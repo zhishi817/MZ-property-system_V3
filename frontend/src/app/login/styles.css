@@ -1,0 +1,21 @@
+.login-wrapper { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background: linear-gradient(135deg,#f5f7fa 0%,#e4ebf5 100%); padding: 24px }
+.brand { display: flex; align-items: center; margin-bottom: 16px }
+.brand-logo { width: 180px; height: auto; margin-right: 16px }
+.login-logo { max-width: 180px; width: 100%; height: auto; object-fit: contain; display: block }
+.login-logo-wrap { margin-bottom: 64px }
+.brand-text { display: flex; flex-direction: column }
+.login-card { width: 100%; max-width: 420px; box-shadow: 0 12px 28px rgba(30,136,229,0.12); border-radius: 16px; border: 1px solid #e6e9f2 }
+.decor-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none }
+.bubble { position: absolute; width: 320px; height: 320px; border-radius: 50%; filter: blur(40px); opacity: .25 }
+.bubble.b1 { top: -120px; right: -120px; background: #c7d2fe }
+.bubble.b2 { bottom: -120px; left: -120px; background: #bfdbfe }
+.bubble.b3 { top: 50%; left: 50%; transform: translate(-50%,-50%); width: 380px; height: 380px; background: #e0e7ff; opacity: .15 }
+.grid { position: absolute; inset: 0; background-image: linear-gradient(to right,#e5e7eb 1px,transparent 1px),linear-gradient(to bottom,#e5e7eb 1px,transparent 1px); background-size: 64px 64px; opacity: .15 }
+.geom-rect { position: absolute; top: 80px; left: 80px; width: 128px; height: 128px; border: 2px solid #c7d2fe; border-radius: 12px; transform: rotate(12deg); opacity: .3 }
+.geom-circle { position: absolute; bottom: 128px; right: 128px; width: 96px; height: 96px; border: 2px solid #93c5fd; border-radius: 50%; opacity: .25 }
+.demo-box { background: #e8f0fe; border: 1px solid #dbe7ff; border-radius: 10px; padding: 12px; margin-top: 16px }
+.forgot-link { color: #1e88e5; font-size: 12px }
+.forgot-link:hover { color: #1e88e5cc }
+.login-divider { position: relative; margin: 16px 0 }
+.login-divider::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: #eef1f6 }
+.login-divider span { position: relative; background: #fff; padding: 0 8px; font-size: 11px; color: #8a8f99; text-transform: uppercase }
