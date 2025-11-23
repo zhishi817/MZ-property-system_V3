@@ -43,4 +43,4 @@ app.use('/audits', auditsRouter)
 app.use('/rbac', rbacRouter)
 
 const port = process.env.PORT ? Number(process.env.PORT) : 4000
-app.listen(port, () => {})
+app.listen(port, () => {console.log(`Server listening on port ${port}`)})

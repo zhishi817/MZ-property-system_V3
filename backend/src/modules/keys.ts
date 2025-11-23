@@ -5,14 +5,25 @@ import multer from 'multer'
 import path from 'path'
 import { requirePerm } from '../auth'
 import { addAudit } from '../store'
+import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete } from '../supabase'
+import { v4 as uuidv4 } from 'uuid'
+import type { KeySet } from '../store'
 
 export const router = Router()
 
-router.get('/', (req, res) => {
-  // ensure key sets exist for all properties by property code
+router.get('/', async (_req, res) => {
+  try {
+    if (hasSupabase) {
+      const sets: any[] = (await supaSelect('key_sets')) || []
+      const items: any[] = (await supaSelect('key_items')) || []
+      const grouped = sets.map((s) => ({ ...s, items: items.filter((it) => it.key_set_id === s.id) }))
+      return res.json(grouped)
+    }
+  } catch (e: any) {
+    // fall back to local
+  }
   const codes = (db.properties || []).map((p: any) => p.code).filter(Boolean)
   const types: Array<'guest'|'spare_1'|'spare_2'|'other'> = ['guest','spare_1','spare_2','other']
-  const { v4: uuidv4 } = require('uuid')
   codes.forEach((code) => {
     types.forEach((t) => {
       if (!db.keySets.find((s) => s.code === code && s.set_type === t)) {
@@ -32,11 +43,18 @@ const createSetSchema = z.object({
   code: v.code || v.property_code || '',
 }))
 
-router.post('/sets', requirePerm('keyset.manage'), (req, res) => {
+router.post('/sets', requirePerm('keyset.manage'), async (req, res) => {
   const parsed = createSetSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
-  const { v4: uuid } = require('uuid')
-  const set = { id: uuid(), set_type: parsed.data.set_type, status: 'available', code: parsed.data.code, items: [] }
+  try {
+    if (hasSupabase) {
+      const set = await require('../supabase').supaUpsertConflict('key_sets', { id: uuidv4(), set_type: parsed.data.set_type, status: 'available', code: parsed.data.code }, 'code,set_type')
+      return res.status(201).json({ ...set, items: [] })
+    }
+  } catch (e: any) {
+    // fall through
+  }
+  const set: KeySet = { id: uuidv4(), set_type: parsed.data.set_type, status: 'available', code: parsed.data.code || '', items: [] }
   db.keySets.push(set)
   res.status(201).json(set)
 })
@@ -47,13 +65,32 @@ const flowSchema = z.object({
   new_code: z.string().optional(),
 })
 
-router.post('/sets/:id/flows', requirePerm('key.flow'), (req, res) => {
+router.post('/sets/:id/flows', requirePerm('key.flow'), async (req, res) => {
   const { id } = req.params
   const parsed = flowSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (hasSupabase) {
+      const rows: any = await supaSelect('key_sets', '*', { id })
+      const set = rows && rows[0]
+      if (!set) return res.status(404).json({ message: 'set not found' })
+      const oldCode = set.code
+      let newStatus = set.status
+      if (parsed.data.action === 'borrow') newStatus = 'in_transit'
+      else if (parsed.data.action === 'return') newStatus = 'available'
+      else if (parsed.data.action === 'lost') newStatus = 'lost'
+      else if (parsed.data.action === 'replace') newStatus = 'replaced'
+      const newCode = parsed.data.action === 'replace' && parsed.data.new_code ? parsed.data.new_code : set.code
+      const updated = await supaUpdate('key_sets', id, { status: newStatus, code: newCode })
+      const flow = await supaInsert('key_flows', { id: require('uuid').v4(), key_set_id: id, action: parsed.data.action, timestamp: new Date().toISOString(), note: parsed.data.note, old_code: oldCode, new_code: newCode })
+      addAudit('KeySet', id, 'flow', { status: set.status, code: oldCode }, { status: updated.status, code: updated.code })
+      return res.status(201).json({ set: updated, flow })
+    }
+  } catch (e: any) {
+    // fall through to local
+  }
   const set = db.keySets.find((s) => s.id === id)
   if (!set) return res.status(404).json({ message: 'set not found' })
-  const { v4: uuid } = require('uuid')
   const oldCode = set.code
   if (parsed.data.action === 'borrow') set.status = 'in_transit'
   else if (parsed.data.action === 'return') set.status = 'available'
@@ -63,7 +100,7 @@ router.post('/sets/:id/flows', requirePerm('key.flow'), (req, res) => {
     if (parsed.data.new_code) set.code = parsed.data.new_code
   }
   const flow = {
-    id: uuid(),
+    id: uuidv4(),
     key_set_id: set.id,
     action: parsed.data.action,
     timestamp: new Date().toISOString(),
@@ -76,57 +113,125 @@ router.post('/sets/:id/flows', requirePerm('key.flow'), (req, res) => {
   res.status(201).json({ set, flow })
 })
 
-router.get('/sets/:id/history', (req, res) => {
+router.get('/sets/:id/history', async (req, res) => {
+  try {
+    if (hasSupabase) {
+      const flows = await supaSelect('key_flows', '*', { key_set_id: req.params.id })
+      return res.json(flows || [])
+    }
+  } catch (e: any) {}
   const { id } = req.params
   const flows = db.keyFlows.filter((f) => f.key_set_id === id)
   res.json(flows)
 })
 
-router.get('/sets/:id', (req, res) => {
+router.get('/sets/:id', async (req, res) => {
+  try {
+    if (hasSupabase) {
+      const rows: any = await supaSelect('key_sets', '*', { id: req.params.id })
+      const set = rows && rows[0]
+      if (!set) return res.status(404).json({ message: 'set not found' })
+      const items = await supaSelect('key_items', '*', { key_set_id: set.id })
+      return res.json({ ...set, items: items || [] })
+    }
+  } catch (e: any) {}
   const set = db.keySets.find((s) => s.id === req.params.id)
   if (!set) return res.status(404).json({ message: 'set not found' })
   res.json(set)
 })
 
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, path.join(process.cwd(), 'uploads')),
-  filename: (_req, file, cb) => {
+  destination: (_req: any, _file: any, cb: any) => cb(null, path.join(process.cwd(), 'uploads')),
+  filename: (_req: any, file: any, cb: any) => {
     const ext = path.extname(file.originalname)
     cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`)
   },
 })
 const upload = multer({ storage })
 
-const addItemSchema = z.object({ item_type: z.enum(['key', 'fob']), code: z.string().min(1) })
-
-router.post('/sets/:id/items', requirePerm('keyset.manage'), upload.single('photo'), (req, res) => {
-  const set = db.keySets.find((s) => s.id === req.params.id)
-  if (!set) return res.status(404).json({ message: 'set not found' })
-  const parsed = addItemSchema.safeParse(req.body)
-  if (!parsed.success) return res.status(400).json(parsed.error.format())
-  const { v4: uuidv4 } = require('uuid')
-  const item = {
-    id: uuidv4(),
-    item_type: parsed.data.item_type,
-    code: parsed.data.code,
-    photo_url: req.file ? `/uploads/${req.file.filename}` : undefined,
-  }
-  set.items.push(item)
-  res.status(201).json(item)
+const addItemSchema = z.object({
+  item_type: z.enum(['key', 'fob']),
+  code: z.string().min(1),
+  set_type: z.enum(['guest','spare_1','spare_2','other']).optional(),
+  property_code: z.string().optional(),
 })
 
-router.patch('/sets/:id/items/:itemId', requirePerm('keyset.manage'), upload.single('photo'), (req, res) => {
+router.post('/sets/:id/items', requirePerm('keyset.manage'), upload.single('photo'), async (req, res) => {
+  const parsed = addItemSchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (hasSupabase) {
+      let rows: any = await supaSelect('key_sets', '*', { id: req.params.id })
+      let set = rows && rows[0]
+      if (!set) {
+        const local = db.keySets.find((s) => s.id === req.params.id)
+        const code = local?.code || (req.body && (req.body as any).property_code)
+        const sType = local?.set_type || (req.body && (req.body as any).set_type)
+        if (!code || !sType) return res.status(404).json({ message: 'set not found' })
+        const byCode: any = await supaSelect('key_sets', '*', { code, set_type: sType })
+        set = byCode && byCode[0]
+        if (!set) {
+          const { v4: uuidv4 } = require('uuid')
+          set = await supaInsert('key_sets', { id: uuidv4(), set_type: sType, status: (local?.status || 'available'), code })
+        }
+      }
+      try {
+        const item = await require('../supabase').supaUpsertConflict('key_items', { key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: (req as any).file ? `/uploads/${(req as any).file.filename}` : null }, 'key_set_id,item_type')
+        return res.status(201).json(item)
+      } catch (eUp: any) {
+        const existed: any = await supaSelect('key_items', '*', { key_set_id: set.id, item_type: parsed.data.item_type })
+        const existing = existed && existed[0]
+        if (existing) {
+          const updated = await supaUpdate('key_items', existing.id, { code: parsed.data.code, photo_url: (req as any).file ? `/uploads/${(req as any).file.filename}` : existing.photo_url })
+          return res.status(200).json(updated)
+        }
+        const created = await supaInsert('key_items', { id: uuidv4(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: (req as any).file ? `/uploads/${(req as any).file.filename}` : null })
+        return res.status(201).json(created)
+      }
+    }
+  } catch (e: any) {
+    if (hasSupabase) return res.status(500).json({ message: e?.message || 'supabase insert failed' })
+  }
+  const set = db.keySets.find((s) => s.id === req.params.id)
+  if (!set) return res.status(404).json({ message: 'set not found' })
+  const existing = (set.items || []).find((it: any) => it.item_type === parsed.data.item_type)
+  if (existing) {
+    existing.code = parsed.data.code
+    if ((req as any).file) existing.photo_url = `/uploads/${(req as any).file.filename}`
+    return res.status(200).json(existing)
+  }
+  const created = { id: uuidv4(), item_type: parsed.data.item_type, code: parsed.data.code, photo_url: (req as any).file ? `/uploads/${(req as any).file.filename}` : undefined }
+  set.items.push(created)
+  res.status(201).json(created)
+})
+
+router.patch('/sets/:id/items/:itemId', requirePerm('keyset.manage'), upload.single('photo'), async (req, res) => {
+  try {
+    if (hasSupabase) {
+      const payload: any = {}
+      if (req.body && req.body.code) payload.code = String(req.body.code)
+      if ((req as any).file) payload.photo_url = `/uploads/${(req as any).file.filename}`
+      const item = await supaUpdate('key_items', req.params.itemId, payload)
+      return res.json(item)
+    }
+  } catch (e: any) {}
   const set = db.keySets.find((s) => s.id === req.params.id)
   if (!set) return res.status(404).json({ message: 'set not found' })
   const item = set.items.find((it: any) => it.id === req.params.itemId)
   if (!item) return res.status(404).json({ message: 'item not found' })
-  const code = (req.body && req.body.code) ? String(req.body.code) : undefined
+  const code = (req.body && (req.body as any).code) ? String((req.body as any).code) : undefined
   if (code) item.code = code
-  if (req.file) item.photo_url = `/uploads/${req.file.filename}`
+  if ((req as any).file) item.photo_url = `/uploads/${(req as any).file.filename}`
   res.json(item)
 })
 
-router.delete('/sets/:id/items/:itemId', requirePerm('keyset.manage'), (req, res) => {
+router.delete('/sets/:id/items/:itemId', requirePerm('keyset.manage'), async (req, res) => {
+  try {
+    if (hasSupabase) {
+      await supaDelete('key_items', req.params.itemId)
+      return res.json({ ok: true })
+    }
+  } catch (e: any) {}
   const set = db.keySets.find((s) => s.id === req.params.id)
   if (!set) return res.status(404).json({ message: 'set not found' })
   const idx = set.items.findIndex((it: any) => it.id === req.params.itemId)
@@ -135,11 +240,20 @@ router.delete('/sets/:id/items/:itemId', requirePerm('keyset.manage'), (req, res
   res.json({ ok: true })
 })
 
-router.get('/sets', (req, res) => {
+router.get('/sets', async (req, res) => {
   const { property_code } = req.query as any
+  try {
+    if (hasSupabase) {
+      if (!property_code) {
+        const sets = await supaSelect('key_sets')
+        return res.json(sets)
+      }
+      const rows = await supaSelect('key_sets', '*', { code: property_code })
+      return res.json(rows)
+    }
+  } catch (e: any) {}
   if (!property_code) return res.json(db.keySets)
   const types: Array<'guest'|'spare_1'|'spare_2'|'other'> = ['guest','spare_1','spare_2','other']
-  const { v4: uuidv4 } = require('uuid')
   types.forEach((t) => {
     if (!db.keySets.find((s) => s.code === property_code && s.set_type === t)) {
       db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: property_code, items: [] })

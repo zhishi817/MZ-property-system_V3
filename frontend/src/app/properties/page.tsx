@@ -1,5 +1,5 @@
 "use client"
-import { Table, Card, Button, Modal, Form, Input, InputNumber, Select, message, Space, Row, Col, Tag, Divider, Switch } from 'antd'
+import { Table, Card, Button, Modal, Form, Input, InputNumber, Select, message, Space, Row, Col, Tag, Divider, Switch, AutoComplete } from 'antd'
 import { useEffect, useState } from 'react'
 import { API_BASE } from '../../lib/api'
 
@@ -20,6 +20,9 @@ export default function PropertiesPage() {
   const [typeSel, setTypeSel] = useState<string | undefined>(undefined)
   const [typeEdit, setTypeEdit] = useState<string | undefined>(undefined)
   const [query, setQuery] = useState('')
+  const [addrOptions, setAddrOptions] = useState<{ value: string; label: string }[]>([])
+  const [addrTimer, setAddrTimer] = useState<any>(null)
+  const [showArchived, setShowArchived] = useState(false)
   function getBedroomCount(type?: string) {
     switch (type) {
       case '一房一卫': return 1
@@ -32,11 +35,40 @@ export default function PropertiesPage() {
   }
 
   async function load() {
-    const res = await fetch(`${API_BASE}/properties`)
-    setData(await res.json())
+    const res = await fetch(`${API_BASE}/properties?include_archived=${showArchived ? 'true' : 'false'}`)
+    const rows = await res.json()
+    const arr = Array.isArray(rows) ? rows : []
+    setData(showArchived ? arr : arr.filter((p: any) => !p.archived))
   }
-  useEffect(() => { load(); fetch(`${API_BASE}/config/dictionaries`).then(r => r.json()).then(setDicts); fetch(`${API_BASE}/landlords`).then(r => r.json()).then(setLandlords) }, [])
+  useEffect(() => { load(); fetch(`${API_BASE}/config/dictionaries`).then(r => r.json()).then(setDicts); fetch(`${API_BASE}/landlords`).then(r => r.json()).then(setLandlords) }, [showArchived])
   useEffect(() => { setMounted(true) }, [])
+
+  async function fetchAddrSuggestions(input: string) {
+    const q = input.trim()
+    if (!q) { setAddrOptions([]); return }
+    try {
+      const u = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=8&countrycodes=au&q=${encodeURIComponent(q + ' Melbourne VIC Australia')}`
+      const res = await fetch(u, { headers: { 'Accept-Language': 'en' } })
+      const rows = await res.json().catch(() => [])
+      const opts = (rows || []).map((r: any) => {
+        const a = r.address || {}
+        const num = a.house_number || ''
+        const road = a.road || a.pedestrian || a.cycleway || ''
+        const suburb = a.suburb || a.neighbourhood || a.town || a.city || 'Melbourne'
+        const state = a.state || 'VIC'
+        const pc = a.postcode || ''
+        const formatted = `${[num, road].filter(Boolean).join(' ')}${road || num ? ', ' : ''}${suburb}, ${state}${pc ? ' ' + pc : ''}, Australia`
+        return { value: formatted, label: formatted }
+      })
+      setAddrOptions(opts)
+    } catch { setAddrOptions([]) }
+  }
+
+  function handleAddrSearch(input: string) {
+    if (addrTimer) clearTimeout(addrTimer)
+    const t = setTimeout(() => fetchAddrSuggestions(input), 250)
+    setAddrTimer(t)
+  }
 
   async function submitCreate() {
     const v = await form.validateFields()
@@ -59,14 +91,14 @@ export default function PropertiesPage() {
 
   async function deleteProperty(id: string) {
     const res = await fetch(`${API_BASE}/properties/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` } })
-    if (res.ok) { message.success('房源已删除'); load() } else { const m = await res.json().catch(() => null); message.error(m?.message || '删除失败') }
+    if (res.ok) { message.success('房源已归档'); load() } else { const m = await res.json().catch(() => null); message.error(m?.message || '归档失败') }
   }
 
   function confirmDelete(record: Property) {
     Modal.confirm({
-      title: '确认删除',
-      content: `是否确认删除房源：${record.code || record.address}？此操作不可恢复。`,
-      okText: '删除',
+      title: '确认归档',
+      content: `是否确认归档房源：${record.code || record.address}？`,
+      okText: '归档',
       okType: 'danger',
       cancelText: '取消',
       onOk: () => deleteProperty(record.id),
@@ -96,13 +128,15 @@ export default function PropertiesPage() {
     { title: '可住人数', dataIndex: 'capacity' },
     { title: '区域', dataIndex: 'region' },
     { title: '面积(㎡)', dataIndex: 'area_sqm' },
-    { title: '操作', render: (_: any, r: Property) => (<Space><Button onClick={() => openDetail(r.id)}>详情</Button><Button onClick={() => openEdit(r)}>编辑</Button><Button danger onClick={() => confirmDelete(r)}>删除</Button></Space>) },
+    { title: '操作', render: (_: any, r: Property) => (<Space><Button onClick={() => openDetail(r.id)}>详情</Button><Button onClick={() => openEdit(r)}>编辑</Button><Button danger onClick={() => confirmDelete(r)}>归档</Button></Space>) },
   ]
 
   if (!mounted) return null
   return (
     <Card title="房源管理" extra={
       <Space>
+        <span>显示归档</span>
+        <Switch checked={showArchived} onChange={setShowArchived as any} />
         <Input.Search allowClear placeholder="搜索房源" onSearch={setQuery} onChange={(e) => setQuery(e.target.value)} style={{ width: 260 }} />
         <Button type="primary" onClick={() => setOpen(true)}>新建房源</Button>
       </Space>
@@ -129,7 +163,16 @@ export default function PropertiesPage() {
             <Col span={8}><Form.Item name="code" label="房号"><Input placeholder="留空自动生成" /></Form.Item></Col>
             <Col span={8}><Form.Item name="landlord_id" label="房源隶属房东"><Select allowClear options={landlords.map(l => ({ value: l.id, label: l.name }))} /></Form.Item></Col>
             <Col span={8}><Form.Item name="region" label="房源区域划分"><Select options={(dicts.regions || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item></Col>
-            <Col span={24}><Form.Item name="address" label="房源地址（墨尔本）" rules={[{ required: true }]}><Input /></Form.Item></Col>
+            <Col span={24}><Form.Item name="address" label="房源地址（墨尔本）" rules={[{ required: true }]}>
+              <AutoComplete
+                options={addrOptions}
+                onSearch={handleAddrSearch}
+                onSelect={(v) => form.setFieldsValue({ address: v })}
+                style={{ width: '100%' }}
+              >
+                <Input placeholder="输入街道和门牌号，自动提示格式化地址" />
+              </AutoComplete>
+            </Form.Item></Col>
             <Col span={8}><Form.Item name="type" label="房型分类" rules={[{ required: true }]}><Select onChange={(v) => setTypeSel(v)} options={[{value:'一房一卫',label:'一房一卫'},{value:'两房一卫',label:'两房一卫'},{value:'两房两卫',label:'两房两卫'},{value:'三房两卫',label:'三房两卫'},{value:'三房三卫',label:'三房三卫'}]} /></Form.Item></Col>
             <Col span={8}><Form.Item name="capacity" label="可住人数" rules={[{ required: true }]}><InputNumber min={1} style={{ width: '100%' }} /></Form.Item></Col>
             <Col span={8}><Form.Item name="area_sqm" label="房源面积(㎡)"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item></Col>
@@ -211,7 +254,16 @@ export default function PropertiesPage() {
             <Col span={8}><Form.Item label="房号"><Input value={editForm.getFieldValue('code') || ''} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item name="landlord_id" label="房东"><Select allowClear options={landlords.map(l => ({ value: l.id, label: l.name }))} /></Form.Item></Col>
             <Col span={8}><Form.Item name="region" label="区域"><Select options={(dicts.regions || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item></Col>
-            <Col span={24}><Form.Item name="address" label="地址" rules={[{ required: true }]}><Input /></Form.Item></Col>
+            <Col span={24}><Form.Item name="address" label="地址" rules={[{ required: true }]}>
+              <AutoComplete
+                options={addrOptions}
+                onSearch={handleAddrSearch}
+                onSelect={(v) => editForm.setFieldsValue({ address: v })}
+                style={{ width: '100%' }}
+              >
+                <Input placeholder="输入街道和门牌号，自动提示格式化地址" />
+              </AutoComplete>
+            </Form.Item></Col>
             <Col span={8}><Form.Item name="type" label="房型" rules={[{ required: true }]}><Select onChange={(v) => setTypeEdit(v)} options={[{value:'一房一卫',label:'一房一卫'},{value:'两房一卫',label:'两房一卫'},{value:'两房两卫',label:'两房两卫'},{value:'三房两卫',label:'三房两卫'},{value:'三房三卫',label:'三房三卫'}]} /></Form.Item></Col>
             <Col span={8}><Form.Item name="capacity" label="可住人数" rules={[{ required: true }]}><InputNumber min={1} style={{ width: '100%' }} /></Form.Item></Col>
             <Col span={8}><Form.Item name="area_sqm" label="面积(㎡)"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item></Col>

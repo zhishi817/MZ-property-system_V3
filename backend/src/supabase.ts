@@ -46,3 +46,10 @@ export async function supaUpsert(table: string, payload: any) {
   if (error) throw error
   return data
 }
+
+export async function supaUpsertConflict(table: string, payload: any, onConflict: string) {
+  if (!supabase) return null
+  const { data, error } = await supabase.from(table).upsert(payload, { onConflict }).select('*').single()
+  if (error) throw error
+  return data
+}

@@ -2,27 +2,38 @@ import { Router } from 'express'
 import { db, Landlord, addAudit } from '../store'
 import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete } from '../supabase'
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
-import { hasPg, pgSelect, pgInsert, pgUpdate } from '../dbAdapter'
 import { z } from 'zod'
 import { requirePerm } from '../auth'
 import bcrypt from 'bcryptjs'
+import { v4 as uuidv4 } from 'uuid'
 
 export const router = Router()
 
 router.get('/', (req, res) => {
+  const q: any = req.query || {}
+  const includeArchived = String(q.include_archived || '').toLowerCase() === 'true'
   if (hasSupabase) {
-    supaSelect('landlords')
-      .then((data) => res.json(data))
-      .catch((err) => res.status(500).json({ message: err.message }))
+    const handle = (rows: any) => {
+      const arr = Array.isArray(rows) ? rows : []
+      return res.json(includeArchived ? arr : arr.filter((x: any) => !x.archived))
+    }
+    supaSelect('landlords', '*', includeArchived ? undefined as any : { archived: false } as any)
+      .then(handle)
+      .catch(() => {
+        supaSelect('landlords')
+          .then(handle)
+          .catch((err) => res.status(500).json({ message: err.message }))
+      })
     return
   }
   if (hasPg) {
-    pgSelect('landlords')
-      .then((data) => res.json(data))
+    const filter = includeArchived ? {} : { archived: false }
+    pgSelect('landlords', '*', filter as any)
+      .then((data) => res.json(includeArchived ? data : (data || []).filter((x: any) => !x.archived)))
       .catch((err) => res.status(500).json({ message: err.message }))
     return
   }
-  return res.json(db.landlords)
+  return res.json((db.landlords || []).filter((l: any) => includeArchived ? true : !l.archived))
 })
 
 const schema = z.object({
@@ -42,8 +53,7 @@ const schema = z.object({
 router.post('/', requirePerm('landlord.manage'), (req, res) => {
   const parsed = schema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
-  const { v4: uuid } = require('uuid')
-  const l: Landlord = { id: uuid(), ...parsed.data }
+  const l: Landlord = { id: uuidv4(), ...parsed.data }
   if (hasSupabase) {
     return supaInsert('landlords', l)
       .then((row) => { addAudit('Landlord', row.id, 'create', null, row); res.status(201).json(row) })
@@ -112,21 +122,29 @@ router.delete('/:id', requirePerm('landlord.manage'), async (req, res) => {
   const actor = (req as any).user
   try {
     if (hasSupabase) {
-      const row = await supaDelete('landlords', id)
-      addAudit('Landlord', id, 'delete', row, null, actor?.sub)
-      return res.json({ id })
+      const rows: any = await supaSelect('landlords', '*', { id })
+      const before = rows && rows[0]
+      try {
+        const row = await supaUpdate('landlords', id, { archived: true })
+        addAudit('Landlord', id, 'archive', before, row, actor?.sub)
+        return res.json({ id, archived: true })
+      } catch (e: any) {
+        return res.status(400).json({ message: '数据库缺少 archived 列，请先执行迁移：ALTER TABLE landlords ADD COLUMN IF NOT EXISTS archived boolean DEFAULT false;' })
+      }
     }
     if (hasPg) {
-      const row = await pgDelete('landlords', id)
-      addAudit('Landlord', id, 'delete', row, null, actor?.sub)
-      return res.json({ id })
+      const rows: any = await pgSelect('landlords', '*', { id })
+      const before = rows && rows[0]
+      const row = await pgUpdate('landlords', id, { archived: true })
+      addAudit('Landlord', id, 'archive', before, row, actor?.sub)
+      return res.json({ id, archived: true })
     }
-    const idx = db.landlords.findIndex(x => x.id === id)
-    if (idx === -1) return res.status(404).json({ message: 'not found' })
-    const beforeLocal = db.landlords[idx]
-    db.landlords.splice(idx, 1)
-    addAudit('Landlord', id, 'delete', beforeLocal, null, actor?.sub)
-    return res.json({ id })
+    const l = db.landlords.find(x => x.id === id)
+    if (!l) return res.status(404).json({ message: 'not found' })
+    const beforeLocal = { ...l }
+    ;(l as any).archived = true
+    addAudit('Landlord', id, 'archive', beforeLocal, l, actor?.sub)
+    return res.json({ id, archived: true })
   } catch (e: any) {
     return res.status(500).json({ message: e.message })
   }

@@ -52,6 +52,7 @@ async function run() {
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS building_notes text;`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS orientation text;`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS fireworks_view boolean;`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS archived boolean DEFAULT false;`,
 
     `CREATE TABLE IF NOT EXISTS landlords (
       id text PRIMARY KEY,
@@ -71,6 +72,7 @@ async function run() {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_landlords_name ON landlords(name);`,
     `ALTER TABLE landlords ADD COLUMN IF NOT EXISTS property_ids text[];`,
+    `ALTER TABLE landlords ADD COLUMN IF NOT EXISTS archived boolean DEFAULT false;`,
 
     `CREATE TABLE IF NOT EXISTS orders (
       id text PRIMARY KEY,
@@ -113,6 +115,38 @@ async function run() {
     `CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);`
     ,
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_password_hash text;`
+    ,
+    `CREATE TABLE IF NOT EXISTS key_sets (
+      id text PRIMARY KEY,
+      set_type text,
+      status text,
+      code text,
+      created_at timestamptz DEFAULT now()
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_key_sets_code ON key_sets(code);`,
+    `CREATE INDEX IF NOT EXISTS idx_key_sets_type ON key_sets(set_type);`,
+    `ALTER TABLE key_sets ADD CONSTRAINT IF NOT EXISTS unique_key_sets_code_type UNIQUE (code, set_type);`,
+    `CREATE TABLE IF NOT EXISTS key_items (
+      id text PRIMARY KEY,
+      key_set_id text REFERENCES key_sets(id) ON DELETE CASCADE,
+      item_type text,
+      code text,
+      photo_url text,
+      created_at timestamptz DEFAULT now()
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_key_items_set ON key_items(key_set_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_key_items_type ON key_items(item_type);`,
+    `ALTER TABLE key_items ADD CONSTRAINT IF NOT EXISTS unique_key_items_set_type UNIQUE (key_set_id, item_type);`,
+    `CREATE TABLE IF NOT EXISTS key_flows (
+      id text PRIMARY KEY,
+      key_set_id text REFERENCES key_sets(id) ON DELETE CASCADE,
+      action text,
+      timestamp timestamptz,
+      note text,
+      old_code text,
+      new_code text
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_key_flows_set ON key_flows(key_set_id);`
   ]
 
   for (const sql of stmts) {

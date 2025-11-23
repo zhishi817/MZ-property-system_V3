@@ -1,5 +1,5 @@
 "use client"
-import { Table, Card, Button, Modal, Form, Input, InputNumber, Space, message, Select, Tag } from 'antd'
+import { Table, Card, Button, Modal, Form, Input, InputNumber, Space, message, Select, Tag, Switch } from 'antd'
 import { useEffect, useState } from 'react'
 import { API_BASE } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
@@ -28,12 +28,14 @@ export default function LandlordsPage() {
   const [pwdForm] = Form.useForm()
   const [properties, setProperties] = useState<{ id: string; address: string }[]>([])
   const [query, setQuery] = useState('')
+  const [showArchived, setShowArchived] = useState(false)
 
   async function load() {
-    const res = await fetch(`${API_BASE}/landlords`).then(r => r.json())
-    setData(res)
+    const res = await fetch(`${API_BASE}/landlords?include_archived=${showArchived ? 'true' : 'false'}`).then(r => r.json()).catch(() => [])
+    const arr = Array.isArray(res) ? res : []
+    setData(showArchived ? arr : arr.filter((l: any) => !l.archived))
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [showArchived])
   useEffect(() => { fetch(`${API_BASE}/properties`).then(r => r.json()).then(setProperties).catch(() => setProperties([])) }, [])
   useEffect(() => { setMounted(true) }, [])
 
@@ -69,15 +71,15 @@ export default function LandlordsPage() {
   async function submitDelete() {
     if (!current) return
     const res = await fetch(`${API_BASE}/landlords/${current.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` } })
-    if (res.ok) { message.success('房东已删除'); setCurrent(null); load() } else { const m = await res.json().catch(() => null); message.error(m?.message || '删除失败') }
+    if (res.ok) { message.success('房东已归档'); setCurrent(null); load() } else { const m = await res.json().catch(() => null); message.error(m?.message || '归档失败') }
   }
 
   function confirmDelete(record: Landlord) {
     setCurrent(record)
     Modal.confirm({
-      title: '确认删除',
-      content: `是否确认删除房东：${record.name}？此操作不可恢复。`,
-      okText: '删除',
+      title: '确认归档',
+      content: `是否确认归档房东：${record.name}？`,
+      okText: '归档',
       okType: 'danger',
       cancelText: '取消',
       onOk: submitDelete,
@@ -91,7 +93,7 @@ export default function LandlordsPage() {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` },
       body: JSON.stringify({ password: v.password })
     })
-    if (res.ok) { message.success('删除口令已更新'); setSetPwdOpen(false); pwdForm.resetFields() }
+    if (res.ok) { message.success('删除口令已更新'); pwdForm.resetFields() }
     else { const m = await res.json().catch(() => null); message.error(m?.message || '更新失败') }
   }
 
@@ -114,7 +116,7 @@ export default function LandlordsPage() {
       <Space wrap>
         <Button size="small" onClick={() => openDetail(r.id)}>详情</Button>
         {hasPerm('landlord.manage') && <Button size="small" onClick={() => { setCurrent(r); setEditOpen(true); editForm.setFieldsValue(r) }}>编辑</Button>}
-        {hasPerm('landlord.manage') && <Button size="small" danger onClick={() => confirmDelete(r)}>删除</Button>}
+        {hasPerm('landlord.manage') && <Button size="small" danger onClick={() => confirmDelete(r)}>归档</Button>}
       </Space>
     ), responsive: ['xs','sm','md','lg','xl'] },
   ]
@@ -123,6 +125,8 @@ export default function LandlordsPage() {
   return (
     <Card title="房东管理" extra={
       <Space>
+        <span>显示归档</span>
+        <Switch checked={showArchived} onChange={setShowArchived as any} />
         <Input.Search allowClear placeholder="搜索房东" onSearch={setQuery} onChange={(e) => setQuery(e.target.value)} style={{ width: 240 }} />
         {hasPerm('landlord.manage') && <Button type="primary" onClick={() => setOpen(true)}>新增房东</Button>}
       </Space>
@@ -130,7 +134,7 @@ export default function LandlordsPage() {
       <Table
         rowKey={(r) => r.id}
         columns={columns as any}
-        dataSource={data.filter(l => {
+        dataSource={(Array.isArray(data) ? data : []).filter(l => {
           const q = query.trim().toLowerCase()
           if (!q) return true
           return (
@@ -149,23 +153,12 @@ export default function LandlordsPage() {
           <Form.Item name="phone" label="联系方式"><Input /></Form.Item>
           <Form.Item name="email" label="邮箱"><Input /></Form.Item>
           <Form.Item name="management_fee_rate" label="管理费">
-            <InputNumber
-              min={0}
-              max={1}
-              step={0.01}
-              style={{ width: '100%' }}
-              formatter={(value) => (value !== null && value !== undefined ? `${Math.round(Number(value) * 100)}%` : '')}
-              parser={(value) => {
-                const s = (value || '').toString().replace(/\s|%/g, '')
-                const n = parseFloat(s)
-                return isNaN(n) ? 0 : n / 100
-              }}
-            />
+            <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="payout_bsb" label="BSB"><Input /></Form.Item>
           <Form.Item name="payout_account" label="银行账户"><Input /></Form.Item>
           <Form.Item name="property_ids" label="被管理的房源">
-            <Select mode="multiple" placeholder="选择房源" options={properties.map(p => ({ value: p.id, label: p.address }))} />
+            <Select mode="multiple" placeholder="选择房源" options={(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.address }))} />
           </Form.Item>
         </Form>
       </Modal>
@@ -175,23 +168,12 @@ export default function LandlordsPage() {
           <Form.Item name="phone" label="联系方式"><Input /></Form.Item>
           <Form.Item name="email" label="邮箱"><Input /></Form.Item>
           <Form.Item name="management_fee_rate" label="管理费">
-            <InputNumber
-              min={0}
-              max={1}
-              step={0.01}
-              style={{ width: '100%' }}
-              formatter={(value) => (value !== null && value !== undefined ? `${Math.round(Number(value) * 100)}%` : '')}
-              parser={(value) => {
-                const s = (value || '').toString().replace(/\s|%/g, '')
-                const n = parseFloat(s)
-                return isNaN(n) ? 0 : n / 100
-              }}
-            />
+            <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="payout_bsb" label="BSB"><Input /></Form.Item>
           <Form.Item name="payout_account" label="银行账户"><Input /></Form.Item>
           <Form.Item name="property_ids" label="被管理的房源">
-            <Select mode="multiple" placeholder="选择房源" options={properties.map(p => ({ value: p.id, label: p.address }))} />
+            <Select mode="multiple" placeholder="选择房源" options={(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.address }))} />
           </Form.Item>
         </Form>
       </Modal>
@@ -206,7 +188,7 @@ export default function LandlordsPage() {
           <Form.Item label="房源">
             <Space wrap>
               {(detail?.property_ids || []).map(id => {
-                const p = properties.find(x => x.id === id)
+                const p = (Array.isArray(properties) ? properties : []).find(x => x.id === id)
                 return <Tag key={id}>{p ? p.address : id}</Tag>
               })}
             </Space>

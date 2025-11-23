@@ -4,23 +4,35 @@ import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete } from '../
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import { z } from 'zod'
 import { requirePerm } from '../auth'
+import { v4 as uuidv4 } from 'uuid'
 
 export const router = Router()
 
 router.get('/', (req, res) => {
+  const q: any = req.query || {}
+  const includeArchived = String(q.include_archived || '').toLowerCase() === 'true'
   if (hasSupabase) {
-    supaSelect('properties')
-      .then((data) => res.json(data))
-      .catch((err) => res.status(500).json({ message: err.message }))
+    const handle = (rows: any) => {
+      const arr = Array.isArray(rows) ? rows : []
+      return res.json(includeArchived ? arr : arr.filter((x: any) => !x.archived))
+    }
+    supaSelect('properties', '*', includeArchived ? undefined as any : { archived: false } as any)
+      .then(handle)
+      .catch(() => {
+        supaSelect('properties')
+          .then(handle)
+          .catch((err) => res.status(500).json({ message: err.message }))
+      })
     return
   }
   if (hasPg) {
-    pgSelect('properties')
-      .then((data) => res.json(data))
+    const filter = includeArchived ? {} : { archived: false }
+    pgSelect('properties', '*', filter as any)
+      .then((data) => res.json(includeArchived ? data : (data || []).filter((x: any) => !x.archived)))
       .catch((err) => res.status(500).json({ message: err.message }))
     return
   }
-  return res.json(db.properties)
+  return res.json((db.properties || []).filter((p: any) => includeArchived ? true : !p.archived))
 })
 
 const createSchema = z.object({
@@ -57,9 +69,8 @@ const createSchema = z.object({
 router.post('/', requirePerm('property.write'), async (req, res) => {
   const parsed = createSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
-  const { v4: uuid } = require('uuid')
   const autoCode = `PM-${Math.random().toString(36).slice(2,6).toUpperCase()}-${Date.now().toString().slice(-4)}`
-  const pFull: any = { id: uuid(), code: parsed.data.code || autoCode, ...parsed.data }
+  const pFull: any = { id: uuidv4(), code: parsed.data.code || autoCode, ...parsed.data }
   const baseKeys = ['id','address','type','capacity','region','area_sqm','building_name','building_facilities','building_facility_floor','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','aircon_model','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id']
   const pBase: any = Object.fromEntries(Object.entries(pFull).filter(([k]) => baseKeys.includes(k)))
   const minimalKeys = ['id','address','type','capacity','region','area_sqm','notes']
@@ -69,10 +80,13 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
       try {
         const row = await supaInsert('properties', pFull)
         addAudit('Property', row.id, 'create', null, row)
-        ;['guest','spare_1','spare_2','other'].forEach((t) => {
-          if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-            const { v4: uuidv4 } = require('uuid')
-            db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] })
+        ;['guest','spare_1','spare_2','other'].forEach(async (t) => {
+          try {
+            await require('../supabase').supaUpsertConflict('key_sets', { id: uuidv4(), set_type: t, status: 'available', code: row.code || '' }, 'code,set_type')
+          } catch {
+            if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
+              db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
+            }
           }
         })
         return res.status(201).json(row)
@@ -80,20 +94,26 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
         try {
           const row = await supaInsert('properties', pBase)
           addAudit('Property', row.id, 'create', null, row)
-          ;['guest','spare_1','spare_2','other'].forEach((t) => {
+          ;['guest','spare_1','spare_2','other'].forEach(async (t) => {
+            try {
+            await require('../supabase').supaUpsertConflict('key_sets', { id: uuidv4(), set_type: t, status: 'available', code: row.code || '' }, 'code,set_type')
+            } catch {
             if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-              const { v4: uuidv4 } = require('uuid')
-              db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] })
+              db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
+              }
             }
           })
           return res.status(201).json(row)
         } catch (e2: any) {
           const row = await supaInsert('properties', pMinimal)
           addAudit('Property', row.id, 'create', null, row)
-          ;['guest','spare_1','spare_2','other'].forEach((t) => {
+          ;['guest','spare_1','spare_2','other'].forEach(async (t) => {
+            try {
+            await require('../supabase').supaUpsertConflict('key_sets', { id: uuidv4(), set_type: t, status: 'available', code: row.code || '' }, 'code,set_type')
+            } catch {
             if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-              const { v4: uuidv4 } = require('uuid')
-              db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] })
+            db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
+            }
             }
           })
           return res.status(201).json(row)
@@ -105,8 +125,7 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
       addAudit('Property', row.id, 'create', null, row)
       ;['guest','spare_1','spare_2','other'].forEach((t) => {
         if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-          const { v4: uuidv4 } = require('uuid')
-          db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] })
+          db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
         }
       })
       return res.status(201).json(row)
@@ -115,8 +134,7 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
     addAudit('Property', pFull.id, 'create', null, pFull)
     ;['guest','spare_1','spare_2','other'].forEach((t) => {
       if (!db.keySets.find((s) => s.code === (pFull.code || '') && s.set_type === t)) {
-        const { v4: uuidv4 } = require('uuid')
-        db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: pFull.code || '', items: [] })
+        db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: pFull.code || '', items: [] } as any)
       }
     })
     return res.status(201).json(pFull)
@@ -196,21 +214,29 @@ router.delete('/:id', requirePerm('property.write'), async (req, res) => {
   const actor = (req as any).user
   try {
     if (hasSupabase) {
-      const row = await supaDelete('properties', id)
-      addAudit('Property', id, 'delete', row, null, actor?.sub)
-      return res.json({ id })
+      const rows: any = await supaSelect('properties', '*', { id })
+      const before = rows && rows[0]
+      try {
+        const row = await supaUpdate('properties', id, { archived: true })
+        addAudit('Property', id, 'archive', before, row, actor?.sub)
+        return res.json({ id, archived: true })
+      } catch (e: any) {
+        return res.status(400).json({ message: '数据库缺少 archived 列，请先执行迁移：ALTER TABLE properties ADD COLUMN IF NOT EXISTS archived boolean DEFAULT false;' })
+      }
     }
     if (hasPg) {
-      const row = await pgDelete('properties', id)
-      addAudit('Property', id, 'delete', row, null, actor?.sub)
-      return res.json({ id })
+      const rows: any = await pgSelect('properties', '*', { id })
+      const before = rows && rows[0]
+      const row = await pgUpdate('properties', id, { archived: true })
+      addAudit('Property', id, 'archive', before, row, actor?.sub)
+      return res.json({ id, archived: true })
     }
-    const idx = db.properties.findIndex(x => x.id === id)
-    if (idx === -1) return res.status(404).json({ message: 'not found' })
-    const beforeLocal = db.properties[idx]
-    db.properties.splice(idx, 1)
-    addAudit('Property', id, 'delete', beforeLocal, null, actor?.sub)
-    return res.json({ id })
+    const p = db.properties.find(x => x.id === id)
+    if (!p) return res.status(404).json({ message: 'not found' })
+    const beforeLocal = { ...p }
+    ;(p as any).archived = true
+    addAudit('Property', id, 'archive', beforeLocal, p, actor?.sub)
+    return res.json({ id, archived: true })
   } catch (e: any) {
     return res.status(500).json({ message: e.message })
   }

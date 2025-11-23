@@ -187,38 +187,33 @@ if (db.inventoryItems.length === 0) {
 }
 
 export function addAudit(entity: string, entity_id: string, action: string, before: any, after: any, actor_id?: string) {
-  const { v4: uuidv4 } = require('uuid')
-  db.audits.push({ id: uuidv4(), actor_id, action, entity, entity_id, before, after, timestamp: new Date().toISOString() })
+  db.audits.push({ id: uuid(), actor_id, action, entity, entity_id, before, after, timestamp: new Date().toISOString() })
 }
 
 if (db.landlords.length === 0) {
-  const { v4: uuidv4 } = require('uuid')
   const p1 = db.properties[0]?.id
   const p2 = db.properties[1]?.id
   db.landlords.push(
-    { id: uuidv4(), name: 'MZ Holdings', phone: '0400 000 000', email: 'owner@mz.com', management_fee_rate: 0.1, payout_bsb: '062000', payout_account: '123456', property_ids: p1 ? [p1] : [] },
-    { id: uuidv4(), name: 'John Doe', phone: '0411 111 111', email: 'john@example.com', management_fee_rate: 0.08, payout_bsb: '063000', payout_account: '654321', property_ids: p2 ? [p2] : [] }
+    { id: uuid(), name: 'MZ Holdings', phone: '0400 000 000', email: 'owner@mz.com', management_fee_rate: 0.1, payout_bsb: '062000', payout_account: '123456', property_ids: p1 ? [p1] : [] },
+    { id: uuid(), name: 'John Doe', phone: '0411 111 111', email: 'john@example.com', management_fee_rate: 0.08, payout_bsb: '063000', payout_account: '654321', property_ids: p2 ? [p2] : [] }
   )
 }
 
 if (db.financeTransactions.length === 0) {
-  const { v4: uuidv4 } = require('uuid')
   db.financeTransactions.push(
-    { id: uuidv4(), kind: 'income', amount: 220.0, currency: 'AUD', ref_type: 'order', ref_id: 'o-1', occurred_at: new Date().toISOString(), note: '房费' },
-    { id: uuidv4(), kind: 'expense', amount: 60.0, currency: 'AUD', ref_type: 'cleaning', ref_id: 'w-1', occurred_at: new Date().toISOString(), note: '清洁费' }
+    { id: uuid(), kind: 'income', amount: 220.0, currency: 'AUD', ref_type: 'order', ref_id: 'o-1', occurred_at: new Date().toISOString(), note: '房费' },
+    { id: uuid(), kind: 'expense', amount: 60.0, currency: 'AUD', ref_type: 'cleaning', ref_id: 'w-1', occurred_at: new Date().toISOString(), note: '清洁费' }
   )
 }
 
 if (db.payouts.length === 0 && db.landlords.length) {
-  const { v4: uuidv4 } = require('uuid')
   const l = db.landlords[0]
-  db.payouts.push({ id: uuidv4(), landlord_id: l.id, period_from: '2025-11-01', period_to: '2025-11-30', amount: 1200, invoice_no: 'INV-001', status: 'pending' })
+  db.payouts.push({ id: uuid(), landlord_id: l.id, period_from: '2025-11-01', period_to: '2025-11-30', amount: 1200, invoice_no: 'INV-001', status: 'pending' })
 }
 
 // RBAC seed
 if (db.roles.length === 0) {
-  const { v4: uuidv4 } = require('uuid')
-  const adminId = uuidv4(); const opsId = uuidv4(); const fieldId = uuidv4()
+  const adminId = uuid(); const opsId = uuid(); const fieldId = uuid()
   db.roles.push(
     { id: adminId, name: 'admin' },
     { id: opsId, name: 'ops' },

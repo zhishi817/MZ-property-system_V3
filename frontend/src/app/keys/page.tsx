@@ -1,211 +1,171 @@
 "use client"
-import { Table, Card, Tag, Space, Button, message, Modal, Form, Input, Select, Image, Upload } from 'antd'
-import { useEffect, useState } from 'react'
+import { Table, Card, Tag, Space, Button, message, Modal, Form, Input, Select, Image, Upload, Row, Col, Progress } from 'antd'
+import { useEffect, useState, useRef } from 'react'
 import { API_BASE } from '../../lib/api'
-import Link from 'next/link'
 import { hasPerm } from '../../lib/auth'
 
-type KeySet = { id: string; set_type: string; status: string; code?: string }
+type KeySet = { id: string; set_type: 'guest'|'spare_1'|'spare_2'|'other'; status: string; code?: string; items?: Array<{ id: string; item_type: 'key'|'fob'; code: string; photo_url?: string }> }
+type Property = { id: string; code?: string; address: string }
 
 export default function KeysPage() {
-  const [data, setData] = useState<KeySet[]>([])
-  const [open, setOpen] = useState(false)
-  const [currentId, setCurrentId] = useState<string | null>(null)
-  const [form] = Form.useForm()
-  const [createForm] = Form.useForm()
-  const [createOpen, setCreateOpen] = useState(false)
-  const [properties, setProperties] = useState<{ id: string; code?: string; address: string }[]>([])
-  const [addOpen, setAddOpen] = useState(false)
-  const [addForm] = Form.useForm()
-  const [addSetId, setAddSetId] = useState<string | null>(null)
-  const [detailOpen, setDetailOpen] = useState(false)
-  const [detailSet, setDetailSet] = useState<any>(null)
+  const [sets, setSets] = useState<KeySet[]>([])
+  const [properties, setProperties] = useState<Property[]>([])
   const [query, setQuery] = useState('')
+  const [slotOpen, setSlotOpen] = useState(false)
+  const [slotForm] = Form.useForm()
+  const [ctx, setCtx] = useState<{ setId?: string; item?: any; item_type?: 'key'|'fob'; set_type?: KeySet['set_type']; property_code?: string } | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadPct, setUploadPct] = useState(0)
+  const prevSetsRef = useRef<KeySet[]>([])
 
   async function load() {
     const res = await fetch(`${API_BASE}/keys`)
-    setData(await res.json())
+    setSets(await res.json())
+    const p = await fetch(`${API_BASE}/properties`).then(r => r.json()).catch(() => [])
+    setProperties(p)
   }
-  useEffect(() => { load(); fetch(`${API_BASE}/properties`).then(r => r.json()).then(setProperties).catch(() => setProperties([])) }, [])
+  useEffect(() => { load() }, [])
 
-  async function flow(id: string, action: 'borrow'|'return'|'lost') {
-    const res = await fetch(`${API_BASE}/keys/sets/${id}/flows`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) })
-    if (res.ok) { message.success('已更新'); load() } else { message.error('操作失败') }
+  function xhrJSON(method: string, url: string, fd: FormData) {
+    return new Promise<{ ok: boolean; status: number; json: any }>((resolve) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open(method, url)
+      xhr.setRequestHeader('Authorization', `Bearer ${localStorage.getItem('token') || ''}`)
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setUploadPct(Math.round((e.loaded / e.total) * 100))
+      }
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState === 4) {
+          let j: any = null
+          try { j = JSON.parse(xhr.responseText) } catch { j = null }
+          resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, json: j })
+        }
+      }
+      xhr.send(fd)
+    })
   }
 
-  function openReplace(id: string) { setCurrentId(id); setOpen(true) }
-  async function submitReplace() {
-    const values = await form.validateFields()
-    const res = await fetch(`${API_BASE}/keys/sets/${currentId}/flows`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'replace', new_code: values.new_code }) })
-    if (res.ok) { message.success('已更换'); setOpen(false); form.resetFields(); load() } else { message.error('操作失败') }
-  }
-
-  async function submitCreateSet() {
-    const v = await createForm.validateFields()
-    const res = await fetch(`${API_BASE}/keys/sets`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ set_type: v.set_type, property_code: v.property_code }) })
-    if (res.ok) { message.success('已创建套件'); setCreateOpen(false); createForm.resetFields(); load() } else { message.error('创建失败') }
-  }
-
-  async function submitAddItem() {
-    const v = await addForm.validateFields()
-    if (!addSetId) { message.error('缺少套件'); return }
+  async function submitSlot() {
+    const v = await slotForm.validateFields()
+    if (!ctx?.setId || !ctx?.item_type) { message.error('缺少上下文'); return }
     const fd = new FormData()
-    fd.append('item_type', v.item_type)
-    fd.append('code', v.code)
+    fd.append('code', v.code || '')
     if (v.photo && v.photo.file) fd.append('photo', v.photo.file as any)
-    const res = await fetch(`${API_BASE}/keys/sets/${addSetId}/items`, { method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }, body: fd })
-    if (res.ok) { message.success('已添加'); setAddOpen(false); addForm.resetFields(); load() } else { const m = await res.json().catch(() => null); message.error(m?.message || '添加失败') }
-  }
-
-  async function openDetail(set?: any) {
-    if (!set) return
-    const res = await fetch(`${API_BASE}/keys/sets/${set.id}`)
-    setDetailSet(await res.json())
-    setDetailOpen(true)
-  }
-
-  async function updateItem(item: any, values: any) {
-    const fd = new FormData()
-    if (values.code) fd.append('code', values.code)
-    if (values.photo && values.photo.file) fd.append('photo', values.photo.file as any)
-    const r = await fetch(`${API_BASE}/keys/sets/${detailSet.id}/items/${item.id}`, { method: 'PATCH', headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }, body: fd })
-    if (r.ok) { message.success('已更新'); const res = await fetch(`${API_BASE}/keys/sets/${detailSet.id}`); setDetailSet(await res.json()); load() } else { const m = await r.json().catch(() => null); message.error(m?.message || '更新失败') }
-  }
-
-  async function removeItem(item: any) {
-    const r = await fetch(`${API_BASE}/keys/sets/${detailSet.id}/items/${item.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
-    if (r.ok) { message.success('已删除'); const res = await fetch(`${API_BASE}/keys/sets/${detailSet.id}`); setDetailSet(await res.json()); load() } else { const m = await r.json().catch(() => null); message.error(m?.message || '删除失败') }
-  }
-
-  const columns = [
-    { title: '套件类型', dataIndex: 'set_type' },
-    { title: '状态', dataIndex: 'status', render: (v: string) => <Tag>{v}</Tag> },
-    { title: '房号', dataIndex: 'code' },
-    { title: '操作', render: (_: any, r: KeySet) => (
-      <Space>
-        {hasPerm('key.flow') && <Button onClick={() => flow(r.id, 'borrow')}>借用</Button>}
-        {hasPerm('key.flow') && <Button onClick={() => flow(r.id, 'return')}>归还</Button>}
-        {hasPerm('key.flow') && <Button danger onClick={() => flow(r.id, 'lost')}>丢失</Button>}
-        {hasPerm('keyset.manage') && <Button type="primary" onClick={() => openReplace(r.id)}>更换</Button>}
-        <Link href={`/keys/${r.id}`}>查看</Link>
-      </Space>
-    ) },
-  ]
-
-  const rows = properties.filter(p => {
-    const q = query.trim().toLowerCase()
-    if (!q) return true
-    return (p.code || '').toLowerCase().includes(q) || (p.address || '').toLowerCase().includes(q)
-  }).map(p => {
-    const findSet = (t: string) => data.find(s => s.code === (p.code || '') && s.set_type === t) as any
-    const guest = findSet('guest')
-    const spare1 = findSet('spare_1')
-    const spare2 = findSet('spare_2')
-    const other = findSet('other')
-    return {
-      key: p.id,
-      code: p.code || '',
-      guest,
-      spare1,
-      spare2,
-      other,
+    prevSetsRef.current = sets
+    setUploading(true)
+    setUploadPct(0)
+    if (ctx.item) {
+      const r = await xhrJSON('PATCH', `${API_BASE}/keys/sets/${ctx.setId}/items/${ctx.item.id}`, fd)
+      if (r.ok) {
+        const updated = r.json
+        setSets(prev => prev.map(s => s.id === ctx.setId ? { ...s, items: (s.items || []).map(it => it.id === ctx.item.id ? { ...it, code: updated?.code ?? v.code, photo_url: updated?.photo_url ?? (it.photo_url) } : it) } : s))
+        message.success('已更新'); setSlotOpen(false); slotForm.resetFields(); setUploading(false); setUploadPct(0); load()
+      } else { setSets(prevSetsRef.current); const m = r.json; message.error(m?.message || '更新失败'); setUploading(false); setUploadPct(0) }
+    } else {
+      fd.append('item_type', ctx.item_type)
+      if (ctx.set_type) fd.append('set_type', ctx.set_type)
+      if (ctx.property_code) fd.append('property_code', ctx.property_code)
+      const r = await xhrJSON('POST', `${API_BASE}/keys/sets/${ctx.setId}/items`, fd)
+      if (r.ok) {
+        const created = r.json
+        setSets(prev => prev.map(s => s.id === ctx.setId ? { ...s, items: [...(s.items || []).filter(it => it.item_type !== ctx.item_type), { id: created?.id || Math.random().toString(36).slice(2), item_type: ctx.item_type!, code: v.code || '', photo_url: created?.photo_url }] } : s))
+        message.success('已添加'); setSlotOpen(false); slotForm.resetFields(); setUploading(false); setUploadPct(0); load()
+      } else { setSets(prevSetsRef.current); const m = r.json; message.error(m?.message || '添加失败'); setUploading(false); setUploadPct(0) }
     }
-  })
-
-  const imgCell = (set?: any) => {
-    if (!set) return <Tag color="red">未初始化</Tag>
-    const first = (set.items || [])[0]
-    return (
-      <Space wrap>
-        {first && first.photo_url ? <Image width={40} src={`${API_BASE}${first.photo_url}`} /> : null}
-        {hasPerm('keyset.manage') && <Button size="small" onClick={() => { setAddSetId(set.id); setAddOpen(true) }}>添加</Button>}
-        <Button size="small" onClick={() => openDetail(set)}>查看详情</Button>
-      </Space>
-    )
   }
 
-  const tableColumns = [
-    { title: '房号', dataIndex: 'code' },
-    { title: '客人钥匙/Fob', dataIndex: 'guest', render: (_: any, r: any) => r.guest ? imgCell(r.guest) : (
-      <Space>
-        <Tag color="red">未初始化</Tag>
-        {hasPerm('keyset.manage') && <Button size="small" onClick={async () => { const res = await fetch(`${API_BASE}/keys/sets`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ set_type: 'guest', property_code: r.code }) }); if (res.ok) { message.success('已初始化'); load() } else { message.error('初始化失败') } }}>初始化</Button>}
-      </Space>
-    ) },
-    { title: '备用钥匙/Fob-1', dataIndex: 'spare1', render: (_: any, r: any) => r.spare1 ? imgCell(r.spare1) : (
-      <Space>
-        <Tag color="red">未初始化</Tag>
-        {hasPerm('keyset.manage') && <Button size="small" onClick={async () => { const res = await fetch(`${API_BASE}/keys/sets`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ set_type: 'spare_1', property_code: r.code }) }); if (res.ok) { message.success('已初始化'); load() } else { message.error('初始化失败') } }}>初始化</Button>}
-      </Space>
-    ) },
-    { title: '备用钥匙/Fob-2', dataIndex: 'spare2', render: (_: any, r: any) => r.spare2 ? imgCell(r.spare2) : (
-      <Space>
-        <Tag color="red">未初始化</Tag>
-        {hasPerm('keyset.manage') && <Button size="small" onClick={async () => { const res = await fetch(`${API_BASE}/keys/sets`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ set_type: 'spare_2', property_code: r.code }) }); if (res.ok) { message.success('已初始化'); load() } else { message.error('初始化失败') } }}>初始化</Button>}
-      </Space>
-    ) },
-    { title: '房源其他钥匙', dataIndex: 'other', render: (_: any, r: any) => r.other ? imgCell(r.other) : (
-      <Space>
-        <Tag color="red">未初始化</Tag>
-        {hasPerm('keyset.manage') && <Button size="small" onClick={async () => { const res = await fetch(`${API_BASE}/keys/sets`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ set_type: 'other', property_code: r.code }) }); if (res.ok) { message.success('已初始化'); load() } else { message.error('初始化失败') } }}>初始化</Button>}
-      </Space>
-    ) },
+  async function archiveProperty(code?: string) {
+    if (!code) return
+    const rows = await fetch(`${API_BASE}/keys/sets?property_code=${encodeURIComponent(code)}`).then(r => r.json()).catch(() => [])
+    for (const s of (rows || [])) {
+      await fetch(`${API_BASE}/keys/sets/${s.id}/flows`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ action: 'lost' }) })
+    }
+    message.success('已归档该房源所有套件')
+    load()
+  }
+
+  const SLOT_DEFS: Array<{ label: string; set_type: KeySet['set_type']; item_type: 'key'|'fob' }> = [
+    { label: '客人Fob', set_type: 'guest', item_type: 'fob' },
+    { label: '客人钥匙', set_type: 'guest', item_type: 'key' },
+    { label: '备用Fob-1', set_type: 'spare_1', item_type: 'fob' },
+    { label: '备用钥匙-1', set_type: 'spare_1', item_type: 'key' },
+    { label: '备用Fob-2', set_type: 'spare_2', item_type: 'fob' },
+    { label: '备用钥匙-2', set_type: 'spare_2', item_type: 'key' },
+    { label: '其他钥匙', set_type: 'other', item_type: 'key' },
   ]
+
+  function findSet(property_code: string, set_type: KeySet['set_type']) {
+    const matches = sets.filter(s => s.code === property_code && s.set_type === set_type)
+    return matches.find(s => (s.items || []).length > 0) || matches[0]
+  }
+
+  function findItem(set?: KeySet, item_type?: 'key'|'fob') {
+    if (!set) return null
+    return (set.items || []).find(it => it.item_type === item_type) || null
+  }
+
+  async function openSlot(property_code: string, def: { set_type: KeySet['set_type']; item_type: 'key'|'fob' }) {
+    const rows = await fetch(`${API_BASE}/keys/sets?property_code=${encodeURIComponent(property_code)}`).then(r => r.json()).catch(() => [])
+    const s = (rows || []).find((x: any) => x.set_type === def.set_type)
+    if (!s) { message.error('套件不存在'); return }
+    setSets(prev => {
+      const others = prev.filter(p => !(p.code === property_code && p.set_type === def.set_type))
+      return [...others, { ...s, items: (prev.find(p => p.id === s.id)?.items) || [] }]
+    })
+    const it = findItem(s as any, def.item_type)
+    setCtx({ setId: s.id, item: it || undefined, item_type: def.item_type, set_type: def.set_type, property_code })
+    slotForm.setFieldsValue({ code: it?.code })
+    setSlotOpen(true)
+  }
+
+  const filteredProps = properties.filter(p => {
+    const q = query.trim().toLowerCase(); if (!q) return true
+    return (p.code || '').toLowerCase().includes(q) || (p.address || '').toLowerCase().includes(q)
+  })
 
   return (
     <Card title="钥匙管理" extra={<Space><Input.Search allowClear placeholder="搜索房源" onSearch={setQuery} onChange={(e) => setQuery(e.target.value)} style={{ width: 260 }} /></Space>}>
-      <Table rowKey={(r) => r.key} columns={tableColumns as any} dataSource={rows} pagination={{ pageSize: 20 }} />
-      <Modal open={open} onCancel={() => setOpen(false)} onOk={submitReplace} title="更换编号">
-        <Form form={form} layout="vertical">
-          <Form.Item name="new_code" label="新编号" rules={[{ required: true }]}> 
-            <Input />
-          </Form.Item>
-        </Form>
-      </Modal>
-      
-      <Modal open={addOpen} onCancel={() => setAddOpen(false)} onOk={submitAddItem} title="添加物件">
-        <Form form={addForm} layout="vertical">
-          <Form.Item name="item_type" label="类型" rules={[{ required: true }]}>
-            <Select options={[{ value: 'key', label: '钥匙' }, { value: 'fob', label: 'Fob' }]} />
-          </Form.Item>
-          <Form.Item name="code" label="编号" rules={[{ required: true }]}>
+      <Space direction="vertical" style={{ width: '100%' }} size={16}>
+        {filteredProps.map((p) => (
+          <Card key={p.id} title={`Unit ${p.code || ''}`} extra={<Space>{hasPerm('keyset.manage') && <Button onClick={() => archiveProperty(p.code)} type="default">归档</Button>}</Space>}>
+            <div style={{ color: '#888', marginTop: -8 }}>{p.address}</div>
+            <div style={{ display: 'flex', gap: 16, overflowX: 'auto', paddingBottom: 8, marginTop: 12 }}>
+              {SLOT_DEFS.map(def => {
+                const set = findSet(p.code || '', def.set_type)
+                const it = findItem(set || undefined, def.item_type)
+                return (
+                  <div key={`${p.id}-${def.set_type}-${def.item_type}`} style={{ minWidth: 180 }}>
+                    <div style={{ border: '1px dashed #d9d9d9', borderRadius: 8, padding: 12, textAlign: 'center' }}>
+                      <div style={{ height: 72, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        {it?.photo_url ? <Image width={60} src={`${API_BASE}${it.photo_url}`} /> : <Tag>未上传</Tag>}
+                      </div>
+                      <div style={{ marginTop: 8, fontWeight: 500 }}>{def.label}</div>
+                      <div style={{ marginTop: 6 }}><Tag>{it?.code || ''}</Tag></div>
+                      {hasPerm('keyset.manage') && (
+                        <Button size="small" style={{ marginTop: 8 }} onClick={() => openSlot(p.code || '', def)}>
+                          {(it && (it.photo_url || it.code)) ? '编辑' : '添加'}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </Card>
+        ))}
+      </Space>
+      <Modal open={slotOpen} onCancel={() => { if (!uploading) setSlotOpen(false) }} onOk={submitSlot} title="编辑/添加" okButtonProps={{ disabled: uploading, loading: uploading }} cancelButtonProps={{ disabled: uploading }}>
+        <Form form={slotForm} layout="vertical">
+          {uploading ? <Progress percent={uploadPct} size="small" /> : null}
+          <Form.Item name="code" label="编号">
             <Input />
           </Form.Item>
           <Form.Item name="photo" label="照片">
-            <Upload beforeUpload={() => false} maxCount={1}>
+            <Upload beforeUpload={() => false} maxCount={1} disabled={uploading}>
               <Button>选择文件</Button>
             </Upload>
           </Form.Item>
         </Form>
-      </Modal>
-      <Modal open={detailOpen} onCancel={() => setDetailOpen(false)} footer={null} title="套件详情">
-        {detailSet && (
-          <div>
-            <Space style={{ marginBottom: 12 }}>
-              <Tag>{detailSet.set_type}</Tag>
-              <Tag>{detailSet.status}</Tag>
-              <Tag>{detailSet.code}</Tag>
-            </Space>
-            <Table
-              rowKey={(r: any) => r.id}
-              columns={[
-                { title: '类型', dataIndex: 'item_type' },
-                { title: '编号', dataIndex: 'code' },
-                { title: '照片', dataIndex: 'photo_url', render: (url: string) => url ? <Image width={60} src={`${API_BASE}${url}`} /> : null },
-                { title: '操作', render: (_: any, it: any) => (
-                  <Space>
-                    <Button size="small" onClick={() => {
-                      Modal.confirm({ title: '编辑物件', content: <Form form={addForm} layout="vertical"><Form.Item name="code" label="编号" initialValue={it.code}><Input /></Form.Item><Form.Item name="photo" label="照片"><Upload beforeUpload={() => false} maxCount={1}><Button>选择文件</Button></Upload></Form.Item></Form>, onOk: async () => { const v = await addForm.validateFields(); await updateItem(it, v) } })
-                    }}>编辑</Button>
-                    <Button size="small" danger onClick={() => removeItem(it)}>删除</Button>
-                  </Space>
-                ) },
-              ] as any}
-              dataSource={detailSet.items || []}
-              pagination={false}
-            />
-          </div>
-        )}
       </Modal>
     </Card>
   )

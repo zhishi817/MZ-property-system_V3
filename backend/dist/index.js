@@ -1,0 +1,48 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+require("dotenv/config");
+const express_1 = __importDefault(require("express"));
+const cors_1 = __importDefault(require("cors"));
+const morgan_1 = __importDefault(require("morgan"));
+const landlords_1 = require("./modules/landlords");
+const properties_1 = require("./modules/properties");
+const keys_1 = require("./modules/keys");
+const orders_1 = require("./modules/orders");
+const inventory_1 = require("./modules/inventory");
+const finance_1 = require("./modules/finance");
+const cleaning_1 = require("./modules/cleaning");
+const config_1 = require("./modules/config");
+const auth_1 = require("./modules/auth");
+const audits_1 = require("./modules/audits");
+const rbac_1 = require("./modules/rbac");
+const auth_2 = require("./auth");
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
+const app = (0, express_1.default)();
+app.use((0, cors_1.default)());
+app.use(express_1.default.json());
+app.use((0, morgan_1.default)('dev'));
+app.use(auth_2.auth);
+const uploadDir = path_1.default.join(process.cwd(), 'uploads');
+if (!fs_1.default.existsSync(uploadDir))
+    fs_1.default.mkdirSync(uploadDir);
+app.use('/uploads', express_1.default.static(uploadDir));
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok' });
+});
+app.use('/landlords', landlords_1.router);
+app.use('/properties', properties_1.router);
+app.use('/keys', keys_1.router);
+app.use('/orders', orders_1.router);
+app.use('/inventory', inventory_1.router);
+app.use('/finance', finance_1.router);
+app.use('/cleaning', cleaning_1.router);
+app.use('/config', config_1.router);
+app.use('/auth', auth_1.router);
+app.use('/audits', audits_1.router);
+app.use('/rbac', rbac_1.router);
+const port = process.env.PORT ? Number(process.env.PORT) : 4000;
+app.listen(port, () => { });
