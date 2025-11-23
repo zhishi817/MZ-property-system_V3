@@ -45,4 +45,4 @@ app.use('/auth', auth_1.router);
 app.use('/audits', audits_1.router);
 app.use('/rbac', rbac_1.router);
 const port = process.env.PORT ? Number(process.env.PORT) : 4000;
-app.listen(port, () => { });
+app.listen(port, () => { console.log(`Server listening on port ${port}`); });

@@ -45,10 +45,15 @@ export type Order = {
   source: string
   external_id?: string
   property_id?: string
+  property_code?: string
   guest_name?: string
   checkin?: string
   checkout?: string
   price?: number
+  cleaning_fee?: number
+  net_income?: number
+  avg_nightly_price?: number
+  nights?: number
   currency?: string
   status?: string
   idempotency_key?: string

@@ -13,12 +13,19 @@ export default function LoginPage() {
     const res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(v) })
     if (res.ok) {
       const data = await res.json()
-      const remember = form.getFieldValue('remember')
-      const storage = remember ? localStorage : sessionStorage
-      storage.setItem('token', data.token)
-      storage.setItem('role', data.role)
+      try { document.cookie = `auth=${data.token}; path=/; max-age=${7*24*60*60}` } catch {}
+      try { localStorage.setItem('token', data.token) } catch {}
+      try {
+        const p = (data.token || '').split('.')[1]
+        if (p) {
+          const norm = p.replace(/-/g, '+').replace(/_/g, '/'); const pad = norm + '==='.slice((norm.length + 3) % 4)
+          const j = JSON.parse(atob(pad))
+          const r = j?.role || (v.username === 'admin' ? 'admin' : null)
+          if (r) { try { localStorage.setItem('role', r) } catch {} }
+        } else if (v.username === 'admin') { try { localStorage.setItem('role', 'admin') } catch {} }
+      } catch {}
       message.success('登录成功')
-      router.push('/')
+      router.push('/dashboard')
     } else {
       message.error('登录失败')
     }

@@ -1,7 +1,7 @@
 "use client"
 import { Table, Card, Button, Modal, Form, Input, InputNumber, Space, message, Select, Tag, Switch } from 'antd'
 import { useEffect, useState } from 'react'
-import { API_BASE } from '../../lib/api'
+import { API_BASE, getJSON } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
 
 type Landlord = {
@@ -26,17 +26,17 @@ export default function LandlordsPage() {
   const [detailOpen, setDetailOpen] = useState(false)
   const [detail, setDetail] = useState<Landlord | null>(null)
   const [pwdForm] = Form.useForm()
-  const [properties, setProperties] = useState<{ id: string; address: string }[]>([])
+  const [properties, setProperties] = useState<{ id: string; address?: string; code?: string }[]>([])
   const [query, setQuery] = useState('')
   const [showArchived, setShowArchived] = useState(false)
 
   async function load() {
-    const res = await fetch(`${API_BASE}/landlords?include_archived=${showArchived ? 'true' : 'false'}`).then(r => r.json()).catch(() => [])
+    const res = await getJSON<any>(`/landlords?include_archived=${showArchived ? 'true' : 'false'}`).catch(() => [])
     const arr = Array.isArray(res) ? res : []
     setData(showArchived ? arr : arr.filter((l: any) => !l.archived))
   }
   useEffect(() => { load() }, [showArchived])
-  useEffect(() => { fetch(`${API_BASE}/properties`).then(r => r.json()).then(setProperties).catch(() => setProperties([])) }, [])
+  useEffect(() => { getJSON<any>('/properties').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([])) }, [])
   useEffect(() => { setMounted(true) }, [])
 
   async function submitCreate() {
@@ -63,7 +63,7 @@ export default function LandlordsPage() {
   }
 
   async function openDetail(id: string) {
-    const r = await fetch(`${API_BASE}/landlords/${id}`).then(r => r.json())
+    const r = await getJSON<any>(`/landlords/${id}`).catch(() => null)
     setDetail(r)
     setDetailOpen(true)
   }
@@ -101,14 +101,15 @@ export default function LandlordsPage() {
     { title: '姓名', dataIndex: 'name', ellipsis: true, responsive: ['xs','sm','md','lg','xl'] },
     { title: '联系方式', dataIndex: 'phone', ellipsis: true, responsive: ['xs','sm','md','lg','xl'] },
     { title: '邮箱', dataIndex: 'email', ellipsis: true, responsive: ['sm','md','lg','xl'] },
-    { title: '管理费', dataIndex: 'management_fee_rate', render: (v: number) => (v != null ? `${(v * 100).toFixed(0)}%` : ''), responsive: ['sm','md','lg','xl'] },
+    { title: '管理费', dataIndex: 'management_fee_rate', render: (v: number) => (v != null ? `${(v * 100).toFixed(1)}%` : ''), responsive: ['sm','md','lg','xl'] },
     { title: 'BSB', dataIndex: 'payout_bsb', ellipsis: true, responsive: ['md','lg','xl'] },
     { title: '银行账户', dataIndex: 'payout_account', ellipsis: true, responsive: ['md','lg','xl'] },
     { title: '房源', dataIndex: 'property_ids', render: (ids: string[]) => (
       <Space wrap>
         {(ids || []).map(id => {
           const p = properties.find(x => x.id === id)
-          return <Tag key={id}>{p ? p.address : id}</Tag>
+          const label = p ? (p.code || p.address || id) : id
+          return <Tag key={id}>{label}</Tag>
         })}
       </Space>
     ), responsive: ['lg','xl'] },
@@ -128,7 +129,7 @@ export default function LandlordsPage() {
         <span>显示归档</span>
         <Switch checked={showArchived} onChange={setShowArchived as any} />
         <Input.Search allowClear placeholder="搜索房东" onSearch={setQuery} onChange={(e) => setQuery(e.target.value)} style={{ width: 240 }} />
-        {hasPerm('landlord.manage') && <Button type="primary" onClick={() => setOpen(true)}>新增房东</Button>}
+        <Button type="primary" disabled={!hasPerm('landlord.manage')} onClick={() => setOpen(true)}>新增房东</Button>
       </Space>
     }>
       <Table
@@ -151,14 +152,14 @@ export default function LandlordsPage() {
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="房东姓名" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="phone" label="联系方式"><Input /></Form.Item>
-          <Form.Item name="email" label="邮箱"><Input /></Form.Item>
+          <Form.Item name="email" label="邮箱" rules={[{ type: 'email', message: '邮箱格式不正确' }]}><Input /></Form.Item>
           <Form.Item name="management_fee_rate" label="管理费">
-            <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} />
+            <InputNumber min={0} max={1} step={0.001} precision={3} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="payout_bsb" label="BSB"><Input /></Form.Item>
           <Form.Item name="payout_account" label="银行账户"><Input /></Form.Item>
           <Form.Item name="property_ids" label="被管理的房源">
-            <Select mode="multiple" placeholder="选择房源" options={(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.address }))} />
+            <Select mode="multiple" placeholder="选择房源" options={(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: (p.code || p.address || p.id) }))} />
           </Form.Item>
         </Form>
       </Modal>
@@ -166,14 +167,14 @@ export default function LandlordsPage() {
         <Form form={editForm} layout="vertical">
           <Form.Item name="name" label="房东姓名" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="phone" label="联系方式"><Input /></Form.Item>
-          <Form.Item name="email" label="邮箱"><Input /></Form.Item>
+          <Form.Item name="email" label="邮箱" rules={[{ type: 'email', message: '邮箱格式不正确' }]}><Input /></Form.Item>
           <Form.Item name="management_fee_rate" label="管理费">
-            <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} />
+            <InputNumber min={0} max={1} step={0.001} precision={3} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="payout_bsb" label="BSB"><Input /></Form.Item>
           <Form.Item name="payout_account" label="银行账户"><Input /></Form.Item>
           <Form.Item name="property_ids" label="被管理的房源">
-            <Select mode="multiple" placeholder="选择房源" options={(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.address }))} />
+            <Select mode="multiple" placeholder="选择房源" options={(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: (p.code || p.address || p.id) }))} />
           </Form.Item>
         </Form>
       </Modal>
@@ -182,14 +183,15 @@ export default function LandlordsPage() {
           <Form.Item label="房东姓名"><Input value={detail?.name} readOnly /></Form.Item>
           <Form.Item label="联系方式"><Input value={detail?.phone} readOnly /></Form.Item>
           <Form.Item label="邮箱"><Input value={detail?.email} readOnly /></Form.Item>
-          <Form.Item label="管理费"><Input value={detail?.management_fee_rate != null ? `${(detail.management_fee_rate * 100).toFixed(0)}%` : ''} readOnly /></Form.Item>
+          <Form.Item label="管理费"><Input value={detail?.management_fee_rate != null ? `${(detail.management_fee_rate * 100).toFixed(1)}%` : ''} readOnly /></Form.Item>
           <Form.Item label="BSB"><Input value={detail?.payout_bsb} readOnly /></Form.Item>
           <Form.Item label="银行账户"><Input value={detail?.payout_account} readOnly /></Form.Item>
           <Form.Item label="房源">
             <Space wrap>
               {(detail?.property_ids || []).map(id => {
                 const p = (Array.isArray(properties) ? properties : []).find(x => x.id === id)
-                return <Tag key={id}>{p ? p.address : id}</Tag>
+                const label = p ? (p.code || p.address || id) : id
+                return <Tag key={id}>{label}</Tag>
               })}
             </Space>
           </Form.Item>

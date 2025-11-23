@@ -1,6 +1,6 @@
 "use client"
 import { Table, Card, Button, Modal, Form, Input, InputNumber, Select, message, Space, Row, Col, Tag, Divider, Switch, AutoComplete } from 'antd'
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { API_BASE } from '../../lib/api'
 
 type Property = { id: string; code?: string; address: string; type: string; capacity: number; region?: string; area_sqm?: number; landlord_id?: string }
@@ -23,6 +23,15 @@ export default function PropertiesPage() {
   const [addrOptions, setAddrOptions] = useState<{ value: string; label: string }[]>([])
   const [addrTimer, setAddrTimer] = useState<any>(null)
   const [showArchived, setShowArchived] = useState(false)
+  async function getJson(url: string, init?: RequestInit) {
+    try {
+      const r = await fetch(url, init)
+      if (!r.ok) return null
+      return await r.json()
+    } catch {
+      return null
+    }
+  }
   function getBedroomCount(type?: string) {
     switch (type) {
       case '一房一卫': return 1
@@ -35,12 +44,15 @@ export default function PropertiesPage() {
   }
 
   async function load() {
-    const res = await fetch(`${API_BASE}/properties?include_archived=${showArchived ? 'true' : 'false'}`)
-    const rows = await res.json()
+    const rows = await getJson(`${API_BASE}/properties?include_archived=${showArchived ? 'true' : 'false'}`)
     const arr = Array.isArray(rows) ? rows : []
     setData(showArchived ? arr : arr.filter((p: any) => !p.archived))
   }
-  useEffect(() => { load(); fetch(`${API_BASE}/config/dictionaries`).then(r => r.json()).then(setDicts); fetch(`${API_BASE}/landlords`).then(r => r.json()).then(setLandlords) }, [showArchived])
+  useEffect(() => {
+    load()
+    getJson(`${API_BASE}/config/dictionaries`).then((j) => setDicts(j || {}))
+    getJson(`${API_BASE}/landlords`).then((j) => setLandlords(Array.isArray(j) ? j : []))
+  }, [showArchived])
   useEffect(() => { setMounted(true) }, [])
 
   async function fetchAddrSuggestions(input: string) {
@@ -106,8 +118,8 @@ export default function PropertiesPage() {
   }
 
   async function openDetail(id: string) {
-    const r = await fetch(`${API_BASE}/properties/${id}`).then(r => r.json())
-    setDetail(r)
+    const r = await getJson(`${API_BASE}/properties/${id}`)
+    setDetail(r || {})
     setDetailOpen(true)
   }
 
@@ -133,6 +145,7 @@ export default function PropertiesPage() {
 
   if (!mounted) return null
   return (
+    <ErrorBoundary>
     <Card title="房源管理" extra={
       <Space>
         <span>显示归档</span>
@@ -293,5 +306,13 @@ export default function PropertiesPage() {
         </Form>
       </Modal>
     </Card>
+    </ErrorBoundary>
   )
+}
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }>{
+  state = { hasError: false }
+  static getDerivedStateFromError() { return { hasError: true } }
+  componentDidCatch() {}
+  render() { return this.state.hasError ? <Card>页面加载失败</Card> : this.props.children }
 }
