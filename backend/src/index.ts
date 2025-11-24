@@ -15,6 +15,8 @@ import { router as auditsRouter } from './modules/audits'
 import { router as rbacRouter } from './modules/rbac'
 import { router as versionRouter } from './modules/version'
 import { auth } from './auth'
+import { hasPg } from './dbAdapter'
+import { hasSupabase } from './supabase'
 import fs from 'fs'
 import path from 'path'
 
@@ -45,4 +47,4 @@ app.use('/rbac', rbacRouter)
 app.use('/version', versionRouter)
 
 const port = process.env.PORT ? Number(process.env.PORT) : 4000
-app.listen(port, () => {console.log(`Server listening on port ${port}`)})
+app.listen(port, () => {console.log(`Server listening on port ${port}`); console.log(`[DataSources] pg=${hasPg} supabase=${hasSupabase}`)})

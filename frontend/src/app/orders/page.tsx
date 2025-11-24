@@ -1,8 +1,8 @@
 "use client"
-import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, message, Select, Tag, InputNumber } from 'antd'
+import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, message, Select, Tag, InputNumber, Checkbox } from 'antd'
 import { useEffect, useState } from 'react'
 import dayjs from 'dayjs'
-import { API_BASE, getJSON } from '../../lib/api'
+import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
 
 type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; guest_name?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number }
@@ -69,11 +69,14 @@ export default function OrdersPage() {
     const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
     const price = Number(v.price || 0)
     const cleaning = Number(v.cleaning_fee || 0)
-    const net = Math.max(0, price - cleaning)
+    const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+    const cancelFee = Number(v.cancel_fee || 0)
+    const net = Math.max(0, price + lateFee + cancelFee - cleaning)
     const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
     const selectedNew = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
     const payload = {
       source: v.source,
+      status: v.status || 'confirmed',
       property_id: v.property_id,
       property_code: v.property_code || selectedNew?.code || selectedNew?.address || v.property_id,
       guest_name: v.guest_name,
@@ -86,8 +89,18 @@ export default function OrdersPage() {
       nights,
       currency: 'AUD',
     }
-    const res = await fetch(`${API_BASE}/orders/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
-    if (res.status === 201) { message.success('订单已创建'); setOpen(false); form.resetFields(); load() }
+    const res = await fetch(`${API_BASE}/orders/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+    if (res.status === 201) {
+      const created = await res.json()
+      async function writeIncome(amount: number, cat: string, note: string) {
+        if (!amount || amount <= 0) return
+        const tx = { kind: 'income', amount: Number(amount), currency: 'AUD', occurred_at: v.checkout.format('YYYY-MM-DD'), note, category: cat, property_id: v.property_id, ref_type: 'order', ref_id: created?.id }
+        await fetch(`${API_BASE}/finance`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(tx) }).catch(() => {})
+      }
+      await writeIncome(lateFee, 'late_checkout', 'Late checkout income')
+      if ((v.status || '') === 'canceled') await writeIncome(cancelFee, 'cancel_fee', 'Cancelation fee')
+      message.success('订单已创建'); setOpen(false); form.resetFields(); load()
+    }
     else if (res.status === 200) {
       message.error('订单已存在')
     } else {
@@ -145,6 +158,9 @@ export default function OrdersPage() {
         <Form.Item name="source" label="来源" rules={[{ required: true }]}> 
           <Select options={[{ value: 'airbnb', label: 'airbnb' }, { value: 'booking', label: 'booking.com' }, { value: 'offline', label: '线下' }, { value: 'other', label: '其他' }]} />
         </Form.Item>
+        <Form.Item name="status" label="状态" initialValue="confirmed"> 
+          <Select options={[{ value: 'confirmed', label: '已确认' }, { value: 'canceled', label: '已取消' }]} />
+        </Form.Item>
         <Form.Item name="property_id" label="房号" rules={[{ required: true }]}> 
           <Select
             showSearch
@@ -172,19 +188,46 @@ export default function OrdersPage() {
         <Form.Item name="cleaning_fee" label="清洁费" rules={[{ required: true }]}> 
           <InputNumber min={0} step={1} style={{ width: '100%' }} />
         </Form.Item>
+        <Form.Item label="晚退收入">
+          <Space>
+            <Form.Item name="late_checkout" valuePropName="checked" noStyle>
+              <Checkbox>晚退(+20)</Checkbox>
+            </Form.Item>
+            <Form.Item name="late_checkout_fee" noStyle>
+              <InputNumber min={0} step={1} placeholder="自定义金额(可选)" />
+            </Form.Item>
+          </Space>
+        </Form.Item>
+        <Form.Item shouldUpdate>
+          {() => {
+            const st = form.getFieldValue('status')
+            if (st === 'canceled') {
+              return (
+                <Form.Item name="cancel_fee" label="取消费(AUD)">
+                  <InputNumber min={0} step={1} style={{ width: '100%' }} />
+                </Form.Item>
+              )
+            }
+            return null
+          }}
+        </Form.Item>
         <Form.Item shouldUpdate noStyle>
           {() => {
             const v = form.getFieldsValue()
             const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
             const price = Number(v.price || 0)
             const cleaning = Number(v.cleaning_fee || 0)
-            const net = Math.max(0, price - cleaning)
+            const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+            const cancelFee = Number(v.cancel_fee || 0)
+            const net = Math.max(0, price + lateFee + cancelFee - cleaning)
             const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
             return (
               <Card size="small" style={{ marginTop: 8 }}>
                 <Space wrap>
                   <Tag color="blue">入住天数: {nights}</Tag>
                   <Tag color="green">总收入: {net}</Tag>
+                  {v.late_checkout || v.late_checkout_fee ? <Tag color="purple">晚退收入: {lateFee}</Tag> : null}
+                  {v.cancel_fee ? <Tag color="orange">取消费: {cancelFee}</Tag> : null}
                   <Tag color="purple">晚均价: {avg}</Tag>
                 </Space>
               </Card>
@@ -202,8 +245,19 @@ export default function OrdersPage() {
         const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
         const selectedEdit = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
         const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD'), checkout: dayjs(v.checkout).format('YYYY-MM-DD'), nights, net_income: net, avg_nightly_price: avg }
-        const res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
-        if (res.ok) { message.success('订单已更新'); setEditOpen(false); load() }
+        const res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+        if (res.ok) {
+          async function writeIncome(amount: number, cat: string, note: string) {
+            if (!amount || amount <= 0) return
+            const tx = { kind: 'income', amount: Number(amount), currency: 'AUD', occurred_at: dayjs(v.checkout).format('YYYY-MM-DD'), note, category: cat, property_id: v.property_id, ref_type: 'order', ref_id: current?.id }
+            await fetch(`${API_BASE}/finance`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(tx) }).catch(() => {})
+          }
+          const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+          const cancelFee = Number(v.cancel_fee || 0)
+          await writeIncome(lateFee, 'late_checkout', 'Late checkout income')
+          if ((v.status || '') === 'canceled') await writeIncome(cancelFee, 'cancel_fee', 'Cancelation fee')
+          message.success('订单已更新'); setEditOpen(false); load()
+        }
         else {
           let msg = '更新失败'
           try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} }
