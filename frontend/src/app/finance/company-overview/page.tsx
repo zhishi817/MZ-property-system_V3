@@ -7,7 +7,7 @@ import MonthlyStatementView from '../../../components/MonthlyStatement'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string }
-type Landlord = { id: string; management_fee_rate?: number; property_ids?: string[] }
+type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 
 export default function PropertyRevenuePage() {
   const [month, setMonth] = useState<any>(dayjs())

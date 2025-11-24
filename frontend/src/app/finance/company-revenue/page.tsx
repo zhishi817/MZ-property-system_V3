@@ -6,7 +6,7 @@ import { getJSON, API_BASE, authHeaders } from '../../../lib/api'
 
 type Order = { id: string; price?: number; cleaning_fee?: number; checkin?: string; checkout?: string; property_id?: string }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; occurred_at: string }
-type Landlord = { id: string; management_fee_rate?: number; property_ids?: string[] }
+type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 
 export default function CompanyRevenuePage() {
   const [month, setMonth] = useState<any>(dayjs())
@@ -114,4 +114,3 @@ export default function CompanyRevenuePage() {
     </Card>
   )
 }
-
