@@ -90,13 +90,39 @@ const createOrderSchema = z.object({
 })
 const updateOrderSchema = createOrderSchema.partial()
 
-router.post('/sync', requirePerm('order.sync'), (req, res) => {
+function parseDate(s?: string): Date | null {
+  if (!s) return null
+  const d = new Date(s)
+  return isNaN(d.getTime()) ? null : d
+}
+
+function rangesOverlap(aStart?: string, aEnd?: string, bStart?: string, bEnd?: string): boolean {
+  const as = parseDate(aStart); const ae = parseDate(aEnd); const bs = parseDate(bStart); const be = parseDate(bEnd)
+  if (!as || !ae || !bs || !be) return false
+  return as <= be && bs <= ae
+}
+
+async function hasOrderOverlap(propertyId?: string, checkin?: string, checkout?: string, excludeId?: string): Promise<boolean> {
+  if (!propertyId || !checkin || !checkout) return false
+  const localHit = db.orders.some(o => o.property_id === propertyId && o.id !== excludeId && rangesOverlap(checkin, checkout, o.checkin, o.checkout))
+  if (localHit) return true
+  try {
+    if (hasSupabase) {
+      const rows: any[] = (await supaSelect('orders', '*', { property_id: propertyId })) || []
+      const remoteHit = rows.some(o => o.id !== excludeId && rangesOverlap(checkin, checkout, o.checkin, o.checkout))
+      if (remoteHit) return true
+    }
+  } catch {}
+  return false
+}
+
+router.post('/sync', requirePerm('order.sync'), async (req, res) => {
   const parsed = createOrderSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const o = parsed.data
-  const key = o.idempotency_key || `${o.external_id || ''}-${o.checkout || ''}`
+  const key = o.idempotency_key || `${o.property_id || ''}-${o.checkin || ''}-${o.checkout || ''}`
   const exists = db.orders.find((x) => x.idempotency_key === key)
-  if (exists) return res.status(200).json(exists)
+  if (exists) return res.status(409).json({ message: '订单已存在：同一房源同时间段重复创建', order: exists })
   const { v4: uuid } = require('uuid')
   // derive values if not provided
   let nights = o.nights
@@ -113,6 +139,9 @@ router.post('/sync', requirePerm('order.sync'), (req, res) => {
   const net = o.net_income != null ? o.net_income : (price - cleaning)
   const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0)
   const newOrder: Order = { id: uuid(), ...o, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key, status: 'confirmed' }
+  // overlap guard
+  const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout)
+  if (conflict) return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' })
   db.orders.push(newOrder)
   if (newOrder.checkout) {
     const date = newOrder.checkout
@@ -154,6 +183,9 @@ router.patch('/:id', requirePerm('order.manage'), async (req, res) => {
   const net = o.net_income != null ? o.net_income : (price - cleaning)
   const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0)
   const updated: Order = { ...base, ...o, id, nights, net_income: net, avg_nightly_price: avg }
+  // overlap guard on update
+  const conflict = await hasOrderOverlap(updated.property_id, updated.checkin, updated.checkout, id)
+  if (conflict) return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' })
 
   if (idx !== -1) {
     db.orders[idx] = updated
@@ -194,6 +226,11 @@ router.patch('/:id', requirePerm('order.manage'), (req, res) => {
   const net = o.net_income != null ? o.net_income : (price - cleaning)
   const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0)
   const updated: Order = { ...prev, ...o, nights, net_income: net, avg_nightly_price: avg }
+  // local overlap guard on update
+  if (updated.property_id && updated.checkin && updated.checkout) {
+    const hit = db.orders.some(x => x.id !== id && x.property_id === updated.property_id && rangesOverlap(updated.checkin, updated.checkout, x.checkin, x.checkout))
+    if (hit) return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' })
+  }
   db.orders[idx] = updated
   // try remote update; if fails, still respond with updated local record
   if (hasSupabase) {

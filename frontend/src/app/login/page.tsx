@@ -1,5 +1,6 @@
 "use client"
 import { Card, Form, Input, Button, message, Typography, Checkbox } from 'antd'
+import Image from 'next/image'
 import { MailOutlined, LockOutlined } from '@ant-design/icons'
 import { useRouter } from 'next/navigation'
 import { API_BASE } from '../../lib/api'
@@ -10,10 +11,15 @@ export default function LoginPage() {
   const router = useRouter()
   async function submit() {
     const v = await form.validateFields()
+    v.username = (v.username || '').trim()
+    v.password = (v.password || '').trim()
     const res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(v) })
     if (res.ok) {
       const data = await res.json()
-      try { document.cookie = `auth=${data.token}; path=/; max-age=${7*24*60*60}` } catch {}
+      try {
+        const secure = typeof window !== 'undefined' && window.location.protocol === 'https:' ? '; Secure' : ''
+        document.cookie = `auth=${data.token}; path=/; max-age=${7*24*60*60}; SameSite=Lax${secure}`
+      } catch {}
       try { localStorage.setItem('token', data.token) } catch {}
       try {
         const p = (data.token || '').split('.')[1]
@@ -25,9 +31,15 @@ export default function LoginPage() {
         } else if (v.username === 'admin') { try { localStorage.setItem('role', 'admin') } catch {} }
       } catch {}
       message.success('登录成功')
+      try { await new Promise(r => setTimeout(r, 100)) } catch {}
       router.push('/dashboard')
     } else {
-      message.error('登录失败')
+      try {
+        const err = await res.json()
+        message.error(err?.message || `登录失败 (${res.status})`)
+      } catch {
+        message.error(`登录失败 (${res.status})`)
+      }
     }
   }
   return (
@@ -42,7 +54,7 @@ export default function LoginPage() {
       </div>
       <Card className="login-card">
         <div className="login-logo-wrap" style={{ display: 'flex', justifyContent: 'center' }}>
-          <img src="/company-logo.png" alt="MZ Property" className="login-logo" />
+          <Image src="/company-logo.png" alt="MZ Property" width={160} height={40} priority />
         </div>
         <Form form={form} layout="vertical" initialValues={{ remember: true }} requiredMark={false}>
           <Form.Item name="username" label="邮箱地址/用户名" rules={[{ required: true }]}>

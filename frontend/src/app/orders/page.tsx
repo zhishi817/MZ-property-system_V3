@@ -87,8 +87,10 @@ export default function OrdersPage() {
       currency: 'AUD',
     }
     const res = await fetch(`${API_BASE}/orders/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
-    if (res.ok) { message.success('订单已创建'); setOpen(false); form.resetFields(); load() }
-    else {
+    if (res.status === 201) { message.success('订单已创建'); setOpen(false); form.resetFields(); load() }
+    else if (res.status === 200) {
+      message.error('订单已存在')
+    } else {
       let msg = '创建失败'
       try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} }
       message.error(msg)
@@ -201,7 +203,12 @@ export default function OrdersPage() {
         const selectedEdit = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
         const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD'), checkout: dayjs(v.checkout).format('YYYY-MM-DD'), nights, net_income: net, avg_nightly_price: avg }
         const res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
-        if (res.ok) { message.success('订单已更新'); setEditOpen(false); load() } else { message.error('更新失败') }
+        if (res.ok) { message.success('订单已更新'); setEditOpen(false); load() }
+        else {
+          let msg = '更新失败'
+          try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} }
+          message.error(msg)
+        }
       }} title="编辑订单">
         <Form form={editForm} layout="vertical">
           <Form.Item name="source" label="来源" rules={[{ required: true }]}>
