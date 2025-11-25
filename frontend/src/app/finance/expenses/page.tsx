@@ -51,7 +51,7 @@ export default function ExpensesPage() {
     return false
   }
   const columns = [
-    { title: '日期', dataIndex: 'occurred_at' },
+    { title: '日期', dataIndex: 'occurred_at', render: (v: string) => dayjs(v).format('DD/MM/YYYY') },
     { title: '房号', dataIndex: 'property_id', render: (v: string) => {
       if (!v) return '-'
       const p = properties.find(x => x.id === v)

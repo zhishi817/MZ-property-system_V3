@@ -1,6 +1,6 @@
 "use client"
-import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, message, Select, Tag, InputNumber, Checkbox } from 'antd'
-import { useEffect, useState } from 'react'
+import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, message, Select, Tag, InputNumber, Checkbox, Radio, Calendar, Badge } from 'antd'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
@@ -18,6 +18,10 @@ export default function OrdersPage() {
   const [codeQuery, setCodeQuery] = useState('')
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
+  const [view, setView] = useState<'list'|'calendar'>('list')
+  const [calPid, setCalPid] = useState<string | undefined>(undefined)
+  const [calMonth, setCalMonth] = useState<any>(dayjs())
+  const calRef = useRef<HTMLDivElement>(null)
 
   async function load() {
     const res = await getJSON<Order[]>('/orders')
@@ -124,8 +128,8 @@ export default function OrdersPage() {
     { title: '状态', dataIndex: 'status' },
     { title: '操作', render: (_: any, r: Order) => (
       <Space>
-        <Button onClick={() => openEdit(r)}>编辑</Button>
-        <Button danger onClick={() => {
+        {hasPerm('order.write') ? <Button onClick={() => openEdit(r)}>编辑</Button> : null}
+        {hasPerm('order.write') ? <Button danger onClick={() => {
           Modal.confirm({
             title: '确认删除订单',
             content: `确定删除订单（房号：${r.property_code || ''}，入住：${r.checkin || ''}）？`,
@@ -137,22 +141,139 @@ export default function OrdersPage() {
               if (res.ok) { message.success('订单已删除'); load() } else { message.error('删除失败') }
             }
           })
-        }}>删除</Button>
+        }}>删除</Button> : null}
       </Space>
     ) },
   ]
 
+  const sourceColor: Record<string, string> = {
+    airbnb: '#FF9F97',
+    booking: '#98B6EC',
+    offline: '#DC8C03',
+    other: '#98B6EC'
+  }
+
+  const baseMonth = calMonth || dayjs()
+  const monthStart = baseMonth.startOf('month')
+  const monthEnd = baseMonth.endOf('month')
+  const monthOrders = (data || []).filter(o => calPid && o.property_id === calPid && o.checkin && o.checkout && dayjs(o.checkout!).isAfter(monthStart) && dayjs(o.checkin!).isBefore(monthEnd))
+  const orderLane = (function(){
+    const lanesEnd: number[] = []
+    const map: Record<string, number> = {}
+    const toDayIndex = (d: any) => d.startOf('day').diff(monthStart.startOf('day'), 'day')
+    const segs = monthOrders.map(o => {
+      const s = dayjs(o.checkin!).isAfter(monthStart) ? dayjs(o.checkin!) : monthStart
+      const e = dayjs(o.checkout!).isBefore(monthEnd) ? dayjs(o.checkout!) : monthEnd
+      return { id: o.id, startIdx: toDayIndex(s), endIdx: toDayIndex(e) }
+    }).sort((a,b)=> a.startIdx - b.startIdx || a.endIdx - b.endIdx)
+    for (const seg of segs) {
+      let placed = false
+      for (let i = 0; i < lanesEnd.length; i++) {
+        if (seg.startIdx >= lanesEnd[i]) { map[seg.id] = i; lanesEnd[i] = seg.endIdx; placed = true; break }
+      }
+      if (!placed) { map[seg.id] = lanesEnd.length; lanesEnd.push(seg.endIdx) }
+    }
+    return map
+  })()
+  function dayCell(date: any) {
+    if (!calPid) return null
+    const orders = data
+      .filter(o => o.property_id === calPid && o.checkin && o.checkout && dayjs(o.checkin!).diff(date, 'day') <= 0 && dayjs(o.checkout!).diff(date, 'day') > 0)
+      .sort((a,b)=> dayjs(a.checkin!).valueOf() - dayjs(b.checkin!).valueOf())
+    if (!orders.length) return null
+    return (
+      <div style={{ position:'relative', minHeight: 64, overflow:'visible' }}>
+        {orders.slice(0,6).map((o)=> {
+          const accent = sourceColor[o.source || 'other'] || '#999'
+          const isStart = dayjs(o.checkin!).isSame(date, 'day')
+          const isEnd = dayjs(o.checkout!).diff(date, 'day') === 1 // last day shown is checkout-1
+          const radiusLeft = isStart ? 16 : 3
+          const radiusRight = isEnd ? 16 : 3
+          const lane = orderLane[o.id!] || 0
+          return (
+            <div key={o.id} style={{
+              position:'absolute',
+              left: -6,
+              right: -6,
+              top: 4 + lane * 22,
+              height: 20,
+              background: '#f5f5f5',
+              color:'#000',
+              borderRadius: `${radiusLeft}px ${radiusRight}px ${radiusRight}px ${radiusLeft}px`,
+              padding:'0 8px',
+              display:'flex',
+              alignItems:'center',
+              fontSize:11,
+              lineHeight:'20px'
+            }}>
+              {isStart ? <span style={{ position:'absolute', left: -6, top:0, bottom:0, width: '33%', background: accent, borderRadius: `${radiusLeft}px 0 0 ${radiusLeft}px` }} /> : null}
+              {isEnd ? <span style={{ position:'absolute', right: -6, top:0, bottom:0, width: '33%', background: accent, borderRadius: `0 ${radiusRight}px ${radiusRight}px 0` }} /> : null}
+              <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginLeft: isStart ? '33%' : 0, marginRight: isEnd ? '33%' : 0 }}>{(o.guest_name || '').toString()} ${Number(o.price||0).toFixed(0)}</span>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+
   return (
-    <Card title="订单管理" extra={hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}>
+    <Card title="订单管理" extra={hasPerm('order.create') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}>
       <Space style={{ marginBottom: 12 }} wrap>
-        <Input placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} style={{ width: 200 }} />
-        <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} />
+        <Radio.Group value={view} onChange={(e)=>setView(e.target.value)}>
+          <Radio.Button value="list">列表</Radio.Button>
+          <Radio.Button value="calendar">日历</Radio.Button>
+        </Radio.Group>
+        {view==='list' ? (
+          <>
+            <Input placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} style={{ width: 200 }} />
+            <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} />
+          </>
+        ) : (
+          <>
+            <DatePicker picker="month" value={calMonth} onChange={setCalMonth as any} />
+            <Select showSearch placeholder="选择房号" style={{ width: 220 }} value={calPid} onChange={setCalPid} options={properties.map(p=>({value:p.id,label:p.code||p.id}))} />
+            <Button onClick={async () => {
+              if (!calPid) { message.warning('请选择房号'); return }
+              if (!calRef.current) return
+              const style = `
+                <style>
+                  html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+                  @page { margin: 12mm; size: A4 landscape; }
+                  body { width: 277mm; margin: 0 auto; }
+                  .cal-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+                  .cal-title { font-size:18px; font-weight:700; }
+                </style>
+              `
+              const iframe = document.createElement('iframe')
+              iframe.style.position = 'fixed'
+              iframe.style.left = '-9999px'
+              iframe.style.top = '-9999px'
+              iframe.style.width = '0'
+              iframe.style.height = '0'
+              document.body.appendChild(iframe)
+              const doc = iframe.contentDocument || (iframe as any).document
+              const prop = properties.find(p=>p.id===calPid)
+              const header = `<div class="cal-header"><div class="cal-title">订单日历 ${calMonth.format('YYYY-MM')}</div><div>${prop?.code || ''} ${prop?.address || ''}</div></div>`
+              const html = `<html><head><title>Order Calendar</title>${style}<base href="${location.origin}"></head><body>${header}${calRef.current.innerHTML}</body></html>`
+              doc.open(); doc.write(html); doc.close()
+              await new Promise(r => setTimeout(r, 50))
+              try { (iframe.contentWindow as any).focus(); (iframe.contentWindow as any).print() } catch {}
+              setTimeout(() => { try { document.body.removeChild(iframe) } catch {} }, 500)
+            }}>导出日历</Button>
+          </>
+        )}
       </Space>
-      <Table rowKey={(r) => r.id} columns={columns as any} dataSource={data.filter(o => {
-        const codeOk = !codeQuery || (o.property_code || '').toLowerCase().includes(codeQuery.trim().toLowerCase())
-        const rangeOk = !dateRange || (!dateRange[0] || dayjs(o.checkin).diff(dateRange[0], 'day') >= 0) && (!dateRange[1] || dayjs(o.checkout).diff(dateRange[1], 'day') <= 0)
-        return codeOk && rangeOk
-      })} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }} />
+      {view==='list' ? (
+        <Table rowKey={(r) => r.id} columns={columns as any} dataSource={data.filter(o => {
+          const codeOk = !codeQuery || (o.property_code || '').toLowerCase().includes(codeQuery.trim().toLowerCase())
+          const rangeOk = !dateRange || (!dateRange[0] || dayjs(o.checkin).diff(dateRange[0], 'day') >= 0) && (!dateRange[1] || dayjs(o.checkout).diff(dateRange[1], 'day') <= 0)
+          return codeOk && rangeOk
+        })} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }} />
+      ) : (
+        <div ref={calRef}>
+          <Calendar value={calMonth} onChange={setCalMonth as any} fullscreen dateCellRender={dayCell as any} headerRender={() => null} />
+        </div>
+      )}
       <Modal open={open} onCancel={() => setOpen(false)} onOk={submitCreate} title="新建订单">
       <Form form={form} layout="vertical">
         <Form.Item name="source" label="来源" rules={[{ required: true }]}> 

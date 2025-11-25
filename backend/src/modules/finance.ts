@@ -27,7 +27,7 @@ router.get('/', async (_req, res) => {
 })
 
 const txSchema = z.object({ kind: z.enum(['income','expense']), amount: z.coerce.number().min(0), currency: z.string(), ref_type: z.string().optional(), ref_id: z.string().optional(), occurred_at: z.string().optional(), note: z.string().optional(), category: z.string().optional(), property_id: z.string().optional(), invoice_url: z.string().optional(), category_detail: z.string().optional() })
-router.post('/', requirePerm('finance.payout'), async (req, res) => {
+router.post('/', requirePerm('finance.tx.write'), async (req, res) => {
   const parsed = txSchema.safeParse(req.body)
   if (!parsed.success) {
     const msg = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ')
@@ -46,7 +46,7 @@ router.post('/', requirePerm('finance.payout'), async (req, res) => {
   return res.status(201).json(tx)
 })
 
-router.post('/invoices', requirePerm('finance.payout'), upload.single('file'), (req, res) => {
+router.post('/invoices', requirePerm('finance.tx.write'), upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'missing file' })
   const url = `/uploads/${req.file.filename}`
   res.status(201).json({ url })
@@ -161,7 +161,7 @@ router.delete('/payouts/:id', requirePerm('finance.payout'), async (req, res) =>
   return res.json({ ok: true })
 })
 
-router.patch('/:id', requirePerm('finance.payout'), async (req, res) => {
+router.patch('/:id', requirePerm('finance.tx.write'), async (req, res) => {
   const { id } = req.params
   const parsed = txSchema.partial().safeParse(req.body)
   if (!parsed.success) {
@@ -185,7 +185,7 @@ router.patch('/:id', requirePerm('finance.payout'), async (req, res) => {
   return res.json(updated)
 })
 
-router.delete('/:id', requirePerm('finance.payout'), async (req, res) => {
+router.delete('/:id', requirePerm('finance.tx.write'), async (req, res) => {
   const { id } = req.params
   const idx = db.financeTransactions.findIndex(x => x.id === id)
   if (idx !== -1) db.financeTransactions.splice(idx, 1)

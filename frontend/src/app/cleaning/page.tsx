@@ -2,6 +2,7 @@
 import { Card, Calendar, Badge, List, Drawer, Space, Button, Select, TimePicker, message, Progress, Alert } from 'antd'
 import { useEffect, useState } from 'react'
 import { API_BASE } from '../../lib/api'
+import { hasPerm } from '../../lib/auth'
 import dayjs from 'dayjs'
 
 type Task = { id: string; date: string; status: 'pending'|'scheduled'|'done' }
@@ -15,14 +16,16 @@ export default function CleaningPage() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
 
   async function load(dateStr?: string) {
-    const t = await fetch(`${API_BASE}/cleaning/tasks${dateStr ? `?date=${dateStr}` : ''}`).then(r => r.json())
+    const tRes = await fetch(`${API_BASE}/cleaning/tasks${dateStr ? `?date=${dateStr}` : ''}`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+    const t = tRes.ok ? await tRes.json() : []
     setTasks(t)
-    const c = await fetch(`${API_BASE}/cleaning/capacity?date=${dateStr || dayjs().format('YYYY-MM-DD')}`).then(r => r.json())
+    const cRes = await fetch(`${API_BASE}/cleaning/capacity?date=${dateStr || dayjs().format('YYYY-MM-DD')}`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+    const c = cRes.ok ? await cRes.json() : []
     setCapacity(c)
   }
   useEffect(() => {
     load(date.format('YYYY-MM-DD'))
-    fetch(`${API_BASE}/cleaning/staff`).then(r => r.json()).then(setStaff)
+    fetch(`${API_BASE}/cleaning/staff`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.ok ? r.json() : []).then(setStaff)
   }, [])
 
   function dateCellRender(value: any) {
@@ -77,8 +80,8 @@ export default function CleaningPage() {
         dataSource={tasks}
         renderItem={(item) => (
           <List.Item actions={[
-            <Button onClick={() => { setSelectedTask(item); setOpen(true) }}>分配</Button>,
-            <Button onClick={async () => { const time = dayjs().set('hour', 11).set('minute', 0); const scheduled_at = dayjs(date.format('YYYY-MM-DD') + ' ' + time.format('HH:mm')).toISOString(); const r = await fetch(`${API_BASE}/cleaning/tasks/${item.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scheduled_at, status: 'scheduled' }) }); if (r.ok) { message.success('已调整'); load(date.format('YYYY-MM-DD')) } else { message.error('调整失败') } }}>调整时间</Button>
+            hasPerm('cleaning.task.assign') ? <Button onClick={() => { setSelectedTask(item); setOpen(true) }}>分配</Button> : null,
+            hasPerm('cleaning.task.assign') ? <Button onClick={async () => { const time = dayjs().set('hour', 11).set('minute', 0); const scheduled_at = dayjs(date.format('YYYY-MM-DD') + ' ' + time.format('HH:mm')).toISOString(); const r = await fetch(`${API_BASE}/cleaning/tasks/${item.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ scheduled_at, status: 'scheduled' }) }); if (r.ok) { message.success('已调整'); load(date.format('YYYY-MM-DD')) } else { message.error('调整失败') } }}>调整时间</Button> : null
           ]}>
             <Space>
               <Badge status={item.status === 'scheduled' ? 'success' : 'warning'} text={item.status} />
@@ -92,7 +95,7 @@ export default function CleaningPage() {
           <Space direction="vertical" style={{ width: '100%' }}>
             <Select placeholder="选择人员" options={staff.map(s => ({ value: s.id, label: s.name }))} onChange={(id) => (window as any)._assignee = id} style={{ width: '100%' }} />
             <TimePicker format="HH:mm" onChange={(t) => (window as any)._time = t} style={{ width: '100%' }} />
-            <Button type="primary" onClick={() => assign(selectedTask, (window as any)._assignee, (window as any)._time)}>确认分配</Button>
+            {hasPerm('cleaning.task.assign') ? <Button type="primary" onClick={() => assign(selectedTask, (window as any)._assignee, (window as any)._time)}>确认分配</Button> : null}
           </Space>
         )}
       </Drawer>

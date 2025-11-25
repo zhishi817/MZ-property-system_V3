@@ -116,7 +116,7 @@ async function hasOrderOverlap(propertyId?: string, checkin?: string, checkout?:
   return false
 }
 
-router.post('/sync', requirePerm('order.sync'), async (req, res) => {
+router.post('/sync', requirePerm('order.create'), async (req, res) => {
   const parsed = createOrderSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const o = parsed.data
@@ -157,7 +157,7 @@ router.post('/sync', requirePerm('order.sync'), async (req, res) => {
     .catch((_err) => { pendingInsert.push(newOrder); startRetry(); return res.status(201).json(newOrder) })
 })
 
-router.patch('/:id', requirePerm('order.manage'), async (req, res) => {
+router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   const { id } = req.params
   const parsed = updateOrderSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -202,7 +202,7 @@ router.patch('/:id', requirePerm('order.manage'), async (req, res) => {
   }
   return res.json(updated)
 })
-router.patch('/:id', requirePerm('order.manage'), (req, res) => {
+router.patch('/:id', requirePerm('order.write'), (req, res) => {
   const { id } = req.params
   const parsed = createOrderSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -239,7 +239,7 @@ router.patch('/:id', requirePerm('order.manage'), (req, res) => {
   return res.json(updated)
 })
 
-router.delete('/:id', requirePerm('order.manage'), async (req, res) => {
+router.delete('/:id', requirePerm('order.write'), async (req, res) => {
   const { id } = req.params
   const idx = db.orders.findIndex((x) => x.id === id)
   let removed: Order | null = null
@@ -260,7 +260,7 @@ router.delete('/:id', requirePerm('order.manage'), async (req, res) => {
   if (!removed) return res.status(404).json({ message: 'order not found' })
   return res.json({ ok: true, id: removed.id })
 })
-router.delete('/:id', requirePerm('order.manage'), async (req, res) => {
+router.delete('/:id', requirePerm('order.write'), async (req, res) => {
   const { id } = req.params
   const idx = db.orders.findIndex((x) => x.id === id)
   if (idx === -1) return res.status(404).json({ message: 'order not found' })
@@ -270,7 +270,7 @@ router.delete('/:id', requirePerm('order.manage'), async (req, res) => {
   return res.json({ ok: true, id: removed.id })
 })
 
-router.post('/:id/generate-cleaning', requirePerm('order.manage'), (req, res) => {
+router.post('/:id/generate-cleaning', requirePerm('order.write'), (req, res) => {
   const { id } = req.params
   const order = db.orders.find((o) => o.id === id)
   if (!order) return res.status(404).json({ message: 'order not found' })

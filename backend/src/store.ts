@@ -118,6 +118,7 @@ export const db = {
   landlords: [] as Landlord[],
   financeTransactions: [] as FinanceTransaction[],
   payouts: [] as Payout[],
+  users: [] as { id: string; email: string; username?: string; role: string; password_hash?: string }[],
   roles: [] as { id: string; name: string }[],
   permissions: [] as { code: string; name?: string }[],
   rolePermissions: [] as { role_id: string; permission_code: string }[],
@@ -223,21 +224,35 @@ if (db.payouts.length === 0 && db.landlords.length) {
 
 // RBAC seed
 if (db.roles.length === 0) {
-  const adminId = uuid(); const opsId = uuid(); const fieldId = uuid()
+  const adminId = uuid()
+  const csId = uuid() // 客服
+  const cleanMgrId = uuid() // 清洁/检查管理员人员
+  const cleanerId = uuid() // 清洁和检查人员
+  const financeId = uuid() // 财务人员
+  const inventoryId = uuid() // 仓库管理员
+  const maintenanceId = uuid() // 维修人员
   db.roles.push(
     { id: adminId, name: 'admin' },
-    { id: opsId, name: 'ops' },
-    { id: fieldId, name: 'field' },
+    { id: csId, name: 'customer_service' },
+    { id: cleanMgrId, name: 'cleaning_manager' },
+    { id: cleanerId, name: 'cleaner_inspector' },
+    { id: financeId, name: 'finance_staff' },
+    { id: inventoryId, name: 'inventory_manager' },
+    { id: maintenanceId, name: 'maintenance_staff' },
   )
   db.permissions = [
     { code: 'property.write' },
-    { code: 'order.manage' },
+    { code: 'order.view' },
+    { code: 'order.create' },
+    { code: 'order.write' },
     { code: 'order.sync' },
     { code: 'keyset.manage' },
     { code: 'key.flow' },
+    { code: 'cleaning.view' },
     { code: 'cleaning.schedule.manage' },
     { code: 'cleaning.task.assign' },
     { code: 'finance.payout' },
+    { code: 'finance.tx.write' },
     { code: 'inventory.move' },
     { code: 'landlord.manage' },
     { code: 'rbac.manage' },
@@ -245,9 +260,20 @@ if (db.roles.length === 0) {
   function grant(roleId: string, codes: string[]) {
     codes.forEach(c => db.rolePermissions.push({ role_id: roleId, permission_code: c }))
   }
+  // 管理员：所有权限
   grant(adminId, db.permissions.map(p => p.code))
-  grant(opsId, ['property.write','order.manage','key.flow','cleaning.task.assign','landlord.manage'])
-  grant(fieldId, ['cleaning.task.assign'])
+  // 客服：房源可写、订单查看/编辑（不允许新建）、查看清洁安排
+  grant(csId, ['property.write','order.view','order.write','cleaning.view'])
+  // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
+  grant(cleanMgrId, ['cleaning.schedule.manage','cleaning.task.assign'])
+  // 清洁/检查人员：无写权限，仅查看（后端接口默认允许 GET）
+  grant(cleanerId, [])
+  // 财务人员：财务结算与交易录入、房东/房源管理
+  grant(financeId, ['finance.payout','finance.tx.write','landlord.manage','property.write'])
+  // 仓库管理员：仓库与钥匙管理
+  grant(inventoryId, ['inventory.move','keyset.manage','key.flow'])
+  // 维修人员：暂无写接口，预留
+  grant(maintenanceId, [])
 }
 
 export function getRoleIdByName(name: string): string | undefined {

@@ -17,10 +17,27 @@ export default forwardRef<HTMLDivElement, {
 }>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords }, ref) {
   const start = dayjs(`${month}-01`)
   const end = start.endOf('month')
-  const ordersInMonth = orders.filter(o => (!propertyId || o.property_id === propertyId) && o.checkout && dayjs(o.checkout).isAfter(start.subtract(1,'day')) && dayjs(o.checkout).isBefore(end.add(1,'day')))
+  const relatedOrders = orders.filter(o => (!propertyId || o.property_id === propertyId) && o.checkin && o.checkout && dayjs(o.checkout).isAfter(start) && dayjs(o.checkin).isBefore(end))
   const expensesInMonth = txs.filter(t => t.kind === 'expense' && (!propertyId || t.property_id === propertyId) && dayjs(t.occurred_at).isAfter(start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(end.add(1,'day')))
-  const totalIncome = ordersInMonth.reduce((s, x) => s + Number(x.price || 0), 0)
-  const occupiedNights = ordersInMonth.reduce((s, x) => s + Number(x.nights ?? Math.max(dayjs(x.checkout!).diff(dayjs(x.checkin!), 'day'), 0)), 0)
+  const orderIncomeShare = relatedOrders.reduce((s, x) => {
+    const ci = dayjs(x.checkin!)
+    const co = dayjs(x.checkout!)
+    const totalN = Math.max(co.diff(ci,'day'), 0)
+    const segStart = ci.isAfter(start) ? ci : start
+    const segEnd = co.isBefore(end) ? co : end
+    const segN = Math.max(segEnd.diff(segStart,'day'), 0)
+    const perDay = totalN ? Number(x.price||0) / totalN : 0
+    return s + perDay * segN
+  }, 0)
+  const totalIncome = orderIncomeShare
+  const occupiedNights = relatedOrders.reduce((s, x) => {
+    const ci = dayjs(x.checkin!)
+    const co = dayjs(x.checkout!)
+    const segStart = ci.isAfter(start) ? ci : start
+    const segEnd = co.isBefore(end) ? co : end
+    const segN = Math.max(segEnd.diff(segStart,'day'), 0)
+    return s + segN
+  }, 0)
   const daysInMonth = end.diff(start, 'day') + 1
   const occupancyRate = daysInMonth ? Math.round(((occupiedNights / daysInMonth) * 100 + Number.EPSILON) * 100) / 100 : 0
   const dailyAverage = occupiedNights ? Math.round(((totalIncome / occupiedNights) + Number.EPSILON) * 100) / 100 : 0
@@ -111,7 +128,7 @@ export default forwardRef<HTMLDivElement, {
           </tr>
         </thead>
         <tbody>
-          {ordersInMonth.map(r => (
+          {relatedOrders.map(r => (
             <tr key={r.id}>
               <td style={{ padding:6 }}>{r.checkin}</td>
               <td style={{ padding:6 }}>{r.checkout}</td>

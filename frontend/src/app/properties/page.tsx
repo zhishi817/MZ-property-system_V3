@@ -146,7 +146,7 @@ export default function PropertiesPage() {
   if (!mounted) return null
   return (
     <ErrorBoundary>
-    <Card title="房源管理" extra={
+    <Card title="房源列表" extra={
       <Space>
         <span>显示归档</span>
         <Switch checked={showArchived} onChange={setShowArchived as any} />

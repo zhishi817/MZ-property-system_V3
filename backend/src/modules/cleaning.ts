@@ -1,12 +1,12 @@
 import { Router } from 'express'
 import { db } from '../store'
 import { z } from 'zod'
-import { requirePerm } from '../auth'
+import { requirePerm, requireAnyPerm } from '../auth'
 import { hasSupabase, supaSelect, supaInsert, supaUpdate } from '../supabase'
 
 export const router = Router()
 
-router.get('/tasks', (req, res) => {
+router.get('/tasks', requireAnyPerm(['cleaning.view','cleaning.schedule.manage','cleaning.task.assign']), (req, res) => {
   const { date } = req.query as { date?: string }
   if (!hasSupabase) {
     if (date) return res.json(db.cleaningTasks.filter((t) => t.date === date))
@@ -34,7 +34,7 @@ router.post('/tasks', (req, res) => {
     .catch((err) => res.status(500).json({ message: err.message }))
 })
 
-router.get('/staff', (req, res) => {
+router.get('/staff', requireAnyPerm(['cleaning.view','cleaning.schedule.manage','cleaning.task.assign']), (req, res) => {
   res.json(db.cleaners)
 })
 
@@ -92,14 +92,14 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), (req, res) => {
     .catch((err) => res.status(500).json({ message: err.message }))
 })
 
-router.get('/order/:orderId', (req, res) => {
+router.get('/order/:orderId', requireAnyPerm(['cleaning.view','cleaning.schedule.manage','cleaning.task.assign']), (req, res) => {
   const order = db.orders.find(o => o.id === req.params.orderId)
   if (!order) return res.status(404).json({ message: 'order not found' })
   const tasks = db.cleaningTasks.filter(t => t.property_id === order.property_id && t.date === (order.checkout || t.date))
   res.json(tasks)
 })
 
-router.get('/capacity', (req, res) => {
+router.get('/capacity', requireAnyPerm(['cleaning.view','cleaning.schedule.manage','cleaning.task.assign']), (req, res) => {
   const { date } = req.query as { date?: string }
   const dateStr = date || new Date().toISOString().slice(0,10)
   const result = db.cleaners.map(c => {

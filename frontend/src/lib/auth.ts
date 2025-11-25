@@ -23,15 +23,22 @@ export function getRole(): string | null {
   } catch { return null }
 }
 
-const rolePerms: Record<string, string[]> = {
-  admin: ['property.write','order.manage','order.sync','keyset.manage','key.flow','cleaning.schedule.manage','cleaning.task.assign','finance.payout','inventory.move','landlord.manage'],
-  ops: ['property.write','order.manage','key.flow','cleaning.task.assign','landlord.manage'],
-  field: ['cleaning.task.assign'],
-}
-
 export function hasPerm(code: string): boolean {
   const role = getRole() || ''
   if (role === 'admin') return true
-  const list = rolePerms[role] || []
-  return list.includes(code)
+  try {
+    const raw = (typeof window !== 'undefined') ? (localStorage.getItem('perms') || '[]') : '[]'
+    const list = JSON.parse(raw || '[]') as string[]
+    return Array.isArray(list) ? list.includes(code) : false
+  } catch { return false }
+}
+
+export async function preloadPerms(): Promise<void> {
+  try {
+    const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4000'}/rbac/my-permissions`, { headers: { Authorization: (() => { try { const t = localStorage.getItem('token') || sessionStorage.getItem('token'); return t ? `Bearer ${t}` : '' } catch { return '' } })() } })
+    if (res.ok) {
+      const arr = await res.json()
+      try { localStorage.setItem('perms', JSON.stringify(arr || [])) } catch {}
+    }
+  } catch {}
 }
