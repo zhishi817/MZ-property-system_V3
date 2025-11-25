@@ -6,7 +6,7 @@ import { getJSON } from '../../../lib/api'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
 
-type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
+type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 
@@ -175,13 +175,11 @@ export default function PropertyRevenuePage() {
                 const prop = properties.find(p=>p.id===pid)
                 const anchor = (function(){
                   const base = month || dayjs()
-                  if (period==='fiscal-year') { const fyStartYear = base.month() >= 6 ? base.year() : base.year()-1; return dayjs(`${fyStartYear}-07-01`) }
                   if (period==='year') return base.startOf('year')
                   return (startMonth || base).startOf('month')
                 })()
                 const endAnchor = (function(){
                   const base = month || dayjs()
-                  if (period==='fiscal-year') { const fyStartYear = base.month() >= 6 ? base.year() : base.year()-1; return dayjs(`${fyStartYear+1}-06-30`) }
                   if (period==='year') return base.endOf('year')
                   return anchor.add(5,'month').endOf('month')
                 })()
@@ -201,7 +199,7 @@ export default function PropertyRevenuePage() {
                 return (
                   <div>
                     <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
-                      <div style={{ fontSize:18, fontWeight:700 }}>{period==='fiscal-year' ? `财年 ${anchor.format('YYYY-MM')} 至 ${endAnchor.format('YYYY-MM')}` : (period==='year' ? `${anchor.format('YYYY')} 年` : `${anchor.format('YYYY-MM')} 至 ${endAnchor.format('YYYY-MM')}`)}</div>
+                      <div style={{ fontSize:18, fontWeight:700 }}>{period==='year' ? `${anchor.format('YYYY')} 年` : `${anchor.format('YYYY-MM')} 至 ${endAnchor.format('YYYY-MM')}`}</div>
                       <div style={{ textAlign:'right' }}>{prop?.code || ''} {prop?.address || ''}</div>
                     </div>
                     <table>
