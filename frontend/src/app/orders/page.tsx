@@ -26,6 +26,25 @@ export default function OrdersPage() {
   const [calMonth, setCalMonth] = useState(dayjs())
   const [calPid, setCalPid] = useState<string | undefined>(undefined)
   const calRef = useRef<HTMLDivElement | null>(null)
+  const uploadProps: UploadProps = {
+    beforeUpload: async (file) => {
+      setImporting(true)
+      try {
+        const text = await file.text()
+        const isCsv = (file.type || '').includes('csv') || file.name.endsWith('.csv')
+        const headers = { Authorization: `Bearer ${localStorage.getItem('token')}`, 'Content-Type': isCsv ? 'text/csv' : 'application/json' }
+        const body = isCsv ? text : (() => { try { return JSON.stringify(JSON.parse(text)) } catch { return JSON.stringify([]) } })()
+        const res = await fetch(`${API_BASE}/orders/import`, { method: 'POST', headers, body })
+        const j = await res.json().catch(() => null)
+        if (res.ok) { message.success(`导入完成：新增 ${j?.inserted || 0}，跳过 ${j?.skipped || 0}`); setImportOpen(false); load() } else { message.error(j?.message || '导入失败') }
+      } catch { message.error('导入失败') }
+      setImporting(false)
+      return false
+    },
+    multiple: false,
+    showUploadList: false,
+    accept: '.csv,application/json,text/csv'
+  }
 
   async function load() {
     const res = await getJSON<Order[]>('/orders')
@@ -489,23 +508,4 @@ export default function OrdersPage() {
     if (allDone) return <Tag color="green">已完成</Tag>
     if (anyScheduled) return <Tag color="blue">已排班</Tag>
     return <Tag color="orange">待安排</Tag>
-  }
-  const uploadProps: UploadProps = {
-    beforeUpload: async (file) => {
-      setImporting(true)
-      try {
-        const text = await file.text()
-        const isCsv = (file.type || '').includes('csv') || file.name.endsWith('.csv')
-        const headers = { Authorization: `Bearer ${localStorage.getItem('token')}`, 'Content-Type': isCsv ? 'text/csv' : 'application/json' }
-        const body = isCsv ? text : (() => { try { return JSON.stringify(JSON.parse(text)) } catch { return JSON.stringify([]) } })()
-        const res = await fetch(`${API_BASE}/orders/import`, { method: 'POST', headers, body })
-        const j = await res.json().catch(() => null)
-        if (res.ok) { message.success(`导入完成：新增 ${j?.inserted || 0}，跳过 ${j?.skipped || 0}`); setImportOpen(false); load() } else { message.error(j?.message || '导入失败') }
-      } catch { message.error('导入失败') }
-      setImporting(false)
-      return false
-    },
-    multiple: false,
-    showUploadList: false,
-    accept: '.csv,application/json,text/csv'
   }
