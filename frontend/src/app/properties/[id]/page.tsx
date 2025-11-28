@@ -2,6 +2,7 @@
 import { Card, Form, Input, InputNumber, Select, Button, message, Space, Tag } from 'antd'
 import { useEffect, useState } from 'react'
 import { API_BASE } from '../../../lib/api'
+import { hasPerm } from '../../../lib/auth'
 
 type Property = {
   id: string
@@ -65,7 +66,7 @@ export default function PropertyDetail({ params }: { params: { id: string } }) {
 
   return (
     <Card title="房源详情">
-      <Form form={form} layout="vertical">
+      <Form form={form} layout="vertical" disabled={!hasPerm('property.write')}>
         <Form.Item label="房号"><Input value={data?.code} readOnly /></Form.Item>
         <Form.Item name="address" label="地址" rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item name="type" label="房型" rules={[{ required: true }]}><Select options={[{value:'一房一卫',label:'一房一卫'},{value:'两房一卫',label:'两房一卫'},{value:'两房两卫',label:'两房两卫'},{value:'三房两卫',label:'三房两卫'},{value:'三房三卫',label:'三房三卫'}]} /></Form.Item>
@@ -100,7 +101,7 @@ export default function PropertyDetail({ params }: { params: { id: string } }) {
           <Tag>创建时间: {data?.created_at || ''}</Tag>
           <Tag>最后修改: {data?.updated_at || ''}</Tag>
         </Space>
-        <Button type="primary" onClick={save}>保存</Button>
+        {hasPerm('property.write') && <Button type="primary" onClick={save}>保存</Button>}
       </Form>
     </Card>
   )

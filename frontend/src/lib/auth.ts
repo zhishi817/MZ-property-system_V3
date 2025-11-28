@@ -11,34 +11,35 @@ function decodeJwtPayload(token: string | null): any {
 
 export function getRole(): string | null {
   if (typeof window === 'undefined') return null
-  const stored = localStorage.getItem('role') || sessionStorage.getItem('role')
-  if (stored) return stored
   try {
     const m = document.cookie.match(/(?:^|;\s*)auth=([^;]*)/)
     const token = m ? decodeURIComponent(m[1]) : null
     const payload = decodeJwtPayload(token)
-    const role = payload?.role || null
-    if (role) try { localStorage.setItem('role', role) } catch {}
-    return role
-  } catch { return null }
+    const roleFromToken = payload?.role || null
+    if (roleFromToken) {
+      try { localStorage.setItem('role', roleFromToken) } catch {}
+      return roleFromToken
+    }
+  } catch {}
+  const stored = localStorage.getItem('role') || sessionStorage.getItem('role')
+  return stored || null
+}
+
+const rolePerms: Record<string, string[]> = {
+  admin: ['property.write','order.manage','order.sync','keyset.manage','key.flow','cleaning.schedule.manage','cleaning.task.assign','finance.payout','inventory.move','landlord.manage'],
+  ops: ['property.write','order.manage','key.flow','cleaning.task.assign','landlord.manage'],
+  field: ['cleaning.task.assign'],
+  customer_service: ['property.write','order.manage','finance.tx.write'],
+  cleaning_manager: ['cleaning.schedule.manage','cleaning.task.assign'],
+  cleaner_inspector: [],
+  finance_staff: ['finance.payout','finance.tx.write','landlord.manage','property.write'],
+  inventory_manager: ['inventory.move','keyset.manage','key.flow'],
+  maintenance_staff: [],
 }
 
 export function hasPerm(code: string): boolean {
   const role = getRole() || ''
   if (role === 'admin') return true
-  try {
-    const raw = (typeof window !== 'undefined') ? (localStorage.getItem('perms') || '[]') : '[]'
-    const list = JSON.parse(raw || '[]') as string[]
-    return Array.isArray(list) ? list.includes(code) : false
-  } catch { return false }
-}
-
-export async function preloadPerms(): Promise<void> {
-  try {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4000'}/rbac/my-permissions`, { headers: { Authorization: (() => { try { const t = localStorage.getItem('token') || sessionStorage.getItem('token'); return t ? `Bearer ${t}` : '' } catch { return '' } })() } })
-    if (res.ok) {
-      const arr = await res.json()
-      try { localStorage.setItem('perms', JSON.stringify(arr || [])) } catch {}
-    }
-  } catch {}
+  const list = rolePerms[role] || []
+  return list.includes(code)
 }
