@@ -5,7 +5,19 @@ import { API_BASE } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
 import dayjs from 'dayjs'
 
-type Task = { id: string; date: string; status: 'pending'|'scheduled'|'done' }
+type Task = {
+  id: string
+  date: string
+  status: 'pending'|'scheduled'|'done'
+  property_id?: string
+  assignee_id?: string
+  scheduled_at?: string
+  old_code?: string | null
+  new_code?: string | null
+  note?: string | null
+  checkout_time?: string | null
+  checkin_time?: string | null
+}
 type CalEvent = { id: string | null; order_id: string | null; property_id?: string; property_code?: string; type: 'checkin'|'checkout'|'other'|'combined'; nights?: number | null; status: 'pending'|'scheduled'|'done'; scheduled_at?: string | null; assignee_id?: string | null; assignee_name?: string | null; old_code?: string | null; new_code?: string | null; note?: string | null; has_checkin?: boolean; has_checkout?: boolean; checkout_time?: string | null; checkin_time?: string | null }
 type Order = { id: string; property_id?: string; property_code?: string; checkin?: string; checkout?: string }
 
