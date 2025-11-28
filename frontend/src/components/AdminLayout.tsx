@@ -20,6 +20,7 @@ const { Header, Sider, Content } = Layout
 export function AdminLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
+  async function preloadPerms() { return }
   function getCookie(name: string) {
     if (typeof document === 'undefined') return null
     const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()\[\]\\/+^])/g, '\\$1') + '=([^;]*)'))
