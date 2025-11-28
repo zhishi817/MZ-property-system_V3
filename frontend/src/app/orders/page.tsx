@@ -1,7 +1,7 @@
 "use client"
-import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, message, Select, Tag, InputNumber, Checkbox, Upload } from 'antd'
+import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, message, Select, Tag, InputNumber, Checkbox, Upload, Radio, Calendar } from 'antd'
 import type { UploadProps } from 'antd'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
@@ -22,6 +22,10 @@ export default function OrdersPage() {
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [importOpen, setImportOpen] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [view, setView] = useState<'list'|'calendar'>('list')
+  const [calMonth, setCalMonth] = useState(dayjs())
+  const [calPid, setCalPid] = useState<string | undefined>(undefined)
+  const calRef = useRef<HTMLDivElement | null>(null)
 
   async function load() {
     const res = await getJSON<Order[]>('/orders')
