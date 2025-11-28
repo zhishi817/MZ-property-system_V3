@@ -1,11 +1,13 @@
 "use client"
-import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, message, Select, Tag, InputNumber, Checkbox } from 'antd'
+import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, message, Select, Tag, InputNumber, Checkbox, Upload } from 'antd'
+import type { UploadProps } from 'antd'
 import { useEffect, useState } from 'react'
 import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
 
-type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; guest_name?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number }
+type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; guest_name?: string; guest_phone?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number }
+// guest_phone 在后端已支持，这里表单也支持录入
 type CleaningTask = { id: string; status: 'pending'|'scheduled'|'done' }
 
 export default function OrdersPage() {
@@ -18,6 +20,8 @@ export default function OrdersPage() {
   const [codeQuery, setCodeQuery] = useState('')
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
+  const [importOpen, setImportOpen] = useState(false)
+  const [importing, setImporting] = useState(false)
 
   async function load() {
     const res = await getJSON<Order[]>('/orders')
@@ -39,6 +43,8 @@ export default function OrdersPage() {
       cleaning_fee: o.cleaning_fee != null ? o.cleaning_fee : 0,
       checkin: o.checkin ? dayjs(o.checkin) : undefined,
       checkout: o.checkout ? dayjs(o.checkout) : undefined,
+      status: o.status || 'confirmed',
+      guest_phone: (o as any).guest_phone || ''
     })
     // 再异步拉取完整数据并二次填充（失败时保持现有值）
     try {
@@ -53,6 +59,8 @@ export default function OrdersPage() {
         cleaning_fee: full.cleaning_fee != null ? full.cleaning_fee : 0,
         checkin: full.checkin ? dayjs(full.checkin) : undefined,
         checkout: full.checkout ? dayjs(full.checkout) : undefined,
+        status: full.status || 'confirmed',
+        guest_phone: (full as any).guest_phone || ''
       })
     } catch {
       message.warning('加载订单详情失败，使用列表数据进行编辑')
@@ -80,8 +88,9 @@ export default function OrdersPage() {
       property_id: v.property_id,
       property_code: v.property_code || selectedNew?.code || selectedNew?.address || v.property_id,
       guest_name: v.guest_name,
-      checkin: v.checkin.format('YYYY-MM-DD'),
-      checkout: v.checkout.format('YYYY-MM-DD'),
+      guest_phone: v.guest_phone,
+      checkin: v.checkin.format('YYYY-MM-DD') + 'T12:00:00',
+      checkout: v.checkout.format('YYYY-MM-DD') + 'T11:59:59',
       price,
       cleaning_fee: cleaning,
       net_income: net,
@@ -114,6 +123,7 @@ export default function OrdersPage() {
     { title: '房号', dataIndex: 'property_code' },
     { title: '来源', dataIndex: 'source' },
     { title: '客人', dataIndex: 'guest_name' },
+    // 可按需求增加显示客人电话
     { title: '入住', dataIndex: 'checkin' },
     { title: '退房', dataIndex: 'checkout' },
     { title: '天数', dataIndex: 'nights' },
@@ -143,7 +153,7 @@ export default function OrdersPage() {
   ]
 
   return (
-    <Card title="订单管理" extra={hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}>
+    <Card title="订单管理" extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}</Space>}>
       <Space style={{ marginBottom: 12 }} wrap>
         <Input placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} style={{ width: 200 }} />
         <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} />
@@ -175,6 +185,9 @@ export default function OrdersPage() {
         <Form.Item name="property_code" hidden><Input /></Form.Item>
         <Form.Item name="guest_name" label="客人姓名">
           <Input />
+        </Form.Item>
+        <Form.Item name="guest_phone" label="客人电话">
+          <Input placeholder="用于生成旧/新密码（后四位）" />
         </Form.Item>
         <Form.Item name="checkin" label="入住" rules={[{ required: true }]}> 
           <DatePicker style={{ width: '100%' }} />
@@ -244,8 +257,8 @@ export default function OrdersPage() {
         const net = Math.max(0, price - cleaning)
         const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
         const selectedEdit = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
-        const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD'), checkout: dayjs(v.checkout).format('YYYY-MM-DD'), nights, net_income: net, avg_nightly_price: avg }
-        const res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+        const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: net, avg_nightly_price: avg }
+        const res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ ...payload, force: true }) })
         if (res.ok) {
           async function writeIncome(amount: number, cat: string, note: string) {
             if (!amount || amount <= 0) return
@@ -265,8 +278,11 @@ export default function OrdersPage() {
         }
       }} title="编辑订单">
         <Form form={editForm} layout="vertical">
-          <Form.Item name="source" label="来源" rules={[{ required: true }]}>
+          <Form.Item name="source" label="来源" rules={[{ required: true }]}> 
             <Select options={[{ value: 'airbnb', label: 'airbnb' }, { value: 'booking', label: 'booking.com' }, { value: 'offline', label: '线下' }, { value: 'other', label: '其他' }]} />
+          </Form.Item>
+          <Form.Item name="status" label="状态" initialValue="confirmed"> 
+            <Select options={[{ value: 'confirmed', label: '已确认' }, { value: 'canceled', label: '已取消' }]} />
           </Form.Item>
           <Form.Item name="property_id" label="房号" rules={[{ required: true }]}> 
             <Select
@@ -281,11 +297,64 @@ export default function OrdersPage() {
           </Form.Item>
           <Form.Item name="property_code" hidden><Input /></Form.Item>
           <Form.Item name="guest_name" label="客人姓名"><Input /></Form.Item>
+          <Form.Item name="guest_phone" label="客人电话"><Input placeholder="用于生成旧/新密码（后四位）" /></Form.Item>
           <Form.Item name="checkin" label="入住" rules={[{ required: true }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="checkout" label="退房" rules={[{ required: true }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="price" label="总租金(AUD)"><InputNumber min={0} step={1} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="cleaning_fee" label="清洁费"><InputNumber min={0} step={1} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item label="晚退收入">
+            <Space>
+              <Form.Item name="late_checkout" valuePropName="checked" noStyle>
+                <Checkbox>晚退(+20)</Checkbox>
+              </Form.Item>
+              <Form.Item name="late_checkout_fee" noStyle>
+                <InputNumber min={0} step={1} placeholder="自定义金额(可选)" />
+              </Form.Item>
+            </Space>
+          </Form.Item>
+          <Form.Item shouldUpdate>
+            {() => {
+              const st = editForm.getFieldValue('status')
+              if (st === 'canceled') {
+                return (
+                  <Form.Item name="cancel_fee" label="取消费(AUD)">
+                    <InputNumber min={0} step={1} style={{ width: '100%' }} />
+                  </Form.Item>
+                )
+              }
+              return null
+            }}
+          </Form.Item>
+          <Form.Item shouldUpdate noStyle>
+            {() => {
+              const v = editForm.getFieldsValue()
+              const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
+              const price = Number(v.price || 0)
+              const cleaning = Number(v.cleaning_fee || 0)
+              const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+              const cancelFee = Number(v.cancel_fee || 0)
+              const net = Math.max(0, price + lateFee + cancelFee - cleaning)
+              const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+              return (
+                <Card size="small" style={{ marginTop: 8 }}>
+                  <Space wrap>
+                    <Tag color="blue">入住天数: {nights}</Tag>
+                    <Tag color="green">总收入: {net}</Tag>
+                    {v.late_checkout || v.late_checkout_fee ? <Tag color="purple">晚退收入: {lateFee}</Tag> : null}
+                    {v.cancel_fee ? <Tag color="orange">取消费: {cancelFee}</Tag> : null}
+                    <Tag color="purple">晚均价: {avg}</Tag>
+                  </Space>
+                </Card>
+              )
+            }}
+          </Form.Item>
         </Form>
+    </Modal>
+    <Modal open={importOpen} onCancel={() => setImportOpen(false)} footer={null} title="批量导入订单">
+      <Upload.Dragger {...uploadProps} disabled={importing}>
+        <p>点击或拖拽上传 CSV 或 JSON 文件</p>
+        <p>CSV 需包含列：source, property_code 或 property_id, guest_name, checkin, checkout, price, cleaning_fee, currency, status</p>
+      </Upload.Dragger>
     </Modal>
     </Card>
   )
@@ -299,4 +368,23 @@ export default function OrdersPage() {
     if (allDone) return <Tag color="green">已完成</Tag>
     if (anyScheduled) return <Tag color="blue">已排班</Tag>
     return <Tag color="orange">待安排</Tag>
+  }
+  const uploadProps: UploadProps = {
+    beforeUpload: async (file) => {
+      setImporting(true)
+      try {
+        const text = await file.text()
+        const isCsv = (file.type || '').includes('csv') || file.name.endsWith('.csv')
+        const headers = { Authorization: `Bearer ${localStorage.getItem('token')}`, 'Content-Type': isCsv ? 'text/csv' : 'application/json' }
+        const body = isCsv ? text : (() => { try { return JSON.stringify(JSON.parse(text)) } catch { return JSON.stringify([]) } })()
+        const res = await fetch(`${API_BASE}/orders/import`, { method: 'POST', headers, body })
+        const j = await res.json().catch(() => null)
+        if (res.ok) { message.success(`导入完成：新增 ${j?.inserted || 0}，跳过 ${j?.skipped || 0}`); setImportOpen(false); load() } else { message.error(j?.message || '导入失败') }
+      } catch { message.error('导入失败') }
+      setImporting(false)
+      return false
+    },
+    multiple: false,
+    showUploadList: false,
+    accept: '.csv,application/json,text/csv'
   }

@@ -48,6 +48,7 @@ export type Order = {
   property_id?: string
   property_code?: string
   guest_name?: string
+  guest_phone?: string
   checkin?: string
   checkout?: string
   price?: number
@@ -103,6 +104,11 @@ export type CleaningTask = {
   status: 'pending' | 'scheduled' | 'done'
   assignee_id?: string
   scheduled_at?: string
+  old_code?: string
+  new_code?: string
+  note?: string
+  checkout_time?: string
+  checkin_time?: string
 }
 
 export const db = {

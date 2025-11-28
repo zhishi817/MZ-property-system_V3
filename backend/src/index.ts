@@ -46,5 +46,5 @@ app.use('/audits', auditsRouter)
 app.use('/rbac', rbacRouter)
 app.use('/version', versionRouter)
 
-const port = process.env.PORT ? Number(process.env.PORT) : 4000
+const port = process.env.PORT ? Number(process.env.PORT) : 4001
 app.listen(port, () => {console.log(`Server listening on port ${port}`); console.log(`[DataSources] pg=${hasPg} supabase=${hasSupabase}`)})

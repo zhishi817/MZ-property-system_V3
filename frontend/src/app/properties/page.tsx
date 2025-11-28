@@ -2,6 +2,7 @@
 import { Table, Card, Button, Modal, Form, Input, InputNumber, Select, message, Space, Row, Col, Tag, Divider, Switch, AutoComplete } from 'antd'
 import React, { useEffect, useState } from 'react'
 import { API_BASE } from '../../lib/api'
+import { hasPerm } from '../../lib/auth'
 
 type Property = { id: string; code?: string; address: string; type: string; capacity: number; region?: string; area_sqm?: number; landlord_id?: string }
 
@@ -133,6 +134,7 @@ export default function PropertiesPage() {
     if (res.ok) { message.success('房源已更新'); setEditOpen(false); load() } else { message.error('更新失败') }
   }
 
+  const canWrite = hasPerm('property.write')
   const columns = [
     { title: '房号', dataIndex: 'code' },
     { title: '地址', dataIndex: 'address' },
@@ -140,7 +142,13 @@ export default function PropertiesPage() {
     { title: '可住人数', dataIndex: 'capacity' },
     { title: '区域', dataIndex: 'region' },
     { title: '面积(㎡)', dataIndex: 'area_sqm' },
-    { title: '操作', render: (_: any, r: Property) => (<Space><Button onClick={() => openDetail(r.id)}>详情</Button><Button onClick={() => openEdit(r)}>编辑</Button><Button danger onClick={() => confirmDelete(r)}>归档</Button></Space>) },
+    { title: '操作', render: (_: any, r: Property) => (
+      <Space>
+        <Button onClick={() => openDetail(r.id)}>详情</Button>
+        {canWrite && <Button onClick={() => openEdit(r)}>编辑</Button>}
+        {canWrite && <Button danger onClick={() => confirmDelete(r)}>归档</Button>}
+      </Space>
+    ) },
   ]
 
   if (!mounted) return null
@@ -151,7 +159,7 @@ export default function PropertiesPage() {
         <span>显示归档</span>
         <Switch checked={showArchived} onChange={setShowArchived as any} />
         <Input.Search allowClear placeholder="搜索房源" onSearch={setQuery} onChange={(e) => setQuery(e.target.value)} style={{ width: 260 }} />
-        <Button type="primary" onClick={() => setOpen(true)}>新建房源</Button>
+        {canWrite && <Button type="primary" onClick={() => setOpen(true)}>新建房源</Button>}
       </Space>
     }>
       <Table

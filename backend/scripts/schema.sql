@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS orders (
   external_id text,
   property_id text REFERENCES properties(id) ON DELETE SET NULL,
   guest_name text,
+  guest_phone text,
   checkin date,
   checkout date,
   price numeric,
@@ -103,6 +104,13 @@ CREATE TABLE IF NOT EXISTS cleaning_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_cleaning_date ON cleaning_tasks(date);
 CREATE INDEX IF NOT EXISTS idx_cleaning_property ON cleaning_tasks(property_id);
+
+-- Extend cleaning_tasks with additional fields used by calendar UI
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS old_code text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS new_code text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS note text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkout_time text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkin_time text;
 
 -- Users table for system login
 CREATE TABLE IF NOT EXISTS users (
@@ -208,6 +216,32 @@ DROP POLICY IF EXISTS cleaning_update ON cleaning_tasks;
 CREATE POLICY cleaning_update ON cleaning_tasks FOR UPDATE USING (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role IN ('admin','ops'))) WITH CHECK (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role IN ('admin','ops')));
 DROP POLICY IF EXISTS cleaning_delete ON cleaning_tasks;
 CREATE POLICY cleaning_delete ON cleaning_tasks FOR DELETE USING (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role = 'admin'));
+
+-- Generic calendar events for non-cleaning items (other tasks, inspections, maintenance, etc.)
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id text PRIMARY KEY,
+  date date NOT NULL,
+  start_time text,
+  end_time text,
+  type text, -- e.g., other, inspection, maintenance
+  title text,
+  property_id text REFERENCES properties(id) ON DELETE SET NULL,
+  assignee_id text,
+  note text,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_calendar_events_date ON calendar_events(date);
+CREATE INDEX IF NOT EXISTS idx_calendar_events_property ON calendar_events(property_id);
+
+ALTER TABLE calendar_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS calendar_events_select ON calendar_events;
+CREATE POLICY calendar_events_select ON calendar_events FOR SELECT USING (true);
+DROP POLICY IF EXISTS calendar_events_insert ON calendar_events;
+CREATE POLICY calendar_events_insert ON calendar_events FOR INSERT WITH CHECK (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role IN ('admin','ops')));
+DROP POLICY IF EXISTS calendar_events_update ON calendar_events;
+CREATE POLICY calendar_events_update ON calendar_events FOR UPDATE USING (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role IN ('admin','ops'))) WITH CHECK (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role IN ('admin','ops')));
+DROP POLICY IF EXISTS calendar_events_delete ON calendar_events;
+CREATE POLICY calendar_events_delete ON calendar_events FOR DELETE USING (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role = 'admin'));
 
 DROP POLICY IF EXISTS users_select_self ON users;
 CREATE POLICY users_select_self ON users FOR SELECT USING (id = auth.uid()::text OR EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role = 'admin'));

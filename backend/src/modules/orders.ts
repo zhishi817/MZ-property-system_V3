@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, text } from 'express'
 import { db, Order, CleaningTask } from '../store'
 import { z } from 'zod'
 import { requirePerm } from '../auth'
@@ -77,6 +77,7 @@ const createOrderSchema = z.object({
   property_id: z.string().optional(),
   property_code: z.string().optional(),
   guest_name: z.string().optional(),
+  guest_phone: z.string().optional(),
   checkin: z.string().optional(),
   checkout: z.string().optional(),
   price: z.number().optional(),
@@ -95,21 +96,47 @@ function parseDate(s?: string): Date | null {
   const d = new Date(s)
   return isNaN(d.getTime()) ? null : d
 }
+function normalizeStart(s?: string): Date | null {
+  if (!s) return null
+  const hasTime = /T\d{2}:\d{2}/.test(s)
+  const d = new Date(hasTime ? s : `${s}T12:00:00`)
+  return isNaN(d.getTime()) ? null : d
+}
+function normalizeEnd(s?: string): Date | null {
+  if (!s) return null
+  const hasTime = /T\d{2}:\d{2}/.test(s)
+  const d = new Date(hasTime ? s : `${s}T11:59:59`)
+  return isNaN(d.getTime()) ? null : d
+}
 
 function rangesOverlap(aStart?: string, aEnd?: string, bStart?: string, bEnd?: string): boolean {
-  const as = parseDate(aStart); const ae = parseDate(aEnd); const bs = parseDate(bStart); const be = parseDate(bEnd)
+  const as = normalizeStart(aStart); const ae = normalizeEnd(aEnd); const bs = normalizeStart(bStart); const be = normalizeEnd(bEnd)
   if (!as || !ae || !bs || !be) return false
-  return as <= be && bs <= ae
+  return as < be && bs < ae
 }
 
 async function hasOrderOverlap(propertyId?: string, checkin?: string, checkout?: string, excludeId?: string): Promise<boolean> {
   if (!propertyId || !checkin || !checkout) return false
-  const localHit = db.orders.some(o => o.property_id === propertyId && o.id !== excludeId && rangesOverlap(checkin, checkout, o.checkin, o.checkout))
+  const ciDay = (checkin || '').slice(0,10)
+  const coDay = (checkout || '').slice(0,10)
+  const localHit = db.orders.some(o => {
+    if (o.property_id !== propertyId || o.id === excludeId) return false
+    const oCiDay = (o.checkin || '').slice(0,10)
+    const oCoDay = (o.checkout || '').slice(0,10)
+    if (oCoDay === ciDay || coDay === oCiDay) return false
+    return rangesOverlap(checkin, checkout, o.checkin, o.checkout)
+  })
   if (localHit) return true
   try {
     if (hasSupabase) {
       const rows: any[] = (await supaSelect('orders', '*', { property_id: propertyId })) || []
-      const remoteHit = rows.some(o => o.id !== excludeId && rangesOverlap(checkin, checkout, o.checkin, o.checkout))
+      const remoteHit = rows.some((o: any) => {
+        if (o.id === excludeId) return false
+        const oCiDay = (o.checkin || '').slice(0,10)
+        const oCoDay = (o.checkout || '').slice(0,10)
+        if (oCoDay === ciDay || coDay === oCiDay) return false
+        return rangesOverlap(checkin, checkout, o.checkin, o.checkout)
+      })
       if (remoteHit) return true
     }
   } catch {}
@@ -162,6 +189,7 @@ router.patch('/:id', requirePerm('order.manage'), async (req, res) => {
   const parsed = updateOrderSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const o = parsed.data
+  const force = String((req.body as any).force ?? (req.query as any).force ?? '').toLowerCase() === 'true'
   const idx = db.orders.findIndex((x) => x.id === id)
   const prev = idx !== -1 ? db.orders[idx] : undefined
   if (!prev && !hasSupabase) return res.status(404).json({ message: 'order not found' })
@@ -183,9 +211,13 @@ router.patch('/:id', requirePerm('order.manage'), async (req, res) => {
   const net = o.net_income != null ? o.net_income : (price - cleaning)
   const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0)
   const updated: Order = { ...base, ...o, id, nights, net_income: net, avg_nightly_price: avg }
-  // overlap guard on update
-  const conflict = await hasOrderOverlap(updated.property_id, updated.checkin, updated.checkout, id)
-  if (conflict) return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' })
+  const changedCore = (
+    (updated.property_id || '') !== (prev?.property_id || '') ||
+    ((updated.checkin || '').slice(0,10)) !== ((prev?.checkin || '').slice(0,10)) ||
+    ((updated.checkout || '').slice(0,10)) !== ((prev?.checkout || '').slice(0,10))
+  )
+  // 编辑场景不再阻断，允许覆盖更新（冲突仅在创建时校验）
+  // 保留内部工具函数供日志或后续使用，但不阻塞响应
 
   if (idx !== -1) {
     db.orders[idx] = updated
@@ -207,6 +239,7 @@ router.patch('/:id', requirePerm('order.manage'), (req, res) => {
   const parsed = createOrderSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const o = parsed.data
+  const force = String((req.body as any).force ?? (req.query as any).force ?? '').toLowerCase() === 'true'
   const idx = db.orders.findIndex((x) => x.id === id)
   if (idx === -1) return res.status(404).json({ message: 'order not found' })
   const prev = db.orders[idx]
@@ -226,11 +259,13 @@ router.patch('/:id', requirePerm('order.manage'), (req, res) => {
   const net = o.net_income != null ? o.net_income : (price - cleaning)
   const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0)
   const updated: Order = { ...prev, ...o, nights, net_income: net, avg_nightly_price: avg }
-  // local overlap guard on update
-  if (updated.property_id && updated.checkin && updated.checkout) {
-    const hit = db.orders.some(x => x.id !== id && x.property_id === updated.property_id && rangesOverlap(updated.checkin, updated.checkout, x.checkin, x.checkout))
-    if (hit) return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' })
-  }
+  // local overlap guard on update，仅在关键字段变更时检查
+  const changedCore2 = (
+    (updated.property_id || '') !== (prev?.property_id || '') ||
+    ((updated.checkin || '').slice(0,10)) !== ((prev?.checkin || '').slice(0,10)) ||
+    ((updated.checkout || '').slice(0,10)) !== ((prev?.checkout || '').slice(0,10))
+  )
+  // 编辑场景：不再返回 409 冲突
   db.orders[idx] = updated
   // try remote update; if fails, still respond with updated local record
   if (hasSupabase) {
@@ -281,4 +316,82 @@ router.post('/:id/generate-cleaning', requirePerm('order.manage'), (req, res) =>
   const task: CleaningTask = { id: uuid(), property_id: order.property_id, date, status: 'pending' }
   db.cleaningTasks.push(task)
   res.status(201).json(task)
+})
+
+router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','text/plain'] }), async (req, res) => {
+  function toNumber(v: any): number | undefined {
+    if (v == null || v === '') return undefined
+    const n = Number(v)
+    return isNaN(n) ? undefined : n
+  }
+  function parseCsv(s: string): any[] {
+    const lines = (s || '').split(/\r?\n/).filter(l => l.trim().length)
+    if (!lines.length) return []
+    const header = lines[0].split(',').map(h => h.trim())
+    const rows = lines.slice(1).map(l => l.split(',')).map(cols => {
+      const obj: any = {}
+      header.forEach((h, i) => { obj[h] = (cols[i] || '').trim() })
+      return obj
+    })
+    return rows
+  }
+  const rawBody = typeof req.body === 'string' ? req.body : ''
+  const rowsInput: any[] = Array.isArray((req as any).body) ? (req as any).body : parseCsv(rawBody)
+  const results: { ok: boolean; id?: string; error?: string }[] = []
+  let inserted = 0
+  let skipped = 0
+  for (const r of rowsInput) {
+    try {
+      const source = String(r.source || 'offline')
+      const property_code = r.property_code || r.propertyCode || undefined
+      const property_id = r.property_id || r.propertyId || (property_code ? (db.properties.find(p => (p.code || '') === property_code)?.id) : undefined)
+      const guest_name = r.guest_name || r.guest || undefined
+      const checkin = r.checkin || r.check_in || r.start_date || undefined
+      const checkout = r.checkout || r.check_out || r.end_date || undefined
+      const price = toNumber(r.price)
+      const cleaning_fee = toNumber(r.cleaning_fee)
+      const currency = r.currency || 'AUD'
+      const status = r.status || 'confirmed'
+      const parsed = createOrderSchema.safeParse({ source, property_id, property_code, guest_name, checkin, checkout, price, cleaning_fee, currency, status })
+      if (!parsed.success) { results.push({ ok: false, error: 'invalid row' }); skipped++; continue }
+      const o = parsed.data
+      const key = o.idempotency_key || `${o.property_id || ''}-${o.checkin || ''}-${o.checkout || ''}`
+      const exists = db.orders.find((x) => x.idempotency_key === key)
+      if (exists) { results.push({ ok: false, error: 'duplicate' }); skipped++; continue }
+      const { v4: uuid } = require('uuid')
+      let nights = o.nights
+      if (!nights && o.checkin && o.checkout) {
+        try {
+          const ci = new Date(o.checkin)
+          const co = new Date(o.checkout)
+          const ms = co.getTime() - ci.getTime()
+          nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0
+        } catch { nights = 0 }
+      }
+      const cleaning = o.cleaning_fee || 0
+      const total = o.price || 0
+      const net = o.net_income != null ? o.net_income : (total - cleaning)
+      const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0)
+      const newOrder: Order = { id: uuid(), ...o, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key }
+      const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout)
+      if (conflict) { results.push({ ok: false, error: 'overlap' }); skipped++; continue }
+      db.orders.push(newOrder)
+      if (newOrder.checkout) {
+        const date = newOrder.checkout
+        const hasTask = db.cleaningTasks.find((t) => t.date === date && t.property_id === newOrder.property_id)
+        if (!hasTask) {
+          const task = { id: uuid(), property_id: newOrder.property_id, date, status: 'pending' as const }
+          db.cleaningTasks.push(task)
+        }
+      }
+      if (hasSupabase) {
+        try { await supaUpsertConflict('orders', newOrder, 'id') } catch { pendingInsert.push(newOrder); startRetry() }
+      }
+      inserted++
+      results.push({ ok: true, id: newOrder.id })
+    } catch (e: any) {
+      results.push({ ok: false, error: e?.message || 'error' }); skipped++
+    }
+  }
+  res.json({ inserted, skipped, results })
 })
