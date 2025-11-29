@@ -84,7 +84,7 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
                     try {
                         await require('../supabase').supaUpsertConflict('key_sets', { id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '' }, 'code,set_type');
                     }
-                    catch {
+                    catch (_a) {
                         if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
                             store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
                         }
@@ -100,7 +100,7 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
                         try {
                             await require('../supabase').supaUpsertConflict('key_sets', { id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '' }, 'code,set_type');
                         }
-                        catch {
+                        catch (_a) {
                             if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
                                 store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
                             }
@@ -115,7 +115,7 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
                         try {
                             await require('../supabase').supaUpsertConflict('key_sets', { id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '' }, 'code,set_type');
                         }
-                        catch {
+                        catch (_a) {
                             if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
                                 store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
                             }
@@ -228,7 +228,7 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('property.write'), async (
             const before = rows && rows[0];
             try {
                 const row = await (0, supabase_1.supaUpdate)('properties', id, { archived: true });
-                (0, store_1.addAudit)('Property', id, 'archive', before, row, actor?.sub);
+                (0, store_1.addAudit)('Property', id, 'archive', before, row, actor === null || actor === void 0 ? void 0 : actor.sub);
                 return res.json({ id, archived: true });
             }
             catch (e) {
@@ -239,7 +239,7 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('property.write'), async (
             const rows = await (0, dbAdapter_1.pgSelect)('properties', '*', { id });
             const before = rows && rows[0];
             const row = await (0, dbAdapter_1.pgUpdate)('properties', id, { archived: true });
-            (0, store_1.addAudit)('Property', id, 'archive', before, row, actor?.sub);
+            (0, store_1.addAudit)('Property', id, 'archive', before, row, actor === null || actor === void 0 ? void 0 : actor.sub);
             return res.json({ id, archived: true });
         }
         const p = store_1.db.properties.find(x => x.id === id);
@@ -247,7 +247,7 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('property.write'), async (
             return res.status(404).json({ message: 'not found' });
         const beforeLocal = { ...p };
         p.archived = true;
-        (0, store_1.addAudit)('Property', id, 'archive', beforeLocal, p, actor?.sub);
+        (0, store_1.addAudit)('Property', id, 'archive', beforeLocal, p, actor === null || actor === void 0 ? void 0 : actor.sub);
         return res.json({ id, archived: true });
     }
     catch (e) {

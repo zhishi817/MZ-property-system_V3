@@ -3,6 +3,7 @@ import { db, Order, CleaningTask } from '../store'
 import { z } from 'zod'
 import { requirePerm } from '../auth'
 import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete, supaUpsertConflict } from '../supabase'
+import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 
 export const router = Router()
 
@@ -41,11 +42,19 @@ startRetry()
 
 router.get('/', async (_req, res) => {
   try {
-    if (!hasSupabase) return res.json(db.orders)
-    const remote: any[] = (await supaSelect('orders')) || []
-    const local = db.orders
-    const merged = [...remote, ...local.filter((l) => !remote.some((r: any) => r.id === l.id))]
-    return res.json(merged)
+    if (hasPg) {
+      const remote: any[] = (await pgSelect('orders')) || []
+      const local = db.orders
+      const merged = [...remote, ...local.filter((l) => !remote.some((r: any) => r.id === l.id))]
+      return res.json(merged)
+    }
+    if (hasSupabase) {
+      const remote: any[] = (await supaSelect('orders')) || []
+      const local = db.orders
+      const merged = [...remote, ...local.filter((l) => !remote.some((r: any) => r.id === l.id))]
+      return res.json(merged)
+    }
+    return res.json(db.orders)
   } catch {
     return res.json(db.orders)
   }
@@ -56,6 +65,11 @@ router.get('/:id', async (req, res) => {
   const local = db.orders.find((o) => o.id === id)
   if (local) return res.json(local)
   try {
+    if (hasPg) {
+      const remote = await pgSelect('orders', '*', { id })
+      const row = Array.isArray(remote) ? remote[0] : null
+      if (row) return res.json(row)
+    }
     if (hasSupabase) {
       const remote = await supaSelect('orders', '*', { id })
       const row = Array.isArray(remote) ? remote[0] : null
@@ -128,6 +142,17 @@ async function hasOrderOverlap(propertyId?: string, checkin?: string, checkout?:
   })
   if (localHit) return true
   try {
+    if (hasPg) {
+      const rows: any[] = (await pgSelect('orders', '*', { property_id: propertyId })) || []
+      const remoteHit = rows.some((o: any) => {
+        if (o.id === excludeId) return false
+        const oCiDay = (o.checkin || '').slice(0,10)
+        const oCoDay = (o.checkout || '').slice(0,10)
+        if (oCoDay === ciDay || coDay === oCiDay) return false
+        return rangesOverlap(checkin, checkout, o.checkin, o.checkout)
+      })
+      if (remoteHit) return true
+    }
     if (hasSupabase) {
       const rows: any[] = (await supaSelect('orders', '*', { property_id: propertyId })) || []
       const remoteHit = rows.some((o: any) => {
@@ -178,10 +203,23 @@ router.post('/sync', requirePerm('order.create'), async (req, res) => {
       db.cleaningTasks.push(task)
     }
   }
-  if (!hasSupabase) return res.status(201).json(newOrder)
-  supaUpsertConflict('orders', newOrder, 'id')
-    .then((row) => res.status(201).json(row))
-    .catch((_err) => { pendingInsert.push(newOrder); startRetry(); return res.status(201).json(newOrder) })
+  if (hasPg) {
+    try {
+      const row = await pgInsert('orders', newOrder as any)
+      return res.status(201).json(row || newOrder)
+    } catch (e: any) {
+      const msg = String(e?.message || '')
+      if (msg.includes('duplicate') || msg.includes('unique')) return res.status(409).json({ message: '订单已存在：唯一键冲突', order: newOrder })
+      return res.status(201).json(newOrder)
+    }
+  }
+  if (hasSupabase) {
+    supaUpsertConflict('orders', newOrder, 'id')
+      .then((row) => res.status(201).json(row))
+      .catch((_err) => { pendingInsert.push(newOrder); startRetry(); return res.status(201).json(newOrder) })
+    return
+  }
+  return res.status(201).json(newOrder)
 })
 
 router.patch('/:id', requirePerm('order.write'), async (req, res) => {
@@ -223,6 +261,14 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
     db.orders[idx] = updated
   }
 
+  if (hasPg) {
+    try {
+      const row = await pgUpdate('orders', id, updated as any)
+      return res.json(row || updated)
+    } catch {
+      return res.json(updated)
+    }
+  }
   if (hasSupabase) {
     try {
       const row = await supaUpdate('orders', id, updated)
@@ -282,6 +328,15 @@ router.delete('/:id', requirePerm('order.write'), async (req, res) => {
     removed = db.orders[idx]
     db.orders.splice(idx, 1)
   }
+  if (hasPg) {
+    try {
+      const row = await pgDelete('orders', id)
+      removed = removed || (row as any)
+      return res.json({ ok: true, id })
+    } catch {
+      return res.json({ ok: true, id })
+    }
+  }
   if (hasSupabase) {
     try {
       const row = await supaDelete('orders', id)
@@ -301,7 +356,11 @@ router.delete('/:id', requirePerm('order.write'), async (req, res) => {
   if (idx === -1) return res.status(404).json({ message: 'order not found' })
   const removed = db.orders[idx]
   db.orders.splice(idx, 1)
-  if (hasSupabase) await supaDelete('orders', id).catch(() => { pendingDelete.push(id); startRetry() })
+  if (hasPg) {
+    try { await pgDelete('orders', id) } catch {}
+  } else if (hasSupabase) {
+    await supaDelete('orders', id).catch(() => { pendingDelete.push(id); startRetry() })
+  }
   return res.json({ ok: true, id: removed.id })
 })
 
@@ -384,7 +443,9 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
           db.cleaningTasks.push(task)
         }
       }
-      if (hasSupabase) {
+      if (hasPg) {
+        try { await pgInsert('orders', newOrder as any) } catch {}
+      } else if (hasSupabase) {
         try { await supaUpsertConflict('orders', newOrder, 'id') } catch { pendingInsert.push(newOrder); startRetry() }
       }
       inserted++

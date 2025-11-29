@@ -128,7 +128,7 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('landlord.manage'), async 
             const before = rows && rows[0];
             try {
                 const row = await (0, supabase_1.supaUpdate)('landlords', id, { archived: true });
-                (0, store_1.addAudit)('Landlord', id, 'archive', before, row, actor?.sub);
+                (0, store_1.addAudit)('Landlord', id, 'archive', before, row, actor === null || actor === void 0 ? void 0 : actor.sub);
                 return res.json({ id, archived: true });
             }
             catch (e) {
@@ -139,7 +139,7 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('landlord.manage'), async 
             const rows = await (0, dbAdapter_1.pgSelect)('landlords', '*', { id });
             const before = rows && rows[0];
             const row = await (0, dbAdapter_1.pgUpdate)('landlords', id, { archived: true });
-            (0, store_1.addAudit)('Landlord', id, 'archive', before, row, actor?.sub);
+            (0, store_1.addAudit)('Landlord', id, 'archive', before, row, actor === null || actor === void 0 ? void 0 : actor.sub);
             return res.json({ id, archived: true });
         }
         const l = store_1.db.landlords.find(x => x.id === id);
@@ -147,7 +147,7 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('landlord.manage'), async 
             return res.status(404).json({ message: 'not found' });
         const beforeLocal = { ...l };
         l.archived = true;
-        (0, store_1.addAudit)('Landlord', id, 'archive', beforeLocal, l, actor?.sub);
+        (0, store_1.addAudit)('Landlord', id, 'archive', beforeLocal, l, actor === null || actor === void 0 ? void 0 : actor.sub);
         return res.json({ id, archived: true });
     }
     catch (e) {

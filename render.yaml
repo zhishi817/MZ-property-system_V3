@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: mz-backend-dev
+    env: node
+    buildCommand: cd backend && npm install && npm run build
+    startCommand: node backend/dist/index.js
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RENDER_ENV
+        value: dev
+      - key: DATABASE_URL
+        value: ${NEON_DATABASE_URL_DEV}
+
+  - type: web
+    name: mz-backend-prod
+    env: node
+    buildCommand: cd backend && npm install && npm run build
+    startCommand: node backend/dist/index.js
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RENDER_ENV
+        value: prod
+      - key: DATABASE_URL
+        value: ${NEON_DATABASE_URL_PROD}
