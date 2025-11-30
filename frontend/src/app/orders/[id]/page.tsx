@@ -43,8 +43,8 @@ export default function OrderDetail({ params }: { params: { id: string } }) {
       {order && (
         <Descriptions bordered size="small" column={1}>
           <Descriptions.Item label="来源">{order.source}</Descriptions.Item>
-          <Descriptions.Item label="入住">{order.checkin}</Descriptions.Item>
-          <Descriptions.Item label="退房">{order.checkout}</Descriptions.Item>
+          <Descriptions.Item label="入住">{order.checkin ? dayjs(order.checkin).format('DD/MM/YYYY') : ''}</Descriptions.Item>
+          <Descriptions.Item label="退房">{order.checkout ? dayjs(order.checkout).format('DD/MM/YYYY') : ''}</Descriptions.Item>
           <Descriptions.Item label="状态">{order.status}</Descriptions.Item>
         </Descriptions>
       )}
@@ -59,7 +59,7 @@ export default function OrderDetail({ params }: { params: { id: string } }) {
           ].filter(Boolean) as any}>
             <Space>
               <Badge status={t.status === 'done' ? 'success' : t.status === 'scheduled' ? 'processing' : 'warning'} text={t.status} />
-              <span>{t.date}</span>
+              <span>{dayjs(t.date).format('DD/MM/YYYY')}</span>
               {t.assignee_id && <span>负责人: {t.assignee_id}</span>}
               {t.scheduled_at && <span>时间: {dayjs(t.scheduled_at).format('HH:mm')}</span>}
             </Space>

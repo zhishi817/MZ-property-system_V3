@@ -1,4 +1,7 @@
-import 'dotenv/config'
+import dotenv from 'dotenv'
+import path from 'path'
+dotenv.config({ path: path.resolve(process.cwd(), '.env.local'), override: true })
+dotenv.config()
 import { pgPool } from '../src/dbAdapter'
 
 async function run() {
@@ -42,7 +45,7 @@ async function run() {
     `CREATE INDEX IF NOT EXISTS idx_properties_region ON properties(region);`,
     `CREATE INDEX IF NOT EXISTS idx_properties_type ON properties(type);`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS code text;`,
-    `ALTER TABLE properties ADD CONSTRAINT unique_properties_code UNIQUE (code);`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS unique_properties_code ON properties(code);`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS landlord_id text;`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS updated_at timestamptz;`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS created_by text;`,
@@ -125,7 +128,7 @@ async function run() {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_key_sets_code ON key_sets(code);`,
     `CREATE INDEX IF NOT EXISTS idx_key_sets_type ON key_sets(set_type);`,
-    `ALTER TABLE key_sets ADD CONSTRAINT IF NOT EXISTS unique_key_sets_code_type UNIQUE (code, set_type);`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS unique_key_sets_code_type ON key_sets(code, set_type);`,
     `CREATE TABLE IF NOT EXISTS key_items (
       id text PRIMARY KEY,
       key_set_id text REFERENCES key_sets(id) ON DELETE CASCADE,
@@ -136,7 +139,7 @@ async function run() {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_key_items_set ON key_items(key_set_id);`,
     `CREATE INDEX IF NOT EXISTS idx_key_items_type ON key_items(item_type);`,
-    `ALTER TABLE key_items ADD CONSTRAINT IF NOT EXISTS unique_key_items_set_type UNIQUE (key_set_id, item_type);`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS unique_key_items_set_type ON key_items(key_set_id, item_type);`,
     `CREATE TABLE IF NOT EXISTS key_flows (
       id text PRIMARY KEY,
       key_set_id text REFERENCES key_sets(id) ON DELETE CASCADE,
@@ -147,6 +150,80 @@ async function run() {
       new_code text
     );`,
     `CREATE INDEX IF NOT EXISTS idx_key_flows_set ON key_flows(key_set_id);`
+    ,
+    `CREATE TABLE IF NOT EXISTS finance_transactions (
+      id text PRIMARY KEY,
+      kind text NOT NULL,
+      amount numeric NOT NULL,
+      currency text NOT NULL,
+      ref_type text,
+      ref_id text,
+      occurred_at date NOT NULL,
+      note text,
+      category text,
+      property_id text REFERENCES properties(id) ON DELETE SET NULL,
+      invoice_url text,
+      category_detail text,
+      created_at timestamptz DEFAULT now()
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_finance_transactions_date ON finance_transactions(occurred_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_finance_transactions_kind ON finance_transactions(kind);`,
+    `CREATE INDEX IF NOT EXISTS idx_finance_transactions_property ON finance_transactions(property_id);`
+    ,
+    `CREATE TABLE IF NOT EXISTS company_expenses (
+      id text PRIMARY KEY,
+      occurred_at date NOT NULL,
+      amount numeric NOT NULL,
+      currency text NOT NULL,
+      category text,
+      category_detail text,
+      note text,
+      invoice_url text,
+      created_at timestamptz DEFAULT now()
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_company_expenses_date ON company_expenses(occurred_at);`
+    ,
+    `CREATE TABLE IF NOT EXISTS property_expenses (
+      id text PRIMARY KEY,
+      property_id text REFERENCES properties(id) ON DELETE SET NULL,
+      occurred_at date NOT NULL,
+      amount numeric NOT NULL,
+      currency text NOT NULL,
+      category text,
+      category_detail text,
+      note text,
+      invoice_url text,
+      created_at timestamptz DEFAULT now()
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_property_expenses_pid ON property_expenses(property_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_property_expenses_date ON property_expenses(occurred_at);`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses ON company_expenses(occurred_at, category, amount, (coalesce(note,'')));`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses ON property_expenses(property_id, occurred_at, category, amount, (coalesce(note,'')));`
+    ,
+    `CREATE TABLE IF NOT EXISTS company_incomes (
+      id text PRIMARY KEY,
+      occurred_at date NOT NULL,
+      amount numeric NOT NULL,
+      currency text NOT NULL,
+      category text,
+      note text,
+      created_at timestamptz DEFAULT now()
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_company_incomes_date ON company_incomes(occurred_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_company_incomes_cat ON company_incomes(category);`
+    ,
+    `CREATE TABLE IF NOT EXISTS property_incomes (
+      id text PRIMARY KEY,
+      property_id text REFERENCES properties(id) ON DELETE SET NULL,
+      occurred_at date NOT NULL,
+      amount numeric NOT NULL,
+      currency text NOT NULL,
+      category text,
+      note text,
+      created_at timestamptz DEFAULT now()
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_property_incomes_pid ON property_incomes(property_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_property_incomes_date ON property_incomes(occurred_at);`
   ]
 
   for (const sql of stmts) {

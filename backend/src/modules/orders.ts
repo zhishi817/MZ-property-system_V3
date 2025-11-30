@@ -1,8 +1,9 @@
 import { Router, text } from 'express'
 import { db, Order, CleaningTask } from '../store'
 import { z } from 'zod'
-import { requirePerm } from '../auth'
+import { requirePerm, requireAnyPerm } from '../auth'
 import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete, supaUpsertConflict } from '../supabase'
+import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 
 export const router = Router()
 
@@ -41,11 +42,19 @@ startRetry()
 
 router.get('/', async (_req, res) => {
   try {
-    if (!hasSupabase) return res.json(db.orders)
-    const remote: any[] = (await supaSelect('orders')) || []
-    const local = db.orders
-    const merged = [...remote, ...local.filter((l) => !remote.some((r: any) => r.id === l.id))]
-    return res.json(merged)
+    if (hasPg) {
+      const remote: any[] = (await pgSelect('orders')) || []
+      const local = db.orders
+      const merged = [...remote, ...local.filter((l) => !remote.some((r: any) => r.id === l.id))]
+      return res.json(merged)
+    }
+    if (hasSupabase) {
+      const remote: any[] = (await supaSelect('orders')) || []
+      const local = db.orders
+      const merged = [...remote, ...local.filter((l) => !remote.some((r: any) => r.id === l.id))]
+      return res.json(merged)
+    }
+    return res.json(db.orders)
   } catch {
     return res.json(db.orders)
   }
@@ -56,6 +65,11 @@ router.get('/:id', async (req, res) => {
   const local = db.orders.find((o) => o.id === id)
   if (local) return res.json(local)
   try {
+    if (hasPg) {
+      const remote = await pgSelect('orders', '*', { id })
+      const row = Array.isArray(remote) ? remote[0] : null
+      if (row) return res.json(row)
+    }
     if (hasSupabase) {
       const remote = await supaSelect('orders', '*', { id })
       const row = Array.isArray(remote) ? remote[0] : null
@@ -110,30 +124,52 @@ function normalizeEnd(s?: string): Date | null {
 }
 
 function rangesOverlap(aStart?: string, aEnd?: string, bStart?: string, bEnd?: string): boolean {
-  const as = normalizeStart(aStart); const ae = normalizeEnd(aEnd); const bs = normalizeStart(bStart); const be = normalizeEnd(bEnd)
+  const ds = (s?: string) => (s ? String(s).slice(0,10) : '')
+  const as = ds(aStart); const ae = ds(aEnd); const bs = ds(bStart); const be = ds(bEnd)
   if (!as || !ae || !bs || !be) return false
-  return as < be && bs < ae
+  const asDay = new Date(`${as}T00:00:00`)
+  const aeDay = new Date(`${ae}T00:00:00`)
+  const bsDay = new Date(`${bs}T00:00:00`)
+  const beDay = new Date(`${be}T00:00:00`)
+  // day-level exclusive end: [checkin, checkout)
+  return asDay < beDay && bsDay < aeDay
 }
 
+function toIsoString(v: any): string {
+  if (!v) return ''
+  if (typeof v === 'string') return v
+  try { const d = new Date(v); return isNaN(d.getTime()) ? '' : d.toISOString() } catch { return '' }
+}
 async function hasOrderOverlap(propertyId?: string, checkin?: string, checkout?: string, excludeId?: string): Promise<boolean> {
   if (!propertyId || !checkin || !checkout) return false
-  const ciDay = (checkin || '').slice(0,10)
-  const coDay = (checkout || '').slice(0,10)
+  const ciDay = String(checkin || '').slice(0,10)
+  const coDay = String(checkout || '').slice(0,10)
   const localHit = db.orders.some(o => {
     if (o.property_id !== propertyId || o.id === excludeId) return false
-    const oCiDay = (o.checkin || '').slice(0,10)
-    const oCoDay = (o.checkout || '').slice(0,10)
+    const oCiDay = String(o.checkin || '').slice(0,10)
+    const oCoDay = String(o.checkout || '').slice(0,10)
     if (oCoDay === ciDay || coDay === oCiDay) return false
     return rangesOverlap(checkin, checkout, o.checkin, o.checkout)
   })
   if (localHit) return true
   try {
+    if (hasPg) {
+      const rows: any[] = (await pgSelect('orders', '*', { property_id: propertyId })) || []
+      const remoteHit = rows.some((o: any) => {
+        if (o.id === excludeId) return false
+        const oCiDay = String(o.checkin || '').slice(0,10)
+        const oCoDay = String(o.checkout || '').slice(0,10)
+        if (oCoDay === ciDay || coDay === oCiDay) return false
+        return rangesOverlap(checkin, checkout, o.checkin, o.checkout)
+      })
+      if (remoteHit) return true
+    }
     if (hasSupabase) {
       const rows: any[] = (await supaSelect('orders', '*', { property_id: propertyId })) || []
       const remoteHit = rows.some((o: any) => {
         if (o.id === excludeId) return false
-        const oCiDay = (o.checkin || '').slice(0,10)
-        const oCoDay = (o.checkout || '').slice(0,10)
+        const oCiDay = String(o.checkin || '').slice(0,10)
+        const oCoDay = String(o.checkout || '').slice(0,10)
         if (oCoDay === ciDay || coDay === oCiDay) return false
         return rangesOverlap(checkin, checkout, o.checkin, o.checkout)
       })
@@ -143,11 +179,28 @@ async function hasOrderOverlap(propertyId?: string, checkin?: string, checkout?:
   return false
 }
 
-router.post('/sync', requirePerm('order.create'), async (req, res) => {
+router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req, res) => {
   const parsed = createOrderSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const o = parsed.data
-  const key = o.idempotency_key || `${o.property_id || ''}-${o.checkin || ''}-${o.checkout || ''}`
+  try {
+    const ci = normalizeStart(o.checkin || '')
+    const co = normalizeEnd(o.checkout || '')
+    if (ci && co && !(ci < co)) return res.status(400).json({ message: '入住日期必须早于退房日期' })
+  } catch {}
+  let propertyId = o.property_id || (o.property_code ? (db.properties.find(p => (p.code || '') === o.property_code)?.id) : undefined)
+  // 如果传入的 property_id 不存在于 PG，则尝试用房号 code 在 PG 中查找并替换
+  if (hasPg) {
+    try {
+      const byId: any[] = propertyId ? (await pgSelect('properties', 'id', { id: propertyId })) || [] : []
+      const existsById = Array.isArray(byId) && !!byId[0]
+      if (!existsById && o.property_code) {
+        const byCode: any[] = (await pgSelect('properties', '*', { code: o.property_code })) || []
+        if (Array.isArray(byCode) && byCode[0]?.id) propertyId = byCode[0].id
+      }
+    } catch {}
+  }
+  const key = o.idempotency_key || `${propertyId || ''}-${o.checkin || ''}-${o.checkout || ''}`
   const exists = db.orders.find((x) => x.idempotency_key === key)
   if (exists) return res.status(409).json({ message: '订单已存在：同一房源同时间段重复创建', order: exists })
   const { v4: uuid } = require('uuid')
@@ -165,10 +218,52 @@ router.post('/sync', requirePerm('order.create'), async (req, res) => {
   const price = o.price || 0
   const net = o.net_income != null ? o.net_income : (price - cleaning)
   const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0)
-  const newOrder: Order = { id: uuid(), ...o, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key, status: 'confirmed' }
+  const newOrder: Order = { id: uuid(), ...o, property_id: propertyId, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key, status: 'confirmed' }
   // overlap guard
   const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout)
   if (conflict) return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' })
+  if (hasPg) {
+    try {
+      if (newOrder.property_id) {
+        try {
+          const propRows: any[] = (await pgSelect('properties', 'id', { id: newOrder.property_id })) || []
+          const existsProp = Array.isArray(propRows) && propRows[0]
+          if (!existsProp) {
+            const localProp = db.properties.find(p => p.id === newOrder.property_id)
+            const code = (newOrder.property_code || localProp?.code)
+            const payload: any = { id: newOrder.property_id }
+            if (code) payload.code = code
+            if (localProp?.address) payload.address = localProp.address
+            await pgInsert('properties', payload)
+          }
+        } catch {}
+      }
+      const insertOrder: any = { ...newOrder }
+      delete insertOrder.property_code
+      const row = await pgInsert('orders', insertOrder)
+      db.orders.push(row as any)
+      if (newOrder.checkout) {
+        const date = newOrder.checkout
+        const hasTask = db.cleaningTasks.find((t) => t.date === date && t.property_id === newOrder.property_id)
+        if (!hasTask) {
+          const task = { id: uuid(), property_id: newOrder.property_id, date, status: 'pending' as const }
+          db.cleaningTasks.push(task)
+        }
+      }
+      return res.status(201).json(row)
+    } catch (e: any) {
+      const msg = String(e?.message || '')
+      if (msg.includes('duplicate') || msg.includes('unique')) return res.status(409).json({ message: '订单已存在：唯一键冲突' })
+      return res.status(500).json({ message: '数据库写入失败', error: msg })
+    }
+  }
+  if (hasSupabase) {
+    supaUpsertConflict('orders', newOrder, 'id')
+      .then((row) => res.status(201).json(row))
+      .catch((_err) => { pendingInsert.push(newOrder); startRetry(); return res.status(201).json(newOrder) })
+    return
+  }
+  // 无远端数据库，使用内存存储
   db.orders.push(newOrder)
   if (newOrder.checkout) {
     const date = newOrder.checkout
@@ -178,10 +273,7 @@ router.post('/sync', requirePerm('order.create'), async (req, res) => {
       db.cleaningTasks.push(task)
     }
   }
-  if (!hasSupabase) return res.status(201).json(newOrder)
-  supaUpsertConflict('orders', newOrder, 'id')
-    .then((row) => res.status(201).json(row))
-    .catch((_err) => { pendingInsert.push(newOrder); startRetry(); return res.status(201).json(newOrder) })
+  return res.status(201).json(newOrder)
 })
 
 router.patch('/:id', requirePerm('order.write'), async (req, res) => {
@@ -198,6 +290,11 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   let nights = o.nights
   const checkin = o.checkin || base.checkin
   const checkout = o.checkout || base.checkout
+  try {
+    const ci0 = normalizeStart(checkin || '')
+    const co0 = normalizeEnd(checkout || '')
+    if (ci0 && co0 && !(ci0 < co0)) return res.status(400).json({ message: '入住日期必须早于退房日期' })
+  } catch {}
   if (!nights && checkin && checkout) {
     try {
       const ci = new Date(checkin)
@@ -223,6 +320,15 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
     db.orders[idx] = updated
   }
 
+  if (hasPg) {
+    try {
+      const row = await pgUpdate('orders', id, updated as any)
+      if (idx !== -1) db.orders[idx] = row as any
+      return res.json(row)
+    } catch (e) {
+      return res.status(500).json({ message: '数据库更新失败' })
+    }
+  }
   if (hasSupabase) {
     try {
       const row = await supaUpdate('orders', id, updated)
@@ -282,6 +388,15 @@ router.delete('/:id', requirePerm('order.write'), async (req, res) => {
     removed = db.orders[idx]
     db.orders.splice(idx, 1)
   }
+  if (hasPg) {
+    try {
+      const row = await pgDelete('orders', id)
+      removed = removed || (row as any)
+      return res.json({ ok: true, id })
+    } catch (e) {
+      return res.status(500).json({ message: '数据库删除失败' })
+    }
+  }
   if (hasSupabase) {
     try {
       const row = await supaDelete('orders', id)
@@ -301,7 +416,11 @@ router.delete('/:id', requirePerm('order.write'), async (req, res) => {
   if (idx === -1) return res.status(404).json({ message: 'order not found' })
   const removed = db.orders[idx]
   db.orders.splice(idx, 1)
-  if (hasSupabase) await supaDelete('orders', id).catch(() => { pendingDelete.push(id); startRetry() })
+  if (hasPg) {
+    try { await pgDelete('orders', id) } catch {}
+  } else if (hasSupabase) {
+    await supaDelete('orders', id).catch(() => { pendingDelete.push(id); startRetry() })
+  }
   return res.json({ ok: true, id: removed.id })
 })
 
@@ -384,7 +503,9 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
           db.cleaningTasks.push(task)
         }
       }
-      if (hasSupabase) {
+      if (hasPg) {
+        try { await pgInsert('orders', newOrder as any) } catch {}
+      } else if (hasSupabase) {
         try { await supaUpsertConflict('orders', newOrder, 'id') } catch { pendingInsert.push(newOrder); startRetry() }
       }
       inserted++

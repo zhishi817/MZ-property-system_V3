@@ -68,7 +68,7 @@ export default forwardRef<HTMLDivElement, {
           <div style={{ fontSize: 34, fontWeight: 700, letterSpacing: 1 }}>MONTHLY STATEMENT</div>
           <div style={{ borderTop: '2px solid #000', marginTop: 6 }}></div>
           <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', marginTop: 6 }}>
-            <div style={{ fontSize: 22, fontWeight: 700 }}>{dayjs(`${month}-01`).format('MMM YYYY')}</div>
+            <div style={{ fontSize: 22, fontWeight: 700 }}>{dayjs(`${month}-01`).format('MM/YYYY')}</div>
             <div style={{ fontSize: 16, marginTop: 4 }}>{landlord?.name || ''}</div>
             <div style={{ fontSize: 14 }}>{property?.address || ''}</div>
           </div>
@@ -130,8 +130,8 @@ export default forwardRef<HTMLDivElement, {
         <tbody>
           {relatedOrders.map(r => (
             <tr key={r.id}>
-              <td style={{ padding:6 }}>{r.checkin}</td>
-              <td style={{ padding:6 }}>{r.checkout}</td>
+              <td style={{ padding:6 }}>{r.checkin ? dayjs(r.checkin).format('DD/MM/YYYY') : ''}</td>
+              <td style={{ padding:6 }}>{r.checkout ? dayjs(r.checkout).format('DD/MM/YYYY') : ''}</td>
               <td style={{ padding:6, textAlign:'right' }}>{r.nights ?? Math.max(dayjs(r.checkout!).diff(dayjs(r.checkin!), 'day'), 0)}</td>
               <td style={{ padding:6, textAlign:'right' }}>${fmt(Number(r.price||0))}</td>
             </tr>
@@ -147,7 +147,7 @@ export default forwardRef<HTMLDivElement, {
               <span>{e.category || '其他'}</span>
               <span>-${fmt(Number(e.amount||0))}</span>
             </div>
-            <div style={{ fontSize:12 }}>{dayjs(e.occurred_at).format('YYYY-MM-DD')}</div>
+            <div style={{ fontSize:12 }}>{dayjs(e.occurred_at).format('DD/MM/YYYY')}</div>
             {isImg(e.invoice_url) ? (
               <img src={e.invoice_url} style={{ width:'100%', marginTop:6 }} alt="invoice" />
             ) : e.invoice_url ? (

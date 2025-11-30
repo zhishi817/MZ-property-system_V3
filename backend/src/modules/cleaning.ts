@@ -3,22 +3,30 @@ import { db } from '../store'
 import { z } from 'zod'
 import { requirePerm, requireAnyPerm } from '../auth'
 import { hasSupabase, supaSelect, supaInsert, supaUpdate } from '../supabase'
+import { hasPg, pgSelect, pgInsert, pgUpdate } from '../dbAdapter'
 
 export const router = Router()
 
 router.get('/tasks', requireAnyPerm(['cleaning.view','cleaning.schedule.manage','cleaning.task.assign']), (req, res) => {
   const { date } = req.query as { date?: string }
-  if (!hasSupabase) {
-    if (date) {
-      const d1 = date
-      const d2 = (() => { try { return new Date(date + 'T00:00:00').toISOString().slice(0,10) } catch { return d1 } })()
-      return res.json(db.cleaningTasks.filter((t) => t.date === d1 || t.date === d2))
-    }
-    return res.json(db.cleaningTasks)
+  if (hasPg) {
+    pgSelect('cleaning_tasks', '*', date ? { date } : undefined)
+      .then((data: any) => res.json(data))
+      .catch((err: any) => res.status(500).json({ message: err.message }))
+    return
   }
-  supaSelect('cleaning_tasks', '*', date ? { date } : undefined)
-    .then((data) => res.json(data))
-    .catch((err) => res.status(500).json({ message: err.message }))
+  if (hasSupabase) {
+    supaSelect('cleaning_tasks', '*', date ? { date } : undefined)
+      .then((data) => res.json(data))
+      .catch((err) => res.status(500).json({ message: err.message }))
+    return
+  }
+  if (date) {
+    const d1 = date
+    const d2 = (() => { try { return new Date(date + 'T00:00:00').toISOString().slice(0,10) } catch { return d1 } })()
+    return res.json(db.cleaningTasks.filter((t) => t.date === d1 || t.date === d2))
+  }
+  return res.json(db.cleaningTasks)
 })
 
 const taskSchema = z.object({
@@ -32,10 +40,19 @@ router.post('/tasks', (req, res) => {
   const { v4: uuid } = require('uuid')
   const task = { id: uuid(), property_id: parsed.data.property_id, date: parsed.data.date, status: 'pending' as const }
   db.cleaningTasks.push(task)
-  if (!hasSupabase) return res.status(201).json(task)
-  supaInsert('cleaning_tasks', task)
-    .then((row) => res.status(201).json(row))
-    .catch((err) => res.status(500).json({ message: err.message }))
+  if (hasPg) {
+    pgInsert('cleaning_tasks', task as any)
+      .then((row: any) => res.status(201).json(row || task))
+      .catch((_err: any) => res.status(201).json(task))
+    return
+  }
+  if (hasSupabase) {
+    supaInsert('cleaning_tasks', task)
+      .then((row) => res.status(201).json(row))
+      .catch((err) => res.status(500).json({ message: err.message }))
+    return
+  }
+  return res.status(201).json(task)
 })
 
 router.get('/staff', requireAnyPerm(['cleaning.view','cleaning.schedule.manage','cleaning.task.assign']), (req, res) => {
@@ -57,10 +74,19 @@ router.post('/tasks/:id/assign', requirePerm('cleaning.task.assign'), (req, res)
   task.assignee_id = staff.id
   task.scheduled_at = parsed.data.scheduled_at
   task.status = 'scheduled'
-  if (!hasSupabase) return res.json(task)
-  supaUpdate('cleaning_tasks', task.id, { assignee_id: task.assignee_id, scheduled_at: task.scheduled_at, status: task.status })
-    .then((row) => res.json(row))
-    .catch((err) => res.status(500).json({ message: err.message }))
+  if (hasPg) {
+    pgUpdate('cleaning_tasks', task.id, { assignee_id: task.assignee_id, scheduled_at: task.scheduled_at, status: task.status } as any)
+      .then((row: any) => res.json(row || task))
+      .catch((_err: any) => res.json(task))
+    return
+  }
+  if (hasSupabase) {
+    supaUpdate('cleaning_tasks', task.id, { assignee_id: task.assignee_id, scheduled_at: task.scheduled_at, status: task.status })
+      .then((row) => res.json(row))
+      .catch((err) => res.status(500).json({ message: err.message }))
+    return
+  }
+  return res.json(task)
 })
 
 router.post('/schedule/rebalance', requirePerm('cleaning.schedule.manage'), (req, res) => {
@@ -96,10 +122,19 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), (req, res) => {
   if (parsed.data.note !== undefined) task.note = parsed.data.note
   if (parsed.data.checkout_time !== undefined) task.checkout_time = parsed.data.checkout_time
   if (parsed.data.checkin_time !== undefined) task.checkin_time = parsed.data.checkin_time
-  if (!hasSupabase) return res.json(task)
-  supaUpdate('cleaning_tasks', task.id, parsed.data)
-    .then((row) => res.json(row))
-    .catch((err) => res.status(500).json({ message: err.message }))
+  if (hasPg) {
+    pgUpdate('cleaning_tasks', task.id, parsed.data as any)
+      .then((row: any) => res.json(row || task))
+      .catch((_err: any) => res.json(task))
+    return
+  }
+  if (hasSupabase) {
+    supaUpdate('cleaning_tasks', task.id, parsed.data)
+      .then((row) => res.json(row))
+      .catch((err) => res.status(500).json({ message: err.message }))
+    return
+  }
+  return res.json(task)
 })
 
 router.get('/order/:orderId', requireAnyPerm(['cleaning.view','cleaning.schedule.manage','cleaning.task.assign']), (req, res) => {

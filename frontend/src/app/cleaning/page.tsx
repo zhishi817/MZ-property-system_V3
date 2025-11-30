@@ -32,6 +32,7 @@ export default function CleaningPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [dayOpen, setDayOpen] = useState(false)
   const [viewMode, setViewMode] = useState<'month'|'week'|'day'>('month')
+  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
 
   async function load(dateStr?: string) {
     try {
@@ -58,17 +59,23 @@ export default function CleaningPage() {
       const oJson = await oRes.json()
       setOrders(Array.isArray(oJson) ? oJson : [])
     } catch { setOrders([]) }
+    try {
+      const pRes = await fetch(`${API_BASE}/properties`)
+      const pJson = await pRes.json()
+      setProperties(Array.isArray(pJson) ? pJson : [])
+    } catch { setProperties([]) }
   }
   useEffect(() => {
     load(date.format('YYYY-MM-DD'))
     fetch(`${API_BASE}/cleaning/staff`).then(r => r.json()).then((j) => setStaff(Array.isArray(j) ? j : [])).catch(() => setStaff([]))
   }, [])
 
+  function dayStr(v: any): string { try { return dayjs(v).format('YYYY-MM-DD') } catch { return '' } }
   function eventsForDay(day: string): CalEvent[] {
     const byProp: Record<string, CalEvent> = {}
     orders.forEach(o => {
-      const ciDay = (o.checkin || '').slice(0,10)
-      const coDay = (o.checkout || '').slice(0,10)
+      const ciDay = dayStr(o.checkin)
+      const coDay = dayStr(o.checkout)
       const isCheckin = ciDay === day
       const isCheckout = coDay === day
       if (!isCheckin && !isCheckout) return
@@ -124,9 +131,11 @@ export default function CleaningPage() {
       <div>
         {evs.map((ev, idx) => {
           const color = ev.has_checkout ? '#ffccc7' : ev.has_checkin ? '#d6e4ff' : '#fffbe6'
+          const p = properties.find(x => x.id === ev.property_id)
+          const label = p?.code || ev.property_code || ev.property_id || ''
           return (
             <div key={idx} style={{ background: color, borderRadius: 4, padding: '2px 6px', marginBottom: 4, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }} onClick={() => { setSelectedEvent(ev); setOpen(true) }}>
-              <span>{ev.property_code || ev.property_id || ''}</span>
+              <span>{label}</span>
               <span style={{ marginLeft: 6 }}>{ev.has_checkout ? '退房' : ''}{ev.has_checkin ? (ev.has_checkout ? ' 入住' : '入住') : ''}</span>
               {typeof ev.nights === 'number' && <span style={{ marginLeft: 6 }}>{ev.nights}晚</span>}
               {ev.assignee_name && <span style={{ marginLeft: 6 }}>{ev.assignee_name}</span>}
@@ -140,7 +149,7 @@ export default function CleaningPage() {
   function dateCellRender(value: any) {
     const day = value.format('YYYY-MM-DD')
     const dayTasks = tasks.filter(t => t.date === day)
-    const dayOrders = orders.filter(o => (o.checkin === day || o.checkout === day))
+    const dayOrders = orders.filter(o => (dayStr(o.checkin) === day || dayStr(o.checkout) === day))
     const counts = {
       scheduled: dayTasks.filter(t => t.status === 'scheduled').length,
       pending: dayTasks.filter(t => t.status === 'pending').length,
@@ -209,14 +218,14 @@ export default function CleaningPage() {
       {viewMode === 'month' && <Calendar cellRender={(current) => dateCellRenderBars(current)} onSelect={onSelect} />}
       {viewMode === 'day' && (
         <List
-          header={`当日安排 ${date.format('YYYY-MM-DD')}`}
+          header={`当日安排 ${date.format('DD/MM/YYYY')}`}
           dataSource={eventsForDay(date.format('YYYY-MM-DD'))}
           renderItem={(ev) => (
             <List.Item actions={[<Button onClick={() => { setSelectedEvent(ev); setOpen(true) }}>编辑</Button>] }>
               <Space>
                 <Badge status={ev.type === 'checkout' ? 'error' : ev.type === 'checkin' ? 'processing' : 'warning'} text={`${ev.type === 'checkout' ? '退房' : ev.type === 'checkin' ? '入住' : '其他'}`} />
                 <Badge status={ev.status === 'done' ? 'success' : ev.status === 'scheduled' ? 'processing' : 'warning'} text={ev.status} />
-                <span>{ev.property_code || ev.property_id || ''}</span>
+                <span>{(() => { const p = properties.find(x => x.id === ev.property_id); return p?.code || ev.property_code || ev.property_id || '' })()}</span>
                 {typeof ev.nights === 'number' && <span>{ev.nights}晚</span>}
                 {ev.assignee_name && <span>{ev.assignee_name}</span>}
               </Space>
@@ -226,16 +235,16 @@ export default function CleaningPage() {
       )}
       {viewMode === 'week' && (
         <List
-          header={`本周安排（从 ${dayjs(date).startOf('week').format('YYYY-MM-DD')} 起）`}
+          header={`本周安排（从 ${dayjs(date).startOf('week').format('DD/MM/YYYY')} 起）`}
           dataSource={Array.from({length:7}).map((_,i)=> dayjs(date).startOf('week').add(i,'day').format('YYYY-MM-DD'))}
           renderItem={(d) => (
             <List.Item>
               <Space direction="vertical" style={{ width: '100%' }}>
-                <div style={{ fontWeight: 600 }}>{d}</div>
+                <div style={{ fontWeight: 600 }}>{dayjs(d).format('DD/MM/YYYY')}</div>
                 {eventsForDay(d).length === 0 ? <div style={{ color:'#999' }}>无安排</div> : eventsForDay(d).map((ev, idx) => (
                   <div key={idx} style={{ display:'flex', alignItems:'center', gap:8 }}>
                     <Badge status={ev.type === 'checkout' ? 'error' : ev.type === 'checkin' ? 'processing' : 'warning'} text={`${ev.type === 'checkout' ? '退房' : ev.type === 'checkin' ? '入住' : '其他'}`} />
-                    <span>{ev.property_code || ev.property_id || ''}</span>
+                    <span>{(() => { const p = properties.find(x => x.id === ev.property_id); return p?.code || ev.property_code || ev.property_id || '' })()}</span>
                     {typeof ev.nights === 'number' && <span>{ev.nights}晚</span>}
                     {ev.assignee_name && <span>{ev.assignee_name}</span>}
                     <Button size="small" onClick={() => { setSelectedEvent(ev); setOpen(true) }}>编辑</Button>
@@ -257,7 +266,7 @@ export default function CleaningPage() {
         </List.Item>
       )} />
       <List
-        header={`清洁日程 ${date.format('YYYY-MM-DD')}`}
+        header={`清洁日程 ${date.format('DD/MM/YYYY')}`}
         dataSource={eventsForDay(date.format('YYYY-MM-DD'))}
         renderItem={(ev) => (
           <List.Item actions={[
@@ -268,7 +277,7 @@ export default function CleaningPage() {
               {ev.has_checkin && <Badge status="processing" text="入住" />}
               {!ev.has_checkout && !ev.has_checkin && <Badge status="warning" text="清洁" />}
               <Badge status={ev.status === 'done' ? 'success' : ev.status === 'scheduled' ? 'processing' : 'warning'} text={ev.status} />
-              <span>{ev.property_code || ev.property_id || ''}</span>
+              <span>{(() => { const p = properties.find(x => x.id === ev.property_id); return p?.code || ev.property_code || ev.property_id || '' })()}</span>
               {typeof ev.nights === 'number' && <span>{ev.nights}晚</span>}
               {ev.assignee_name && <span>{ev.assignee_name}</span>}
             </Space>
@@ -284,24 +293,35 @@ export default function CleaningPage() {
               {selectedEvent.has_checkin && <Badge status="processing" text="入住" />}
               {!selectedEvent.has_checkout && !selectedEvent.has_checkin && <Badge status="warning" text="其他" />}
               {typeof selectedEvent.nights === 'number' && <span>{selectedEvent.nights}晚</span>}
-              <span>{selectedEvent.property_code || selectedEvent.property_id || ''}</span>
+              <span>{(() => { const p = properties.find(x => x.id === selectedEvent.property_id); return p?.code || selectedEvent.property_code || selectedEvent.property_id || '' })()}</span>
             </Space>
             </div>
             <Select placeholder="选择人员" options={(Array.isArray(staff) ? staff : []).map(s => ({ value: s.id, label: s.name }))} onChange={(id) => (window as any)._assignee = id} style={{ width: '100%' }} />
             {/* 移除通用 Select time，改为具体入住/退房时间 */}
             <TimePicker format="HH:mm" placeholder="退房时间" defaultValue={selectedEvent.checkout_time ? dayjs(selectedEvent.checkout_time, 'HH:mm') : undefined} onChange={(t) => (window as any)._checkoutTime = t} style={{ width: '100%' }} />
             <TimePicker format="HH:mm" placeholder="入住时间" defaultValue={selectedEvent.checkin_time ? dayjs(selectedEvent.checkin_time, 'HH:mm') : undefined} onChange={(t) => (window as any)._checkinTime = t} style={{ width: '100%' }} />
-            <Input placeholder="旧密码" defaultValue={selectedEvent.old_code || ''} onChange={(e) => (window as any)._old = e.target.value} />
-            <Input placeholder="新密码" defaultValue={selectedEvent.new_code || ''} onChange={(e) => (window as any)._new = e.target.value} />
+            {selectedEvent.has_checkout ? (
+              <Input placeholder="旧密码（退房登记）" defaultValue={selectedEvent.old_code || ''} onChange={(e) => (window as any)._old = e.target.value} />
+            ) : null}
+            {selectedEvent.has_checkin ? (
+              <Input placeholder="新密码（入住登记）" defaultValue={selectedEvent.new_code || ''} onChange={(e) => (window as any)._new = e.target.value} />
+            ) : null}
             <Input.TextArea placeholder="备注" defaultValue={selectedEvent.note || ''} onChange={(e) => (window as any)._note = e.target.value} rows={3} />
             <Space>
               <Button type="primary" onClick={() => assign(selectedEvent, (window as any)._assignee, null)}>分配</Button>
-              <Button onClick={() => saveDetails(selectedEvent, { assignee_id: (window as any)._assignee, old_code: (window as any)._old, new_code: (window as any)._new, note: (window as any)._note, checkout_time: (window as any)._checkoutTime ? dayjs((window as any)._checkoutTime).format('HH:mm') : undefined, checkin_time: (window as any)._checkinTime ? dayjs((window as any)._checkinTime).format('HH:mm') : undefined })}>保存详情</Button>
+              <Button onClick={() => {
+                const payload: any = { assignee_id: (window as any)._assignee, note: (window as any)._note }
+                if ((window as any)._checkoutTime) payload.checkout_time = dayjs((window as any)._checkoutTime).format('HH:mm')
+                if ((window as any)._checkinTime) payload.checkin_time = dayjs((window as any)._checkinTime).format('HH:mm')
+                if (selectedEvent.has_checkout) payload.old_code = (window as any)._old
+                if (selectedEvent.has_checkin) payload.new_code = (window as any)._new
+                saveDetails(selectedEvent, payload)
+              }}>保存详情</Button>
             </Space>
           </Space>
         )}
       </Drawer>
-      <Drawer open={dayOpen} onClose={() => setDayOpen(false)} title={`当天安排 ${date.format('YYYY-MM-DD')}`} width={720}>
+      <Drawer open={dayOpen} onClose={() => setDayOpen(false)} title={`当天安排 ${date.format('DD/MM/YYYY')}`} width={720}>
         <List
           dataSource={eventsForDay(date.format('YYYY-MM-DD'))}
           renderItem={(ev) => (
@@ -312,7 +332,7 @@ export default function CleaningPage() {
                   {ev.has_checkin && <Badge status="processing" text="入住" />}
                   {!ev.has_checkout && !ev.has_checkin && <Badge status="warning" text="清洁" />}
                   <Badge status={ev.status === 'done' ? 'success' : ev.status === 'scheduled' ? 'processing' : 'warning'} text={ev.status} />
-                  <span>{ev.property_code || ev.property_id || ''}</span>
+                  <span>{(() => { const p = properties.find(x => x.id === ev.property_id); return p?.code || ev.property_code || ev.property_id || '' })()}</span>
                   {typeof ev.nights === 'number' && <span>{ev.nights}晚</span>}
                 </Space>
                 <Space>

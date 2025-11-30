@@ -1,4 +1,5 @@
 "use strict";
+var _a, _b;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.db = void 0;
 exports.addAudit = addAudit;
@@ -18,6 +19,7 @@ exports.db = {
     landlords: [],
     financeTransactions: [],
     payouts: [],
+    users: [],
     roles: [],
     permissions: [],
     rolePermissions: [],
@@ -68,7 +70,7 @@ if (exports.db.cleaners.length === 0) {
     exports.db.cleaners.push({ id: (0, uuid_1.v4)(), name: 'Alice', capacity_per_day: 4 }, { id: (0, uuid_1.v4)(), name: 'Bob', capacity_per_day: 3 }, { id: (0, uuid_1.v4)(), name: 'Charlie', capacity_per_day: 5 });
 }
 if (exports.db.properties.length === 0) {
-    exports.db.properties.push({ id: (0, uuid_1.v4)(), address: '123 Collins St, Melbourne', type: '2b2b', capacity: 4, region: 'Melbourne City', area_sqm: 65, building_name: 'Collins Tower', building_facilities: ['gym', 'pool'], bed_config: 'Queen×1, Single×2', wifi_ssid: 'Collins123', wifi_password: 'pass123', safety_smoke_alarm: 'ok', safety_extinguisher: 'ok', floor: '23', parking_type: 'garage', parking_space: 'B2-17', access_type: 'keybox', keybox_location: 'Lobby left wall', keybox_code: '4321', garage_guide_link: 'https://example.com/garage' }, { id: (0, uuid_1.v4)(), address: '88 Southbank Blvd, Melbourne', type: '1b1b', capacity: 2, region: 'Southbank', area_sqm: 45, building_name: 'Southbank One', building_facilities: ['gym'], bed_config: 'Queen×1', wifi_ssid: 'SB88', wifi_password: 'pwd88', floor: '12', parking_type: 'visitor', access_type: 'smartlock' });
+    exports.db.properties.push({ id: (0, uuid_1.v4)(), code: 'RM-1001', address: '123 Collins St, Melbourne', type: '2b2b', capacity: 4, region: 'Melbourne City', area_sqm: 65, building_name: 'Collins Tower', building_facilities: ['gym', 'pool'], bed_config: 'Queen×1, Single×2', wifi_ssid: 'Collins123', wifi_password: 'pass123', safety_smoke_alarm: 'ok', safety_extinguisher: 'ok', floor: '23', parking_type: 'garage', parking_space: 'B2-17', access_type: 'keybox', keybox_location: 'Lobby left wall', keybox_code: '4321', garage_guide_link: 'https://example.com/garage' }, { id: (0, uuid_1.v4)(), code: 'RM-1002', address: '88 Southbank Blvd, Melbourne', type: '1b1b', capacity: 2, region: 'Southbank', area_sqm: 45, building_name: 'Southbank One', building_facilities: ['gym'], bed_config: 'Queen×1', wifi_ssid: 'SB88', wifi_password: 'pwd88', floor: '12', parking_type: 'visitor', access_type: 'smartlock' });
 }
 if (exports.db.inventoryItems.length === 0) {
     const id1 = (0, uuid_1.v4)();
@@ -79,8 +81,8 @@ function addAudit(entity, entity_id, action, before, after, actor_id) {
     exports.db.audits.push({ id: (0, uuid_1.v4)(), actor_id, action, entity, entity_id, before, after, timestamp: new Date().toISOString() });
 }
 if (exports.db.landlords.length === 0) {
-    const p1 = exports.db.properties[0]?.id;
-    const p2 = exports.db.properties[1]?.id;
+    const p1 = (_a = exports.db.properties[0]) === null || _a === void 0 ? void 0 : _a.id;
+    const p2 = (_b = exports.db.properties[1]) === null || _b === void 0 ? void 0 : _b.id;
     exports.db.landlords.push({ id: (0, uuid_1.v4)(), name: 'MZ Holdings', phone: '0400 000 000', email: 'owner@mz.com', management_fee_rate: 0.1, payout_bsb: '062000', payout_account: '123456', property_ids: p1 ? [p1] : [] }, { id: (0, uuid_1.v4)(), name: 'John Doe', phone: '0411 111 111', email: 'john@example.com', management_fee_rate: 0.08, payout_bsb: '063000', payout_account: '654321', property_ids: p2 ? [p2] : [] });
 }
 if (exports.db.financeTransactions.length === 0) {
@@ -93,18 +95,26 @@ if (exports.db.payouts.length === 0 && exports.db.landlords.length) {
 // RBAC seed
 if (exports.db.roles.length === 0) {
     const adminId = (0, uuid_1.v4)();
-    const opsId = (0, uuid_1.v4)();
-    const fieldId = (0, uuid_1.v4)();
-    exports.db.roles.push({ id: adminId, name: 'admin' }, { id: opsId, name: 'ops' }, { id: fieldId, name: 'field' });
+    const csId = (0, uuid_1.v4)(); // 客服
+    const cleanMgrId = (0, uuid_1.v4)(); // 清洁/检查管理员人员
+    const cleanerId = (0, uuid_1.v4)(); // 清洁和检查人员
+    const financeId = (0, uuid_1.v4)(); // 财务人员
+    const inventoryId = (0, uuid_1.v4)(); // 仓库管理员
+    const maintenanceId = (0, uuid_1.v4)(); // 维修人员
+    exports.db.roles.push({ id: adminId, name: 'admin' }, { id: csId, name: 'customer_service' }, { id: cleanMgrId, name: 'cleaning_manager' }, { id: cleanerId, name: 'cleaner_inspector' }, { id: financeId, name: 'finance_staff' }, { id: inventoryId, name: 'inventory_manager' }, { id: maintenanceId, name: 'maintenance_staff' });
     exports.db.permissions = [
         { code: 'property.write' },
-        { code: 'order.manage' },
+        { code: 'order.view' },
+        { code: 'order.create' },
+        { code: 'order.write' },
         { code: 'order.sync' },
         { code: 'keyset.manage' },
         { code: 'key.flow' },
+        { code: 'cleaning.view' },
         { code: 'cleaning.schedule.manage' },
         { code: 'cleaning.task.assign' },
         { code: 'finance.payout' },
+        { code: 'finance.tx.write' },
         { code: 'inventory.move' },
         { code: 'landlord.manage' },
         { code: 'rbac.manage' },
@@ -112,12 +122,24 @@ if (exports.db.roles.length === 0) {
     function grant(roleId, codes) {
         codes.forEach(c => exports.db.rolePermissions.push({ role_id: roleId, permission_code: c }));
     }
+    // 管理员：所有权限
     grant(adminId, exports.db.permissions.map(p => p.code));
-    grant(opsId, ['property.write', 'order.manage', 'key.flow', 'cleaning.task.assign', 'landlord.manage']);
-    grant(fieldId, ['cleaning.task.assign']);
+    // 客服：房源可写、订单查看/编辑（不允许新建）、查看清洁安排
+    grant(csId, ['property.write', 'order.view', 'order.write', 'cleaning.view']);
+    // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
+    grant(cleanMgrId, ['cleaning.schedule.manage', 'cleaning.task.assign']);
+    // 清洁/检查人员：无写权限，仅查看（后端接口默认允许 GET）
+    grant(cleanerId, []);
+    // 财务人员：财务结算与交易录入、房东/房源管理
+    grant(financeId, ['finance.payout', 'finance.tx.write', 'landlord.manage', 'property.write']);
+    // 仓库管理员：仓库与钥匙管理
+    grant(inventoryId, ['inventory.move', 'keyset.manage', 'key.flow']);
+    // 维修人员：暂无写接口，预留
+    grant(maintenanceId, []);
 }
 function getRoleIdByName(name) {
-    return exports.db.roles.find(r => r.name === name)?.id;
+    var _a;
+    return (_a = exports.db.roles.find(r => r.name === name)) === null || _a === void 0 ? void 0 : _a.id;
 }
 function roleHasPermission(roleName, perm) {
     const rid = getRoleIdByName(roleName);

@@ -72,7 +72,7 @@ export default function MonthlyStatementPage() {
       </div>
       <div ref={ref} style={{ padding: 24 }}>
         <div style={{ textAlign:'center', fontSize: 24, fontWeight: 700 }}>MONTHLY STATEMENT</div>
-        <div style={{ textAlign:'center', marginBottom: 8 }}>{month.format('MMM YYYY')}</div>
+        <div style={{ textAlign:'center', marginBottom: 8 }}>{month.format('MM/YYYY')}</div>
         <div style={{ borderTop: '2px solid #000', margin: '12px 0' }}></div>
         <div style={{ fontWeight: 600, marginTop: 8, background:'#eef3fb', padding:'6px 8px' }}>Monthly Overview Data</div>
         <table style={{ width: '100%', borderCollapse:'collapse' }}>
@@ -117,7 +117,7 @@ export default function MonthlyStatementPage() {
         </div>
 
         <div style={{ pageBreakBefore: 'always', marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>Rent Records</div>
-        <Table size="small" pagination={false} dataSource={ordersInMonth} rowKey={r => r.id} columns={[{ title:'入住', dataIndex:'checkin' }, { title:'退房', dataIndex:'checkout' }, { title:'晚数', render: (_: any, r: Order) => r.nights ?? Math.max(dayjs(r.checkout!).diff(dayjs(r.checkin!), 'day'), 0) }, { title:'金额', render: (_: any, r: Order) => `$${fmt(Number(r.price||0))}` }]} />
+        <Table size="small" pagination={false} dataSource={ordersInMonth} rowKey={r => r.id} columns={[{ title:'入住', dataIndex:'checkin', render: (v: string) => v ? dayjs(v).format('DD/MM/YYYY') : '' }, { title:'退房', dataIndex:'checkout', render: (v: string) => v ? dayjs(v).format('DD/MM/YYYY') : '' }, { title:'晚数', render: (_: any, r: Order) => r.nights ?? Math.max(dayjs(r.checkout!).diff(dayjs(r.checkin!), 'day'), 0) }, { title:'金额', render: (_: any, r: Order) => `$${fmt(Number(r.price||0))}` }]} />
 
         <div style={{ pageBreakBefore: 'always', marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>Expense Invoices 支出发票</div>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap: 12 }}>
@@ -127,7 +127,7 @@ export default function MonthlyStatementPage() {
                 <span>{e.category || '其他'}</span>
                 <span>-${fmt(Number(e.amount||0))}</span>
               </div>
-              <div style={{ fontSize:12 }}>{dayjs(e.occurred_at).format('YYYY-MM-DD')}</div>
+              <div style={{ fontSize:12 }}>{dayjs(e.occurred_at).format('DD/MM/YYYY')}</div>
               {isImg(e.invoice_url) ? (
                 <img src={e.invoice_url} style={{ width:'100%', marginTop:6 }} alt="invoice" />
               ) : e.invoice_url ? (

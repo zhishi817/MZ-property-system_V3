@@ -26,6 +26,16 @@ export default function OrdersPage() {
   const [calMonth, setCalMonth] = useState(dayjs())
   const [calPid, setCalPid] = useState<string | undefined>(undefined)
   const calRef = useRef<HTMLDivElement | null>(null)
+  function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
+  function getPropertyCodeLabel(o: Order) {
+    const p = getPropertyById(o.property_id)
+    return (p?.code || o.property_code || p?.address || '')
+  }
+  function fmtDay(s?: string) {
+    if (!s) return ''
+    const d = dayjs(s)
+    return d.isValid() ? d.format('DD/MM/YYYY') : s
+  }
   const uploadProps: UploadProps = {
     beforeUpload: async (file) => {
       setImporting(true)
@@ -143,12 +153,12 @@ export default function OrdersPage() {
   }
 
   const columns = [
-    { title: '房号', dataIndex: 'property_code' },
+    { title: '房号', dataIndex: 'property_code', render: (_: any, r: Order) => getPropertyCodeLabel(r) },
     { title: '来源', dataIndex: 'source' },
     { title: '客人', dataIndex: 'guest_name' },
     // 可按需求增加显示客人电话
-    { title: '入住', dataIndex: 'checkin' },
-    { title: '退房', dataIndex: 'checkout' },
+    { title: '入住', dataIndex: 'checkin', render: (_: any, r: Order) => fmtDay(r.checkin) },
+    { title: '退房', dataIndex: 'checkout', render: (_: any, r: Order) => fmtDay(r.checkout) },
     { title: '天数', dataIndex: 'nights' },
     { title: '总租金(AUD)', dataIndex: 'price' },
     { title: '清洁费', dataIndex: 'cleaning_fee' },
@@ -185,14 +195,22 @@ export default function OrdersPage() {
   const baseMonth = calMonth || dayjs()
   const monthStart = baseMonth.startOf('month')
   const monthEnd = baseMonth.endOf('month')
-  const monthOrders = (data || []).filter(o => calPid && o.property_id === calPid && o.checkin && o.checkout && dayjs(o.checkout!).isAfter(monthStart) && dayjs(o.checkin!).isBefore(monthEnd))
+  function dayStr(v: any): string { try { return dayjs(v).format('YYYY-MM-DD') } catch { return '' } }
+  const monthOrders = (data || []).filter(o => {
+    if (!calPid) return false
+    if (o.property_id !== calPid) return false
+    const ciDay = dayStr(o.checkin)
+    const coDay = dayStr(o.checkout)
+    if (!ciDay || !coDay) return false
+    return dayjs(coDay).isAfter(monthStart) && dayjs(ciDay).isBefore(monthEnd)
+  })
   const orderLane = (function(){
     const lanesEnd: number[] = []
     const map: Record<string, number> = {}
     const toDayIndex = (d: any) => d.startOf('day').diff(monthStart.startOf('day'), 'day')
     const segs = monthOrders.map(o => {
-      const s = dayjs(o.checkin!).isAfter(monthStart) ? dayjs(o.checkin!) : monthStart
-      const e = dayjs(o.checkout!).isBefore(monthEnd) ? dayjs(o.checkout!) : monthEnd
+      const s = dayjs(dayStr(o.checkin) || monthStart)
+      const e = dayjs(dayStr(o.checkout) || monthEnd)
       return { id: o.id, startIdx: toDayIndex(s), endIdx: toDayIndex(e) }
     }).sort((a,b)=> a.startIdx - b.startIdx || a.endIdx - b.endIdx)
     for (const seg of segs) {
@@ -207,15 +225,21 @@ export default function OrdersPage() {
   function dayCell(date: any) {
     if (!calPid) return null
     const orders = data
-      .filter(o => o.property_id === calPid && o.checkin && o.checkout && dayjs(o.checkin!).diff(date, 'day') <= 0 && dayjs(o.checkout!).diff(date, 'day') > 0)
+      .filter(o => {
+        const ciDay = dayStr(o.checkin)
+        const coDay = dayStr(o.checkout)
+        return o.property_id === calPid && ciDay && coDay && dayjs(ciDay).diff(date, 'day') <= 0 && dayjs(coDay).diff(date, 'day') > 0
+      })
       .sort((a,b)=> dayjs(a.checkin!).valueOf() - dayjs(b.checkin!).valueOf())
     if (!orders.length) return null
     return (
       <div style={{ position:'relative', minHeight: 64, overflow:'visible' }}>
         {orders.slice(0,6).map((o)=> {
           const accent = sourceColor[o.source || 'other'] || '#999'
-          const isStart = dayjs(o.checkin!).isSame(date, 'day')
-          const isEnd = dayjs(o.checkout!).diff(date, 'day') === 1 // last day shown is checkout-1
+          const ciDay = dayStr(o.checkin)
+          const coDay = dayStr(o.checkout)
+          const isStart = ciDay === dayjs(date).format('YYYY-MM-DD')
+          const isEnd = dayjs(coDay).diff(date, 'day') === 1 // last day shown is checkout-1
           const radiusLeft = isStart ? 16 : 3
           const radiusRight = isEnd ? 16 : 3
           const lane = orderLane[o.id!] || 0
@@ -255,7 +279,7 @@ export default function OrdersPage() {
         {view==='list' ? (
           <>
             <Input placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} style={{ width: 200 }} />
-            <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} />
+            <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} format="DD/MM/YYYY" />
           </>
         ) : (
           <>
@@ -294,7 +318,8 @@ export default function OrdersPage() {
       </Space>
       {view==='list' ? (
         <Table rowKey={(r) => r.id} columns={columns as any} dataSource={data.filter(o => {
-          const codeOk = !codeQuery || (o.property_code || '').toLowerCase().includes(codeQuery.trim().toLowerCase())
+          const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
+          const codeOk = !codeQuery || codeText.includes(codeQuery.trim().toLowerCase())
           const rangeOk = !dateRange || (!dateRange[0] || dayjs(o.checkin).diff(dateRange[0], 'day') >= 0) && (!dateRange[1] || dayjs(o.checkout).diff(dateRange[1], 'day') <= 0)
           return codeOk && rangeOk
         })} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }} />
@@ -329,11 +354,11 @@ export default function OrdersPage() {
         <Form.Item name="guest_phone" label="客人电话">
           <Input placeholder="用于生成旧/新密码（后四位）" />
         </Form.Item>
-        <Form.Item name="checkin" label="入住" rules={[{ required: true }]}> 
-          <DatePicker style={{ width: '100%' }} />
+        <Form.Item name="checkin" label="入住" rules={[{ required: true }, { validator: async (_: any, v: any) => { const c = form.getFieldValue('checkout'); if (v && c && !v.isBefore(c, 'day')) throw new Error('入住日期必须早于退房日期') } }]}> 
+          <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const c = form.getFieldValue('checkout'); return c ? d.isSame(c, 'day') || d.isAfter(c, 'day') : false }} />
         </Form.Item>
-        <Form.Item name="checkout" label="退房" rules={[{ required: true }]}> 
-          <DatePicker style={{ width: '100%' }} />
+        <Form.Item name="checkout" label="退房" rules={[{ required: true }, { validator: async (_: any, v: any) => { const ci = form.getFieldValue('checkin'); if (v && ci && !ci.isBefore(v, 'day')) throw new Error('退房日期必须晚于入住日期') } }]}> 
+          <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const ci = form.getFieldValue('checkin'); return ci ? d.isSame(ci, 'day') || d.isBefore(ci, 'day') : false }} />
         </Form.Item>
         <Form.Item name="price" label="总租金(AUD)" rules={[{ required: true }]}> 
           <InputNumber min={0} step={1} style={{ width: '100%' }} />
@@ -438,8 +463,8 @@ export default function OrdersPage() {
           <Form.Item name="property_code" hidden><Input /></Form.Item>
           <Form.Item name="guest_name" label="客人姓名"><Input /></Form.Item>
           <Form.Item name="guest_phone" label="客人电话"><Input placeholder="用于生成旧/新密码（后四位）" /></Form.Item>
-          <Form.Item name="checkin" label="入住" rules={[{ required: true }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="checkout" label="退房" rules={[{ required: true }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="checkin" label="入住" rules={[{ required: true }, { validator: async (_: any, v: any) => { const c = editForm.getFieldValue('checkout'); if (v && c && !v.isBefore(c, 'day')) throw new Error('入住日期必须早于退房日期') } }]}><DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const c = editForm.getFieldValue('checkout'); return c ? d.isSame(c, 'day') || d.isAfter(c, 'day') : false }} /></Form.Item>
+          <Form.Item name="checkout" label="退房" rules={[{ required: true }, { validator: async (_: any, v: any) => { const ci = editForm.getFieldValue('checkin'); if (v && ci && !ci.isBefore(v, 'day')) throw new Error('退房日期必须晚于入住日期') } }]}><DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const ci = editForm.getFieldValue('checkin'); return ci ? d.isSame(ci, 'day') || d.isBefore(ci, 'day') : false }} /></Form.Item>
           <Form.Item name="price" label="总租金(AUD)"><InputNumber min={0} step={1} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="cleaning_fee" label="清洁费"><InputNumber min={0} step={1} style={{ width: '100%' }} /></Form.Item>
           <Form.Item label="晚退收入">

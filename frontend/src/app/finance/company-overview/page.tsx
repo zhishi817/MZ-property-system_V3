@@ -50,8 +50,9 @@ export default function PropertyRevenuePage() {
     const out: any[] = []
     const rangeMonths: { start: any, end: any, label: string }[] = []
     let cur = start.startOf('month')
-    while (cur.isBefore(end.add(1,'day'))) {
-      rangeMonths.push({ start: cur.startOf('month'), end: cur.endOf('month'), label: cur.format('YYYY-MM') })
+    const last = end.startOf('month')
+    while (cur.isSame(last, 'month') || cur.isBefore(last, 'month')) {
+      rangeMonths.push({ start: cur.startOf('month'), end: cur.endOf('month'), label: cur.format('MM/YYYY') })
       cur = cur.add(1,'month')
     }
     for (const p of list) {
@@ -128,9 +129,16 @@ export default function PropertyRevenuePage() {
 
   return (
     <Card title="房源营收">
-      <div style={{ marginBottom: 12, display:'flex', gap:8 }}>
+      <div style={{ marginBottom: 12, display:'flex', gap:8, alignItems:'center' }}>
         <DatePicker picker="month" value={month} onChange={setMonth as any} />
-        <Select value={period} onChange={setPeriod} style={{ width: 180 }} options={[{value:'month',label:'按月'},{value:'year',label:'全年(自然年)'},{value:'half-year',label:'半年'},{value:'fiscal-year',label:'财年(7月至次年6月)'}]} />
+        <Select
+          allowClear
+          placeholder="选择范围(年/半年/财年)"
+          value={period==='month' ? undefined : period}
+          onChange={(v) => setPeriod((v as any) || 'month')}
+          style={{ width: 220 }}
+          options={[{value:'year',label:'全年(自然年)'},{value:'half-year',label:'半年'},{value:'fiscal-year',label:'财年(7月至次年6月)'}]}
+        />
         {period==='half-year' ? <DatePicker picker="month" value={startMonth} onChange={setStartMonth as any} /> : null}
         <Select allowClear placeholder="按房号筛选" style={{ width: 240 }} options={properties.map(p=>({ value:p.id, label:p.code || p.address || p.id }))} value={selectedPid} onChange={setSelectedPid} />
         <Button type="primary" onClick={() => { if (!selectedPid) { message.warning('请先选择房号'); return } setPreviewPid(selectedPid); setPreviewOpen(true) }}>生成报表</Button>
@@ -193,13 +201,13 @@ export default function PropertyRevenuePage() {
                   const clean = o1.reduce((s,x)=> s + Number(x.cleaning_fee||0), 0)
                   const exp1 = txs.filter(t => t.kind==='expense' && t.property_id===pid && dayjs(t.occurred_at).isAfter(mStart.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(mEnd.add(1,'day')))
                   const other = exp1.reduce((s,x)=> s + Number(x.amount||0), 0)
-                  rowz.push({ month: mStart.format('YYYY-MM'), income: inc, cleaning: clean, other, net: inc - clean - other })
+                  rowz.push({ month: mStart.format('MM/YYYY'), income: inc, cleaning: clean, other, net: inc - clean - other })
                   cur = cur.add(1,'month')
                 }
                 return (
                   <div>
                     <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
-                      <div style={{ fontSize:18, fontWeight:700 }}>{period==='year' ? `${anchor.format('YYYY')} 年` : `${anchor.format('YYYY-MM')} 至 ${endAnchor.format('YYYY-MM')}`}</div>
+                      <div style={{ fontSize:18, fontWeight:700 }}>{period==='year' ? `${anchor.format('YYYY')} 年` : `${anchor.format('MM/YYYY')} 至 ${endAnchor.format('MM/YYYY')}`}</div>
                       <div style={{ textAlign:'right' }}>{prop?.code || ''} {prop?.address || ''}</div>
                     </div>
                     <table>
