@@ -70,7 +70,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   const financeChildren: any[] = []
   if (hasPerm('finance.payout') || hasPerm('finance.tx.write')) financeChildren.push({ key: 'finance-home', label: <Link href="/finance" prefetch={false}>财务总览</Link> })
   if (hasPerm('order.manage')) financeChildren.push({ key: 'orders', label: <Link href="/orders" prefetch={false}>订单管理</Link> })
-  if (hasPerm('finance.tx.write')) financeChildren.push({ key: 'expenses', label: <Link href="/finance/expenses" prefetch={false}>支出管理</Link> })
+  if (hasPerm('finance.tx.write')) financeChildren.push({ key: 'expenses', label: <Link href="/finance/expenses" prefetch={false}>房源支出</Link> })
   if (hasPerm('finance.tx.write') || hasPerm('finance.payout') || role === 'customer_service') financeChildren.push({ key: 'company', label: <Link href="/finance/company-overview" prefetch={false}>房源营收</Link> })
   if (hasPerm('finance.payout')) financeChildren.push({ key: 'company-revenue', label: <Link href="/finance/company-revenue" prefetch={false}>公司营收</Link> })
   if (financeChildren.length > 0) items.push({ key: 'finance', icon: <DollarOutlined />, label: '财务管理', children: financeChildren })

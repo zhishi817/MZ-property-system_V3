@@ -20,7 +20,13 @@ export default function LoginPage() {
     const v = await form.validateFields()
     v.username = (v.username || '').trim()
     v.password = (v.password || '').trim()
-    const res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(v) })
+    let res: Response
+    try {
+      res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(v) })
+    } catch (e: any) {
+      message.error('无法连接服务，请稍后重试')
+      return
+    }
     if (res.ok) {
       const data = await res.json()
       try {

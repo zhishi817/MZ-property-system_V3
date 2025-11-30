@@ -97,6 +97,16 @@ export type Payout = {
   status: 'pending' | 'paid'
 }
 
+export type CompanyPayout = {
+  id: string
+  period_from: string
+  period_to: string
+  amount: number
+  invoice_no?: string
+  note?: string
+  status: 'pending' | 'paid'
+}
+
 export type CleaningTask = {
   id: string
   property_id?: string
@@ -124,6 +134,7 @@ export const db = {
   landlords: [] as Landlord[],
   financeTransactions: [] as FinanceTransaction[],
   payouts: [] as Payout[],
+  companyPayouts: [] as CompanyPayout[],
   users: [] as { id: string; email: string; username?: string; role: string; password_hash?: string }[],
   roles: [] as { id: string; name: string }[],
   permissions: [] as { code: string; name?: string }[],
@@ -268,8 +279,8 @@ if (db.roles.length === 0) {
   }
   // 管理员：所有权限
   grant(adminId, db.permissions.map(p => p.code))
-  // 客服：房源可写、订单查看/编辑（不允许新建）、查看清洁安排
-  grant(csId, ['property.write','order.view','order.write','cleaning.view'])
+  // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
+  grant(csId, ['property.write','order.view','order.write','order.manage','cleaning.view','finance.tx.write'])
   // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
   grant(cleanMgrId, ['cleaning.schedule.manage','cleaning.task.assign'])
   // 清洁/检查人员：无写权限，仅查看（后端接口默认允许 GET）

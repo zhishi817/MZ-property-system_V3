@@ -211,3 +211,73 @@ CREATE TABLE IF NOT EXISTS payouts (
   created_at timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_payouts_landlord ON payouts(landlord_id);
+
+-- Company-level payouts (not tied to a single landlord)
+CREATE TABLE IF NOT EXISTS company_payouts (
+  id text PRIMARY KEY,
+  period_from date,
+  period_to date,
+  amount numeric,
+  invoice_no text,
+  note text,
+  status text,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_company_payouts_period ON company_payouts(period_from, period_to);
+
+-- Split expenses: company_expenses and property_expenses
+CREATE TABLE IF NOT EXISTS company_expenses (
+  id text PRIMARY KEY,
+  occurred_at date NOT NULL,
+  amount numeric NOT NULL,
+  currency text NOT NULL,
+  category text,
+  category_detail text,
+  note text,
+  invoice_url text,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_company_expenses_date ON company_expenses(occurred_at);
+
+CREATE TABLE IF NOT EXISTS property_expenses (
+  id text PRIMARY KEY,
+  property_id text REFERENCES properties(id),
+  occurred_at date NOT NULL,
+  amount numeric NOT NULL,
+  currency text NOT NULL,
+  category text,
+  category_detail text,
+  note text,
+  invoice_url text,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_property_expenses_pid ON property_expenses(property_id);
+CREATE INDEX IF NOT EXISTS idx_property_expenses_date ON property_expenses(occurred_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses ON company_expenses(occurred_at, category, amount, (coalesce(note,'')));
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses ON property_expenses(property_id, occurred_at, category, amount, (coalesce(note,'')));
+
+-- Split incomes: company_incomes and property_incomes
+CREATE TABLE IF NOT EXISTS company_incomes (
+  id text PRIMARY KEY,
+  occurred_at date NOT NULL,
+  amount numeric NOT NULL,
+  currency text NOT NULL,
+  category text,
+  note text,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_company_incomes_date ON company_incomes(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_company_incomes_cat ON company_incomes(category);
+
+CREATE TABLE IF NOT EXISTS property_incomes (
+  id text PRIMARY KEY,
+  property_id text REFERENCES properties(id),
+  occurred_at date NOT NULL,
+  amount numeric NOT NULL,
+  currency text NOT NULL,
+  category text,
+  note text,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_property_incomes_pid ON property_incomes(property_id);
+CREATE INDEX IF NOT EXISTS idx_property_incomes_date ON property_incomes(occurred_at);

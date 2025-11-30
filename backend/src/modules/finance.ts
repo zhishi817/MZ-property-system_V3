@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { db, FinanceTransaction, Payout, addAudit } from '../store'
+import { db, FinanceTransaction, Payout, CompanyPayout, addAudit } from '../store'
 import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete } from '../supabase'
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import multer from 'multer'
@@ -78,6 +78,99 @@ router.get('/payouts', async (_req, res) => {
   } catch {
     return res.json(db.payouts)
   }
+})
+
+// Company payouts
+router.get('/company-payouts', async (_req, res) => {
+  try {
+    if (hasPg) {
+      const rows = (await pgSelect('company_payouts')) as any[] || []
+      return res.json(rows)
+    } else if (hasSupabase) {
+      const rows = (await supaSelect('company_payouts')) as any[] || []
+      return res.json(rows)
+    }
+    return res.json(db.companyPayouts)
+  } catch {
+    return res.json(db.companyPayouts)
+  }
+})
+
+const companyPayoutSchema = z.object({ period_from: z.string(), period_to: z.string(), amount: z.number().min(0), invoice_no: z.string().optional(), note: z.string().optional() })
+router.post('/company-payouts', requirePerm('finance.payout'), async (req, res) => {
+  const parsed = companyPayoutSchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const { v4: uuid } = require('uuid')
+  const p: CompanyPayout = { id: uuid(), status: 'pending', ...parsed.data }
+  db.companyPayouts.push(p)
+  addAudit('CompanyPayout', p.id, 'create', null, p)
+  const tx: FinanceTransaction = { id: uuid(), kind: 'expense', amount: p.amount, currency: 'AUD', occurred_at: new Date().toISOString(), ref_type: 'company_payout', ref_id: p.id, note: p.note || 'company payout', invoice_url: undefined }
+  db.financeTransactions.push(tx)
+  addAudit('FinanceTransaction', tx.id, 'create', null, tx)
+  if (hasPg) {
+    try {
+      await pgInsert('company_payouts', p as any)
+      await pgInsert('finance_transactions', tx as any)
+      return res.status(201).json(p)
+    } catch (e: any) { return res.status(500).json({ message: e?.message || 'pg insert failed' }) }
+  } else if (hasSupabase) {
+    try {
+      await supaInsert('company_payouts', p)
+      await supaInsert('finance_transactions', tx)
+      return res.status(201).json(p)
+    } catch (e: any) { return res.status(500).json({ message: e?.message || 'supabase insert failed' }) }
+  }
+  return res.status(201).json(p)
+})
+
+router.patch('/company-payouts/:id', requirePerm('finance.payout'), async (req, res) => {
+  const { id } = req.params
+  const idx = db.companyPayouts.findIndex(x => x.id === id)
+  const prev = idx !== -1 ? db.companyPayouts[idx] : undefined
+  if (!prev && !hasPg && !hasSupabase) return res.status(404).json({ message: 'not found' })
+  const body = req.body as Partial<CompanyPayout>
+  const updated: CompanyPayout = { ...(prev || ({} as any)), ...body, id }
+  if (idx !== -1) db.companyPayouts[idx] = updated
+  addAudit('CompanyPayout', id, 'update', prev, updated)
+  // sync linked transaction amount/note if provided
+  const linkedIdx = db.financeTransactions.findIndex(t => t.ref_type === 'company_payout' && t.ref_id === id)
+  if (linkedIdx !== -1) {
+    if (body.amount != null) db.financeTransactions[linkedIdx].amount = Number(body.amount)
+    if (body.note != null) db.financeTransactions[linkedIdx].note = body.note
+  }
+  if (hasPg) {
+    try { const row = await pgUpdate('company_payouts', id, updated as any); return res.json(row || updated) } catch {
+      try { const row2 = await pgInsert('company_payouts', updated as any); return res.json(row2 || updated) } catch {}
+    }
+  } else if (hasSupabase) {
+    try { const row = await supaUpdate('company_payouts', id, updated); return res.json(row || updated) } catch {
+      try { const { supaUpsert } = require('../supabase'); const row2 = await supaUpsert('company_payouts', updated); return res.json(row2 || updated) } catch {}
+    }
+  }
+  return res.json(updated)
+})
+
+router.delete('/company-payouts/:id', requirePerm('finance.payout'), async (req, res) => {
+  const { id } = req.params
+  const idx = db.companyPayouts.findIndex(x => x.id === id)
+  if (idx !== -1) db.companyPayouts.splice(idx, 1)
+  db.financeTransactions = db.financeTransactions.filter(t => !(t.ref_type === 'company_payout' && t.ref_id === id))
+  if (hasPg) {
+    try {
+      await pgDelete('company_payouts', id)
+      const linked = await pgSelect('finance_transactions', '*', { ref_type: 'company_payout', ref_id: id })
+      for (const r of (linked || []) as any[]) { if (r?.id) await pgDelete('finance_transactions', r.id) }
+      return res.json({ ok: true })
+    } catch {}
+  } else if (hasSupabase) {
+    try {
+      await supaDelete('company_payouts', id)
+      const linked = await supaSelect('finance_transactions', '*', { ref_type: 'company_payout', ref_id: id })
+      for (const r of (linked || []) as any[]) { if (r?.id) await supaDelete('finance_transactions', r.id) }
+      return res.json({ ok: true })
+    } catch {}
+  }
+  return res.json({ ok: true })
 })
 
 const payoutSchema = z.object({ landlord_id: z.string(), period_from: z.string(), period_to: z.string(), amount: z.number().min(0), invoice_no: z.string().optional() })

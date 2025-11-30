@@ -66,7 +66,7 @@ export default function FinancePage() {
       }
       const income = txs.filter(t => t.kind === 'income' && inMonth(t.occurred_at)).reduce((s, x) => s + Number(x.amount || 0), 0)
       const expense = txs.filter(t => t.kind === 'expense' && inMonth(t.occurred_at)).reduce((s, x) => s + Number(x.amount || 0), 0)
-      months.push({ month: mStart.format('YYYY-MM'), net: Math.round(((income - expense) + Number.EPSILON) * 100) / 100 })
+      months.push({ month: mStart.format('MM/YYYY'), net: Math.round(((income - expense) + Number.EPSILON) * 100) / 100 })
     }
     return months
   }, [txs])
@@ -90,7 +90,7 @@ export default function FinancePage() {
     return rows
   }, [txs])
 
-  const currentMonth = useMemo(() => dayjs().format('YYYY-MM'), [])
+  const currentMonth = useMemo(() => dayjs().format('MM/YYYY'), [])
 
   const incomeByCategory = useMemo(() => {
     const total = txs.filter(t => t.kind === 'income').reduce((s, x) => s + Number(x.amount || 0), 0)
@@ -221,7 +221,7 @@ export default function FinancePage() {
                   </defs>
                   <path d={d} fill="none" stroke="#13c2c2" strokeWidth="2" />
                   {pts.map((p, i) => (<circle key={i} cx={xs[i]} cy={ys[i]} r="3" fill="#13c2c2" />))}
-                  {pts.map((p, i) => (<text key={`t${i}`} x={xs[i]-10} y={H} fontSize="10">{p.month.slice(5)}</text>))}
+                  {pts.map((p, i) => (<text key={`t${i}`} x={xs[i]-10} y={H} fontSize="10">{p.month}</text>))}
                 </svg>
               )
             })()}

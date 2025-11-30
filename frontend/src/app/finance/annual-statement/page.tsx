@@ -44,7 +44,7 @@ export default function AnnualStatementPage() {
       const exp = txs.filter(t => t.kind === 'expense' && (!propertyId || t.property_id === propertyId) && dayjs(t.occurred_at).isAfter(mStart.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(mEnd.add(1,'day')))
       const other = exp.reduce((s, x) => s + Number(x.amount || 0), 0)
       const net = income - cleaning - other
-      rows.push({ month: mStart.format('YYYY-MM'), income, cleaning, other, net })
+      rows.push({ month: mStart.format('MM/YYYY'), income, cleaning, other, net })
       cur = cur.add(1, 'month')
     }
     return rows

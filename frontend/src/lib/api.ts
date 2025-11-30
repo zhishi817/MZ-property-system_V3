@@ -28,3 +28,20 @@ export async function postJSON<T>(path: string, body: any): Promise<T> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json() as Promise<T>
 }
+
+export async function patchJSON<T>(path: string, body: any): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() as Promise<T>
+}
+
+export async function deleteJSON<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE', headers: { ...authHeaders() } })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() as Promise<T>
+}
+
+export const apiList = <T>(resource: string, params?: Record<string, any>) => getJSON<T>(`/crud/${resource}${params ? `?${new URLSearchParams(params as any).toString()}` : ''}`)
+export const apiCreate = <T>(resource: string, body: any) => postJSON<T>(`/crud/${resource}`, body)
+export const apiUpdate = <T>(resource: string, id: string, body: any) => patchJSON<T>(`/crud/${resource}/${id}`, body)
+export const apiDelete = <T>(resource: string, id: string) => deleteJSON<T>(`/crud/${resource}/${id}`)
