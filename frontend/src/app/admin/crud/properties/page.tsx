@@ -1,5 +1,5 @@
 import React from 'react'
-import CrudTable from '../../../../components/CrudTable'
+import CrudTable, { type Field } from '../../../../components/CrudTable'
 
 export default function Page() {
   const columns = [
@@ -8,7 +8,7 @@ export default function Page() {
     { title: '类型', dataIndex: 'type' },
     { title: '容量', dataIndex: 'capacity' },
   ]
-  const fields = [
+  const fields: Field[] = [
     { key: 'code', label: '房号', type: 'text', required: true },
     { key: 'address', label: '地址', type: 'text', required: true },
     { key: 'type', label: '类型', type: 'text' },
