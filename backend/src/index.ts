@@ -22,7 +22,6 @@ import { auth } from './auth'
 import { hasPg, pgPool } from './dbAdapter'
 import { hasSupabase, supabase } from './supabase'
 import fs from 'fs'
-import path from 'path'
 
 const app = express()
 const corsOpts: cors.CorsOptions = {
