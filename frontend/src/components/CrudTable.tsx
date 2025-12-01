@@ -1,3 +1,4 @@
+"use client"
 import React, { useEffect, useState } from 'react'
 import { Table, Button, Modal, Form, Input, InputNumber, DatePicker, Select, Space, App } from 'antd'
 import dayjs from 'dayjs'
