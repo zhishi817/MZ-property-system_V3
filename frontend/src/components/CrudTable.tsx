@@ -4,7 +4,7 @@ import { Table, Button, Modal, Form, Input, InputNumber, DatePicker, Select, Spa
 import dayjs from 'dayjs'
 import { apiList, apiCreate, apiUpdate, apiDelete } from '../lib/api'
 
-type Field = { key: string; label: string; type?: 'text'|'number'|'date'|'select'; required?: boolean; options?: { value: string; label: string }[] }
+export type Field = { key: string; label: string; type?: 'text'|'number'|'date'|'select'; required?: boolean; options?: { value: string; label: string }[] }
 type Column = any
 
 export default function CrudTable({ resource, columns, fields }: { resource: string; columns: Column[]; fields: Field[] }) {
