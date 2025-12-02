@@ -44,9 +44,9 @@ export default function MaintenancePage() {
     setEditing(row)
     form.setFieldsValue({ property_id: row.property_id, occurred_at: dayjs(row.occurred_at), worker_name: row.worker_name, notes: row.notes })
     setDetails(Array.isArray(row.details) ? row.details : (row.details ? JSON.parse(row.details) : []))
-    const urls = Array.isArray((row as any).photo_urls) ? (row as any).photo_urls : []
+    const urls: string[] = Array.isArray((row as any).photo_urls) ? ((row as any).photo_urls as string[]) : []
     setPhotos(urls)
-    setFileList(urls.map((u, i) => ({ uid: String(i), name: `photo-${i+1}`, status: 'done', url: u } as UploadFile)))
+    setFileList(urls.map((u: string, i: number) => ({ uid: String(i), name: `photo-${i+1}`, status: 'done', url: u } as UploadFile)))
     const matched = props.find(p => String(p.id) === String(row.property_id))
     setSelectedProp(matched ? { value: matched.id, label: matched.code } : null)
     setOpen(true)
