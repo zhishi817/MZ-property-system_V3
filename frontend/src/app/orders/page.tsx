@@ -29,7 +29,8 @@ export default function OrdersPage() {
   function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
   function getPropertyCodeLabel(o: Order) {
     const p = getPropertyById(o.property_id)
-    return (p?.code || o.property_code || p?.address || '')
+    const byCodeAsId = (Array.isArray(properties) ? properties : []).find(px => (px.code || '') === (o.property_id || ''))
+    return (p?.code || byCodeAsId?.code || o.property_code || p?.address || o.property_id || '')
   }
   function fmtDay(s?: string) {
     if (!s) return ''
@@ -60,7 +61,7 @@ export default function OrdersPage() {
     const res = await getJSON<Order[]>('/orders')
     setData(res)
   }
-  useEffect(() => { load(); getJSON<any>('/properties').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([])) }, [])
+  useEffect(() => { load(); getJSON<any>('/properties?include_archived=true').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([])) }, [])
 
   async function openEdit(o: Order) {
     setCurrent(o)

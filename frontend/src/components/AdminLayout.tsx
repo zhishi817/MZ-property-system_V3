@@ -76,6 +76,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   if (financeChildren.length > 0) items.push({ key: 'finance', icon: <DollarOutlined />, label: '财务管理', children: financeChildren })
   if (hasPerm('cleaning.task.assign') || role === 'customer_service' || role === 'cleaning_manager' || role === 'cleaner_inspector') items.push({ key: 'cleaning', icon: <CalendarOutlined />, label: <Link href="/cleaning" prefetch={false}>清洁安排</Link> })
   if (hasPerm('rbac.manage')) items.push({ key: 'rbac', icon: <ProfileOutlined />, label: <Link href="/rbac" prefetch={false}>角色权限</Link> })
+  items.push({ key: 'cms', icon: <ShopOutlined />, label: <Link href="/cms" prefetch={false}>CMS管理</Link> })
 
   
   

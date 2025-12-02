@@ -238,6 +238,7 @@ CREATE TABLE IF NOT EXISTS company_expenses (
   created_at timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_company_expenses_date ON company_expenses(occurred_at);
+ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS created_by text;
 
 CREATE TABLE IF NOT EXISTS property_expenses (
   id text PRIMARY KEY,
@@ -253,6 +254,7 @@ CREATE TABLE IF NOT EXISTS property_expenses (
 );
 CREATE INDEX IF NOT EXISTS idx_property_expenses_pid ON property_expenses(property_id);
 CREATE INDEX IF NOT EXISTS idx_property_expenses_date ON property_expenses(occurred_at);
+ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS created_by text;
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses ON company_expenses(occurred_at, category, amount, (coalesce(note,'')));
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses ON property_expenses(property_id, occurred_at, category, amount, (coalesce(note,'')));
 
@@ -281,3 +283,35 @@ CREATE TABLE IF NOT EXISTS property_incomes (
 );
 CREATE INDEX IF NOT EXISTS idx_property_incomes_pid ON property_incomes(property_id);
 CREATE INDEX IF NOT EXISTS idx_property_incomes_date ON property_incomes(occurred_at);
+
+CREATE TABLE IF NOT EXISTS cms_pages (
+  id text PRIMARY KEY,
+  slug text UNIQUE,
+  title text,
+  content text,
+  status text,
+  published_at date,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cms_pages_status ON cms_pages(status);
+
+CREATE TABLE IF NOT EXISTS property_maintenance (
+  id text PRIMARY KEY,
+  property_id text REFERENCES properties(id) ON DELETE SET NULL,
+  occurred_at date NOT NULL,
+  worker_name text,
+  details jsonb,
+  notes text,
+  created_by text,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_property_maintenance_pid ON property_maintenance(property_id);
+CREATE INDEX IF NOT EXISTS idx_property_maintenance_date ON property_maintenance(occurred_at);
+ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;
+ALTER TABLE property_maintenance ALTER COLUMN details TYPE text USING details::text;
+DO $$ BEGIN
+  BEGIN
+    ALTER TABLE property_maintenance ALTER COLUMN photo_urls TYPE jsonb USING to_jsonb(photo_urls);
+  EXCEPTION WHEN others THEN NULL; END;
+END $$;
+ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;

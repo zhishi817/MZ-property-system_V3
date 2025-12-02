@@ -3,6 +3,7 @@ import { db } from '../store'
 import { z } from 'zod'
 import multer from 'multer'
 import path from 'path'
+import { hasR2, r2Upload } from '../r2'
 import { requirePerm } from '../auth'
 import { addAudit } from '../store'
 import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete } from '../supabase'
@@ -177,14 +178,13 @@ router.get('/sets/:id', async (req, res) => {
   res.json(set)
 })
 
-const storage = multer.diskStorage({
+const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ storage: multer.diskStorage({
   destination: (_req: any, _file: any, cb: any) => cb(null, path.join(process.cwd(), 'uploads')),
   filename: (_req: any, file: any, cb: any) => {
     const ext = path.extname(file.originalname)
     cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`)
   },
-})
-const upload = multer({ storage })
+}) })
 
 const addItemSchema = z.object({
   item_type: z.enum(['key', 'fob']),
@@ -215,10 +215,30 @@ router.post('/sets/:id/items', requirePerm('keyset.manage'), upload.single('phot
       const existed: any = await pgSelect('key_items', '*', { key_set_id: set.id, item_type: parsed.data.item_type })
       const existing = existed && existed[0]
       if (existing) {
-        const updated = await pgUpdate('key_items', existing.id, { code: parsed.data.code, photo_url: (req as any).file ? `/uploads/${(req as any).file.filename}` : existing.photo_url } as any)
+        let photoUrl = existing.photo_url
+        if ((req as any).file) {
+          if (hasR2 && (req as any).file.buffer) {
+            const ext = path.extname((req as any).file.originalname)
+            const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+            photoUrl = await r2Upload(key, (req as any).file.mimetype || 'application/octet-stream', (req as any).file.buffer)
+          } else {
+            photoUrl = `/uploads/${(req as any).file.filename}`
+          }
+        }
+        const updated = await pgUpdate('key_items', existing.id, { code: parsed.data.code, photo_url: photoUrl } as any)
         return res.status(200).json(updated)
       }
-      const created = await pgInsert('key_items', { id: uuidv4(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: (req as any).file ? `/uploads/${(req as any).file.filename}` : null } as any)
+      let photoUrl: string | null = null
+      if ((req as any).file) {
+        if (hasR2 && (req as any).file.buffer) {
+          const ext = path.extname((req as any).file.originalname)
+          const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+          photoUrl = await r2Upload(key, (req as any).file.mimetype || 'application/octet-stream', (req as any).file.buffer)
+        } else {
+          photoUrl = `/uploads/${(req as any).file.filename}`
+        }
+      }
+      const created = await pgInsert('key_items', { id: uuidv4(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: photoUrl } as any)
       return res.status(201).json(created)
     }
     if (hasSupabase) {
@@ -237,16 +257,46 @@ router.post('/sets/:id/items', requirePerm('keyset.manage'), upload.single('phot
         }
       }
       try {
-        const item = await require('../supabase').supaUpsertConflict('key_items', { key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: (req as any).file ? `/uploads/${(req as any).file.filename}` : null }, 'key_set_id,item_type')
+        let photoUrl: string | null = null
+        if ((req as any).file) {
+          if (hasR2 && (req as any).file.buffer) {
+            const ext = path.extname((req as any).file.originalname)
+            const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+            photoUrl = await r2Upload(key, (req as any).file.mimetype || 'application/octet-stream', (req as any).file.buffer)
+          } else {
+            photoUrl = `/uploads/${(req as any).file.filename}`
+          }
+        }
+        const item = await require('../supabase').supaUpsertConflict('key_items', { key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: photoUrl }, 'key_set_id,item_type')
         return res.status(201).json(item)
       } catch (eUp: any) {
         const existed: any = await supaSelect('key_items', '*', { key_set_id: set.id, item_type: parsed.data.item_type })
         const existing = existed && existed[0]
         if (existing) {
-          const updated = await supaUpdate('key_items', existing.id, { code: parsed.data.code, photo_url: (req as any).file ? `/uploads/${(req as any).file.filename}` : existing.photo_url })
+          let photoUrl2 = existing.photo_url
+          if ((req as any).file) {
+            if (hasR2 && (req as any).file.buffer) {
+              const ext = path.extname((req as any).file.originalname)
+              const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+              photoUrl2 = await r2Upload(key, (req as any).file.mimetype || 'application/octet-stream', (req as any).file.buffer)
+            } else {
+              photoUrl2 = `/uploads/${(req as any).file.filename}`
+            }
+          }
+          const updated = await supaUpdate('key_items', existing.id, { code: parsed.data.code, photo_url: photoUrl2 })
           return res.status(200).json(updated)
         }
-        const created = await supaInsert('key_items', { id: uuidv4(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: (req as any).file ? `/uploads/${(req as any).file.filename}` : null })
+        let photoUrl3: string | null = null
+        if ((req as any).file) {
+          if (hasR2 && (req as any).file.buffer) {
+            const ext = path.extname((req as any).file.originalname)
+            const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+            photoUrl3 = await r2Upload(key, (req as any).file.mimetype || 'application/octet-stream', (req as any).file.buffer)
+          } else {
+            photoUrl3 = `/uploads/${(req as any).file.filename}`
+          }
+        }
+        const created = await supaInsert('key_items', { id: uuidv4(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: photoUrl3 })
         return res.status(201).json(created)
       }
     }
@@ -271,14 +321,30 @@ router.patch('/sets/:id/items/:itemId', requirePerm('keyset.manage'), upload.sin
     if (hasPg) {
       const payload: any = {}
       if (req.body && req.body.code) payload.code = String(req.body.code)
-      if ((req as any).file) payload.photo_url = `/uploads/${(req as any).file.filename}`
+      if ((req as any).file) {
+        if (hasR2 && (req as any).file.buffer) {
+          const ext = path.extname((req as any).file.originalname)
+          const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+          payload.photo_url = await r2Upload(key, (req as any).file.mimetype || 'application/octet-stream', (req as any).file.buffer)
+        } else {
+          payload.photo_url = `/uploads/${(req as any).file.filename}`
+        }
+      }
       const item = await pgUpdate('key_items', req.params.itemId, payload)
       return res.json(item)
     }
     if (hasSupabase) {
       const payload: any = {}
       if (req.body && req.body.code) payload.code = String(req.body.code)
-      if ((req as any).file) payload.photo_url = `/uploads/${(req as any).file.filename}`
+      if ((req as any).file) {
+        if (hasR2 && (req as any).file.buffer) {
+          const ext = path.extname((req as any).file.originalname)
+          const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+          payload.photo_url = await r2Upload(key, (req as any).file.mimetype || 'application/octet-stream', (req as any).file.buffer)
+        } else {
+          payload.photo_url = `/uploads/${(req as any).file.filename}`
+        }
+      }
       const item = await supaUpdate('key_items', req.params.itemId, payload)
       return res.json(item)
     }
@@ -289,7 +355,15 @@ router.patch('/sets/:id/items/:itemId', requirePerm('keyset.manage'), upload.sin
   if (!item) return res.status(404).json({ message: 'item not found' })
   const code = (req.body && (req.body as any).code) ? String((req.body as any).code) : undefined
   if (code) item.code = code
-  if ((req as any).file) item.photo_url = `/uploads/${(req as any).file.filename}`
+  if ((req as any).file) {
+    if (hasR2 && (req as any).file.buffer) {
+      const ext = path.extname((req as any).file.originalname)
+      const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+      item.photo_url = await r2Upload(key, (req as any).file.mimetype || 'application/octet-stream', (req as any).file.buffer)
+    } else {
+      item.photo_url = `/uploads/${(req as any).file.filename}`
+    }
+  }
   res.json(item)
 })
 

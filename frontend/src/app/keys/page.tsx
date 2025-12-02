@@ -19,10 +19,18 @@ export default function KeysPage() {
   const prevSetsRef = useRef<KeySet[]>([])
 
   async function load() {
-    const res = await fetch(`${API_BASE}/keys`)
-    setSets(await res.json())
-    const p = await fetch(`${API_BASE}/properties`).then(r => r.json()).catch(() => [])
-    setProperties(p)
+    try {
+      const res = await fetch(`${API_BASE}/keys`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setSets(await res.json())
+    } catch (e: any) {
+      message.error('钥匙数据加载失败，稍后重试')
+      setSets([])
+    }
+    try {
+      const p = await fetch(`${API_BASE}/properties`).then(r => r.json()).catch(() => [])
+      setProperties(Array.isArray(p) ? p : [])
+    } catch { setProperties([]) }
   }
   useEffect(() => { load() }, [])
 
@@ -137,7 +145,7 @@ export default function KeysPage() {
                   <div key={`${p.id}-${def.set_type}-${def.item_type}`} style={{ minWidth: 180 }}>
                     <div style={{ border: '1px dashed #d9d9d9', borderRadius: 8, padding: 12, textAlign: 'center' }}>
                       <div style={{ height: 72, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        {it?.photo_url ? <Image width={60} src={`${API_BASE}${it.photo_url}`} /> : <Tag>未上传</Tag>}
+                        {it?.photo_url ? <Image width={60} src={/^https?:\/\//.test(it.photo_url) ? it.photo_url : `${API_BASE}${it.photo_url}`} /> : <Tag>未上传</Tag>}
                       </div>
                       <div style={{ marginTop: 8, fontWeight: 500 }}>{def.label}</div>
                       <div style={{ marginTop: 6 }}><Tag>{it?.code || ''}</Tag></div>

@@ -24,6 +24,9 @@ export default function PropertiesPage() {
   const [addrOptions, setAddrOptions] = useState<{ value: string; label: string }[]>([])
   const [addrTimer, setAddrTimer] = useState<any>(null)
   const [showArchived, setShowArchived] = useState(false)
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
+  const [batchOpen, setBatchOpen] = useState(false)
+  const [batchForm] = Form.useForm()
   async function getJson(url: string, init?: RequestInit) {
     try {
       const r = await fetch(url, init)
@@ -134,6 +137,23 @@ export default function PropertiesPage() {
     if (res.ok) { message.success('房源已更新'); setEditOpen(false); load() } else { message.error('更新失败') }
   }
 
+  async function submitBatch() {
+    const v = await batchForm.validateFields().catch(() => null)
+    if (!v) return
+    const payload: any = {}
+    Object.entries(v).forEach(([k, val]) => {
+      if (Array.isArray(val)) { if (val.length) payload[k] = val }
+      else if (typeof val === 'string') { const t = val.trim(); if (t) payload[k] = t }
+      else if (val !== undefined && val !== null) { payload[k] = val }
+    })
+    if (!Object.keys(payload).length) { message.warning('请至少填写一个要修改的字段'); return }
+    const ids = selectedRowKeys.map(String)
+    const results = await Promise.all(ids.map(id => submitPatch(id, payload)))
+    const okCount = results.filter(Boolean).length
+    message.success(`批量更新完成：成功 ${okCount} 条，失败 ${results.length - okCount} 条`)
+    setBatchOpen(false); batchForm.resetFields(); setSelectedRowKeys([]); load()
+  }
+
   const canWrite = hasPerm('property.write')
   const columns = [
     { title: '房号', dataIndex: 'code' },
@@ -175,8 +195,15 @@ export default function PropertiesPage() {
             (p.type || '').toLowerCase().includes(q)
           )
         })}
+        rowSelection={canWrite ? { selectedRowKeys, onChange: setSelectedRowKeys as any } : undefined}
         pagination={{ pageSize: 10 }}
       />
+      {canWrite && (
+        <Space style={{ marginTop: 12 }}>
+          <Button disabled={!selectedRowKeys.length} onClick={() => setBatchOpen(true)}>批量编辑（已选 {selectedRowKeys.length} 条）</Button>
+          {selectedRowKeys.length > 0 && <Button onClick={() => setSelectedRowKeys([])}>清空选择</Button>}
+        </Space>
+      )}
       <Modal open={open} onCancel={() => setOpen(false)} onOk={submitCreate} title="新建房源" width={900}>
         <Form form={form} layout="vertical">
           <Divider orientation="left">房源基础信息</Divider>
@@ -313,6 +340,23 @@ export default function PropertiesPage() {
           </Row>
         </Form>
       </Modal>
+      <Modal open={batchOpen} onCancel={() => setBatchOpen(false)} onOk={submitBatch} title="批量编辑房源" width={800}>
+        <Form form={batchForm} layout="vertical">
+          <Divider orientation="left">批量修改字段（不填则不修改）</Divider>
+          <Row gutter={[16,16]}>
+            <Col span={24}><Form.Item name="address" label="地址"><Input placeholder="统一更新为此地址" /></Form.Item></Col>
+            <Col span={12}><Form.Item name="building_name" label="大楼名称"><Input /></Form.Item></Col>
+            <Col span={12}><Form.Item name="building_facility_floor" label="设施所在楼层"><Input placeholder="如：LG/Level 2" /></Form.Item></Col>
+            <Col span={12}><Form.Item name="building_contact_phone" label="大楼经理电话"><Input /></Form.Item></Col>
+            <Col span={12}><Form.Item name="building_contact_email" label="大楼经理邮箱"><Input /></Form.Item></Col>
+            <Col span={24}><Form.Item name="building_facilities" label="大楼设施"><Select mode="multiple" options={(dicts.facilities || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item></Col>
+            <Col span={24}><Form.Item name="building_notes" label="大楼备注"><Input.TextArea rows={2} /></Form.Item></Col>
+            <Col span={24}><Form.Item name="notes" label="房源备注"><Input.TextArea rows={3} /></Form.Item></Col>
+          </Row>
+          <Divider />
+          <Space><Tag color="blue">将对 {selectedRowKeys.length} 条房源应用以上非空字段</Tag></Space>
+        </Form>
+      </Modal>
     </Card>
     </ErrorBoundary>
   )
@@ -323,4 +367,11 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
   static getDerivedStateFromError() { return { hasError: true } }
   componentDidCatch() {}
   render() { return this.state.hasError ? <Card>页面加载失败</Card> : this.props.children }
+}
+
+async function submitPatch(id: string, payload: any) {
+  try {
+    const res = await fetch(`${API_BASE}/properties/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
+    return res.ok
+  } catch { return false }
 }

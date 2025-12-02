@@ -17,12 +17,19 @@ import { router as authRouter } from './modules/auth'
 import { router as auditsRouter } from './modules/audits'
 import { router as rbacRouter } from './modules/rbac'
 import { router as versionRouter } from './modules/version'
+import maintenanceRouter from './modules/maintenance'
 import crudRouter from './modules/crud'
 import { auth } from './auth'
 import { hasPg, pgPool } from './dbAdapter'
 import { hasSupabase, supabase } from './supabase'
 import fs from 'fs'
-import path from 'path'
+const isProd = process.env.NODE_ENV === 'production'
+if (isProd && hasPg) {
+  const url = process.env.DATABASE_URL || ''
+  if (!url) throw new Error('DATABASE_URL 未设置')
+  if (/localhost/i.test(url)) throw new Error('DATABASE_URL 不能使用 localhost')
+  if (!/[?&]sslmode=require/.test(url)) throw new Error('DATABASE_URL 需包含 sslmode=require')
+}
 
 const app = express()
 const corsOpts: cors.CorsOptions = {
@@ -80,6 +87,7 @@ app.use('/auth', authRouter)
 app.use('/audits', auditsRouter)
 app.use('/rbac', rbacRouter)
 app.use('/version', versionRouter)
+app.use('/maintenance', maintenanceRouter)
 
 const port = process.env.PORT ? Number(process.env.PORT) : 4001
 app.listen(port, () => {console.log(`Server listening on port ${port}`); console.log(`[DataSources] pg=${hasPg} supabase=${hasSupabase}`)})

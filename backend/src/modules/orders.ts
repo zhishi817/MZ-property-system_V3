@@ -46,17 +46,43 @@ router.get('/', async (_req, res) => {
       const remote: any[] = (await pgSelect('orders')) || []
       const local = db.orders
       const merged = [...remote, ...local.filter((l) => !remote.some((r: any) => r.id === l.id))]
-      return res.json(merged)
+      let pRows: any[] = []
+      try { pRows = (await pgSelect('properties', 'id,code,address')) as any[] || [] } catch {}
+      const byId: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.id), p]))
+      const byCode: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.code || ''), p]))
+      const labeled = merged.map((o: any) => {
+        const pid = String(o.property_id || '')
+        const prop = byId[pid] || byCode[pid]
+        const label = (o.property_code || prop?.code || prop?.address || pid)
+        return { ...o, property_code: label }
+      })
+      return res.json(labeled)
     }
     if (hasSupabase) {
       const remote: any[] = (await supaSelect('orders')) || []
       const local = db.orders
       const merged = [...remote, ...local.filter((l) => !remote.some((r: any) => r.id === l.id))]
-      return res.json(merged)
+      let pRows: any[] = []
+      try { pRows = (await supaSelect('properties', 'id,code,address')) as any[] || [] } catch {}
+      const byId: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.id), p]))
+      const byCode: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.code || ''), p]))
+      const labeled = merged.map((o: any) => {
+        const pid = String(o.property_id || '')
+        const prop = byId[pid] || byCode[pid]
+        const label = (o.property_code || prop?.code || prop?.address || pid)
+        return { ...o, property_code: label }
+      })
+      return res.json(labeled)
     }
-    return res.json(db.orders)
+    return res.json(db.orders.map((o) => {
+      const prop = db.properties.find((p) => String(p.id) === String(o.property_id)) || db.properties.find((p) => String(p.code || '') === String(o.property_id || ''))
+      return { ...o, property_code: (o.property_code || prop?.code || prop?.address || o.property_id || '') }
+    }))
   } catch {
-    return res.json(db.orders)
+    return res.json(db.orders.map((o) => {
+      const prop = db.properties.find((p) => String(p.id) === String(o.property_id)) || db.properties.find((p) => String(p.code || '') === String(o.property_id || ''))
+      return { ...o, property_code: (o.property_code || prop?.code || prop?.address || o.property_id || '') }
+    }))
   }
 })
 
