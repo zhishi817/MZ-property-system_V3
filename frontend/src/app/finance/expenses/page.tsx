@@ -1,5 +1,5 @@
 "use client"
-import { Card, Form, Input, InputNumber, DatePicker, Select, Upload, Button, Table, Space, App, Modal, Alert } from 'antd'
+import { Card, Form, Input, InputNumber, DatePicker, Select, Upload, Button, Table, Space, App, Modal, Alert, Radio } from 'antd'
 import { UploadOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import dayjs from 'dayjs'
@@ -37,14 +37,15 @@ export default function ExpensesPage() {
     if (saving) return
     setSaving(true)
     const v = await form.validateFields()
+    const invoiceUrl = form.getFieldValue('invoice_url')
     const payload = {
       kind: 'expense',
       amount: Number(v.amount || 0),
       currency: v.currency || 'AUD',
       category: v.category,
       property_id: v.property_id,
-      invoice_url: v.invoice_url,
-      note: v.category === 'other' ? (v.other_detail || v.note || '') : v.note,
+      invoice_url: invoiceUrl,
+      note: v.note,
       category_detail: v.category === 'other' ? (v.other_detail || '') : undefined,
       occurred_at: dayjs(v.occurred_at).format('YYYY-MM-DD')
     }
@@ -62,16 +63,31 @@ export default function ExpensesPage() {
     if (res.ok) { const j = await res.json(); form.setFieldsValue({ invoice_url: j.url }); message.success('上传成功') } else { message.error('上传失败') }
     return false
   }
+  const CATS = [
+    { value: 'electricity', label: '电费' },
+    { value: 'water', label: '水费' },
+    { value: 'gas_hot_water', label: '煤气/热水费' },
+    { value: 'internet', label: '网费' },
+    { value: 'consumables', label: '消耗品费' },
+    { value: 'carpark', label: '车位费' },
+    { value: 'owners_corp', label: '物业费' },
+    { value: 'council_rate', label: '市政费' },
+    { value: 'other', label: '其他' }
+  ]
+  const catLabel = (v?: string) => (CATS.find(c => c.value === v)?.label || v || '-')
   const columns = [
     { title: '日期', dataIndex: 'occurred_at', render: (v: string) => dayjs(v).format('DD/MM/YYYY') },
     { title: '房号', dataIndex: 'property_code', render: (v: string, r: any) => (v || (()=>{ const p = properties.find(x => x.id === r.property_id); return p?.code || r.property_id || '-' })()) },
     { title: '类别', dataIndex: 'category', render: (_: any, r: Tx) => {
       if (!r?.category) return '-'
-      return r.category === 'other' ? `其他:${r.category_detail || ''}` : r.category
+      return r.category === 'other' ? `其他: ${r.category_detail || ''}` : catLabel(r.category)
     } },
     { title: '金额', dataIndex: 'amount' },
     { title: '币种', dataIndex: 'currency' },
-    { title: '发票', dataIndex: 'invoice_url', render: (v: string) => v ? <a href={v} target="_blank" rel="noreferrer">查看</a> : '-' },
+    { title: '发票', dataIndex: 'invoice_url', render: (v: string) => {
+      const url = v && /^https?:\/\//.test(v) ? v : (v ? `${API_BASE}${v}` : '')
+      return url ? <a href={url} target="_blank" rel="noreferrer">查看</a> : '-'
+    } },
     { title: '备注', dataIndex: 'note' },
     { title: '操作', render: (_: any, r: Tx) => hasPerm('finance.payout') ? (
       <Space>
@@ -95,7 +111,7 @@ export default function ExpensesPage() {
         {canViewList ? (
           <>
             <Input placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} style={{ width: 200 }} />
-            <Select allowClear placeholder="按类别筛选" value={catFilter} onChange={setCatFilter} style={{ width: 200 }} options={[{value:'electricity',label:'电费'},{value:'water',label:'水费'},{value:'gas',label:'气费'},{value:'property_fee',label:'物业费'},{value:'other',label:'其他'}]} />
+            <Select allowClear placeholder="按类别筛选" value={catFilter} onChange={setCatFilter} style={{ width: 240 }} options={CATS.map(c => ({ value: c.value, label: c.label }))} />
             <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} format="DD/MM/YYYY" />
           </>
         ) : (
@@ -122,7 +138,28 @@ export default function ExpensesPage() {
             <Select showSearch options={properties.map(p => ({ value: p.id, label: p.code || p.id }))} />
           </Form.Item>
           <Form.Item name="category" label="类别" rules={[{ required: true }]}> 
-            <Select options={[{value:'electricity',label:'电费'},{value:'water',label:'水费'},{value:'gas',label:'气费'},{value:'property_fee',label:'物业费'},{value:'other',label:'其他'}]} />
+            <Radio.Group optionType="button" buttonStyle="solid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(140px, 1fr))', gap: 12 }}>
+              {CATS.map(c => (
+                <Radio.Button
+                  key={c.value}
+                  value={c.value}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    textAlign: 'center',
+                    padding: '10px 14px',
+                    borderRadius: 9999,
+                    minHeight: 40,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
+                  }}
+                >
+                  {c.label}
+                </Radio.Button>
+              ))}
+            </Radio.Group>
           </Form.Item>
           <Form.Item noStyle shouldUpdate>
             {() => {
@@ -153,6 +190,9 @@ export default function ExpensesPage() {
             {form.getFieldValue('invoice_url') ? (
               <a href={form.getFieldValue('invoice_url')} target="_blank" rel="noreferrer" style={{ marginLeft: 8 }}>已上传，查看</a>
             ) : null}
+          </Form.Item>
+          <Form.Item name="invoice_url" hidden>
+            <Input />
           </Form.Item>
         </Form>
       </Modal>

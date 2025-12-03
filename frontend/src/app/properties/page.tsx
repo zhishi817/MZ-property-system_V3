@@ -91,7 +91,9 @@ export default function PropertiesPage() {
     const bedroomCount = getBedroomCount(v.type)
     const beds = (v.bedrooms || []).slice(0, bedroomCount)
     const bed_config = beds.map((b: string, i: number) => `Bedroom ${i + 1}: ${b || ''}`).join('; ')
-    const payload = { code: v.code, address: v.address, type: v.type, capacity: v.capacity, region: v.region, area_sqm: v.area_sqm, landlord_id: v.landlord_id, bed_config, aircon_model: v.aircon_model, access_guide_link: v.access_guide_link, garage_guide_link: v.garage_guide_link, building_name: v.building_name, building_facilities: v.building_facilities, building_contact_name: v.building_contact_name, building_contact_phone: v.building_contact_phone, building_contact_email: v.building_contact_email, tv_model: v.tv_model, notes: v.notes }
+    const listing_names = { airbnb: v.listing_airbnb || '', booking: v.listing_booking || '', other: v.listing_other || '' }
+    if (![listing_names.airbnb, listing_names.booking, listing_names.other].some(x => String(x || '').trim())) { message.error('请至少填写一个平台的 Listing 名称'); return }
+    const payload = { code: v.code, address: v.address, type: v.type, capacity: v.capacity, region: v.region, area_sqm: v.area_sqm, landlord_id: v.landlord_id, bed_config, aircon_model: v.aircon_model, access_guide_link: v.access_guide_link, garage_guide_link: v.garage_guide_link, building_name: v.building_name, building_facilities: v.building_facilities, building_contact_name: v.building_contact_name, building_contact_phone: v.building_contact_phone, building_contact_email: v.building_contact_email, tv_model: v.tv_model, notes: v.notes, listing_names }
     const res = await fetch(`${API_BASE}/properties`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('房源已创建'); setOpen(false); form.resetFields(); load() }
     else { let msg = '创建失败'; try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} } message.error(msg) }
@@ -101,7 +103,7 @@ export default function PropertiesPage() {
     setCurrent(record)
     const full = await fetch(`${API_BASE}/properties/${record.id}`).then(r => r.json()).catch(() => record)
     setEditOpen(true)
-    editForm.setFieldsValue(full)
+    editForm.setFieldsValue({ ...full, listing_airbnb: full?.listing_names?.airbnb || '', listing_booking: full?.listing_names?.booking || '', listing_other: full?.listing_names?.other || '' })
     setTypeEdit(full?.type)
   }
 
@@ -132,7 +134,9 @@ export default function PropertiesPage() {
     const bedroomCount = getBedroomCount(v.type)
     const beds = (v.bedrooms || []).slice(0, bedroomCount)
     const bed_config = beds.map((b: string, i: number) => `Bedroom ${i + 1}: ${b || ''}`).join('; ')
-    const payload = { ...v, bed_config }
+    const listing_names = { airbnb: v.listing_airbnb || '', booking: v.listing_booking || '', other: v.listing_other || '' }
+    if (![listing_names.airbnb, listing_names.booking, listing_names.other].some(x => String(x || '').trim())) { message.error('请至少填写一个平台的 Listing 名称'); return }
+    const payload = { ...v, bed_config, listing_names }
     const res = await fetch(`${API_BASE}/properties/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('房源已更新'); setEditOpen(false); load() } else { message.error('更新失败') }
   }
@@ -208,10 +212,13 @@ export default function PropertiesPage() {
         <Form form={form} layout="vertical">
           <Divider orientation="left">房源基础信息</Divider>
           <Row gutter={[16,16]}>
-            <Col span={8}><Form.Item name="code" label="房号"><Input placeholder="留空自动生成" /></Form.Item></Col>
+            <Col span={8}><Form.Item name="code" label="房号" rules={[{ required: true, message: '房号必填' }]}><Input placeholder="请输入房号" /></Form.Item></Col>
             <Col span={8}><Form.Item name="landlord_id" label="房源隶属房东"><Select allowClear options={landlords.map(l => ({ value: l.id, label: l.name }))} /></Form.Item></Col>
             <Col span={8}><Form.Item name="region" label="房源区域划分"><Select options={(dicts.regions || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item></Col>
-            <Col span={24}><Form.Item name="address" label="房源地址（墨尔本）" rules={[{ required: true }]}>
+            <Col span={8}><Form.Item name="listing_airbnb" label="Airbnb Listing 名称"><Input placeholder="Airbnb上展示的Listing标题" /></Form.Item></Col>
+            <Col span={8}><Form.Item name="listing_booking" label="Booking.com Listing 名称"><Input placeholder="Booking.com 上展示的Listing标题" /></Form.Item></Col>
+            <Col span={8}><Form.Item name="listing_other" label="其他平台 Listing 名称"><Input placeholder="其他平台的Listing标题" /></Form.Item></Col>
+            <Col span={24}><Form.Item name="address" label="房源地址（墨尔本）" rules={[{ required: true }]}> 
               <AutoComplete
                 options={addrOptions}
                 onSearch={handleAddrSearch}
@@ -260,6 +267,9 @@ export default function PropertiesPage() {
             <Col span={8}><Form.Item label="房号"><Input value={detail?.code} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="房东"><Input value={(landlords.find(l => l.id === detail?.landlord_id)?.name) || ''} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="区域"><Input value={detail?.region} readOnly /></Form.Item></Col>
+            <Col span={8}><Form.Item label="Airbnb Listing 名称"><Input value={detail?.listing_names?.airbnb || ''} readOnly /></Form.Item></Col>
+            <Col span={8}><Form.Item label="Booking.com Listing 名称"><Input value={detail?.listing_names?.booking || ''} readOnly /></Form.Item></Col>
+            <Col span={8}><Form.Item label="其他平台 Listing 名称"><Input value={detail?.listing_names?.other || ''} readOnly /></Form.Item></Col>
             <Col span={24}><Form.Item label="地址"><Input value={detail?.address} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="房型"><Input value={detail?.type} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="可住人数"><Input value={detail?.capacity?.toString()} readOnly /></Form.Item></Col>
@@ -302,7 +312,10 @@ export default function PropertiesPage() {
             <Col span={8}><Form.Item label="房号"><Input value={editForm.getFieldValue('code') || ''} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item name="landlord_id" label="房东"><Select allowClear options={landlords.map(l => ({ value: l.id, label: l.name }))} /></Form.Item></Col>
             <Col span={8}><Form.Item name="region" label="区域"><Select options={(dicts.regions || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item></Col>
-            <Col span={24}><Form.Item name="address" label="地址" rules={[{ required: true }]}>
+            <Col span={8}><Form.Item name="listing_airbnb" label="Airbnb Listing 名称"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name="listing_booking" label="Booking.com Listing 名称"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name="listing_other" label="其他平台 Listing 名称"><Input /></Form.Item></Col>
+            <Col span={24}><Form.Item name="address" label="地址" rules={[{ required: true }]}> 
               <AutoComplete
                 options={addrOptions}
                 onSearch={handleAddrSearch}

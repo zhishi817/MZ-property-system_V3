@@ -64,11 +64,17 @@ const createSchema = z.object({
   landlord_id: z.string().optional(),
   orientation: z.string().optional(),
   fireworks_view: z.boolean().optional(),
+  listing_names: z.record(z.string()).optional(),
 })
 
 router.post('/', requirePerm('property.write'), async (req, res) => {
   const parsed = createSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    const ln = (parsed.data as any).listing_names || {}
+    const hasAny = Object.values(ln || {}).some((v: any) => String(v || '').trim())
+    if (!hasAny) return res.status(400).json({ message: '请至少填写一个平台的 Listing 名称' })
+  } catch {}
   const autoCode = `PM-${Math.random().toString(36).slice(2,6).toUpperCase()}-${Date.now().toString().slice(-4)}`
   const pFull: any = { id: uuidv4(), code: parsed.data.code || autoCode, ...parsed.data }
   const baseKeys = ['id','address','type','capacity','region','area_sqm','building_name','building_facilities','building_facility_floor','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','aircon_model','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id']
@@ -121,14 +127,33 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
       }
     }
     if (hasPg) {
-      const row = await pgInsert('properties', pFull)
-      addAudit('Property', row.id, 'create', null, row)
-      ;['guest','spare_1','spare_2','other'].forEach((t) => {
-        if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-          db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
+      try {
+        const row = await pgInsert('properties', pBase)
+        addAudit('Property', row.id, 'create', null, row)
+        ;['guest','spare_1','spare_2','other'].forEach((t) => {
+          if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
+            db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
+          }
+        })
+        return res.status(201).json(row)
+      } catch (e: any) {
+        if (/column\s+"?listing_names"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
+          try {
+            await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS listing_names jsonb')
+            const row = await pgInsert('properties', pBase)
+            addAudit('Property', row.id, 'create', null, row)
+            ;['guest','spare_1','spare_2','other'].forEach((t) => {
+              if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
+                db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
+              }
+            })
+            return res.status(201).json(row)
+          } catch (e2: any) {
+            return res.status(500).json({ message: e2?.message || 'failed to add listing_names column' })
+          }
         }
-      })
-      return res.status(201).json(row)
+        return res.status(500).json({ message: e?.message || 'create failed' })
+      }
     }
     db.properties.push(pFull)
     addAudit('Property', pFull.id, 'create', null, pFull)
@@ -147,7 +172,7 @@ router.patch('/:id', requirePerm('property.write'), async (req, res) => {
   const { id } = req.params
   const body = req.body as any
   const cleanedBody: any = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'bedrooms'))
-  const baseKeys = ['address','type','capacity','region','area_sqm','building_name','building_facilities','building_facility_floor','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','aircon_model','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id']
+  const baseKeys = ['address','type','capacity','region','area_sqm','building_name','building_facilities','building_facility_floor','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','aircon_model','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id','listing_names']
   const bodyBase: any = Object.fromEntries(Object.entries(cleanedBody).filter(([k]) => baseKeys.includes(k)))
   try {
     if (hasSupabase) {
@@ -175,9 +200,19 @@ router.patch('/:id', requirePerm('property.write'), async (req, res) => {
     if (hasPg) {
       const rows: any = await pgSelect('properties', '*', { id })
       const before = rows && rows[0]
-      const row = await pgUpdate('properties', id, cleanedBody)
-      addAudit('Property', id, 'update', before, row)
-      return res.json(row)
+      try {
+        const row = await pgUpdate('properties', id, bodyBase)
+        addAudit('Property', id, 'update', before, row)
+        return res.json(row)
+      } catch (e: any) {
+        if (/column\s+"?listing_names"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
+          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS listing_names jsonb')
+          const row2 = await pgUpdate('properties', id, bodyBase)
+          addAudit('Property', id, 'update', before, row2)
+          return res.json(row2)
+        }
+        throw e
+      }
     }
     const p = db.properties.find((x) => x.id === id)
     if (!p) return res.status(404).json({ message: 'not found' })

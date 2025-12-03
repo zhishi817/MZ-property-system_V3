@@ -6,7 +6,7 @@ import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
 
-type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; guest_name?: string; guest_phone?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number }
+type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number }
 // guest_phone 在后端已支持，这里表单也支持录入
 type CleaningTask = { id: string; status: 'pending'|'scheduled'|'done' }
 
@@ -71,6 +71,7 @@ export default function OrdersPage() {
     const p0 = (Array.isArray(properties) ? properties : []).find(x => x.id === pid0)
     editForm.setFieldsValue({
       ...o,
+      confirmation_code: o.confirmation_code || '',
       property_id: pid0,
       property_code: p0 ? (p0.code || p0.address || pid0) : o.property_code,
       price: o.price != null ? o.price : 0,
@@ -87,6 +88,7 @@ export default function OrdersPage() {
       const p = (Array.isArray(properties) ? properties : []).find(x => x.id === pid)
       editForm.setFieldsValue({
         ...full,
+        confirmation_code: (full as any).confirmation_code || '',
         property_id: pid,
         property_code: p ? (p.code || p.address || pid) : full.property_code,
         price: full.price != null ? full.price : 0,
@@ -121,6 +123,7 @@ export default function OrdersPage() {
       status: v.status || 'confirmed',
       property_id: v.property_id,
       property_code: v.property_code || selectedNew?.code || selectedNew?.address || v.property_id,
+      confirmation_code: v.confirmation_code,
       guest_name: v.guest_name,
       guest_phone: v.guest_phone,
       checkin: v.checkin.format('YYYY-MM-DD') + 'T12:00:00',
@@ -155,6 +158,7 @@ export default function OrdersPage() {
 
   const columns = [
     { title: '房号', dataIndex: 'property_code', render: (_: any, r: Order) => getPropertyCodeLabel(r) },
+    { title: '确认码', dataIndex: 'confirmation_code' },
     { title: '来源', dataIndex: 'source' },
     { title: '客人', dataIndex: 'guest_name' },
     // 可按需求增加显示客人电话
@@ -331,6 +335,9 @@ export default function OrdersPage() {
       )}
       <Modal open={open} onCancel={() => setOpen(false)} onOk={submitCreate} title="新建订单">
       <Form form={form} layout="vertical">
+        <Form.Item name="confirmation_code" label="确认码" rules={[{ required: true, message: '确认码必填' }]}>
+          <Input placeholder="平台订单确认码或唯一编号" />
+        </Form.Item>
         <Form.Item name="source" label="来源" rules={[{ required: true }]}> 
           <Select options={[{ value: 'airbnb', label: 'airbnb' }, { value: 'booking', label: 'booking.com' }, { value: 'offline', label: '线下' }, { value: 'other', label: '其他' }]} />
         </Form.Item>
@@ -444,6 +451,9 @@ export default function OrdersPage() {
         }
       }} title="编辑订单">
         <Form form={editForm} layout="vertical">
+          <Form.Item name="confirmation_code" label="确认码" rules={[{ required: true, message: '确认码必填' }]}>
+            <Input />
+          </Form.Item>
           <Form.Item name="source" label="来源" rules={[{ required: true }]}> 
             <Select options={[{ value: 'airbnb', label: 'airbnb' }, { value: 'booking', label: 'booking.com' }, { value: 'offline', label: '线下' }, { value: 'other', label: '其他' }]} />
           </Form.Item>

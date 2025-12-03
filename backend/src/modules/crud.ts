@@ -36,21 +36,23 @@ router.get('/:resource', requireAnyPerm(['rbac.manage','property.write','order.v
   delete filter.limit; delete filter.offset; delete filter.order
   try {
     if (hasPg) {
-      const rows = (await pgSelect(resource, '*', Object.keys(filter).length ? filter : undefined)) as any[] || []
-      if (resource === 'property_expenses') {
-        let props: any[] = []
-        try { props = (await pgSelect('properties', 'id,code,address')) as any[] || [] } catch {}
-        const byId: Record<string, any> = Object.fromEntries(props.map(p => [String(p.id), p]))
-        const byCode: Record<string, any> = Object.fromEntries(props.map(p => [String(p.code || ''), p]))
-        const labeled = rows.map(r => {
-          const pid = String(r.property_id || '')
-          const p = byId[pid] || byCode[pid]
-          const label = p?.code || p?.address || pid || ''
-          return { ...r, property_code: label }
-        })
-        return res.json(labeled)
-      }
-      return res.json(rows)
+      try {
+        const rows = (await pgSelect(resource, '*', Object.keys(filter).length ? filter : undefined)) as any[] || []
+        if (resource === 'property_expenses') {
+          let props: any[] = []
+          try { props = (await pgSelect('properties', 'id,code,address')) as any[] || [] } catch {}
+          const byId: Record<string, any> = Object.fromEntries(props.map(p => [String(p.id), p]))
+          const byCode: Record<string, any> = Object.fromEntries(props.map(p => [String(p.code || ''), p]))
+          const labeled = rows.map(r => {
+            const pid = String(r.property_id || '')
+            const p = byId[pid] || byCode[pid]
+            const label = p?.code || p?.address || pid || ''
+            return { ...r, property_code: label }
+          })
+          return res.json(labeled)
+        }
+        return res.json(rows)
+      } catch {}
     }
     if (hasSupabase) {
       const rows = (await supaSelect(resource, '*', Object.keys(filter).length ? filter : undefined)) as any[] || []
@@ -223,7 +225,23 @@ router.post('/:resource', requireAnyPerm(['rbac.manage','property.write','order.
             row = res.rows && res.rows[0]
           }
         } else {
-          row = await pgInsert(resource, payload)
+          let toInsert: any = payload
+          if (resource === 'property_expenses') {
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','created_by']
+            const cleaned: any = { id: payload.id }
+            for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+            if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+            if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+            toInsert = cleaned
+          } else if (resource === 'company_expenses') {
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url']
+            const cleaned: any = { id: payload.id }
+            for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+            if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+            if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+            toInsert = cleaned
+          }
+          row = await pgInsert(resource, toInsert)
         }
       } catch (e: any) {
         const msg = String(e?.message || '')
@@ -320,6 +338,24 @@ router.post('/:resource', requireAnyPerm(['rbac.manage','property.write','order.
             return res.status(500).json({ message: (e3 as any)?.message || 'create failed (photo_urls text[])' })
           }
         } else {
+          if (resource === 'company_expenses' && /column\s+"?category_detail"?\s+of\s+relation\s+"?company_expenses"?\s+does\s+not\s+exist/i.test(msg)) {
+            try {
+              const { pgPool } = require('../dbAdapter')
+              if (pgPool) {
+                await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
+                const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url']
+                const cleaned: any = { id: payload.id }
+                for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+                if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+                if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+                const row2 = await pgInsert(resource, cleaned)
+                addAudit(resource, String((row2 as any)?.id || ''), 'create', null, row2, (req as any).user?.sub)
+                return res.status(201).json(row2)
+              }
+            } catch (e4) {
+              return res.status(500).json({ message: (e4 as any)?.message || 'create failed (column add)' })
+            }
+          }
           return res.status(500).json({ message: msg || 'create failed' })
         }
       }
@@ -370,7 +406,23 @@ router.patch('/:resource/:id', requireAnyPerm(['rbac.manage','property.write','o
   }
   try {
     if (hasPg) {
-      const row = await pgUpdate(resource, id, payload)
+      let toUpdate: any = payload
+      if (resource === 'property_expenses') {
+        const allow = ['occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id']
+        const cleaned: any = {}
+        for (const k of allow) { if (payload[k] !== undefined) cleaned[k] = payload[k] }
+        if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+        if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+        toUpdate = cleaned
+      } else if (resource === 'company_expenses') {
+        const allow = ['occurred_at','amount','currency','category','category_detail','note','invoice_url']
+        const cleaned: any = {}
+        for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+        if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+        if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+        toUpdate = cleaned
+      }
+      const row = await pgUpdate(resource, id, toUpdate)
       addAudit(resource, id, 'update', null, row, (req as any).user?.sub)
       return res.json(row || { id, ...payload })
     }
