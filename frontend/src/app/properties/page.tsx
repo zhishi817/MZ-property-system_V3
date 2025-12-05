@@ -27,6 +27,7 @@ export default function PropertiesPage() {
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
   const [batchOpen, setBatchOpen] = useState(false)
   const [batchForm] = Form.useForm()
+  const [regionFilter, setRegionFilter] = useState<string | undefined>(undefined)
   async function getJson(url: string, init?: RequestInit) {
     try {
       const r = await fetch(url, init)
@@ -93,7 +94,7 @@ export default function PropertiesPage() {
     const bed_config = beds.map((b: string, i: number) => `Bedroom ${i + 1}: ${b || ''}`).join('; ')
     const listing_names = { airbnb: v.listing_airbnb || '', booking: v.listing_booking || '', other: v.listing_other || '' }
     if (![listing_names.airbnb, listing_names.booking, listing_names.other].some(x => String(x || '').trim())) { message.error('请至少填写一个平台的 Listing 名称'); return }
-    const payload = { code: v.code, address: v.address, type: v.type, capacity: v.capacity, region: v.region, area_sqm: v.area_sqm, landlord_id: v.landlord_id, bed_config, aircon_model: v.aircon_model, access_guide_link: v.access_guide_link, garage_guide_link: v.garage_guide_link, building_name: v.building_name, building_facilities: v.building_facilities, building_contact_name: v.building_contact_name, building_contact_phone: v.building_contact_phone, building_contact_email: v.building_contact_email, tv_model: v.tv_model, notes: v.notes, listing_names }
+    const payload = { code: v.code, address: v.address, type: v.type, capacity: v.capacity, region: v.region === '其他' ? (v.region_other || '') : v.region, area_sqm: v.area_sqm, landlord_id: v.landlord_id, biz_category: v.biz_category, bed_config, aircon_model: v.aircon_model, bedroom_ac: v.bedroom_ac, access_guide_link: v.access_guide_link, garage_guide_link: v.garage_guide_link, building_name: v.building_name, building_facilities: v.building_facilities, building_facility_other: v.building_facility_other, building_contact_name: v.building_contact_name, building_contact_phone: v.building_contact_phone, building_contact_email: v.building_contact_email, tv_model: v.tv_model, notes: v.notes, listing_names }
     const res = await fetch(`${API_BASE}/properties`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('房源已创建'); setOpen(false); form.resetFields(); load() }
     else { let msg = '创建失败'; try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} } message.error(msg) }
@@ -136,7 +137,7 @@ export default function PropertiesPage() {
     const bed_config = beds.map((b: string, i: number) => `Bedroom ${i + 1}: ${b || ''}`).join('; ')
     const listing_names = { airbnb: v.listing_airbnb || '', booking: v.listing_booking || '', other: v.listing_other || '' }
     if (![listing_names.airbnb, listing_names.booking, listing_names.other].some(x => String(x || '').trim())) { message.error('请至少填写一个平台的 Listing 名称'); return }
-    const payload = { ...v, bed_config, listing_names }
+    const payload = { ...v, region: v.region === '其他' ? (v.region_other || '') : v.region, bed_config, listing_names }
     const res = await fetch(`${API_BASE}/properties/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('房源已更新'); setEditOpen(false); load() } else { message.error('更新失败') }
   }
@@ -163,6 +164,7 @@ export default function PropertiesPage() {
     { title: '房号', dataIndex: 'code' },
     { title: '地址', dataIndex: 'address' },
     { title: '房型', dataIndex: 'type' },
+    { title: '分类', dataIndex: 'biz_category', render: (v: string) => v === 'leased' ? '包租房源' : (v === 'management_fee' ? '管理费房源' : '-') },
     { title: '可住人数', dataIndex: 'capacity' },
     { title: '区域', dataIndex: 'region' },
     { title: '面积(㎡)', dataIndex: 'area_sqm' },
@@ -182,15 +184,15 @@ export default function PropertiesPage() {
       <Space>
         <span>显示归档</span>
         <Switch checked={showArchived} onChange={setShowArchived as any} />
+        <Select allowClear placeholder="按区域筛选" value={regionFilter} onChange={setRegionFilter as any} style={{ width: 160 }} options={[{value:'Melbourne',label:'Melbourne'},{value:'Southbank',label:'Southbank'},{value:'South Melbourne',label:'South Melbourne'},{value:'West Melbourne',label:'West Melbourne'},{value:'St Kilda',label:'St Kilda'},{value:'Docklands',label:'Docklands'},{value:'未分区',label:'未分区'}]} />
         <Input.Search allowClear placeholder="搜索房源" onSearch={setQuery} onChange={(e) => setQuery(e.target.value)} style={{ width: 260 }} />
         {canWrite && <Button type="primary" onClick={() => setOpen(true)}>新建房源</Button>}
       </Space>
     }>
-      <Table
-        rowKey={(r) => r.id}
-        columns={columns as any}
-        dataSource={data.filter(p => {
-          const q = query.trim().toLowerCase()
+      {(() => {
+        const q = query.trim().toLowerCase()
+        const known = ['Melbourne','Southbank','South Melbourne','West Melbourne','St Kilda','Docklands']
+        const matchQuery = (p: any) => {
           if (!q) return true
           return (
             (p.code || '').toLowerCase().includes(q) ||
@@ -198,10 +200,40 @@ export default function PropertiesPage() {
             (p.region || '').toLowerCase().includes(q) ||
             (p.type || '').toLowerCase().includes(q)
           )
-        })}
-        rowSelection={canWrite ? { selectedRowKeys, onChange: setSelectedRowKeys as any } : undefined}
-        pagination={{ pageSize: 10 }}
-      />
+        }
+        const matchRegion = (p: any) => {
+          if (!regionFilter) return true
+          if (regionFilter === '未分区') return !p.region || String(p.region) === '其他'
+          return String(p.region) === regionFilter
+        }
+        const rows = data.filter(p => matchQuery(p) && matchRegion(p))
+        if (regionFilter) {
+          return (
+            <Table rowKey={(r:any)=>r.id} columns={columns as any} dataSource={rows} rowSelection={canWrite ? { selectedRowKeys, onChange: setSelectedRowKeys as any } : undefined} pagination={{ pageSize: 10 }} />
+          )
+        }
+        const groups: { name: string, rows: any[] }[] = []
+        const used = new Set<string>()
+        for (const r of known) {
+          const rs = rows.filter(x => String(x.region || '') === r)
+          if (rs.length) { groups.push({ name: r, rows: rs }); used.add(r) }
+        }
+        const uniques = Array.from(new Set(rows.map(x => String(x.region || '未分区'))))
+          .filter(name => name && name !== '其他' && !used.has(name) && name !== '未分区')
+          .sort()
+        for (const name of uniques) {
+          const rs = rows.filter(x => String(x.region || '') === name)
+          if (rs.length) groups.push({ name, rows: rs })
+        }
+        const unknown = rows.filter(x => !x.region || String(x.region) === '其他')
+        if (unknown.length) groups.push({ name: '未分区', rows: unknown })
+        return groups.map(g => (
+          <div key={g.name}>
+            <Divider orientation="left">{g.name}</Divider>
+            <Table rowKey={(r:any)=>r.id} columns={columns as any} dataSource={g.rows} rowSelection={canWrite ? { selectedRowKeys, onChange: setSelectedRowKeys as any } : undefined} pagination={{ pageSize: 10 }} />
+          </div>
+        ))
+      })()}
       {canWrite && (
         <Space style={{ marginTop: 12 }}>
           <Button disabled={!selectedRowKeys.length} onClick={() => setBatchOpen(true)}>批量编辑（已选 {selectedRowKeys.length} 条）</Button>
@@ -214,7 +246,17 @@ export default function PropertiesPage() {
           <Row gutter={[16,16]}>
             <Col span={8}><Form.Item name="code" label="房号" rules={[{ required: true, message: '房号必填' }]}><Input placeholder="请输入房号" /></Form.Item></Col>
             <Col span={8}><Form.Item name="landlord_id" label="房源隶属房东"><Select allowClear options={landlords.map(l => ({ value: l.id, label: l.name }))} /></Form.Item></Col>
-            <Col span={8}><Form.Item name="region" label="房源区域划分"><Select options={(dicts.regions || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item></Col>
+            <Col span={8}><Form.Item name="region" label="房源区域划分" rules={[{ required: true }]}>
+              <Select options={[{value:'Melbourne',label:'Melbourne'},{value:'Southbank',label:'Southbank'},{value:'South Melbourne',label:'South Melbourne'},{value:'West Melbourne',label:'West Melbourne'},{value:'St Kilda',label:'St Kilda'},{value:'Docklands',label:'Docklands'},{value:'其他',label:'其他'}]} />
+            </Form.Item></Col>
+            <Form.Item noStyle shouldUpdate={(prev, cur) => prev.region !== cur.region}>
+              {() => (form.getFieldValue('region') === '其他' ? (
+                <Col span={8}><Form.Item name="region_other" label="其他区域"><Input /></Form.Item></Col>
+              ) : null)}
+            </Form.Item>
+            <Col span={8}><Form.Item name="biz_category" label="房源分类" rules={[{ required: true, message: '请选择房源分类' }]}>
+              <Select options={[{ value:'leased', label:'包租房源' }, { value:'management_fee', label:'管理费房源' }]} />
+            </Form.Item></Col>
             <Col span={8}><Form.Item name="listing_airbnb" label="Airbnb Listing 名称"><Input placeholder="Airbnb上展示的Listing标题" /></Form.Item></Col>
             <Col span={8}><Form.Item name="listing_booking" label="Booking.com Listing 名称"><Input placeholder="Booking.com 上展示的Listing标题" /></Form.Item></Col>
             <Col span={8}><Form.Item name="listing_other" label="其他平台 Listing 名称"><Input placeholder="其他平台的Listing标题" /></Form.Item></Col>
@@ -244,7 +286,12 @@ export default function PropertiesPage() {
           <Divider orientation="left">房源大楼信息</Divider>
           <Row gutter={[16,16]}>
             <Col span={12}><Form.Item name="building_name" label="大楼名称"><Input /></Form.Item></Col>
-            <Col span={12}><Form.Item name="building_facilities" label="大楼设施"><Select mode="multiple" options={(dicts.facilities || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item></Col>
+            <Col span={12}><Form.Item name="building_facilities" label="大楼设施"><Select mode="multiple" options={[...((dicts.facilities||[]).filter((v:string)=> !['elevator','parking'].includes(v.toLowerCase()))).map((v:string)=>({value:v,label:v})),{value:'Sauna',label:'Sauna'},{value:'Spa',label:'Spa'},{value:'其他',label:'其他'}]} /></Form.Item></Col>
+            <Form.Item noStyle shouldUpdate={(prev, cur) => JSON.stringify(prev.building_facilities) !== JSON.stringify(cur.building_facilities)}>
+              {() => (Array.isArray(form.getFieldValue('building_facilities')) && form.getFieldValue('building_facilities').includes('其他') ? (
+                <Col span={12}><Form.Item name="building_facility_other" label="其他设施"><Input /></Form.Item></Col>
+              ) : null)}
+            </Form.Item>
             <Col span={8}><Form.Item name="building_facility_floor" label="设施所在楼层"><Input placeholder="如：LG/Level 2" /></Form.Item></Col>
             <Col span={8}><Form.Item name="building_contact_phone" label="大楼经理电话"><Input /></Form.Item></Col>
             <Col span={8}><Form.Item name="building_contact_email" label="大楼经理邮箱"><Input /></Form.Item></Col>
@@ -254,6 +301,9 @@ export default function PropertiesPage() {
           <Row gutter={[16,16]}>
             <Col span={8}><Form.Item name="tv_model" label="电视型号"><Input placeholder="品牌/型号" /></Form.Item></Col>
             <Col span={8}><Form.Item name="aircon_model" label="空调型号"><Input placeholder="空调品牌/型号" /></Form.Item></Col>
+            <Col span={8}><Form.Item name="bedroom_ac" label="卧室空调">
+              <Select options={[{value:'none',label:'无'},{value:'master_only',label:'主卧有'},{value:'both',label:'两个卧室都有'}]} />
+            </Form.Item></Col>
             <Col span={8}><Form.Item name="orientation" label="房源朝向"><Select allowClear options={[{value:'N',label:'北'},{value:'S',label:'南'},{value:'E',label:'东'},{value:'W',label:'西'},{value:'NE',label:'东北'},{value:'NW',label:'西北'},{value:'SE',label:'东南'},{value:'SW',label:'西南'}]} /></Form.Item></Col>
             <Col span={8}><Form.Item name="fireworks_view" label="可看新年烟花" valuePropName="checked"><Switch /></Form.Item></Col>
             <Col span={24}><Form.Item name="notes" label="其他备注"><Input.TextArea rows={3} /></Form.Item></Col>
@@ -267,6 +317,8 @@ export default function PropertiesPage() {
             <Col span={8}><Form.Item label="房号"><Input value={detail?.code} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="房东"><Input value={(landlords.find(l => l.id === detail?.landlord_id)?.name) || ''} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="区域"><Input value={detail?.region} readOnly /></Form.Item></Col>
+            <Col span={8}><Form.Item label="房源分类"><Input value={detail?.biz_category === 'leased' ? '包租房源' : (detail?.biz_category === 'management_fee' ? '管理费房源' : '')} readOnly /></Form.Item></Col>
+            <Col span={8}><Form.Item label="卧室空调"><Input value={detail?.bedroom_ac === 'none' ? '无' : (detail?.bedroom_ac === 'master_only' ? '主卧有' : (detail?.bedroom_ac === 'both' ? '两个卧室都有' : ''))} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="Airbnb Listing 名称"><Input value={detail?.listing_names?.airbnb || ''} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="Booking.com Listing 名称"><Input value={detail?.listing_names?.booking || ''} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="其他平台 Listing 名称"><Input value={detail?.listing_names?.other || ''} readOnly /></Form.Item></Col>
@@ -295,6 +347,7 @@ export default function PropertiesPage() {
           <Row gutter={[16,16]}>
             <Col span={8}><Form.Item label="电视型号"><Input value={detail?.tv_model} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="空调型号"><Input value={detail?.aircon_model} readOnly /></Form.Item></Col>
+            <Col span={8}><Form.Item label="卧室空调"><Input value={detail?.bedroom_ac === 'none' ? '无' : (detail?.bedroom_ac === 'master_only' ? '主卧有' : (detail?.bedroom_ac === 'both' ? '两个卧室都有' : ''))} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="朝向"><Input value={detail?.orientation || ''} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="可看烟花"><Input value={detail?.fireworks_view ? '是' : '否'} readOnly /></Form.Item></Col>
             <Col span={24}><Form.Item label="其他备注"><Input.TextArea value={detail?.notes || ''} readOnly rows={3} /></Form.Item></Col>
@@ -302,6 +355,7 @@ export default function PropertiesPage() {
           <Space>
             <Tag>创建时间: {detail?.created_at || ''}</Tag>
             <Tag>最后修改: {detail?.updated_at || ''}</Tag>
+            {detail?.updated_by ? <Tag>修改人: {detail?.updated_by}</Tag> : null}
           </Space>
         </Form>
       </Modal>
@@ -311,7 +365,17 @@ export default function PropertiesPage() {
           <Row gutter={[16,16]}>
             <Col span={8}><Form.Item label="房号"><Input value={editForm.getFieldValue('code') || ''} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item name="landlord_id" label="房东"><Select allowClear options={landlords.map(l => ({ value: l.id, label: l.name }))} /></Form.Item></Col>
-            <Col span={8}><Form.Item name="region" label="区域"><Select options={(dicts.regions || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item></Col>
+            <Col span={8}><Form.Item name="region" label="区域" rules={[{ required: true }]}>
+              <Select options={[{value:'Melbourne',label:'Melbourne'},{value:'Southbank',label:'Southbank'},{value:'South Melbourne',label:'South Melbourne'},{value:'West Melbourne',label:'West Melbourne'},{value:'St Kilda',label:'St Kilda'},{value:'Docklands',label:'Docklands'},{value:'其他',label:'其他'}]} />
+            </Form.Item></Col>
+            <Form.Item noStyle shouldUpdate={(prev, cur) => prev.region !== cur.region}>
+              {() => (editForm.getFieldValue('region') === '其他' ? (
+                <Col span={8}><Form.Item name="region_other" label="其他区域"><Input /></Form.Item></Col>
+              ) : null)}
+            </Form.Item>
+            <Col span={8}><Form.Item name="biz_category" label="房源分类" rules={[{ required: true, message: '请选择房源分类' }]}>
+              <Select options={[{ value:'leased', label:'包租房源' }, { value:'management_fee', label:'管理费房源' }]} />
+            </Form.Item></Col>
             <Col span={8}><Form.Item name="listing_airbnb" label="Airbnb Listing 名称"><Input /></Form.Item></Col>
             <Col span={8}><Form.Item name="listing_booking" label="Booking.com Listing 名称"><Input /></Form.Item></Col>
             <Col span={8}><Form.Item name="listing_other" label="其他平台 Listing 名称"><Input /></Form.Item></Col>
@@ -337,7 +401,12 @@ export default function PropertiesPage() {
           <Divider orientation="left">房源大楼信息</Divider>
           <Row gutter={[16,16]}>
             <Col span={12}><Form.Item name="building_name" label="大楼名称"><Input /></Form.Item></Col>
-            <Col span={12}><Form.Item name="building_facilities" label="大楼设施"><Select mode="multiple" options={(dicts.facilities || []).map((v: string) => ({ value: v, label: v }))} /></Form.Item></Col>
+            <Col span={12}><Form.Item name="building_facilities" label="大楼设施"><Select mode="multiple" options={[...((dicts.facilities||[]).filter((v:string)=> !['elevator','parking'].includes(v.toLowerCase()))).map((v:string)=>({value:v,label:v})),{value:'Sauna',label:'Sauna'},{value:'Spa',label:'Spa'},{value:'其他',label:'其他'}]} /></Form.Item></Col>
+            <Form.Item noStyle shouldUpdate={(prev, cur) => JSON.stringify(prev.building_facilities) !== JSON.stringify(cur.building_facilities)}>
+              {() => (Array.isArray(editForm.getFieldValue('building_facilities')) && editForm.getFieldValue('building_facilities').includes('其他') ? (
+                <Col span={12}><Form.Item name="building_facility_other" label="其他设施"><Input /></Form.Item></Col>
+              ) : null)}
+            </Form.Item>
             <Col span={8}><Form.Item name="building_facility_floor" label="设施所在楼层"><Input /></Form.Item></Col>
             <Col span={8}><Form.Item name="building_contact_phone" label="大楼经理电话"><Input /></Form.Item></Col>
             <Col span={8}><Form.Item name="building_contact_email" label="大楼经理邮箱"><Input /></Form.Item></Col>
@@ -347,6 +416,9 @@ export default function PropertiesPage() {
           <Row gutter={[16,16]}>
             <Col span={8}><Form.Item name="tv_model" label="电视型号"><Input /></Form.Item></Col>
             <Col span={8}><Form.Item name="aircon_model" label="空调型号"><Input placeholder="空调品牌/型号" /></Form.Item></Col>
+            <Col span={8}><Form.Item name="bedroom_ac" label="卧室空调">
+              <Select options={[{value:'none',label:'无'},{value:'master_only',label:'主卧有'},{value:'both',label:'两个卧室都有'}]} />
+            </Form.Item></Col>
             <Col span={8}><Form.Item name="orientation" label="房源朝向"><Select allowClear options={[{value:'N',label:'北'},{value:'S',label:'南'},{value:'E',label:'东'},{value:'W',label:'西'},{value:'NE',label:'东北'},{value:'NW',label:'西北'},{value:'SE',label:'东南'},{value:'SW',label:'西南'}]} /></Form.Item></Col>
             <Col span={8}><Form.Item name="fireworks_view" label="可看新年烟花" valuePropName="checked"><Switch /></Form.Item></Col>
             <Col span={24}><Form.Item name="notes" label="其他备注"><Input.TextArea rows={3} /></Form.Item></Col>

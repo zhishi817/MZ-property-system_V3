@@ -16,6 +16,7 @@ const ALLOW: Record<string, true> = {
   property_expenses: true,
   company_incomes: true,
   property_incomes: true,
+  recurring_payments: true,
   cms_pages: true,
   payouts: true,
   company_payouts: true,
@@ -240,6 +241,32 @@ router.post('/:resource', requireAnyPerm(['rbac.manage','property.write','order.
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
             if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
             toInsert = cleaned
+          } else if (resource === 'recurring_payments') {
+            const allow = ['id','property_id','scope','vendor','category','category_detail','amount','due_day_of_month','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource']
+            const cleaned: any = { id: payload.id }
+            for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+            if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+            cleaned.remind_days_before = 3
+            const today = new Date()
+            const d0 = typeof cleaned.last_paid_date === 'string' ? new Date(cleaned.last_paid_date) : null
+            const base = d0 && !isNaN(d0.getTime()) ? d0 : today
+            const due = Number(cleaned.due_day_of_month || 1)
+            const y = base.getUTCFullYear()
+            const m = base.getUTCMonth()
+            const daysInMonth = new Date(Date.UTC(y, m + 1, 0)).getUTCDate()
+            const targetDayThis = Math.min(due, daysInMonth)
+            const thisDue = new Date(Date.UTC(y, m, targetDayThis))
+            let next: Date
+            if (base.getUTCDate() < targetDayThis) {
+              next = thisDue
+            } else {
+              const y2 = m === 11 ? y + 1 : y
+              const m2 = (m + 1) % 12
+              const dim2 = new Date(Date.UTC(y2, m2 + 1, 0)).getUTCDate()
+              next = new Date(Date.UTC(y2, m2, Math.min(due, dim2)))
+            }
+            if (!cleaned.next_due_date) cleaned.next_due_date = next.toISOString().slice(0,10)
+            toInsert = cleaned
           }
           row = await pgInsert(resource, toInsert)
         }
@@ -420,6 +447,32 @@ router.patch('/:resource/:id', requireAnyPerm(['rbac.manage','property.write','o
         for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
         if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
         if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+        toUpdate = cleaned
+      } else if (resource === 'recurring_payments') {
+        const allow = ['property_id','scope','vendor','category','category_detail','amount','due_day_of_month','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource']
+        const cleaned: any = {}
+        for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+        if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+        cleaned.remind_days_before = 3
+        const today = new Date()
+        const d0 = typeof cleaned.last_paid_date === 'string' ? new Date(cleaned.last_paid_date) : null
+        const base = d0 && !isNaN(d0.getTime()) ? d0 : today
+        const due = Number(cleaned.due_day_of_month || payload.due_day_of_month || 1)
+        const y = base.getUTCFullYear()
+        const m = base.getUTCMonth()
+        const daysInMonth = new Date(Date.UTC(y, m + 1, 0)).getUTCDate()
+        const targetDayThis = Math.min(due, daysInMonth)
+        const thisDue = new Date(Date.UTC(y, m, targetDayThis))
+        let next: Date
+        if (base.getUTCDate() < targetDayThis) {
+          next = thisDue
+        } else {
+          const y2 = m === 11 ? y + 1 : y
+          const m2 = (m + 1) % 12
+          const dim2 = new Date(Date.UTC(y2, m2 + 1, 0)).getUTCDate()
+          next = new Date(Date.UTC(y2, m2, Math.min(due, dim2)))
+        }
+        if (!cleaned.next_due_date) cleaned.next_due_date = next.toISOString().slice(0,10)
         toUpdate = cleaned
       }
       const row = await pgUpdate(resource, id, toUpdate)

@@ -32,9 +32,14 @@ export default function OrdersPage() {
     const byCodeAsId = (Array.isArray(properties) ? properties : []).find(px => (px.code || '') === (o.property_id || ''))
     return (p?.code || byCodeAsId?.code || o.property_code || p?.address || o.property_id || '')
   }
+  function toDayStr(raw?: any): string {
+    const str = String(raw || '')
+    const m = str.match(/^(\d{4}-\d{2}-\d{2})/)
+    return m ? m[1] : dayjs(str).format('YYYY-MM-DD')
+  }
   function fmtDay(s?: string) {
     if (!s) return ''
-    const d = dayjs(s)
+    const d = dayjs(toDayStr(s))
     return d.isValid() ? d.format('DD/MM/YYYY') : s
   }
   const uploadProps: UploadProps = {
@@ -200,14 +205,16 @@ export default function OrdersPage() {
   const baseMonth = calMonth || dayjs()
   const monthStart = baseMonth.startOf('month')
   const monthEnd = baseMonth.endOf('month')
-  function dayStr(v: any): string { try { return dayjs(v).format('YYYY-MM-DD') } catch { return '' } }
+  function dayStr(v: any): string { try { return toDayStr(v) } catch { return '' } }
   const monthOrders = (data || []).filter(o => {
     if (!calPid) return false
     if (o.property_id !== calPid) return false
     const ciDay = dayStr(o.checkin)
     const coDay = dayStr(o.checkout)
     if (!ciDay || !coDay) return false
-    return dayjs(coDay).isAfter(monthStart) && dayjs(ciDay).isBefore(monthEnd)
+    const ms = monthStart.format('YYYY-MM-DD')
+    const me = monthEnd.format('YYYY-MM-DD')
+    return coDay > ms && ciDay < me
   })
   const orderLane = (function(){
     const lanesEnd: number[] = []
@@ -229,11 +236,12 @@ export default function OrdersPage() {
   })()
   function dayCell(date: any) {
     if (!calPid) return null
+    const dateStr = dayjs(date).format('YYYY-MM-DD')
     const orders = data
       .filter(o => {
         const ciDay = dayStr(o.checkin)
         const coDay = dayStr(o.checkout)
-        return o.property_id === calPid && ciDay && coDay && dayjs(ciDay).diff(date, 'day') <= 0 && dayjs(coDay).diff(date, 'day') > 0
+        return o.property_id === calPid && ciDay && coDay && ciDay <= dateStr && coDay > dateStr
       })
       .sort((a,b)=> dayjs(a.checkin!).valueOf() - dayjs(b.checkin!).valueOf())
     if (!orders.length) return null
@@ -243,8 +251,9 @@ export default function OrdersPage() {
           const accent = sourceColor[o.source || 'other'] || '#999'
           const ciDay = dayStr(o.checkin)
           const coDay = dayStr(o.checkout)
-          const isStart = ciDay === dayjs(date).format('YYYY-MM-DD')
-          const isEnd = dayjs(coDay).diff(date, 'day') === 1 // last day shown is checkout-1
+          const isStart = ciDay === dateStr
+          const nextStr = dayjs(dateStr).add(1,'day').format('YYYY-MM-DD')
+          const isEnd = coDay === nextStr // last day shown is checkout-1
           const radiusLeft = isStart ? 16 : 3
           const radiusRight = isEnd ? 16 : 3
           const lane = orderLane[o.id!] || 0
@@ -325,7 +334,10 @@ export default function OrdersPage() {
         <Table rowKey={(r) => r.id} columns={columns as any} dataSource={data.filter(o => {
           const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
           const codeOk = !codeQuery || codeText.includes(codeQuery.trim().toLowerCase())
-          const rangeOk = !dateRange || (!dateRange[0] || dayjs(o.checkin).diff(dateRange[0], 'day') >= 0) && (!dateRange[1] || dayjs(o.checkout).diff(dateRange[1], 'day') <= 0)
+          const rangeOk = !dateRange || (
+            (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
+            (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
+          )
           return codeOk && rangeOk
         })} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }} />
       ) : (

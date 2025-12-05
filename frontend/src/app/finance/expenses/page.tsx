@@ -16,6 +16,8 @@ export default function ExpensesPage() {
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editing, setEditing] = useState<Tx | null>(null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
   const [codeQuery, setCodeQuery] = useState('')
   const [catFilter, setCatFilter] = useState<string | undefined>(undefined)
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
@@ -86,7 +88,7 @@ export default function ExpensesPage() {
     { title: '币种', dataIndex: 'currency' },
     { title: '发票', dataIndex: 'invoice_url', render: (v: string) => {
       const url = v && /^https?:\/\//.test(v) ? v : (v ? `${API_BASE}${v}` : '')
-      return url ? <a href={url} target="_blank" rel="noreferrer">查看</a> : '-'
+      return url ? <Button type="link" onClick={() => { setPreviewUrl(url); setPreviewOpen(true) }}>查看</Button> : '-'
     } },
     { title: '备注', dataIndex: 'note' },
     { title: '操作', render: (_: any, r: Tx) => hasPerm('finance.payout') ? (
@@ -188,13 +190,24 @@ export default function ExpensesPage() {
               <Button icon={<UploadOutlined />}>上传发票</Button>
             </Upload>
             {form.getFieldValue('invoice_url') ? (
-              <a href={form.getFieldValue('invoice_url')} target="_blank" rel="noreferrer" style={{ marginLeft: 8 }}>已上传，查看</a>
+              <Button type="link" style={{ marginLeft: 8 }} onClick={() => { const v = form.getFieldValue('invoice_url'); const url = v && /^https?:\/\//.test(v) ? v : (v ? `${API_BASE}${v}` : ''); if (url) { setPreviewUrl(url); setPreviewOpen(true) } }}>已上传，查看</Button>
             ) : null}
           </Form.Item>
           <Form.Item name="invoice_url" hidden>
             <Input />
           </Form.Item>
         </Form>
+      </Modal>
+      <Modal open={previewOpen} onCancel={() => setPreviewOpen(false)} footer={null} width={900} title="发票预览">
+        {previewUrl ? (
+          (/\.pdf($|\?)/i.test(previewUrl) ? (
+            <object data={previewUrl} type="application/pdf" style={{ width:'100%', height: 680 }}>
+              <a href={previewUrl} target="_blank" rel="noreferrer">打开原文件</a>
+            </object>
+          ) : (
+            <img src={previewUrl} style={{ maxWidth:'100%' }} />
+          ))
+        ) : null}
       </Modal>
     </Card>
   )

@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS properties (
 );
 CREATE INDEX IF NOT EXISTS idx_properties_region ON properties(region);
 CREATE INDEX IF NOT EXISTS idx_properties_type ON properties(type);
+ALTER TABLE properties ADD COLUMN IF NOT EXISTS biz_category text;
+ALTER TABLE properties ADD COLUMN IF NOT EXISTS building_facility_other text;
+ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedroom_ac text;
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'unique_properties_code'
@@ -286,3 +289,28 @@ CREATE INDEX IF NOT EXISTS idx_property_incomes_date ON property_incomes(occurre
 -- Orders confirmation_code column and unique index (non-null only)
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_confirmation_code_unique ON orders(confirmation_code) WHERE confirmation_code IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS recurring_payments (
+  id text PRIMARY KEY,
+  property_id text REFERENCES properties(id) ON DELETE SET NULL,
+  scope text,
+  vendor text,
+  category text,
+  amount numeric,
+  due_day_of_month integer,
+  remind_days_before integer DEFAULT 3,
+  status text,
+  last_paid_date date,
+  next_due_date date,
+  pay_account_name text,
+  pay_bsb text,
+  pay_account_number text,
+  pay_ref text,
+  expense_id text,
+  expense_resource text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_recurring_payments_status ON recurring_payments(status);
+CREATE INDEX IF NOT EXISTS idx_recurring_payments_next_due ON recurring_payments(next_due_date);
+CREATE INDEX IF NOT EXISTS idx_recurring_payments_scope ON recurring_payments(scope);

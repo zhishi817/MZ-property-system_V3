@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { API_BASE, getJSON } from '../../lib/api'
 import { PieChart as RePieChart, Pie as RePie, Cell as ReCell, Tooltip as ReTooltip, Legend as ReLegend, ResponsiveContainer } from 'recharts'
 
-type Property = { id: string; code?: string; address?: string; region?: string; manage_mode?: 'leased'|'managed' }
+type Property = { id: string; code?: string; address?: string; region?: string; biz_category?: 'leased'|'management_fee' }
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; nights?: number; avg_nightly_price?: number; net_income?: number }
 type PropertyExpense = { id: string; property_id?: string; amount?: number; occurred_at?: string }
 type Landlord = { id: string; name: string }
@@ -34,8 +34,8 @@ export default function DashboardPage() {
   const regions = ['City','Southbank','St Kilda','Docklands']
   const regionCounts = regions.map(reg => ({ region: reg, count: properties.filter(p => (p.region || '').toLowerCase() === reg.toLowerCase()).length }))
   const manageStats = (() => {
-    const leased = properties.filter(p => (p.manage_mode || '').toLowerCase() === 'leased').length
-    const managed = properties.filter(p => (p.manage_mode || '').toLowerCase() === 'managed').length
+    const leased = properties.filter(p => (p.biz_category || '').toLowerCase() === 'leased').length
+    const managed = properties.filter(p => (p.biz_category || '').toLowerCase() === 'management_fee').length
     const unknown = totalProps - leased - managed
     return { leased, managed, unknown }
   })()
@@ -45,7 +45,7 @@ export default function DashboardPage() {
   const unknownCount = manageStats.unknown
   const data = [
     { name: '包租房源', value: leaseCount },
-    { name: '收管理费房源', value: manageCount },
+    { name: '管理费房源', value: manageCount },
     { name: '未知', value: unknownCount },
   ]
   const COLORS = ['#3A7BFA', '#8B5CF6', '#A0AEC0']
@@ -223,7 +223,7 @@ export default function DashboardPage() {
             {sector(mAngle, colors.managed, lAngle)}
             {sector(uAngle, colors.unknown, lAngle + mAngle)}
             {label(`包租房源 ${lPct}%`, colors.leased, 0, lAngle)}
-            {label(`收管理费房源 ${mPct}%`, colors.managed, lAngle, mAngle)}
+            {label(`管理费房源 ${mPct}%`, colors.managed, lAngle, mAngle)}
             {unknown > 0 && label(`未知 ${uPct}%`, colors.unknown, lAngle + mAngle, uAngle)}
           </svg>
         </div>
@@ -232,7 +232,7 @@ export default function DashboardPage() {
             <span style={{ display:'inline-block', width:10, height:10, background:colors.leased, borderRadius:'50%' }}></span>
             <span>包租房源：{leased}</span>
             <span style={{ display:'inline-block', width:10, height:10, background:colors.managed, borderRadius:'50%' }}></span>
-            <span>收管理费房源：{managed}</span>
+            <span>管理费房源：{managed}</span>
             {unknown > 0 && (<>
               <span style={{ display:'inline-block', width:10, height:10, background:colors.unknown, borderRadius:'50%' }}></span>
               <span>未知：{unknown}</span>
