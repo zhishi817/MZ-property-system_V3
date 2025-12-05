@@ -1,15 +1,25 @@
 "use client"
 import { Card, Space, Button, Table, Tag, Modal, Form, Input, InputNumber, Select, DatePicker, Statistic, App } from 'antd'
 import dayjs from 'dayjs'
+import customParseFormat from 'dayjs/plugin/customParseFormat'
+import utc from 'dayjs/plugin/utc'
+import timezone from 'dayjs/plugin/timezone'
 import { useEffect, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 
 type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses' }
+type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
 type Property = { id: string; code?: string; address?: string }
+
+dayjs.extend(customParseFormat)
+dayjs.extend(utc)
+dayjs.extend(timezone)
+dayjs.tz.setDefault('Australia/Melbourne')
 
 export default function RecurringPage() {
   const { message } = App.useApp()
   const [list, setList] = useState<Recurring[]>([])
+  const [expenses, setExpenses] = useState<ExpenseRow[]>([])
   const [properties, setProperties] = useState<Property[]>([])
   const [open, setOpen] = useState(false)
   const [form] = Form.useForm()
@@ -25,41 +35,41 @@ export default function RecurringPage() {
   }
   useEffect(()=>{ load() },[])
 
-  function fmt(d?: string) { const s = toDayStr(d); return s ? dayjs(s).format('DD/MM/YYYY') : '-' }
-  function toDayStr(s?: string): string | undefined {
-    if (!s) return undefined
+  function parseAU(s?: string) {
+    if (!s) return undefined as any
     const t = String(s)
-    const m1 = t.match(/^(\d{4}-\d{2}-\d{2})/)
-    if (m1) return m1[1]
-    const m2 = t.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
-    if (m2) return `${m2[3]}-${m2[2]}-${m2[1]}`
-    const d = dayjs(t)
-    return d.isValid() ? d.format('YYYY-MM-DD') : undefined
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(t)) return dayjs.tz(t, 'DD/MM/YYYY', 'Australia/Melbourne')
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return dayjs.tz(t, 'YYYY-MM-DD', 'Australia/Melbourne')
+    const d = dayjs.tz(t, 'Australia/Melbourne')
+    return d.isValid() ? d : undefined
   }
+  function nowAU() { return dayjs.tz(dayjs(), 'Australia/Melbourne') }
+  function fmt(d?: string) { const m = parseAU(d); return m ? m.format('DD/MM/YYYY') : '-' }
+  function inSelectedMonth(d?: string) { const m = parseAU(d); return !!(m && m.format('YYYY-MM') === (month||dayjs()).format('YYYY-MM')) }
   function getLabel(p?: string) { const x = properties.find(pp=>pp.id===p); return x?.code || x?.address || '公司' }
-  function statusTag(r: Recurring) {
-    const today = dayjs().format('YYYY-MM-DD')
+  function statusTag(r: Recurring & { is_paid?: boolean }) {
+    const today = nowAU()
     if ((r.status||'')==='paused') return <Tag color="default">暂停</Tag>
-    if ((r.status||'')==='paid') return <Tag color="green">已付款</Tag>
-    const nd = toDayStr(r.next_due_date)
-    if (nd && nd === today) return <Tag color="gold">今天到期</Tag>
-    if (nd && dayjs(nd).isBefore(dayjs(), 'day')) {
-      const days = dayjs().diff(dayjs(nd), 'day')
+    if (r.is_paid) return <Tag color="green">已付款</Tag>
+    const nd = parseAU(r.next_due_date)
+    if (nd && nd.isSame(today, 'day')) return <Tag color="gold">今天到期</Tag>
+    if (nd && today.isAfter(nd, 'day')) {
+      const days = today.startOf('day').diff(nd.startOf('day'), 'day')
       return <Tag color="red">逾期 {days} 天</Tag>
     }
     return <Tag color="blue">待付款</Tag>
   }
 
   const columns = [
-    { title:'对象', dataIndex:'property_id', render:(v:string, r:Recurring)=> r.scope==='company' || !v ? '公司' : getLabel(v) },
+    { title:'对象', dataIndex:'property_id', render:(v:string, r:any)=> (r.scope==='company' || !v) ? '公司' : getLabel(v) },
     { title:'收款方', dataIndex:'vendor' },
-    { title:'类别', dataIndex:'category', render:(v:string, r:Recurring)=> v==='other' ? `其他: ${r.category_detail || ''}` : v },
+    { title:'类别', dataIndex:'category', render:(v:string)=> v==='other' ? '其他' : v },
     { title:'金额', dataIndex:'amount', render:(v:number)=> v!=null?`$${Number(v).toFixed(2)}`:'-' },
-    { title:'到期日', dataIndex:'due_day_of_month' },
+    { title:'到期日', key:'due', render:(_:any,r:any)=> fmt(r.next_due_date || r.due_date) },
     { title:'提醒', dataIndex:'remind_days_before', render:(v:number)=> v!=null?`${v}天`:'-' },
-    { title:'状态', key:'st', render:(_:any,r:Recurring)=> statusTag(r) },
-    { title:'上次付款', dataIndex:'last_paid_date', render:(v:string)=> fmt(v) },
-    { title:'下次到期', dataIndex:'next_due_date', render:(v:string)=> fmt(v) },
+    { title:'状态', key:'st', render:(_:any,r:any)=> statusTag(r) },
+    { title:'上次付款', key:'paid', render:(_:any,r:any)=> fmt(r.paid_date) },
+    { title:'下次到期', key:'next', render:(_:any,r:any)=> fmt(r.next_due_date) },
     { title:'付款账户', key:'acct', render:(_:any,r:Recurring)=> (
       <div style={{ fontSize:12, lineHeight:1.4 }}>
         {r.pay_account_name ? <div>Name: {r.pay_account_name}</div> : null}
@@ -70,173 +80,154 @@ export default function RecurringPage() {
     ) },
     { title:'操作', key:'ops', render:(_:any,r:Recurring)=> (
       <Space>
-        <Button onClick={()=>{ setEditing(r); setOpen(true); form.setFieldsValue({ ...r, last_paid_date: r.last_paid_date ? dayjs(r.last_paid_date) : undefined }) }}>编辑</Button>
-        {r.status === 'paid' ? (
+        <Button onClick={()=>{ setEditing(r); setOpen(true); form.setFieldsValue({ ...r }) }}>编辑</Button>
+        {r.is_paid ? (
           <Button onClick={async ()=>{
-            const base = dayjs()
-            const due = Number(r.due_day_of_month || 1)
-            const dim = base.endOf('month').date()
-            const nd = base.startOf('month').date(Math.min(due, dim)).format('YYYY-MM-DD')
-            const isOver = dayjs().isAfter(dayjs(nd), 'day')
-            const prevMonth = base.subtract(1,'month')
-            const prevDim = prevMonth.endOf('month').date()
-            const lp = prevMonth.startOf('month').date(Math.min(due, prevDim)).format('YYYY-MM-DD')
-            const delDate = r.last_paid_date ? dayjs(r.last_paid_date).format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD')
             try {
-              if (r.expense_id && r.expense_resource) {
-                const del = await fetch(`${API_BASE}/crud/${r.expense_resource}/${r.expense_id}`, { method:'DELETE', headers: authHeaders() })
-                if (!del.ok) throw new Error(`HTTP ${del.status}`)
-              } else {
-                const resType = (r.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
-                const q = new URLSearchParams({ occurred_at: delDate, category: String(r.category||'other'), amount: String(Number(r.amount||0)), note: 'Monthly fixed payment' })
-                if (resType==='property_expenses' && r.property_id) q.set('property_id', String(r.property_id))
-                try {
-                  const find = await fetch(`${API_BASE}/crud/${resType}?${q.toString()}`, { headers: authHeaders() })
-                  if (find.ok) {
-                    const arr = await find.json().catch(()=>[])
-                    const id = Array.isArray(arr) && arr[0]?.id
-                    if (id) {
-                      await fetch(`${API_BASE}/crud/${resType}/${id}`, { method:'DELETE', headers: authHeaders() })
-                    }
-                  }
-                } catch {}
+              const monthKey = m.format('YYYY-MM')
+              const resType = (r.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
+              const qs = new URLSearchParams({ fixed_expense_id: String((r as any).fixed_expense_id || r.id), month_key: monthKey })
+              const listRes = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
+              const arr = listRes.ok ? await listRes.json().catch(()=>[]) : []
+              for (const it of Array.isArray(arr)?arr:[]) {
+                if (it?.id) await fetch(`${API_BASE}/crud/${resType}/${it.id}`, { method:'DELETE', headers: authHeaders() })
               }
-            } catch (e:any) {
-              message.error(e?.message || '删除关联支出失败')
-            }
-            const payload = { status: isOver ? 'overdue' : 'active', last_paid_date: lp, next_due_date: nd, expense_id: null, expense_resource: null }
-            try {
-              const resp = await fetch(`${API_BASE}/crud/recurring_payments/${r.id}`, { method:'PATCH', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
-              if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
               message.success('已退回为未付')
-              load()
-            } catch (e: any) {
+              await refreshMonth()
+            } catch (e:any) {
               message.error(e?.message || '退回失败')
             }
           }}>未付</Button>
         ) : (
           <Button onClick={async ()=>{
-            const today = dayjs().format('YYYY-MM-DD')
-            let expId: string | undefined
-            let expRes: 'company_expenses'|'property_expenses' | undefined
+            const todayISO = nowAU().format('YYYY-MM-DD')
+            const dueDay = Number(r.due_day_of_month || 1)
+            const dim = m.endOf('month').date()
+            const dueISO = m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
+            const baseBody = { occurred_at: todayISO, amount: Number(r.amount||0), currency: 'AUD', category: r.category || 'other', note: 'Monthly fixed payment', fixed_expense_id: r.id, month_key: m.format('YYYY-MM'), due_date: dueISO, paid_date: todayISO, status: 'paid', property_id: r.property_id }
             try {
-              if ((r.scope||'company') === 'property' && r.property_id) {
-                expRes = 'property_expenses'
-                const body = { occurred_at: today, amount: Number(r.amount||0), currency: 'AUD', category: r.category || 'other', category_detail: r.vendor || '', note: 'Monthly fixed payment', property_id: r.property_id }
-                const resp = await fetch(`${API_BASE}/crud/property_expenses`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(body) })
-                if (resp.status === 409) {
-                  // duplicate, proceed without linking
-                } else if (resp.ok) {
-                  const j = await resp.json().catch(()=>null)
-                  expId = j?.id
-                } else {
-                  throw new Error(`HTTP ${resp.status}`)
+              const resType = (r.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
+              // idempotent: check existing for this month
+              const qs = new URLSearchParams({ fixed_expense_id: String(r.id), month_key: m.format('YYYY-MM') })
+              const existingRes = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
+              if (existingRes.ok) {
+                const arr = await existingRes.json().catch(()=>[])
+                if (Array.isArray(arr) && arr.length > 0) {
+                  message.success('本月已存在已付记录')
+                  await refreshMonth()
+                  return
                 }
-              } else {
-                expRes = 'company_expenses'
-                const body = { occurred_at: today, amount: Number(r.amount||0), currency: 'AUD', category: r.category || 'other', category_detail: r.vendor || '', note: 'Monthly fixed payment' }
-                const resp = await fetch(`${API_BASE}/crud/company_expenses`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+              }
+              const resp = await fetch(`${API_BASE}/crud/${resType}`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(baseBody) })
+              if (!resp.ok) {
                 if (resp.status === 409) {
-                  // duplicate, proceed without linking
-                } else if (resp.ok) {
-                  const j = await resp.json().catch(()=>null)
-                  expId = j?.id
+                  // treat duplicate as success
                 } else {
                   throw new Error(`HTTP ${resp.status}`)
                 }
               }
-            } catch (e: any) {
-              message.error(e?.message || '生成支出失败')
-            }
-            const base = dayjs()
-            const due = Number(r.due_day_of_month || 1)
-            const nextMonth = base.add(1,'month')
-            const dim2 = nextMonth.endOf('month').date()
-            const nd2 = nextMonth.startOf('month').date(Math.min(due, dim2)).format('YYYY-MM-DD')
-            const payload = { last_paid_date: today, status: 'paid', next_due_date: nd2, expense_id: expId, expense_resource: expRes }
-            try {
-              const resp = await fetch(`${API_BASE}/crud/recurring_payments/${r.id}`, { method:'PATCH', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
-              if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
               message.success('已标记为已付')
-              load()
-            } catch (e: any) {
-              message.error(e?.message || '更新固定支出失败')
+              await refreshMonth()
+            } catch (e:any) {
+              message.error(e?.message || '生成支出失败')
             }
           }}>已付</Button>
         )}
+        <Button danger onClick={async()=>{ try { const resp = await fetch(`${API_BASE}/crud/fixed_expenses/${r.id}`, { method:'DELETE', headers: authHeaders() }); if (!resp.ok) throw new Error(`HTTP ${resp.status}`); message.success('已删除'); load() } catch (e:any) { message.error(e?.message || '删除失败') } }}>删除</Button>
       </Space>
     ) }
   ]
 
-  const m = month || dayjs()
-  const monthStart = m.startOf('month').format('YYYY-MM-DD')
-  const monthEnd = m.endOf('month').format('YYYY-MM-DD')
+  const m = month || nowAU()
   function computeNextDue(r: Recurring): string | undefined {
     if (r.next_due_date) return r.next_due_date
-    const base = r.last_paid_date ? dayjs(r.last_paid_date) : dayjs()
+    const base = r.last_paid_date ? parseAU(r.last_paid_date) : nowAU()
     const due = Number(r.due_day_of_month || 1)
     const daysInMonth = base.endOf('month').date()
     const targetDayThis = Math.min(due, daysInMonth)
     const thisDue = base.startOf('month').date(targetDayThis)
-    if (base.date() < targetDayThis) return thisDue.format('YYYY-MM-DD')
+    if (base.date() < targetDayThis) return thisDue.format('DD/MM/YYYY')
     const nextMonth = base.add(1,'month')
     const dim2 = nextMonth.endOf('month').date()
-    return nextMonth.startOf('month').date(Math.min(due, dim2)).format('YYYY-MM-DD')
+    return nextMonth.startOf('month').date(Math.min(due, dim2)).format('DD/MM/YYYY')
   }
-  const enhanced = list.map(r => ({ ...r, next_due_date: computeNextDue(r) }))
+  function dueForSelectedMonth(r: Recurring): string | undefined {
+    const due = Number(r.due_day_of_month || 1)
+    const dim = m.endOf('month').date()
+    const day = Math.min(due, dim)
+    return m.startOf('month').date(day).format('DD/MM/YYYY')
+  }
+  const enhanced = list.map(r => ({ ...r, next_due_date: dueForSelectedMonth(r), is_paid: String(r.status||'')==='paid' }))
   const monthKey = m.format('YYYY-MM')
-  const unpaidRows = enhanced.filter(r => {
-    const nd = toDayStr(r.next_due_date)
-    const isPaid = String(r.status||'') === 'paid'
-    const ndMonth = nd ? dayjs(nd).format('YYYY-MM') : ''
-    return nd && ndMonth === monthKey && !isPaid
+  async function refreshMonth() {
+    const pe = await fetch(`${API_BASE}/crud/property_expenses?month_key=${monthKey}`, { headers: authHeaders() }).then(r=>r.ok?r.json():[]).catch(()=>[])
+    const ce = await fetch(`${API_BASE}/crud/company_expenses?month_key=${monthKey}`, { headers: authHeaders() }).then(r=>r.ok?r.json():[]).catch(()=>[])
+    setExpenses([...(Array.isArray(pe)?pe:[]), ...(Array.isArray(ce)?ce:[])])
+  }
+  useEffect(()=>{ refreshMonth() },[monthKey])
+  const tplById: Record<string, Recurring> = Object.fromEntries((list||[]).map(r=>[String(r.id), r]))
+  const paidRows = (expenses||[]).filter(e=> String(e.status||'')==='paid' && String(e.month_key||'')===monthKey).map(e=>{
+    const tpl = tplById[String(e.fixed_expense_id||'')] || {}
+    return {
+      id: String(e.fixed_expense_id||''),
+      fixed_expense_id: String(e.fixed_expense_id||''),
+      expense_id: String(e.id||''),
+      property_id: e.property_id,
+      scope: tpl.scope || (e.property_id ? 'property' : 'company'),
+      vendor: (tpl as any).vendor,
+      category: String(e.category||tpl.category||''),
+      amount: Number(e.amount || tpl.amount || 0),
+      due_day_of_month: tpl.due_day_of_month,
+      remind_days_before: tpl.remind_days_before,
+      status: 'paid',
+      last_paid_date: e.paid_date,
+      next_due_date: e.due_date,
+      is_paid: true,
+    } as Recurring
   })
-  const paidRows = enhanced.filter(r => {
-    const isPaid = String(r.status||'') === 'paid'
-    const nd = toDayStr(r.next_due_date)
-    const ndMonth = nd ? dayjs(nd).format('YYYY-MM') : ''
-    return isPaid && nd && ndMonth === monthKey
-  })
+  const templatesForMonth = enhanced.filter(t => { const ck = (t as any).created_at ? parseAU((t as any).created_at)?.format('YYYY-MM') : undefined; const eff = ck || '0001-01'; return eff <= monthKey && inSelectedMonth(t.next_due_date) })
+  const allRows = templatesForMonth.map(t => ({ ...t, is_paid: !!paidRows.find(pr => String(pr.fixed_expense_id||'') === String(t.id)) }))
   const paidAmount = paidRows.reduce((s,r)=> s + Number(r.amount || 0), 0)
-  const unpaidAmount = unpaidRows.reduce((s,r)=> s + Number(r.amount || 0), 0)
+  const unpaidAmount = allRows.filter(r=>!r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
   const paidCount = paidRows.length
-  const unpaidCount = unpaidRows.length
-  const overdueCount = unpaidRows.filter(r => { const nd = toDayStr(r.next_due_date); return nd && dayjs(nd).isBefore(dayjs(), 'day') }).length
+  const unpaidCount = allRows.filter(r=>!r.is_paid).length
+  const overdueCount = allRows.filter(r => { const nd = parseAU(r.next_due_date); return !r.is_paid && nd && nowAU().isAfter(nd, 'day') }).length
 
   async function submit() {
     if (saving) return
     setSaving(true)
     const v = await form.validateFields()
-    const payload = { ...v, amount: v.amount!=null?Number(v.amount):undefined, last_paid_date: v.last_paid_date ? dayjs(v.last_paid_date).format('YYYY-MM-DD') : undefined }
-    const url = editing ? `${API_BASE}/crud/recurring_payments/${editing.id}` : `${API_BASE}/crud/recurring_payments`
+    const payload = { ...v, amount: v.amount!=null?Number(v.amount):undefined }
+    const url = editing ? `${API_BASE}/crud/fixed_expenses/${editing.id}` : `${API_BASE}/crud/fixed_expenses`
     const method = editing ? 'PATCH' : 'POST'
     const res = await fetch(url, { method, headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(editing?payload:{ id: crypto.randomUUID(), ...payload }) })
     if (res.ok) { setOpen(false); setEditing(null); form.resetFields(); load() }
     setSaving(false)
   }
 
+  // removed normalization side-effect; display uses selected-month computation
+
   return (
     <Card title="固定支出" extra={<Space><DatePicker picker="month" value={month} onChange={(v)=> setMonth(v || dayjs())} /><Button type="primary" onClick={()=>{ setEditing(null); form.resetFields(); setOpen(true) }}>新增固定支出</Button></Space>}>
-      <Space style={{ marginBottom: 12 }} wrap>
+      <div className="stats-grid">
         <Card><Statistic title="本月未付总额" value={unpaidAmount} prefix="$" precision={2} /></Card>
         <Card><Statistic title="本月已付总额" value={paidAmount} prefix="$" precision={2} /></Card>
         <Card><Statistic title="已付/未付数量" value={`${paidCount} / ${unpaidCount}`} /></Card>
         <Card><Statistic title="逾期条数" value={overdueCount} valueStyle={{ color: overdueCount>0? 'red' : undefined }} /></Card>
-        <Tag color="blue">月份筛选：{monthKey}</Tag>
-      </Space>
+      </div>
       <Card title="固定支出" size="small" style={{ marginTop: 8 }}>
-        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={unpaidRows} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }}
+        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={allRows} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }}
           rowClassName={(r)=>{
-            const today = dayjs().format('YYYY-MM-DD')
-            const nd = toDayStr(r.next_due_date)
-            const isPaid = String(r.status||'') === 'paid'
+            const today = nowAU()
+            const nd = parseAU(r.next_due_date)
+            const isPaid = !!(r as any).is_paid
             if ((r.status||'')==='paused') return ''
-            if (!isPaid && nd === today) return 'row-due-today'
-            if (!isPaid && nd && dayjs(nd).isBefore(dayjs(), 'day')) return 'row-overdue'
+            if (!isPaid && nd && nd.isSame(today, 'day')) return 'row-due-today'
+            if (!isPaid && nd && today.isAfter(nd, 'day')) return 'row-overdue'
             return ''
           }}
         />
-        {unpaidRows.length === 0 ? <div style={{ margin:'8px 0', color:'#888' }}>本月无未支付固定支出</div> : null}
+        {allRows.filter(r=>!r.is_paid).length === 0 ? <div style={{ margin:'8px 0', color:'#888' }}>本月无未支付固定支出</div> : null}
       </Card>
       <Card title="已支付固定支出" size="small" style={{ marginTop: 12 }}>
         <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={paidRows} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }} />
@@ -275,7 +266,6 @@ export default function RecurringPage() {
           <Form.Item name="due_day_of_month" label="每月几号到期" rules={[{ required: true }]}><InputNumber min={1} max={31} style={{ width:'100%' }} /></Form.Item>
           <Form.Item label="提前提醒天数"><InputNumber value={3} disabled style={{ width:'100%' }} /></Form.Item>
           <Form.Item name="status" label="状态" initialValue="active"><Select options={[{value:'active',label:'active'},{value:'paused',label:'paused'}]} /></Form.Item>
-          <Form.Item name="last_paid_date" label="最后一次付款日期"><DatePicker style={{ width:'100%' }} /></Form.Item>
           <Form.Item label="付款账户">
             <Space direction="vertical" style={{ width:'100%' }}>
               <Form.Item name="pay_account_name" label="名称"><Input /></Form.Item>
@@ -287,6 +277,7 @@ export default function RecurringPage() {
         </Form>
       </Modal>
       <style jsx>{`
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
         .row-due-today { background: #fffbe6; }
         .row-overdue { background: #fff1f0; }
       `}</style>

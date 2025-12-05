@@ -5,7 +5,7 @@ import minMax from 'dayjs/plugin/minMax'
 import isSameOrAfter from 'dayjs/plugin/isSameOrAfter'
 dayjs.extend(minMax)
 dayjs.extend(isSameOrAfter)
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { API_BASE, authHeaders } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
 
@@ -306,15 +306,36 @@ export default function FinancePage() {
     )
   }
 
+  const [trendW, setTrendW] = useState<number>(520)
+  const trendRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    function update() {
+      const el = trendRef.current
+      if (el) setTrendW(Math.max(320, el.clientWidth - 24))
+    }
+    update()
+    let ro: any = null
+    if ((window as any).ResizeObserver) {
+      ro = new (window as any).ResizeObserver(update)
+      if (trendRef.current) ro.observe(trendRef.current)
+    }
+    window.addEventListener('resize', update)
+    return () => { try { if (ro && trendRef.current) ro.unobserve(trendRef.current) } catch {} ; window.removeEventListener('resize', update) }
+  }, [])
+
+  const monthOrderCount = useMemo(() => monthOrders.length, [monthOrders])
+
   return (
     <Card title="财务管理" extra={null}>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:12, marginBottom: 12 }}>
-        <Card size="small" title="总流水收入">${totals.totalIncome.toFixed(2)}</Card>
-        <Card size="small" title="总支出">${totals.totalExpense.toFixed(2)}</Card>
-        <Card size="small" title="公司净收入"><b>${totals.net.toFixed(2)}</b></Card>
+      <div className="finance-page">
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12, marginBottom: 12, alignItems:'stretch' }}>
+        <Card size="small" title="总流水收入" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center' } }} style={{ height:'100%' }}>${totals.totalIncome.toFixed(2)}</Card>
+        <Card size="small" title="总支出" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center' } }} style={{ height:'100%' }}>${totals.totalExpense.toFixed(2)}</Card>
+        <Card size="small" title="公司净收入" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center' } }} style={{ height:'100%' }}><b>${totals.net.toFixed(2)}</b></Card>
+        <Card size="small" title="本月订单数" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center' } }} style={{ height:'100%' }}>{monthOrderCount}</Card>
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom: 12 }}>
-        <Card size="small" title="各平台订单占比">
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(300px, 1fr))', gap:12, marginBottom: 12, alignItems:'stretch' }}>
+        <Card size="small" title="各平台订单占比" style={{ height:'100%', display:'flex', flexDirection:'column' }}>
           <div style={{ display:'flex', gap:16, alignItems:'center' }}>
             <div style={{ width: 180, height: 180, borderRadius: '50%', background: platformDonutGradient, position:'relative' }}>
               <div style={{ position:'absolute', left:'50%', top:'50%', transform:'translate(-50%, -50%)', width: 100, height: 100, borderRadius: '50%', background:'#fff' }} />
@@ -330,15 +351,20 @@ export default function FinancePage() {
             </div>
           </div>
         </Card>
-        <Card size="small" title="近半年公司利润趋势">
-          <div style={{ height: 200, padding: 12 }}>
+        <Card size="small" title="近半年公司利润趋势" style={{ height:'100%', display:'flex', flexDirection:'column' }}>
+          <div ref={trendRef} style={{ height: 220, padding: 12, overflow: 'hidden' }}>
             {(() => {
-              const W = 520
-              const H = 160
+              const W = trendW
+              const H = 180
               const pts = last6MonthsTrend
               const maxAbs = Math.max(1, ...pts.map(p => Math.abs(p.net)))
-              const xs = pts.map((_, i) => 20 + i * ((W - 40) / (pts.length - 1)))
-              const ys = pts.map(p => 20 + (H - 40) * (1 - ((p.net + maxAbs) / (2 * maxAbs))))
+              const mL = 24
+              const mR = 56
+              const mT = 20
+              const mB = 24
+              const denom = Math.max(1, pts.length - 1)
+              const xs = pts.map((_, i) => mL + i * ((W - mL - mR) / denom))
+              const ys = pts.map(p => mT + (H - mT - mB) * (1 - ((p.net + maxAbs) / (2 * maxAbs))))
               const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xs[i]} ${ys[i]}`).join(' ')
               return (
                 <svg width={W} height={H}>
@@ -350,26 +376,26 @@ export default function FinancePage() {
                   </defs>
                   <path d={d} fill="none" stroke="#13c2c2" strokeWidth="2" />
                   {pts.map((p, i) => (<circle key={i} cx={xs[i]} cy={ys[i]} r="3" fill="#13c2c2" />))}
-                  {pts.map((p, i) => (<text key={`t${i}`} x={xs[i]-10} y={H} fontSize="10">{p.month}</text>))}
+                  {pts.map((p, i) => (<text key={`t${i}`} x={xs[i]} y={H - 6} fontSize="10" textAnchor="middle">{p.month}</text>))}
                 </svg>
               )
             })()}
           </div>
         </Card>
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom: 12 }}>
-        <Card size="small" title="每日平均房价">
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(300px, 1fr))', gap:12, marginBottom: 12, alignItems:'stretch' }}>
+        <Card size="small" title="每日平均房价" style={{ height:'100%', display:'flex', flexDirection:'column' }}>
           <Space direction="vertical" style={{ width:'100%' }}>
             <div style={{ fontSize: 18 }}>$ {dar}/晚</div>
             <SparkBars data={adrSpark} />
           </Space>
         </Card>
-        <Card size="small" title="最多房源区域">
+        <Card size="small" title="最多房源区域" styles={{ header:{ minHeight: 48, fontSize: 16, fontWeight: 500 } }} style={{ height:'100%', display:'flex', flexDirection:'column', justifyContent:'center' }}>
           <div style={{ fontSize: 16 }}>{regionCounts.sort((a,b)=> b.count - a.count)[0]?.region || ''} – {regionCounts.sort((a,b)=> b.count - a.count)[0]?.count || 0} 套</div>
         </Card>
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom: 12 }}>
-        <Card size="small" title="各区域入住率">
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(300px, 1fr))', gap:12, marginBottom: 12, alignItems:'stretch' }}>
+        <Card size="small" title="各区域入住率" style={{ height:'100%', display:'flex', flexDirection:'column' }}>
           <Space direction="vertical" style={{ width: '100%' }}>
             {occupancyByRegion.map(r => (
               <div key={r.region} style={{ display:'flex', alignItems:'center', gap:8 }}>
@@ -411,49 +437,13 @@ export default function FinancePage() {
           ]} dataSource={bottomNet} />
         )}
       </Card>
-      <Card size="small" title={`公司支出分类（${currentMonth}）`}>
-        <div style={{ display:'flex', gap:16, alignItems:'flex-start', padding: 12 }}>
-          {(() => {
-            const W = 700
-            const H = 220
-            const padL = 40
-            const padB = 28
-            const rows = expenseByCategory
-            const max = Math.max(1, ...rows.map(r => r.value))
-            const bw = Math.max(24, Math.floor((W - padL - 20) / Math.max(1, rows.length)))
-            return (
-              <svg width={W} height={H}>
-                <rect x={padL} y={10} width={W - padL - 10} height={H - padB - 10} fill="#fff" stroke="#f0f0f0" />
-                {[0.25,0.5,0.75].map((g,i)=> (
-                  <line key={i} x1={padL} x2={W-10} y1={10 + (H - padB - 10) * (1 - g)} y2={10 + (H - padB - 10) * (1 - g)} stroke="#eee" />
-                ))}
-                {rows.map((r, i) => {
-                  const x = padL + 10 + i * bw
-                  const h = Math.round((r.value / max) * (H - padB - 20))
-                  const y = 10 + (H - padB - 10) - h
-                  const label = `$${Number(r.value||0).toFixed(2)}`
-                  return (
-                    <g key={r.key}>
-                      <rect x={x} y={y} width={bw - 12} height={h} fill="#5B8FF9" rx={4} />
-                      <text x={x + (bw - 12)/2} y={y - 6} fontSize="11" textAnchor="middle" fill="#595959">{label}</text>
-                      <text x={x + (bw - 12)/2} y={H - 8} fontSize="11" textAnchor="middle" style={{ textTransform:'capitalize' }}>{r.key}</text>
-                    </g>
-                  )
-                })}
-              </svg>
-            )
-          })()}
-          <div style={{ display:'grid', gap:8 }}>
-            {expenseByCategory.map(r => (
-              <div key={r.key} style={{ display:'flex', alignItems:'center', gap:8 }}>
-                <span style={{ display:'inline-block', width:12, height:12, borderRadius:2, background:'#5B8FF9' }} />
-                <span style={{ width: 160, textTransform:'capitalize' }}>{r.key}</span>
-                <span>${Number(r.value||0).toFixed(2)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </Card>
+      
+      </div>
+      <style jsx>{`
+        :global(.finance-page .ant-card-head) { min-height: 48px; }
+        :global(.finance-page .ant-card-head .ant-card-head-wrapper) { min-height: 48px; display: flex; align-items: center; }
+        :global(.finance-page .ant-card-head .ant-card-head-title) { font-size: 16px; font-weight: 500; }
+      `}</style>
     </Card>
   )
 }

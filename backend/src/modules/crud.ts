@@ -14,6 +14,7 @@ const ALLOW: Record<string, true> = {
   finance_transactions: true,
   company_expenses: true,
   property_expenses: true,
+  fixed_expenses: true,
   company_incomes: true,
   property_incomes: true,
   recurring_payments: true,
@@ -165,11 +166,15 @@ router.post('/:resource', requireAnyPerm(['rbac.manage','property.write','order.
   try {
     if (hasPg) {
       if (resource === 'company_expenses') {
-        const dup = await pgSelect(resource, '*', { occurred_at: payload.occurred_at, category: payload.category, amount: payload.amount, note: payload.note })
+        const dup = payload.fixed_expense_id && payload.month_key
+          ? await pgSelect(resource, '*', { fixed_expense_id: payload.fixed_expense_id, month_key: payload.month_key })
+          : await pgSelect(resource, '*', { occurred_at: payload.occurred_at, category: payload.category, amount: payload.amount, note: payload.note })
         if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '重复记录：公司支出已存在' })
       }
       if (resource === 'property_expenses') {
-        const dup = await pgSelect(resource, '*', { property_id: payload.property_id, occurred_at: payload.occurred_at, category: payload.category, amount: payload.amount, note: payload.note })
+        const dup = payload.fixed_expense_id && payload.month_key
+          ? await pgSelect(resource, '*', { fixed_expense_id: payload.fixed_expense_id, month_key: payload.month_key })
+          : await pgSelect(resource, '*', { property_id: payload.property_id, occurred_at: payload.occurred_at, category: payload.category, amount: payload.amount, note: payload.note })
         if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '重复记录：房源支出已存在' })
       }
       if (resource === 'company_incomes') {
@@ -228,18 +233,22 @@ router.post('/:resource', requireAnyPerm(['rbac.manage','property.write','order.
         } else {
           let toInsert: any = payload
           if (resource === 'property_expenses') {
-            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','created_by']
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status']
             const cleaned: any = { id: payload.id }
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
             if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+            if (cleaned.due_date) cleaned.due_date = String(cleaned.due_date).slice(0,10)
+            if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
             toInsert = cleaned
           } else if (resource === 'company_expenses') {
-            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url']
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status']
             const cleaned: any = { id: payload.id }
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
             if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+            if (cleaned.due_date) cleaned.due_date = String(cleaned.due_date).slice(0,10)
+            if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
             toInsert = cleaned
           } else if (resource === 'recurring_payments') {
             const allow = ['id','property_id','scope','vendor','category','category_detail','amount','due_day_of_month','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource']
@@ -266,6 +275,12 @@ router.post('/:resource', requireAnyPerm(['rbac.manage','property.write','order.
               next = new Date(Date.UTC(y2, m2, Math.min(due, dim2)))
             }
             if (!cleaned.next_due_date) cleaned.next_due_date = next.toISOString().slice(0,10)
+            toInsert = cleaned
+          } else if (resource === 'fixed_expenses') {
+            const allow = ['id','property_id','scope','vendor','category','amount','due_day_of_month','remind_days_before','status','pay_account_name','pay_bsb','pay_account_number','pay_ref']
+            const cleaned: any = { id: payload.id }
+            for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+            if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
             toInsert = cleaned
           }
           row = await pgInsert(resource, toInsert)
@@ -435,18 +450,22 @@ router.patch('/:resource/:id', requireAnyPerm(['rbac.manage','property.write','o
     if (hasPg) {
       let toUpdate: any = payload
       if (resource === 'property_expenses') {
-        const allow = ['occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id']
+        const allow = ['occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','fixed_expense_id','month_key','due_date','paid_date','status']
         const cleaned: any = {}
         for (const k of allow) { if (payload[k] !== undefined) cleaned[k] = payload[k] }
         if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
         if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+        if (cleaned.due_date) cleaned.due_date = String(cleaned.due_date).slice(0,10)
+        if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
         toUpdate = cleaned
       } else if (resource === 'company_expenses') {
-        const allow = ['occurred_at','amount','currency','category','category_detail','note','invoice_url']
+        const allow = ['occurred_at','amount','currency','category','category_detail','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status']
         const cleaned: any = {}
         for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
         if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
         if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+        if (cleaned.due_date) cleaned.due_date = String(cleaned.due_date).slice(0,10)
+        if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
         toUpdate = cleaned
       } else if (resource === 'recurring_payments') {
         const allow = ['property_id','scope','vendor','category','category_detail','amount','due_day_of_month','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource']
@@ -473,6 +492,12 @@ router.patch('/:resource/:id', requireAnyPerm(['rbac.manage','property.write','o
           next = new Date(Date.UTC(y2, m2, Math.min(due, dim2)))
         }
         if (!cleaned.next_due_date) cleaned.next_due_date = next.toISOString().slice(0,10)
+        toUpdate = cleaned
+      } else if (resource === 'fixed_expenses') {
+        const allow = ['property_id','scope','vendor','category','amount','due_day_of_month','remind_days_before','status','pay_account_name','pay_bsb','pay_account_number','pay_ref']
+        const cleaned: any = {}
+        for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+        if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
         toUpdate = cleaned
       }
       const row = await pgUpdate(resource, id, toUpdate)

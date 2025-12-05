@@ -242,6 +242,11 @@ CREATE TABLE IF NOT EXISTS company_expenses (
 );
 CREATE INDEX IF NOT EXISTS idx_company_expenses_date ON company_expenses(occurred_at);
 ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;
+ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;
+ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;
+ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;
+ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;
+ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;
 
 CREATE TABLE IF NOT EXISTS property_expenses (
   id text PRIMARY KEY,
@@ -258,6 +263,11 @@ CREATE TABLE IF NOT EXISTS property_expenses (
 CREATE INDEX IF NOT EXISTS idx_property_expenses_pid ON property_expenses(property_id);
 CREATE INDEX IF NOT EXISTS idx_property_expenses_date ON property_expenses(occurred_at);
 ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS category_detail text;
+ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;
+ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;
+ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;
+ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;
+ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses ON company_expenses(occurred_at, category, amount, (coalesce(note,'')));
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses ON property_expenses(property_id, occurred_at, category, amount, (coalesce(note,'')));
 
@@ -314,3 +324,25 @@ CREATE TABLE IF NOT EXISTS recurring_payments (
 CREATE INDEX IF NOT EXISTS idx_recurring_payments_status ON recurring_payments(status);
 CREATE INDEX IF NOT EXISTS idx_recurring_payments_next_due ON recurring_payments(next_due_date);
 CREATE INDEX IF NOT EXISTS idx_recurring_payments_scope ON recurring_payments(scope);
+
+CREATE TABLE IF NOT EXISTS fixed_expenses (
+  id text PRIMARY KEY,
+  property_id text REFERENCES properties(id) ON DELETE SET NULL,
+  scope text,
+  vendor text,
+  category text,
+  amount numeric,
+  due_day_of_month integer,
+  remind_days_before integer,
+  status text,
+  pay_account_name text,
+  pay_bsb text,
+  pay_account_number text,
+  pay_ref text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_fixed_expenses_scope ON fixed_expenses(scope);
+CREATE INDEX IF NOT EXISTS idx_fixed_expenses_status ON fixed_expenses(status);
+CREATE INDEX IF NOT EXISTS idx_company_expenses_month_fixed ON company_expenses(month_key, fixed_expense_id);
+CREATE INDEX IF NOT EXISTS idx_property_expenses_month_fixed ON property_expenses(month_key, fixed_expense_id);
