@@ -47,7 +47,7 @@ router.get('/', async (_req, res) => {
       const local = db.orders
       const merged = [...remote, ...local.filter((l) => !remote.some((r: any) => r.id === l.id))]
       let pRows: any[] = []
-      try { pRows = (await pgSelect('properties', 'id,code,address,listing_names')) as any[] || [] } catch {}
+      try { const raw = await pgSelect('properties', 'id,code,address,listing_names'); pRows = Array.isArray(raw) ? raw : [] } catch {}
       const byId: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.id), p]))
       const byCode: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.code || ''), p]))
       const byListing: Record<string, string> = {}
@@ -69,7 +69,7 @@ router.get('/', async (_req, res) => {
       const local = db.orders
       const merged = [...remote, ...local.filter((l) => !remote.some((r: any) => r.id === l.id))]
       let pRows: any[] = []
-      try { pRows = (await supaSelect('properties', 'id,code,address,listing_names')) as any[] || [] } catch {}
+      try { const raw = await supaSelect('properties', 'id,code,address,listing_names'); pRows = Array.isArray(raw) ? raw : [] } catch {}
       const byId: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.id), p]))
       const byCode: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.code || ''), p]))
       const byListing: Record<string, string> = {}
@@ -263,8 +263,9 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   if (conflict) return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' })
   // confirmation_code 唯一性（PG）
   try {
-    if (hasPg && newOrder.confirmation_code) {
-      const dup: any[] = (await pgSelect('orders', 'id', { confirmation_code: newOrder.confirmation_code })) || []
+    const cc = (newOrder as any).confirmation_code
+    if (hasPg && cc) {
+      const dup: any[] = (await pgSelect('orders', 'id', { confirmation_code: cc })) || []
       if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '确认码已存在' })
     }
   } catch {}
@@ -304,7 +305,8 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
           const { pgPool } = require('../dbAdapter')
           await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
           await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_confirmation_code_unique ON orders(confirmation_code) WHERE confirmation_code IS NOT NULL')
-          const row = await pgInsert('orders', insertOrder)
+          const ins: any = { ...newOrder }; delete ins.property_code
+          const row = await pgInsert('orders', ins)
           db.orders.push(row as any)
           if (newOrder.checkout) {
             const date = newOrder.checkout
@@ -608,17 +610,3 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
   }
   res.json({ inserted, skipped, results })
 })
-  // 确认码唯一性校验（PG）
-  try {
-    if (hasPg && o.confirmation_code) {
-      const dup: any[] = (await pgSelect('orders', 'id', { confirmation_code: o.confirmation_code })) || []
-      if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '确认码已存在' })
-    }
-  } catch {}
-  // 确认码唯一性校验（PG）
-  try {
-    if (hasPg && o.confirmation_code) {
-      const dup: any[] = (await pgSelect('orders', 'id', { confirmation_code: o.confirmation_code })) || []
-      if (Array.isArray(dup) && dup[0] && String(dup[0].id) !== String(id)) return res.status(409).json({ message: '确认码已存在' })
-    }
-  } catch {}

@@ -94,7 +94,7 @@ router.post('/sets/:id/flows', requirePerm('key.flow'), async (req, res) => {
       else if (parsed.data.action === 'lost') newStatus = 'lost'
       else if (parsed.data.action === 'replace') newStatus = 'replaced'
       const newCode = parsed.data.action === 'replace' && parsed.data.new_code ? parsed.data.new_code : set.code
-      const updated = await pgUpdate('key_sets', id, { status: newStatus, code: newCode } as any)
+      const updated = await pgUpdate('key_sets', id, { status: newStatus, code: newCode } as any) || { id, status: newStatus, code: newCode }
       const flow = await pgInsert('key_flows', { id: require('uuid').v4(), key_set_id: id, action: parsed.data.action, timestamp: new Date().toISOString(), note: parsed.data.note, old_code: oldCode, new_code: newCode } as any)
       addAudit('KeySet', id, 'flow', { status: set.status, code: oldCode }, { status: updated.status, code: updated.code })
       return res.status(201).json({ set: updated, flow })

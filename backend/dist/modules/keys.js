@@ -9,6 +9,7 @@ const store_1 = require("../store");
 const zod_1 = require("zod");
 const multer_1 = __importDefault(require("multer"));
 const path_1 = __importDefault(require("path"));
+const r2_1 = require("../r2");
 const auth_1 = require("../auth");
 const store_2 = require("../store");
 const supabase_1 = require("../supabase");
@@ -101,7 +102,7 @@ exports.router.post('/sets/:id/flows', (0, auth_1.requirePerm)('key.flow'), asyn
             else if (parsed.data.action === 'replace')
                 newStatus = 'replaced';
             const newCode = parsed.data.action === 'replace' && parsed.data.new_code ? parsed.data.new_code : set.code;
-            const updated = await (0, dbAdapter_1.pgUpdate)('key_sets', id, { status: newStatus, code: newCode });
+            const updated = await (0, dbAdapter_1.pgUpdate)('key_sets', id, { status: newStatus, code: newCode }) || { id, status: newStatus, code: newCode };
             const flow = await (0, dbAdapter_1.pgInsert)('key_flows', { id: require('uuid').v4(), key_set_id: id, action: parsed.data.action, timestamp: new Date().toISOString(), note: parsed.data.note, old_code: oldCode, new_code: newCode });
             (0, store_2.addAudit)('KeySet', id, 'flow', { status: set.status, code: oldCode }, { status: updated.status, code: updated.code });
             return res.status(201).json({ set: updated, flow });
@@ -198,14 +199,13 @@ exports.router.get('/sets/:id', async (req, res) => {
         return res.status(404).json({ message: 'set not found' });
     res.json(set);
 });
-const storage = multer_1.default.diskStorage({
-    destination: (_req, _file, cb) => cb(null, path_1.default.join(process.cwd(), 'uploads')),
-    filename: (_req, file, cb) => {
-        const ext = path_1.default.extname(file.originalname);
-        cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-    },
-});
-const upload = (0, multer_1.default)({ storage });
+const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ storage: multer_1.default.diskStorage({
+        destination: (_req, _file, cb) => cb(null, path_1.default.join(process.cwd(), 'uploads')),
+        filename: (_req, file, cb) => {
+            const ext = path_1.default.extname(file.originalname);
+            cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+        },
+    }) });
 const addItemSchema = zod_1.z.object({
     item_type: zod_1.z.enum(['key', 'fob']),
     code: zod_1.z.string().min(1),
@@ -236,10 +236,32 @@ exports.router.post('/sets/:id/items', (0, auth_1.requirePerm)('keyset.manage'),
             const existed = await (0, dbAdapter_1.pgSelect)('key_items', '*', { key_set_id: set.id, item_type: parsed.data.item_type });
             const existing = existed && existed[0];
             if (existing) {
-                const updated = await (0, dbAdapter_1.pgUpdate)('key_items', existing.id, { code: parsed.data.code, photo_url: req.file ? `/uploads/${req.file.filename}` : existing.photo_url });
+                let photoUrl = existing.photo_url;
+                if (req.file) {
+                    if (r2_1.hasR2 && req.file.buffer) {
+                        const ext = path_1.default.extname(req.file.originalname);
+                        const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+                        photoUrl = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
+                    }
+                    else {
+                        photoUrl = `/uploads/${req.file.filename}`;
+                    }
+                }
+                const updated = await (0, dbAdapter_1.pgUpdate)('key_items', existing.id, { code: parsed.data.code, photo_url: photoUrl });
                 return res.status(200).json(updated);
             }
-            const created = await (0, dbAdapter_1.pgInsert)('key_items', { id: (0, uuid_1.v4)(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: req.file ? `/uploads/${req.file.filename}` : null });
+            let photoUrl = null;
+            if (req.file) {
+                if (r2_1.hasR2 && req.file.buffer) {
+                    const ext = path_1.default.extname(req.file.originalname);
+                    const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+                    photoUrl = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
+                }
+                else {
+                    photoUrl = `/uploads/${req.file.filename}`;
+                }
+            }
+            const created = await (0, dbAdapter_1.pgInsert)('key_items', { id: (0, uuid_1.v4)(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: photoUrl });
             return res.status(201).json(created);
         }
         if (supabase_1.hasSupabase) {
@@ -259,17 +281,50 @@ exports.router.post('/sets/:id/items', (0, auth_1.requirePerm)('keyset.manage'),
                 }
             }
             try {
-                const item = await require('../supabase').supaUpsertConflict('key_items', { key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: req.file ? `/uploads/${req.file.filename}` : null }, 'key_set_id,item_type');
+                let photoUrl = null;
+                if (req.file) {
+                    if (r2_1.hasR2 && req.file.buffer) {
+                        const ext = path_1.default.extname(req.file.originalname);
+                        const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+                        photoUrl = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
+                    }
+                    else {
+                        photoUrl = `/uploads/${req.file.filename}`;
+                    }
+                }
+                const item = await require('../supabase').supaUpsertConflict('key_items', { key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: photoUrl }, 'key_set_id,item_type');
                 return res.status(201).json(item);
             }
             catch (eUp) {
                 const existed = await (0, supabase_1.supaSelect)('key_items', '*', { key_set_id: set.id, item_type: parsed.data.item_type });
                 const existing = existed && existed[0];
                 if (existing) {
-                    const updated = await (0, supabase_1.supaUpdate)('key_items', existing.id, { code: parsed.data.code, photo_url: req.file ? `/uploads/${req.file.filename}` : existing.photo_url });
+                    let photoUrl2 = existing.photo_url;
+                    if (req.file) {
+                        if (r2_1.hasR2 && req.file.buffer) {
+                            const ext = path_1.default.extname(req.file.originalname);
+                            const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+                            photoUrl2 = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
+                        }
+                        else {
+                            photoUrl2 = `/uploads/${req.file.filename}`;
+                        }
+                    }
+                    const updated = await (0, supabase_1.supaUpdate)('key_items', existing.id, { code: parsed.data.code, photo_url: photoUrl2 });
                     return res.status(200).json(updated);
                 }
-                const created = await (0, supabase_1.supaInsert)('key_items', { id: (0, uuid_1.v4)(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: req.file ? `/uploads/${req.file.filename}` : null });
+                let photoUrl3 = null;
+                if (req.file) {
+                    if (r2_1.hasR2 && req.file.buffer) {
+                        const ext = path_1.default.extname(req.file.originalname);
+                        const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+                        photoUrl3 = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
+                    }
+                    else {
+                        photoUrl3 = `/uploads/${req.file.filename}`;
+                    }
+                }
+                const created = await (0, supabase_1.supaInsert)('key_items', { id: (0, uuid_1.v4)(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: photoUrl3 });
                 return res.status(201).json(created);
             }
         }
@@ -298,8 +353,16 @@ exports.router.patch('/sets/:id/items/:itemId', (0, auth_1.requirePerm)('keyset.
             const payload = {};
             if (req.body && req.body.code)
                 payload.code = String(req.body.code);
-            if (req.file)
-                payload.photo_url = `/uploads/${req.file.filename}`;
+            if (req.file) {
+                if (r2_1.hasR2 && req.file.buffer) {
+                    const ext = path_1.default.extname(req.file.originalname);
+                    const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+                    payload.photo_url = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
+                }
+                else {
+                    payload.photo_url = `/uploads/${req.file.filename}`;
+                }
+            }
             const item = await (0, dbAdapter_1.pgUpdate)('key_items', req.params.itemId, payload);
             return res.json(item);
         }
@@ -307,8 +370,16 @@ exports.router.patch('/sets/:id/items/:itemId', (0, auth_1.requirePerm)('keyset.
             const payload = {};
             if (req.body && req.body.code)
                 payload.code = String(req.body.code);
-            if (req.file)
-                payload.photo_url = `/uploads/${req.file.filename}`;
+            if (req.file) {
+                if (r2_1.hasR2 && req.file.buffer) {
+                    const ext = path_1.default.extname(req.file.originalname);
+                    const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+                    payload.photo_url = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
+                }
+                else {
+                    payload.photo_url = `/uploads/${req.file.filename}`;
+                }
+            }
             const item = await (0, supabase_1.supaUpdate)('key_items', req.params.itemId, payload);
             return res.json(item);
         }
@@ -323,8 +394,16 @@ exports.router.patch('/sets/:id/items/:itemId', (0, auth_1.requirePerm)('keyset.
     const code = (req.body && req.body.code) ? String(req.body.code) : undefined;
     if (code)
         item.code = code;
-    if (req.file)
-        item.photo_url = `/uploads/${req.file.filename}`;
+    if (req.file) {
+        if (r2_1.hasR2 && req.file.buffer) {
+            const ext = path_1.default.extname(req.file.originalname);
+            const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+            item.photo_url = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
+        }
+        else {
+            item.photo_url = `/uploads/${req.file.filename}`;
+        }
+    }
     res.json(item);
 });
 exports.router.delete('/sets/:id/items/:itemId', (0, auth_1.requirePerm)('keyset.manage'), async (req, res) => {

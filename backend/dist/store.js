@@ -19,6 +19,7 @@ exports.db = {
     landlords: [],
     financeTransactions: [],
     payouts: [],
+    companyPayouts: [],
     users: [],
     roles: [],
     permissions: [],
@@ -124,8 +125,8 @@ if (exports.db.roles.length === 0) {
     }
     // 管理员：所有权限
     grant(adminId, exports.db.permissions.map(p => p.code));
-    // 客服：房源可写、订单查看/编辑（不允许新建）、查看清洁安排
-    grant(csId, ['property.write', 'order.view', 'order.write', 'cleaning.view']);
+    // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
+    grant(csId, ['property.write', 'order.view', 'order.write', 'order.manage', 'cleaning.view', 'finance.tx.write']);
     // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
     grant(cleanMgrId, ['cleaning.schedule.manage', 'cleaning.task.assign']);
     // 清洁/检查人员：无写权限，仅查看（后端接口默认允许 GET）

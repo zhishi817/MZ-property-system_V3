@@ -15,11 +15,13 @@ const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ de
 router.get('/', async (_req, res) => {
   try {
     if (hasSupabase) {
-      const rows = (await supaSelect('finance_transactions')) as any[] || []
+      const raw = await supaSelect('finance_transactions')
+      const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     }
     if (hasPg) {
-      const rows = (await pgSelect('finance_transactions')) as any[] || []
+      const raw = await pgSelect('finance_transactions')
+      const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     }
     return res.json(db.financeTransactions)
@@ -136,11 +138,13 @@ router.post('/send-annual', requirePerm('finance.payout'), (req, res) => {
 router.get('/payouts', async (_req, res) => {
   try {
     if (hasSupabase) {
-      const rows = (await supaSelect('payouts')) as any[] || []
+      const raw = await supaSelect('payouts')
+      const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     }
     if (hasPg) {
-      const rows = (await pgSelect('payouts')) as any[] || []
+      const raw = await pgSelect('payouts')
+      const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     }
     return res.json(db.payouts)
@@ -153,10 +157,12 @@ router.get('/payouts', async (_req, res) => {
 router.get('/company-payouts', async (_req, res) => {
   try {
     if (hasPg) {
-      const rows = (await pgSelect('company_payouts')) as any[] || []
+      const raw = await pgSelect('company_payouts')
+      const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     } else if (hasSupabase) {
-      const rows = (await supaSelect('company_payouts')) as any[] || []
+      const raw = await supaSelect('company_payouts')
+      const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     }
     return res.json(db.companyPayouts)

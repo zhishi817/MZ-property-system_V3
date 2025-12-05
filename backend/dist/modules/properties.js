@@ -42,9 +42,11 @@ const createSchema = zod_1.z.object({
     capacity: zod_1.z.number().int().min(1),
     region: zod_1.z.string().optional(),
     area_sqm: zod_1.z.number().optional(),
+    biz_category: zod_1.z.enum(['leased', 'management_fee']).optional(),
     building_name: zod_1.z.string().optional(),
     building_facilities: zod_1.z.array(zod_1.z.string()).optional(),
     building_facility_floor: zod_1.z.string().optional(),
+    building_facility_other: zod_1.z.string().optional(),
     building_contact_name: zod_1.z.string().optional(),
     building_contact_phone: zod_1.z.string().optional(),
     building_contact_email: zod_1.z.string().optional(),
@@ -52,6 +54,7 @@ const createSchema = zod_1.z.object({
     bed_config: zod_1.z.string().optional(),
     tv_model: zod_1.z.string().optional(),
     aircon_model: zod_1.z.string().optional(),
+    bedroom_ac: zod_1.z.enum(['none', 'master_only', 'both']).optional(),
     notes: zod_1.z.string().optional(),
     floor: zod_1.z.string().optional(),
     parking_type: zod_1.z.string().optional(),
@@ -64,14 +67,24 @@ const createSchema = zod_1.z.object({
     landlord_id: zod_1.z.string().optional(),
     orientation: zod_1.z.string().optional(),
     fireworks_view: zod_1.z.boolean().optional(),
+    listing_names: zod_1.z.record(zod_1.z.string()).optional(),
 });
 exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, res) => {
+    var _a, _b, _c, _d;
     const parsed = createSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
+    try {
+        const ln = parsed.data.listing_names || {};
+        const hasAny = Object.values(ln || {}).some((v) => String(v || '').trim());
+        if (!hasAny)
+            return res.status(400).json({ message: '请至少填写一个平台的 Listing 名称' });
+    }
+    catch (_e) { }
     const autoCode = `PM-${Math.random().toString(36).slice(2, 6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
-    const pFull = { id: (0, uuid_1.v4)(), code: parsed.data.code || autoCode, ...parsed.data };
-    const baseKeys = ['id', 'address', 'type', 'capacity', 'region', 'area_sqm', 'building_name', 'building_facilities', 'building_facility_floor', 'building_contact_name', 'building_contact_phone', 'building_contact_email', 'building_notes', 'bed_config', 'tv_model', 'aircon_model', 'access_guide_link', 'keybox_location', 'keybox_code', 'garage_guide_link', 'floor', 'parking_type', 'parking_space', 'access_type', 'orientation', 'fireworks_view', 'notes', 'landlord_id'];
+    const actor = req.user;
+    const pFull = { id: (0, uuid_1.v4)(), code: parsed.data.code || autoCode, created_by: (actor === null || actor === void 0 ? void 0 : actor.sub) || (actor === null || actor === void 0 ? void 0 : actor.username) || null, ...parsed.data };
+    const baseKeys = ['id', 'address', 'type', 'capacity', 'region', 'area_sqm', 'biz_category', 'building_name', 'building_facilities', 'building_facility_floor', 'building_facility_other', 'building_contact_name', 'building_contact_phone', 'building_contact_email', 'building_notes', 'bed_config', 'tv_model', 'aircon_model', 'bedroom_ac', 'access_guide_link', 'keybox_location', 'keybox_code', 'garage_guide_link', 'floor', 'parking_type', 'parking_space', 'access_type', 'orientation', 'fireworks_view', 'notes', 'landlord_id', 'created_by'];
     const pBase = Object.fromEntries(Object.entries(pFull).filter(([k]) => baseKeys.includes(k)));
     const minimalKeys = ['id', 'address', 'type', 'capacity', 'region', 'area_sqm', 'notes'];
     const pMinimal = Object.fromEntries(Object.entries(pFull).filter(([k]) => minimalKeys.includes(k)));
@@ -126,14 +139,83 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
             }
         }
         if (dbAdapter_1.hasPg) {
-            const row = await (0, dbAdapter_1.pgInsert)('properties', pFull);
-            (0, store_1.addAudit)('Property', row.id, 'create', null, row);
-            ['guest', 'spare_1', 'spare_2', 'other'].forEach((t) => {
-                if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-                    store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
+            try {
+                const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
+                (0, store_1.addAudit)('Property', row.id, 'create', null, row);
+                ['guest', 'spare_1', 'spare_2', 'other'].forEach((t) => {
+                    if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
+                        store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
+                    }
+                });
+                return res.status(201).json(row);
+            }
+            catch (e) {
+                if (/column\s+"?listing_names"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
+                    try {
+                        await ((_a = require('../dbAdapter').pgPool) === null || _a === void 0 ? void 0 : _a.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS listing_names jsonb'));
+                        const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
+                        (0, store_1.addAudit)('Property', row.id, 'create', null, row);
+                        ['guest', 'spare_1', 'spare_2', 'other'].forEach((t) => {
+                            if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
+                                store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
+                            }
+                        });
+                        return res.status(201).json(row);
+                    }
+                    catch (e2) {
+                        return res.status(500).json({ message: (e2 === null || e2 === void 0 ? void 0 : e2.message) || 'failed to add listing_names column' });
+                    }
                 }
-            });
-            return res.status(201).json(row);
+                if (/column\s+"?biz_category"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
+                    try {
+                        await ((_b = require('../dbAdapter').pgPool) === null || _b === void 0 ? void 0 : _b.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS biz_category text'));
+                        const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
+                        (0, store_1.addAudit)('Property', row.id, 'create', null, row);
+                        ['guest', 'spare_1', 'spare_2', 'other'].forEach((t) => {
+                            if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
+                                store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
+                            }
+                        });
+                        return res.status(201).json(row);
+                    }
+                    catch (e3) {
+                        return res.status(500).json({ message: (e3 === null || e3 === void 0 ? void 0 : e3.message) || 'failed to add biz_category column' });
+                    }
+                }
+                if (/column\s+"?building_facility_other"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
+                    try {
+                        await ((_c = require('../dbAdapter').pgPool) === null || _c === void 0 ? void 0 : _c.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS building_facility_other text'));
+                        const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
+                        (0, store_1.addAudit)('Property', row.id, 'create', null, row);
+                        ['guest', 'spare_1', 'spare_2', 'other'].forEach((t) => {
+                            if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
+                                store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
+                            }
+                        });
+                        return res.status(201).json(row);
+                    }
+                    catch (e4) {
+                        return res.status(500).json({ message: (e4 === null || e4 === void 0 ? void 0 : e4.message) || 'failed to add building_facility_other column' });
+                    }
+                }
+                if (/column\s+"?bedroom_ac"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
+                    try {
+                        await ((_d = require('../dbAdapter').pgPool) === null || _d === void 0 ? void 0 : _d.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedroom_ac text'));
+                        const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
+                        (0, store_1.addAudit)('Property', row.id, 'create', null, row);
+                        ['guest', 'spare_1', 'spare_2', 'other'].forEach((t) => {
+                            if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
+                                store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
+                            }
+                        });
+                        return res.status(201).json(row);
+                    }
+                    catch (e5) {
+                        return res.status(500).json({ message: (e5 === null || e5 === void 0 ? void 0 : e5.message) || 'failed to add bedroom_ac column' });
+                    }
+                }
+                return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'create failed' });
+            }
         }
         store_1.db.properties.push(pFull);
         (0, store_1.addAudit)('Property', pFull.id, 'create', null, pFull);
@@ -149,11 +231,14 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
     }
 });
 exports.router.patch('/:id', (0, auth_1.requirePerm)('property.write'), async (req, res) => {
+    var _a, _b, _c, _d;
     const { id } = req.params;
     const body = req.body;
     const cleanedBody = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'bedrooms'));
-    const baseKeys = ['address', 'type', 'capacity', 'region', 'area_sqm', 'building_name', 'building_facilities', 'building_facility_floor', 'building_contact_name', 'building_contact_phone', 'building_contact_email', 'building_notes', 'bed_config', 'tv_model', 'aircon_model', 'access_guide_link', 'keybox_location', 'keybox_code', 'garage_guide_link', 'floor', 'parking_type', 'parking_space', 'access_type', 'orientation', 'fireworks_view', 'notes', 'landlord_id'];
-    const bodyBase = Object.fromEntries(Object.entries(cleanedBody).filter(([k]) => baseKeys.includes(k)));
+    const baseKeys = ['address', 'type', 'capacity', 'region', 'area_sqm', 'biz_category', 'building_name', 'building_facilities', 'building_facility_floor', 'building_facility_other', 'building_contact_name', 'building_contact_phone', 'building_contact_email', 'building_notes', 'bed_config', 'tv_model', 'aircon_model', 'bedroom_ac', 'access_guide_link', 'keybox_location', 'keybox_code', 'garage_guide_link', 'floor', 'parking_type', 'parking_space', 'access_type', 'orientation', 'fireworks_view', 'notes', 'landlord_id', 'listing_names'];
+    const actor = req.user;
+    const bodyBaseRaw = Object.fromEntries(Object.entries(cleanedBody).filter(([k]) => baseKeys.includes(k)));
+    const bodyBase = { ...bodyBaseRaw, updated_at: new Date(), updated_by: (actor === null || actor === void 0 ? void 0 : actor.sub) || (actor === null || actor === void 0 ? void 0 : actor.username) || null };
     try {
         if (supabase_1.hasSupabase) {
             const rows = await (0, supabase_1.supaSelect)('properties', '*', { id });
@@ -182,9 +267,38 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('property.write'), async (r
         if (dbAdapter_1.hasPg) {
             const rows = await (0, dbAdapter_1.pgSelect)('properties', '*', { id });
             const before = rows && rows[0];
-            const row = await (0, dbAdapter_1.pgUpdate)('properties', id, cleanedBody);
-            (0, store_1.addAudit)('Property', id, 'update', before, row);
-            return res.json(row);
+            try {
+                const row = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
+                (0, store_1.addAudit)('Property', id, 'update', before, row);
+                return res.json(row);
+            }
+            catch (e) {
+                if (/column\s+"?listing_names"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
+                    await ((_a = require('../dbAdapter').pgPool) === null || _a === void 0 ? void 0 : _a.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS listing_names jsonb'));
+                    const row2 = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
+                    (0, store_1.addAudit)('Property', id, 'update', before, row2);
+                    return res.json(row2);
+                }
+                if (/column\s+"?biz_category"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
+                    await ((_b = require('../dbAdapter').pgPool) === null || _b === void 0 ? void 0 : _b.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS biz_category text'));
+                    const row3 = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
+                    (0, store_1.addAudit)('Property', id, 'update', before, row3);
+                    return res.json(row3);
+                }
+                if (/column\s+"?building_facility_other"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
+                    await ((_c = require('../dbAdapter').pgPool) === null || _c === void 0 ? void 0 : _c.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS building_facility_other text'));
+                    const row4 = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
+                    (0, store_1.addAudit)('Property', id, 'update', before, row4);
+                    return res.json(row4);
+                }
+                if (/column\s+"?bedroom_ac"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
+                    await ((_d = require('../dbAdapter').pgPool) === null || _d === void 0 ? void 0 : _d.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedroom_ac text'));
+                    const row5 = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
+                    (0, store_1.addAudit)('Property', id, 'update', before, row5);
+                    return res.json(row5);
+                }
+                throw e;
+            }
         }
         const p = store_1.db.properties.find((x) => x.id === id);
         if (!p)

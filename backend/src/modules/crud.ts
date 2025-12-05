@@ -39,10 +39,11 @@ router.get('/:resource', requireAnyPerm(['rbac.manage','property.write','order.v
   try {
     if (hasPg) {
       try {
-        const rows = (await pgSelect(resource, '*', Object.keys(filter).length ? filter : undefined)) as any[] || []
+        const rowsRaw = await pgSelect(resource, '*', Object.keys(filter).length ? filter : undefined)
+        const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
         if (resource === 'property_expenses') {
           let props: any[] = []
-          try { props = (await pgSelect('properties', 'id,code,address')) as any[] || [] } catch {}
+          try { const propsRaw = await pgSelect('properties', 'id,code,address'); props = Array.isArray(propsRaw) ? propsRaw : [] } catch {}
           const byId: Record<string, any> = Object.fromEntries(props.map(p => [String(p.id), p]))
           const byCode: Record<string, any> = Object.fromEntries(props.map(p => [String(p.code || ''), p]))
           const labeled = rows.map(r => {
@@ -57,10 +58,11 @@ router.get('/:resource', requireAnyPerm(['rbac.manage','property.write','order.v
       } catch {}
     }
     if (hasSupabase) {
-      const rows = (await supaSelect(resource, '*', Object.keys(filter).length ? filter : undefined)) as any[] || []
+      const rowsRaw = await supaSelect(resource, '*', Object.keys(filter).length ? filter : undefined)
+      const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
       if (resource === 'property_expenses') {
         let props: any[] = []
-        try { props = (await supaSelect('properties', 'id,code,address')) as any[] || [] } catch {}
+        try { const propsRaw = await supaSelect('properties', 'id,code,address'); props = Array.isArray(propsRaw) ? propsRaw : [] } catch {}
         const byId: Record<string, any> = Object.fromEntries(props.map(p => [String(p.id), p]))
         const byCode: Record<string, any> = Object.fromEntries(props.map(p => [String(p.code || ''), p]))
         const labeled = rows.map(r => {
@@ -96,11 +98,13 @@ router.get('/:resource/:id', requireAnyPerm(['rbac.manage','property.write','ord
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
   try {
     if (hasPg) {
-      const rows = (await pgSelect(resource, '*', { id })) as any[] || []
+      const rowsRaw = await pgSelect(resource, '*', { id })
+      const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
       return rows[0] ? res.json(rows[0]) : res.status(404).json({ message: 'not found' })
     }
     if (hasSupabase) {
-      const rows = (await supaSelect(resource, '*', { id })) as any[] || []
+      const rowsRaw = await supaSelect(resource, '*', { id })
+      const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
       return rows[0] ? res.json(rows[0]) : res.status(404).json({ message: 'not found' })
     }
     const arr = (db as any)[camelToArrayKey(resource)] || []
@@ -153,11 +157,13 @@ router.post('/:resource', requireAnyPerm(['rbac.manage','property.write','order.
             }
           }
         } else if (hasSupabase) {
-          const byCode = code ? await supaSelect('properties', 'id', { code }) : []
-          if (byCode && (byCode as any[])[0] && (byCode as any[])[0].id) payload.property_id = (byCode as any[])[0].id
+          const byCodeRaw = code ? await supaSelect('properties', 'id', { code }) : null
+          const byCode: any[] = Array.isArray(byCodeRaw) ? byCodeRaw : []
+          if (byCode[0]?.id) payload.property_id = byCode[0].id
           if (payload.property_id) {
-            const byId = await supaSelect('properties', 'id', { id: payload.property_id })
-            if (!byId || !(byId as any[])[0]) payload.property_id = null
+            const byIdRaw = await supaSelect('properties', 'id', { id: payload.property_id })
+            const byId: any[] = Array.isArray(byIdRaw) ? byIdRaw : []
+            if (!byId[0]) payload.property_id = null
           }
         }
       } catch {}
@@ -440,7 +446,8 @@ router.patch('/:resource/:id', requireAnyPerm(['rbac.manage','property.write','o
   if (user?.role === 'customer_service' && resource === 'property_expenses') {
     try {
       if (hasPg) {
-        const rows = (await pgSelect(resource, '*', { id })) as any[] || []
+        const rowsRaw = await pgSelect(resource, '*', { id })
+        const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
         const row = rows[0]
         if (row && row.created_by && row.created_by !== user.sub) return res.status(403).json({ message: 'forbidden' })
       }
