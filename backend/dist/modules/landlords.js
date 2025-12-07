@@ -83,8 +83,9 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('landlord.manage'), async (
             const rows = await (0, dbAdapter_1.pgSelect)('landlords', '*', { id });
             const before = rows && rows[0];
             const row = await (0, dbAdapter_1.pgUpdate)('landlords', id, body);
-            (0, store_1.addAudit)('Landlord', id, 'update', before, row);
-            return res.json(row);
+            const out = row || { ...(before || {}), ...body, id };
+            (0, store_1.addAudit)('Landlord', id, 'update', before, out);
+            return res.json(out);
         }
         const l = store_1.db.landlords.find(x => x.id === id);
         if (!l)
@@ -139,7 +140,8 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('landlord.manage'), async 
             const rows = await (0, dbAdapter_1.pgSelect)('landlords', '*', { id });
             const before = rows && rows[0];
             const row = await (0, dbAdapter_1.pgUpdate)('landlords', id, { archived: true });
-            (0, store_1.addAudit)('Landlord', id, 'archive', before, row, actor === null || actor === void 0 ? void 0 : actor.sub);
+            const out = row || { ...(before || {}), id, archived: true };
+            (0, store_1.addAudit)('Landlord', id, 'archive', before, out, actor === null || actor === void 0 ? void 0 : actor.sub);
             return res.json({ id, archived: true });
         }
         const l = store_1.db.landlords.find(x => x.id === id);

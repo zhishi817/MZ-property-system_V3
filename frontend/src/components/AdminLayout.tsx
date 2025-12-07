@@ -1,5 +1,5 @@
 "use client"
-import { Layout, Menu, Button } from 'antd'
+import { Layout, Menu, Button, Space } from 'antd'
 import {
   ApartmentOutlined,
   KeyOutlined,
@@ -12,7 +12,8 @@ import {
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { getRole, hasPerm } from '../lib/auth'
+import { getRole, hasPerm, preloadRolePerms } from '../lib/auth'
+import { API_BASE, authHeaders } from '../lib/api'
 import { VersionBadge } from './VersionBadge'
 
 const { Header, Sider, Content } = Layout
@@ -20,7 +21,8 @@ const { Header, Sider, Content } = Layout
 export function AdminLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
-  async function preloadPerms() { return }
+  const [permTick, setPermTick] = useState(0)
+  async function preloadPerms() { try { await preloadRolePerms(); setPermTick((x)=>x+1) } catch {} }
   function getCookie(name: string) {
     if (typeof document === 'undefined') return null
     const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()\[\]\\/+^])/g, '\\$1') + '=([^;]*)'))
@@ -29,6 +31,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false)
   const isLogin = pathname.startsWith('/login')
   const [role, setRole] = useState<string | null>(null)
+  const [username, setUsername] = useState<string | null>(null)
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setRole(getRole()) }, [])
   useEffect(() => { setMounted(true) }, [])
@@ -46,36 +49,52 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     if (authed) { preloadPerms().catch(() => {}) }
   }, [authed])
   useEffect(() => {
+    if (authed) { preloadPerms().catch(() => {}) }
+  }, [pathname])
+  useEffect(() => {
+    if (!authed) return
+    ;(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() })
+        const j = res.ok ? await res.json() : null
+        setUsername((j as any)?.username || null)
+        setRole((j as any)?.role || getRole())
+      } catch {}
+    })()
+  }, [authed])
+  useEffect(() => {
     if (!isLogin && !authed) {
       try { router.replace('/login') } catch {}
     }
   }, [isLogin, authed, router])
   const items: any[] = []
-  items.push({ key: 'dashboard', icon: <ProfileOutlined />, label: <Link href="/dashboard" prefetch={false}>总览</Link> })
-  if (hasPerm('landlord.manage')) {
+  if (hasPerm('menu.dashboard')) items.push({ key: 'dashboard', icon: <ProfileOutlined />, label: <Link href="/dashboard" prefetch={false}>总览</Link> })
+  if (hasPerm('menu.landlords')) {
     const landlordChildren: any[] = []
     landlordChildren.push({ key: 'landlords-home', label: <Link href="/landlords" prefetch={false}>房东列表</Link> })
     landlordChildren.push({ key: 'landlord-agreements', label: <Link href="/landlords/agreements" prefetch={false}>授权协议</Link> })
     landlordChildren.push({ key: 'landlord-contracts', label: <Link href="/landlords/contracts" prefetch={false}>房源合同</Link> })
     items.push({ key: 'landlords', icon: <TeamOutlined />, label: '房东管理', children: landlordChildren })
   }
-  if (hasPerm('property.write') || ['customer_service','field','cleaner_inspector'].includes(role || '')) {
+  if (hasPerm('menu.properties') || ['customer_service','field','cleaner_inspector'].includes(role || '')) {
     const propChildren: any[] = []
-    propChildren.push({ key: 'properties-list', label: <Link href="/properties" prefetch={false}>房源列表</Link> })
-    if (hasPerm('keyset.manage') || hasPerm('key.flow')) propChildren.push({ key: 'properties-keys', label: <Link href="/keys" prefetch={false}>房源钥匙</Link> })
-    if (role === 'admin' || hasPerm('property.write')) propChildren.push({ key: 'properties-maintenance', label: <Link href="/maintenance" prefetch={false}>房源维修</Link> })
+    if (hasPerm('menu.properties.list.visible')) propChildren.push({ key: 'properties-list', label: <Link href="/properties" prefetch={false}>房源列表</Link> })
+    if (hasPerm('menu.properties.keys.visible')) propChildren.push({ key: 'properties-keys', label: <Link href="/keys" prefetch={false}>房源钥匙</Link> })
+    if (hasPerm('menu.properties.maintenance.visible')) propChildren.push({ key: 'properties-maintenance', label: <Link href="/maintenance" prefetch={false}>房源维修</Link> })
     items.push({ key: 'properties', icon: <ApartmentOutlined />, label: '房源管理', children: propChildren })
   }
-  if (hasPerm('inventory.move')) items.push({ key: 'inventory', icon: <ProfileOutlined />, label: <Link href="/inventory" prefetch={false}>仓库库存</Link> })
+  if (hasPerm('menu.inventory')) items.push({ key: 'inventory', icon: <ProfileOutlined />, label: <Link href="/inventory" prefetch={false}>仓库库存</Link> })
   const financeChildren: any[] = []
-  if (hasPerm('finance.payout') || hasPerm('finance.tx.write')) financeChildren.push({ key: 'finance-home', label: <Link href="/finance" prefetch={false}>财务总览</Link> })
-  if (hasPerm('order.manage')) financeChildren.push({ key: 'orders', label: <Link href="/orders" prefetch={false}>订单管理</Link> })
-  if (hasPerm('finance.tx.write')) financeChildren.push({ key: 'expenses', label: <Link href="/finance/expenses" prefetch={false}>房源支出</Link> })
-  if (hasPerm('finance.tx.write') || hasPerm('finance.payout') || role === 'customer_service') financeChildren.push({ key: 'company', label: <Link href="/finance/company-overview" prefetch={false}>房源营收</Link> })
-  if (hasPerm('finance.payout')) financeChildren.push({ key: 'company-revenue', label: <Link href="/finance/company-revenue" prefetch={false}>公司营收</Link> })
-  if (financeChildren.length > 0) items.push({ key: 'finance', icon: <DollarOutlined />, label: '财务管理', children: financeChildren })
-  if (hasPerm('cleaning.task.assign') || role === 'customer_service' || role === 'cleaning_manager' || role === 'cleaner_inspector') items.push({ key: 'cleaning', icon: <CalendarOutlined />, label: <Link href="/cleaning" prefetch={false}>清洁安排</Link> })
-  if (hasPerm('rbac.manage')) items.push({ key: 'rbac', icon: <ProfileOutlined />, label: <Link href="/rbac" prefetch={false}>角色权限</Link> })
+  if (hasPerm('menu.finance.company_overview.visible')) financeChildren.push({ key: 'finance-home', label: <Link href="/finance" prefetch={false}>财务总览</Link> })
+  if (hasPerm('menu.finance.orders.visible')) financeChildren.push({ key: 'orders', label: <Link href="/orders" prefetch={false}>订单管理</Link> })
+  if (hasPerm('menu.finance.expenses.visible')) financeChildren.push({ key: 'expenses', label: <Link href="/finance/expenses" prefetch={false}>房源支出</Link> })
+  if (hasPerm('menu.finance.recurring.visible')) financeChildren.push({ key: 'finance-recurring', label: <Link href="/finance/recurring" prefetch={false}>固定支出</Link> })
+  if (hasPerm('menu.finance.company_overview.visible')) financeChildren.push({ key: 'company', label: <Link href="/finance/company-overview" prefetch={false}>房源营收</Link> })
+  if (hasPerm('menu.finance.company_revenue.visible')) financeChildren.push({ key: 'company-revenue', label: <Link href="/finance/company-revenue" prefetch={false}>公司营收</Link> })
+  if (hasPerm('menu.finance')) items.push({ key: 'finance', icon: <DollarOutlined />, label: '财务管理', children: financeChildren })
+  if (hasPerm('menu.cleaning') || hasPerm('cleaning.task.assign') || role === 'customer_service' || role === 'cleaning_manager' || role === 'cleaner_inspector') items.push({ key: 'cleaning', icon: <CalendarOutlined />, label: <Link href="/cleaning" prefetch={false}>清洁安排</Link> })
+  if (hasPerm('menu.rbac') || hasPerm('rbac.manage')) items.push({ key: 'rbac', icon: <ProfileOutlined />, label: <Link href="/rbac" prefetch={false}>角色权限</Link> })
+  if (hasPerm('menu.cms')) items.push({ key: 'cms', icon: <ShopOutlined />, label: <Link href="/cms" prefetch={false}>CMS管理</Link> })
 
   
   
@@ -95,14 +114,21 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     ) : (
       <Layout style={{ minHeight: '100vh' }}>
         <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} breakpoint="md">
-          <div style={{ color: '#fff', padding: 16, fontWeight: 600 }}>MZ Property</div>
+          <div style={{ color: '#fff', padding: 16, fontWeight: 700 }}>MZ Property</div>
           <Menu theme="dark" mode="inline" items={items} />
         </Sider>
         <Layout>
           <Header style={{ background: '#fff', padding: '0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>后台管理</div>
+            <div style={{ fontWeight: 700, fontFamily:'SF Pro Display, Segoe UI, Roboto, Helvetica Neue, Arial' }}>后台管理</div>
             <div>
-              {authed ? <Button onClick={logout}>退出{role ? `(${role})` : ''}</Button> : <Link href="/login" prefetch={false}>登录</Link>}
+              {authed ? (
+                <Space>
+                  <span style={{ fontFamily:'SF Pro Text, Segoe UI, Roboto, Helvetica Neue, Arial', color:'#555' }}>Hi, {username || ''}{role ? ` (${role})` : ''}</span>
+                  <Button onClick={logout}>退出</Button>
+                </Space>
+              ) : (
+                <Link href="/login" prefetch={false}>登录</Link>
+              )}
             </div>
           </Header>
           <Content style={{ margin: '16px' }}>{children}</Content>

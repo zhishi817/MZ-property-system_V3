@@ -46,17 +46,55 @@ router.get('/', async (_req, res) => {
       const remote: any[] = (await pgSelect('orders')) || []
       const local = db.orders
       const merged = [...remote, ...local.filter((l) => !remote.some((r: any) => r.id === l.id))]
-      return res.json(merged)
+      let pRows: any[] = []
+      try { const raw = await pgSelect('properties', 'id,code,address,listing_names'); pRows = Array.isArray(raw) ? raw : [] } catch {}
+      const byId: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.id), p]))
+      const byCode: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.code || ''), p]))
+      const byListing: Record<string, string> = {}
+      ;(pRows || []).forEach((p: any) => {
+        const ln = p?.listing_names || {}
+        Object.values(ln || {}).forEach((name: any) => { if (name) byListing[String(name).toLowerCase()] = String(p.id) })
+      })
+      const labeled = merged.map((o: any) => {
+        const pid = String(o.property_id || '')
+        const pid2 = byListing[String((o.listing_name || '')).toLowerCase()] || ''
+        const prop = byId[pid] || byCode[pid] || byId[pid2]
+        const label = (o.property_code || prop?.code || prop?.address || pid)
+        return { ...o, property_code: label }
+      })
+      return res.json(labeled)
     }
     if (hasSupabase) {
       const remote: any[] = (await supaSelect('orders')) || []
       const local = db.orders
       const merged = [...remote, ...local.filter((l) => !remote.some((r: any) => r.id === l.id))]
-      return res.json(merged)
+      let pRows: any[] = []
+      try { const raw = await supaSelect('properties', 'id,code,address,listing_names'); pRows = Array.isArray(raw) ? raw : [] } catch {}
+      const byId: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.id), p]))
+      const byCode: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.code || ''), p]))
+      const byListing: Record<string, string> = {}
+      ;(pRows || []).forEach((p: any) => {
+        const ln = p?.listing_names || {}
+        Object.values(ln || {}).forEach((name: any) => { if (name) byListing[String(name).toLowerCase()] = String(p.id) })
+      })
+      const labeled = merged.map((o: any) => {
+        const pid = String(o.property_id || '')
+        const pid2 = byListing[String((o.listing_name || '')).toLowerCase()] || ''
+        const prop = byId[pid] || byCode[pid] || byId[pid2]
+        const label = (o.property_code || prop?.code || prop?.address || pid)
+        return { ...o, property_code: label }
+      })
+      return res.json(labeled)
     }
-    return res.json(db.orders)
+    return res.json(db.orders.map((o) => {
+      const prop = db.properties.find((p) => String(p.id) === String(o.property_id)) || db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || (db.properties as any[]).find((p: any) => { const ln = p?.listing_names || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String((o as any).listing_name || '').toLowerCase()) })
+      return { ...o, property_code: (o.property_code || prop?.code || prop?.address || o.property_id || '') }
+    }))
   } catch {
-    return res.json(db.orders)
+    return res.json(db.orders.map((o) => {
+      const prop = db.properties.find((p) => String(p.id) === String(o.property_id)) || db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || (db.properties as any[]).find((p: any) => { const ln = p?.listing_names || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String((o as any).listing_name || '').toLowerCase()) })
+      return { ...o, property_code: (o.property_code || prop?.code || prop?.address || o.property_id || '') }
+    }))
   }
 })
 
@@ -90,15 +128,16 @@ const createOrderSchema = z.object({
   external_id: z.string().optional(),
   property_id: z.string().optional(),
   property_code: z.string().optional(),
+  confirmation_code: z.coerce.string().min(1),
   guest_name: z.string().optional(),
   guest_phone: z.string().optional(),
-  checkin: z.string().optional(),
-  checkout: z.string().optional(),
-  price: z.number().optional(),
-  cleaning_fee: z.number().optional(),
-  net_income: z.number().optional(),
-  avg_nightly_price: z.number().optional(),
-  nights: z.number().optional(),
+  checkin: z.coerce.string().optional(),
+  checkout: z.coerce.string().optional(),
+  price: z.coerce.number().optional(),
+  cleaning_fee: z.coerce.number().optional(),
+  net_income: z.coerce.number().optional(),
+  avg_nightly_price: z.coerce.number().optional(),
+  nights: z.coerce.number().optional(),
   currency: z.string().optional(),
   status: z.string().optional(),
   idempotency_key: z.string().optional(),
@@ -222,6 +261,14 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   // overlap guard
   const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout)
   if (conflict) return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' })
+  // confirmation_code 唯一性（PG）
+  try {
+    const cc = (newOrder as any).confirmation_code
+    if (hasPg && cc) {
+      const dup: any[] = (await pgSelect('orders', 'id', { confirmation_code: cc })) || []
+      if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '确认码已存在' })
+    }
+  } catch {}
   if (hasPg) {
     try {
       if (newOrder.property_id) {
@@ -253,7 +300,28 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
       return res.status(201).json(row)
     } catch (e: any) {
       const msg = String(e?.message || '')
-      if (msg.includes('duplicate') || msg.includes('unique')) return res.status(409).json({ message: '订单已存在：唯一键冲突' })
+      if (/column\s+"?confirmation_code"?\s+of\s+relation\s+"?orders"?\s+does\s+not\s+exist/i.test(msg)) {
+        try {
+          const { pgPool } = require('../dbAdapter')
+          await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
+          await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_confirmation_code_unique ON orders(confirmation_code) WHERE confirmation_code IS NOT NULL')
+          const ins: any = { ...newOrder }; delete ins.property_code
+          const row = await pgInsert('orders', ins)
+          db.orders.push(row as any)
+          if (newOrder.checkout) {
+            const date = newOrder.checkout
+            const hasTask = db.cleaningTasks.find((t) => t.date === date && t.property_id === newOrder.property_id)
+            if (!hasTask) {
+              const task = { id: uuid(), property_id: newOrder.property_id, date, status: 'pending' as const }
+              db.cleaningTasks.push(task)
+            }
+          }
+          return res.status(201).json(row)
+        } catch (e2: any) {
+          return res.status(500).json({ message: '数据库写入失败', error: String(e2?.message || '') })
+        }
+      }
+      if (msg.includes('duplicate') || msg.includes('unique')) return res.status(409).json({ message: '确认码已存在' })
       return res.status(500).json({ message: '数据库写入失败', error: msg })
     }
   }
@@ -284,9 +352,15 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   const force = String((req.body as any).force ?? (req.query as any).force ?? '').toLowerCase() === 'true'
   const idx = db.orders.findIndex((x) => x.id === id)
   const prev = idx !== -1 ? db.orders[idx] : undefined
-  if (!prev && !hasSupabase) return res.status(404).json({ message: 'order not found' })
-
-  const base = prev || ({} as Order)
+  let base: Order | undefined = prev
+  if (!base && hasPg) {
+    try {
+      const rows: any[] = (await pgSelect('orders', '*', { id })) || []
+      base = Array.isArray(rows) ? (rows[0] as Order | undefined) : undefined
+    } catch {}
+  }
+  if (!base && !hasSupabase) return res.status(404).json({ message: 'order not found' })
+  if (!base) base = {} as Order
   let nights = o.nights
   const checkin = o.checkin || base.checkin
   const checkout = o.checkout || base.checkout
@@ -322,11 +396,31 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
 
   if (hasPg) {
     try {
-      const row = await pgUpdate('orders', id, updated as any)
+      const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+      const payload: any = {}
+      for (const k of allow) { if ((updated as any)[k] !== undefined) payload[k] = (updated as any)[k] }
+      const row = await pgUpdate('orders', id, payload)
       if (idx !== -1) db.orders[idx] = row as any
       return res.json(row)
-    } catch (e) {
-      return res.status(500).json({ message: '数据库更新失败' })
+    } catch (e: any) {
+      const msg = String(e?.message || '')
+      if (/column\s+"?confirmation_code"?\s+of\s+relation\s+"?orders"?\s+does\s+not\s+exist/i.test(msg)) {
+        try {
+          const { pgPool } = require('../dbAdapter')
+          await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
+          await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_confirmation_code_unique ON orders(confirmation_code) WHERE confirmation_code IS NOT NULL')
+          const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+          const payload2: any = {}
+          for (const k of allow) { if ((updated as any)[k] !== undefined) payload2[k] = (updated as any)[k] }
+          const row = await pgUpdate('orders', id, payload2)
+          if (idx !== -1) db.orders[idx] = row as any
+          return res.json(row)
+        } catch (e2: any) {
+          return res.status(500).json({ message: '数据库更新失败', error: String(e2?.message || '') })
+        }
+      }
+      if (msg.includes('duplicate') || msg.includes('unique')) return res.status(409).json({ message: '确认码已存在' })
+      return res.status(500).json({ message: '数据库更新失败', error: msg })
     }
   }
   if (hasSupabase) {

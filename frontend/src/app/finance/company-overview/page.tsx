@@ -1,8 +1,10 @@
 "use client"
 import { Card, DatePicker, Table, Select, Button, Modal, message } from 'antd'
+import html2canvas from 'html2canvas'
+import { jsPDF } from 'jspdf'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { getJSON } from '../../../lib/api'
+import { getJSON, apiList, API_BASE, authHeaders } from '../../../lib/api'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
 
@@ -22,7 +24,49 @@ export default function PropertyRevenuePage() {
   const printRef = useRef<HTMLDivElement>(null)
   const [period, setPeriod] = useState<'month'|'year'|'half-year'|'fiscal-year'>('month')
   const [startMonth, setStartMonth] = useState<any>(dayjs())
-  useEffect(() => { getJSON<Order[]>('/orders').then(setOrders).catch(()=>setOrders([])); getJSON<Tx[]>('/finance').then(setTxs).catch(()=>setTxs([])); getJSON<any>('/properties').then((j)=>setProperties(j||[])).catch(()=>setProperties([])); getJSON<Landlord[]>('/landlords').then(setLandlords).catch(()=>setLandlords([])) }, [])
+  useEffect(() => {
+    getJSON<Order[]>('/orders').then(setOrders).catch(()=>setOrders([]))
+    ;(async () => {
+      try {
+        const fin: any[] = await getJSON<Tx[]>('/finance')
+        const pexp: any[] = await apiList<any[]>('property_expenses')
+        const mapCat = (c?: string) => {
+          const v = String(c || '')
+          if (v === 'gas_hot_water') return 'gas'
+          if (v === 'consumables') return 'consumable'
+          if (v === 'owners_corp') return 'property_fee'
+          if (v === 'council_rate') return 'council'
+          return v
+        }
+        const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).map((r: any) => ({
+          id: r.id,
+          kind: 'expense',
+          amount: Number(r.amount || 0),
+          currency: r.currency || 'AUD',
+          property_id: r.property_id || undefined,
+          occurred_at: r.occurred_at,
+          category: mapCat(r.category),
+          // 其他支出描述
+          ...(r.category_detail ? { category_detail: r.category_detail } : {}),
+          ...(r.invoice_url ? { invoice_url: r.invoice_url } : {})
+        }))
+        const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
+          id: t.id,
+          kind: t.kind,
+          amount: Number(t.amount || 0),
+          currency: t.currency || 'AUD',
+          property_id: t.property_id || undefined,
+          occurred_at: t.occurred_at,
+          category: mapCat(t.category),
+          ...(t.category_detail ? { category_detail: t.category_detail } : {})
+          ,...(t.invoice_url ? { invoice_url: t.invoice_url } : {})
+        }))
+        setTxs([...finMapped, ...peMapped])
+      } catch { setTxs([]) }
+    })()
+    getJSON<any>('/properties').then((j)=>setProperties(j||[])).catch(()=>setProperties([]))
+    getJSON<Landlord[]>('/landlords').then(setLandlords).catch(()=>setLandlords([]))
+  }, [])
   const start = useMemo(() => {
     const base = month || dayjs()
     if (period === 'fiscal-year') {
@@ -69,8 +113,16 @@ export default function PropertyRevenuePage() {
           const perDay = totalN ? Number(x.price||0) / totalN : 0
           return s + perDay * segN
         }, 0)
-        const extraInc = txs.filter(x => x.kind==='income' && x.property_id === p.id && ['late_checkout','cancel_fee'].includes(String(x.category||'')) && dayjs(x.occurred_at).isAfter(rm.start.subtract(1,'day')) && dayjs(x.occurred_at).isBefore(rm.end.add(1,'day'))).reduce((s,x)=> s + Number(x.amount||0), 0)
-        const income = rentIncome + extraInc
+        const otherIncomeTx = txs.filter(x => x.kind==='income' && x.property_id === p.id && dayjs(x.occurred_at).isAfter(rm.start.subtract(1,'day')) && dayjs(x.occurred_at).isBefore(rm.end.add(1,'day')))
+        const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount||0), 0)
+        const mapIncomeCatLabel = (c?: string) => {
+          const v = String(c || '')
+          if (v === 'late_checkout') return '晚退房费'
+          if (v === 'cancel_fee') return '取消费'
+          return v || '-'
+        }
+        const otherIncomeDesc = Array.from(new Set(otherIncomeTx.map(t => mapIncomeCatLabel(t.category)))).filter(Boolean).join('、') || '-'
+        const totalIncome = rentIncome + otherIncome
         const nights = related.reduce((s,x)=> {
           const ci = dayjs(x.checkin!)
           const co = dayjs(x.checkout!)
@@ -81,7 +133,7 @@ export default function PropertyRevenuePage() {
         }, 0)
         const daysInMonth = rm.end.diff(rm.start,'day') + 1
         const occRate = daysInMonth ? Math.round(((nights / daysInMonth)*100 + Number.EPSILON)*100)/100 : 0
-        const avg = nights ? Math.round(((income / nights) + Number.EPSILON)*100)/100 : 0
+        const avg = nights ? Math.round(((totalIncome / nights) + Number.EPSILON)*100)/100 : 0
         const landlord = landlords.find(l => (l.property_ids||[]).includes(p.id))
         const mgmt = landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON)*100)/100 : 0
         const sumCat = (c: string) => e.filter(xx=>xx.category===c).reduce((s,x)=> s + Number(x.amount||0), 0)
@@ -94,9 +146,11 @@ export default function PropertyRevenuePage() {
         const ownercorp = sumCat('property_fee')
         const council = sumCat('council')
         const other = sumCat('other')
+        const otherExpenseDesc = (e.filter(xx=>xx.category==='other' && (xx as any).category_detail).map(xx => String((xx as any).category_detail || '').trim()).filter(Boolean))
+        const otherExpenseDescStr = Array.from(new Set(otherExpenseDesc)).join('、') || '-'
         const totalExp = mgmt + electricity + water + gas + internet + consumable + carpark + ownercorp + council + other
-        const net = Math.round(((income - totalExp) + Number.EPSILON)*100)/100
-        out.push({ key: `${p.id}-${rm.label}`, pid: p.id, month: rm.label, code: p.code || p.id, address: p.address, occRate, avg, income, mgmt, electricity, water, gas, internet, consumable, carpark, ownercorp, council, other, totalExp, net })
+        const net = Math.round(((totalIncome - totalExp) + Number.EPSILON)*100)/100
+        out.push({ key: `${p.id}-${rm.label}`, pid: p.id, month: rm.label, code: p.code || p.id, address: p.address, occRate, avg, totalIncome, rentIncome, otherIncome, otherIncomeDesc, mgmt, electricity, water, gas, internet, consumable, carpark, ownercorp, council, other, otherExpenseDesc: otherExpenseDescStr, totalExp, net })
       }
     }
     return out
@@ -109,7 +163,10 @@ export default function PropertyRevenuePage() {
     { title:'地址', dataIndex:'address' },
     { title:'入住率', dataIndex:'occRate', render:(v: number)=> `${fmt(v)}%` },
     { title:'日均租金', dataIndex:'avg', render:(v: number)=> `$${fmt(v)}` },
-    { title:'租金收入', dataIndex:'income', render:(v: number)=> `$${fmt(v)}` },
+    { title:'总收入', dataIndex:'totalIncome', render:(v: number)=> `$${fmt(v)}` },
+    { title:'租金收入', dataIndex:'rentIncome', render:(v: number)=> `$${fmt(v)}` },
+    { title:'其他收入', dataIndex:'otherIncome', render:(v: number)=> `$${fmt(v)}` },
+    { title:'其他收入描述', dataIndex:'otherIncomeDesc' },
     { title:'管理费', dataIndex:'mgmt', render:(v: number)=> `-$${fmt(v)}` },
     { title:'电费', dataIndex:'electricity', render:(v: number)=> `-$${fmt(v)}` },
     { title:'水费', dataIndex:'water', render:(v: number)=> `-$${fmt(v)}` },
@@ -120,6 +177,7 @@ export default function PropertyRevenuePage() {
     { title:'物业费', dataIndex:'ownercorp', render:(v: number)=> `-$${fmt(v)}` },
     { title:'市政费', dataIndex:'council', render:(v: number)=> `-$${fmt(v)}` },
     { title:'其他支出', dataIndex:'other', render:(v: number)=> `-$${fmt(v)}` },
+    { title:'其他支出描述', dataIndex:'otherExpenseDesc' },
     { title:'总支出', dataIndex:'totalExp', render:(v: number)=> `-$${fmt(v)}` },
     { title:'净收入', dataIndex:'net', render:(v: number)=> `$${fmt(v)}` },
     { title:'操作', render: (_: any, r: any) => (
@@ -144,33 +202,70 @@ export default function PropertyRevenuePage() {
         <Button type="primary" onClick={() => { if (!selectedPid) { message.warning('请先选择房号'); return } setPreviewPid(selectedPid); setPreviewOpen(true) }}>生成报表</Button>
       </div>
       <Table rowKey={(r)=>r.key} columns={columns as any} dataSource={rows} scroll={{ x: 'max-content' }} pagination={{ pageSize: 20 }} />
-      <Modal title={period==='month' ? '月度报告' : (period==='year' ? '年度报告' : (period==='fiscal-year' ? '财年报告' : '半年报告'))} open={previewOpen} onCancel={() => setPreviewOpen(false)} footer={<Button type="primary" onClick={async () => {
-        if (!printRef.current) return
-        const style = `
-          <style>
-            html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            @page { margin: 12mm; size: A4 ${period==='fiscal-year' ? 'landscape' : 'portrait'}; }
-            body { width: ${period==='fiscal-year' ? '277mm' : '190mm'}; margin: 0 auto; }
-            table { width: 100%; border-collapse: collapse; }
-            th, td { border-bottom: 1px solid #ddd; }
-          </style>
-        `
-        const iframe = document.createElement('iframe')
-        iframe.style.position = 'fixed'
-        iframe.style.left = '-9999px'
-        iframe.style.top = '-9999px'
-        iframe.style.width = '0'
-        iframe.style.height = '0'
-        document.body.appendChild(iframe)
-        const doc = iframe.contentDocument || (iframe as any).document
-        const html = `<html><head><title>Statement</title>${style}<base href="${location.origin}"></head><body>${printRef.current.innerHTML}</body></html>`
-        doc.open(); doc.write(html); doc.close()
-        const imgs = Array.from(doc.images || [])
-        await Promise.all(imgs.map((img: any) => img.complete ? Promise.resolve(null) : new Promise((resolve) => { img.addEventListener('load', resolve); img.addEventListener('error', resolve) })))
-        await new Promise(r => setTimeout(r, 50))
-        try { (iframe.contentWindow as any).focus(); (iframe.contentWindow as any).print() } catch {}
-        setTimeout(() => { try { document.body.removeChild(iframe) } catch {} }, 500)
-      }}>导出PDF</Button>} width={900}>
+      <Modal title={period==='month' ? '月度报告' : (period==='year' ? '年度报告' : (period==='fiscal-year' ? '财年报告' : '半年报告'))} open={previewOpen} onCancel={() => setPreviewOpen(false)} footer={<>
+        <Button onClick={async () => {
+          if (!printRef.current) return
+          const style = `
+            <style>
+              html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              @page { margin: 12mm; size: A4 ${period==='fiscal-year' ? 'landscape' : 'portrait'}; }
+              body { width: ${period==='fiscal-year' ? '277mm' : '190mm'}; margin: 0 auto; }
+              table { width: 100%; border-collapse: collapse; }
+              th, td { border-bottom: 1px solid #ddd; }
+            </style>
+          `
+          const iframe = document.createElement('iframe')
+          iframe.style.position = 'fixed'
+          iframe.style.left = '-9999px'
+          iframe.style.top = '-9999px'
+          iframe.style.width = '0'
+          iframe.style.height = '0'
+          document.body.appendChild(iframe)
+          const doc = iframe.contentDocument || (iframe as any).document
+          const html = `<html><head><title>Statement</title>${style}<base href="${location.origin}"></head><body>${printRef.current.innerHTML}</body></html>`
+          doc.open(); doc.write(html); doc.close()
+          const imgs = Array.from(doc.images || [])
+          await Promise.all(imgs.map((img: any) => img.complete ? Promise.resolve(null) : new Promise((resolve) => { img.addEventListener('load', resolve); img.addEventListener('error', resolve) })))
+          await new Promise(r => setTimeout(r, 50))
+          try { (iframe.contentWindow as any).focus(); (iframe.contentWindow as any).print() } catch {}
+          setTimeout(() => { try { document.body.removeChild(iframe) } catch {} }, 500)
+        }}>导出PDF</Button>
+        <Button type="primary" onClick={async () => {
+          if (!printRef.current || !previewPid) return
+          const node = printRef.current as HTMLElement
+          const canvas = await html2canvas(node, { scale: 2 })
+          const imgData = canvas.toDataURL('image/png')
+          const pdf = new jsPDF('p', 'mm', 'a4')
+          const pageWidth = 210
+          const imgWidth = pageWidth - 20
+          const imgHeight = (canvas.height * imgWidth) / canvas.width
+          pdf.addImage(imgData, 'PNG', 10, 10, imgWidth, imgHeight)
+          const statementBlob = pdf.output('blob') as Blob
+          // Upload the generated statement PDF first
+          const fd = new FormData()
+          fd.append('file', statementBlob, `statement-${month.format('YYYY-MM')}.pdf`)
+          const upRes = await fetch(`${API_BASE}/finance/invoices`, { method: 'POST', headers: { ...authHeaders() }, body: fd })
+          if (!upRes.ok) throw new Error(`HTTP ${upRes.status}`)
+          const upJson = await upRes.json()
+          const statementUrl = upJson?.url
+          const invUrls = txs.filter(t => t.kind==='expense' && t.property_id===previewPid && dayjs(t.occurred_at).isAfter(start!.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(end!.add(1,'day'))).map(t => (t as any).invoice_url).filter((u: any) => !!u)
+          try {
+            const resp = await fetch(`${API_BASE}/finance/merge-pdf`, { method:'POST', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ statement_pdf_url: statementUrl, invoice_urls: invUrls }) })
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+            const blob = await resp.blob()
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `statement-merged-${month.format('YYYY-MM')}.pdf`
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            URL.revokeObjectURL(url)
+          } catch (e: any) {
+            message.error(e?.message || '合并下载失败')
+          }
+        }}>合并PDF下载</Button>
+      </>} width={900}>
         {previewPid ? (
           period==='month' ? (
             <MonthlyStatementView ref={printRef} month={month.format('YYYY-MM')} propertyId={previewPid || undefined} orders={orders} txs={txs} properties={properties} landlords={landlords} />

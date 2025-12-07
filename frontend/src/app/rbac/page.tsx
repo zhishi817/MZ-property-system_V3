@@ -1,7 +1,8 @@
 "use client"
-import { Card, Table, Drawer, Space, Button, Select, message, Modal, Form, Input, InputNumber } from 'antd'
+import { Card, Table, Drawer, Space, Button, Select, message, Modal, Form, Input, InputNumber, Checkbox, Divider } from 'antd'
 import { useEffect, useState } from 'react'
 import { API_BASE, authHeaders } from '../../lib/api'
+import { preloadRolePerms } from '../../lib/auth'
 import { hasPerm } from '../../lib/auth'
 
 type Role = { id: string; name: string }
@@ -35,7 +36,7 @@ export default function RBACPage() {
 
   async function save() {
     const res = await fetch(`${API_BASE}/rbac/role-permissions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ role_id: current?.id, permissions: selectedPerms }) })
-    if (res.ok) { message.success('已保存'); setOpen(false) } else { message.error('保存失败') }
+    if (res.ok) { message.success('已保存'); setOpen(false); try { await preloadRolePerms() } catch {} } else { message.error('保存失败') }
   }
 
   async function submitUser() {
@@ -63,6 +64,29 @@ export default function RBACPage() {
     { title: '操作', render: (_: any, r: User) => (<Space><Button danger onClick={() => removeUser(r.id)}>删除</Button></Space>) },
   ]
 
+  const menuPerms = perms.filter(p => p.code.startsWith('menu.') && !/\.visible$/.test(p.code)).map(p => ({ label: p.code, value: p.code }))
+  const featurePerms = perms.filter(p => !p.code.startsWith('menu.') && !/\.view$|\.write$|\.delete$/.test(p.code)).map(p => ({ label: p.code, value: p.code }))
+  const matrixRows = [
+    { key:'properties.list', label:'房源列表', menu:'menu.properties.list.visible', resources:['properties'] },
+    { key:'properties.maintenance', label:'房源维修', menu:'menu.properties.maintenance.visible', resources:['property_maintenance'] },
+    { key:'finance.expenses', label:'房源支出', menu:'menu.finance.expenses.visible', resources:['property_expenses'] },
+    { key:'finance.recurring', label:'固定支出', menu:'menu.finance.recurring.visible', resources:['recurring_payments'] },
+    { key:'finance.orders', label:'订单管理', menu:'menu.finance.orders.visible', resources:['orders'] },
+    { key:'finance.company_overview', label:'财务总览', menu:'menu.finance.company_overview.visible', resources:['finance_transactions','orders','properties','property_expenses'] },
+    { key:'finance.company_revenue', label:'公司营收', menu:'menu.finance.company_revenue.visible', resources:['company_incomes','company_expenses'] },
+    { key:'landlords', label:'房东管理', menu:'menu.landlords.visible', resources:['landlords'] },
+    { key:'cleaning', label:'清洁安排', menu:'menu.cleaning.visible', resources:['cleaning_tasks'] },
+    { key:'cms', label:'CMS管理', menu:'menu.cms.visible', resources:['cms_pages'] },
+  ]
+  function has(code: string) { return selectedPerms.includes(code) }
+  function toggle(code: string, checked: boolean) {
+    setSelectedPerms(prev => checked ? Array.from(new Set([...prev, code])) : prev.filter(c => c !== code))
+  }
+  function isMenu(code: string) { return code.startsWith('menu.') }
+  function isFeature(code: string) { return !isMenu(code) && !/\.(view|write|delete)$/.test(code) }
+  function ensureVisibleWhenAction(menuCode: string) {
+    setSelectedPerms(prev => (prev.includes(menuCode) ? prev : [...prev, menuCode]))
+  }
   return (
     <Card title="角色权限" extra={hasPerm('rbac.manage') ? <Button onClick={() => setUserOpen(true)}>新建用户</Button> : null}>
       <Table rowKey={(r) => r.id} columns={columns as any} dataSource={roles} pagination={false} />
@@ -70,7 +94,67 @@ export default function RBACPage() {
         <Table rowKey={(r) => (r as any).id} columns={userCols as any} dataSource={users} pagination={{ pageSize: 10 }} />
       </Card>
       <Drawer open={open} onClose={() => setOpen(false)} title={`配置权限：${current?.name}`}>
-        <Select mode="multiple" style={{ width: '100%' }} value={selectedPerms} onChange={setSelectedPerms} options={perms.map(p => ({ value: p.code, label: p.code }))} />
+        <Card size="small" title="菜单显示">
+          <Checkbox.Group value={selectedPerms.filter(isMenu)} onChange={(v)=> setSelectedPerms(prev => [...prev.filter(c => !isMenu(c)), ...(v as string[])])} options={menuPerms} />
+        </Card>
+        <Divider />
+        <Card size="small" title="子菜单矩阵（可见 / 查看 / 编辑 / 删除 / 归档）">
+          {(() => {
+            const groupBy: Record<string, any[]> = {}
+            matrixRows.forEach(row => {
+              const parent = String(row.menu).split('.').slice(0,2).join('.')
+              groupBy[parent] = groupBy[parent] || []
+              groupBy[parent].push(row)
+            })
+            const parents = Object.keys(groupBy)
+            return (
+              <div style={{ display:'grid', gap:12 }}>
+                {parents.map((parent) => (
+                  <Card key={parent} size="small" title={parent}>
+                    <Table rowKey={(r)=>r.key} dataSource={groupBy[parent]} pagination={false} columns={[
+                      { title:'子菜单', dataIndex:'label' },
+                      { title:'可见', dataIndex:'visible', render: (_:any, row:any)=> (
+                        <Checkbox checked={has(row.menu)} onChange={(e)=> toggle(row.menu, e.target.checked)} />
+                      ) },
+                      { title:'查看', dataIndex:'view', render: (_:any, row:any)=> (
+                        <Checkbox checked={row.resources.every((res:string)=> has(`${res}.view`))} onChange={(e)=> {
+                          const checked = e.target.checked
+                          ensureVisibleWhenAction(row.menu)
+                          row.resources.forEach((res:string)=> toggle(`${res}.view`, checked))
+                        }} />
+                      ) },
+                      { title:'编辑', dataIndex:'write', render: (_:any, row:any)=> (
+                        <Checkbox checked={row.resources.every((res:string)=> has(`${res}.write`))} onChange={(e)=> {
+                          const checked = e.target.checked
+                          ensureVisibleWhenAction(row.menu)
+                          row.resources.forEach((res:string)=> toggle(`${res}.write`, checked))
+                        }} />
+                      ) },
+                      { title:'删除', dataIndex:'delete', render: (_:any, row:any)=> (
+                        <Checkbox checked={row.resources.every((res:string)=> has(`${res}.delete`))} onChange={(e)=> {
+                          const checked = e.target.checked
+                          ensureVisibleWhenAction(row.menu)
+                          row.resources.forEach((res:string)=> toggle(`${res}.delete`, checked))
+                        }} />
+                      ) },
+                      { title:'归档', dataIndex:'archive', render: (_:any, row:any)=> (
+                        <Checkbox checked={row.resources.every((res:string)=> has(`${res}.archive`))} onChange={(e)=> {
+                          const checked = e.target.checked
+                          ensureVisibleWhenAction(row.menu)
+                          row.resources.forEach((res:string)=> toggle(`${res}.archive`, checked))
+                        }} />
+                      ) },
+                    ] as any} />
+                  </Card>
+                ))}
+              </div>
+            )
+          })()}
+        </Card>
+        <Divider />
+        <Card size="small" title="功能权限（其他）">
+          <Checkbox.Group value={selectedPerms.filter(isFeature)} onChange={(v)=> setSelectedPerms(prev => [...prev.filter(c => !isFeature(c)), ...(v as string[])])} options={featurePerms} />
+        </Card>
         <Space style={{ marginTop: 12 }}>
           <Button type="primary" onClick={save}>保存</Button>
           <Button onClick={() => setOpen(false)}>取消</Button>

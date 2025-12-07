@@ -73,7 +73,7 @@ export default function CompanyRevenuePage() {
   }
   const incomeAgg = useMemo(() => catAgg(incomeDetails.map(d => ({ category: d.category, amount: d.amount }))), [incomeDetails])
   const expenseAgg = useMemo(() => catAgg(expenseDetails.map(d => ({ category: d.category, amount: d.amount }))), [expenseDetails])
-  const COL = { date: 120, category: 160, amount: 120, currency: 80, note: 240, ops: 140 }
+  const COL = { date: 120, category: 160, amount: 120, currency: 80, other: 200, note: 240, ops: 140 }
 
   async function submitIncome() {
     if (savingIncome) return
@@ -93,7 +93,7 @@ export default function CompanyRevenuePage() {
     if (savingExpense) return
     setSavingExpense(true)
     const v = await expenseForm.validateFields()
-    const payload = { amount: Number(v.amount || 0), currency: 'AUD', occurred_at: dayjs(v.date).format('YYYY-MM-DD'), category: v.category, note: v.note }
+    const payload = { amount: Number(v.amount || 0), currency: 'AUD', occurred_at: dayjs(v.date).format('YYYY-MM-DD'), category: v.category, category_detail: v.category === 'other' ? (v.other_detail || '') : undefined, note: v.category === 'other' ? (v.note || '') : v.note }
     try {
       if (editingExpense) await apiUpdate('company_expenses', editingExpense.id, payload); else await apiCreate('company_expenses', payload)
       message.success(editingExpense ? '支出已更新' : '支出已记录')
@@ -142,7 +142,7 @@ export default function CompanyRevenuePage() {
         <>
           <Table rowKey={(r)=>r.id} title={()=>'收入明细'} pagination={{ pageSize: 10 }} dataSource={incomeDetails} columns={[{ title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') }, { title:'类别', dataIndex:'category', width: COL.category }, { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` }, { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' }, { title:'备注', dataIndex:'note', width: COL.note }, { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (<Space><Button onClick={() => { setEditingIncome(r); setIncomeOpen(true); incomeForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, note: r.note }) }}>编辑</Button><Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_incomes', r.id); apiList<any[]>('company_incomes').then((rows)=>setCompanyIncomes(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button></Space>) }]} />
           <div style={{ height: 12 }} />
-          <Table rowKey={(r)=>r.id} title={()=>'支出明细'} pagination={{ pageSize: 10 }} dataSource={expenseDetails} columns={[{ title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') }, { title:'类别', dataIndex:'category', width: COL.category }, { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` }, { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' }, { title:'备注', dataIndex:'note', width: COL.note }, { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (<Space><Button onClick={() => { setEditingExpense(r); setExpenseOpen(true); expenseForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, note: r.note }) }}>编辑</Button><Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_expenses', r.id); apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button></Space>) }]} />
+          <Table rowKey={(r)=>r.id} title={()=>'支出明细'} pagination={{ pageSize: 10 }} dataSource={expenseDetails} columns={[{ title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') }, { title:'类别', dataIndex:'category', width: COL.category }, { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` }, { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' }, { title:'其他支出描述', dataIndex:'category_detail', width: COL.other, render: (v:any, r:any) => (r.category === 'other' ? (v || '-') : '-') }, { title:'备注', dataIndex:'note', width: COL.note }, { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (<Space><Button onClick={() => { setEditingExpense(r); setExpenseOpen(true); expenseForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, other_detail: r.category === 'other' ? r.category_detail : undefined, note: r.note }) }}>编辑</Button><Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_expenses', r.id); apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button></Space>) }]} />
         </>
       )}
 
@@ -159,15 +159,28 @@ export default function CompanyRevenuePage() {
       </Modal>
 
       <Modal title={editingExpense ? '编辑支出' : '记录支出'} open={expenseOpen} onCancel={() => { setExpenseOpen(false); setEditingExpense(null) }} onOk={submitExpense} confirmLoading={savingExpense}>
-        <Form form={expenseForm} layout="vertical">
-          <Form.Item name="date" label="日期" rules={[{ required: true }]}><DP style={{ width:'100%' }} /></Form.Item>
-          <Form.Item name="amount" label="金额" rules={[{ required: true }]}><InputNumber min={0} step={1} style={{ width:'100%' }} /></Form.Item>
-          <Form.Item name="category" label="类别" rules={[{ required: true }]}>
-            <Select options={[{value:'office',label:'办公'},{value:'tax',label:'税费'},{value:'service',label:'服务采购'},{value:'other',label:'其他支出'}]} />
-          </Form.Item>
-          <Form.Item name="property_id" label="房号(可选)"><Select allowClear showSearch options={properties.map(p=>({value:p.id,label:p.code||p.address||p.id}))} /></Form.Item>
-          <Form.Item name="note" label="备注"><Input /></Form.Item>
-        </Form>
+          <Form form={expenseForm} layout="vertical">
+            <Form.Item name="date" label="日期" rules={[{ required: true }]}><DP style={{ width:'100%' }} /></Form.Item>
+            <Form.Item name="amount" label="金额" rules={[{ required: true }]}><InputNumber min={0} step={1} style={{ width:'100%' }} /></Form.Item>
+            <Form.Item name="category" label="类别" rules={[{ required: true }]}> 
+              <Select options={[{value:'office',label:'办公'},{value:'tax',label:'税费'},{value:'service',label:'服务采购'},{value:'other',label:'其他支出'}]} />
+            </Form.Item>
+            <Form.Item noStyle shouldUpdate>
+              {() => {
+                const v = expenseForm.getFieldValue('category')
+                if (v === 'other') {
+                  return (
+                    <Form.Item name="other_detail" label="其他支出描述" rules={[{ required: true }]}> 
+                      <Input />
+                    </Form.Item>
+                  )
+                }
+                return null
+              }}
+            </Form.Item>
+            <Form.Item name="property_id" label="房号(可选)"><Select allowClear showSearch options={properties.map(p=>({value:p.id,label:p.code||p.address||p.id}))} /></Form.Item>
+            <Form.Item name="note" label="备注"><Input /></Form.Item>
+          </Form>
       </Modal>
     </Card>
   )

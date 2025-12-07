@@ -84,8 +84,9 @@ router.patch('/:id', requirePerm('landlord.manage'), async (req, res) => {
       const rows: any = await pgSelect('landlords', '*', { id })
       const before = rows && rows[0]
       const row = await pgUpdate('landlords', id, body)
-      addAudit('Landlord', id, 'update', before, row)
-      return res.json(row)
+      const out = row || { ...(before || {}), ...body, id }
+      addAudit('Landlord', id, 'update', before, out)
+      return res.json(out)
     }
     const l = db.landlords.find(x => x.id === id)
     if (!l) return res.status(404).json({ message: 'not found' })
@@ -136,7 +137,8 @@ router.delete('/:id', requirePerm('landlord.manage'), async (req, res) => {
       const rows: any = await pgSelect('landlords', '*', { id })
       const before = rows && rows[0]
       const row = await pgUpdate('landlords', id, { archived: true })
-      addAudit('Landlord', id, 'archive', before, row, actor?.sub)
+      const out = row || { ...(before || {}), id, archived: true }
+      addAudit('Landlord', id, 'archive', before, out, actor?.sub)
       return res.json({ id, archived: true })
     }
     const l = db.landlords.find(x => x.id === id)

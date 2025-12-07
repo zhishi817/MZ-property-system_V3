@@ -63,18 +63,66 @@ exports.router.get('/', async (_req, res) => {
             const remote = (await (0, dbAdapter_1.pgSelect)('orders')) || [];
             const local = store_1.db.orders;
             const merged = [...remote, ...local.filter((l) => !remote.some((r) => r.id === l.id))];
-            return res.json(merged);
+            let pRows = [];
+            try {
+                const raw = await (0, dbAdapter_1.pgSelect)('properties', 'id,code,address,listing_names');
+                pRows = Array.isArray(raw) ? raw : [];
+            }
+            catch (_a) { }
+            const byId = Object.fromEntries((pRows || []).map((p) => [String(p.id), p]));
+            const byCode = Object.fromEntries((pRows || []).map((p) => [String(p.code || ''), p]));
+            const byListing = {};
+            (pRows || []).forEach((p) => {
+                const ln = (p === null || p === void 0 ? void 0 : p.listing_names) || {};
+                Object.values(ln || {}).forEach((name) => { if (name)
+                    byListing[String(name).toLowerCase()] = String(p.id); });
+            });
+            const labeled = merged.map((o) => {
+                const pid = String(o.property_id || '');
+                const pid2 = byListing[String((o.listing_name || '')).toLowerCase()] || '';
+                const prop = byId[pid] || byCode[pid] || byId[pid2];
+                const label = (o.property_code || (prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || pid);
+                return { ...o, property_code: label };
+            });
+            return res.json(labeled);
         }
         if (supabase_1.hasSupabase) {
             const remote = (await (0, supabase_1.supaSelect)('orders')) || [];
             const local = store_1.db.orders;
             const merged = [...remote, ...local.filter((l) => !remote.some((r) => r.id === l.id))];
-            return res.json(merged);
+            let pRows = [];
+            try {
+                const raw = await (0, supabase_1.supaSelect)('properties', 'id,code,address,listing_names');
+                pRows = Array.isArray(raw) ? raw : [];
+            }
+            catch (_b) { }
+            const byId = Object.fromEntries((pRows || []).map((p) => [String(p.id), p]));
+            const byCode = Object.fromEntries((pRows || []).map((p) => [String(p.code || ''), p]));
+            const byListing = {};
+            (pRows || []).forEach((p) => {
+                const ln = (p === null || p === void 0 ? void 0 : p.listing_names) || {};
+                Object.values(ln || {}).forEach((name) => { if (name)
+                    byListing[String(name).toLowerCase()] = String(p.id); });
+            });
+            const labeled = merged.map((o) => {
+                const pid = String(o.property_id || '');
+                const pid2 = byListing[String((o.listing_name || '')).toLowerCase()] || '';
+                const prop = byId[pid] || byCode[pid] || byId[pid2];
+                const label = (o.property_code || (prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || pid);
+                return { ...o, property_code: label };
+            });
+            return res.json(labeled);
         }
-        return res.json(store_1.db.orders);
+        return res.json(store_1.db.orders.map((o) => {
+            const prop = store_1.db.properties.find((p) => String(p.id) === String(o.property_id)) || store_1.db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || store_1.db.properties.find((p) => { const ln = (p === null || p === void 0 ? void 0 : p.listing_names) || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String(o.listing_name || '').toLowerCase()); });
+            return { ...o, property_code: (o.property_code || (prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || o.property_id || '') };
+        }));
     }
-    catch (_a) {
-        return res.json(store_1.db.orders);
+    catch (_c) {
+        return res.json(store_1.db.orders.map((o) => {
+            const prop = store_1.db.properties.find((p) => String(p.id) === String(o.property_id)) || store_1.db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || store_1.db.properties.find((p) => { const ln = (p === null || p === void 0 ? void 0 : p.listing_names) || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String(o.listing_name || '').toLowerCase()); });
+            return { ...o, property_code: (o.property_code || (prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || o.property_id || '') };
+        }));
     }
 });
 exports.router.get('/:id', async (req, res) => {
@@ -111,15 +159,16 @@ const createOrderSchema = zod_1.z.object({
     external_id: zod_1.z.string().optional(),
     property_id: zod_1.z.string().optional(),
     property_code: zod_1.z.string().optional(),
+    confirmation_code: zod_1.z.coerce.string().min(1),
     guest_name: zod_1.z.string().optional(),
     guest_phone: zod_1.z.string().optional(),
-    checkin: zod_1.z.string().optional(),
-    checkout: zod_1.z.string().optional(),
-    price: zod_1.z.number().optional(),
-    cleaning_fee: zod_1.z.number().optional(),
-    net_income: zod_1.z.number().optional(),
-    avg_nightly_price: zod_1.z.number().optional(),
-    nights: zod_1.z.number().optional(),
+    checkin: zod_1.z.coerce.string().optional(),
+    checkout: zod_1.z.coerce.string().optional(),
+    price: zod_1.z.coerce.number().optional(),
+    cleaning_fee: zod_1.z.coerce.number().optional(),
+    net_income: zod_1.z.coerce.number().optional(),
+    avg_nightly_price: zod_1.z.coerce.number().optional(),
+    nights: zod_1.z.coerce.number().optional(),
     currency: zod_1.z.string().optional(),
     status: zod_1.z.string().optional(),
     idempotency_key: zod_1.z.string().optional(),
@@ -146,24 +195,43 @@ function normalizeEnd(s) {
     return isNaN(d.getTime()) ? null : d;
 }
 function rangesOverlap(aStart, aEnd, bStart, bEnd) {
-    const as = normalizeStart(aStart);
-    const ae = normalizeEnd(aEnd);
-    const bs = normalizeStart(bStart);
-    const be = normalizeEnd(bEnd);
+    const ds = (s) => (s ? String(s).slice(0, 10) : '');
+    const as = ds(aStart);
+    const ae = ds(aEnd);
+    const bs = ds(bStart);
+    const be = ds(bEnd);
     if (!as || !ae || !bs || !be)
         return false;
-    return as < be && bs < ae;
+    const asDay = new Date(`${as}T00:00:00`);
+    const aeDay = new Date(`${ae}T00:00:00`);
+    const bsDay = new Date(`${bs}T00:00:00`);
+    const beDay = new Date(`${be}T00:00:00`);
+    // day-level exclusive end: [checkin, checkout)
+    return asDay < beDay && bsDay < aeDay;
+}
+function toIsoString(v) {
+    if (!v)
+        return '';
+    if (typeof v === 'string')
+        return v;
+    try {
+        const d = new Date(v);
+        return isNaN(d.getTime()) ? '' : d.toISOString();
+    }
+    catch (_a) {
+        return '';
+    }
 }
 async function hasOrderOverlap(propertyId, checkin, checkout, excludeId) {
     if (!propertyId || !checkin || !checkout)
         return false;
-    const ciDay = (checkin || '').slice(0, 10);
-    const coDay = (checkout || '').slice(0, 10);
+    const ciDay = String(checkin || '').slice(0, 10);
+    const coDay = String(checkout || '').slice(0, 10);
     const localHit = store_1.db.orders.some(o => {
         if (o.property_id !== propertyId || o.id === excludeId)
             return false;
-        const oCiDay = (o.checkin || '').slice(0, 10);
-        const oCoDay = (o.checkout || '').slice(0, 10);
+        const oCiDay = String(o.checkin || '').slice(0, 10);
+        const oCoDay = String(o.checkout || '').slice(0, 10);
         if (oCoDay === ciDay || coDay === oCiDay)
             return false;
         return rangesOverlap(checkin, checkout, o.checkin, o.checkout);
@@ -176,8 +244,8 @@ async function hasOrderOverlap(propertyId, checkin, checkout, excludeId) {
             const remoteHit = rows.some((o) => {
                 if (o.id === excludeId)
                     return false;
-                const oCiDay = (o.checkin || '').slice(0, 10);
-                const oCoDay = (o.checkout || '').slice(0, 10);
+                const oCiDay = String(o.checkin || '').slice(0, 10);
+                const oCoDay = String(o.checkout || '').slice(0, 10);
                 if (oCoDay === ciDay || coDay === oCiDay)
                     return false;
                 return rangesOverlap(checkin, checkout, o.checkin, o.checkout);
@@ -190,8 +258,8 @@ async function hasOrderOverlap(propertyId, checkin, checkout, excludeId) {
             const remoteHit = rows.some((o) => {
                 if (o.id === excludeId)
                     return false;
-                const oCiDay = (o.checkin || '').slice(0, 10);
-                const oCoDay = (o.checkout || '').slice(0, 10);
+                const oCiDay = String(o.checkin || '').slice(0, 10);
+                const oCoDay = String(o.checkout || '').slice(0, 10);
                 if (oCoDay === ciDay || coDay === oCiDay)
                     return false;
                 return rangesOverlap(checkin, checkout, o.checkin, o.checkout);
@@ -203,12 +271,34 @@ async function hasOrderOverlap(propertyId, checkin, checkout, excludeId) {
     catch (_a) { }
     return false;
 }
-exports.router.post('/sync', (0, auth_1.requirePerm)('order.create'), async (req, res) => {
+exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.manage']), async (req, res) => {
+    var _a, _b;
     const parsed = createOrderSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
     const o = parsed.data;
-    const key = o.idempotency_key || `${o.property_id || ''}-${o.checkin || ''}-${o.checkout || ''}`;
+    try {
+        const ci = normalizeStart(o.checkin || '');
+        const co = normalizeEnd(o.checkout || '');
+        if (ci && co && !(ci < co))
+            return res.status(400).json({ message: '入住日期必须早于退房日期' });
+    }
+    catch (_c) { }
+    let propertyId = o.property_id || (o.property_code ? ((_a = store_1.db.properties.find(p => (p.code || '') === o.property_code)) === null || _a === void 0 ? void 0 : _a.id) : undefined);
+    // 如果传入的 property_id 不存在于 PG，则尝试用房号 code 在 PG 中查找并替换
+    if (dbAdapter_1.hasPg) {
+        try {
+            const byId = propertyId ? (await (0, dbAdapter_1.pgSelect)('properties', 'id', { id: propertyId })) || [] : [];
+            const existsById = Array.isArray(byId) && !!byId[0];
+            if (!existsById && o.property_code) {
+                const byCode = (await (0, dbAdapter_1.pgSelect)('properties', '*', { code: o.property_code })) || [];
+                if (Array.isArray(byCode) && ((_b = byCode[0]) === null || _b === void 0 ? void 0 : _b.id))
+                    propertyId = byCode[0].id;
+            }
+        }
+        catch (_d) { }
+    }
+    const key = o.idempotency_key || `${propertyId || ''}-${o.checkin || ''}-${o.checkout || ''}`;
     const exists = store_1.db.orders.find((x) => x.idempotency_key === key);
     if (exists)
         return res.status(409).json({ message: '订单已存在：同一房源同时间段重复创建', order: exists });
@@ -222,7 +312,7 @@ exports.router.post('/sync', (0, auth_1.requirePerm)('order.create'), async (req
             const ms = co.getTime() - ci.getTime();
             nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
         }
-        catch (_a) {
+        catch (_e) {
             nights = 0;
         }
     }
@@ -230,11 +320,91 @@ exports.router.post('/sync', (0, auth_1.requirePerm)('order.create'), async (req
     const price = o.price || 0;
     const net = o.net_income != null ? o.net_income : (price - cleaning);
     const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0);
-    const newOrder = { id: uuid(), ...o, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key, status: 'confirmed' };
+    const newOrder = { id: uuid(), ...o, property_id: propertyId, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key, status: 'confirmed' };
     // overlap guard
     const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout);
     if (conflict)
         return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' });
+    // confirmation_code 唯一性（PG）
+    try {
+        const cc = newOrder.confirmation_code;
+        if (dbAdapter_1.hasPg && cc) {
+            const dup = (await (0, dbAdapter_1.pgSelect)('orders', 'id', { confirmation_code: cc })) || [];
+            if (Array.isArray(dup) && dup[0])
+                return res.status(409).json({ message: '确认码已存在' });
+        }
+    }
+    catch (_f) { }
+    if (dbAdapter_1.hasPg) {
+        try {
+            if (newOrder.property_id) {
+                try {
+                    const propRows = (await (0, dbAdapter_1.pgSelect)('properties', 'id', { id: newOrder.property_id })) || [];
+                    const existsProp = Array.isArray(propRows) && propRows[0];
+                    if (!existsProp) {
+                        const localProp = store_1.db.properties.find(p => p.id === newOrder.property_id);
+                        const code = (newOrder.property_code || (localProp === null || localProp === void 0 ? void 0 : localProp.code));
+                        const payload = { id: newOrder.property_id };
+                        if (code)
+                            payload.code = code;
+                        if (localProp === null || localProp === void 0 ? void 0 : localProp.address)
+                            payload.address = localProp.address;
+                        await (0, dbAdapter_1.pgInsert)('properties', payload);
+                    }
+                }
+                catch (_g) { }
+            }
+            const insertOrder = { ...newOrder };
+            delete insertOrder.property_code;
+            const row = await (0, dbAdapter_1.pgInsert)('orders', insertOrder);
+            store_1.db.orders.push(row);
+            if (newOrder.checkout) {
+                const date = newOrder.checkout;
+                const hasTask = store_1.db.cleaningTasks.find((t) => t.date === date && t.property_id === newOrder.property_id);
+                if (!hasTask) {
+                    const task = { id: uuid(), property_id: newOrder.property_id, date, status: 'pending' };
+                    store_1.db.cleaningTasks.push(task);
+                }
+            }
+            return res.status(201).json(row);
+        }
+        catch (e) {
+            const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+            if (/column\s+"?confirmation_code"?\s+of\s+relation\s+"?orders"?\s+does\s+not\s+exist/i.test(msg)) {
+                try {
+                    const { pgPool } = require('../dbAdapter');
+                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text'));
+                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_confirmation_code_unique ON orders(confirmation_code) WHERE confirmation_code IS NOT NULL'));
+                    const ins = { ...newOrder };
+                    delete ins.property_code;
+                    const row = await (0, dbAdapter_1.pgInsert)('orders', ins);
+                    store_1.db.orders.push(row);
+                    if (newOrder.checkout) {
+                        const date = newOrder.checkout;
+                        const hasTask = store_1.db.cleaningTasks.find((t) => t.date === date && t.property_id === newOrder.property_id);
+                        if (!hasTask) {
+                            const task = { id: uuid(), property_id: newOrder.property_id, date, status: 'pending' };
+                            store_1.db.cleaningTasks.push(task);
+                        }
+                    }
+                    return res.status(201).json(row);
+                }
+                catch (e2) {
+                    return res.status(500).json({ message: '数据库写入失败', error: String((e2 === null || e2 === void 0 ? void 0 : e2.message) || '') });
+                }
+            }
+            if (msg.includes('duplicate') || msg.includes('unique'))
+                return res.status(409).json({ message: '确认码已存在' });
+            return res.status(500).json({ message: '数据库写入失败', error: msg });
+        }
+    }
+    if (supabase_1.hasSupabase) {
+        (0, supabase_1.supaUpsertConflict)('orders', newOrder, 'id')
+            .then((row) => res.status(201).json(row))
+            .catch((_err) => { pendingInsert.push(newOrder); startRetry(); return res.status(201).json(newOrder); });
+        return;
+    }
+    // 无远端数据库，使用内存存储
     store_1.db.orders.push(newOrder);
     if (newOrder.checkout) {
         const date = newOrder.checkout;
@@ -243,24 +413,6 @@ exports.router.post('/sync', (0, auth_1.requirePerm)('order.create'), async (req
             const task = { id: uuid(), property_id: newOrder.property_id, date, status: 'pending' };
             store_1.db.cleaningTasks.push(task);
         }
-    }
-    if (dbAdapter_1.hasPg) {
-        try {
-            const row = await (0, dbAdapter_1.pgInsert)('orders', newOrder);
-            return res.status(201).json(row || newOrder);
-        }
-        catch (e) {
-            const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
-            if (msg.includes('duplicate') || msg.includes('unique'))
-                return res.status(409).json({ message: '订单已存在：唯一键冲突', order: newOrder });
-            return res.status(201).json(newOrder);
-        }
-    }
-    if (supabase_1.hasSupabase) {
-        (0, supabase_1.supaUpsertConflict)('orders', newOrder, 'id')
-            .then((row) => res.status(201).json(row))
-            .catch((_err) => { pendingInsert.push(newOrder); startRetry(); return res.status(201).json(newOrder); });
-        return;
     }
     return res.status(201).json(newOrder);
 });
@@ -274,12 +426,28 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
     const force = String((_b = (_a = req.body.force) !== null && _a !== void 0 ? _a : req.query.force) !== null && _b !== void 0 ? _b : '').toLowerCase() === 'true';
     const idx = store_1.db.orders.findIndex((x) => x.id === id);
     const prev = idx !== -1 ? store_1.db.orders[idx] : undefined;
-    if (!prev && !supabase_1.hasSupabase)
+    let base = prev;
+    if (!base && dbAdapter_1.hasPg) {
+        try {
+            const rows = (await (0, dbAdapter_1.pgSelect)('orders', '*', { id })) || [];
+            base = Array.isArray(rows) ? rows[0] : undefined;
+        }
+        catch (_c) { }
+    }
+    if (!base && !supabase_1.hasSupabase)
         return res.status(404).json({ message: 'order not found' });
-    const base = prev || {};
+    if (!base)
+        base = {};
     let nights = o.nights;
     const checkin = o.checkin || base.checkin;
     const checkout = o.checkout || base.checkout;
+    try {
+        const ci0 = normalizeStart(checkin || '');
+        const co0 = normalizeEnd(checkout || '');
+        if (ci0 && co0 && !(ci0 < co0))
+            return res.status(400).json({ message: '入住日期必须早于退房日期' });
+    }
+    catch (_d) { }
     if (!nights && checkin && checkout) {
         try {
             const ci = new Date(checkin);
@@ -287,7 +455,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
             const ms = co.getTime() - ci.getTime();
             nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
         }
-        catch (_c) {
+        catch (_e) {
             nights = 0;
         }
     }
@@ -306,11 +474,42 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
     }
     if (dbAdapter_1.hasPg) {
         try {
-            const row = await (0, dbAdapter_1.pgUpdate)('orders', id, updated);
-            return res.json(row || updated);
+            const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
+            const payload = {};
+            for (const k of allow) {
+                if (updated[k] !== undefined)
+                    payload[k] = updated[k];
+            }
+            const row = await (0, dbAdapter_1.pgUpdate)('orders', id, payload);
+            if (idx !== -1)
+                store_1.db.orders[idx] = row;
+            return res.json(row);
         }
-        catch (_d) {
-            return res.json(updated);
+        catch (e) {
+            const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+            if (/column\s+"?confirmation_code"?\s+of\s+relation\s+"?orders"?\s+does\s+not\s+exist/i.test(msg)) {
+                try {
+                    const { pgPool } = require('../dbAdapter');
+                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text'));
+                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_confirmation_code_unique ON orders(confirmation_code) WHERE confirmation_code IS NOT NULL'));
+                    const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
+                    const payload2 = {};
+                    for (const k of allow) {
+                        if (updated[k] !== undefined)
+                            payload2[k] = updated[k];
+                    }
+                    const row = await (0, dbAdapter_1.pgUpdate)('orders', id, payload2);
+                    if (idx !== -1)
+                        store_1.db.orders[idx] = row;
+                    return res.json(row);
+                }
+                catch (e2) {
+                    return res.status(500).json({ message: '数据库更新失败', error: String((e2 === null || e2 === void 0 ? void 0 : e2.message) || '') });
+                }
+            }
+            if (msg.includes('duplicate') || msg.includes('unique'))
+                return res.status(409).json({ message: '确认码已存在' });
+            return res.status(500).json({ message: '数据库更新失败', error: msg });
         }
     }
     if (supabase_1.hasSupabase) {
@@ -318,7 +517,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
             const row = await (0, supabase_1.supaUpdate)('orders', id, updated);
             return res.json(row || updated);
         }
-        catch (_e) {
+        catch (_f) {
             pendingUpdate.push({ id, payload: updated });
             startRetry();
             return res.json(updated);
@@ -383,8 +582,8 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('order.write'), async (req
             removed = removed || row;
             return res.json({ ok: true, id });
         }
-        catch (_a) {
-            return res.json({ ok: true, id });
+        catch (e) {
+            return res.status(500).json({ message: '数据库删除失败' });
         }
     }
     if (supabase_1.hasSupabase) {
@@ -393,7 +592,7 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('order.write'), async (req
             removed = removed || row;
             return res.json({ ok: true, id });
         }
-        catch (_b) {
+        catch (_a) {
             pendingDelete.push(id);
             startRetry();
             return res.json({ ok: true, id });

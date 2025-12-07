@@ -19,6 +19,10 @@ export function authHeaders(): Record<string, string> {
 
 export async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { cache: 'no-store', headers: authHeaders() })
+  if (res.status === 401) {
+    if (typeof window !== 'undefined') window.location.href = '/login'
+    throw new Error('HTTP 401')
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json() as Promise<T>
 }

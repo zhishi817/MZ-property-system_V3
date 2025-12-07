@@ -2,9 +2,10 @@
 import dayjs from 'dayjs'
 import { Table } from 'antd'
 import { forwardRef } from 'react'
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4001'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; invoice_url?: string; note?: string }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; invoice_url?: string; note?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 
 export default forwardRef<HTMLDivElement, {
@@ -29,7 +30,17 @@ export default forwardRef<HTMLDivElement, {
     const perDay = totalN ? Number(x.price||0) / totalN : 0
     return s + perDay * segN
   }, 0)
-  const totalIncome = orderIncomeShare
+  const rentIncome = orderIncomeShare
+  const otherIncomeTx = txs.filter(t => t.kind === 'income' && (!propertyId || t.property_id === propertyId) && dayjs(t.occurred_at).isAfter(start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(end.add(1,'day')))
+  const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount || 0), 0)
+  const mapIncomeCatLabel = (c?: string) => {
+    const v = String(c || '')
+    if (v === 'late_checkout') return '晚退房费'
+    if (v === 'cancel_fee') return '取消费'
+    return v || '-'
+  }
+  const otherIncomeDesc = Array.from(new Set(otherIncomeTx.map(t => mapIncomeCatLabel(t.category)))).filter(Boolean).join('、') || '-'
+  const totalIncome = rentIncome + otherIncome
   const occupiedNights = relatedOrders.reduce((s, x) => {
     const ci = dayjs(x.checkin!)
     const co = dayjs(x.checkout!)
@@ -43,7 +54,7 @@ export default forwardRef<HTMLDivElement, {
   const dailyAverage = occupiedNights ? Math.round(((totalIncome / occupiedNights) + Number.EPSILON) * 100) / 100 : 0
   const landlord = landlords.find(l => (l.property_ids || []).includes(propertyId || ''))
   const property = properties.find(pp => pp.id === (propertyId || ''))
-  const managementFee = landlord?.management_fee_rate ? Math.round(((totalIncome * landlord.management_fee_rate) + Number.EPSILON) * 100) / 100 : 0
+  const managementFee = landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON) * 100) / 100 : 0
   const sumByCat = (cat: string) => expensesInMonth.filter(e => e.category === cat).reduce((s, x) => s + Number(x.amount || 0), 0)
   const catElectricity = sumByCat('electricity')
   const catWater = sumByCat('water')
@@ -54,9 +65,12 @@ export default forwardRef<HTMLDivElement, {
   const catOwnerCorp = sumByCat('property_fee')
   const catCouncil = sumByCat('council')
   const catOther = sumByCat('other')
+  const otherExpenseDesc = Array.from(new Set(expensesInMonth.filter(e => e.category === 'other' && (e as any).category_detail).map(e => String((e as any).category_detail || '').trim()).filter(Boolean))).join('、') || '-'
   const totalExpense = managementFee + catElectricity + catWater + catGas + catInternet + catConsumable + catCarpark + catOwnerCorp + catCouncil + catOther
   const netIncome = Math.round(((totalIncome - totalExpense) + Number.EPSILON) * 100) / 100
   const isImg = (u?: string) => !!u && /\.(png|jpg|jpeg|gif)$/i.test(u)
+  const isPdf = (u?: string) => !!u && /\.pdf$/i.test(u)
+  const resolveUrl = (u?: string) => (u && /^https?:\/\//.test(u)) ? u : (u ? `${API_BASE}${u}` : '')
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
   return (
@@ -69,8 +83,9 @@ export default forwardRef<HTMLDivElement, {
           <div style={{ borderTop: '2px solid #000', marginTop: 6 }}></div>
           <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', marginTop: 6 }}>
             <div style={{ fontSize: 22, fontWeight: 700 }}>{dayjs(`${month}-01`).format('MM/YYYY')}</div>
-            <div style={{ fontSize: 16, marginTop: 4 }}>{landlord?.name || ''}</div>
-            <div style={{ fontSize: 14 }}>{property?.address || ''}</div>
+          <div style={{ fontSize: 16, marginTop: 4 }}>{landlord?.name || ''}</div>
+          <div style={{ fontSize: 14 }}>{property?.code || ''}</div>
+          <div style={{ fontSize: 14 }}>{property?.address || ''}</div>
           </div>
         </div>
       </div>
@@ -90,8 +105,9 @@ export default forwardRef<HTMLDivElement, {
       </div>
       <table style={{ width:'100%' }}>
         <tbody>
-          <tr><td style={{ padding:6 }}>Rent Income 租金收入</td><td style={{ textAlign:'right', padding:6 }}>${fmt(totalIncome)}</td></tr>
-          <tr><td style={{ padding:6 }}>Other Income 其他收入</td><td style={{ textAlign:'right', padding:6 }}>$0.00</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Rent Income 租金收入</td><td style={{ textAlign:'right', padding:6 }}>${fmt(rentIncome)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Other Income 其他收入</td><td style={{ textAlign:'right', padding:6 }}>${fmt(otherIncome)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Other Income Desc 其他收入描述</td><td style={{ textAlign:'right', padding:6 }}>{otherIncomeDesc}</td></tr>
         </tbody>
       </table>
 
@@ -100,16 +116,17 @@ export default forwardRef<HTMLDivElement, {
       </div>
       <table style={{ width:'100%' }}>
         <tbody>
-          <tr><td style={{ padding:6 }}>Management Fee 管理费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(managementFee)}</td></tr>
-          <tr><td style={{ padding:6 }}>Electricity 电费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catElectricity)}</td></tr>
-          <tr><td style={{ padding:6 }}>Water 水费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catWater)}</td></tr>
-          <tr><td style={{ padding:6 }}>Gas / Hot water 煤气费 / 热水费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catGas)}</td></tr>
-          <tr><td style={{ padding:6 }}>Internet 网费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catInternet)}</td></tr>
-          <tr><td style={{ padding:6 }}>Monthly Consumable 消耗品费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catConsumable)}</td></tr>
-          <tr><td style={{ padding:6 }}>Carpark 车位费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catCarpark)}</td></tr>
-          <tr><td style={{ padding:6 }}>Owner's Corporation 物业费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOwnerCorp)}</td></tr>
-          <tr><td style={{ padding:6 }}>Council Rate 市政费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catCouncil)}</td></tr>
-          <tr><td style={{ padding:6 }}>Other Expense 其他支出</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOther)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Management Fee 管理费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(managementFee)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Electricity 电费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catElectricity)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Water 水费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catWater)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Gas / Hot water 煤气费 / 热水费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catGas)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Internet 网费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catInternet)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Monthly Consumable 消耗品费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catConsumable)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Carpark 车位费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catCarpark)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Owner's Corporation 物业费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOwnerCorp)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Council Rate 市政费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catCouncil)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Other Expense 其他支出</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOther)}</td></tr>
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>Other Expense Desc 其他支出描述</td><td style={{ textAlign:'right', padding:6 }}>{otherExpenseDesc}</td></tr>
         </tbody>
       </table>
 
@@ -149,9 +166,13 @@ export default forwardRef<HTMLDivElement, {
             </div>
             <div style={{ fontSize:12 }}>{dayjs(e.occurred_at).format('DD/MM/YYYY')}</div>
             {isImg(e.invoice_url) ? (
-              <img src={e.invoice_url} style={{ width:'100%', marginTop:6 }} alt="invoice" />
+              <img src={resolveUrl(e.invoice_url)} style={{ width:'100%', marginTop:6 }} alt="invoice" />
+            ) : isPdf(e.invoice_url) ? (
+              <object data={resolveUrl(e.invoice_url)} type="application/pdf" style={{ width:'100%', height: 600, marginTop:6 }}>
+                <a href={resolveUrl(e.invoice_url)} target="_blank" rel="noreferrer">查看发票</a>
+              </object>
             ) : e.invoice_url ? (
-              <a href={e.invoice_url} target="_blank" rel="noreferrer" style={{ display:'inline-block', marginTop:6 }}>查看发票</a>
+              <a href={resolveUrl(e.invoice_url)} target="_blank" rel="noreferrer" style={{ display:'inline-block', marginTop:6 }}>查看发票</a>
             ) : (
               <div style={{ fontSize:12, color:'#888', marginTop:6 }}>未上传发票</div>
             )}

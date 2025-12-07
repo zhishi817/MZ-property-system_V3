@@ -4,20 +4,24 @@ import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete } from '../
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
+import { hasR2, r2Upload } from '../r2'
 import { z } from 'zod'
 import { requirePerm } from '../auth'
+import { PDFDocument } from 'pdf-lib'
 
 export const router = Router()
-const upload = multer({ dest: path.join(process.cwd(), 'uploads') })
+const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
 
 router.get('/', async (_req, res) => {
   try {
     if (hasSupabase) {
-      const rows = (await supaSelect('finance_transactions')) as any[] || []
+      const raw = await supaSelect('finance_transactions')
+      const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     }
     if (hasPg) {
-      const rows = (await pgSelect('finance_transactions')) as any[] || []
+      const raw = await pgSelect('finance_transactions')
+      const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     }
     return res.json(db.financeTransactions)
@@ -46,10 +50,77 @@ router.post('/', requirePerm('finance.tx.write'), async (req, res) => {
   return res.status(201).json(tx)
 })
 
-router.post('/invoices', requirePerm('finance.tx.write'), upload.single('file'), (req, res) => {
+router.post('/invoices', requirePerm('finance.tx.write'), upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'missing file' })
-  const url = `/uploads/${req.file.filename}`
-  res.status(201).json({ url })
+  try {
+    if (hasR2 && req.file && (req.file as any).buffer) {
+      const ext = path.extname(req.file.originalname) || ''
+      const key = `invoices/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+      const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+      return res.status(201).json({ url })
+    }
+    const url = `/uploads/${req.file.filename}`
+    return res.status(201).json({ url })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'upload failed' })
+  }
+})
+
+// Merge monthly statement PDF with multiple invoice PDFs and return a single PDF
+router.post('/merge-pdf', requirePerm('finance.payout'), async (req, res) => {
+  try {
+    const { statement_pdf_base64, statement_pdf_url, invoice_urls } = req.body || {}
+    if (!statement_pdf_base64 && !statement_pdf_url) return res.status(400).json({ message: 'missing statement pdf' })
+    const urls: string[] = Array.isArray(invoice_urls) ? invoice_urls.filter((u: any) => typeof u === 'string') : []
+    async function fetchBytes(u: string): Promise<Uint8Array> {
+      const r = await fetch(u)
+      if (!r.ok) throw new Error(`fetch failed: ${r.status}`)
+      const ab = await r.arrayBuffer()
+      return new Uint8Array(ab)
+    }
+    let merged = await PDFDocument.create()
+    // append statement
+    if (statement_pdf_base64 && typeof statement_pdf_base64 === 'string') {
+      const b64 = statement_pdf_base64.replace(/^data:application\/pdf;base64,/, '')
+      const bytes = Uint8Array.from(Buffer.from(b64, 'base64'))
+      const src = await PDFDocument.load(bytes)
+      const copied = await merged.copyPages(src, src.getPageIndices())
+      copied.forEach(p => merged.addPage(p))
+    } else if (statement_pdf_url && typeof statement_pdf_url === 'string') {
+      const bytes = await fetchBytes(statement_pdf_url)
+      const src = await PDFDocument.load(bytes)
+      const copied = await merged.copyPages(src, src.getPageIndices())
+      copied.forEach(p => merged.addPage(p))
+    }
+    for (const u of urls) {
+      try {
+        if (/\.pdf($|\?)/i.test(u || '')) {
+          const bytes = await fetchBytes(u)
+          const src = await PDFDocument.load(bytes)
+          const copied = await merged.copyPages(src, src.getPageIndices())
+          copied.forEach(p => merged.addPage(p))
+        } else if (/\.(png|jpg|jpeg)($|\?)/i.test(u || '')) {
+          const bytes = await fetchBytes(u)
+          const img = /\.png($|\?)/i.test(u || '') ? await merged.embedPng(bytes) : await merged.embedJpg(bytes)
+          const page = merged.addPage([595, 842])
+          const maxW = 595 - 60
+          const maxH = 842 - 60
+          const scale = Math.min(maxW / img.width, maxH / img.height)
+          const w = img.width * scale
+          const h = img.height * scale
+          const x = (595 - w) / 2
+          const y = (842 - h) / 2
+          page.drawImage(img, { x, y, width: w, height: h })
+        }
+      } catch {}
+    }
+    const out = await merged.save()
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', 'attachment; filename="statement-merged.pdf"')
+    return res.status(200).send(Buffer.from(out))
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'merge failed' })
+  }
 })
 
 router.post('/send-monthly', requirePerm('finance.payout'), (req, res) => {
@@ -67,11 +138,13 @@ router.post('/send-annual', requirePerm('finance.payout'), (req, res) => {
 router.get('/payouts', async (_req, res) => {
   try {
     if (hasSupabase) {
-      const rows = (await supaSelect('payouts')) as any[] || []
+      const raw = await supaSelect('payouts')
+      const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     }
     if (hasPg) {
-      const rows = (await pgSelect('payouts')) as any[] || []
+      const raw = await pgSelect('payouts')
+      const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     }
     return res.json(db.payouts)
@@ -84,10 +157,12 @@ router.get('/payouts', async (_req, res) => {
 router.get('/company-payouts', async (_req, res) => {
   try {
     if (hasPg) {
-      const rows = (await pgSelect('company_payouts')) as any[] || []
+      const raw = await pgSelect('company_payouts')
+      const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     } else if (hasSupabase) {
-      const rows = (await supaSelect('company_payouts')) as any[] || []
+      const raw = await supaSelect('company_payouts')
+      const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     }
     return res.json(db.companyPayouts)

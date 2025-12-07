@@ -6,7 +6,7 @@ import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
 
-type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; guest_name?: string; guest_phone?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number }
+type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number }
 // guest_phone 在后端已支持，这里表单也支持录入
 type CleaningTask = { id: string; status: 'pending'|'scheduled'|'done' }
 
@@ -29,11 +29,17 @@ export default function OrdersPage() {
   function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
   function getPropertyCodeLabel(o: Order) {
     const p = getPropertyById(o.property_id)
-    return (p?.code || o.property_code || p?.address || '')
+    const byCodeAsId = (Array.isArray(properties) ? properties : []).find(px => (px.code || '') === (o.property_id || ''))
+    return (p?.code || byCodeAsId?.code || o.property_code || p?.address || o.property_id || '')
+  }
+  function toDayStr(raw?: any): string {
+    const str = String(raw || '')
+    const m = str.match(/^(\d{4}-\d{2}-\d{2})/)
+    return m ? m[1] : dayjs(str).format('YYYY-MM-DD')
   }
   function fmtDay(s?: string) {
     if (!s) return ''
-    const d = dayjs(s)
+    const d = dayjs(toDayStr(s))
     return d.isValid() ? d.format('DD/MM/YYYY') : s
   }
   const uploadProps: UploadProps = {
@@ -60,7 +66,7 @@ export default function OrdersPage() {
     const res = await getJSON<Order[]>('/orders')
     setData(res)
   }
-  useEffect(() => { load(); getJSON<any>('/properties').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([])) }, [])
+  useEffect(() => { load(); getJSON<any>('/properties?include_archived=true').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([])) }, [])
 
   async function openEdit(o: Order) {
     setCurrent(o)
@@ -70,6 +76,7 @@ export default function OrdersPage() {
     const p0 = (Array.isArray(properties) ? properties : []).find(x => x.id === pid0)
     editForm.setFieldsValue({
       ...o,
+      confirmation_code: o.confirmation_code || '',
       property_id: pid0,
       property_code: p0 ? (p0.code || p0.address || pid0) : o.property_code,
       price: o.price != null ? o.price : 0,
@@ -86,6 +93,7 @@ export default function OrdersPage() {
       const p = (Array.isArray(properties) ? properties : []).find(x => x.id === pid)
       editForm.setFieldsValue({
         ...full,
+        confirmation_code: (full as any).confirmation_code || '',
         property_id: pid,
         property_code: p ? (p.code || p.address || pid) : full.property_code,
         price: full.price != null ? full.price : 0,
@@ -120,6 +128,7 @@ export default function OrdersPage() {
       status: v.status || 'confirmed',
       property_id: v.property_id,
       property_code: v.property_code || selectedNew?.code || selectedNew?.address || v.property_id,
+      confirmation_code: v.confirmation_code,
       guest_name: v.guest_name,
       guest_phone: v.guest_phone,
       checkin: v.checkin.format('YYYY-MM-DD') + 'T12:00:00',
@@ -154,6 +163,7 @@ export default function OrdersPage() {
 
   const columns = [
     { title: '房号', dataIndex: 'property_code', render: (_: any, r: Order) => getPropertyCodeLabel(r) },
+    { title: '确认码', dataIndex: 'confirmation_code' },
     { title: '来源', dataIndex: 'source' },
     { title: '客人', dataIndex: 'guest_name' },
     // 可按需求增加显示客人电话
@@ -195,14 +205,16 @@ export default function OrdersPage() {
   const baseMonth = calMonth || dayjs()
   const monthStart = baseMonth.startOf('month')
   const monthEnd = baseMonth.endOf('month')
-  function dayStr(v: any): string { try { return dayjs(v).format('YYYY-MM-DD') } catch { return '' } }
+  function dayStr(v: any): string { try { return toDayStr(v) } catch { return '' } }
   const monthOrders = (data || []).filter(o => {
     if (!calPid) return false
     if (o.property_id !== calPid) return false
     const ciDay = dayStr(o.checkin)
     const coDay = dayStr(o.checkout)
     if (!ciDay || !coDay) return false
-    return dayjs(coDay).isAfter(monthStart) && dayjs(ciDay).isBefore(monthEnd)
+    const ms = monthStart.format('YYYY-MM-DD')
+    const me = monthEnd.format('YYYY-MM-DD')
+    return coDay > ms && ciDay < me
   })
   const orderLane = (function(){
     const lanesEnd: number[] = []
@@ -224,11 +236,12 @@ export default function OrdersPage() {
   })()
   function dayCell(date: any) {
     if (!calPid) return null
+    const dateStr = dayjs(date).format('YYYY-MM-DD')
     const orders = data
       .filter(o => {
         const ciDay = dayStr(o.checkin)
         const coDay = dayStr(o.checkout)
-        return o.property_id === calPid && ciDay && coDay && dayjs(ciDay).diff(date, 'day') <= 0 && dayjs(coDay).diff(date, 'day') > 0
+        return o.property_id === calPid && ciDay && coDay && ciDay <= dateStr && coDay > dateStr
       })
       .sort((a,b)=> dayjs(a.checkin!).valueOf() - dayjs(b.checkin!).valueOf())
     if (!orders.length) return null
@@ -238,8 +251,9 @@ export default function OrdersPage() {
           const accent = sourceColor[o.source || 'other'] || '#999'
           const ciDay = dayStr(o.checkin)
           const coDay = dayStr(o.checkout)
-          const isStart = ciDay === dayjs(date).format('YYYY-MM-DD')
-          const isEnd = dayjs(coDay).diff(date, 'day') === 1 // last day shown is checkout-1
+          const isStart = ciDay === dateStr
+          const nextStr = dayjs(dateStr).add(1,'day').format('YYYY-MM-DD')
+          const isEnd = coDay === nextStr // last day shown is checkout-1
           const radiusLeft = isStart ? 16 : 3
           const radiusRight = isEnd ? 16 : 3
           const lane = orderLane[o.id!] || 0
@@ -320,7 +334,10 @@ export default function OrdersPage() {
         <Table rowKey={(r) => r.id} columns={columns as any} dataSource={data.filter(o => {
           const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
           const codeOk = !codeQuery || codeText.includes(codeQuery.trim().toLowerCase())
-          const rangeOk = !dateRange || (!dateRange[0] || dayjs(o.checkin).diff(dateRange[0], 'day') >= 0) && (!dateRange[1] || dayjs(o.checkout).diff(dateRange[1], 'day') <= 0)
+          const rangeOk = !dateRange || (
+            (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
+            (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
+          )
           return codeOk && rangeOk
         })} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }} />
       ) : (
@@ -330,6 +347,9 @@ export default function OrdersPage() {
       )}
       <Modal open={open} onCancel={() => setOpen(false)} onOk={submitCreate} title="新建订单">
       <Form form={form} layout="vertical">
+        <Form.Item name="confirmation_code" label="确认码" rules={[{ required: true, message: '确认码必填' }]}>
+          <Input placeholder="平台订单确认码或唯一编号" />
+        </Form.Item>
         <Form.Item name="source" label="来源" rules={[{ required: true }]}> 
           <Select options={[{ value: 'airbnb', label: 'airbnb' }, { value: 'booking', label: 'booking.com' }, { value: 'offline', label: '线下' }, { value: 'other', label: '其他' }]} />
         </Form.Item>
@@ -443,6 +463,9 @@ export default function OrdersPage() {
         }
       }} title="编辑订单">
         <Form form={editForm} layout="vertical">
+          <Form.Item name="confirmation_code" label="确认码" rules={[{ required: true, message: '确认码必填' }]}>
+            <Input />
+          </Form.Item>
           <Form.Item name="source" label="来源" rules={[{ required: true }]}> 
             <Select options={[{ value: 'airbnb', label: 'airbnb' }, { value: 'booking', label: 'booking.com' }, { value: 'offline', label: '线下' }, { value: 'other', label: '其他' }]} />
           </Form.Item>
