@@ -61,7 +61,20 @@ export default function DashboardPage() {
               ))}
             </RePie>
             <ReTooltip />
-            <ReLegend layout="vertical" verticalAlign="middle" align="right" iconType="circle" />
+            {(() => {
+              const LegendContent = () => (
+                <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                  {data.map((d, i) => (
+                    <div key={d.name} style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      <span style={{ display:'inline-block', width:10, height:10, background:COLORS[i % COLORS.length], borderRadius:'50%' }}></span>
+                      <span>{d.name}</span>
+                      <span style={{ marginLeft:'auto' }}>{d.value}</span>
+                    </div>
+                  ))}
+                </div>
+              )
+              return <ReLegend layout="vertical" verticalAlign="middle" align="right" content={<LegendContent />} />
+            })()}
           </RePieChart>
         </ResponsiveContainer>
       </div>
@@ -286,13 +299,16 @@ export default function DashboardPage() {
       </Row>
       <Row gutter={[16,16]}>
         <Col xs={24} md={12}><Card title="房源管理类型占比" style={{ height: 300 }}><ManagementTypePieChart /></Card></Col>
-        <Col xs={24} md={12}><Card title="各区域房源数量" style={{ height: 300 }}><Space direction="vertical" style={{ width: '100%' }}>{regionCounts.map(rc => (
-          <div key={rc.region} style={{ display:'flex', alignItems:'center', gap:8 }} title={`${rc.region} - ${rc.count} units`}>
-            <div style={{ width: 120 }}>{rc.region}</div>
-            <Bar value={rc.count} max={maxRegion} />
-            <div>{rc.count}</div>
-          </div>
-        ))}</Space></Card></Col>
+        <Col xs={24} md={12}><Card title="各区域房源数量" extra={<span>总计：{totalProps}</span>} style={{ height: 300 }}><Space direction="vertical" style={{ width: '100%' }}>{regionCounts.map(rc => {
+          const pct = totalProps ? Math.round((rc.count * 100) / totalProps) : 0
+          return (
+            <div key={rc.region} style={{ display:'flex', alignItems:'center', gap:8 }} title={`${rc.region} - ${rc.count} units`}>
+              <div style={{ width: 120 }}>{rc.region}</div>
+              <Bar value={rc.count} max={maxRegion} />
+              <div style={{ marginLeft:'auto', minWidth: 80, textAlign:'right' }}>{rc.count}（{pct}%）</div>
+            </div>
+          )
+        })}</Space></Card></Col>
       </Row>
       
     </Space>

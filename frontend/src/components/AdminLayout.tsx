@@ -1,5 +1,5 @@
 "use client"
-import { Layout, Menu, Button } from 'antd'
+import { Layout, Menu, Button, Space } from 'antd'
 import {
   ApartmentOutlined,
   KeyOutlined,
@@ -13,6 +13,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { getRole, hasPerm, preloadRolePerms } from '../lib/auth'
+import { API_BASE, authHeaders } from '../lib/api'
 import { VersionBadge } from './VersionBadge'
 
 const { Header, Sider, Content } = Layout
@@ -30,6 +31,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false)
   const isLogin = pathname.startsWith('/login')
   const [role, setRole] = useState<string | null>(null)
+  const [username, setUsername] = useState<string | null>(null)
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setRole(getRole()) }, [])
   useEffect(() => { setMounted(true) }, [])
@@ -49,6 +51,17 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (authed) { preloadPerms().catch(() => {}) }
   }, [pathname])
+  useEffect(() => {
+    if (!authed) return
+    ;(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() })
+        const j = res.ok ? await res.json() : null
+        setUsername((j as any)?.username || null)
+        setRole((j as any)?.role || getRole())
+      } catch {}
+    })()
+  }, [authed])
   useEffect(() => {
     if (!isLogin && !authed) {
       try { router.replace('/login') } catch {}
@@ -101,14 +114,21 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     ) : (
       <Layout style={{ minHeight: '100vh' }}>
         <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} breakpoint="md">
-          <div style={{ color: '#fff', padding: 16, fontWeight: 600 }}>MZ Property</div>
+          <div style={{ color: '#fff', padding: 16, fontWeight: 700 }}>MZ Property</div>
           <Menu theme="dark" mode="inline" items={items} />
         </Sider>
         <Layout>
           <Header style={{ background: '#fff', padding: '0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>后台管理</div>
+            <div style={{ fontWeight: 700, fontFamily:'SF Pro Display, Segoe UI, Roboto, Helvetica Neue, Arial' }}>后台管理</div>
             <div>
-              {authed ? <Button onClick={logout}>退出{role ? `(${role})` : ''}</Button> : <Link href="/login" prefetch={false}>登录</Link>}
+              {authed ? (
+                <Space>
+                  <span style={{ fontFamily:'SF Pro Text, Segoe UI, Roboto, Helvetica Neue, Arial', color:'#555' }}>Hi, {username || ''}{role ? ` (${role})` : ''}</span>
+                  <Button onClick={logout}>退出</Button>
+                </Space>
+              ) : (
+                <Link href="/login" prefetch={false}>登录</Link>
+              )}
             </div>
           </Header>
           <Content style={{ margin: '16px' }}>{children}</Content>
