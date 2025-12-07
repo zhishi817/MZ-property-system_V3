@@ -130,3 +130,17 @@ export async function setDeletePassword(req: Request, res: Response) {
     return res.status(500).json({ message: e.message })
   }
 }
+
+export function requireResourcePerm(kind: 'view' | 'write' | 'delete') {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const user = (req as any).user
+    if (!user) return res.status(401).json({ message: 'unauthorized' })
+    const role = String(user.role || '')
+    const resource = String((req.params as any)?.resource || '')
+    if (!resource) return res.status(400).json({ message: 'missing resource' })
+    const code = `${resource}.${kind}`
+    const ok = roleHasPermission(role, code)
+    if (!ok) return res.status(403).json({ message: 'forbidden' })
+    next()
+  }
+}

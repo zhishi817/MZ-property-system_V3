@@ -34,12 +34,12 @@ export default function FinancePage() {
 
   async function load() {
     const [t, p, l, o, props, exps] = await Promise.all([
-      fetch(`${API_BASE}/finance`).then(r => r.json()),
-      fetch(`${API_BASE}/finance/payouts`).then(r => r.json()),
-      fetch(`${API_BASE}/landlords`).then(r => r.json()),
-      fetch(`${API_BASE}/orders`).then(r => r.json()),
-      fetch(`${API_BASE}/properties`).then(r => r.json()),
-      fetch(`${API_BASE}/crud/property_expenses`).then(r => r.json()),
+      fetch(`${API_BASE}/finance`, { headers: authHeaders() }).then(r => r.ok ? r.json() : []),
+      fetch(`${API_BASE}/finance/payouts`, { headers: authHeaders() }).then(r => r.ok ? r.json() : []),
+      fetch(`${API_BASE}/landlords`, { headers: authHeaders() }).then(r => r.ok ? r.json() : []),
+      fetch(`${API_BASE}/orders`, { headers: authHeaders() }).then(r => r.ok ? r.json() : []),
+      fetch(`${API_BASE}/properties`, { headers: authHeaders() }).then(r => r.ok ? r.json() : []),
+      fetch(`${API_BASE}/crud/property_expenses`, { headers: authHeaders() }).then(r => r.ok ? r.json() : []),
     ])
     setTxs(t); setPayouts(p); setLandlords(l); setOrders(Array.isArray(o) ? o : [])
     setProperties(Array.isArray(props) ? props : [])

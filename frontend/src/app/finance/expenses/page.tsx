@@ -23,7 +23,7 @@ export default function ExpensesPage() {
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [mode] = useState<'property'>('property')
   const role = (typeof window !== 'undefined') ? (localStorage.getItem('role') || sessionStorage.getItem('role')) : null
-  const canViewList = hasPerm('finance.payout') || role === 'customer_service'
+  const canViewList = (role === 'admin') || hasPerm('menu.finance') || hasPerm('property_expenses.view') || role === 'customer_service' || hasPerm('finance.tx.write')
   async function load() {
     const resource = 'property_expenses'
     if (canViewList) {

@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requireAnyPerm } from '../auth'
+import { requireAnyPerm, requireResourcePerm } from '../auth'
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete } from '../supabase'
 import { db, addAudit } from '../store'
@@ -27,7 +27,7 @@ const ALLOW: Record<string, true> = {
 
 function okResource(r: string): boolean { return !!ALLOW[r] }
 
-router.get('/:resource', requireAnyPerm(['rbac.manage','property.write','order.view','finance.tx.write','finance.payout']), async (req, res) => {
+router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
   const { resource } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
   const filter: Record<string, any> = { ...(req.query || {}) }
@@ -39,8 +39,64 @@ router.get('/:resource', requireAnyPerm(['rbac.manage','property.write','order.v
   try {
     if (hasPg) {
       try {
-        const rowsRaw = await pgSelect(resource, '*', Object.keys(filter).length ? filter : undefined)
-        const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
+        const rows: any[] = []
+        const { pgPool } = require('../dbAdapter')
+        function buildWhere(filters?: Record<string, any>) {
+          const keys = Object.keys(filters || {})
+          if (!keys.length) return { clause: '', values: [] as any[] }
+          const parts = keys.map((k, i) => `${k} = $${i + 1}`)
+          const values = keys.map((k) => (filters as any)[k])
+          return { clause: ` WHERE ${parts.join(' AND ')}`, values }
+        }
+        const w = buildWhere(Object.keys(filter).length ? filter : undefined)
+        let orderBy = ''
+        if (resource === 'property_expenses' || resource === 'company_expenses') {
+          orderBy = ' ORDER BY due_date ASC NULLS LAST, paid_date ASC NULLS LAST, occurred_at ASC'
+        } else if (resource === 'recurring_payments') {
+          orderBy = ' ORDER BY next_due_date ASC NULLS LAST, due_day_of_month ASC, vendor ASC'
+        } else if (resource === 'fixed_expenses') {
+          orderBy = ' ORDER BY due_day_of_month ASC, vendor ASC'
+        }
+        if (pgPool) {
+          try {
+            if (resource === 'property_expenses') {
+              const rowsRaw = await pgSelect(resource, '*', Object.keys(filter).length ? filter : undefined)
+              rows.push(...(Array.isArray(rowsRaw) ? rowsRaw : []))
+            } else {
+              const sql = `SELECT * FROM ${resource}${w.clause}${orderBy}`
+              const resq = await pgPool.query(sql, w.values)
+              rows.push(...(resq?.rows || []))
+            }
+          } catch (e: any) {
+            const msg = String(e?.message || '')
+            if (resource === 'fixed_expenses' && /relation\s+"?fixed_expenses"?\s+does\s+not\s+exist/i.test(msg)) {
+              await pgPool.query(`CREATE TABLE IF NOT EXISTS fixed_expenses (
+                id text PRIMARY KEY,
+                property_id text REFERENCES properties(id) ON DELETE SET NULL,
+                scope text,
+                vendor text,
+                category text,
+                amount numeric,
+                due_day_of_month integer,
+                remind_days_before integer,
+                status text,
+                pay_account_name text,
+                pay_bsb text,
+                pay_account_number text,
+                pay_ref text,
+                created_at timestamptz DEFAULT now(),
+                updated_at timestamptz
+              );`)
+              await pgPool.query('CREATE INDEX IF NOT EXISTS idx_fixed_expenses_scope ON fixed_expenses(scope);')
+              await pgPool.query('CREATE INDEX IF NOT EXISTS idx_fixed_expenses_status ON fixed_expenses(status);')
+              const sql2 = `SELECT * FROM ${resource}${w.clause}${orderBy}`
+              const res2 = await pgPool.query(sql2, w.values)
+              rows.push(...(res2?.rows || []))
+            } else {
+              throw e
+            }
+          }
+        }
         if (resource === 'property_expenses') {
           let props: any[] = []
           try { const propsRaw = await pgSelect('properties', 'id,code,address'); props = Array.isArray(propsRaw) ? propsRaw : [] } catch {}
@@ -77,7 +133,37 @@ router.get('/:resource', requireAnyPerm(['rbac.manage','property.write','order.v
     }
     // in-memory fallback
     const arr = (db as any)[camelToArrayKey(resource)] || []
-    const filtered = arr.filter((r: any) => Object.entries(filter).every(([k,v]) => (r?.[k]) == v))
+    let filtered = arr.filter((r: any) => Object.entries(filter).every(([k,v]) => (r?.[k]) == v))
+    if (resource === 'property_expenses' || resource === 'company_expenses') {
+      filtered = filtered.sort((a: any, b: any) => {
+        const av = a?.due_date ? new Date(a.due_date).getTime() : Number.POSITIVE_INFINITY
+        const bv = b?.due_date ? new Date(b.due_date).getTime() : Number.POSITIVE_INFINITY
+        if (av !== bv) return av - bv
+        const ap = a?.paid_date ? new Date(a.paid_date).getTime() : Number.POSITIVE_INFINITY
+        const bp = b?.paid_date ? new Date(b.paid_date).getTime() : Number.POSITIVE_INFINITY
+        if (ap !== bp) return ap - bp
+        const ao = a?.occurred_at ? new Date(a.occurred_at).getTime() : Number.POSITIVE_INFINITY
+        const bo = b?.occurred_at ? new Date(b.occurred_at).getTime() : Number.POSITIVE_INFINITY
+        return ao - bo
+      })
+    } else if (resource === 'recurring_payments') {
+      filtered = filtered.sort((a: any, b: any) => {
+        const av = a?.next_due_date ? new Date(a.next_due_date).getTime() : Number.POSITIVE_INFINITY
+        const bv = b?.next_due_date ? new Date(b.next_due_date).getTime() : Number.POSITIVE_INFINITY
+        if (av !== bv) return av - bv
+        const ad = Number(a?.due_day_of_month || 0)
+        const bd = Number(b?.due_day_of_month || 0)
+        if (ad !== bd) return ad - bd
+        return String(a?.vendor || '').localeCompare(String(b?.vendor || ''))
+      })
+    } else if (resource === 'fixed_expenses') {
+      filtered = filtered.sort((a: any, b: any) => {
+        const ad = Number(a?.due_day_of_month || 0)
+        const bd = Number(b?.due_day_of_month || 0)
+        if (ad !== bd) return ad - bd
+        return String(a?.vendor || '').localeCompare(String(b?.vendor || ''))
+      })
+    }
     if (resource === 'property_expenses') {
       const labeled = filtered.map((r: any) => {
         const pid = String(r.property_id || '')
@@ -93,7 +179,7 @@ router.get('/:resource', requireAnyPerm(['rbac.manage','property.write','order.v
   }
 });
 
-router.get('/:resource/:id', requireAnyPerm(['rbac.manage','property.write','order.view','finance.tx.write','finance.payout']), async (req, res) => {
+router.get('/:resource/:id', requireResourcePerm('view'), async (req, res) => {
   const { resource, id } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
   try {
@@ -115,7 +201,7 @@ router.get('/:resource/:id', requireAnyPerm(['rbac.manage','property.write','ord
   }
 })
 
-router.post('/:resource', requireAnyPerm(['rbac.manage','property.write','order.write','finance.tx.write','finance.payout']), async (req, res) => {
+router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
   const { resource } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
   const payload = { ...(req.body || {}) }
@@ -293,6 +379,41 @@ router.post('/:resource', requireAnyPerm(['rbac.manage','property.write','order.
         }
       } catch (e: any) {
         const msg = String(e?.message || '')
+        if (resource === 'fixed_expenses' && /relation\s+"?fixed_expenses"?\s+does\s+not\s+exist/i.test(msg)) {
+          try {
+            const { pgPool } = require('../dbAdapter')
+            if (pgPool) {
+              await pgPool.query(`CREATE TABLE IF NOT EXISTS fixed_expenses (
+                id text PRIMARY KEY,
+                property_id text REFERENCES properties(id) ON DELETE SET NULL,
+                scope text,
+                vendor text,
+                category text,
+                amount numeric,
+                due_day_of_month integer,
+                remind_days_before integer,
+                status text,
+                pay_account_name text,
+                pay_bsb text,
+                pay_account_number text,
+                pay_ref text,
+                created_at timestamptz DEFAULT now(),
+                updated_at timestamptz
+              );`)
+              await pgPool.query('CREATE INDEX IF NOT EXISTS idx_fixed_expenses_scope ON fixed_expenses(scope);')
+              await pgPool.query('CREATE INDEX IF NOT EXISTS idx_fixed_expenses_status ON fixed_expenses(status);')
+              const allow = ['id','property_id','scope','vendor','category','amount','due_day_of_month','remind_days_before','status','pay_account_name','pay_bsb','pay_account_number','pay_ref']
+              const cleaned: any = { id: payload.id }
+              for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+              if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+              const row2 = await pgInsert(resource, cleaned)
+              addAudit(resource, String((row2 as any)?.id || ''), 'create', null, row2, (req as any).user?.sub)
+              return res.status(201).json(row2)
+            }
+          } catch (e2) {
+            return res.status(500).json({ message: (e2 as any)?.message || 'create failed (table init)' })
+          }
+        }
         if (resource === 'property_maintenance' && /does not exist|relation .* does not exist/i.test(msg)) {
           try {
             const { pgPool } = require('../dbAdapter')
@@ -437,7 +558,7 @@ router.post('/:resource', requireAnyPerm(['rbac.manage','property.write','order.
   }
 });
 
-router.patch('/:resource/:id', requireAnyPerm(['rbac.manage','property.write','order.write','finance.tx.write','finance.payout']), async (req, res) => {
+router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) => {
   const { resource, id } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
   const payload = req.body || {}
@@ -528,7 +649,7 @@ router.patch('/:resource/:id', requireAnyPerm(['rbac.manage','property.write','o
   }
 })
 
-router.delete('/:resource/:id', requireAnyPerm(['rbac.manage','property.write','order.write','finance.tx.write','finance.payout']), async (req, res) => {
+router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) => {
   const { resource, id } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
   try {

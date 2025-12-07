@@ -57,13 +57,18 @@ export default function RecurringPage() {
       const days = today.startOf('day').diff(nd.startOf('day'), 'day')
       return <Tag color="red">逾期 {days} 天</Tag>
     }
+    if (nd && today.isBefore(nd, 'day')) {
+      const days = nd.startOf('day').diff(today.startOf('day'), 'day')
+      const remind = Number((r.remind_days_before ?? 3))
+      if (days > 0 && days <= remind) return <Tag color="orange">即将到期 {days} 天</Tag>
+    }
     return <Tag color="blue">待付款</Tag>
   }
 
   const columns = [
     { title:'对象', dataIndex:'property_id', render:(v:string, r:any)=> (r.scope==='company' || !v) ? '公司' : getLabel(v) },
-    { title:'收款方', dataIndex:'vendor' },
-    { title:'类别', dataIndex:'category', render:(v:string)=> v==='other' ? '其他' : v },
+    { title:'支出事项', dataIndex:'vendor' },
+    { title:'支出类别', dataIndex:'category', render:(v:string)=> v==='other' ? '其他' : v },
     { title:'金额', dataIndex:'amount', render:(v:number)=> v!=null?`$${Number(v).toFixed(2)}`:'-' },
     { title:'到期日', key:'due', render:(_:any,r:any)=> fmt(r.next_due_date || r.due_date) },
     { title:'提醒', dataIndex:'remind_days_before', render:(v:number)=> v!=null?`${v}天`:'-' },
@@ -72,7 +77,7 @@ export default function RecurringPage() {
     { title:'下次到期', key:'next', render:(_:any,r:any)=> fmt(r.next_due_date) },
     { title:'付款账户', key:'acct', render:(_:any,r:Recurring)=> (
       <div style={{ fontSize:12, lineHeight:1.4 }}>
-        {r.pay_account_name ? <div>Name: {r.pay_account_name}</div> : null}
+        {r.pay_account_name ? <div>收款方: {r.pay_account_name}</div> : null}
         {r.pay_bsb ? <div>BSB: {r.pay_bsb}</div> : null}
         {r.pay_account_number ? <div>Acc: {r.pay_account_number}</div> : null}
         {r.pay_ref ? <div>Ref: {r.pay_ref}</div> : null}
@@ -133,7 +138,7 @@ export default function RecurringPage() {
             }
           }}>已付</Button>
         )}
-        <Button danger onClick={async()=>{ try { const resp = await fetch(`${API_BASE}/crud/fixed_expenses/${r.id}`, { method:'DELETE', headers: authHeaders() }); if (!resp.ok) throw new Error(`HTTP ${resp.status}`); message.success('已删除'); load() } catch (e:any) { message.error(e?.message || '删除失败') } }}>删除</Button>
+        <Button danger onClick={async()=>{ try { const resp = await fetch(`${API_BASE}/crud/recurring_payments/${r.id}`, { method:'DELETE', headers: authHeaders() }); if (!resp.ok) throw new Error(`HTTP ${resp.status}`); message.success('已删除'); await load(); await refreshMonth() } catch (e:any) { message.error(e?.message || '删除失败') } }}>删除</Button>
       </Space>
     ) }
   ]
@@ -186,28 +191,60 @@ export default function RecurringPage() {
     } as Recurring
   })
   const templatesForMonth = enhanced.filter(t => { const ck = (t as any).created_at ? parseAU((t as any).created_at)?.format('YYYY-MM') : undefined; const eff = ck || '0001-01'; return eff <= monthKey && inSelectedMonth(t.next_due_date) })
-  const allRows = templatesForMonth.map(t => ({ ...t, is_paid: !!paidRows.find(pr => String(pr.fixed_expense_id||'') === String(t.id)) }))
-  const sortedAllRows = [...allRows].sort((a,b)=>{
-    const ad = parseAU(a.next_due_date); const bd = parseAU(b.next_due_date)
-    const av = ad ? ad.valueOf() : Number.MAX_SAFE_INTEGER
-    const bv = bd ? bd.valueOf() : Number.MAX_SAFE_INTEGER
-    return av - bv
-  })
+  const allRows = templatesForMonth
+    .map(t => ({ ...t, is_paid: !!paidRows.find(pr => String(pr.fixed_expense_id||'') === String(t.id)) }))
+    .sort((a,b)=>{
+      const ad = parseAU(a.next_due_date)
+      const bd = parseAU(b.next_due_date)
+      const av = ad ? ad.valueOf() : Number.POSITIVE_INFINITY
+      const bv = bd ? bd.valueOf() : Number.POSITIVE_INFINITY
+      return av - bv
+    })
   const paidAmount = paidRows.reduce((s,r)=> s + Number(r.amount || 0), 0)
   const unpaidAmount = allRows.filter(r=>!r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
   const paidCount = paidRows.length
   const unpaidCount = allRows.filter(r=>!r.is_paid).length
   const overdueCount = allRows.filter(r => { const nd = parseAU(r.next_due_date); return !r.is_paid && nd && nowAU().isAfter(nd, 'day') }).length
+  const soonCount = allRows.filter(r => { const nd = parseAU(r.next_due_date); const remind = Number((r.remind_days_before ?? 3)); const t = nowAU(); return !r.is_paid && nd && t.isBefore(nd, 'day') && nd.startOf('day').diff(t.startOf('day'), 'day') > 0 && nd.startOf('day').diff(t.startOf('day'), 'day') <= remind }).length
+  useEffect(()=>{ if (soonCount>0) { message.warning(`本月有${soonCount}条固定支出即将到期`) } },[monthKey, soonCount])
 
   async function submit() {
     if (saving) return
     setSaving(true)
     const v = await form.validateFields()
     const payload = { ...v, amount: v.amount!=null?Number(v.amount):undefined }
-    const url = editing ? `${API_BASE}/crud/fixed_expenses/${editing.id}` : `${API_BASE}/crud/fixed_expenses`
-    const method = editing ? 'PATCH' : 'POST'
-    const res = await fetch(url, { method, headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(editing?payload:{ id: crypto.randomUUID(), ...payload }) })
-    if (res.ok) { setOpen(false); setEditing(null); form.resetFields(); load() }
+    try {
+      if (editing) {
+        const url = `${API_BASE}/crud/recurring_payments/${editing.id}`
+        const res = await fetch(url, { method:'PATCH', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        setOpen(false); setEditing(null); form.resetFields(); await load(); await refreshMonth()
+      } else {
+        const newId = crypto.randomUUID()
+        const body = { id: newId, ...payload }
+        const res = await fetch(`${API_BASE}/crud/recurring_payments`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        if (v.initial_mark === 'paid') {
+          const todayISO = nowAU().format('YYYY-MM-DD')
+          const dueDay = Number(v.due_day_of_month || 1)
+          const dim = m.endOf('month').date()
+          const dueISO = m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
+          const baseBody = { occurred_at: todayISO, amount: Number(v.amount||0), currency: 'AUD', category: v.category || 'other', note: 'Monthly fixed payment', fixed_expense_id: newId, month_key: m.format('YYYY-MM'), due_date: dueISO, paid_date: todayISO, status: 'paid', property_id: v.property_id }
+          const resType = (v.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
+          const qs = new URLSearchParams({ fixed_expense_id: String(newId), month_key: m.format('YYYY-MM') })
+          const existingRes = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
+          if (existingRes.ok) {
+            const arr = await existingRes.json().catch(()=>[])
+            if (!(Array.isArray(arr) && arr.length > 0)) {
+              await fetch(`${API_BASE}/crud/${resType}`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(baseBody) })
+            }
+          }
+        }
+        setOpen(false); setEditing(null); form.resetFields(); await load(); await refreshMonth()
+      }
+    } catch (e:any) {
+      message.error(e?.message || '保存失败')
+    }
     setSaving(false)
   }
 
@@ -220,9 +257,10 @@ export default function RecurringPage() {
         <Card><Statistic title="本月已付总额" value={paidAmount} prefix="$" precision={2} /></Card>
         <Card><Statistic title="已付/未付数量" value={`${paidCount} / ${unpaidCount}`} /></Card>
         <Card><Statistic title="逾期条数" value={overdueCount} valueStyle={{ color: overdueCount>0? 'red' : undefined }} /></Card>
+        <Card><Statistic title="即将到期条数" value={soonCount} valueStyle={{ color: soonCount>0? 'orange' : undefined }} /></Card>
       </div>
       <Card title="固定支出" size="small" style={{ marginTop: 8 }}>
-        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={sortedAllRows} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }}
+        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={allRows} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }}
           rowClassName={(r)=>{
             const today = nowAU()
             const nd = parseAU(r.next_due_date)
@@ -230,11 +268,17 @@ export default function RecurringPage() {
             if ((r.status||'')==='paused') return ''
             if (!isPaid && nd && nd.isSame(today, 'day')) return 'row-due-today'
             if (!isPaid && nd && today.isAfter(nd, 'day')) return 'row-overdue'
+            if (!isPaid && nd && today.isBefore(nd, 'day')) {
+              const days = nd.startOf('day').diff(today.startOf('day'), 'day')
+              const remind = Number((r.remind_days_before ?? 3))
+              if (days > 0 && days <= remind) return 'row-due-soon'
+            }
             return ''
           }}
         />
         {allRows.filter(r=>!r.is_paid).length === 0 ? <div style={{ margin:'8px 0', color:'#888' }}>本月无未支付固定支出</div> : null}
       </Card>
+      
       <Modal open={open} onCancel={()=>setOpen(false)} onOk={submit} confirmLoading={saving} title={editing? '编辑固定支出':'新增固定支出'}>
         <Form form={form} layout="vertical">
           <Form.Item name="scope" label="对象" initialValue="company"><Select options={[{value:'company',label:'公司'},{value:'property',label:'房源'}]} /></Form.Item>
@@ -243,19 +287,14 @@ export default function RecurringPage() {
               <Form.Item name="property_id" label="房号"><Select allowClear showSearch options={properties.map(p=>({ value:p.id, label:p.code||p.address||p.id }))} /></Form.Item>
             ) : null)}
           </Form.Item>
-          <Form.Item name="vendor" label="收款方" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="category" label="类别" rules={[{ required: true }]}><Select options={[
-            {value:'owners_corp',label:'物业(OC)'},
-            {value:'council_rate',label:'市政费'},
-            {value:'internet',label:'网费'},
-            {value:'electricity',label:'电费'},
-            {value:'water',label:'水费'},
-            {value:'carpark',label:'车位费'},
-            {value:'office_rent',label:'办公室租金'},
-            {value:'salary',label:'工资'},
-            {value:'insurance',label:'保险'},
-            {value:'vehicle',label:'车辆相关'},
-            {value:'loan',label:'贷款'},
+          <Form.Item name="vendor" label="支出事项" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="category" label="支出类别" rules={[{ required: true }]}><Select options={[
+            {value:'房源租金',label:'房源租金'},
+            {value:'公司仓库租金',label:'公司仓库租金'},
+            {value:'公司办公室租金',label:'公司办公室租金'},
+            {value:'车位租金',label:'车位租金'},
+            {value:'密码盒',label:'密码盒'},
+            {value:'车贷',label:'车贷'},
             {value:'other',label:'其他'}
           ]} /></Form.Item>
           <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.category!==cur.category}>
@@ -269,9 +308,12 @@ export default function RecurringPage() {
           <Form.Item name="due_day_of_month" label="每月几号到期" rules={[{ required: true }]}><InputNumber min={1} max={31} style={{ width:'100%' }} /></Form.Item>
           <Form.Item label="提前提醒天数"><InputNumber value={3} disabled style={{ width:'100%' }} /></Form.Item>
           <Form.Item name="status" label="状态" initialValue="active"><Select options={[{value:'active',label:'active'},{value:'paused',label:'paused'}]} /></Form.Item>
+          {editing ? null : (
+            <Form.Item name="initial_mark" label="新增后状态" initialValue="unpaid"><Select options={[{value:'unpaid',label:'待支付'},{value:'paid',label:'已支付'}]} /></Form.Item>
+          )}
           <Form.Item label="付款账户">
             <Space direction="vertical" style={{ width:'100%' }}>
-              <Form.Item name="pay_account_name" label="名称"><Input /></Form.Item>
+              <Form.Item name="pay_account_name" label="收款方"><Input /></Form.Item>
               <Form.Item name="pay_bsb" label="BSB"><Input /></Form.Item>
               <Form.Item name="pay_account_number" label="账户"><Input /></Form.Item>
               <Form.Item name="pay_ref" label="Ref"><Input /></Form.Item>
@@ -280,9 +322,10 @@ export default function RecurringPage() {
         </Form>
       </Modal>
       <style jsx>{`
-        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 12px; }
         .row-due-today { background: #fffbe6; }
         .row-overdue { background: #fff1f0; }
+        .row-due-soon { background: #fff7e6; }
       `}</style>
     </Card>
   )
