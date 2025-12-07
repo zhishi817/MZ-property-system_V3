@@ -187,6 +187,12 @@ export default function RecurringPage() {
   })
   const templatesForMonth = enhanced.filter(t => { const ck = (t as any).created_at ? parseAU((t as any).created_at)?.format('YYYY-MM') : undefined; const eff = ck || '0001-01'; return eff <= monthKey && inSelectedMonth(t.next_due_date) })
   const allRows = templatesForMonth.map(t => ({ ...t, is_paid: !!paidRows.find(pr => String(pr.fixed_expense_id||'') === String(t.id)) }))
+  const sortedAllRows = [...allRows].sort((a,b)=>{
+    const ad = parseAU(a.next_due_date); const bd = parseAU(b.next_due_date)
+    const av = ad ? ad.valueOf() : Number.MAX_SAFE_INTEGER
+    const bv = bd ? bd.valueOf() : Number.MAX_SAFE_INTEGER
+    return av - bv
+  })
   const paidAmount = paidRows.reduce((s,r)=> s + Number(r.amount || 0), 0)
   const unpaidAmount = allRows.filter(r=>!r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
   const paidCount = paidRows.length
@@ -216,7 +222,7 @@ export default function RecurringPage() {
         <Card><Statistic title="逾期条数" value={overdueCount} valueStyle={{ color: overdueCount>0? 'red' : undefined }} /></Card>
       </div>
       <Card title="固定支出" size="small" style={{ marginTop: 8 }}>
-        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={allRows} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }}
+        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={sortedAllRows} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }}
           rowClassName={(r)=>{
             const today = nowAU()
             const nd = parseAU(r.next_due_date)
@@ -228,9 +234,6 @@ export default function RecurringPage() {
           }}
         />
         {allRows.filter(r=>!r.is_paid).length === 0 ? <div style={{ margin:'8px 0', color:'#888' }}>本月无未支付固定支出</div> : null}
-      </Card>
-      <Card title="已支付固定支出" size="small" style={{ marginTop: 12 }}>
-        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={paidRows} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }} />
       </Card>
       <Modal open={open} onCancel={()=>setOpen(false)} onOk={submit} confirmLoading={saving} title={editing? '编辑固定支出':'新增固定支出'}>
         <Form form={form} layout="vertical">
