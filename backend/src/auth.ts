@@ -1,11 +1,14 @@
 import jwt from 'jsonwebtoken'
 import { Request, Response, NextFunction } from 'express'
+import { v4 as uuid } from 'uuid'
 import { roleHasPermission, db } from './store'
-import { hasPg, pgSelect } from './dbAdapter'
+import { hasPg, pgSelect, pgRunInTransaction, pgPool } from './dbAdapter'
 import { hasSupabase, supaSelect } from './supabase'
 import bcrypt from 'bcryptjs'
 
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
+const SESSION_MAX_AGE_HOURS = Number(process.env.SESSION_MAX_AGE_HOURS || 5)
+const SESSION_IDLE_TIMEOUT_MINUTES = Number(process.env.SESSION_IDLE_TIMEOUT_MINUTES || 60)
 
 type User = { id: string; username: string; role: string }
 
@@ -47,7 +50,26 @@ export async function login(req: Request, res: Response) {
   if (row) {
     const ok = await bcrypt.compare(password, row.password_hash)
     if (!ok) return res.status(401).json({ message: 'invalid credentials' })
-    const token = jwt.sign({ sub: row.id, role: row.role, username: row.username }, SECRET, { expiresIn: '7d' })
+    let sid: string | null = null
+    if (hasPg) {
+      try {
+        sid = await pgRunInTransaction<string>(async (client: any) => {
+          await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [row.id])
+          const newSid = uuid()
+          const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString()
+          const ua = String(req.headers['user-agent'] || '')
+          const ip = String((req.ip || req.socket?.remoteAddress || '')).slice(0, 255)
+          await client.query(
+            'INSERT INTO sessions(id, user_id, created_at, last_seen_at, expires_at, revoked, ip, user_agent) VALUES($1,$2,now(),now(),$3,false,$4,$5)',
+            [newSid, row.id, expiresAt, ip, ua]
+          )
+          return newSid
+        })
+      } catch {}
+    }
+    const payload: any = { sub: row.id, role: row.role, username: row.username }
+    if (sid) payload.sid = sid
+    const token = jwt.sign(payload, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
     return res.json({ token, role: row.role })
   }
   if (!row && db.users.length) {
@@ -57,23 +79,63 @@ export async function login(req: Request, res: Response) {
     if (found) {
       const ok = found.password_hash ? await bcrypt.compare(password, found.password_hash) : false
       if (!ok) return res.status(401).json({ message: 'invalid credentials' })
-      const token = jwt.sign({ sub: found.id, role: found.role, username: found.username || found.email }, SECRET, { expiresIn: '7d' })
+      let sid: string | null = null
+      if (hasPg) {
+        try {
+          sid = await pgRunInTransaction<string>(async (client: any) => {
+            await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [found.id])
+            const newSid = uuid()
+            const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString()
+            const ua = String(req.headers['user-agent'] || '')
+            const ip = String((req.ip || req.socket?.remoteAddress || '')).slice(0, 255)
+            await client.query(
+              'INSERT INTO sessions(id, user_id, created_at, last_seen_at, expires_at, revoked, ip, user_agent) VALUES($1,$2,now(),now(),$3,false,$4,$5)',
+              [newSid, found.id, expiresAt, ip, ua]
+            )
+            return newSid
+          })
+        } catch {}
+      }
+      const payload: any = { sub: found.id, role: found.role, username: found.username || found.email }
+      if (sid) payload.sid = sid
+      const token = jwt.sign(payload, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
       return res.json({ token, role: found.role })
     }
   }
   // Fallback static users
   const u = users[username]
   if (!u || u.password !== password) return res.status(401).json({ message: 'invalid credentials' })
-  const token = jwt.sign({ sub: u.id, role: u.role, username: u.username }, SECRET, { expiresIn: '7d' })
+  const token = jwt.sign({ sub: u.id, role: u.role, username: u.username }, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
   res.json({ token, role: u.role })
 }
 
-export function auth(req: Request, _res: Response, next: NextFunction) {
+export async function auth(req: Request, res: Response, next: NextFunction) {
   const h = req.headers.authorization
   if (h && h.startsWith('Bearer ')) {
     const token = h.slice(7)
     try {
-      ;(req as any).user = jwt.verify(token, SECRET)
+      const decoded: any = jwt.verify(token, SECRET)
+      const sid = decoded?.sid
+      if (sid && hasPg) {
+        try {
+          const rows: any = await pgSelect('sessions', '*', { id: sid })
+          const s = rows && rows[0]
+          if (!s) return res.status(401).json({ message: 'session not found' })
+          const now = Date.now()
+          const exp = new Date(s.expires_at).getTime()
+          const last = new Date(s.last_seen_at || s.created_at).getTime()
+          const idleMs = SESSION_IDLE_TIMEOUT_MINUTES * 60 * 1000
+          if (s.revoked) return res.status(401).json({ message: 'session revoked' })
+          if (exp < now) return res.status(401).json({ message: 'session expired' })
+          if (now - last > idleMs) return res.status(401).json({ message: 'session idle timeout' })
+          ;(req as any).user = decoded
+          try { if (pgPool) await pgPool.query('UPDATE sessions SET last_seen_at=now() WHERE id=$1', [sid]) } catch {}
+        } catch (e) {
+          return res.status(401).json({ message: 'unauthorized' })
+        }
+      } else {
+        ;(req as any).user = decoded
+      }
     } catch {}
   }
   next()
