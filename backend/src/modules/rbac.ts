@@ -83,6 +83,20 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
         } catch {}
         console.log(`[RBAC] write start env=${process.env.NODE_ENV} hasPg=${hasPg} host=${host} db=${dbname} role_id=${role_id} count=${set.size}`)
       } catch {}
+      try {
+        const { pgPool } = require('../dbAdapter')
+        if (pgPool) {
+          await pgPool.query(`CREATE TABLE IF NOT EXISTS role_permissions (
+            id text PRIMARY KEY,
+            role_id text NOT NULL,
+            permission_code text NOT NULL,
+            created_at timestamptz DEFAULT now()
+          );`)
+          await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_role_perm ON role_permissions(role_id, permission_code);')
+        }
+      } catch (e: any) {
+        console.error(`[RBAC] schema ensure error message=${String(e?.message || '')} stack=${String(e?.stack || '')}`)
+      }
       const { pgRunInTransaction, pgDeleteWhere, pgInsertOnConflictDoNothing } = require('../dbAdapter')
       const { v4: uuid } = require('uuid')
       await pgRunInTransaction(async (client: any) => {
@@ -95,7 +109,7 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
           }
           console.log(`[RBAC] write done role_id=${role_id} inserted=${inserted}`)
         } catch (e: any) {
-          console.error(`[RBAC] write error role_id=${role_id} message=${String(e?.message || '')}`)
+          console.error(`[RBAC] write error role_id=${role_id} message=${String(e?.message || '')} stack=${String(e?.stack || '')}`)
           throw e
         }
       })
