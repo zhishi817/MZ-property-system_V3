@@ -21,7 +21,12 @@ router.get('/role-permissions', async (req, res) => {
   const { role_id } = req.query as { role_id?: string }
   try {
     if (hasPg) {
-      const rows = await pgSelect('role_permissions', '*', role_id ? { role_id } : undefined) as any[] || []
+      let rows = await pgSelect('role_permissions', '*', role_id ? { role_id } : undefined) as any[] || []
+      if (role_id && (!rows || rows.length === 0)) {
+        const alt = role_id.startsWith('role.') ? role_id.replace(/^role\./, '') : `role.${role_id}`
+        const altRows = await pgSelect('role_permissions', '*', { role_id: alt }) as any[] || []
+        if (altRows && altRows.length) rows = altRows
+      }
       return res.json(rows)
     }
   } catch (e: any) {
@@ -108,11 +113,13 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
       try {
         console.log(`[RBAC] txn begin role_id=${role_id}`)
         await client.query('BEGIN')
-        await client.query('DELETE FROM role_permissions WHERE role_id = $1', [role_id])
+        const normalizedId = role_id.startsWith('role.') ? role_id : `role.${role_id}`
+        const altId = role_id.startsWith('role.') ? role_id.replace(/^role\./, '') : role_id
+        await client.query('DELETE FROM role_permissions WHERE role_id = $1 OR role_id = $2', [normalizedId, altId])
         for (const code of Array.from(set)) {
           const id = uuid()
           const sql = 'INSERT INTO role_permissions (id, role_id, permission_code) VALUES ($1,$2,$3) ON CONFLICT (role_id, permission_code) DO NOTHING RETURNING id'
-          const r = await client.query(sql, [id, role_id, code])
+          const r = await client.query(sql, [id, normalizedId, code])
           if (r && r.rows && r.rows[0]) inserted++
         }
         await client.query('COMMIT')
@@ -142,7 +149,11 @@ router.get('/my-permissions', auth, async (req, res) => {
   if (!role) return res.json([])
   try {
     if (hasPg) {
-      const rows = await pgSelect('role_permissions', 'permission_code', { role_id: role.id }) as any[] || []
+      let rows = await pgSelect('role_permissions', 'permission_code', { role_id: role.id }) as any[] || []
+      if (!rows || rows.length === 0) {
+        const altRows = await pgSelect('role_permissions', 'permission_code', { role_id: role.name }) as any[] || []
+        if (altRows && altRows.length) rows = altRows
+      }
       const list = rows.map((r: any) => r.permission_code)
       return res.json(list)
     }
