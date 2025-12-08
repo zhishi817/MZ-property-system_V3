@@ -259,6 +259,30 @@ async function run() {
     `DO $$ BEGIN BEGIN ALTER TABLE property_maintenance ALTER COLUMN photo_urls TYPE jsonb USING to_jsonb(photo_urls); EXCEPTION WHEN others THEN NULL; END; END $$;`
     ,
     `ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;`
+    ,
+    `CREATE TABLE IF NOT EXISTS role_permissions (
+      id text PRIMARY KEY,
+      role_id text NOT NULL,
+      permission_code text NOT NULL,
+      created_at timestamptz DEFAULT now()
+    );`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_role_perm ON role_permissions(role_id, permission_code);`,
+    `CREATE INDEX IF NOT EXISTS idx_role_perm_role ON role_permissions(role_id);`
+    ,
+    `CREATE TABLE IF NOT EXISTS sessions (
+      id text PRIMARY KEY,
+      user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at timestamptz DEFAULT now(),
+      last_seen_at timestamptz DEFAULT now(),
+      expires_at timestamptz NOT NULL,
+      revoked boolean NOT NULL DEFAULT false,
+      ip text,
+      user_agent text,
+      device text
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(user_id) WHERE revoked = false;`
   ]
 
   for (const sql of stmts) {
