@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { db } from '../store'
+import { saveRolePermissions } from '../persistence'
 import { z } from 'zod'
 import { requirePerm, auth } from '../auth'
 import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete } from '../supabase'
@@ -16,14 +17,20 @@ router.get('/permissions', (req, res) => {
   res.json(db.permissions)
 })
 
-router.get('/role-permissions', (req, res) => {
+router.get('/role-permissions', async (req, res) => {
   const { role_id } = req.query as { role_id?: string }
+  try {
+    if (hasPg) {
+      const rows = await pgSelect('role_permissions', '*', role_id ? { role_id } : undefined) as any[] || []
+      return res.json(rows)
+    }
+  } catch (e: any) { return res.status(500).json({ message: e.message }) }
   const list = role_id ? db.rolePermissions.filter(rp => rp.role_id === role_id) : db.rolePermissions
   res.json(list)
 })
 
-const setSchema = z.object({ role_id: z.string(), permissions: z.array(z.string()) })
-router.post('/role-permissions', requirePerm('rbac.manage'), (req, res) => {
+const setSchema = z.object({ role_id: z.string(), permissions: z.array(z.string().min(1)) })
+router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) => {
   const parsed = setSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const { role_id, permissions } = parsed.data
@@ -63,19 +70,58 @@ router.post('/role-permissions', requirePerm('rbac.manage'), (req, res) => {
       set.delete(`${base}.view`); set.delete(`${base}.write`); set.delete(`${base}.delete`); set.delete(`${base}.archive`)
     }
   })
-  // remove old
+  try {
+    if (hasPg) {
+      try {
+        const conn = process.env.DATABASE_URL || ''
+        let host = ''
+        let dbname = ''
+        try {
+          const u = new URL(conn)
+          host = u.hostname
+          dbname = (u.pathname || '').replace(/^\//, '')
+        } catch {}
+        console.log(`[RBAC] write start env=${process.env.NODE_ENV} hasPg=${hasPg} host=${host} db=${dbname} role_id=${role_id} count=${set.size}`)
+      } catch {}
+      const { pgRunInTransaction, pgDeleteWhere, pgInsertOnConflictDoNothing } = require('../dbAdapter')
+      const { v4: uuid } = require('uuid')
+      await pgRunInTransaction(async (client: any) => {
+        try {
+          await pgDeleteWhere('role_permissions', { role_id }, client)
+          let inserted = 0
+          for (const code of Array.from(set)) {
+            const r = await pgInsertOnConflictDoNothing('role_permissions', { id: uuid(), role_id, permission_code: code }, ['role_id', 'permission_code'], client)
+            if (r) inserted++
+          }
+          console.log(`[RBAC] write done role_id=${role_id} inserted=${inserted}`)
+        } catch (e: any) {
+          console.error(`[RBAC] write error role_id=${role_id} message=${String(e?.message || '')}`)
+          throw e
+        }
+      })
+      return res.json({ ok: true })
+    }
+  } catch (e: any) { return res.status(500).json({ message: e.message }) }
   db.rolePermissions = db.rolePermissions.filter(rp => rp.role_id !== role_id)
   Array.from(set).forEach(code => db.rolePermissions.push({ role_id, permission_code: code }))
+  try { if (!hasPg && !hasSupabase) saveRolePermissions(db.rolePermissions) } catch {}
   res.json({ ok: true })
 })
 
 // current user's permissions
-router.get('/my-permissions', auth, (req, res) => {
+router.get('/my-permissions', auth, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const roleName = String(user.role || '')
   const role = db.roles.find(r => r.name === roleName)
   if (!role) return res.json([])
+  try {
+    if (hasPg) {
+      const rows = await pgSelect('role_permissions', 'permission_code', { role_id: role.id }) as any[] || []
+      const list = rows.map((r: any) => r.permission_code)
+      return res.json(list)
+    }
+  } catch (e: any) { return res.status(500).json({ message: e.message }) }
   const list = db.rolePermissions.filter(rp => rp.role_id === role.id).map(rp => rp.permission_code)
   return res.json(list)
 })
