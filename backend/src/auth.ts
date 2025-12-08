@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken'
 import { Request, Response, NextFunction } from 'express'
 import { v4 as uuid } from 'uuid'
 import { roleHasPermission, db } from './store'
-import { hasPg, pgSelect, pgRunInTransaction, pgPool } from './dbAdapter'
+import { hasPg, pgSelect } from './dbAdapter'
 import { hasSupabase, supaSelect } from './supabase'
 import bcrypt from 'bcryptjs'
 
@@ -53,7 +53,8 @@ export async function login(req: Request, res: Response) {
     let sid: string | null = null
     if (hasPg) {
       try {
-        sid = await pgRunInTransaction<string>(async (client: any) => {
+        const { pgRunInTransaction } = require('./dbAdapter')
+        const sidNew = await pgRunInTransaction(async (client: any) => {
           await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [row.id])
           const newSid = uuid()
           const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString()
@@ -65,6 +66,7 @@ export async function login(req: Request, res: Response) {
           )
           return newSid
         })
+        sid = String(sidNew)
       } catch {}
     }
     const payload: any = { sub: row.id, role: row.role, username: row.username }
@@ -82,7 +84,8 @@ export async function login(req: Request, res: Response) {
       let sid: string | null = null
       if (hasPg) {
         try {
-          sid = await pgRunInTransaction<string>(async (client: any) => {
+          const { pgRunInTransaction } = require('./dbAdapter')
+          const sidNew = await pgRunInTransaction(async (client: any) => {
             await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [found.id])
             const newSid = uuid()
             const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString()
@@ -94,6 +97,7 @@ export async function login(req: Request, res: Response) {
             )
             return newSid
           })
+          sid = String(sidNew)
         } catch {}
       }
       const payload: any = { sub: found.id, role: found.role, username: found.username || found.email }
@@ -129,7 +133,7 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
           if (exp < now) return res.status(401).json({ message: 'session expired' })
           if (now - last > idleMs) return res.status(401).json({ message: 'session idle timeout' })
           ;(req as any).user = decoded
-          try { if (pgPool) await pgPool.query('UPDATE sessions SET last_seen_at=now() WHERE id=$1', [sid]) } catch {}
+          try { const { pgPool } = require('./dbAdapter'); if (pgPool) await pgPool.query('UPDATE sessions SET last_seen_at=now() WHERE id=$1', [sid]) } catch {}
         } catch (e) {
           return res.status(401).json({ message: 'unauthorized' })
         }
