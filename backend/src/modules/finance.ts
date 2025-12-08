@@ -6,7 +6,7 @@ import multer from 'multer'
 import path from 'path'
 import { hasR2, r2Upload } from '../r2'
 import { z } from 'zod'
-import { requirePerm } from '../auth'
+import { requirePerm, requireAnyPerm } from '../auth'
 import { PDFDocument } from 'pdf-lib'
 
 export const router = Router()
@@ -50,7 +50,7 @@ router.post('/', requirePerm('finance.tx.write'), async (req, res) => {
   return res.status(201).json(tx)
 })
 
-router.post('/invoices', requirePerm('finance.tx.write'), upload.single('file'), async (req, res) => {
+router.post('/invoices', requireAnyPerm(['finance.tx.write','property_expenses.write']), upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'missing file' })
   try {
     if (hasR2 && req.file && (req.file as any).buffer) {

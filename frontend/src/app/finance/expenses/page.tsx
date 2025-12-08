@@ -91,24 +91,26 @@ export default function ExpensesPage() {
       return url ? <Button type="link" onClick={() => { setPreviewUrl(url); setPreviewOpen(true) }}>查看</Button> : '-'
     } },
     { title: '备注', dataIndex: 'note' },
-    { title: '操作', render: (_: any, r: Tx) => hasPerm('finance.payout') ? (
+    { title: '操作', render: (_: any, r: Tx) => (hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) ? (
       <Space>
         <Button onClick={() => { setEditing(r); setOpen(true); form.setFieldsValue({
           occurred_at: dayjs(r.occurred_at), property_id: r.property_id, category: r.category,
           other_detail: r.category === 'other' ? r.category_detail : undefined,
           amount: r.amount, currency: r.currency, note: r.note, invoice_url: r.invoice_url,
         }) }}>编辑</Button>
+        {hasPerm('property_expenses.delete') && (
         <Button danger onClick={() => {
           modal.confirm({ title: '确认删除支出', okType: 'danger', onOk: async () => {
             const resource = 'property_expenses'
             try { await apiDelete(resource, r.id); message.success('已删除'); load() } catch (e: any) { message.error(e?.message || '删除失败') }
           } })
         }}>删除</Button>
+        )}
       </Space>
     ) : null },
   ]
   return (
-    <Card title="房源支出" extra={<Space>{hasPerm('finance.tx.write') ? <Button type="primary" onClick={() => { setEditing(null); form.resetFields(); setOpen(true) }}>记录支出</Button> : null}</Space>}>
+    <Card title="房源支出" extra={<Space>{(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) ? <Button type="primary" onClick={() => { setEditing(null); form.resetFields(); setOpen(true) }}>记录支出</Button> : null}</Space>}>
       <Space style={{ marginBottom: 12 }} wrap>
         {canViewList ? (
           <>

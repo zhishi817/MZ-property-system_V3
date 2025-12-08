@@ -159,7 +159,7 @@ export default function PropertiesPage() {
     setBatchOpen(false); batchForm.resetFields(); setSelectedRowKeys([]); load()
   }
 
-  const canWrite = hasPerm('property.write')
+  const canWrite = hasPerm('properties.write') || hasPerm('property.write')
   const columns = [
     { title: '房号', dataIndex: 'code' },
     { title: '地址', dataIndex: 'address' },
