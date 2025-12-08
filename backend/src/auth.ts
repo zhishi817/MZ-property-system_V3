@@ -54,7 +54,7 @@ export async function login(req: Request, res: Response) {
     if (hasPg) {
       try {
         const { pgRunInTransaction } = require('./dbAdapter')
-        sid = await pgRunInTransaction<string>(async (client: any) => {
+        const sidNew = await pgRunInTransaction(async (client: any) => {
           await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [row.id])
           const newSid = uuid()
           const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString()
@@ -66,6 +66,7 @@ export async function login(req: Request, res: Response) {
           )
           return newSid
         })
+        sid = String(sidNew)
       } catch {}
     }
     const payload: any = { sub: row.id, role: row.role, username: row.username }
@@ -84,7 +85,7 @@ export async function login(req: Request, res: Response) {
       if (hasPg) {
         try {
           const { pgRunInTransaction } = require('./dbAdapter')
-          sid = await pgRunInTransaction<string>(async (client: any) => {
+          const sidNew = await pgRunInTransaction(async (client: any) => {
             await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [found.id])
             const newSid = uuid()
             const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString()
@@ -96,6 +97,7 @@ export async function login(req: Request, res: Response) {
             )
             return newSid
           })
+          sid = String(sidNew)
         } catch {}
       }
       const payload: any = { sub: found.id, role: found.role, username: found.username || found.email }
