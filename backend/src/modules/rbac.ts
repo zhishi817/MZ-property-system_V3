@@ -24,7 +24,10 @@ router.get('/role-permissions', async (req, res) => {
       const rows = await pgSelect('role_permissions', '*', role_id ? { role_id } : undefined) as any[] || []
       return res.json(rows)
     }
-  } catch (e: any) { return res.status(500).json({ message: e.message }) }
+  } catch (e: any) {
+    try { console.error(`[RBAC] outer error role_id=${role_id} message=${String(e?.message || '')} stack=${String(e?.stack || '')}`) } catch {}
+    return res.status(500).json({ message: e.message })
+  }
   const list = role_id ? db.rolePermissions.filter(rp => rp.role_id === role_id) : db.rolePermissions
   res.json(list)
 })
