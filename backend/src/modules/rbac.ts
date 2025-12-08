@@ -100,22 +100,30 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
       } catch (e: any) {
         console.error(`[RBAC] schema ensure error message=${String(e?.message || '')} stack=${String(e?.stack || '')}`)
       }
-      const { pgRunInTransaction, pgDeleteWhere, pgInsertOnConflictDoNothing } = require('../dbAdapter')
+      const { pgPool } = require('../dbAdapter')
       const { v4: uuid } = require('uuid')
-      await pgRunInTransaction(async (client: any) => {
-        try {
-          await pgDeleteWhere('role_permissions', { role_id }, client)
-          let inserted = 0
-          for (const code of Array.from(set)) {
-            const r = await pgInsertOnConflictDoNothing('role_permissions', { id: uuid(), role_id, permission_code: code }, ['role_id', 'permission_code'], client)
-            if (r) inserted++
-          }
-          console.log(`[RBAC] write done role_id=${role_id} inserted=${inserted}`)
-        } catch (e: any) {
-          console.error(`[RBAC] write error role_id=${role_id} message=${String(e?.message || '')} stack=${String(e?.stack || '')}`)
-          throw e
+      if (!pgPool) { console.error('[RBAC] no pgPool'); return res.status(500).json({ message: 'database not available' }) }
+      const client = await pgPool.connect()
+      let inserted = 0
+      try {
+        console.log(`[RBAC] txn begin role_id=${role_id}`)
+        await client.query('BEGIN')
+        await client.query('DELETE FROM role_permissions WHERE role_id = $1', [role_id])
+        for (const code of Array.from(set)) {
+          const id = uuid()
+          const sql = 'INSERT INTO role_permissions (id, role_id, permission_code) VALUES ($1,$2,$3) ON CONFLICT (role_id, permission_code) DO NOTHING RETURNING id'
+          const r = await client.query(sql, [id, role_id, code])
+          if (r && r.rows && r.rows[0]) inserted++
         }
-      })
+        await client.query('COMMIT')
+        console.log(`[RBAC] write done role_id=${role_id} inserted=${inserted}`)
+      } catch (e: any) {
+        try { await client.query('ROLLBACK') } catch {}
+        console.error(`[RBAC] write error role_id=${role_id} message=${String(e?.message || '')} stack=${String(e?.stack || '')}`)
+        return res.status(500).json({ message: e?.message || 'write failed' })
+      } finally {
+        client.release()
+      }
       return res.json({ ok: true })
     }
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
