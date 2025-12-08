@@ -1,4 +1,6 @@
 import { v4 as uuid } from 'uuid'
+import { loadRolePermissions } from './persistence'
+import { hasPg, pgSelect } from './dbAdapter'
 
 export type KeySet = {
   id: string
@@ -241,13 +243,13 @@ if (db.payouts.length === 0 && db.landlords.length) {
 
 // RBAC seed
 if (db.roles.length === 0) {
-  const adminId = uuid()
-  const csId = uuid() // 客服
-  const cleanMgrId = uuid() // 清洁/检查管理员人员
-  const cleanerId = uuid() // 清洁和检查人员
-  const financeId = uuid() // 财务人员
-  const inventoryId = uuid() // 仓库管理员
-  const maintenanceId = uuid() // 维修人员
+  const adminId = 'role.admin'
+  const csId = 'role.customer_service'
+  const cleanMgrId = 'role.cleaning_manager'
+  const cleanerId = 'role.cleaner_inspector'
+  const financeId = 'role.finance_staff'
+  const inventoryId = 'role.inventory_manager'
+  const maintenanceId = 'role.maintenance_staff'
   db.roles.push(
     { id: adminId, name: 'admin' },
     { id: csId, name: 'customer_service' },
@@ -323,6 +325,12 @@ const defaultPerms = [
   'menu.dashboard','menu.landlords','menu.properties','menu.keys','menu.inventory','menu.finance','menu.cleaning','menu.rbac','menu.cms'
 ]
 defaultPerms.forEach((code) => { if (!db.permissions.find(p => p.code === code)) db.permissions.push({ code }) })
+try {
+  if (!hasPg) {
+    const loadedRPs = loadRolePermissions()
+    if (Array.isArray(loadedRPs) && loadedRPs.length) { db.rolePermissions = loadedRPs }
+  }
+} catch {}
 const adminRole = db.roles.find(r => r.name === 'admin')
 if (adminRole) {
   defaultPerms.forEach((code) => {

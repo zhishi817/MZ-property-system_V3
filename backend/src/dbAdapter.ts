@@ -47,3 +47,40 @@ export async function pgDelete(table: string, id: string) {
   const res = await pgPool.query(sql, [id])
   return res.rows[0]
 }
+
+export async function pgRunInTransaction<T>(cb: (client: any) => Promise<T>) {
+  if (!pgPool) return null
+  const client = await pgPool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await cb(client)
+    await client.query('COMMIT')
+    return result
+  } catch (e) {
+    try { await client.query('ROLLBACK') } catch {}
+    throw e
+  } finally {
+    client.release()
+  }
+}
+
+export async function pgInsertOnConflictDoNothing(table: string, payload: Record<string, any>, conflictColumns: string[], client?: any) {
+  if (!pgPool) return null
+  const keys = Object.keys(payload)
+  const cols = keys.join(',')
+  const placeholders = keys.map((_, i) => `$${i + 1}`).join(',')
+  const values = keys.map((k) => payload[k])
+  const conflict = conflictColumns.join(',')
+  const sql = `INSERT INTO ${table} (${cols}) VALUES (${placeholders}) ON CONFLICT (${conflict}) DO NOTHING RETURNING *`
+  const executor = client || pgPool
+  const res = await executor.query(sql, values)
+  return res.rows[0] || null
+}
+
+export async function pgDeleteWhere(table: string, filters: Record<string, any>, client?: any) {
+  if (!pgPool) return null
+  const w = buildWhere(filters)
+  const sql = `DELETE FROM ${table}${w.clause}`
+  const executor = client || pgPool
+  await executor.query(sql, w.values)
+}
