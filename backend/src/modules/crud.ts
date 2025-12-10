@@ -570,6 +570,22 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             } catch (e4) {
               return res.status(500).json({ message: (e4 as any)?.message || 'create failed (column add)' })
             }
+          } else if (resource === 'recurring_payments' && /column\s+"?category_detail"?\s+of\s+relation\s+"?recurring_payments"?\s+does\s+not\s+exist/i.test(msg)) {
+            try {
+              const { pgPool } = require('../dbAdapter')
+              if (pgPool) {
+                await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS category_detail text;')
+                const allow = ['id','property_id','scope','vendor','category','category_detail','amount','due_day_of_month','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource']
+                const cleaned: any = { id: payload.id }
+                for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+                if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+                const row2 = await pgInsert(resource, cleaned)
+                addAudit(resource, String((row2 as any)?.id || ''), 'create', null, row2, (req as any).user?.sub)
+                return res.status(201).json(row2)
+              }
+            } catch (e5) {
+              return res.status(500).json({ message: (e5 as any)?.message || 'create failed (column add)' })
+            }
           }
           return res.status(500).json({ message: msg || 'create failed' })
         }
