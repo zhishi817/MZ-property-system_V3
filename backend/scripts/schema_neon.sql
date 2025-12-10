@@ -306,6 +306,7 @@ CREATE TABLE IF NOT EXISTS recurring_payments (
   scope text,
   vendor text,
   category text,
+  category_detail text,
   amount numeric,
   due_day_of_month integer,
   remind_days_before integer DEFAULT 3,
@@ -324,6 +325,7 @@ CREATE TABLE IF NOT EXISTS recurring_payments (
 CREATE INDEX IF NOT EXISTS idx_recurring_payments_status ON recurring_payments(status);
 CREATE INDEX IF NOT EXISTS idx_recurring_payments_next_due ON recurring_payments(next_due_date);
 CREATE INDEX IF NOT EXISTS idx_recurring_payments_scope ON recurring_payments(scope);
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS category_detail text;
 
 CREATE TABLE IF NOT EXISTS fixed_expenses (
   id text PRIMARY KEY,

@@ -303,6 +303,8 @@ async function run() {
     `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);`,
     `CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);`,
     `CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(user_id) WHERE revoked = false;`
+    ,
+    `ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS category_detail text;`
   ]
 
   for (const sql of stmts) {
