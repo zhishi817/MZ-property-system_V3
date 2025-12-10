@@ -198,14 +198,28 @@ export async function setDeletePassword(req: Request, res: Response) {
 }
 
 export function requireResourcePerm(kind: 'view' | 'write' | 'delete') {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     const user = (req as any).user
     if (!user) return res.status(401).json({ message: 'unauthorized' })
-    const role = String(user.role || '')
+    const roleName = String(user.role || '')
     const resource = String((req.params as any)?.resource || '')
     if (!resource) return res.status(400).json({ message: 'missing resource' })
     const code = `${resource}.${kind}`
-    const ok = roleHasPermission(role, code)
+    let ok = false
+    try {
+      const { hasPg, pgSelect } = require('./dbAdapter')
+      if (hasPg) {
+        const role = db.roles.find(r => r.name === roleName)
+        const rid = role?.id || roleName
+        let rows = await pgSelect('role_permissions', 'permission_code', { role_id: rid, permission_code: code }) as any[] || []
+        if ((!rows || !rows.length) && role?.name) {
+          const altRows = await pgSelect('role_permissions', 'permission_code', { role_id: role.name, permission_code: code }) as any[] || []
+          rows = altRows && altRows.length ? altRows : rows
+        }
+        ok = Array.isArray(rows) && rows.length > 0
+      }
+    } catch {}
+    if (!ok) ok = roleHasPermission(roleName, code)
     if (!ok) return res.status(403).json({ message: 'forbidden' })
     next()
   }
