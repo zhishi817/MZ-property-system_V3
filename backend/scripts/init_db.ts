@@ -185,6 +185,16 @@ async function run() {
     ,
     `ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS created_by text;`
     ,
+    `ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;`
+    ,
+    `ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;`
+    ,
+    `ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;`
+    ,
+    `ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;`
+    ,
+    `ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;`
+    ,
     `CREATE TABLE IF NOT EXISTS property_expenses (
       id text PRIMARY KEY,
       property_id text REFERENCES properties(id) ON DELETE SET NULL,
@@ -203,6 +213,16 @@ async function run() {
     `CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses ON property_expenses(property_id, occurred_at, category, amount, (coalesce(note,'')));`
     ,
     `ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS created_by text;`
+    ,
+    `ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;`
+    ,
+    `ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;`
+    ,
+    `ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;`
+    ,
+    `ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;`
+    ,
+    `ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;`
     ,
     `CREATE TABLE IF NOT EXISTS company_incomes (
       id text PRIMARY KEY,

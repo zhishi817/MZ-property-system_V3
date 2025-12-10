@@ -413,6 +413,52 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
           } catch (e2) {
             return res.status(500).json({ message: (e2 as any)?.message || 'create failed (table init)' })
           }
+        } else if (resource === 'property_expenses' && /column\s+"?fixed_expense_id"?\s+of\s+relation\s+"?property_expenses"?\s+does\s+not\s+exist/i.test(msg)) {
+          try {
+            const { pgPool } = require('../dbAdapter')
+            if (pgPool) {
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;')
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;')
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;')
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;')
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;')
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status']
+              const cleaned: any = { id: payload.id }
+              for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+              if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+              if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+              if (cleaned.due_date) cleaned.due_date = String(cleaned.due_date).slice(0,10)
+              if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
+              const row2 = await pgInsert(resource, cleaned)
+              addAudit(resource, String((row2 as any)?.id || ''), 'create', null, row2, (req as any).user?.sub)
+              return res.status(201).json(row2)
+            }
+          } catch (e3) {
+            return res.status(500).json({ message: (e3 as any)?.message || 'create failed (column add)' })
+          }
+        } else if (resource === 'company_expenses' && /column\s+"?fixed_expense_id"?\s+of\s+relation\s+"?company_expenses"?\s+does\s+not\s+exist/i.test(msg)) {
+          try {
+            const { pgPool } = require('../dbAdapter')
+            if (pgPool) {
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;')
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;')
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;')
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;')
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;')
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status']
+              const cleaned: any = { id: payload.id }
+              for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+              if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+              if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+              if (cleaned.due_date) cleaned.due_date = String(cleaned.due_date).slice(0,10)
+              if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
+              const row2 = await pgInsert(resource, cleaned)
+              addAudit(resource, String((row2 as any)?.id || ''), 'create', null, row2, (req as any).user?.sub)
+              return res.status(201).json(row2)
+            }
+          } catch (e4) {
+            return res.status(500).json({ message: (e4 as any)?.message || 'create failed (column add)' })
+          }
         }
         if (resource === 'property_maintenance' && /does not exist|relation .* does not exist/i.test(msg)) {
           try {
