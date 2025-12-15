@@ -12,6 +12,8 @@ export default function LoginPage() {
   const [forgotOpen, setForgotOpen] = useState(false as any)
   const [forgotForm] = Form.useForm()
   const router = useRouter()
+  const [loading, setLoading] = useState(false)
+  const [msg, contextHolder] = message.useMessage()
   try {
     const remembered = typeof window !== 'undefined' ? (localStorage.getItem('remember_username') || '') : ''
     if (remembered) form.setFieldsValue({ username: remembered, remember: true })
@@ -20,11 +22,19 @@ export default function LoginPage() {
     const v = await form.validateFields()
     v.username = (v.username || '').trim()
     v.password = (v.password || '').trim()
+    const alias: Record<string, string> = { ops: 'cs', field: 'cleaner' }
+    v.username = alias[v.username] || v.username
     let res: Response
     try {
-      res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(v) })
+      setLoading(true)
+      const controller = new AbortController()
+      const timer = setTimeout(() => { try { controller.abort() } catch {} }, 15000)
+      try {
+        res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(v), signal: controller.signal })
+      } finally { try { clearTimeout(timer) } catch {} }
     } catch (e: any) {
-      message.error('无法连接服务，请稍后重试')
+      msg.error('无法连接服务，请稍后重试')
+      setLoading(false)
       return
     }
     if (res.ok) {
@@ -47,20 +57,22 @@ export default function LoginPage() {
           if (r) { try { localStorage.setItem('role', r) } catch {} }
         } else if (v.username === 'admin') { try { localStorage.setItem('role', 'admin') } catch {} }
       } catch {}
-      message.success('登录成功')
+      msg.success('登录成功')
       try { await new Promise(r => setTimeout(r, 100)) } catch {}
       router.push('/dashboard')
     } else {
       try {
         const err = await res.json()
-        message.error(err?.message || `登录失败 (${res.status})`)
+        msg.error(err?.message || `登录失败 (${res.status})`)
       } catch {
-        message.error(`登录失败 (${res.status})`)
+        msg.error(`登录失败 (${res.status})`)
       }
     }
+    setLoading(false)
   }
   return (
     <div className="login-wrapper">
+      {contextHolder}
       <div className="decor-layer">
         <div className="bubble b1"></div>
         <div className="bubble b2"></div>
@@ -72,12 +84,12 @@ export default function LoginPage() {
       <Card className="login-card">
         <div className="login-logo-wrap" style={{ display: 'flex', justifyContent: 'center' }}>
           <div style={{ position: 'relative', width: '240px', height: '64px' }}>
-            <Image src="/company-logo.png" alt="MZ Property" fill style={{ objectFit: 'contain', objectPosition: 'center' }} priority />
+            <Image src="/company-logo.png" alt="MZ Property" fill sizes="240px" style={{ objectFit: 'contain', objectPosition: 'center' }} priority />
           </div>
         </div>
         <Form form={form} layout="vertical" initialValues={{ remember: true }} requiredMark={false}>
           <Form.Item name="username" label="邮箱地址/用户名" rules={[{ required: true }]}> 
-            <Input size="large" placeholder="admin / ops / field" prefix={<MailOutlined />} />
+            <Input size="large" placeholder="admin / cs / cleaner" prefix={<MailOutlined />} />
           </Form.Item>
           <Form.Item name="password" label="密码" rules={[{ required: true }]}> 
             <Input.Password size="large" placeholder="请输入密码" visibilityToggle prefix={<LockOutlined />} />
@@ -88,7 +100,7 @@ export default function LoginPage() {
             </Form.Item>
             <a className="forgot-link" onClick={() => setForgotOpen(true)}>忘记密码？</a>
           </div>
-          <Button type="primary" block size="large" style={{ marginTop: 12 }} onClick={submit}>登录</Button>
+          <Button type="primary" block size="large" style={{ marginTop: 12 }} onClick={submit} loading={loading} disabled={loading}>登录</Button>
         </Form>
       </Card>
       <Modal open={forgotOpen} onCancel={() => setForgotOpen(false)} onOk={async () => {
@@ -97,7 +109,7 @@ export default function LoginPage() {
           const r = await fetch(`${API_BASE}/auth/forgot`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: v.email }) })
           if (!r.ok) throw new Error('fallback')
         } catch {}
-        message.success('已发送重置密码指南到邮箱')
+        msg.success('已发送重置密码指南到邮箱')
         setForgotOpen(false); forgotForm.resetFields()
       }} title="找回密码">
         <Form form={forgotForm} layout="vertical">

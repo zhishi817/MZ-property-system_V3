@@ -156,6 +156,15 @@ export default function PropertyRevenuePage() {
     return out
   }, [properties, orders, txs, landlords, start, end, selectedPid])
 
+  const totals = useMemo(() => {
+    const sum = (arr: any[], key: string) => arr.reduce((s, x) => s + Number(x?.[key] || 0), 0)
+    const income = sum(rows, 'totalIncome')
+    const expense = sum(rows, 'totalExp')
+    const net = income - expense
+    const fmt2 = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    return { income: fmt2(income), expense: fmt2(expense), net: fmt2(net) }
+  }, [rows])
+
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const columns = [
     { title:'月份', dataIndex:'month' },
@@ -201,6 +210,7 @@ export default function PropertyRevenuePage() {
         <Select allowClear placeholder="按房号筛选" style={{ width: 240 }} options={properties.map(p=>({ value:p.id, label:p.code || p.address || p.id }))} value={selectedPid} onChange={setSelectedPid} />
         <Button type="primary" onClick={() => { if (!selectedPid) { message.warning('请先选择房号'); return } setPreviewPid(selectedPid); setPreviewOpen(true) }}>生成报表</Button>
       </div>
+      {/* totals summary removed per request */}
       <Table rowKey={(r)=>r.key} columns={columns as any} dataSource={rows} scroll={{ x: 'max-content' }} pagination={{ pageSize: 20 }} />
       <Modal title={period==='month' ? '月度报告' : (period==='year' ? '年度报告' : (period==='fiscal-year' ? '财年报告' : '半年报告'))} open={previewOpen} onCancel={() => setPreviewOpen(false)} footer={<>
         <Button onClick={async () => {

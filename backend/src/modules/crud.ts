@@ -4,6 +4,7 @@ import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import { db, addAudit } from '../store'
 
 const router = Router()
+const hasSupabase = false
 
 const ALLOW: Record<string, true> = {
   properties: true,

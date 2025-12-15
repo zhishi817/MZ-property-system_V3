@@ -3,7 +3,8 @@ import { Request, Response, NextFunction } from 'express'
 import { v4 as uuid } from 'uuid'
 import { roleHasPermission, db } from './store'
 import { hasPg, pgSelect } from './dbAdapter'
-import { hasSupabase, supaSelect } from './supabase'
+const hasSupabase = false
+const supaSelect: any = undefined
 import bcrypt from 'bcryptjs'
 
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
@@ -27,16 +28,7 @@ export async function login(req: Request, res: Response) {
   if (!username || !password) return res.status(400).json({ message: 'missing credentials' })
   // DB first（优先 Supabase，其次 Postgres；分别容错）
   let row: any = null
-  if (hasSupabase) {
-    try {
-      const byUser: any = await supaSelect('users', '*', { username })
-      row = byUser && byUser[0]
-      if (!row) {
-        const byEmail: any = await supaSelect('users', '*', { email: username })
-        row = byEmail && byEmail[0]
-      }
-    } catch {}
-  }
+  // Supabase branch removed
   if (!row && hasPg) {
     try {
       const byUser = await pgSelect('users', '*', { username })
@@ -186,11 +178,7 @@ export async function setDeletePassword(req: Request, res: Response) {
       const row = await pgUpdate('users', user.sub, { delete_password_hash: hash })
       return res.json({ ok: true })
     }
-    if (hasSupabase) {
-      const { supaUpdate } = require('./supabase')
-      await supaUpdate('users', user.sub, { delete_password_hash: hash })
-      return res.json({ ok: true })
-    }
+    // Supabase branch removed
     return res.status(200).json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e.message })

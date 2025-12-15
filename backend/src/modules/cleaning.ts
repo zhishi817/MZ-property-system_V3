@@ -2,10 +2,10 @@ import { Router } from 'express'
 import { db } from '../store'
 import { z } from 'zod'
 import { requirePerm, requireAnyPerm } from '../auth'
-import { hasSupabase, supaSelect, supaInsert, supaUpdate } from '../supabase'
 import { hasPg, pgSelect, pgInsert, pgUpdate } from '../dbAdapter'
 
 export const router = Router()
+const hasSupabase = false
 
 router.get('/tasks', requireAnyPerm(['cleaning.view','cleaning.schedule.manage','cleaning.task.assign']), (req, res) => {
   const { date } = req.query as { date?: string }

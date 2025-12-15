@@ -3,11 +3,11 @@ import { db } from '../store'
 import { saveRolePermissions } from '../persistence'
 import { z } from 'zod'
 import { requirePerm, auth } from '../auth'
-import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete } from '../supabase'
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import bcrypt from 'bcryptjs'
 
 export const router = Router()
+const hasSupabase = false
 
 router.get('/roles', (req, res) => {
   res.json(db.roles)

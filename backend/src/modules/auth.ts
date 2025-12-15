@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { login, me, setDeletePassword } from '../auth'
-import { hasSupabase, supaSelect, supaUpdate } from '../supabase'
+ 
+const supaUpdate: any = undefined
 import { hasPg, pgSelect, pgUpdate } from '../dbAdapter'
 
 export const router = Router()

@@ -20,8 +20,20 @@ import { router as versionRouter } from './modules/version'
 import maintenanceRouter from './modules/maintenance'
 import crudRouter from './modules/crud'
 import { auth } from './auth'
+// 环境保险锁，必须在任何数据库连接之前执行
+const appEnv = process.env.APP_ENV
+const dbRole = process.env.DATABASE_ROLE
+if (!appEnv || !dbRole) {
+  throw new Error('APP_ENV or DATABASE_ROLE is missing')
+}
+if (appEnv === 'dev' && dbRole === 'prod') {
+  throw new Error('❌ DEV backend cannot connect to PROD database')
+}
+if (appEnv === 'prod' && dbRole === 'dev') {
+  throw new Error('❌ PROD backend cannot connect to DEV database')
+}
 import { hasPg, pgPool } from './dbAdapter'
-import { hasSupabase, supabase } from './supabase'
+// Supabase removed
 import fs from 'fs'
 const isProd = process.env.NODE_ENV === 'production'
 if (isProd && hasPg) {
@@ -42,37 +54,43 @@ app.use(cors(corsOpts))
 app.options('*', cors(corsOpts))
 app.use(express.json())
 app.use(morgan('dev'))
-app.use(auth)
-const uploadDir = path.join(process.cwd(), 'uploads')
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir)
-app.use('/uploads', express.static(uploadDir))
-
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok' })
-})
+// Health endpoints should NOT require auth
+app.get('/health', (req, res) => { res.json({ status: 'ok' }) })
 app.get('/health/db', async (_req, res) => {
-  const result: any = { pg: false, supabase: false }
+  const result: any = { status: 'ok', appEnv, databaseRole: dbRole, pg: false }
+  try {
+    const url = process.env.DATABASE_URL || ''
+    if (url) {
+      const u = new URL(url)
+      result.pg_host = u.hostname
+      const db = (u.pathname || '').replace(/^\//,'')
+      result.pg_database = db
+    }
+  } catch {}
   try {
     if (pgPool) {
-      const r = await pgPool.query('SELECT 1 as ok')
+      const r = await pgPool.query('SELECT current_database() as db, 1 as ok')
       result.pg = !!(r && r.rows && r.rows[0] && r.rows[0].ok)
+      result.pg_database = result.pg_database || (r.rows?.[0]?.db)
     }
   } catch (e: any) {
     result.pg = false
     result.pg_error = e?.message
   }
-  try {
-    if (supabase) {
-      const { error } = await supabase.from('properties').select('id').limit(1)
-      result.supabase = !error
-      if (error) result.supabase_error = error.message
-    }
-  } catch (e: any) {
-    result.supabase = false
-    result.supabase_error = e?.message
-  }
   res.json(result)
 })
+app.get('/health/version', (_req, res) => {
+  let pkg: any = {}
+  try { pkg = require('../package.json') } catch {}
+  const build = process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown'
+  res.json({ build, version: pkg.version || 'unknown', node_env: process.env.NODE_ENV || 'unknown', started_at: new Date().toISOString() })
+})
+// Auth middleware comes AFTER health routes
+app.use(auth)
+const uploadDir = path.join(process.cwd(), 'uploads')
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir)
+app.use('/uploads', express.static(uploadDir))
+
 
 app.use('/landlords', landlordsRouter)
 app.use('/properties', propertiesRouter)
@@ -90,4 +108,15 @@ app.use('/version', versionRouter)
 app.use('/maintenance', maintenanceRouter)
 
 const port = process.env.PORT ? Number(process.env.PORT) : 4001
-app.listen(port, () => {console.log(`Server listening on port ${port}`); console.log(`[DataSources] pg=${hasPg} supabase=${hasSupabase}`)})
+app.listen(port, () => {
+  console.log(`Server listening on port ${port}`)
+  console.log(`[DataSources] pg=${hasPg}`)
+  try {
+    const url = process.env.DATABASE_URL || ''
+    if (url) {
+      const u = new URL(url)
+      const db = (u.pathname || '').replace(/^\//,'')
+      console.log(`[PG] host=${u.hostname} db=${db}`)
+    }
+  } catch {}
+})
