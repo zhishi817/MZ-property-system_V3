@@ -9,7 +9,7 @@ import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 
 type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; is_paid?: boolean }
 type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
-type Property = { id: string; code?: string; address?: string }
+type Property = { id: string; code?: string; address?: string; region?: string }
 
 dayjs.extend(customParseFormat)
 dayjs.extend(utc)
@@ -287,7 +287,19 @@ export default function RecurringPage() {
           <Form.Item name="scope" label="对象" initialValue="company"><Select options={[{value:'company',label:'公司'},{value:'property',label:'房源'}]} /></Form.Item>
           <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.scope!==cur.scope}>
             {()=> (form.getFieldValue('scope')==='property' ? (
-              <Form.Item name="property_id" label="房号"><Select allowClear showSearch options={properties.map(p=>({ value:p.id, label:p.code||p.address||p.id }))} /></Form.Item>
+              <Form.Item name="property_id" label="房号">
+                <Select
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())}
+                  filterSort={(a,b)=> String((a as any)?.region||'').localeCompare(String((b as any)?.region||'')) || String(a.label||'').localeCompare(String(b.label||''))}
+                  options={(properties||[])
+                    .slice()
+                    .sort((a,b)=> String(a.region||'').localeCompare(String(b.region||'')) || String(a.code||a.address||a.id).localeCompare(String(b.code||b.address||b.id)))
+                    .map(p=>({ value:p.id, label:p.code||p.address||p.id, region: p.region || '' }))}
+                />
+              </Form.Item>
             ) : null)}
           </Form.Item>
           <Form.Item name="vendor" label="支出事项" rules={[{ required: true }]}><Input /></Form.Item>
