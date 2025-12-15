@@ -6,30 +6,11 @@ import { requirePerm } from '../auth'
 import { v4 as uuidv4 } from 'uuid'
 
 export const router = Router()
-const hasSupabase = false
-// stubs for Supabase functions to satisfy TypeScript when Supabase is disabled
-async function supaSelect(_resource: string, _cols?: string, _filter?: any): Promise<any[]> { return [] }
-async function supaInsert(_resource: string, _payload: any): Promise<any> { return null }
-async function supaUpdate(_resource: string, _id: string, _payload: any): Promise<any> { return null }
-async function supaDelete(_resource: string, _id: string): Promise<any> { return null }
 
 router.get('/', (req, res) => {
   const q: any = req.query || {}
   const includeArchived = String(q.include_archived || '').toLowerCase() === 'true'
-  if (hasSupabase) {
-    const handle = (rows: any) => {
-      const arr = Array.isArray(rows) ? rows : []
-      return res.json(includeArchived ? arr : arr.filter((x: any) => !x.archived))
-    }
-    supaSelect('properties', '*', includeArchived ? (undefined as any) : ({ archived: false } as any))
-      .then(handle)
-      .catch(() => {
-        supaSelect('properties')
-          .then(handle)
-          .catch((err) => res.status(500).json({ message: err.message }))
-      })
-    return
-  }
+  // Supabase branch removed
   if (hasPg) {
     const filter = includeArchived ? {} : { archived: false }
     pgSelect('properties', '*', filter as any)
@@ -103,50 +84,7 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
   const minimalKeys = ['id','code','address','type','capacity','region','area_sqm','notes','listing_names']
   const pMinimal: any = Object.fromEntries(Object.entries(pFull).filter(([k]) => minimalKeys.includes(k)))
   try {
-    if (hasSupabase) {
-      try {
-        const row = await supaInsert('properties', pFull)
-        addAudit('Property', row.id, 'create', null, row)
-        ;['guest','spare_1','spare_2','other'].forEach(async (t) => {
-          try {
-            await require('../supabase').supaUpsertConflict('key_sets', { id: uuidv4(), set_type: t, status: 'available', code: row.code || '' }, 'code,set_type')
-          } catch {
-            if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-              db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
-            }
-          }
-        })
-        return res.status(201).json(row)
-      } catch (e: any) {
-        try {
-          const row = await supaInsert('properties', pBase)
-          addAudit('Property', row.id, 'create', null, row)
-          ;['guest','spare_1','spare_2','other'].forEach(async (t) => {
-            try {
-            await require('../supabase').supaUpsertConflict('key_sets', { id: uuidv4(), set_type: t, status: 'available', code: row.code || '' }, 'code,set_type')
-            } catch {
-            if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-              db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
-              }
-            }
-          })
-          return res.status(201).json(row)
-        } catch (e2: any) {
-          const row = await supaInsert('properties', pMinimal)
-          addAudit('Property', row.id, 'create', null, row)
-          ;['guest','spare_1','spare_2','other'].forEach(async (t) => {
-            try {
-            await require('../supabase').supaUpsertConflict('key_sets', { id: uuidv4(), set_type: t, status: 'available', code: row.code || '' }, 'code,set_type')
-            } catch {
-            if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-            db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
-            }
-            }
-          })
-          return res.status(201).json(row)
-        }
-      }
-    }
+    // Supabase branch removed
     if (hasPg) {
       try {
         const row = await pgInsert('properties', pBase)
@@ -273,28 +211,6 @@ router.patch('/:id', requirePerm('property.write'), async (req, res) => {
   const bodyBaseRaw: any = Object.fromEntries(Object.entries(cleanedBody).filter(([k]) => baseKeys.includes(k)))
   const bodyBase: any = { ...bodyBaseRaw, updated_at: new Date(), updated_by: actor?.sub || actor?.username || null }
   try {
-    if (hasSupabase) {
-      const rows: any = await supaSelect('properties', '*', { id })
-      const before = rows && rows[0]
-      const minimalKeys = ['code','address','type','capacity','region','area_sqm','notes']
-      const cleaned: any = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'bedrooms'))
-      const bodyMinimal: any = Object.fromEntries(Object.entries(cleaned).filter(([k]) => minimalKeys.includes(k)))
-      try {
-        const row = await supaUpdate('properties', id, cleaned)
-        addAudit('Property', id, 'update', before, row)
-        return res.json(row)
-      } catch (e: any) {
-        try {
-          const row = await supaUpdate('properties', id, bodyBase)
-          addAudit('Property', id, 'update', before, row)
-          return res.json(row)
-        } catch (e2: any) {
-          const row = await supaUpdate('properties', id, bodyMinimal)
-          addAudit('Property', id, 'update', before, row)
-          return res.json(row)
-        }
-      }
-    }
     if (hasPg) {
       const rows: any = await pgSelect('properties', '*', { id })
       const before = rows && rows[0]
@@ -343,12 +259,7 @@ router.patch('/:id', requirePerm('property.write'), async (req, res) => {
 
 router.get('/:id', (req, res) => {
   const { id } = req.params
-  if (hasSupabase) {
-    supaSelect('properties', '*', { id })
-      .then((rows: any) => { if (!rows || !rows[0]) return res.status(404).json({ message: 'not found' }); res.json(rows[0]) })
-      .catch((err) => res.status(500).json({ message: err.message }))
-    return
-  }
+  // Supabase branch removed
   if (hasPg) {
     pgSelect('properties', '*', { id })
       .then((rows) => { if (!rows || !rows[0]) return res.status(404).json({ message: 'not found' }); res.json(rows[0]) })

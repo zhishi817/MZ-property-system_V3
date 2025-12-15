@@ -3,8 +3,6 @@ import { Request, Response, NextFunction } from 'express'
 import { v4 as uuid } from 'uuid'
 import { roleHasPermission, db } from './store'
 import { hasPg, pgSelect } from './dbAdapter'
-const hasSupabase = false
-const supaSelect: any = undefined
 import bcrypt from 'bcryptjs'
 
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
@@ -26,7 +24,7 @@ export const users: Record<string, User & { password: string }> = {
 export async function login(req: Request, res: Response) {
   const { username, password } = req.body || {}
   if (!username || !password) return res.status(400).json({ message: 'missing credentials' })
-  // DB first（优先 Supabase，其次 Postgres；分别容错）
+  // DB first（Postgres；容错）
   let row: any = null
   // Supabase branch removed
   if (!row && hasPg) {

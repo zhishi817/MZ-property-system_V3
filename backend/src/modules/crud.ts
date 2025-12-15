@@ -4,11 +4,7 @@ import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import { db, addAudit } from '../store'
 
 const router = Router()
-const hasSupabase = false
-// stubs to satisfy TypeScript when Supabase is disabled
-async function supaSelect(_resource: string, _cols: string, _filter?: any): Promise<any[]> { return [] }
-async function supaUpdate(_resource: string, _id: string, _payload: any): Promise<any> { return null }
-async function supaDelete(_resource: string, _id: string): Promise<any> { return null }
+// Supabase removed
 
 const ALLOW: Record<string, true> = {
   properties: true,
@@ -118,24 +114,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         return res.json(rows)
       } catch {}
     }
-    if (hasSupabase) {
-      const rowsRaw = await supaSelect(resource, '*', Object.keys(filter).length ? filter : undefined)
-      const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
-      if (resource === 'property_expenses') {
-        let props: any[] = []
-        try { const propsRaw = await supaSelect('properties', 'id,code,address'); props = Array.isArray(propsRaw) ? propsRaw : [] } catch {}
-        const byId: Record<string, any> = Object.fromEntries(props.map(p => [String(p.id), p]))
-        const byCode: Record<string, any> = Object.fromEntries(props.map(p => [String(p.code || ''), p]))
-        const labeled = rows.map(r => {
-          const pid = String(r.property_id || '')
-          const p = byId[pid] || byCode[pid]
-          const label = p?.code || p?.address || pid || ''
-          return { ...r, property_code: label }
-        })
-        return res.json(labeled)
-      }
-      return res.json(rows)
-    }
+    // Supabase branch removed
     // in-memory fallback
     const arr = (db as any)[camelToArrayKey(resource)] || []
     let filtered = arr.filter((r: any) => Object.entries(filter).every(([k,v]) => (r?.[k]) == v))
@@ -193,11 +172,7 @@ router.get('/:resource/:id', requireResourcePerm('view'), async (req, res) => {
       const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
       return rows[0] ? res.json(rows[0]) : res.status(404).json({ message: 'not found' })
     }
-    if (hasSupabase) {
-      const rowsRaw = await supaSelect(resource, '*', { id })
-      const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
-      return rows[0] ? res.json(rows[0]) : res.status(404).json({ message: 'not found' })
-    }
+    // Supabase branch removed
     const arr = (db as any)[camelToArrayKey(resource)] || []
     const found = arr.find((x: any) => x.id === id)
     return found ? res.json(found) : res.status(404).json({ message: 'not found' })
@@ -225,10 +200,6 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             : [])
       if (hasPg) {
         if (payload.details && typeof payload.details !== 'string') payload.details = JSON.stringify(payload.details)
-      } else if (hasSupabase) {
-        if (payload.details && typeof payload.details === 'string') {
-          try { payload.details = JSON.parse(payload.details) } catch {}
-        }
       }
       if (payload.photo_urls && !Array.isArray(payload.photo_urls)) payload.photo_urls = [payload.photo_urls]
       // Resolve property_id by id or code (robust)
@@ -246,15 +217,6 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 payload.property_id = null
               }
             }
-          }
-        } else if (hasSupabase) {
-          const byCodeRaw = code ? await supaSelect('properties', 'id', { code }) : null
-          const byCode: any[] = Array.isArray(byCodeRaw) ? byCodeRaw : []
-          if (byCode[0]?.id) payload.property_id = byCode[0].id
-          if (payload.property_id) {
-            const byIdRaw = await supaSelect('properties', 'id', { id: payload.property_id })
-            const byId: any[] = Array.isArray(byIdRaw) ? byIdRaw : []
-            if (!byId[0]) payload.property_id = null
           }
         }
       } catch {}
@@ -747,11 +709,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
       addAudit(resource, id, 'update', null, row, (req as any).user?.sub)
       return res.json(row || { id, ...payload })
     }
-    if (hasSupabase) {
-      const row = await supaUpdate(resource, id, payload)
-      addAudit(resource, id, 'update', null, row, (req as any).user?.sub)
-      return res.json(row || { id, ...payload })
-    }
+    // Supabase branch removed
     const arrKey = camelToArrayKey(resource)
     const arr = (db as any)[arrKey] || []
     const idx = arr.findIndex((x: any) => x.id === id)
@@ -773,11 +731,7 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
       addAudit(resource, id, 'delete', null, null, (req as any).user?.sub)
       return res.json({ ok: true })
     }
-    if (hasSupabase) {
-      await supaDelete(resource, id)
-      addAudit(resource, id, 'delete', null, null, (req as any).user?.sub)
-      return res.json({ ok: true })
-    }
+    // Supabase branch removed
     const arrKey = camelToArrayKey(resource)
     const arr = (db as any)[arrKey] || []
     const idx = arr.findIndex((x: any) => x.id === id)

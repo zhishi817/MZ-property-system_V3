@@ -5,7 +5,6 @@ import { requirePerm, requireAnyPerm } from '../auth'
 import { hasPg, pgSelect, pgInsert, pgUpdate } from '../dbAdapter'
 
 export const router = Router()
-const hasSupabase = false
 
 router.get('/tasks', requireAnyPerm(['cleaning.view','cleaning.schedule.manage','cleaning.task.assign']), (req, res) => {
   const { date } = req.query as { date?: string }
@@ -15,12 +14,7 @@ router.get('/tasks', requireAnyPerm(['cleaning.view','cleaning.schedule.manage',
       .catch((err: any) => res.status(500).json({ message: err.message }))
     return
   }
-  if (hasSupabase) {
-    supaSelect('cleaning_tasks', '*', date ? { date } : undefined)
-      .then((data) => res.json(data))
-      .catch((err) => res.status(500).json({ message: err.message }))
-    return
-  }
+  
   if (date) {
     const d1 = date
     const d2 = (() => { try { return new Date(date + 'T00:00:00').toISOString().slice(0,10) } catch { return d1 } })()
@@ -46,12 +40,7 @@ router.post('/tasks', (req, res) => {
       .catch((_err: any) => res.status(201).json(task))
     return
   }
-  if (hasSupabase) {
-    supaInsert('cleaning_tasks', task)
-      .then((row) => res.status(201).json(row))
-      .catch((err) => res.status(500).json({ message: err.message }))
-    return
-  }
+  
   return res.status(201).json(task)
 })
 
@@ -80,12 +69,7 @@ router.post('/tasks/:id/assign', requirePerm('cleaning.task.assign'), (req, res)
       .catch((_err: any) => res.json(task))
     return
   }
-  if (hasSupabase) {
-    supaUpdate('cleaning_tasks', task.id, { assignee_id: task.assignee_id, scheduled_at: task.scheduled_at, status: task.status })
-      .then((row) => res.json(row))
-      .catch((err) => res.status(500).json({ message: err.message }))
-    return
-  }
+  
   return res.json(task)
 })
 
@@ -128,12 +112,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), (req, res) => {
       .catch((_err: any) => res.json(task))
     return
   }
-  if (hasSupabase) {
-    supaUpdate('cleaning_tasks', task.id, parsed.data)
-      .then((row) => res.json(row))
-      .catch((err) => res.status(500).json({ message: err.message }))
-    return
-  }
+  
   return res.json(task)
 })
 
