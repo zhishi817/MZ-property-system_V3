@@ -6,6 +6,11 @@ import { hasPg, pgSelect, pgInsert, pgUpdate } from '../dbAdapter'
 
 export const router = Router()
 const hasSupabase = false
+// stubs for Supabase functions to satisfy TypeScript when Supabase is disabled
+async function supaSelect(_resource: string, _cols?: string, _filter?: any): Promise<any[]> { return [] }
+async function supaInsert(_resource: string, _payload: any): Promise<any> { return null }
+async function supaUpdate(_resource: string, _id: string, _payload: any): Promise<any> { return null }
+async function supaDelete(_resource: string, _id: string): Promise<any> { return null }
 
 router.get('/tasks', requireAnyPerm(['cleaning.view','cleaning.schedule.manage','cleaning.task.assign']), (req, res) => {
   const { date } = req.query as { date?: string }
@@ -17,9 +22,9 @@ router.get('/tasks', requireAnyPerm(['cleaning.view','cleaning.schedule.manage',
   }
   if (hasSupabase) {
     supaSelect('cleaning_tasks', '*', date ? { date } : undefined)
-      .then((data) => res.json(data))
-      .catch((err) => res.status(500).json({ message: err.message }))
-    return
+      .then((data: any) => res.json(data))
+      .catch((err: any) => res.status(500).json({ message: err.message }))
+      return
   }
   if (date) {
     const d1 = date
@@ -48,8 +53,8 @@ router.post('/tasks', (req, res) => {
   }
   if (hasSupabase) {
     supaInsert('cleaning_tasks', task)
-      .then((row) => res.status(201).json(row))
-      .catch((err) => res.status(500).json({ message: err.message }))
+      .then((row: any) => res.status(201).json(row))
+      .catch((err: any) => res.status(500).json({ message: err.message }))
     return
   }
   return res.status(201).json(task)
@@ -82,8 +87,8 @@ router.post('/tasks/:id/assign', requirePerm('cleaning.task.assign'), (req, res)
   }
   if (hasSupabase) {
     supaUpdate('cleaning_tasks', task.id, { assignee_id: task.assignee_id, scheduled_at: task.scheduled_at, status: task.status })
-      .then((row) => res.json(row))
-      .catch((err) => res.status(500).json({ message: err.message }))
+      .then((row: any) => res.json(row))
+      .catch((err: any) => res.status(500).json({ message: err.message }))
     return
   }
   return res.json(task)
@@ -130,8 +135,8 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), (req, res) => {
   }
   if (hasSupabase) {
     supaUpdate('cleaning_tasks', task.id, parsed.data)
-      .then((row) => res.json(row))
-      .catch((err) => res.status(500).json({ message: err.message }))
+      .then((row: any) => res.json(row))
+      .catch((err: any) => res.status(500).json({ message: err.message }))
     return
   }
   return res.json(task)
