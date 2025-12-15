@@ -10,20 +10,10 @@ import { PDFDocument } from 'pdf-lib'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
-const hasSupabase = false
-// stubs for Supabase functions to satisfy TypeScript when Supabase is disabled
-async function supaSelect(_resource: string, _cols?: string, _filter?: any): Promise<any[]> { return [] }
-async function supaInsert(_resource: string, _payload: any): Promise<any> { return null }
-async function supaUpdate(_resource: string, _id: string, _payload: any): Promise<any> { return null }
-async function supaDelete(_resource: string, _id: string): Promise<any> { return null }
 
 router.get('/', async (_req, res) => {
   try {
-    if (hasSupabase) {
-      const raw = await supaSelect('finance_transactions')
-      const rows: any[] = Array.isArray(raw) ? raw : []
-      return res.json(rows)
-    }
+    
     if (hasPg) {
       const raw = await pgSelect('finance_transactions')
       const rows: any[] = Array.isArray(raw) ? raw : []
@@ -46,9 +36,6 @@ router.post('/', requirePerm('finance.tx.write'), async (req, res) => {
   const tx: FinanceTransaction = { id: uuid(), occurred_at: parsed.data.occurred_at || new Date().toISOString(), ...parsed.data }
   db.financeTransactions.push(tx)
   addAudit('FinanceTransaction', tx.id, 'create', null, tx)
-  if (hasSupabase) {
-    try { const row = await supaInsert('finance_transactions', tx); return res.status(201).json(row || tx) } catch (e: any) { return res.status(500).json({ message: e?.message || 'supabase insert failed' }) }
-  }
   if (hasPg) {
     try { const row = await pgInsert('finance_transactions', tx as any); return res.status(201).json(row || tx) } catch (e: any) { return res.status(500).json({ message: e?.message || 'pg insert failed' }) }
   }
@@ -142,11 +129,7 @@ router.post('/send-annual', requirePerm('finance.payout'), (req, res) => {
 
 router.get('/payouts', async (_req, res) => {
   try {
-    if (hasSupabase) {
-      const raw = await supaSelect('payouts')
-      const rows: any[] = Array.isArray(raw) ? raw : []
-      return res.json(rows)
-    }
+    
     if (hasPg) {
       const raw = await pgSelect('payouts')
       const rows: any[] = Array.isArray(raw) ? raw : []
@@ -163,10 +146,6 @@ router.get('/company-payouts', async (_req, res) => {
   try {
     if (hasPg) {
       const raw = await pgSelect('company_payouts')
-      const rows: any[] = Array.isArray(raw) ? raw : []
-      return res.json(rows)
-    } else if (hasSupabase) {
-      const raw = await supaSelect('company_payouts')
       const rows: any[] = Array.isArray(raw) ? raw : []
       return res.json(rows)
     }
@@ -193,12 +172,6 @@ router.post('/company-payouts', requirePerm('finance.payout'), async (req, res) 
       await pgInsert('finance_transactions', tx as any)
       return res.status(201).json(p)
     } catch (e: any) { return res.status(500).json({ message: e?.message || 'pg insert failed' }) }
-  } else if (hasSupabase) {
-    try {
-      await supaInsert('company_payouts', p)
-      await supaInsert('finance_transactions', tx)
-      return res.status(201).json(p)
-    } catch (e: any) { return res.status(500).json({ message: e?.message || 'supabase insert failed' }) }
   }
   return res.status(201).json(p)
 })
@@ -207,7 +180,7 @@ router.patch('/company-payouts/:id', requirePerm('finance.payout'), async (req, 
   const { id } = req.params
   const idx = db.companyPayouts.findIndex(x => x.id === id)
   const prev = idx !== -1 ? db.companyPayouts[idx] : undefined
-  if (!prev && !hasPg && !hasSupabase) return res.status(404).json({ message: 'not found' })
+  if (!prev && !hasPg) return res.status(404).json({ message: 'not found' })
   const body = req.body as Partial<CompanyPayout>
   const updated: CompanyPayout = { ...(prev || ({} as any)), ...body, id }
   if (idx !== -1) db.companyPayouts[idx] = updated
@@ -270,9 +243,7 @@ router.patch('/payouts/:id', requirePerm('finance.payout'), async (req, res) => 
   const before = { ...p }
   Object.assign(p, req.body as Partial<Payout>)
   addAudit('Payout', p.id, 'update', before, p)
-  if (hasSupabase) {
-    try { const row = await supaUpdate('payouts', p.id, p); return res.json(row || p) } catch {}
-  } else if (hasPg) {
+  if (hasPg) {
     try { const row = await pgUpdate('payouts', p.id, p as any); return res.json(row || p) } catch {}
   }
   return res.json(p)

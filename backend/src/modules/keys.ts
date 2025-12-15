@@ -122,10 +122,7 @@ router.get('/sets/:id/history', async (req, res) => {
       const flows: any = await pgSelect('key_flows', '*', { key_set_id: req.params.id })
       return res.json(flows || [])
     }
-    if (hasSupabase) {
-      const flows = await supaSelect('key_flows', '*', { key_set_id: req.params.id })
-      return res.json(flows || [])
-    }
+    // Supabase branch removed
   } catch (e: any) {}
   const { id } = req.params
   const flows = db.keyFlows.filter((f) => f.key_set_id === id)
@@ -211,68 +208,8 @@ router.post('/sets/:id/items', requirePerm('keyset.manage'), upload.single('phot
       const created = await pgInsert('key_items', { id: uuidv4(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: photoUrl } as any)
       return res.status(201).json(created)
     }
-    if (hasSupabase) {
-      let rows: any = await supaSelect('key_sets', '*', { id: req.params.id })
-      let set = rows && rows[0]
-      if (!set) {
-        const local = db.keySets.find((s) => s.id === req.params.id)
-        const code = local?.code || (req.body && (req.body as any).property_code)
-        const sType = local?.set_type || (req.body && (req.body as any).set_type)
-        if (!code || !sType) return res.status(404).json({ message: 'set not found' })
-        const byCode: any = await supaSelect('key_sets', '*', { code, set_type: sType })
-        set = byCode && byCode[0]
-        if (!set) {
-          const { v4: uuidv4 } = require('uuid')
-          set = await supaInsert('key_sets', { id: uuidv4(), set_type: sType, status: (local?.status || 'available'), code })
-        }
-      }
-      try {
-        let photoUrl: string | null = null
-        if ((req as any).file) {
-          if (hasR2 && (req as any).file.buffer) {
-            const ext = path.extname((req as any).file.originalname)
-            const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-            photoUrl = await r2Upload(key, (req as any).file.mimetype || 'application/octet-stream', (req as any).file.buffer)
-          } else {
-            photoUrl = `/uploads/${(req as any).file.filename}`
-          }
-        }
-        const item = await require('../supabase').supaUpsertConflict('key_items', { key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: photoUrl }, 'key_set_id,item_type')
-        return res.status(201).json(item)
-      } catch (eUp: any) {
-        const existed: any = await supaSelect('key_items', '*', { key_set_id: set.id, item_type: parsed.data.item_type })
-        const existing = existed && existed[0]
-        if (existing) {
-          let photoUrl2 = existing.photo_url
-          if ((req as any).file) {
-            if (hasR2 && (req as any).file.buffer) {
-              const ext = path.extname((req as any).file.originalname)
-              const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-              photoUrl2 = await r2Upload(key, (req as any).file.mimetype || 'application/octet-stream', (req as any).file.buffer)
-            } else {
-              photoUrl2 = `/uploads/${(req as any).file.filename}`
-            }
-          }
-          const updated = await supaUpdate('key_items', existing.id, { code: parsed.data.code, photo_url: photoUrl2 })
-          return res.status(200).json(updated)
-        }
-        let photoUrl3: string | null = null
-        if ((req as any).file) {
-          if (hasR2 && (req as any).file.buffer) {
-            const ext = path.extname((req as any).file.originalname)
-            const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-            photoUrl3 = await r2Upload(key, (req as any).file.mimetype || 'application/octet-stream', (req as any).file.buffer)
-          } else {
-            photoUrl3 = `/uploads/${(req as any).file.filename}`
-          }
-        }
-        const created = await supaInsert('key_items', { id: uuidv4(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: photoUrl3 })
-        return res.status(201).json(created)
-      }
-    }
-  } catch (e: any) {
-    if (hasSupabase) return res.status(500).json({ message: e?.message || 'supabase insert failed' })
-  }
+    // Supabase branch removed
+  } catch (e: any) {}
   const set = db.keySets.find((s) => s.id === req.params.id)
   if (!set) return res.status(404).json({ message: 'set not found' })
   const existing = (set.items || []).find((it: any) => it.item_type === parsed.data.item_type)
