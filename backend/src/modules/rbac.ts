@@ -7,12 +7,6 @@ import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import bcrypt from 'bcryptjs'
 
 export const router = Router()
-const hasSupabase = false
-// stubs for Supabase functions to satisfy TypeScript when Supabase is disabled
-async function supaSelect(_resource: string, _cols?: string, _filter?: any): Promise<any[]> { return [] }
-async function supaInsert(_resource: string, _payload: any): Promise<any> { return null }
-async function supaUpdate(_resource: string, _id: string, _payload: any): Promise<any> { return null }
-async function supaDelete(_resource: string, _id: string): Promise<any> { return null }
 
 router.get('/roles', (req, res) => {
   res.json(db.roles)
@@ -174,7 +168,7 @@ const userUpdateSchema = z.object({ username: z.string().optional(), email: z.st
 router.get('/users', requirePerm('rbac.manage'), async (_req, res) => {
   try {
     if (hasPg) { const rows = await pgSelect('users') as any[] || []; return res.json(rows) }
-    if (hasSupabase) { const rows = await supaSelect('users') as any[] || []; return res.json(rows) }
+    // Supabase branch removed
     return res.json([])
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
 })
@@ -187,7 +181,7 @@ router.post('/users', requirePerm('rbac.manage'), async (req, res) => {
   const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, role: parsed.data.role, password_hash: hash }
   try {
     if (hasPg) { const created = await pgInsert('users', row as any); return res.status(201).json(created || row) }
-    if (hasSupabase) { const created = await supaInsert('users', row); return res.status(201).json(created || row) }
+    // Supabase branch removed
     return res.status(201).json(row)
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
 })
@@ -200,7 +194,7 @@ router.patch('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
   const { id } = req.params
   try {
     if (hasPg) { const updated = await pgUpdate('users', id, payload as any); return res.json(updated || { id, ...payload }) }
-    if (hasSupabase) { const updated = await supaUpdate('users', id, payload); return res.json(updated || { id, ...payload }) }
+    // Supabase branch removed
     return res.json({ id, ...payload })
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
 })
@@ -209,7 +203,7 @@ router.delete('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
   const { id } = req.params
   try {
     if (hasPg) { await pgDelete('users', id); return res.json({ ok: true }) }
-    if (hasSupabase) { await supaDelete('users', id); return res.json({ ok: true }) }
+    // Supabase branch removed
     return res.json({ ok: true })
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
 })

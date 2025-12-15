@@ -222,10 +222,6 @@ router.patch('/company-payouts/:id', requirePerm('finance.payout'), async (req, 
     try { const row = await pgUpdate('company_payouts', id, updated as any); return res.json(row || updated) } catch {
       try { const row2 = await pgInsert('company_payouts', updated as any); return res.json(row2 || updated) } catch {}
     }
-  } else if (hasSupabase) {
-    try { const row = await supaUpdate('company_payouts', id, updated); return res.json(row || updated) } catch {
-      try { const { supaUpsert } = require('../supabase'); const row2 = await supaUpsert('company_payouts', updated); return res.json(row2 || updated) } catch {}
-    }
   }
   return res.json(updated)
 })
@@ -240,13 +236,6 @@ router.delete('/company-payouts/:id', requirePerm('finance.payout'), async (req,
       await pgDelete('company_payouts', id)
       const linked = await pgSelect('finance_transactions', '*', { ref_type: 'company_payout', ref_id: id })
       for (const r of (linked || []) as any[]) { if (r?.id) await pgDelete('finance_transactions', r.id) }
-      return res.json({ ok: true })
-    } catch {}
-  } else if (hasSupabase) {
-    try {
-      await supaDelete('company_payouts', id)
-      const linked = await supaSelect('finance_transactions', '*', { ref_type: 'company_payout', ref_id: id })
-      for (const r of (linked || []) as any[]) { if (r?.id) await supaDelete('finance_transactions', r.id) }
       return res.json({ ok: true })
     } catch {}
   }
@@ -264,13 +253,7 @@ router.post('/payouts', requirePerm('finance.payout'), async (req, res) => {
   const tx: FinanceTransaction = { id: uuid(), kind: 'expense', amount: p.amount, currency: 'AUD', occurred_at: new Date().toISOString(), ref_type: 'payout', ref_id: p.id, note: `landlord payout ${p.landlord_id}` }
   db.financeTransactions.push(tx)
   addAudit('FinanceTransaction', tx.id, 'create', null, tx)
-  if (hasSupabase) {
-    try {
-      await supaInsert('payouts', p)
-      await supaInsert('finance_transactions', tx)
-      return res.status(201).json(p)
-    } catch (e: any) { return res.status(500).json({ message: e?.message || 'supabase insert failed' }) }
-  }
+  // Supabase branch removed
   if (hasPg) {
     try {
       await pgInsert('payouts', p as any)
@@ -301,9 +284,6 @@ router.get('/payouts/:id', async (req, res) => {
     if (hasPg) {
       const rows = await pgSelect('payouts', '*', { id })
       if (rows && rows[0]) return res.json(rows[0])
-    } else if (hasSupabase) {
-      const rows = await supaSelect('payouts', '*', { id })
-      if (rows && (rows as any[])[0]) return res.json((rows as any[])[0])
     }
   } catch {}
   const local = db.payouts.find(x => x.id === id)
@@ -316,14 +296,7 @@ router.delete('/payouts/:id', requirePerm('finance.payout'), async (req, res) =>
   const idx = db.payouts.findIndex(x => x.id === id)
   if (idx !== -1) db.payouts.splice(idx, 1)
   db.financeTransactions = db.financeTransactions.filter(t => !(t.ref_type === 'payout' && t.ref_id === id))
-  if (hasSupabase) {
-    try {
-      await supaDelete('payouts', id)
-      const linked = await supaSelect('finance_transactions', '*', { ref_type: 'payout', ref_id: id })
-      for (const r of (linked || []) as any[]) { if (r?.id) await supaDelete('finance_transactions', r.id) }
-      return res.json({ ok: true })
-    } catch {}
-  } else if (hasPg) {
+  if (hasPg) {
     try {
       await pgDelete('payouts', id)
       const linked = await pgSelect('finance_transactions', '*', { ref_type: 'payout', ref_id: id })
@@ -346,11 +319,7 @@ router.patch('/:id', requirePerm('finance.tx.write'), async (req, res) => {
   const updated: FinanceTransaction = { ...(prev || ({} as any)), ...(parsed.data as any), id }
   if (idx !== -1) db.financeTransactions[idx] = updated
   else db.financeTransactions.push(updated)
-  if (hasSupabase) {
-    try { const row = await supaUpdate('finance_transactions', id, updated); return res.json(row || updated) } catch {
-      try { const { supaUpsert } = require('../supabase'); const row2 = await supaUpsert('finance_transactions', updated); return res.json(row2 || updated) } catch {}
-    }
-  } else if (hasPg) {
+  if (hasPg) {
     try { const row = await pgUpdate('finance_transactions', id, updated as any); return res.json(row || updated) } catch {
       try { await pgInsert('finance_transactions', updated as any); return res.json(updated) } catch {}
     }
@@ -362,9 +331,7 @@ router.delete('/:id', requirePerm('finance.tx.write'), async (req, res) => {
   const { id } = req.params
   const idx = db.financeTransactions.findIndex(x => x.id === id)
   if (idx !== -1) db.financeTransactions.splice(idx, 1)
-  if (hasSupabase) {
-    try { await supaDelete('finance_transactions', id); return res.json({ ok: true }) } catch {}
-  } else if (hasPg) {
+  if (hasPg) {
     try { await pgDelete('finance_transactions', id); return res.json({ ok: true }) } catch {}
   }
   return res.json({ ok: true })
