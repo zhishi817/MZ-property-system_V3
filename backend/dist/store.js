@@ -6,6 +6,8 @@ exports.addAudit = addAudit;
 exports.getRoleIdByName = getRoleIdByName;
 exports.roleHasPermission = roleHasPermission;
 const uuid_1 = require("uuid");
+const persistence_1 = require("./persistence");
+const dbAdapter_1 = require("./dbAdapter");
 exports.db = {
     keySets: [],
     keyFlows: [],
@@ -95,13 +97,13 @@ if (exports.db.payouts.length === 0 && exports.db.landlords.length) {
 }
 // RBAC seed
 if (exports.db.roles.length === 0) {
-    const adminId = (0, uuid_1.v4)();
-    const csId = (0, uuid_1.v4)(); // 客服
-    const cleanMgrId = (0, uuid_1.v4)(); // 清洁/检查管理员人员
-    const cleanerId = (0, uuid_1.v4)(); // 清洁和检查人员
-    const financeId = (0, uuid_1.v4)(); // 财务人员
-    const inventoryId = (0, uuid_1.v4)(); // 仓库管理员
-    const maintenanceId = (0, uuid_1.v4)(); // 维修人员
+    const adminId = 'role.admin';
+    const csId = 'role.customer_service';
+    const cleanMgrId = 'role.cleaning_manager';
+    const cleanerId = 'role.cleaner_inspector';
+    const financeId = 'role.finance_staff';
+    const inventoryId = 'role.inventory_manager';
+    const maintenanceId = 'role.maintenance_staff';
     exports.db.roles.push({ id: adminId, name: 'admin' }, { id: csId, name: 'customer_service' }, { id: cleanMgrId, name: 'cleaning_manager' }, { id: cleanerId, name: 'cleaner_inspector' }, { id: financeId, name: 'finance_staff' }, { id: inventoryId, name: 'inventory_manager' }, { id: maintenanceId, name: 'maintenance_staff' });
     exports.db.permissions = [
         { code: 'property.write' },
@@ -119,6 +121,25 @@ if (exports.db.roles.length === 0) {
         { code: 'inventory.move' },
         { code: 'landlord.manage' },
         { code: 'rbac.manage' },
+        // menu visibility controls
+        { code: 'menu.dashboard' },
+        { code: 'menu.landlords' },
+        { code: 'menu.properties' },
+        { code: 'menu.keys' },
+        { code: 'menu.inventory' },
+        { code: 'menu.finance' },
+        { code: 'menu.cleaning' },
+        { code: 'menu.rbac' },
+        { code: 'menu.cms' },
+        // submenu visibles
+        { code: 'menu.properties.list.visible' },
+        { code: 'menu.properties.keys.visible' },
+        { code: 'menu.properties.maintenance.visible' },
+        { code: 'menu.finance.expenses.visible' },
+        { code: 'menu.finance.recurring.visible' },
+        { code: 'menu.finance.orders.visible' },
+        { code: 'menu.finance.company_overview.visible' },
+        { code: 'menu.finance.company_revenue.visible' },
     ];
     function grant(roleId, codes) {
         codes.forEach(c => exports.db.rolePermissions.push({ role_id: roleId, permission_code: c }));
@@ -126,23 +147,77 @@ if (exports.db.roles.length === 0) {
     // 管理员：所有权限
     grant(adminId, exports.db.permissions.map(p => p.code));
     // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
-    grant(csId, ['property.write', 'order.view', 'order.write', 'order.manage', 'cleaning.view', 'finance.tx.write']);
+    grant(csId, ['property.write', 'order.view', 'order.write', 'order.manage', 'cleaning.view', 'finance.tx.write', 'menu.dashboard', 'menu.properties', 'menu.finance', 'menu.cleaning', 'menu.cms']);
     // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
-    grant(cleanMgrId, ['cleaning.schedule.manage', 'cleaning.task.assign']);
+    grant(cleanMgrId, ['cleaning.schedule.manage', 'cleaning.task.assign', 'menu.cleaning', 'menu.dashboard']);
     // 清洁/检查人员：无写权限，仅查看（后端接口默认允许 GET）
-    grant(cleanerId, []);
+    grant(cleanerId, ['menu.cleaning', 'menu.dashboard']);
     // 财务人员：财务结算与交易录入、房东/房源管理
-    grant(financeId, ['finance.payout', 'finance.tx.write', 'landlord.manage', 'property.write']);
+    grant(financeId, ['finance.payout', 'finance.tx.write', 'landlord.manage', 'property.write', 'menu.finance', 'menu.landlords', 'menu.properties', 'menu.dashboard']);
     // 仓库管理员：仓库与钥匙管理
-    grant(inventoryId, ['inventory.move', 'keyset.manage', 'key.flow']);
+    grant(inventoryId, ['inventory.move', 'keyset.manage', 'key.flow', 'menu.inventory', 'menu.keys', 'menu.dashboard']);
     // 维修人员：暂无写接口，预留
-    grant(maintenanceId, []);
+    grant(maintenanceId, ['menu.dashboard']);
 }
+const defaultPerms = [
+    'property.view', 'property.write',
+    'order.view', 'order.create', 'order.write', 'order.sync', 'order.manage',
+    'keyset.manage', 'key.flow',
+    'cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign',
+    'finance.payout', 'finance.tx.write',
+    'inventory.move', 'landlord.manage',
+    'rbac.manage',
+    'menu.dashboard', 'menu.landlords', 'menu.properties', 'menu.keys', 'menu.inventory', 'menu.finance', 'menu.cleaning', 'menu.rbac', 'menu.cms'
+];
+defaultPerms.forEach((code) => { if (!exports.db.permissions.find(p => p.code === code))
+    exports.db.permissions.push({ code }); });
+try {
+    if (!dbAdapter_1.hasPg) {
+        const loadedRPs = (0, persistence_1.loadRolePermissions)();
+        if (Array.isArray(loadedRPs) && loadedRPs.length) {
+            exports.db.rolePermissions = loadedRPs;
+        }
+    }
+}
+catch (_c) { }
+const adminRole = exports.db.roles.find(r => r.name === 'admin');
+if (adminRole) {
+    defaultPerms.forEach((code) => {
+        if (!exports.db.rolePermissions.find(rp => rp.role_id === adminRole.id && rp.permission_code === code)) {
+            exports.db.rolePermissions.push({ role_id: adminRole.id, permission_code: code });
+        }
+    });
+}
+// granular CRUD resource permissions
+const resources = [
+    'properties', 'landlords', 'orders', 'cleaning_tasks', 'finance_transactions', 'company_expenses', 'property_expenses', 'fixed_expenses', 'company_incomes', 'property_incomes', 'recurring_payments', 'cms_pages', 'payouts', 'company_payouts', 'users', 'property_maintenance'
+];
+resources.forEach(r => {
+    const viewCode = `${r}.view`;
+    const writeCode = `${r}.write`;
+    const delCode = `${r}.delete`;
+    if (!exports.db.permissions.find(p => p.code === viewCode))
+        exports.db.permissions.push({ code: viewCode });
+    if (!exports.db.permissions.find(p => p.code === writeCode))
+        exports.db.permissions.push({ code: writeCode });
+    if (!exports.db.permissions.find(p => p.code === delCode))
+        exports.db.permissions.push({ code: delCode });
+    if (adminRole) {
+        if (!exports.db.rolePermissions.find(rp => rp.role_id === adminRole.id && rp.permission_code === viewCode))
+            exports.db.rolePermissions.push({ role_id: adminRole.id, permission_code: viewCode });
+        if (!exports.db.rolePermissions.find(rp => rp.role_id === adminRole.id && rp.permission_code === writeCode))
+            exports.db.rolePermissions.push({ role_id: adminRole.id, permission_code: writeCode });
+        if (!exports.db.rolePermissions.find(rp => rp.role_id === adminRole.id && rp.permission_code === delCode))
+            exports.db.rolePermissions.push({ role_id: adminRole.id, permission_code: delCode });
+    }
+});
 function getRoleIdByName(name) {
     var _a;
     return (_a = exports.db.roles.find(r => r.name === name)) === null || _a === void 0 ? void 0 : _a.id;
 }
 function roleHasPermission(roleName, perm) {
+    if (roleName === 'admin')
+        return true;
     const rid = getRoleIdByName(roleName);
     if (!rid)
         return false;

@@ -1,6 +1,5 @@
 import { Router } from 'express'
 import { db, FinanceTransaction, Payout, CompanyPayout, addAudit } from '../store'
-import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete } from '../supabase'
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
@@ -11,6 +10,7 @@ import { PDFDocument } from 'pdf-lib'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
+const hasSupabase = false
 
 router.get('/', async (_req, res) => {
   try {

@@ -72,6 +72,44 @@ export default forwardRef<HTMLDivElement, {
   const isPdf = (u?: string) => !!u && /\.pdf$/i.test(u)
   const resolveUrl = (u?: string) => (u && /^https?:\/\//.test(u)) ? u : (u ? `${API_BASE}${u}` : '')
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  function perDayPrice(o: Order): number {
+    const ci = o.checkin ? dayjs(o.checkin) : null
+    const co = o.checkout ? dayjs(o.checkout) : null
+    if (!ci || !co) return 0
+    const totalN = Math.max(co.diff(ci, 'day'), 0)
+    if (!totalN) return 0
+    return Number(o.price || 0) / totalN
+  }
+  const weekStart = start.startOf('week')
+  const weekEnd = end.endOf('week')
+  const days: any[] = []
+  { let d = weekStart.clone(); while (d.isBefore(weekEnd.add(1,'day'))) { days.push(d.clone()); d = d.add(1,'day') } }
+  function buildWeekSegments(ws: any, we: any) {
+    const segs: Array<{ id: string; startIdx: number; endIdx: number; o: Order }> = []
+    relatedOrders.forEach((o) => {
+      const ci = o.checkin ? dayjs(o.checkin).startOf('day') : null
+      const co = o.checkout ? dayjs(o.checkout).startOf('day') : null
+      if (!ci || !co) return
+      const s = ci.isAfter(ws) ? ci : ws
+      const e = co.isBefore(we.add(1,'millisecond')) ? co : we.add(1,'millisecond')
+      if (!(e.isAfter(s))) return
+      const startIdx = Math.max(0, s.diff(ws.startOf('day'), 'day'))
+      const endIdx = Math.max(0, e.subtract(1,'day').diff(ws.startOf('day'), 'day'))
+      segs.push({ id: o.id, startIdx, endIdx, o })
+    })
+    segs.sort((a,b)=> a.startIdx - b.startIdx || a.endIdx - b.endIdx)
+    const lanesEnd: number[] = []
+    const laneMap: Record<string, number> = {}
+    segs.forEach(seg => {
+      let placed = false
+      for (let i = 0; i < lanesEnd.length; i++) {
+        if (seg.startIdx > lanesEnd[i]) { laneMap[seg.id] = i; lanesEnd[i] = seg.endIdx; placed = true; break }
+      }
+      if (!placed) { laneMap[seg.id] = lanesEnd.length; lanesEnd.push(seg.endIdx) }
+    })
+    return { segs, laneMap, laneCount: lanesEnd.length }
+  }
+  const sourceColor: Record<string, string> = { airbnb: '#FF9F97', booking: '#98B6EC', offline: '#DC8C03', other: '#98B6EC' }
 
   return (
     <div ref={ref as any} style={{ padding: 24, fontFamily: 'Times New Roman, Times, serif' }}>
@@ -155,6 +193,52 @@ export default forwardRef<HTMLDivElement, {
           ))}
         </tbody>
       </table>
+
+
+      <div style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>Order Calendar</div>
+      {(() => {
+        const weeks: Array<{ ws: any; we: any }> = []
+        let cur = weekStart.clone()
+        while (cur.isBefore(weekEnd.add(1,'day'))) { const ws = cur.clone(); const we = cur.clone().endOf('week'); weeks.push({ ws, we }); cur = cur.add(1,'week') }
+        return (
+          <div>
+            {weeks.map(({ ws, we }, idx) => {
+              const { segs, laneMap, laneCount } = buildWeekSegments(ws, we)
+              const daysRow = Array.from({ length: 7 }).map((_, i) => ws.startOf('day').add(i, 'day'))
+              return (
+                <div key={idx} style={{ position:'relative', minHeight: Math.max(44, laneCount * 24 + 24), margin:'6px 0', background:'#fff' }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:0, padding:'2px 0', color:'#888', fontSize:11 }}>
+                    {daysRow.map((d, i) => (
+                      <div key={i} style={{ textAlign:'center' }}>{d.format('DD/MM')}</div>
+                    ))}
+                  </div>
+                  {[0,1,2,3,4,5,6].map(dIdx => (
+                    <div key={dIdx} style={{ position:'absolute', left: `${(dIdx * 100) / 7}%`, width: `${100/7}%`, top: 22, bottom:0, borderRight:'1px dashed #eee' }} />
+                  ))}
+                  {segs.map(seg => {
+                    const o = seg.o as any
+                    const isStart = seg.startIdx === Math.max(0, dayjs(o.checkin).diff(ws.startOf('day'),'day'))
+                    const isEnd = seg.endIdx === Math.max(0, dayjs(o.checkout).subtract(1,'day').diff(ws.startOf('day'),'day'))
+                    const accent = sourceColor[o.source || 'other'] || '#999'
+                    const leftPct = (seg.startIdx * 100) / 7
+                    const rightPct = ((6 - seg.endIdx) * 100) / 7
+                    const lane = laneMap[seg.id] || 0
+                    const radiusLeft = isStart ? 12 : 3
+                    const radiusRight = isEnd ? 12 : 3
+                    return (
+                      <div key={seg.id} style={{ position:'absolute', left: `${leftPct}%`, right: `${rightPct}%`, top: 26 + lane * 24, height: 20, background:'#f5f5f5', borderRadius: `${radiusLeft}px ${radiusRight}px ${radiusRight}px ${radiusLeft}px`, padding:'0 8px', display:'flex', alignItems:'center', fontSize:11, lineHeight:'20px' }}>
+                        {isStart ? <span style={{ position:'absolute', left: -6, top:0, bottom:0, width: '33%', background: accent, borderRadius: `${radiusLeft}px 0 0 ${radiusLeft}px` }} /> : null}
+                        {isEnd ? <span style={{ position:'absolute', right: -6, top:0, bottom:0, width: '33%', background: accent, borderRadius: `0 ${radiusRight}px ${radiusRight}px 0` }} /> : null}
+                        <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginLeft: isStart ? '33%' : 0, marginRight: isEnd ? '33%' : 0 }}>{String(o.guest_name || '')} ${fmt(Number(o.price || 0))}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })}
+          </div>
+        )
+      })()}
 
       <div style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>Expense Invoices 支出发票</div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap: 12 }}>

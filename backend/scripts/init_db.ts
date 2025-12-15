@@ -56,6 +56,10 @@ async function run() {
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS orientation text;`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS fireworks_view boolean;`,
     `ALTER TABLE properties ADD COLUMN IF NOT EXISTS archived boolean DEFAULT false;`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_name text;`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_name text;`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_id text;`,
+    `ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_id text;`,
 
     `CREATE TABLE IF NOT EXISTS landlords (
       id text PRIMARY KEY,
@@ -88,11 +92,37 @@ async function run() {
       price numeric,
       currency text,
       status text,
-      idempotency_key text UNIQUE,
+      idempotency_key text,
       created_at timestamptz DEFAULT now()
     );`,
     `CREATE INDEX IF NOT EXISTS idx_orders_property ON orders(property_id);`,
     `CREATE INDEX IF NOT EXISTS idx_orders_checkout ON orders(checkout);`,
+    `ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text;`,
+    `DO $$ BEGIN BEGIN ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_idempotency_key_key; EXCEPTION WHEN others THEN NULL; END; BEGIN DROP INDEX IF EXISTS idx_orders_idempotency_key_unique; EXCEPTION WHEN others THEN NULL; END; END $$;`,
+    `DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_orders_confirmation_code_unique') THEN
+        BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_orders_source_confirmation_code_unique') THEN
+        BEGIN DROP INDEX IF EXISTS idx_orders_source_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END;
+      END IF;
+    END $$;`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_src_cc_pid_unique ON orders(source, confirmation_code, property_id) WHERE confirmation_code IS NOT NULL;`,
+    `CREATE TABLE IF NOT EXISTS order_import_staging (
+      id text PRIMARY KEY,
+      channel text,
+      raw_row jsonb,
+      reason text,
+      listing_name text,
+      listing_id text,
+      property_code text,
+      property_id text REFERENCES properties(id) ON DELETE SET NULL,
+      status text DEFAULT 'unmatched',
+      created_at timestamptz DEFAULT now(),
+      resolved_at timestamptz
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_order_import_staging_status ON order_import_staging(status);`,
+    `CREATE INDEX IF NOT EXISTS idx_order_import_staging_created ON order_import_staging(created_at);`,
 
     `CREATE TABLE IF NOT EXISTS cleaning_tasks (
       id text PRIMARY KEY,

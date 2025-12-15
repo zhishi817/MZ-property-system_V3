@@ -10,12 +10,16 @@ exports.requirePerm = requirePerm;
 exports.requireAnyPerm = requireAnyPerm;
 exports.me = me;
 exports.setDeletePassword = setDeletePassword;
+exports.requireResourcePerm = requireResourcePerm;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
+const uuid_1 = require("uuid");
 const store_1 = require("./store");
 const dbAdapter_1 = require("./dbAdapter");
 const supabase_1 = require("./supabase");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const SECRET = process.env.JWT_SECRET || 'dev-secret';
+const SESSION_MAX_AGE_HOURS = Number(process.env.SESSION_MAX_AGE_HOURS || 5);
+const SESSION_IDLE_TIMEOUT_MINUTES = Number(process.env.SESSION_IDLE_TIMEOUT_MINUTES || 60);
 exports.users = {
     admin: { id: 'u-admin', username: 'admin', role: 'admin', password: process.env.ADMIN_PASSWORD || 'admin' },
     cs: { id: 'u-cs', username: 'cs', role: 'customer_service', password: process.env.CS_PASSWORD || 'cs' },
@@ -57,7 +61,28 @@ async function login(req, res) {
         const ok = await bcryptjs_1.default.compare(password, row.password_hash);
         if (!ok)
             return res.status(401).json({ message: 'invalid credentials' });
-        const token = jsonwebtoken_1.default.sign({ sub: row.id, role: row.role, username: row.username }, SECRET, { expiresIn: '7d' });
+        let sid = null;
+        if (dbAdapter_1.hasPg) {
+            try {
+                const { pgRunInTransaction } = require('./dbAdapter');
+                const sidNew = await pgRunInTransaction(async (client) => {
+                    var _a;
+                    await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [row.id]);
+                    const newSid = (0, uuid_1.v4)();
+                    const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString();
+                    const ua = String(req.headers['user-agent'] || '');
+                    const ip = String((req.ip || ((_a = req.socket) === null || _a === void 0 ? void 0 : _a.remoteAddress) || '')).slice(0, 255);
+                    await client.query('INSERT INTO sessions(id, user_id, created_at, last_seen_at, expires_at, revoked, ip, user_agent) VALUES($1,$2,now(),now(),$3,false,$4,$5)', [newSid, row.id, expiresAt, ip, ua]);
+                    return newSid;
+                });
+                sid = String(sidNew);
+            }
+            catch (_c) { }
+        }
+        const payload = { sub: row.id, role: row.role, username: row.username };
+        if (sid)
+            payload.sid = sid;
+        const token = jsonwebtoken_1.default.sign(payload, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` });
         return res.json({ token, role: row.role });
     }
     if (!row && store_1.db.users.length) {
@@ -68,7 +93,28 @@ async function login(req, res) {
             const ok = found.password_hash ? await bcryptjs_1.default.compare(password, found.password_hash) : false;
             if (!ok)
                 return res.status(401).json({ message: 'invalid credentials' });
-            const token = jsonwebtoken_1.default.sign({ sub: found.id, role: found.role, username: found.username || found.email }, SECRET, { expiresIn: '7d' });
+            let sid = null;
+            if (dbAdapter_1.hasPg) {
+                try {
+                    const { pgRunInTransaction } = require('./dbAdapter');
+                    const sidNew = await pgRunInTransaction(async (client) => {
+                        var _a;
+                        await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [found.id]);
+                        const newSid = (0, uuid_1.v4)();
+                        const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString();
+                        const ua = String(req.headers['user-agent'] || '');
+                        const ip = String((req.ip || ((_a = req.socket) === null || _a === void 0 ? void 0 : _a.remoteAddress) || '')).slice(0, 255);
+                        await client.query('INSERT INTO sessions(id, user_id, created_at, last_seen_at, expires_at, revoked, ip, user_agent) VALUES($1,$2,now(),now(),$3,false,$4,$5)', [newSid, found.id, expiresAt, ip, ua]);
+                        return newSid;
+                    });
+                    sid = String(sidNew);
+                }
+                catch (_d) { }
+            }
+            const payload = { sub: found.id, role: found.role, username: found.username || found.email };
+            if (sid)
+                payload.sid = sid;
+            const token = jsonwebtoken_1.default.sign(payload, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` });
             return res.json({ token, role: found.role });
         }
     }
@@ -76,18 +122,50 @@ async function login(req, res) {
     const u = exports.users[username];
     if (!u || u.password !== password)
         return res.status(401).json({ message: 'invalid credentials' });
-    const token = jsonwebtoken_1.default.sign({ sub: u.id, role: u.role, username: u.username }, SECRET, { expiresIn: '7d' });
+    const token = jsonwebtoken_1.default.sign({ sub: u.id, role: u.role, username: u.username }, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` });
     res.json({ token, role: u.role });
 }
-function auth(req, _res, next) {
+async function auth(req, res, next) {
     const h = req.headers.authorization;
     if (h && h.startsWith('Bearer ')) {
         const token = h.slice(7);
         try {
-            ;
-            req.user = jsonwebtoken_1.default.verify(token, SECRET);
+            const decoded = jsonwebtoken_1.default.verify(token, SECRET);
+            const sid = decoded === null || decoded === void 0 ? void 0 : decoded.sid;
+            if (sid && dbAdapter_1.hasPg) {
+                try {
+                    const rows = await (0, dbAdapter_1.pgSelect)('sessions', '*', { id: sid });
+                    const s = rows && rows[0];
+                    if (!s)
+                        return res.status(401).json({ message: 'session not found' });
+                    const now = Date.now();
+                    const exp = new Date(s.expires_at).getTime();
+                    const last = new Date(s.last_seen_at || s.created_at).getTime();
+                    const idleMs = SESSION_IDLE_TIMEOUT_MINUTES * 60 * 1000;
+                    if (s.revoked)
+                        return res.status(401).json({ message: 'session revoked' });
+                    if (exp < now)
+                        return res.status(401).json({ message: 'session expired' });
+                    if (now - last > idleMs)
+                        return res.status(401).json({ message: 'session idle timeout' });
+                    req.user = decoded;
+                    try {
+                        const { pgPool } = require('./dbAdapter');
+                        if (pgPool)
+                            await pgPool.query('UPDATE sessions SET last_seen_at=now() WHERE id=$1', [sid]);
+                    }
+                    catch (_a) { }
+                }
+                catch (e) {
+                    return res.status(401).json({ message: 'unauthorized' });
+                }
+            }
+            else {
+                ;
+                req.user = decoded;
+            }
         }
-        catch (_a) { }
+        catch (_b) { }
     }
     next();
 }
@@ -147,4 +225,21 @@ async function setDeletePassword(req, res) {
     catch (e) {
         return res.status(500).json({ message: e.message });
     }
+}
+function requireResourcePerm(kind) {
+    return (req, res, next) => {
+        var _a;
+        const user = req.user;
+        if (!user)
+            return res.status(401).json({ message: 'unauthorized' });
+        const role = String(user.role || '');
+        const resource = String(((_a = req.params) === null || _a === void 0 ? void 0 : _a.resource) || '');
+        if (!resource)
+            return res.status(400).json({ message: 'missing resource' });
+        const code = `${resource}.${kind}`;
+        const ok = (0, store_1.roleHasPermission)(role, code);
+        if (!ok)
+            return res.status(403).json({ message: 'forbidden' });
+        next();
+    };
 }

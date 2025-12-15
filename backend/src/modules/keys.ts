@@ -6,12 +6,12 @@ import path from 'path'
 import { hasR2, r2Upload } from '../r2'
 import { requirePerm } from '../auth'
 import { addAudit } from '../store'
-import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete } from '../supabase'
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import { v4 as uuidv4 } from 'uuid'
 import type { KeySet } from '../store'
 
 export const router = Router()
+const hasSupabase = false
 
 router.get('/', async (_req, res) => {
   try {

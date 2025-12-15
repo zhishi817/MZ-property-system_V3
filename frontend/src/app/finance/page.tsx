@@ -47,12 +47,39 @@ export default function FinancePage() {
   }
   useEffect(() => { load() }, [])
 
+  const monthStart = useMemo(() => dayjs().startOf('month'), [])
+  const monthEnd = useMemo(() => dayjs().endOf('month'), [])
+
   const totals = useMemo(() => {
-    const income = txs.filter(t => t.kind === 'income').reduce((s, x) => s + Number(x.amount || 0), 0)
-    const expense = txs.filter(t => t.kind === 'expense').reduce((s, x) => s + Number(x.amount || 0), 0)
+    const inMonth = (d: string) => {
+      const x = dayjs(d)
+      return x.isAfter(monthStart.subtract(1, 'millisecond')) && x.isBefore(monthEnd.add(1, 'millisecond'))
+    }
+    const txIncome = txs.filter(t => t.kind === 'income' && inMonth(t.occurred_at)).reduce((s, x) => s + Number(x.amount || 0), 0)
+    const txExpense = txs.filter(t => t.kind === 'expense' && inMonth(t.occurred_at)).reduce((s, x) => s + Number(x.amount || 0), 0)
+    const rentIncome = orders.reduce((s, x) => {
+      const ci = x.checkin ? dayjs(x.checkin) : null
+      const co = x.checkout ? dayjs(x.checkout) : null
+      if (!ci || !co) return s
+      const totalN = Math.max(co.diff(ci, 'day'), 0)
+      if (!totalN) return s
+      const segStart = ci.isAfter(monthStart) ? ci : monthStart
+      const segEnd = co.isBefore(monthEnd) ? co : monthEnd
+      const segN = Math.max(segEnd.diff(segStart, 'day'), 0)
+      const perDay = Number(x.price || 0) / totalN
+      return s + perDay * segN
+    }, 0)
+    const propExp = propExpenses.reduce((s, ex) => {
+      const t = ex.occurred_at ? dayjs(ex.occurred_at) : null
+      if (!t) return s
+      if (t.isAfter(monthStart.subtract(1,'day')) && t.isBefore(monthEnd.add(1,'day'))) return s + Number(ex.amount || 0)
+      return s
+    }, 0)
+    const income = rentIncome + txIncome
+    const expense = txExpense + propExp
     const net = Math.round(((income - expense) + Number.EPSILON) * 100) / 100
-    return { totalIncome: income, totalExpense: expense, net }
-  }, [txs])
+    return { totalIncome: Math.round((income + Number.EPSILON) * 100) / 100, totalExpense: Math.round((expense + Number.EPSILON) * 100) / 100, net }
+  }, [txs, orders, propExpenses, monthStart, monthEnd])
 
   const platformShare = useMemo(() => {
     const byKey: Record<string, number> = {}
@@ -191,8 +218,6 @@ export default function FinancePage() {
 
   const regions = ['City','Southbank','St Kilda','Docklands']
   const regionCounts = regions.map(reg => ({ region: reg, count: properties.filter(p => (p.region || '').toLowerCase() === reg.toLowerCase()).length }))
-  const monthStart = useMemo(() => dayjs().startOf('month'), [])
-  const monthEnd = useMemo(() => dayjs().endOf('month'), [])
   function overlapNights(ci?: string, co?: string) {
     if (!ci || !co) return 0
     const s = dayjs(ci).startOf('day'); const e = dayjs(co).startOf('day')

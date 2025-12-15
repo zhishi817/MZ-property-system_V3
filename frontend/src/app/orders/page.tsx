@@ -1,5 +1,5 @@
 "use client"
-import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, message, Select, Tag, InputNumber, Checkbox, Upload, Radio, Calendar } from 'antd'
+import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, Select, Tag, InputNumber, Checkbox, Upload, Radio, Calendar, App } from 'antd'
 import type { UploadProps } from 'antd'
 import { useEffect, useState, useRef } from 'react'
 import dayjs from 'dayjs'
@@ -11,6 +11,7 @@ type Order = { id: string; source?: string; checkin?: string; checkout?: string;
 type CleaningTask = { id: string; status: 'pending'|'scheduled'|'done' }
 
 export default function OrdersPage() {
+  const { message } = App.useApp()
   const [data, setData] = useState<Order[]>([])
   const [open, setOpen] = useState(false)
   const [form] = Form.useForm()
@@ -22,10 +23,15 @@ export default function OrdersPage() {
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [importOpen, setImportOpen] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [importSummary, setImportSummary] = useState<{ inserted: number; skipped: number; reason_counts?: Record<string, number> } | null>(null)
+  const [importResults, setImportResults] = useState<any[]>([])
+  const [unmatched, setUnmatched] = useState<any[]>([])
+  const [importPlatform, setImportPlatform] = useState<'airbnb'|'booking'|'other'>('airbnb')
   const [view, setView] = useState<'list'|'calendar'>('list')
   const [calMonth, setCalMonth] = useState(dayjs())
   const [calPid, setCalPid] = useState<string | undefined>(undefined)
   const calRef = useRef<HTMLDivElement | null>(null)
+  const [monthFilter, setMonthFilter] = useState<any>(dayjs())
   function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
   function getPropertyCodeLabel(o: Order) {
     const p = getPropertyById(o.property_id)
@@ -43,23 +49,67 @@ export default function OrdersPage() {
     return d.isValid() ? d.format('DD/MM/YYYY') : s
   }
   const uploadProps: UploadProps = {
-    beforeUpload: async (file) => {
+    customRequest: async (options: any) => {
+      const { file, onSuccess, onError } = options || {}
+      console.log('IMPORT CLICKED')
+      console.log('CSV FILE', file)
       setImporting(true)
       try {
-        const text = await file.text()
-        const isCsv = (file.type || '').includes('csv') || file.name.endsWith('.csv')
-        const headers = { Authorization: `Bearer ${localStorage.getItem('token')}`, 'Content-Type': isCsv ? 'text/csv' : 'application/json' }
-        const body = isCsv ? text : (() => { try { return JSON.stringify(JSON.parse(text)) } catch { return JSON.stringify([]) } })()
-        const res = await fetch(`${API_BASE}/orders/import`, { method: 'POST', headers, body })
-        const j = await res.json().catch(() => null)
-        if (res.ok) { message.success(`导入完成：新增 ${j?.inserted || 0}，跳过 ${j?.skipped || 0}`); setImportOpen(false); load() } else { message.error(j?.message || '导入失败') }
-      } catch { message.error('导入失败') }
+        const f: File = file as File
+        const isCsv = (f.type || '').includes('csv') || (f.name || '').toLowerCase().endsWith('.csv')
+        if (isCsv) {
+          const text = await f.text()
+          const headers = { 'Content-Type': 'text/csv', ...authHeaders() }
+          console.log('CALLING IMPORT API', `${API_BASE}/orders/import?channel=${importPlatform}`)
+          const res = await fetch(`${API_BASE}/orders/import?channel=${importPlatform}`, { method: 'POST', headers, body: text })
+          const j = await res.json().catch(() => null)
+          console.log('IMPORT API RESP', res.status, j)
+          if (res.ok) {
+            setImportSummary({ inserted: Number(j?.inserted || 0), skipped: Number(j?.skipped || 0), reason_counts: j?.reason_counts || {} })
+            setImportResults(Array.isArray(j?.results) ? (j.results || []).slice(0, 20) : [])
+            message.success(`导入完成：新增 ${j?.inserted || 0}，跳过 ${j?.skipped || 0}`)
+            const list = Array.isArray(j?.results) ? j.results.filter((r:any)=> r && r.error === 'unmatched_property').map((r:any)=> ({ id: r.id, listing_name: r.listing_name, confirmation_code: r.confirmation_code, channel: r.source || 'unknown', reason: 'unmatched_property' })) : []
+            setUnmatched(list)
+            onSuccess && onSuccess(j, file)
+            load()
+          } else {
+            onError && onError(j)
+            message.error(j?.message || '导入失败')
+          }
+        } else {
+          const reader = new FileReader()
+          const b64: string = await new Promise((resolve) => { reader.onload = () => resolve(String(reader.result)); reader.readAsDataURL(f) })
+          const headers = { 'Content-Type': 'application/json', ...authHeaders() }
+          const payload = { platform: importPlatform, fileType: 'excel', fileContent: b64 }
+          console.log('CALLING IMPORT API (excel)', `${API_BASE}/orders/actions/importBookings`)
+          const res = await fetch(`${API_BASE}/orders/actions/importBookings`, { method: 'POST', headers, body: JSON.stringify(payload) })
+          const j = await res.json().catch(() => null)
+          console.log('IMPORT API RESP (excel)', res.status, j)
+          if (res.ok) {
+            const errors = Array.isArray(j?.errors) ? j.errors : []
+            setImportSummary({ inserted: Number(j?.successCount || 0), skipped: Number(j?.errorCount || 0) })
+            message.success(`导入完成：新增 ${j?.successCount || 0}，失败 ${j?.errorCount || 0}`)
+            const list = errors.filter((e:any)=> e?.reason === '找不到房号' || e?.reason === 'unmatched_property').map((e:any)=> ({ id: e.stagingId, listing_name: e.listing_name, confirmation_code: e.confirmation_code, channel: 'unknown', reason: 'unmatched_property' }))
+            setUnmatched(list)
+            onSuccess && onSuccess(j, file)
+            load()
+          } else {
+            onError && onError(j)
+            message.error(j?.message || '导入失败')
+          }
+        }
+      } catch (err: any) {
+        console.error('IMPORT ERROR', err)
+        onError && onError(err)
+        message.error('导入失败')
+      }
       setImporting(false)
-      return false
     },
+    onChange(info) { console.log('UPLOAD CHANGE', info?.file?.status, info) },
+    onDrop(e) { console.log('UPLOAD DROP', e?.dataTransfer?.files) },
     multiple: false,
     showUploadList: false,
-    accept: '.csv,application/json,text/csv'
+    accept: '.csv,.xlsx,.xls,application/json,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel'
   }
 
   async function load() {
@@ -133,10 +183,10 @@ export default function OrdersPage() {
       guest_phone: v.guest_phone,
       checkin: v.checkin.format('YYYY-MM-DD') + 'T12:00:00',
       checkout: v.checkout.format('YYYY-MM-DD') + 'T11:59:59',
-      price,
-      cleaning_fee: cleaning,
-      net_income: net,
-      avg_nightly_price: avg,
+      price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price,
+      cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning,
+      net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net,
+      avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg,
       nights,
       currency: 'AUD',
     }
@@ -161,6 +211,15 @@ export default function OrdersPage() {
     }
   }
 
+  async function resolveImport(id: string, property_id?: string) {
+    if (!property_id) { message.warning('请选择房号'); return }
+    try {
+      const res = await fetch(`${API_BASE}/orders/import/resolve/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ property_id }) })
+      if (res.ok || res.status === 201) { message.success('已导入到订单'); setUnmatched(u => u.filter(x => x.id !== id)); load() } else { const j = await res.json().catch(()=>({} as any)); message.error(j?.message || '导入失败') }
+    } catch { message.error('导入失败') }
+  }
+
+  function money(v?: number) { const n = Number(v || 0); if (!isFinite(n)) return ''; return Number(n.toFixed(2)).toFixed(2) }
   const columns = [
     { title: '房号', dataIndex: 'property_code', render: (_: any, r: Order) => getPropertyCodeLabel(r) },
     { title: '确认码', dataIndex: 'confirmation_code' },
@@ -170,10 +229,10 @@ export default function OrdersPage() {
     { title: '入住', dataIndex: 'checkin', render: (_: any, r: Order) => fmtDay(r.checkin) },
     { title: '退房', dataIndex: 'checkout', render: (_: any, r: Order) => fmtDay(r.checkout) },
     { title: '天数', dataIndex: 'nights' },
-    { title: '总租金(AUD)', dataIndex: 'price' },
-    { title: '清洁费', dataIndex: 'cleaning_fee' },
-    { title: '总收入', dataIndex: 'net_income' },
-    { title: '晚均价', dataIndex: 'avg_nightly_price' },
+    { title: '总租金(AUD)', dataIndex: 'price', render: (v:any)=> money(v) },
+    { title: '清洁费', dataIndex: 'cleaning_fee', render: (v:any)=> money(v) },
+    { title: '总收入', dataIndex: 'net_income', render: (v:any)=> money(v) },
+    { title: '晚均价', dataIndex: 'avg_nightly_price', render: (v:any)=> money(v) },
     { title: '状态', dataIndex: 'status' },
     { title: '操作', render: (_: any, r: Order) => (
       <Space>
@@ -262,8 +321,9 @@ export default function OrdersPage() {
               position:'absolute',
               left: -6,
               right: -6,
-              top: 4 + lane * 22,
-              height: 20,
+              top: 4 + lane * 32,
+              height: 'auto',
+              minHeight: 28,
               background: '#f5f5f5',
               color:'#000',
               borderRadius: `${radiusLeft}px ${radiusRight}px ${radiusRight}px ${radiusLeft}px`,
@@ -271,11 +331,11 @@ export default function OrdersPage() {
               display:'flex',
               alignItems:'center',
               fontSize:11,
-              lineHeight:'20px'
+              lineHeight:'14px'
             }}>
               {isStart ? <span style={{ position:'absolute', left: -6, top:0, bottom:0, width: '33%', background: accent, borderRadius: `${radiusLeft}px 0 0 ${radiusLeft}px` }} /> : null}
               {isEnd ? <span style={{ position:'absolute', right: -6, top:0, bottom:0, width: '33%', background: accent, borderRadius: `0 ${radiusRight}px ${radiusRight}px 0` }} /> : null}
-              <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginLeft: isStart ? '33%' : 0, marginRight: isEnd ? '33%' : 0 }}>{(o.guest_name || '').toString()} ${Number(o.price||0).toFixed(0)}</span>
+              <span style={{ overflow:'visible', textOverflow:'clip', whiteSpace:'normal', wordBreak:'break-word', marginLeft: isStart ? '33%' : 0, marginRight: isEnd ? '33%' : 0 }}>{(o.guest_name || '').toString()} ${money(o.price)}</span>
             </div>
           )
         })}
@@ -293,6 +353,7 @@ export default function OrdersPage() {
         {view==='list' ? (
           <>
             <Input placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} style={{ width: 200 }} />
+            <DatePicker picker="month" value={monthFilter} onChange={setMonthFilter as any} />
             <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} format="DD/MM/YYYY" />
           </>
         ) : (
@@ -338,11 +399,14 @@ export default function OrdersPage() {
             (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
             (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
           )
-          return codeOk && rangeOk
+          const monthStart = (monthFilter || dayjs()).startOf('month')
+          const monthEnd = (monthFilter || dayjs()).endOf('month')
+          const monthOk = !monthFilter || (dayjs(o.checkout).isAfter(monthStart) && dayjs(o.checkin).isBefore(monthEnd))
+          return codeOk && rangeOk && monthOk
         })} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }} />
       ) : (
         <div ref={calRef}>
-          <Calendar value={calMonth} onChange={setCalMonth as any} fullscreen dateCellRender={dayCell as any} headerRender={() => null} />
+          <Calendar value={calMonth} onChange={setCalMonth as any} fullscreen cellRender={(date:any, info:any) => (info?.type === 'date' ? (dayCell(date) as any) : undefined)} headerRender={() => null} />
         </div>
       )}
       <Modal open={open} onCancel={() => setOpen(false)} onOk={submitCreate} title="新建订单">
@@ -423,10 +487,10 @@ export default function OrdersPage() {
               <Card size="small" style={{ marginTop: 8 }}>
                 <Space wrap>
                   <Tag color="blue">入住天数: {nights}</Tag>
-                  <Tag color="green">总收入: {net}</Tag>
+                  <Tag color="green">总收入: {Number(net).toFixed(2)}</Tag>
                   {v.late_checkout || v.late_checkout_fee ? <Tag color="purple">晚退收入: {lateFee}</Tag> : null}
                   {v.cancel_fee ? <Tag color="orange">取消费: {cancelFee}</Tag> : null}
-                  <Tag color="purple">晚均价: {avg}</Tag>
+                  <Tag color="purple">晚均价: {Number(avg).toFixed(2)}</Tag>
                 </Space>
               </Card>
             )
@@ -442,7 +506,7 @@ export default function OrdersPage() {
         const net = Math.max(0, price - cleaning)
         const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
         const selectedEdit = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
-        const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: net, avg_nightly_price: avg }
+        const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net, avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg, price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price, cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning }
         const res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ ...payload, force: true }) })
         if (res.ok) {
           async function writeIncome(amount: number, cat: string, note: string) {
@@ -527,10 +591,10 @@ export default function OrdersPage() {
                 <Card size="small" style={{ marginTop: 8 }}>
                   <Space wrap>
                     <Tag color="blue">入住天数: {nights}</Tag>
-                    <Tag color="green">总收入: {net}</Tag>
+                    <Tag color="green">总收入: {Number(net).toFixed(2)}</Tag>
                     {v.late_checkout || v.late_checkout_fee ? <Tag color="purple">晚退收入: {lateFee}</Tag> : null}
                     {v.cancel_fee ? <Tag color="orange">取消费: {cancelFee}</Tag> : null}
-                    <Tag color="purple">晚均价: {avg}</Tag>
+                    <Tag color="purple">晚均价: {Number(avg).toFixed(2)}</Tag>
                   </Space>
                 </Card>
               )
@@ -538,11 +602,60 @@ export default function OrdersPage() {
           </Form.Item>
         </Form>
     </Modal>
-    <Modal open={importOpen} onCancel={() => setImportOpen(false)} footer={null} title="批量导入订单">
+    <Modal open={importOpen} onCancel={() => setImportOpen(false)} footer={null} title="批量导入订单" width={960} styles={{ body: { maxHeight: 520, overflow: 'auto' } }}>
       <Upload.Dragger {...uploadProps} disabled={importing}>
-        <p>点击或拖拽上传 CSV 或 JSON 文件</p>
-        <p>CSV 需包含列：source, property_code 或 property_id, guest_name, checkin, checkout, price, cleaning_fee, currency, status</p>
+        <p>点击或拖拽上传 CSV 或 Excel 文件</p>
+        <p>平台导出 CSV 按表头解析（不依赖列顺序）：</p>
+        <p>Airbnb: Listing, Start date, End date, Amount, Cleaning fee, Guest, Confirmation Code</p>
+        <p>Booking: Property Name, Arrival, Departure, Total Payment, Booker Name, Reservation Number, Status</p>
       </Upload.Dragger>
+      <Space style={{ marginTop: 12 }}>
+        <span>Excel 平台：</span>
+        <Radio.Group value={importPlatform} onChange={(e)=> setImportPlatform(e.target.value)}>
+          <Radio.Button value="airbnb">Airbnb</Radio.Button>
+          <Radio.Button value="booking">Booking.com</Radio.Button>
+          <Radio.Button value="other">其他平台</Radio.Button>
+        </Radio.Group>
+      </Space>
+      {importSummary ? (
+        <Card size="small" style={{ marginTop: 12 }}>
+          <Space wrap>
+            <Tag color="green">新增: {importSummary.inserted}</Tag>
+            <Tag color="red">跳过: {importSummary.skipped}</Tag>
+            {Object.entries(importSummary.reason_counts || {}).map(([k,v]) => (<Tag key={k}>{k}: {v as any}</Tag>))}
+          </Space>
+          {importResults.length ? (
+            <Table rowKey="id" dataSource={importResults} pagination={false} style={{ marginTop: 12 }} size="small" scroll={{ x: 'max-content', y: 240 }}
+              columns={[
+                { title: '结果', dataIndex: 'ok', render: (v:any)=> v ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag> },
+                { title: '错误', dataIndex: 'error', render: (v:any)=> v ? <span style={{ wordBreak:'break-all' }}>{String(v)}</span> : '' },
+                { title: '来源', dataIndex: 'source' },
+                { title: '确认码', dataIndex: 'confirmation_code', render: (v:any)=> <span style={{ wordBreak:'break-all' }}>{v||''}</span> },
+                { title: 'Listing 名称', dataIndex: 'listing_name', render: (v:any)=> <span style={{ wordBreak:'break-all' }}>{v||''}</span> },
+                { title: '房号', dataIndex: 'property_code' },
+                { title: '详情', dataIndex: 'detail', render: (v:any)=> v ? <span style={{ wordBreak:'break-all' }}>{String(v)}</span> : '' },
+              ] as any}
+            />
+          ) : null}
+          {unmatched.length ? (
+            <Table rowKey="id" dataSource={unmatched} pagination={false} style={{ marginTop: 12 }} size="small" scroll={{ x: 'max-content', y: 300 }}
+              columns={[
+                { title: '来源', dataIndex: 'channel' },
+                { title: '确认码', dataIndex: 'confirmation_code', render: (v:any)=> <span style={{ wordBreak:'break-all' }}>{v||''}</span> },
+                { title: 'Listing 名称', dataIndex: 'listing_name', render: (v:any)=> <span style={{ wordBreak:'break-all' }}>{v||''}</span> },
+                { title: '失败原因', dataIndex: 'reason', render: (v:any)=> <Tag color="red">{String(v||'').replace('unmatched_property','找不到房号').replace('missing_confirmation_code','确认码为空').replace('write_failed','写入失败')}</Tag> },
+                { title: '选择房号并导入', render: (_:any, r:any) => (
+                  <Space>
+                    <Select showSearch placeholder="选择房号" style={{ width: 220 }} options={properties.map(p=>({value:p.id,label:p.code||p.address||p.id}))}
+                      onChange={(pid)=>{ (r as any).__pid = pid }} />
+                    <Button type="primary" onClick={()=> resolveImport(r.id, (r as any).__pid)}>导入</Button>
+                  </Space>
+                ) }
+              ] as any}
+            />
+          ) : <p style={{ marginTop: 12 }}>无未匹配记录</p>}
+        </Card>
+      ) : null}
     </Modal>
     </Card>
   )

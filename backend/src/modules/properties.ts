@@ -1,12 +1,12 @@
 import { Router } from 'express'
 import { db, Property, addAudit } from '../store'
-import { hasSupabase, supaSelect, supaInsert, supaUpdate, supaDelete } from '../supabase'
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import { z } from 'zod'
 import { requirePerm } from '../auth'
 import { v4 as uuidv4 } from 'uuid'
 
 export const router = Router()
+const hasSupabase = false
 
 router.get('/', (req, res) => {
   const q: any = req.query || {}
@@ -68,6 +68,10 @@ const createSchema = z.object({
   orientation: z.string().optional(),
   fireworks_view: z.boolean().optional(),
   listing_names: z.record(z.string()).optional(),
+  airbnb_listing_name: z.string().optional(),
+  booking_listing_name: z.string().optional(),
+  airbnb_listing_id: z.string().optional(),
+  booking_listing_id: z.string().optional(),
 })
 
 router.post('/', requirePerm('property.write'), async (req, res) => {
@@ -75,15 +79,23 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     const ln = (parsed.data as any).listing_names || {}
-    const hasAny = Object.values(ln || {}).some((v: any) => String(v || '').trim())
-    if (!hasAny) return res.status(400).json({ message: '请至少填写一个平台的 Listing 名称' })
+    const hasAnyObj = Object.values(ln || {}).some((v: any) => String(v || '').trim())
+    const hasAnyFlat = [
+      (parsed.data as any).airbnb_listing_name,
+      (parsed.data as any).booking_listing_name,
+    ].some((v: any) => String(v || '').trim())
+    if (!hasAnyObj && !hasAnyFlat) return res.status(400).json({ message: '请至少填写一个平台的 Listing 名称' })
   } catch {}
   const autoCode = `PM-${Math.random().toString(36).slice(2,6).toUpperCase()}-${Date.now().toString().slice(-4)}`
   const actor = (req as any).user
   const pFull: any = { id: uuidv4(), code: parsed.data.code || autoCode, created_by: actor?.sub || actor?.username || null, ...parsed.data }
-  const baseKeys = ['id','address','type','capacity','region','area_sqm','biz_category','building_name','building_facilities','building_facility_floor','building_facility_other','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','aircon_model','bedroom_ac','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id','created_by']
+  const lnObj = (pFull.listing_names || {}) as any
+  pFull.airbnb_listing_name = pFull.airbnb_listing_name || lnObj.airbnb || null
+  pFull.booking_listing_name = pFull.booking_listing_name || lnObj.booking || null
+  pFull.listing_names = { other: (lnObj.other || '') }
+  const baseKeys = ['id','code','address','type','capacity','region','area_sqm','biz_category','building_name','building_facilities','building_facility_floor','building_facility_other','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','aircon_model','bedroom_ac','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id','created_by','listing_names','airbnb_listing_name','booking_listing_name','airbnb_listing_id','booking_listing_id']
   const pBase: any = Object.fromEntries(Object.entries(pFull).filter(([k]) => baseKeys.includes(k)))
-  const minimalKeys = ['id','address','type','capacity','region','area_sqm','notes']
+  const minimalKeys = ['id','code','address','type','capacity','region','area_sqm','notes','listing_names']
   const pMinimal: any = Object.fromEntries(Object.entries(pFull).filter(([k]) => minimalKeys.includes(k)))
   try {
     if (hasSupabase) {
@@ -156,6 +168,30 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
             return res.status(500).json({ message: e2?.message || 'failed to add listing_names column' })
           }
         }
+        if (/column\s+"?airbnb_listing_name"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
+          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_name text')
+          const row2 = await pgUpdate('properties', id, bodyBase)
+          addAudit('Property', id, 'update', before, row2)
+          return res.json(row2)
+        }
+        if (/column\s+"?booking_listing_name"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
+          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_name text')
+          const row2 = await pgUpdate('properties', id, bodyBase)
+          addAudit('Property', id, 'update', before, row2)
+          return res.json(row2)
+        }
+        if (/column\s+"?airbnb_listing_id"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
+          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_id text')
+          const row2 = await pgUpdate('properties', id, bodyBase)
+          addAudit('Property', id, 'update', before, row2)
+          return res.json(row2)
+        }
+        if (/column\s+"?booking_listing_id"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
+          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_id text')
+          const row2 = await pgUpdate('properties', id, bodyBase)
+          addAudit('Property', id, 'update', before, row2)
+          return res.json(row2)
+        }
         if (/column\s+"?biz_category"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
           try {
             await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS biz_category text')
@@ -221,7 +257,13 @@ router.patch('/:id', requirePerm('property.write'), async (req, res) => {
   const { id } = req.params
   const body = req.body as any
   const cleanedBody: any = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'bedrooms'))
-  const baseKeys = ['address','type','capacity','region','area_sqm','biz_category','building_name','building_facilities','building_facility_floor','building_facility_other','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','aircon_model','bedroom_ac','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id','listing_names']
+  if (cleanedBody.listing_names && typeof cleanedBody.listing_names === 'object') {
+    const ln: any = cleanedBody.listing_names || {}
+    cleanedBody.airbnb_listing_name = cleanedBody.airbnb_listing_name || ln.airbnb || null
+    cleanedBody.booking_listing_name = cleanedBody.booking_listing_name || ln.booking || null
+    cleanedBody.listing_names = { other: (ln.other || '') }
+  }
+  const baseKeys = ['code','address','type','capacity','region','area_sqm','biz_category','building_name','building_facilities','building_facility_floor','building_facility_other','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','aircon_model','bedroom_ac','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id','listing_names','airbnb_listing_name','booking_listing_name','airbnb_listing_id','booking_listing_id']
   const actor = (req as any).user
   const bodyBaseRaw: any = Object.fromEntries(Object.entries(cleanedBody).filter(([k]) => baseKeys.includes(k)))
   const bodyBase: any = { ...bodyBaseRaw, updated_at: new Date(), updated_by: actor?.sub || actor?.username || null }
@@ -229,7 +271,7 @@ router.patch('/:id', requirePerm('property.write'), async (req, res) => {
     if (hasSupabase) {
       const rows: any = await supaSelect('properties', '*', { id })
       const before = rows && rows[0]
-      const minimalKeys = ['address','type','capacity','region','area_sqm','notes']
+      const minimalKeys = ['code','address','type','capacity','region','area_sqm','notes']
       const cleaned: any = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'bedrooms'))
       const bodyMinimal: any = Object.fromEntries(Object.entries(cleaned).filter(([k]) => minimalKeys.includes(k)))
       try {
@@ -317,17 +359,7 @@ router.delete('/:id', requirePerm('property.write'), async (req, res) => {
   const { id } = req.params
   const actor = (req as any).user
   try {
-    if (hasSupabase) {
-      const rows: any = await supaSelect('properties', '*', { id })
-      const before = rows && rows[0]
-      try {
-        const row = await supaUpdate('properties', id, { archived: true })
-        addAudit('Property', id, 'archive', before, row, actor?.sub)
-        return res.json({ id, archived: true })
-      } catch (e: any) {
-        return res.status(400).json({ message: '数据库缺少 archived 列，请先执行迁移：ALTER TABLE properties ADD COLUMN IF NOT EXISTS archived boolean DEFAULT false;' })
-      }
-    }
+    // Supabase branch removed
     if (hasPg) {
       const rows: any = await pgSelect('properties', '*', { id })
       const before = rows && rows[0]

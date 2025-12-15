@@ -41,6 +41,10 @@ export type Property = {
   keybox_location?: string
   keybox_code?: string
   garage_guide_link?: string
+  airbnb_listing_name?: string
+  booking_listing_name?: string
+  airbnb_listing_id?: string
+  booking_listing_id?: string
 }
 
 export type Order = {
@@ -123,6 +127,20 @@ export type CleaningTask = {
   checkin_time?: string
 }
 
+export type OrderImportStaging = {
+  id: string
+  channel?: string
+  raw_row?: any
+  reason?: string
+  listing_name?: string
+  listing_id?: string
+  property_code?: string
+  property_id?: string
+  status?: 'unmatched' | 'resolved'
+  created_at?: string
+  resolved_at?: string
+}
+
 export const db = {
   keySets: [] as KeySet[],
   keyFlows: [] as { id: string; key_set_id: string; action: 'borrow'|'return'|'lost'|'replace'; handler_id?: string; timestamp: string; note?: string; old_code?: string; new_code?: string }[],
@@ -130,6 +148,7 @@ export const db = {
   cleaningTasks: [] as CleaningTask[],
   cleaners: [] as { id: string; name: string; capacity_per_day: number }[],
   properties: [] as Property[],
+  orderImportStaging: [] as OrderImportStaging[],
   inventoryItems: [] as { id: string; name: string; sku: string; unit: string; threshold: number; bin_location?: string; quantity: number }[],
   stockMovements: [] as { id: string; item_id: string; type: 'in'|'out'; quantity: number; handler_id?: string; timestamp: string }[],
   audits: [] as { id: string; actor_id?: string; action: string; entity: string; entity_id: string; before?: any; after?: any; timestamp: string }[],
@@ -342,7 +361,7 @@ if (adminRole) {
 
 // granular CRUD resource permissions
 const resources = [
-  'properties','landlords','orders','cleaning_tasks','finance_transactions','company_expenses','property_expenses','fixed_expenses','company_incomes','property_incomes','recurring_payments','cms_pages','payouts','company_payouts','users','property_maintenance'
+  'properties','landlords','orders','cleaning_tasks','finance_transactions','company_expenses','property_expenses','fixed_expenses','company_incomes','property_incomes','recurring_payments','cms_pages','payouts','company_payouts','users','property_maintenance','order_import_staging'
 ]
 resources.forEach(r => {
   const viewCode = `${r}.view`
