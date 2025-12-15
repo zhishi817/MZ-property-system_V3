@@ -565,7 +565,7 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
       })
     }
   } catch {}
-  const results: { ok: boolean; id?: string; error?: string }[] = []
+  const results: any[] = []
   let inserted = 0
   let skipped = 0
   for (let idx = 0; idx < rowsInput.length; idx++) {
