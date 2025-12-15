@@ -26,7 +26,7 @@ export default function OrdersPage() {
   const [importSummary, setImportSummary] = useState<{ inserted: number; skipped: number; reason_counts?: Record<string, number> } | null>(null)
   const [importResults, setImportResults] = useState<any[]>([])
   const [unmatched, setUnmatched] = useState<any[]>([])
-  const [importPlatform, setImportPlatform] = useState<'airbnb'|'booking'>('airbnb')
+  const [importPlatform, setImportPlatform] = useState<'airbnb'|'booking'|'other'>('airbnb')
   const [view, setView] = useState<'list'|'calendar'>('list')
   const [calMonth, setCalMonth] = useState(dayjs())
   const [calPid, setCalPid] = useState<string | undefined>(undefined)
@@ -60,8 +60,8 @@ export default function OrdersPage() {
         if (isCsv) {
           const text = await f.text()
           const headers = { 'Content-Type': 'text/csv', ...authHeaders() }
-          console.log('CALLING IMPORT API', `${API_BASE}/orders/import`)
-          const res = await fetch(`${API_BASE}/orders/import`, { method: 'POST', headers, body: text })
+          console.log('CALLING IMPORT API', `${API_BASE}/orders/import?channel=${importPlatform}`)
+          const res = await fetch(`${API_BASE}/orders/import?channel=${importPlatform}`, { method: 'POST', headers, body: text })
           const j = await res.json().catch(() => null)
           console.log('IMPORT API RESP', res.status, j)
           if (res.ok) {
@@ -209,6 +209,14 @@ export default function OrdersPage() {
       try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} }
       message.error(msg)
     }
+  }
+
+  async function resolveImport(id: string, property_id?: string) {
+    if (!property_id) { message.warning('请选择房号'); return }
+    try {
+      const res = await fetch(`${API_BASE}/orders/import/resolve/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ property_id }) })
+      if (res.ok || res.status === 201) { message.success('已导入到订单'); setUnmatched(u => u.filter(x => x.id !== id)); load() } else { const j = await res.json().catch(()=>({} as any)); message.error(j?.message || '导入失败') }
+    } catch { message.error('导入失败') }
   }
 
   function money(v?: number) { const n = Number(v || 0); if (!isFinite(n)) return ''; return Number(n.toFixed(2)).toFixed(2) }
@@ -606,6 +614,7 @@ export default function OrdersPage() {
         <Radio.Group value={importPlatform} onChange={(e)=> setImportPlatform(e.target.value)}>
           <Radio.Button value="airbnb">Airbnb</Radio.Button>
           <Radio.Button value="booking">Booking.com</Radio.Button>
+          <Radio.Button value="other">其他平台</Radio.Button>
         </Radio.Group>
       </Space>
       {importSummary ? (
@@ -616,7 +625,7 @@ export default function OrdersPage() {
             {Object.entries(importSummary.reason_counts || {}).map(([k,v]) => (<Tag key={k}>{k}: {v as any}</Tag>))}
           </Space>
           {importResults.length ? (
-            <Table rowKey={(r:any, i:number)=> String(r?.id || i)} dataSource={importResults} pagination={false} style={{ marginTop: 12 }} size="small" scroll={{ x: true, y: 240 }}
+            <Table rowKey="id" dataSource={importResults} pagination={false} style={{ marginTop: 12 }} size="small" scroll={{ x: 'max-content', y: 240 }}
               columns={[
                 { title: '结果', dataIndex: 'ok', render: (v:any)=> v ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag> },
                 { title: '错误', dataIndex: 'error', render: (v:any)=> v ? <span style={{ wordBreak:'break-all' }}>{String(v)}</span> : '' },
@@ -629,7 +638,7 @@ export default function OrdersPage() {
             />
           ) : null}
           {unmatched.length ? (
-            <Table rowKey={(r:any)=>r.id} dataSource={unmatched} pagination={false} style={{ marginTop: 12 }} size="small" scroll={{ x: true, y: 300 }}
+            <Table rowKey="id" dataSource={unmatched} pagination={false} style={{ marginTop: 12 }} size="small" scroll={{ x: 'max-content', y: 300 }}
               columns={[
                 { title: '来源', dataIndex: 'channel' },
                 { title: '确认码', dataIndex: 'confirmation_code', render: (v:any)=> <span style={{ wordBreak:'break-all' }}>{v||''}</span> },
@@ -660,11 +669,4 @@ export default function OrdersPage() {
     if (allDone) return <Tag color="green">已完成</Tag>
     if (anyScheduled) return <Tag color="blue">已排班</Tag>
     return <Tag color="orange">待安排</Tag>
-  }
-  async function resolveImport(id: string, property_id?: string) {
-    if (!property_id) { message.warning('请选择房号'); return }
-    try {
-      const res = await fetch(`${API_BASE}/orders/import/resolve/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ property_id }) })
-      if (res.ok || res.status === 201) { message.success('已导入到订单'); setUnmatched(u => u.filter(x => x.id !== id)); load() } else { const j = await res.json().catch(()=>({} as any)); message.error(j?.message || '导入失败') }
-    } catch { message.error('导入失败') }
   }

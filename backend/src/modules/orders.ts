@@ -855,10 +855,10 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
   try {
     const body: any = req.body || {}
     const platformRaw = String(body.platform || '').trim().toLowerCase()
-    const platform = platformRaw.startsWith('airbnb') ? 'airbnb' : (platformRaw.startsWith('booking') ? 'booking' : '')
+    const platform = platformRaw.startsWith('airbnb') ? 'airbnb' : (platformRaw.startsWith('booking') ? 'booking' : 'other')
     const fileType = String(body.fileType || '').trim().toLowerCase()
     const fileContent = String(body.fileContent || '')
-    if (!platform || !fileType || !fileContent) return res.status(400).json({ message: 'missing platform/fileType/fileContent' })
+    if (!fileType || !fileContent) return res.status(400).json({ message: 'missing fileType/fileContent' })
 
     function decodeBase64DataUrl(dataUrl: string): Buffer {
       const m = /^data:[^;]+;base64,(.*)$/i.exec(dataUrl)
@@ -929,34 +929,54 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
       const status = stLower === 'ok' ? 'confirmed' : (stLower.includes('cancel') ? 'cancelled' : 'other')
       return { confirmation_code, check_in, check_out, guest_name, listing_name, amount, cleaning_fee: undefined, status }
     }
+    function normOther(r: Record<string, any>) {
+      const confirmation_code = getField(r, ['confirmation_code','Confirmation Code','Reservation Number','订单号'])
+      const check_in = getField(r, ['check_in','checkin','Start date','Arrival','入住'])
+      const check_out = getField(r, ['check_out','checkout','End date','Departure','退房'])
+      const guest_name = getField(r, ['guest_name','Guest','Booker Name','客人'])
+      const listing_name = getField(r, ['listing_name','Listing','Property Name','房号'])
+      const amount = toNumber(getField(r, ['Amount','Total Payment','price','总金额']))
+      const status = (getField(r, ['status','状态']) || 'confirmed').toLowerCase()
+      return { confirmation_code, check_in, check_out, guest_name, listing_name, amount, cleaning_fee: undefined, status }
+    }
 
     // parse to records
     const recordsAll: any[] = fileType === 'csv' ? (await parseCsvText(fileContent)) : (await parseExcelBase64(fileContent))
     const buildVersion = (process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown') as string
     try { console.log('IMPORT_BUILD', buildVersion) } catch {}
-    const normalize = platform === 'airbnb' ? normAirbnb : normBooking
+    const normalize = platform === 'airbnb' ? normAirbnb : (platform === 'booking' ? normBooking : normOther)
 
     // build property match indexes
     const byName: Record<string, string> = {}
     const idToCode: Record<string, string> = {}
     try {
       if (hasPg) {
-        const cols = platform === 'airbnb' ? 'id,code,airbnb_listing_name' : 'id,code,booking_listing_name'
+        const cols = platform === 'airbnb' ? 'id,code,airbnb_listing_name' : (platform === 'booking' ? 'id,code,booking_listing_name' : 'id,code,listing_names')
         const propsRaw: any[] = (await pgSelect('properties', cols)) || []
         propsRaw.forEach((p: any) => {
           const id = String(p.id)
           const code = String(p.code || '')
           if (code) idToCode[id] = code
-          const nm = String((platform === 'airbnb' ? p.airbnb_listing_name : p.booking_listing_name) || '')
-          if (nm) byName[nm.trim().toLowerCase()] = id
+          if (platform === 'airbnb' || platform === 'booking') {
+            const nm = String((platform === 'airbnb' ? p.airbnb_listing_name : p.booking_listing_name) || '')
+            if (nm) byName[nm.trim().toLowerCase()] = id
+          } else {
+            const ln = p?.listing_names || {}
+            Object.values(ln || {}).forEach((nm: any) => { if (nm) byName[String(nm).trim().toLowerCase()] = id })
+          }
         })
       } else {
         (db.properties || []).forEach((p: any) => {
           const id = String(p.id)
           const code = String(p.code || '')
           if (code) idToCode[id] = code
-          const nm = String((platform === 'airbnb' ? p.airbnb_listing_name : (p as any).booking_listing_name) || '')
-          if (nm) byName[nm.trim().toLowerCase()] = id
+          if (platform === 'airbnb' || platform === 'booking') {
+            const nm = String((platform === 'airbnb' ? p.airbnb_listing_name : (p as any).booking_listing_name) || '')
+            if (nm) byName[nm.trim().toLowerCase()] = id
+          } else {
+            const ln = (p?.listing_names || {})
+            Object.values(ln || {}).forEach((nm: any) => { if (nm) byName[String(nm).trim().toLowerCase()] = id })
+          }
         })
       }
     } catch {}

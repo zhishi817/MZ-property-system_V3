@@ -5,6 +5,10 @@ import { db, addAudit } from '../store'
 
 const router = Router()
 const hasSupabase = false
+// stubs to satisfy TypeScript when Supabase is disabled
+async function supaSelect(_resource: string, _cols: string, _filter?: any): Promise<any[]> { return [] }
+async function supaUpdate(_resource: string, _id: string, _payload: any): Promise<any> { return null }
+async function supaDelete(_resource: string, _id: string): Promise<any> { return null }
 
 const ALLOW: Record<string, true> = {
   properties: true,
