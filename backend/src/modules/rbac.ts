@@ -8,6 +8,11 @@ import bcrypt from 'bcryptjs'
 
 export const router = Router()
 const hasSupabase = false
+// stubs for Supabase functions to satisfy TypeScript when Supabase is disabled
+async function supaSelect(_resource: string, _cols?: string, _filter?: any): Promise<any[]> { return [] }
+async function supaInsert(_resource: string, _payload: any): Promise<any> { return null }
+async function supaUpdate(_resource: string, _id: string, _payload: any): Promise<any> { return null }
+async function supaDelete(_resource: string, _id: string): Promise<any> { return null }
 
 router.get('/roles', (req, res) => {
   res.json(db.roles)

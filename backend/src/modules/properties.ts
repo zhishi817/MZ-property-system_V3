@@ -7,6 +7,11 @@ import { v4 as uuidv4 } from 'uuid'
 
 export const router = Router()
 const hasSupabase = false
+// stubs for Supabase functions to satisfy TypeScript when Supabase is disabled
+async function supaSelect(_resource: string, _cols?: string, _filter?: any): Promise<any[]> { return [] }
+async function supaInsert(_resource: string, _payload: any): Promise<any> { return null }
+async function supaUpdate(_resource: string, _id: string, _payload: any): Promise<any> { return null }
+async function supaDelete(_resource: string, _id: string): Promise<any> { return null }
 
 router.get('/', (req, res) => {
   const q: any = req.query || {}
@@ -16,7 +21,7 @@ router.get('/', (req, res) => {
       const arr = Array.isArray(rows) ? rows : []
       return res.json(includeArchived ? arr : arr.filter((x: any) => !x.archived))
     }
-    supaSelect('properties', '*', includeArchived ? undefined as any : { archived: false } as any)
+    supaSelect('properties', '*', includeArchived ? (undefined as any) : ({ archived: false } as any))
       .then(handle)
       .catch(() => {
         supaSelect('properties')
@@ -170,27 +175,27 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
         }
         if (/column\s+"?airbnb_listing_name"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
           await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_name text')
-          const row2 = await pgUpdate('properties', id, bodyBase)
-          addAudit('Property', id, 'update', before, row2)
-          return res.json(row2)
+          const row2 = await pgInsert('properties', pBase)
+          addAudit('Property', row2.id, 'create', null, row2)
+          return res.status(201).json(row2)
         }
         if (/column\s+"?booking_listing_name"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
           await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_name text')
-          const row2 = await pgUpdate('properties', id, bodyBase)
-          addAudit('Property', id, 'update', before, row2)
-          return res.json(row2)
+          const row2 = await pgInsert('properties', pBase)
+          addAudit('Property', row2.id, 'create', null, row2)
+          return res.status(201).json(row2)
         }
         if (/column\s+"?airbnb_listing_id"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
           await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_id text')
-          const row2 = await pgUpdate('properties', id, bodyBase)
-          addAudit('Property', id, 'update', before, row2)
-          return res.json(row2)
+          const row2 = await pgInsert('properties', pBase)
+          addAudit('Property', row2.id, 'create', null, row2)
+          return res.status(201).json(row2)
         }
         if (/column\s+"?booking_listing_id"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
           await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_id text')
-          const row2 = await pgUpdate('properties', id, bodyBase)
-          addAudit('Property', id, 'update', before, row2)
-          return res.json(row2)
+          const row2 = await pgInsert('properties', pBase)
+          addAudit('Property', row2.id, 'create', null, row2)
+          return res.status(201).json(row2)
         }
         if (/column\s+"?biz_category"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
           try {
@@ -340,7 +345,7 @@ router.get('/:id', (req, res) => {
   const { id } = req.params
   if (hasSupabase) {
     supaSelect('properties', '*', { id })
-      .then((rows) => { if (!rows || !rows[0]) return res.status(404).json({ message: 'not found' }); res.json(rows[0]) })
+      .then((rows: any) => { if (!rows || !rows[0]) return res.status(404).json({ message: 'not found' }); res.json(rows[0]) })
       .catch((err) => res.status(500).json({ message: err.message }))
     return
   }
