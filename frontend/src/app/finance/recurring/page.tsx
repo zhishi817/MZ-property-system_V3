@@ -7,7 +7,7 @@ import timezone from 'dayjs/plugin/timezone'
 import { useEffect, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 
-type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; is_paid?: boolean }
+type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; is_paid?: boolean }
 type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
 type Property = { id: string; code?: string; address?: string }
 
@@ -77,10 +77,13 @@ export default function RecurringPage() {
     { title:'下次到期', key:'next', render:(_:any,r:any)=> fmt(r.next_due_date) },
     { title:'付款账户', key:'acct', render:(_:any,r:Recurring)=> (
       <div style={{ fontSize:12, lineHeight:1.4 }}>
+        {r.payment_type ? <div>付款类型: {r.payment_type==='bank_account'?'Bank account': r.payment_type==='bpay'?'Bpay':'PayID'}</div> : null}
         {r.pay_account_name ? <div>收款方: {r.pay_account_name}</div> : null}
-        {r.pay_bsb ? <div>BSB: {r.pay_bsb}</div> : null}
-        {r.pay_account_number ? <div>Acc: {r.pay_account_number}</div> : null}
-        {r.pay_ref ? <div>Ref: {r.pay_ref}</div> : null}
+        {r.payment_type==='bank_account' && r.pay_bsb ? <div>BSB: {r.pay_bsb}</div> : null}
+        {r.payment_type==='bank_account' && r.pay_account_number ? <div>Acc: {r.pay_account_number}</div> : null}
+        {r.payment_type==='bpay' && r.bpay_code ? <div>Bpay code: {r.bpay_code}</div> : null}
+        {r.payment_type==='bpay' && r.pay_ref ? <div>Ref: {r.pay_ref}</div> : null}
+        {r.payment_type==='payid' && r.pay_mobile_number ? <div>Mobile: {r.pay_mobile_number}</div> : null}
       </div>
     ) },
     { title:'操作', key:'ops', render:(_:any,r:Recurring)=> (
@@ -311,14 +314,33 @@ export default function RecurringPage() {
           {editing ? null : (
             <Form.Item name="initial_mark" label="新增后状态" initialValue="unpaid"><Select options={[{value:'unpaid',label:'待支付'},{value:'paid',label:'已支付'}]} /></Form.Item>
           )}
-          <Form.Item label="付款账户">
-            <Space direction="vertical" style={{ width:'100%' }}>
-              <Form.Item name="pay_account_name" label="收款方"><Input /></Form.Item>
-              <Form.Item name="pay_bsb" label="BSB"><Input /></Form.Item>
-              <Form.Item name="pay_account_number" label="账户"><Input /></Form.Item>
-              <Form.Item name="pay_ref" label="Ref"><Input /></Form.Item>
-            </Space>
-          </Form.Item>
+          <Space direction="vertical" style={{ width:'100%' }}>
+            <Form.Item name="payment_type" label="付款类型" initialValue="bank_account">
+              <Select options={[{value:'bank_account',label:'Bank account'},{value:'bpay',label:'Bpay'},{value:'payid',label:'PayID'}]} />
+            </Form.Item>
+            <Form.Item name="pay_account_name" label="收款方"><Input /></Form.Item>
+            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.payment_type!==cur.payment_type}>
+              {()=> (form.getFieldValue('payment_type')==='bank_account' ? (
+                <>
+                  <Form.Item name="pay_bsb" label="BSB"><Input /></Form.Item>
+                  <Form.Item name="pay_account_number" label="账户"><Input /></Form.Item>
+                </>
+              ) : null)}
+            </Form.Item>
+            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.payment_type!==cur.payment_type}>
+              {()=> (form.getFieldValue('payment_type')==='bpay' ? (
+                <>
+                  <Form.Item name="bpay_code" label="Bpay code"><Input /></Form.Item>
+                  <Form.Item name="pay_ref" label="Ref"><Input /></Form.Item>
+                </>
+              ) : null)}
+            </Form.Item>
+            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.payment_type!==cur.payment_type}>
+              {()=> (form.getFieldValue('payment_type')==='payid' ? (
+                <Form.Item name="pay_mobile_number" label="Mobile number"><Input /></Form.Item>
+              ) : null)}
+            </Form.Item>
+          </Space>
         </Form>
       </Modal>
       <style jsx>{`
