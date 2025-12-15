@@ -211,28 +211,6 @@ router.patch('/:id', requirePerm('property.write'), async (req, res) => {
   const bodyBaseRaw: any = Object.fromEntries(Object.entries(cleanedBody).filter(([k]) => baseKeys.includes(k)))
   const bodyBase: any = { ...bodyBaseRaw, updated_at: new Date(), updated_by: actor?.sub || actor?.username || null }
   try {
-    if (hasSupabase) {
-      const rows: any = await supaSelect('properties', '*', { id })
-      const before = rows && rows[0]
-      const minimalKeys = ['code','address','type','capacity','region','area_sqm','notes']
-      const cleaned: any = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'bedrooms'))
-      const bodyMinimal: any = Object.fromEntries(Object.entries(cleaned).filter(([k]) => minimalKeys.includes(k)))
-      try {
-        const row = await supaUpdate('properties', id, cleaned)
-        addAudit('Property', id, 'update', before, row)
-        return res.json(row)
-      } catch (e: any) {
-        try {
-          const row = await supaUpdate('properties', id, bodyBase)
-          addAudit('Property', id, 'update', before, row)
-          return res.json(row)
-        } catch (e2: any) {
-          const row = await supaUpdate('properties', id, bodyMinimal)
-          addAudit('Property', id, 'update', before, row)
-          return res.json(row)
-        }
-      }
-    }
     if (hasPg) {
       const rows: any = await pgSelect('properties', '*', { id })
       const before = rows && rows[0]

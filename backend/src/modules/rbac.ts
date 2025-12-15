@@ -135,7 +135,7 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
   db.rolePermissions = db.rolePermissions.filter(rp => rp.role_id !== role_id)
   Array.from(set).forEach(code => db.rolePermissions.push({ role_id, permission_code: code }))
-  try { if (!hasPg && !hasSupabase) saveRolePermissions(db.rolePermissions) } catch {}
+  try { if (!hasPg) saveRolePermissions(db.rolePermissions) } catch {}
   res.json({ ok: true })
 })
 

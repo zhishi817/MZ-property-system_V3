@@ -200,10 +200,6 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             : [])
       if (hasPg) {
         if (payload.details && typeof payload.details !== 'string') payload.details = JSON.stringify(payload.details)
-      } else if (hasSupabase) {
-        if (payload.details && typeof payload.details === 'string') {
-          try { payload.details = JSON.parse(payload.details) } catch {}
-        }
       }
       if (payload.photo_urls && !Array.isArray(payload.photo_urls)) payload.photo_urls = [payload.photo_urls]
       // Resolve property_id by id or code (robust)
@@ -221,15 +217,6 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 payload.property_id = null
               }
             }
-          }
-        } else if (hasSupabase) {
-          const byCodeRaw = code ? await supaSelect('properties', 'id', { code }) : null
-          const byCode: any[] = Array.isArray(byCodeRaw) ? byCodeRaw : []
-          if (byCode[0]?.id) payload.property_id = byCode[0].id
-          if (payload.property_id) {
-            const byIdRaw = await supaSelect('properties', 'id', { id: payload.property_id })
-            const byId: any[] = Array.isArray(byIdRaw) ? byIdRaw : []
-            if (!byId[0]) payload.property_id = null
           }
         }
       } catch {}
