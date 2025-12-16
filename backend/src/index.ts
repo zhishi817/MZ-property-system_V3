@@ -20,17 +20,25 @@ import { router as versionRouter } from './modules/version'
 import maintenanceRouter from './modules/maintenance'
 import crudRouter from './modules/crud'
 import { auth } from './auth'
-// 环境保险锁，必须在任何数据库连接之前执行
-const appEnv = process.env.APP_ENV
-const dbRole = process.env.DATABASE_ROLE
-if (!appEnv || !dbRole) {
-  throw new Error('APP_ENV or DATABASE_ROLE is missing')
+// 环境保险锁（允许缺省采用智能默认，不再抛错）
+let appEnv = process.env.APP_ENV
+let dbRole = process.env.DATABASE_ROLE
+if (!appEnv) {
+  appEnv = process.env.NODE_ENV === 'production' ? 'prod' : 'dev'
+  process.env.APP_ENV = appEnv
 }
-if (appEnv === 'dev' && dbRole === 'prod') {
-  throw new Error('❌ DEV backend cannot connect to PROD database')
+if (!dbRole) {
+  const url = process.env.DATABASE_URL || ''
+  dbRole = url ? (/localhost/i.test(url) ? 'dev' : 'prod') : 'none'
+  process.env.DATABASE_ROLE = dbRole
 }
-if (appEnv === 'prod' && dbRole === 'dev') {
-  throw new Error('❌ PROD backend cannot connect to DEV database')
+if (dbRole !== 'none') {
+  if (appEnv === 'dev' && dbRole === 'prod') {
+    throw new Error('❌ DEV backend cannot connect to PROD database')
+  }
+  if (appEnv === 'prod' && dbRole === 'dev') {
+    throw new Error('❌ PROD backend cannot connect to DEV database')
+  }
 }
 import { hasPg, pgPool } from './dbAdapter'
 // Supabase removed
