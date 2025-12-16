@@ -1,5 +1,5 @@
 "use client"
-import { Card, Space, Button, Table, Tag, Modal, Form, Input, InputNumber, Select, DatePicker, Statistic, App } from 'antd'
+import { Card, Space, Button, Table, Tag, Modal, Form, Input, InputNumber, Select, DatePicker, Statistic, App, message as AntMessage } from 'antd'
 import dayjs from 'dayjs'
 import customParseFormat from 'dayjs/plugin/customParseFormat'
 import utc from 'dayjs/plugin/utc'
@@ -75,17 +75,24 @@ export default function RecurringPage() {
     { title:'状态', key:'st', render:(_:any,r:any)=> statusTag(r) },
     { title:'上次付款', key:'paid', render:(_:any,r:any)=> fmt(r.paid_date) },
     { title:'下次到期', key:'next', render:(_:any,r:any)=> fmt(r.next_due_date) },
-    { title:'付款账户', key:'acct', render:(_:any,r:Recurring)=> (
-      <div style={{ fontSize:12, lineHeight:1.4 }}>
-        {r.payment_type ? <div>付款类型: {r.payment_type==='bank_account'?'Bank account': r.payment_type==='bpay'?'Bpay':'PayID'}</div> : null}
-        {r.pay_account_name ? <div>收款方: {r.pay_account_name}</div> : null}
-        {r.payment_type==='bank_account' && r.pay_bsb ? <div>BSB: {r.pay_bsb}</div> : null}
-        {r.payment_type==='bank_account' && r.pay_account_number ? <div>Acc: {r.pay_account_number}</div> : null}
-        {r.payment_type==='bpay' && r.bpay_code ? <div>Bpay code: {r.bpay_code}</div> : null}
-        {r.payment_type==='bpay' && r.pay_ref ? <div>Ref: {r.pay_ref}</div> : null}
-        {r.payment_type==='payid' && r.pay_mobile_number ? <div>Mobile: {r.pay_mobile_number}</div> : null}
-      </div>
-    ) },
+    { title:'付款账户', key:'acct', width: 280, render:(_:any,r:Recurring & any)=> {
+      const type = r.payment_type
+      const accountName = r.pay_account_name || r.account_name
+      const bsb = r.pay_bsb || r.bsb
+      const accNo = r.pay_account_number || r.account_number
+      const bpayCode = r.bpay_code || r.pay_bpay_code
+      const bpayRef = r.pay_ref || r.bpay_ref
+      const mobile = r.pay_mobile_number || r.mobile_number
+      return (
+        <div style={{ fontSize:12, lineHeight:1.6, whiteSpace:'normal' }}>
+          {type ? <div>付款类型: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, type)}>{type==='bank_account'?'Bank account': type==='bpay'?'Bpay':'PayID'}</span></div> : null}
+          {accountName ? <div>收款方: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, accountName)}>{accountName}</span></div> : null}
+          {(bsb || accNo) ? <div>BSB: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, bsb)}>{bsb || '-'}</span> | Acc: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, accNo)}>{accNo || '-'}</span></div> : null}
+          {(bpayCode || bpayRef) ? <div>Bpay: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, bpayCode)}>{bpayCode || '-'}</span> | Ref: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, bpayRef)}>{bpayRef || '-'}</span></div> : null}
+          {mobile ? <div>Mobile: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, mobile)}>{mobile}</span></div> : null}
+        </div>
+      )
+    } },
     { title:'操作', key:'ops', render:(_:any,r:Recurring)=> (
       <Space>
         <Button onClick={()=>{ setEditing(r); setOpen(true); form.setFieldsValue({ ...r }) }}>编辑</Button>
@@ -364,3 +371,31 @@ export default function RecurringPage() {
     </Card>
   )
 }
+export function copyAtMouse(e: React.MouseEvent, val?: string) {
+  try { const t = String(val || '').trim(); if (!t) return; navigator.clipboard.writeText(t) } catch {}
+  const x = (e as any).clientX || 0
+  const y = (e as any).clientY || 0
+  const tip = document.createElement('div')
+  tip.textContent = '已复制'
+  tip.style.position = 'fixed'
+  tip.style.left = `${x + 12}px`
+  tip.style.top = `${y + 12}px`
+  tip.style.background = 'rgba(0,0,0,0.80)'
+  tip.style.color = '#fff'
+  tip.style.borderRadius = '6px'
+  tip.style.padding = '6px 10px'
+  tip.style.fontSize = '12px'
+  tip.style.zIndex = '10000'
+  tip.style.pointerEvents = 'none'
+  document.body.appendChild(tip)
+  window.setTimeout(() => { try { document.body.removeChild(tip) } catch {} }, 2000)
+}
+  function copy(val?: string) {
+    const t = String(val || '').trim()
+    if (!t) return
+    try { navigator.clipboard.writeText(t); (message as any)?.open ? (message as any).open({ type:'success', content:'已复制', duration: 2 }) : AntMessage.success('已复制', 2) } catch {
+      try {
+        const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); (message as any)?.open ? (message as any).open({ type:'success', content:'已复制', duration: 2 }) : AntMessage.success('已复制', 2)
+      } catch {}
+    }
+  }
