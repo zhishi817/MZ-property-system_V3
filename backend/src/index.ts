@@ -19,6 +19,7 @@ import { router as rbacRouter } from './modules/rbac'
 import { router as versionRouter } from './modules/version'
 import maintenanceRouter from './modules/maintenance'
 import crudRouter from './modules/crud'
+import recurringRouter from './modules/recurring'
 import { auth } from './auth'
 // 环境保险锁（允许缺省采用智能默认，不再抛错）
 let appEnv = process.env.APP_ENV
@@ -107,6 +108,7 @@ app.use('/orders', ordersRouter)
 app.use('/inventory', inventoryRouter)
 app.use('/finance', financeRouter)
 app.use('/crud', crudRouter)
+app.use('/recurring', recurringRouter)
 app.use('/cleaning', cleaningRouter)
 app.use('/config', configRouter)
 app.use('/auth', authRouter)
