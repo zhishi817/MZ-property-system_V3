@@ -390,12 +390,3 @@ function copyAtMouse(e: any, val?: string) {
   document.body.appendChild(tip)
   window.setTimeout(() => { try { document.body.removeChild(tip) } catch {} }, 2000)
 }
-  function copy(val?: string) {
-    const t = String(val || '').trim()
-    if (!t) return
-    try { navigator.clipboard.writeText(t); (message as any)?.open ? (message as any).open({ type:'success', content:'已复制', duration: 2 }) : AntMessage.success('已复制', 2) } catch {
-      try {
-        const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); (message as any)?.open ? (message as any).open({ type:'success', content:'已复制', duration: 2 }) : AntMessage.success('已复制', 2)
-      } catch {}
-    }
-  }
