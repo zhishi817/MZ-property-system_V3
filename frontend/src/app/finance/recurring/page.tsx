@@ -371,7 +371,7 @@ export default function RecurringPage() {
     </Card>
   )
 }
-export function copyAtMouse(e: React.MouseEvent, val?: string) {
+function copyAtMouse(e: any, val?: string) {
   try { const t = String(val || '').trim(); if (!t) return; navigator.clipboard.writeText(t) } catch {}
   const x = (e as any).clientX || 0
   const y = (e as any).clientY || 0
