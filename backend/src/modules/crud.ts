@@ -93,6 +93,35 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
               const sql2 = `SELECT * FROM ${resource}${w.clause}${orderBy}`
               const res2 = await pgPool.query(sql2, w.values)
               rows.push(...(res2?.rows || []))
+            } else if (resource === 'recurring_payments' && /relation\s+"?recurring_payments"?\s+does\s+not\s+exist/i.test(msg)) {
+              await pgPool.query(`CREATE TABLE IF NOT EXISTS recurring_payments (
+                id text PRIMARY KEY,
+                property_id text REFERENCES properties(id) ON DELETE SET NULL,
+                scope text,
+                vendor text,
+                category text,
+                category_detail text,
+                amount numeric,
+                due_day_of_month integer,
+                remind_days_before integer,
+                status text,
+                last_paid_date date,
+                next_due_date date,
+                pay_account_name text,
+                pay_bsb text,
+                pay_account_number text,
+                pay_ref text,
+                expense_id text,
+                expense_resource text,
+                payment_type text,
+                bpay_code text,
+                pay_mobile_number text,
+                created_at timestamptz DEFAULT now(),
+                updated_at timestamptz
+              );`)
+              const sql2 = `SELECT * FROM ${resource}${w.clause}${orderBy}`
+              const res2 = await pgPool.query(sql2, w.values)
+              rows.push(...(res2?.rows || []))
             } else {
               throw e
             }
@@ -518,6 +547,46 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             }
           } catch (e3) {
             return res.status(500).json({ message: (e3 as any)?.message || 'create failed (photo_urls text[])' })
+          }
+        } else if (resource === 'recurring_payments' && /relation\s+"?recurring_payments"?\s+does\s+not\s+exist/i.test(msg)) {
+          try {
+            const { pgPool } = require('../dbAdapter')
+            if (pgPool) {
+              await pgPool.query(`CREATE TABLE IF NOT EXISTS recurring_payments (
+                id text PRIMARY KEY,
+                property_id text REFERENCES properties(id) ON DELETE SET NULL,
+                scope text,
+                vendor text,
+                category text,
+                category_detail text,
+                amount numeric,
+                due_day_of_month integer,
+                remind_days_before integer,
+                status text,
+                last_paid_date date,
+                next_due_date date,
+                pay_account_name text,
+                pay_bsb text,
+                pay_account_number text,
+                pay_ref text,
+                expense_id text,
+                expense_resource text,
+                payment_type text,
+                bpay_code text,
+                pay_mobile_number text,
+                created_at timestamptz DEFAULT now(),
+                updated_at timestamptz
+              );`)
+              const allow = ['id','property_id','scope','vendor','category','category_detail','amount','due_day_of_month','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource','payment_type','bpay_code','pay_mobile_number']
+              const cleaned: any = { id: payload.id }
+              for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+              if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+              const row2 = await pgInsert(resource, cleaned)
+              addAudit(resource, String((row2 as any)?.id || ''), 'create', null, row2, (req as any).user?.sub)
+              return res.status(201).json(row2)
+            }
+          } catch (e2) {
+            return res.status(500).json({ message: (e2 as any)?.message || 'create failed (table init)' })
           }
         } else {
           if (resource === 'company_expenses' && /column\s+"?category_detail"?\s+of\s+relation\s+"?company_expenses"?\s+does\s+not\s+exist/i.test(msg)) {

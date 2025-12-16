@@ -80,16 +80,22 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     const propChildren: any[] = []
     if (hasPerm('menu.properties.list.visible')) propChildren.push({ key: 'properties-list', label: <Link href="/properties" prefetch={false}>房源列表</Link> })
     if (hasPerm('menu.properties.keys.visible')) propChildren.push({ key: 'properties-keys', label: <Link href="/keys" prefetch={false}>房源钥匙</Link> })
-    if (hasPerm('menu.properties.maintenance.visible')) propChildren.push({ key: 'properties-maintenance', label: <Link href="/maintenance" prefetch={false}>房源维修</Link> })
     items.push({ key: 'properties', icon: <ApartmentOutlined />, label: '房源管理', children: propChildren })
   }
+  if (hasPerm('menu.properties.maintenance.visible')) items.push({ key: 'maintenance', icon: <ProfileOutlined />, label: '房源维修', children: [
+    { key: 'maintenance-overview', label: <Link href="/maintenance/overview" prefetch={false}>维修总览</Link> },
+    { key: 'maintenance-records', label: <Link href="/maintenance" prefetch={false}>维修记录</Link> },
+  ] })
   if (hasPerm('menu.inventory')) items.push({ key: 'inventory', icon: <ProfileOutlined />, label: <Link href="/inventory" prefetch={false}>仓库库存</Link> })
   const financeChildren: any[] = []
-  if (hasPerm('menu.finance.company_overview.visible')) financeChildren.push({ key: 'finance-home', label: <Link href="/finance" prefetch={false}>财务总览</Link> })
   if (hasPerm('menu.finance.orders.visible')) financeChildren.push({ key: 'orders', label: <Link href="/orders" prefetch={false}>订单管理</Link> })
   if (hasPerm('menu.finance.expenses.visible')) financeChildren.push({ key: 'expenses', label: <Link href="/finance/expenses" prefetch={false}>房源支出</Link> })
   if (hasPerm('menu.finance.recurring.visible')) financeChildren.push({ key: 'finance-recurring', label: <Link href="/finance/recurring" prefetch={false}>固定支出</Link> })
-  if (hasPerm('menu.finance.company_overview.visible')) financeChildren.push({ key: 'company', label: <Link href="/finance/company-overview" prefetch={false}>房源营收</Link> })
+  if (hasPerm('menu.finance.company_overview.visible')) financeChildren.push({ key: 'finance-performance', label: '房源表现', children: [
+    { key: 'finance-performance-overview', label: <Link href="/finance/performance/overview" prefetch={false}>经营分析</Link> },
+    { key: 'finance-performance-revenue', label: <Link href="/finance/performance/revenue" prefetch={false}>房源营收</Link> },
+    { key: 'finance-performance-property', label: <Link href="/finance/performance/property" prefetch={false}>单房源分析</Link> },
+  ] })
   if (hasPerm('menu.finance.company_revenue.visible')) financeChildren.push({ key: 'company-revenue', label: <Link href="/finance/company-revenue" prefetch={false}>公司营收</Link> })
   if (hasPerm('menu.finance')) items.push({ key: 'finance', icon: <DollarOutlined />, label: '财务管理', children: financeChildren })
   if (hasPerm('menu.cleaning') || hasPerm('cleaning.task.assign') || role === 'customer_service' || role === 'cleaning_manager' || role === 'cleaner_inspector') items.push({ key: 'cleaning', icon: <CalendarOutlined />, label: <Link href="/cleaning" prefetch={false}>清洁安排</Link> })

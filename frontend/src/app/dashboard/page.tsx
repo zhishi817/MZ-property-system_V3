@@ -12,7 +12,7 @@ import { API_BASE, getJSON } from '../../lib/api'
 import { PieChart as RePieChart, Pie as RePie, Cell as ReCell, Tooltip as ReTooltip, Legend as ReLegend, ResponsiveContainer } from 'recharts'
 
 type Property = { id: string; code?: string; address?: string; region?: string; biz_category?: 'leased'|'management_fee' }
-type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; nights?: number; avg_nightly_price?: number; net_income?: number }
+type Order = { id: string; source?: string; property_id?: string; checkin?: string; checkout?: string; nights?: number; avg_nightly_price?: number; net_income?: number; price?: number }
 type PropertyExpense = { id: string; property_id?: string; amount?: number; occurred_at?: string }
 type Landlord = { id: string; name: string }
 
@@ -118,6 +118,33 @@ export default function DashboardPage() {
     const occ = propIds.length ? (nights / (propIds.length * daysInMonth)) * 100 : 0
     return { region: reg, occ: Math.round(occ * 100) / 100 }
   })
+
+  const platformShare = useMemo(() => {
+    const byKey: Record<string, number> = {}
+    for (const o of orders) {
+      const k = (o.source || 'other').toLowerCase()
+      byKey[k] = (byKey[k] || 0) + Number(o.price || 0)
+    }
+    const total = Object.values(byKey).reduce((s, v) => s + v, 0)
+    const rows = Object.entries(byKey).map(([key, value]) => ({ key, value, ratio: total > 0 ? (value / total) : 0, percent: total > 0 ? Math.round((value / total) * 100) : 0 }))
+    rows.sort((a, b) => b.value - a.value)
+    return rows
+  }, [orders])
+
+  const platformColors: Record<string, string> = { airbnb: '#FF9F97', booking: '#98B6EC', offline: '#DC8C03', other: '#98B6EC' }
+  const platformDonutGradient = useMemo(() => {
+    const segments = platformShare
+    if (!segments.length) return 'conic-gradient(#d9d9d9 0 360deg)'
+    let acc = 0
+    const parts: string[] = []
+    for (const seg of segments) {
+      const deg = seg.ratio * 360
+      const color = platformColors[seg.key] || '#5B8FF9'
+      parts.push(`${color} ${acc}deg ${acc + deg}deg`)
+      acc += deg
+    }
+    return `conic-gradient(${parts.join(', ')})`
+  }, [platformShare])
 
   const monthOrders = useMemo(() => orders.filter(o => overlapNights(o.checkin, o.checkout) > 0), [orders, monthStart, monthEnd])
   const dar = useMemo(() => {
@@ -299,6 +326,24 @@ export default function DashboardPage() {
       </Row>
       <Row gutter={[16,16]}>
         <Col xs={24} md={12}><Card title="房源管理类型占比" style={{ height: 300 }}><ManagementTypePieChart /></Card></Col>
+        <Col xs={24} md={12}><Card title="各平台订单占比" style={{ height: 300, display:'flex', flexDirection:'column' }}>
+          <div style={{ display:'flex', gap:16, alignItems:'center' }}>
+            <div style={{ width: 180, height: 180, borderRadius: '50%', background: platformDonutGradient, position:'relative' }}>
+              <div style={{ position:'absolute', left:'50%', top:'50%', transform:'translate(-50%, -50%)', width: 100, height: 100, borderRadius: '50%', background:'#fff' }} />
+            </div>
+            <div style={{ display:'grid', gap:8 }}>
+              {platformShare.map(r => (
+                <div key={r.key} style={{ display:'flex', alignItems:'center', gap:8 }}>
+                  <span style={{ display:'inline-block', width:12, height:12, borderRadius:2, background: platformColors[r.key] || '#5B8FF9' }} />
+                  <span style={{ width: 160 }}>{r.key==='airbnb' ? 'Airbnb' : r.key==='booking' ? 'Booking.com' : r.key==='offline' ? '线下客人' : '其他平台'}</span>
+                  <span>{r.percent}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card></Col>
+      </Row>
+      <Row gutter={[16,16]}>
         <Col xs={24} md={12}><Card title="各区域房源数量" extra={<span>总计：{totalProps}</span>} style={{ height: 300 }}><Space direction="vertical" style={{ width: '100%' }}>{regionCounts.map(rc => {
           const pct = totalProps ? Math.round((rc.count * 100) / totalProps) : 0
           return (
@@ -309,6 +354,15 @@ export default function DashboardPage() {
             </div>
           )
         })}</Space></Card></Col>
+        <Col xs={24} md={12}><Card title="各区域入住率" style={{ height: 300 }}><Space direction="vertical" style={{ width: '100%' }}>
+          {occupancyByRegion.map(r => (
+            <div key={r.region} style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <div style={{ width: 120 }}>{r.region}</div>
+              <div style={{ width: 240, background:'#eee', borderRadius:4 }}><div style={{ width: `${Math.min(100, Math.max(0, r.occ))}%`, height: 12, background:'#52c41a', borderRadius:4 }} /></div>
+              <div>{r.occ}%</div>
+            </div>
+          ))}
+        </Space></Card></Col>
       </Row>
       
     </Space>
