@@ -33,8 +33,8 @@ export default function MonthlyStatementPage() {
     if (!start || !end) return [] as Tx[]
     return txs.filter(t => t.kind === 'expense' && (!propertyId || t.property_id === propertyId) && dayjs(t.occurred_at).isAfter(start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(end.add(1,'day')))
   }, [txs, propertyId, start, end])
-  const totalIncome = useMemo(() => ordersInMonth.reduce((s, x) => s + Number((x as any).net_income || 0), 0), [ordersInMonth])
-  const occupiedNights = useMemo(() => ordersInMonth.reduce((s, x) => s + Number(x.nights || 0), 0), [ordersInMonth])
+  const totalIncome = useMemo(() => ordersInMonth.reduce((s: number, x: any) => s + Number((x as any).net_income || 0), 0), [ordersInMonth])
+  const occupiedNights = useMemo(() => ordersInMonth.reduce((s: number, x: any) => s + Number(x.nights || 0), 0), [ordersInMonth])
   const daysInMonth = end && start ? end.diff(start, 'day') + 1 : 30
   const occupancyRate = daysInMonth ? Math.round(((occupiedNights / daysInMonth) * 100 + Number.EPSILON) * 100) / 100 : 0
   const dailyAverage = occupiedNights ? Math.round(((totalIncome / occupiedNights) + Number.EPSILON) * 100) / 100 : 0
