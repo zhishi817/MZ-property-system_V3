@@ -4,6 +4,7 @@ import { LeftOutlined, RightOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { getJSON, API_BASE, authHeaders, apiList, apiCreate, apiUpdate, apiDelete } from '../../../lib/api'
+import { sortProperties } from '../../../lib/properties'
 
 type Order = { id: string; price?: number; cleaning_fee?: number; checkin?: string; checkout?: string; property_id?: string }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; occurred_at: string }
@@ -153,7 +154,7 @@ export default function CompanyRevenuePage() {
           <Form.Item name="category" label="类别" rules={[{ required: true }]}>
             <Select options={[{value:'mgmt_fee',label:'管理费'},{value:'cleaning_fee',label:'清洁费'},{value:'late_checkout',label:'晚退房费'},{value:'cancel_fee',label:'取消费'},{value:'other',label:'其他收入'}]} />
           </Form.Item>
-          <Form.Item name="property_id" label="房号(可选)"><Select allowClear showSearch options={properties.map(p=>({value:p.id,label:p.code||p.address||p.id}))} /></Form.Item>
+          <Form.Item name="property_id" label="房号(可选)"><Select allowClear showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))} /></Form.Item>
           <Form.Item name="note" label="备注"><Input /></Form.Item>
         </Form>
       </Modal>
@@ -178,7 +179,7 @@ export default function CompanyRevenuePage() {
                 return null
               }}
             </Form.Item>
-            <Form.Item name="property_id" label="房号(可选)"><Select allowClear showSearch options={properties.map(p=>({value:p.id,label:p.code||p.address||p.id}))} /></Form.Item>
+            <Form.Item name="property_id" label="房号(可选)"><Select allowClear showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))} /></Form.Item>
             <Form.Item name="note" label="备注"><Input /></Form.Item>
           </Form>
       </Modal>

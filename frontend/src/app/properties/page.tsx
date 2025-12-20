@@ -210,7 +210,37 @@ export default function PropertiesPage() {
           if (regionFilter === '未分区') return !p.region || String(p.region) === '其他'
           return String(p.region) === regionFilter
         }
-        const rows = data.filter(p => matchQuery(p) && matchRegion(p))
+        function cmpCode(a?: string, b?: string) {
+          const A = String(a || '').trim().toUpperCase()
+          const B = String(b || '').trim().toUpperCase()
+          if (!A && !B) return 0
+          if (!A) return 1
+          if (!B) return -1
+          const isDigitA = /\d/.test(A[0] || '')
+          const isDigitB = /\d/.test(B[0] || '')
+          if (isDigitA !== isDigitB) return isDigitA ? -1 : 1
+          const tok = (s: string) => s.match(/\d+|[A-Z]+|[^A-Z0-9]+/g) || []
+          const ta = tok(A)
+          const tb = tok(B)
+          const n = Math.min(ta.length, tb.length)
+          for (let i = 0; i < n; i++) {
+            const xa = ta[i]
+            const xb = tb[i]
+            const da = /^\d+$/.test(xa)
+            const db = /^\d+$/.test(xb)
+            if (da && db) {
+              const va = Number(xa)
+              const vb = Number(xb)
+              if (va !== vb) return va - vb
+            } else {
+              const c = xa.localeCompare(xb)
+              if (c !== 0) return c
+            }
+          }
+          if (ta.length !== tb.length) return ta.length - tb.length
+          return A.localeCompare(B)
+        }
+        const rows = data.filter(p => matchQuery(p) && matchRegion(p)).slice().sort((a,b)=> cmpCode(a.code, b.code))
         if (regionFilter) {
           return (
             <Table rowKey={(r:any)=>r.id} columns={columns as any} dataSource={rows} rowSelection={canWrite ? { selectedRowKeys, onChange: setSelectedRowKeys as any } : undefined} pagination={{ pageSize: 10 }} />
@@ -219,17 +249,17 @@ export default function PropertiesPage() {
         const groups: { name: string, rows: any[] }[] = []
         const used = new Set<string>()
         for (const r of known) {
-          const rs = rows.filter(x => String(x.region || '') === r)
+          const rs = rows.filter(x => String(x.region || '') === r).slice().sort((a,b)=> cmpCode(a.code, b.code))
           if (rs.length) { groups.push({ name: r, rows: rs }); used.add(r) }
         }
         const uniques = Array.from(new Set(rows.map(x => String(x.region || '未分区'))))
           .filter(name => name && name !== '其他' && !used.has(name) && name !== '未分区')
           .sort()
         for (const name of uniques) {
-          const rs = rows.filter(x => String(x.region || '') === name)
+          const rs = rows.filter(x => String(x.region || '') === name).slice().sort((a,b)=> cmpCode(a.code, b.code))
           if (rs.length) groups.push({ name, rows: rs })
         }
-        const unknown = rows.filter(x => !x.region || String(x.region) === '其他')
+        const unknown = rows.filter(x => !x.region || String(x.region) === '其他').slice().sort((a,b)=> cmpCode(a.code, b.code))
         if (unknown.length) groups.push({ name: '未分区', rows: unknown })
         return groups.map(g => (
           <div key={g.name}>

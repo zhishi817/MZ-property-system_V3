@@ -4,6 +4,7 @@ import type { UploadProps } from 'antd'
 import { useEffect, useState, useRef } from 'react'
 import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
+import { sortProperties } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 
 type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number }
@@ -359,7 +360,7 @@ export default function OrdersPage() {
         ) : (
           <>
             <DatePicker picker="month" value={calMonth} onChange={setCalMonth as any} />
-            <Select showSearch placeholder="选择房号" style={{ width: 220 }} value={calPid} onChange={setCalPid} options={properties.map(p=>({value:p.id,label:p.code||p.id}))} />
+            <Select showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="选择房号" style={{ width: 220 }} value={calPid} onChange={setCalPid} options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.id}))} />
             <Button onClick={async () => {
               if (!calPid) { message.warning('请选择房号'); return }
               if (!calRef.current) return
@@ -424,7 +425,7 @@ export default function OrdersPage() {
           <Select
             showSearch
             optionFilterProp="label"
-            options={(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.code || p.address || p.id }))}
+            options={sortProperties(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.code || p.address || p.id }))}
             onChange={(val, opt) => {
               const label = (opt as any)?.label || ''
               form.setFieldsValue({ property_code: label })
@@ -540,7 +541,7 @@ export default function OrdersPage() {
             <Select
               showSearch
               optionFilterProp="label"
-              options={(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.code || p.address || p.id }))}
+              options={sortProperties(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.code || p.address || p.id }))}
               onChange={(val, opt) => {
                 const label = (opt as any)?.label || ''
                 editForm.setFieldsValue({ property_code: label })
@@ -646,7 +647,7 @@ export default function OrdersPage() {
                 { title: '失败原因', dataIndex: 'reason', render: (v:any)=> <Tag color="red">{String(v||'').replace('unmatched_property','找不到房号').replace('missing_confirmation_code','确认码为空').replace('write_failed','写入失败')}</Tag> },
                 { title: '选择房号并导入', render: (_:any, r:any) => (
                   <Space>
-                    <Select showSearch placeholder="选择房号" style={{ width: 220 }} options={properties.map(p=>({value:p.id,label:p.code||p.address||p.id}))}
+                    <Select showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="选择房号" style={{ width: 220 }} options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))}
                       onChange={(pid)=>{ (r as any).__pid = pid }} />
                     <Button type="primary" onClick={()=> resolveImport(r.id, (r as any).__pid)}>导入</Button>
                   </Space>

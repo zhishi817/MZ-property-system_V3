@@ -5,6 +5,7 @@ import { jsPDF } from 'jspdf'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getJSON, apiList, API_BASE, authHeaders } from '../../../lib/api'
+import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/properties'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
 
@@ -90,7 +91,7 @@ export default function PropertyRevenuePage() {
 
   const rows = useMemo(() => {
     if (!start || !end) return [] as any[]
-    const list = selectedPid ? properties.filter(pp => pp.id === selectedPid) : properties
+    const list = selectedPid ? properties.filter(pp => pp.id === selectedPid) : sortPropertiesByRegionThenCode(properties as any)
     const out: any[] = []
     const rangeMonths: { start: any, end: any, label: string }[] = []
     let cur = start.startOf('month')
@@ -207,7 +208,7 @@ export default function PropertyRevenuePage() {
           options={[{value:'year',label:'全年(自然年)'},{value:'half-year',label:'半年'},{value:'fiscal-year',label:'财年(7月至次年6月)'}]}
         />
         {period==='half-year' ? <DatePicker picker="month" value={startMonth} onChange={setStartMonth as any} /> : null}
-        <Select allowClear placeholder="按房号筛选" style={{ width: 240 }} options={properties.map(p=>({ value:p.id, label:p.code || p.address || p.id }))} value={selectedPid} onChange={setSelectedPid} />
+        <Select allowClear showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="按房号筛选" style={{ width: 240 }} options={sortProperties(properties).map(p=>({ value:p.id, label:p.code || p.address || p.id }))} value={selectedPid} onChange={setSelectedPid} />
         <Button type="primary" onClick={() => { if (!selectedPid) { message.warning('请先选择房号'); return } setPreviewPid(selectedPid); setPreviewOpen(true) }}>生成报表</Button>
       </div>
       {/* totals summary removed per request */}
