@@ -1,6 +1,6 @@
 import dayjs from 'dayjs'
 
-export type OrderLike = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; source?: string; guest_name?: string }
+export type OrderLike = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; source?: string; guest_name?: string; net_income?: number; avg_nightly_price?: number }
 
 export function toDayStr(raw?: any): string {
   const str = String(raw || '')
