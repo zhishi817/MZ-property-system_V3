@@ -1,0 +1,52 @@
+.childContainer {
+  position: relative;
+  background: #FAFAFA;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+.leftBar {
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: #1677FF;
+  border-radius: 2px;
+}
+.childHeader {
+  font-weight: 600;
+  color: #1677FF;
+  margin: 0 0 6px 8px;
+}
+.childTable {
+  background: transparent;
+}
+.childTable :global(.ant-table) {
+  width: fit-content !important;
+  table-layout: fixed;
+}
+.childTable :global(.ant-table-container),
+.childTable :global(.ant-table-content) {
+  width: fit-content !important;
+}
+.childTable :global(.ant-table-thead > tr > th) {
+  background: #F5F5F5;
+  padding: 6px 8px;
+}
+.childTable :global(.ant-table-cell) {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  padding: 6px 8px;
+}
+@media (max-width: 768px) {
+  .childTable :global(.ant-table-cell) { padding: 3px 6px; font-size: 12px; }
+  .childHeader { font-size: 13px; }
+}
+
+.tableOuter {
+  overflow-x: auto;
+}
+.tableOuter :global(.ant-table-tbody > tr > td) {
+  padding: 6px 8px;
+}
