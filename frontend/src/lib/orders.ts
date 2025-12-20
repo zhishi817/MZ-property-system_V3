@@ -4,8 +4,7 @@ export type OrderLike = { id: string; property_id?: string; checkin?: string; ch
 
 export function toDayStr(raw?: any): string {
   const str = String(raw || '')
-  if (/^\d{4}-\d{2}-\d{2}T/.test(str)) return dayjs(str).format('YYYY-MM-DD')
-  const m = str.match(/^(\d{4}-\d{2}-\d{2})$/)
+  const m = str.match(/^(\d{4}-\d{2}-\d{2})/)
   return m ? m[1] : dayjs(str).format('YYYY-MM-DD')
 }
 
