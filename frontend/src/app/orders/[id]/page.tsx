@@ -3,6 +3,7 @@ import { Card, Descriptions, List, Badge, Space, Button, Drawer, Select, TimePic
 import { useEffect, useState } from 'react'
 import { API_BASE } from '../../../lib/api'
 import dayjs from 'dayjs'
+import { toDayStr } from '../../../lib/orders'
 import { hasPerm } from '../../../lib/auth'
 
 type Order = { id: string; source?: string; property_id?: string; checkin?: string; checkout?: string; status?: string }
@@ -43,8 +44,8 @@ export default function OrderDetail({ params }: { params: { id: string } }) {
       {order && (
         <Descriptions bordered size="small" column={1}>
           <Descriptions.Item label="来源">{order.source}</Descriptions.Item>
-          <Descriptions.Item label="入住">{order.checkin ? dayjs(order.checkin).format('DD/MM/YYYY') : ''}</Descriptions.Item>
-          <Descriptions.Item label="退房">{order.checkout ? dayjs(order.checkout).format('DD/MM/YYYY') : ''}</Descriptions.Item>
+          <Descriptions.Item label="入住">{order.checkin ? dayjs(toDayStr(order.checkin)).format('DD/MM/YYYY') : ''}</Descriptions.Item>
+          <Descriptions.Item label="退房">{order.checkout ? dayjs(toDayStr(order.checkout)).format('DD/MM/YYYY') : ''}</Descriptions.Item>
           <Descriptions.Item label="状态">{order.status}</Descriptions.Item>
         </Descriptions>
       )}
