@@ -1,5 +1,6 @@
 "use client"
 import dayjs from 'dayjs'
+import { monthSegments } from '../lib/orders'
 import { forwardRef } from 'react'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number }
@@ -29,17 +30,8 @@ export default forwardRef<HTMLDivElement, {
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
   const monthValues = monthRanges.map(r => {
-    const overlapping = orders.filter(o => o.property_id===propertyId && o.checkin && o.checkout && dayjs(o.checkout).isAfter(r.start) && dayjs(o.checkin).isBefore(r.end))
-    const rentIncome = overlapping.reduce((s, x) => {
-      const ci = dayjs(x.checkin!)
-      const co = dayjs(x.checkout!)
-      const totalN = Math.max(co.diff(ci,'day'), 0)
-      const segStart = ci.isAfter(r.start) ? ci : r.start
-      const segEnd = co.isBefore(r.end) ? co : r.end
-      const segN = Math.max(segEnd.diff(segStart,'day'), 0)
-      const perDay = totalN ? Number(x.price||0) / totalN : 0
-      return s + perDay * segN
-    }, 0)
+    const overlapping = monthSegments(orders.filter(o => o.property_id===propertyId), r.start)
+    const rentIncome = overlapping.reduce((s, x) => s + Number((x as any).net_income || 0), 0)
     const otherIncome = txs.filter(t => t.kind==='income' && t.property_id===propertyId && dayjs(t.occurred_at).isAfter(r.start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(r.end.add(1,'day'))).reduce((s, x) => s + Number(x.amount || 0), 0)
     const mgmt = landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON) * 100) / 100 : 0
     const sumCat = (c: string) => txs.filter(t => t.kind==='expense' && t.property_id===propertyId && t.category===c && dayjs(t.occurred_at).isAfter(r.start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(r.end.add(1,'day'))).reduce((s, x) => s + Number(x.amount || 0), 0)

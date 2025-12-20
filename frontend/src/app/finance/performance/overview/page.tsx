@@ -5,6 +5,7 @@ import minMax from 'dayjs/plugin/minMax'
 dayjs.extend(minMax)
 import { useEffect, useMemo, useState } from 'react'
 import { getJSON } from '../../../../lib/api'
+import { monthSegments } from '../../../../lib/orders'
 import { sortPropertiesByRegionThenCode } from '../../../../lib/properties'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number }
@@ -32,19 +33,11 @@ export default function PerformanceOverviewPage() {
       const mStart = base.subtract(i,'month').startOf('month')
       const mEnd = base.subtract(i,'month').endOf('month')
       const daysInMonth = mEnd.diff(mStart,'day') + 1
-      const occNights = orders.reduce((sum, o) => sum + overlapNights(o.checkin, o.checkout, mStart, mEnd), 0)
-      const rentIncome = orders.reduce((sum, o) => {
-        if (!o.checkin || !o.checkout) return sum
-        const ci = dayjs(o.checkin).startOf('day'); const co = dayjs(o.checkout).startOf('day')
-        const totalN = Math.max(co.diff(ci,'day'), 0)
-        if (!totalN) return sum
-        const a = dayjs.max(ci, mStart); const b = dayjs.min(co, mEnd)
-        const segN = Math.max(b.diff(a,'day'), 0)
-        const perDay = Number(o.price || 0) / totalN
-        return sum + perDay * segN
-      }, 0)
-      const cleaningCount = orders.filter(o => o.checkout && dayjs(o.checkout).isSame(mStart, 'month')).length
-      const cleaningFee = orders.filter(o => o.checkout && dayjs(o.checkout).isSame(mStart, 'month')).reduce((s,o)=> s + Number(o.cleaning_fee || 0), 0)
+      const segs = monthSegments(orders, mStart)
+      const occNights = segs.reduce((sum, o) => sum + Number(o.nights || 0), 0)
+      const rentIncome = segs.reduce((sum, o) => sum + Number((o as any).net_income || 0), 0)
+      const cleaningCount = segs.filter(o => Number(o.cleaning_fee || 0) > 0).length
+      const cleaningFee = segs.reduce((s,o)=> s + Number(o.cleaning_fee || 0), 0)
       const vacancyNights = Math.max(0, (properties.length * daysInMonth) - occNights)
       const occRate = properties.length ? Math.round(((occNights / (properties.length * daysInMonth)) * 100) * 100) / 100 : 0
       const adr = occNights ? Math.round(((rentIncome / occNights) + Number.EPSILON) * 100) / 100 : 0
@@ -55,19 +48,11 @@ export default function PerformanceOverviewPage() {
 
   const propRows = useMemo(() => {
     function propMonthStats(pid: string, start: any, end: any, dim: number) {
-      const occNights = orders.filter(o => String(o.property_id) === pid).reduce((sum, o) => sum + overlapNights(o.checkin, o.checkout, start, end), 0)
-      const rentIncome = orders.filter(o => String(o.property_id) === pid).reduce((sum, o) => {
-        if (!o.checkin || !o.checkout) return sum
-        const ci = dayjs(o.checkin).startOf('day'); const co = dayjs(o.checkout).startOf('day')
-        const totalN = Math.max(co.diff(ci,'day'), 0)
-        if (!totalN) return sum
-        const a = dayjs.max(ci, start); const b = dayjs.min(co, end)
-        const segN = Math.max(b.diff(a,'day'), 0)
-        const perDay = Number(o.price || 0) / totalN
-        return sum + perDay * segN
-      }, 0)
-      const cleaningFee = orders.filter(o => String(o.property_id) === pid && o.checkout && dayjs(o.checkout).isSame(start, 'month')).reduce((s,o)=> s + Number(o.cleaning_fee || 0), 0)
-      const cleaningCount = orders.filter(o => String(o.property_id) === pid && o.checkout && dayjs(o.checkout).isSame(start, 'month')).length
+      const segs = monthSegments(orders.filter(o => String(o.property_id) === pid), start)
+      const occNights = segs.reduce((sum, o) => sum + Number(o.nights || 0), 0)
+      const rentIncome = segs.reduce((sum, o) => sum + Number((o as any).net_income || 0), 0)
+      const cleaningFee = segs.reduce((s,o)=> s + Number(o.cleaning_fee || 0), 0)
+      const cleaningCount = segs.filter(o => Number(o.cleaning_fee || 0) > 0).length
       const occRate = dim ? Math.round(((occNights / dim) * 100) * 100) / 100 : 0
       const adr = occNights ? Math.round(((rentIncome / occNights) + Number.EPSILON) * 100) / 100 : 0
       return { rentIncome: Math.round(rentIncome * 100) / 100, vacancy: Math.max(0, dim - occNights), occRate, adr, cleaningFee: Math.round(cleaningFee * 100) / 100, cleaningCount }

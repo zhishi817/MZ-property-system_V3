@@ -1,6 +1,7 @@
 "use client"
 import { Card, DatePicker, Button, Select, Table } from 'antd'
 import dayjs from 'dayjs'
+import { monthSegments } from '../../../lib/orders'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { getJSON } from '../../../lib/api'
@@ -26,14 +27,14 @@ export default function MonthlyStatementPage() {
   const end = start ? start.endOf('month') : null
   const ordersInMonth = useMemo(() => {
     if (!start || !end) return [] as Order[]
-    return orders.filter(o => (!propertyId || o.property_id === propertyId) && o.checkout && dayjs(o.checkout).isAfter(start.subtract(1,'day')) && dayjs(o.checkout).isBefore(end.add(1,'day')))
+    return monthSegments(orders.filter(o => (!propertyId || o.property_id === propertyId)), start as any) as any
   }, [orders, propertyId, start, end])
   const expensesInMonth = useMemo(() => {
     if (!start || !end) return [] as Tx[]
     return txs.filter(t => t.kind === 'expense' && (!propertyId || t.property_id === propertyId) && dayjs(t.occurred_at).isAfter(start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(end.add(1,'day')))
   }, [txs, propertyId, start, end])
-  const totalIncome = useMemo(() => ordersInMonth.reduce((s, x) => s + Number(x.price || 0), 0), [ordersInMonth])
-  const occupiedNights = useMemo(() => ordersInMonth.reduce((s, x) => s + Number(x.nights ?? Math.max(dayjs(x.checkout!).diff(dayjs(x.checkin!), 'day'), 0)), 0), [ordersInMonth])
+  const totalIncome = useMemo(() => ordersInMonth.reduce((s, x) => s + Number((x as any).net_income || 0), 0), [ordersInMonth])
+  const occupiedNights = useMemo(() => ordersInMonth.reduce((s, x) => s + Number(x.nights || 0), 0), [ordersInMonth])
   const daysInMonth = end && start ? end.diff(start, 'day') + 1 : 30
   const occupancyRate = daysInMonth ? Math.round(((occupiedNights / daysInMonth) * 100 + Number.EPSILON) * 100) / 100 : 0
   const dailyAverage = occupiedNights ? Math.round(((totalIncome / occupiedNights) + Number.EPSILON) * 100) / 100 : 0
@@ -117,7 +118,7 @@ export default function MonthlyStatementPage() {
         </div>
 
         <div style={{ pageBreakBefore: 'always', marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>Rent Records</div>
-        <Table size="small" pagination={false} dataSource={ordersInMonth} rowKey={r => r.id} columns={[{ title:'入住', dataIndex:'checkin', render: (v: string) => v ? dayjs(v).format('DD/MM/YYYY') : '' }, { title:'退房', dataIndex:'checkout', render: (v: string) => v ? dayjs(v).format('DD/MM/YYYY') : '' }, { title:'晚数', render: (_: any, r: Order) => r.nights ?? Math.max(dayjs(r.checkout!).diff(dayjs(r.checkin!), 'day'), 0) }, { title:'金额', render: (_: any, r: Order) => `$${fmt(Number(r.price||0))}` }]} />
+        <Table size="small" pagination={false} dataSource={ordersInMonth} rowKey={r => (r as any).__rid || r.id} columns={[{ title:'入住', dataIndex:'checkin', render: (v: string) => v ? dayjs(v).format('DD/MM/YYYY') : '' }, { title:'退房', dataIndex:'checkout', render: (v: string) => v ? dayjs(v).format('DD/MM/YYYY') : '' }, { title:'晚数', render: (_: any, r: Order) => r.nights ?? Math.max(dayjs(r.checkout!).diff(dayjs(r.checkin!), 'day'), 0) }, { title:'金额', render: (_: any, r: Order) => `$${fmt(Number((r as any).net_income||0))}` }]} />
 
         <div style={{ pageBreakBefore: 'always', marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>Expense Invoices 支出发票</div>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap: 12 }}>
