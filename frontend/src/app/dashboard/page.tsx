@@ -96,6 +96,7 @@ export default function DashboardPage() {
     return Math.max(0, diff)
   }
   const daysInMonth = monthEnd.diff(monthStart, 'day') + 1
+  const monthOrders = useMemo(() => monthSegments(orders, monthStart) as any[], [orders, monthStart])
   const occupancyOverall = useMemo(() => {
     const nights = monthOrders.reduce((sum, o) => sum + Number(o.nights || 0), 0)
     const occ = totalProps ? (nights / (totalProps * daysInMonth)) * 100 : 0
@@ -152,7 +153,6 @@ export default function DashboardPage() {
     return `conic-gradient(${parts.join(', ')})`
   }, [platformShare])
 
-  const monthOrders = useMemo(() => monthSegments(orders, monthStart) as any[], [orders, monthStart])
   const dar = useMemo(() => {
     const arr = monthOrders.map(o => Number((o as any).avg_nightly_price || 0)).filter(n => n > 0)
     const avg = arr.length ? arr.reduce((a,b)=>a+b,0) / arr.length : 0
