@@ -9,6 +9,7 @@ dayjs.extend(minMax)
 dayjs.extend(isSameOrAfter)
 import { useEffect, useMemo, useState } from 'react'
 import { API_BASE, getJSON } from '../../lib/api'
+import { monthSegments } from '../../lib/orders'
 import { PieChart as RePieChart, Pie as RePie, Cell as ReCell, Tooltip as ReTooltip, Legend as ReLegend, ResponsiveContainer } from 'recharts'
 
 type Property = { id: string; code?: string; address?: string; region?: string; biz_category?: 'leased'|'management_fee' }
@@ -96,10 +97,10 @@ export default function DashboardPage() {
   }
   const daysInMonth = monthEnd.diff(monthStart, 'day') + 1
   const occupancyOverall = useMemo(() => {
-    const nights = orders.reduce((sum, o) => sum + overlapNights(o.checkin, o.checkout), 0)
+    const nights = monthOrders.reduce((sum, o) => sum + Number(o.nights || 0), 0)
     const occ = totalProps ? (nights / (totalProps * daysInMonth)) * 100 : 0
     return Math.round(occ * 100) / 100
-  }, [orders, totalProps, daysInMonth, monthStart, monthEnd])
+  }, [monthOrders, totalProps, daysInMonth])
   const prevMonthStart = useMemo(() => dayjs(monthStart).subtract(1, 'month').startOf('month'), [monthStart])
   const prevMonthEnd = useMemo(() => dayjs(monthStart).subtract(1, 'month').endOf('month'), [monthStart])
   function overlapPrev(ci?: string, co?: string) {
@@ -111,14 +112,15 @@ export default function DashboardPage() {
   }
   const prevDaysInMonth = prevMonthEnd.diff(prevMonthStart, 'day') + 1
   const occupancyOverallPrev = useMemo(() => {
-    const nights = orders.reduce((sum, o) => sum + overlapPrev(o.checkin, o.checkout), 0)
+    const prevSegs = monthSegments(orders, prevMonthStart) as any[]
+    const nights = prevSegs.reduce((sum, o) => sum + Number(o.nights || 0), 0)
     const occ = totalProps ? (nights / (totalProps * prevDaysInMonth)) * 100 : 0
     return Math.round(occ * 100) / 100
-  }, [orders, totalProps, prevDaysInMonth, prevMonthStart, prevMonthEnd])
+  }, [orders, totalProps, prevDaysInMonth, prevMonthStart])
   const occupancyByRegion = regions.map(reg => {
     const propIds = properties.filter(p => displayRegion(p.region) === reg).map(p => p.id)
-    const regOrders = orders.filter(o => propIds.includes(String(o.property_id)))
-    const nights = regOrders.reduce((sum, o) => sum + overlapNights(o.checkin, o.checkout), 0)
+    const regOrders = monthOrders.filter(o => propIds.includes(String(o.property_id)))
+    const nights = regOrders.reduce((sum, o) => sum + Number(o.nights || 0), 0)
     const occ = propIds.length ? (nights / (propIds.length * daysInMonth)) * 100 : 0
     return { region: reg, occ: Math.round(occ * 100) / 100 }
   })
@@ -150,9 +152,9 @@ export default function DashboardPage() {
     return `conic-gradient(${parts.join(', ')})`
   }, [platformShare])
 
-  const monthOrders = useMemo(() => orders.filter(o => overlapNights(o.checkin, o.checkout) > 0), [orders, monthStart, monthEnd])
+  const monthOrders = useMemo(() => monthSegments(orders, monthStart) as any[], [orders, monthStart])
   const dar = useMemo(() => {
-    const arr = monthOrders.map(o => Number(o.avg_nightly_price || 0)).filter(n => n > 0)
+    const arr = monthOrders.map(o => Number((o as any).avg_nightly_price || 0)).filter(n => n > 0)
     const avg = arr.length ? arr.reduce((a,b)=>a+b,0) / arr.length : 0
     return Math.round(avg * 100) / 100
   }, [monthOrders])
@@ -165,7 +167,7 @@ export default function DashboardPage() {
       const arr = monthOrders.filter(o => {
         const s = dayjs(o.checkin).startOf('day'); const e = dayjs(o.checkout).startOf('day')
         return d.isSameOrAfter(s) && d.isBefore(e)
-      }).map(o => Number(o.avg_nightly_price || 0)).filter(n => n > 0)
+      }).map(o => Number((o as any).avg_nightly_price || 0)).filter(n => n > 0)
       const v = arr.length ? arr.reduce((a,b)=>a+b,0) / arr.length : 0
       series.push(Math.round(v * 100) / 100)
     }
@@ -175,7 +177,7 @@ export default function DashboardPage() {
     const acc = new Map<string, { sum: number, cnt: number }>()
     monthOrders.forEach(o => {
       const pid = String(o.property_id)
-      const v = Number(o.avg_nightly_price || 0)
+      const v = Number((o as any).avg_nightly_price || 0)
       if (!acc.has(pid)) acc.set(pid, { sum: 0, cnt: 0 })
       const cur = acc.get(pid)!
       acc.set(pid, { sum: cur.sum + v, cnt: cur.cnt + (v > 0 ? 1 : 0) })
@@ -186,7 +188,7 @@ export default function DashboardPage() {
     const acc = new Map<string, number>()
     monthOrders.forEach(o => {
       const pid = String(o.property_id)
-      const v = Number(typeof o.net_income === 'number' ? o.net_income : (o.avg_nightly_price || 0) * (o.nights || overlapNights(o.checkin, o.checkout)))
+      const v = Number(typeof (o as any).net_income === 'number' ? (o as any).net_income : ((o as any).avg_nightly_price || 0) * (o.nights || 0))
       acc.set(pid, (acc.get(pid) || 0) + v)
     })
     return acc

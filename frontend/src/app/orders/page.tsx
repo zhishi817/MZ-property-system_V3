@@ -4,6 +4,7 @@ import type { UploadProps } from 'antd'
 import { useEffect, useState, useRef } from 'react'
 import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
+import { monthSegments } from '../../lib/orders'
 import { sortProperties } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 
@@ -41,7 +42,8 @@ export default function OrdersPage() {
   }
   function toDayStr(raw?: any): string {
     const str = String(raw || '')
-    const m = str.match(/^(\d{4}-\d{2}-\d{2})/)
+    if (/^\d{4}-\d{2}-\d{2}T/.test(str)) return dayjs(str).format('YYYY-MM-DD')
+    const m = str.match(/^(\d{4}-\d{2}-\d{2})$/)
     return m ? m[1] : dayjs(str).format('YYYY-MM-DD')
   }
   function fmtDay(s?: string) {
@@ -266,6 +268,32 @@ export default function OrdersPage() {
   const monthStart = baseMonth.startOf('month')
   const monthEnd = baseMonth.endOf('month')
   function dayStr(v: any): string { try { return toDayStr(v) } catch { return '' } }
+  function splitOrderByMonths(o: Order): (Order & { __rid?: string })[] {
+    const ciDay = dayStr(o.checkin)
+    const coDay = dayStr(o.checkout)
+    const ci = dayjs(ciDay).startOf('day')
+    const co = dayjs(coDay).startOf('day')
+    const totalNights = Math.max(0, co.diff(ci, 'day'))
+    if (totalNights <= 0) return []
+    const totalPrice = Number(o.price || 0)
+    const totalCleaning = Number(o.cleaning_fee || 0)
+    const dailyNet = totalNights ? (Number((totalPrice - totalCleaning).toFixed(2)) / totalNights) : 0
+    const segments: (Order & { __rid?: string })[] = []
+    let s = ci
+    while (s.isBefore(co)) {
+      const boundary = s.add(1, 'month').startOf('month')
+      const e = co.isBefore(boundary) ? co : boundary
+      const nights = Math.max(0, e.startOf('day').diff(s.startOf('day'), 'day'))
+      const net = Number((dailyNet * nights).toFixed(2))
+      const clean = e.isSame(co) ? totalCleaning : 0
+      const price = Number((net + clean).toFixed(2))
+      const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+      const __rid = `${o.id}|${s.format('YYYYMM')}`
+      segments.push({ ...o, __rid, checkin: s.format('YYYY-MM-DD') + 'T12:00:00', checkout: e.format('YYYY-MM-DD') + 'T11:59:59', nights, price, cleaning_fee: clean, net_income: net, avg_nightly_price: avg } as any)
+      s = e
+    }
+    return segments
+  }
   const monthOrders = (data || []).filter(o => {
     if (!calPid) return false
     if (o.property_id !== calPid) return false
@@ -393,18 +421,25 @@ export default function OrdersPage() {
         )}
       </Space>
       {view==='list' ? (
-        <Table rowKey={(r) => r.id} columns={columns as any} dataSource={data.filter(o => {
-          const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
-          const codeOk = !codeQuery || codeText.includes(codeQuery.trim().toLowerCase())
-          const rangeOk = !dateRange || (
-            (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
-            (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
-          )
-          const monthStart = (monthFilter || dayjs()).startOf('month')
-          const monthEnd = (monthFilter || dayjs()).endOf('month')
-          const monthOk = !monthFilter || (dayjs(o.checkout).isAfter(monthStart) && dayjs(o.checkin).isBefore(monthEnd))
-          return codeOk && rangeOk && monthOk
-        })} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }} />
+        <Table
+          rowKey={(r) => String((r as any).__rid || r.id)}
+          columns={columns as any}
+          dataSource={(function(){
+            const ms = (monthFilter || dayjs()).startOf('month')
+            const rows: (Order & { __rid?: string })[] = monthSegments(data as any, ms) as any
+            return rows.filter(o => {
+              const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
+              const codeOk = !codeQuery || codeText.includes(codeQuery.trim().toLowerCase())
+              const rangeOk = !dateRange || (
+                (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
+                (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
+              )
+              return codeOk && rangeOk
+            })
+          })()}
+          pagination={{ pageSize: 10 }}
+          scroll={{ x: 'max-content' }}
+        />
       ) : (
         <div ref={calRef}>
           <Calendar value={calMonth} onChange={setCalMonth as any} fullscreen cellRender={(date:any, info:any) => (info?.type === 'date' ? (dayCell(date) as any) : undefined)} headerRender={() => null} />

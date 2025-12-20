@@ -1,5 +1,6 @@
 "use client"
 import dayjs from 'dayjs'
+import { monthSegments } from '../lib/orders'
 import { Table } from 'antd'
 import { forwardRef } from 'react'
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4001'
@@ -18,18 +19,9 @@ export default forwardRef<HTMLDivElement, {
 }>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords }, ref) {
   const start = dayjs(`${month}-01`)
   const end = start.endOf('month')
-  const relatedOrders = orders.filter(o => (!propertyId || o.property_id === propertyId) && o.checkin && o.checkout && dayjs(o.checkout).isAfter(start) && dayjs(o.checkin).isBefore(end))
+  const relatedOrders = monthSegments(orders.filter(o => (!propertyId || o.property_id === propertyId)), start)
   const expensesInMonth = txs.filter(t => t.kind === 'expense' && (!propertyId || t.property_id === propertyId) && dayjs(t.occurred_at).isAfter(start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(end.add(1,'day')))
-  const orderIncomeShare = relatedOrders.reduce((s, x) => {
-    const ci = dayjs(x.checkin!)
-    const co = dayjs(x.checkout!)
-    const totalN = Math.max(co.diff(ci,'day'), 0)
-    const segStart = ci.isAfter(start) ? ci : start
-    const segEnd = co.isBefore(end) ? co : end
-    const segN = Math.max(segEnd.diff(segStart,'day'), 0)
-    const perDay = totalN ? Number(x.price||0) / totalN : 0
-    return s + perDay * segN
-  }, 0)
+  const orderIncomeShare = relatedOrders.reduce((s, x) => s + Number((x as any).net_income || 0), 0)
   const rentIncome = orderIncomeShare
   const otherIncomeTx = txs.filter(t => t.kind === 'income' && (!propertyId || t.property_id === propertyId) && dayjs(t.occurred_at).isAfter(start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(end.add(1,'day')))
   const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount || 0), 0)
@@ -41,14 +33,7 @@ export default forwardRef<HTMLDivElement, {
   }
   const otherIncomeDesc = Array.from(new Set(otherIncomeTx.map(t => mapIncomeCatLabel(t.category)))).filter(Boolean).join('、') || '-'
   const totalIncome = rentIncome + otherIncome
-  const occupiedNights = relatedOrders.reduce((s, x) => {
-    const ci = dayjs(x.checkin!)
-    const co = dayjs(x.checkout!)
-    const segStart = ci.isAfter(start) ? ci : start
-    const segEnd = co.isBefore(end) ? co : end
-    const segN = Math.max(segEnd.diff(segStart,'day'), 0)
-    return s + segN
-  }, 0)
+  const occupiedNights = relatedOrders.reduce((s, x) => s + Number(x.nights || 0), 0)
   const daysInMonth = end.diff(start, 'day') + 1
   const occupancyRate = daysInMonth ? Math.round(((occupiedNights / daysInMonth) * 100 + Number.EPSILON) * 100) / 100 : 0
   const dailyAverage = occupiedNights ? Math.round(((totalIncome / occupiedNights) + Number.EPSILON) * 100) / 100 : 0
@@ -184,11 +169,11 @@ export default forwardRef<HTMLDivElement, {
         </thead>
         <tbody>
           {relatedOrders.map(r => (
-            <tr key={r.id}>
+            <tr key={(r as any).__rid || r.id}>
               <td style={{ padding:6 }}>{r.checkin ? dayjs(r.checkin).format('DD/MM/YYYY') : ''}</td>
               <td style={{ padding:6 }}>{r.checkout ? dayjs(r.checkout).format('DD/MM/YYYY') : ''}</td>
               <td style={{ padding:6, textAlign:'right' }}>{r.nights ?? Math.max(dayjs(r.checkout!).diff(dayjs(r.checkin!), 'day'), 0)}</td>
-              <td style={{ padding:6, textAlign:'right' }}>${fmt(Number(r.price||0))}</td>
+              <td style={{ padding:6, textAlign:'right' }}>${fmt(Number((r as any).net_income || 0))}</td>
             </tr>
           ))}
         </tbody>

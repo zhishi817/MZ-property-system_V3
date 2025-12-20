@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getJSON, apiList, API_BASE, authHeaders } from '../../../lib/api'
 import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/properties'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
+import { monthSegments } from '../../../lib/orders'
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number }
@@ -102,18 +103,9 @@ export default function PropertyRevenuePage() {
     }
     for (const p of list) {
       for (const rm of rangeMonths) {
-        const related = orders.filter(x => x.property_id === p.id && x.checkin && x.checkout && dayjs(x.checkout).isAfter(rm.start) && dayjs(x.checkin).isBefore(rm.end))
+        const related = monthSegments(orders.filter(x => x.property_id === p.id), rm.start)
         const e = txs.filter(x => x.kind==='expense' && x.property_id === p.id && dayjs(x.occurred_at).isAfter(rm.start.subtract(1,'day')) && dayjs(x.occurred_at).isBefore(rm.end.add(1,'day')))
-        const rentIncome = related.reduce((s,x)=> {
-          const ci = dayjs(x.checkin!)
-          const co = dayjs(x.checkout!)
-          const totalN = Math.max(co.diff(ci,'day'), 0)
-          const segStart = ci.isAfter(rm.start) ? ci : rm.start
-          const segEnd = co.isBefore(rm.end) ? co : rm.end
-          const segN = Math.max(segEnd.diff(segStart,'day'), 0)
-          const perDay = totalN ? Number(x.price||0) / totalN : 0
-          return s + perDay * segN
-        }, 0)
+        const rentIncome = related.reduce((s,x)=> s + Number((x as any).net_income || 0), 0)
         const otherIncomeTx = txs.filter(x => x.kind==='income' && x.property_id === p.id && dayjs(x.occurred_at).isAfter(rm.start.subtract(1,'day')) && dayjs(x.occurred_at).isBefore(rm.end.add(1,'day')))
         const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount||0), 0)
         const mapIncomeCatLabel = (c?: string) => {
@@ -124,14 +116,7 @@ export default function PropertyRevenuePage() {
         }
         const otherIncomeDesc = Array.from(new Set(otherIncomeTx.map(t => mapIncomeCatLabel(t.category)))).filter(Boolean).join('、') || '-'
         const totalIncome = rentIncome + otherIncome
-        const nights = related.reduce((s,x)=> {
-          const ci = dayjs(x.checkin!)
-          const co = dayjs(x.checkout!)
-          const segStart = ci.isAfter(rm.start) ? ci : rm.start
-          const segEnd = co.isBefore(rm.end) ? co : rm.end
-          const segN = Math.max(segEnd.diff(segStart,'day'), 0)
-          return s + segN
-        }, 0)
+        const nights = related.reduce((s,x)=> s + Number(x.nights || 0), 0)
         const daysInMonth = rm.end.diff(rm.start,'day') + 1
         const occRate = daysInMonth ? Math.round(((nights / daysInMonth)*100 + Number.EPSILON)*100)/100 : 0
         const avg = nights ? Math.round(((totalIncome / nights) + Number.EPSILON)*100)/100 : 0
@@ -302,9 +287,9 @@ export default function PropertyRevenuePage() {
                 while (cur.isBefore(endAnchor.add(1,'day'))) {
                   const mStart = cur.startOf('month')
                   const mEnd = cur.endOf('month')
-                  const o1 = orders.filter(o => o.property_id===pid && o.checkout && dayjs(o.checkout).isAfter(mStart.subtract(1,'day')) && dayjs(o.checkout).isBefore(mEnd.add(1,'day')))
-                  const inc = o1.reduce((s,x)=> s + Number(x.price||0), 0)
-                  const clean = o1.reduce((s,x)=> s + Number(x.cleaning_fee||0), 0)
+                  const oSeg = monthSegments(orders.filter(o => o.property_id===pid), mStart)
+                  const inc = oSeg.reduce((s,x)=> s + Number((x as any).net_income || 0), 0)
+                  const clean = oSeg.reduce((s,x)=> s + Number(x.cleaning_fee||0), 0)
                   const exp1 = txs.filter(t => t.kind==='expense' && t.property_id===pid && dayjs(t.occurred_at).isAfter(mStart.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(mEnd.add(1,'day')))
                   const other = exp1.reduce((s,x)=> s + Number(x.amount||0), 0)
                   rowz.push({ month: mStart.format('MM/YYYY'), income: inc, cleaning: clean, other, net: inc - clean - other })
