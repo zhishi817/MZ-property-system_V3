@@ -4,6 +4,7 @@ import { UploadOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders, apiList, apiCreate, apiUpdate, apiDelete } from '../../../lib/api'
+import { sortProperties } from '../../../lib/properties'
 import { hasPerm } from '../../../lib/auth'
 
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; invoice_url?: string; occurred_at: string; note?: string }
@@ -139,7 +140,12 @@ export default function ExpensesPage() {
             <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" />
           </Form.Item>
           <Form.Item name="property_id" label="房号" rules={[{ required: true }]}> 
-            <Select showSearch options={properties.map(p => ({ value: p.id, label: p.code || p.id }))} />
+            <Select
+              showSearch
+              optionFilterProp="label"
+              filterOption={(input, option) => String((option as any)?.label || '').toLowerCase().includes(String(input || '').toLowerCase())}
+              options={sortProperties(properties).map(p => ({ value: p.id, label: p.code || p.id }))}
+            />
           </Form.Item>
           <Form.Item name="category" label="类别" rules={[{ required: true }]}> 
             <Radio.Group optionType="button" buttonStyle="solid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(140px, 1fr))', gap: 12 }}>

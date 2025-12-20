@@ -31,8 +31,12 @@ export default function DashboardPage() {
   }, [])
 
   const totalProps = properties.length
-  const regions = ['City','Southbank','St Kilda','Docklands']
-  const regionCounts = regions.map(reg => ({ region: reg, count: properties.filter(p => (p.region || '').toLowerCase() === reg.toLowerCase()).length }))
+  const displayRegion = (r?: string) => {
+    const s = (r || '').trim()
+    return s.toLowerCase() === 'city' ? 'Melbourne' : s
+  }
+  const regions = Array.from(new Set(properties.map(p => displayRegion(p.region)).filter(r => !!r)))
+  const regionCounts = regions.map(reg => ({ region: reg, count: properties.filter(p => displayRegion(p.region) === reg).length }))
   const manageStats = (() => {
     const leased = properties.filter(p => (p.biz_category || '').toLowerCase() === 'leased').length
     const managed = properties.filter(p => (p.biz_category || '').toLowerCase() === 'management_fee').length
@@ -112,7 +116,7 @@ export default function DashboardPage() {
     return Math.round(occ * 100) / 100
   }, [orders, totalProps, prevDaysInMonth, prevMonthStart, prevMonthEnd])
   const occupancyByRegion = regions.map(reg => {
-    const propIds = properties.filter(p => (p.region || '').toLowerCase() === reg.toLowerCase()).map(p => p.id)
+    const propIds = properties.filter(p => displayRegion(p.region) === reg).map(p => p.id)
     const regOrders = orders.filter(o => propIds.includes(String(o.property_id)))
     const nights = regOrders.reduce((sum, o) => sum + overlapNights(o.checkin, o.checkout), 0)
     const occ = propIds.length ? (nights / (propIds.length * daysInMonth)) * 100 : 0
