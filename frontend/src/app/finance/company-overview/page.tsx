@@ -1,5 +1,6 @@
 "use client"
 import { Card, DatePicker, Table, Select, Button, Modal, message } from 'antd'
+import styles from './ExpandedRow.module.css'
 import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 import dayjs from 'dayjs'
@@ -7,7 +8,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getJSON, apiList, API_BASE, authHeaders } from '../../../lib/api'
 import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/properties'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
-import { monthSegments } from '../../../lib/orders'
+import { monthSegments, toDayStr, getMonthSegmentsForProperty, parseDateOnly } from '../../../lib/orders'
+import { debugOnce } from '../../../lib/debug'
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number }
@@ -98,15 +100,23 @@ export default function PropertyRevenuePage() {
     let cur = start.startOf('month')
     const last = end.startOf('month')
     while (cur.isSame(last, 'month') || cur.isBefore(last, 'month')) {
-      rangeMonths.push({ start: cur.startOf('month'), end: cur.endOf('month'), label: cur.format('MM/YYYY') })
+      rangeMonths.push({ start: cur.startOf('month'), end: cur.add(1,'month').startOf('month'), label: cur.format('MM/YYYY') })
       cur = cur.add(1,'month')
     }
     for (const p of list) {
       for (const rm of rangeMonths) {
-        const related = monthSegments(orders.filter(x => x.property_id === p.id), rm.start)
-        const e = txs.filter(x => x.kind==='expense' && x.property_id === p.id && dayjs(x.occurred_at).isAfter(rm.start.subtract(1,'day')) && dayjs(x.occurred_at).isBefore(rm.end.add(1,'day')))
-        const rentIncome = related.reduce((s,x)=> s + Number((x as any).net_income || 0), 0)
-        const otherIncomeTx = txs.filter(x => x.kind==='income' && x.property_id === p.id && dayjs(x.occurred_at).isAfter(rm.start.subtract(1,'day')) && dayjs(x.occurred_at).isBefore(rm.end.add(1,'day')))
+        const related = getMonthSegmentsForProperty(orders as any, rm.start, String(p.id))
+        debugOnce(`REVENUE_DEBUG ${rm.label} ${String(p.id)}`, related.map(s => s.id))
+        const e = txs.filter(x => x.kind==='expense' && x.property_id === p.id && dayjs(toDayStr(x.occurred_at)).isSame(rm.start, 'month'))
+        function overlap(s: any) {
+          const ci = parseDateOnly(toDayStr(s.checkin))
+          const co = parseDateOnly(toDayStr(s.checkout))
+          const a = ci.isAfter(rm.start) ? ci : rm.start
+          const b = co.isBefore(rm.end) ? co : rm.end
+          return Math.max(0, b.diff(a, 'day'))
+        }
+        const rentIncome = related.reduce((sum, seg) => sum + Number((seg as any).net_income || 0), 0)
+        const otherIncomeTx = txs.filter(x => x.kind==='income' && x.property_id === p.id && dayjs(toDayStr(x.occurred_at)).isSame(rm.start, 'month'))
         const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount||0), 0)
         const mapIncomeCatLabel = (c?: string) => {
           const v = String(c || '')
@@ -117,9 +127,9 @@ export default function PropertyRevenuePage() {
         const otherIncomeDesc = Array.from(new Set(otherIncomeTx.map(t => mapIncomeCatLabel(t.category)))).filter(Boolean).join('、') || '-'
         const totalIncome = rentIncome + otherIncome
         const nights = related.reduce((s,x)=> s + Number(x.nights || 0), 0)
-        const daysInMonth = rm.end.diff(rm.start,'day') + 1
+        const daysInMonth = rm.end.diff(rm.start,'day')
         const occRate = daysInMonth ? Math.round(((nights / daysInMonth)*100 + Number.EPSILON)*100)/100 : 0
-        const avg = nights ? Math.round(((totalIncome / nights) + Number.EPSILON)*100)/100 : 0
+        const avg = nights ? Math.round(((rentIncome / nights) + Number.EPSILON)*100)/100 : 0
         const landlord = landlords.find(l => (l.property_ids||[]).includes(p.id))
         const mgmt = landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON)*100)/100 : 0
         const sumCat = (c: string) => e.filter(xx=>xx.category===c).reduce((s,x)=> s + Number(x.amount||0), 0)
@@ -152,29 +162,30 @@ export default function PropertyRevenuePage() {
   }, [rows])
 
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const formatMoney = (n?: number) => `$${fmt(Number(n || 0))}`
   const columns = [
     { title:'月份', dataIndex:'month' },
     { title:'房号', dataIndex:'code' },
     { title:'地址', dataIndex:'address' },
-    { title:'入住率', dataIndex:'occRate', render:(v: number)=> `${fmt(v)}%` },
-    { title:'日均租金', dataIndex:'avg', render:(v: number)=> `$${fmt(v)}` },
-    { title:'总收入', dataIndex:'totalIncome', render:(v: number)=> `$${fmt(v)}` },
-    { title:'租金收入', dataIndex:'rentIncome', render:(v: number)=> `$${fmt(v)}` },
-    { title:'其他收入', dataIndex:'otherIncome', render:(v: number)=> `$${fmt(v)}` },
+    { title:'入住率', dataIndex:'occRate', align:'right', render:(v: number)=> `${fmt(v)}%` },
+    { title:'日均租金', dataIndex:'avg', align:'right', render:(v: number)=> `$${fmt(v)}` },
+    { title:'总收入', dataIndex:'totalIncome', align:'right', render:(v: number)=> `$${fmt(v)}` },
+    { title:'租金收入', dataIndex:'rentIncome', align:'right', render:(v: number)=> `$${fmt(v)}` },
+    { title:'其他收入', dataIndex:'otherIncome', align:'right', render:(v: number)=> `$${fmt(v)}` },
     { title:'其他收入描述', dataIndex:'otherIncomeDesc' },
-    { title:'管理费', dataIndex:'mgmt', render:(v: number)=> `-$${fmt(v)}` },
-    { title:'电费', dataIndex:'electricity', render:(v: number)=> `-$${fmt(v)}` },
-    { title:'水费', dataIndex:'water', render:(v: number)=> `-$${fmt(v)}` },
-    { title:'气费', dataIndex:'gas', render:(v: number)=> `-$${fmt(v)}` },
-    { title:'网费', dataIndex:'internet', render:(v: number)=> `-$${fmt(v)}` },
-    { title:'消耗品费', dataIndex:'consumable', render:(v: number)=> `-$${fmt(v)}` },
-    { title:'车位费', dataIndex:'carpark', render:(v: number)=> `-$${fmt(v)}` },
-    { title:'物业费', dataIndex:'ownercorp', render:(v: number)=> `-$${fmt(v)}` },
-    { title:'市政费', dataIndex:'council', render:(v: number)=> `-$${fmt(v)}` },
-    { title:'其他支出', dataIndex:'other', render:(v: number)=> `-$${fmt(v)}` },
+    { title:'管理费', dataIndex:'mgmt', align:'right', render:(v: number)=> `-$${fmt(v)}` },
+    { title:'电费', dataIndex:'electricity', align:'right', render:(v: number)=> `-$${fmt(v)}` },
+    { title:'水费', dataIndex:'water', align:'right', render:(v: number)=> `-$${fmt(v)}` },
+    { title:'气费', dataIndex:'gas', align:'right', render:(v: number)=> `-$${fmt(v)}` },
+    { title:'网费', dataIndex:'internet', align:'right', render:(v: number)=> `-$${fmt(v)}` },
+    { title:'消耗品费', dataIndex:'consumable', align:'right', render:(v: number)=> `-$${fmt(v)}` },
+    { title:'车位费', dataIndex:'carpark', align:'right', render:(v: number)=> `-$${fmt(v)}` },
+    { title:'物业费', dataIndex:'ownercorp', align:'right', render:(v: number)=> `-$${fmt(v)}` },
+    { title:'市政费', dataIndex:'council', align:'right', render:(v: number)=> `-$${fmt(v)}` },
+    { title:'其他支出', dataIndex:'other', align:'right', render:(v: number)=> `-$${fmt(v)}` },
     { title:'其他支出描述', dataIndex:'otherExpenseDesc' },
-    { title:'总支出', dataIndex:'totalExp', render:(v: number)=> `-$${fmt(v)}` },
-    { title:'净收入', dataIndex:'net', render:(v: number)=> `$${fmt(v)}` },
+    { title:'总支出', dataIndex:'totalExp', align:'right', render:(v: number)=> `-$${fmt(v)}` },
+    { title:'净收入', dataIndex:'net', align:'right', render:(v: number)=> `$${fmt(v)}` },
     { title:'操作', render: (_: any, r: any) => (
       <Button onClick={() => { setPreviewPid(r.pid); setPreviewOpen(true) }}>预览/导出</Button>
     ) },
@@ -197,7 +208,58 @@ export default function PropertyRevenuePage() {
         <Button type="primary" onClick={() => { if (!selectedPid) { message.warning('请先选择房号'); return } setPreviewPid(selectedPid); setPreviewOpen(true) }}>生成报表</Button>
       </div>
       {/* totals summary removed per request */}
-      <Table rowKey={(r)=>r.key} columns={columns as any} dataSource={rows} scroll={{ x: 'max-content' }} pagination={{ pageSize: 20 }} />
+      <div className={styles.tableOuter}>
+      <Table
+        rowKey={(r)=>r.key}
+        columns={columns as any}
+        dataSource={rows}
+        scroll={{ x: 'max-content' }}
+        pagination={{ pageSize: 20 }}
+        size="small"
+        style={{ fontSize: 12 }}
+        expandable={{
+          expandRowByClick: true,
+          expandIconColumnIndex: 0,
+          rowExpandable: () => true,
+          columnWidth: 40,
+          expandedRowRender: (r: any) => {
+            const mStart = dayjs(r.month, 'MM/YYYY').startOf('month')
+            const segs: any[] = monthSegments(orders.filter(o => o.property_id===r.pid), mStart)
+            const fmt2 = (n: number) => (n||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })
+            const sumNet = segs.reduce((s,x)=> s + Number((x as any).net_income || 0), 0)
+            const childColumns = [
+              { title: '入住', dataIndex: 'check_in', width: 130, fixed: 'left' as const, align: 'left' as const, ellipsis: true, render: (v: any)=> dayjs(v).format('DD/MM/YYYY') },
+              { title: '退房', dataIndex: 'check_out', width: 130, align: 'left' as const, ellipsis: true, render: (v: any)=> dayjs(v).format('DD/MM/YYYY') },
+              { title: '晚数', dataIndex: 'nights', width: 80, align: 'center' as const },
+              { title: '净租金', dataIndex: 'net_rent', width: 140, align: 'right' as const, render: (v: any)=> formatMoney(Number(v||0)) },
+            ]
+            return (
+              <div className={styles.childContainer}>
+                <div className={styles.leftBar} />
+                <div className={styles.childHeader}>分段明细</div>
+                <Table
+                  className={styles.childTable}
+                  columns={childColumns as any}
+                  dataSource={segs.map(s => ({ key: s.__rid || s.id, check_in: s.checkin, check_out: s.checkout, nights: s.nights, net_rent: (s as any).net_income }))}
+                  pagination={false}
+                  size="small"
+                  tableLayout="fixed"
+                  scroll={{ x: 480 }}
+                  summary={() => (
+                    <Table.Summary>
+                      <Table.Summary.Row>
+                        <Table.Summary.Cell index={0} colSpan={3}>分段合计净租金</Table.Summary.Cell>
+                        <Table.Summary.Cell index={3} align="right"><strong>${fmt2(sumNet)}</strong></Table.Summary.Cell>
+                      </Table.Summary.Row>
+                    </Table.Summary>
+                  )}
+                />
+              </div>
+            )
+          }
+        }}
+      />
+      </div>
       <Modal title={period==='month' ? '月度报告' : (period==='year' ? '年度报告' : (period==='fiscal-year' ? '财年报告' : '半年报告'))} open={previewOpen} onCancel={() => setPreviewOpen(false)} footer={<>
         <Button onClick={async () => {
           if (!printRef.current) return
