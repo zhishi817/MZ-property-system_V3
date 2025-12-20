@@ -850,3 +850,10 @@ function camelToArrayKey(r: string): string {
 }
 
 export default router
+
+async function ensureRecurringFrequencyInteger(pgPool: any) {
+  try {
+    await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS frequency_months integer;')
+    await pgPool.query('ALTER TABLE recurring_payments ALTER COLUMN frequency_months TYPE integer USING frequency_months::integer;')
+  } catch {}
+}
