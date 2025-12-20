@@ -9,7 +9,7 @@ dayjs.extend(minMax)
 dayjs.extend(isSameOrAfter)
 import { useEffect, useMemo, useState } from 'react'
 import { API_BASE, getJSON } from '../../lib/api'
-import { monthSegments } from '../../lib/orders'
+import { monthSegments, toDayStr, parseDateOnly } from '../../lib/orders'
 import { PieChart as RePieChart, Pie as RePie, Cell as ReCell, Tooltip as ReTooltip, Legend as ReLegend, ResponsiveContainer } from 'recharts'
 
 type Property = { id: string; code?: string; address?: string; region?: string; biz_category?: 'leased'|'management_fee' }
@@ -88,29 +88,31 @@ export default function DashboardPage() {
 
   const monthStart = useMemo(() => dayjs(month).startOf('month'), [month])
   const monthEnd = useMemo(() => dayjs(month).endOf('month'), [month])
+  const monthEndNext = useMemo(() => dayjs(month).add(1, 'month').startOf('month'), [month])
   function overlapNights(ci?: string, co?: string) {
     if (!ci || !co) return 0
-    const s = dayjs(ci).startOf('day'); const e = dayjs(co).startOf('day')
-    const a = dayjs.max(s, monthStart); const b = dayjs.min(e, monthEnd)
+    const s = parseDateOnly(toDayStr(ci)); const e = parseDateOnly(toDayStr(co))
+    const a = dayjs.max(s, monthStart.startOf('day')); const b = dayjs.min(e, monthEndNext.startOf('day'))
     const diff = b.diff(a, 'day')
     return Math.max(0, diff)
   }
-  const daysInMonth = monthEnd.diff(monthStart, 'day') + 1
+  const daysInMonth = monthEndNext.diff(monthStart, 'day')
+  const monthOrders = useMemo(() => monthSegments(orders, monthStart) as any[], [orders, monthStart])
   const occupancyOverall = useMemo(() => {
     const nights = monthOrders.reduce((sum, o) => sum + Number(o.nights || 0), 0)
     const occ = totalProps ? (nights / (totalProps * daysInMonth)) * 100 : 0
     return Math.round(occ * 100) / 100
   }, [monthOrders, totalProps, daysInMonth])
   const prevMonthStart = useMemo(() => dayjs(monthStart).subtract(1, 'month').startOf('month'), [monthStart])
-  const prevMonthEnd = useMemo(() => dayjs(monthStart).subtract(1, 'month').endOf('month'), [monthStart])
+  const prevMonthEndNext = useMemo(() => dayjs(monthStart).subtract(1, 'month').add(1, 'month').startOf('month'), [monthStart])
   function overlapPrev(ci?: string, co?: string) {
     if (!ci || !co) return 0
     const s = dayjs(ci).startOf('day'); const e = dayjs(co).startOf('day')
-    const a = dayjs.max(s, prevMonthStart); const b = dayjs.min(e, prevMonthEnd)
+    const a = dayjs.max(s, prevMonthStart.startOf('day')); const b = dayjs.min(e, prevMonthEndNext.startOf('day'))
     const diff = b.diff(a, 'day')
     return Math.max(0, diff)
   }
-  const prevDaysInMonth = prevMonthEnd.diff(prevMonthStart, 'day') + 1
+  const prevDaysInMonth = prevMonthEndNext.diff(prevMonthStart, 'day')
   const occupancyOverallPrev = useMemo(() => {
     const prevSegs = monthSegments(orders, prevMonthStart) as any[]
     const nights = prevSegs.reduce((sum, o) => sum + Number(o.nights || 0), 0)
@@ -152,7 +154,6 @@ export default function DashboardPage() {
     return `conic-gradient(${parts.join(', ')})`
   }, [platformShare])
 
-  const monthOrders = useMemo(() => monthSegments(orders, monthStart) as any[], [orders, monthStart])
   const dar = useMemo(() => {
     const arr = monthOrders.map(o => Number((o as any).avg_nightly_price || 0)).filter(n => n > 0)
     const avg = arr.length ? arr.reduce((a,b)=>a+b,0) / arr.length : 0
@@ -165,7 +166,7 @@ export default function DashboardPage() {
     for (let i = 0; i < 7; i++) {
       const d = start.add(i, 'day')
       const arr = monthOrders.filter(o => {
-        const s = dayjs(o.checkin).startOf('day'); const e = dayjs(o.checkout).startOf('day')
+        const s = parseDateOnly(toDayStr(o.checkin)); const e = parseDateOnly(toDayStr(o.checkout))
         return d.isSameOrAfter(s) && d.isBefore(e)
       }).map(o => Number((o as any).avg_nightly_price || 0)).filter(n => n > 0)
       const v = arr.length ? arr.reduce((a,b)=>a+b,0) / arr.length : 0
@@ -196,7 +197,7 @@ export default function DashboardPage() {
   const expenseByProp = useMemo(() => {
     const acc = new Map<string, number>()
     expenses.forEach(ex => {
-      const t = ex.occurred_at ? dayjs(ex.occurred_at) : null
+      const t = ex.occurred_at ? dayjs(toDayStr(ex.occurred_at)) : null
       if (t && t.isSame(monthStart, 'month')) {
         const pid = String(ex.property_id || '')
         const v = Number(ex.amount || 0)
