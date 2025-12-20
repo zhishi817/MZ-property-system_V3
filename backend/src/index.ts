@@ -88,6 +88,42 @@ app.get('/health/db', async (_req, res) => {
   }
   res.json(result)
 })
+app.get('/health/config', (_req, res) => {
+  const cfg: any = {
+    app_env: process.env.APP_ENV || 'unknown',
+    node_env: process.env.NODE_ENV || 'unknown',
+    database_role: process.env.DATABASE_ROLE || 'none',
+    api_base: process.env.API_BASE || '',
+    port: process.env.PORT || '4001',
+  }
+  try {
+    const url = process.env.DATABASE_URL || ''
+    if (url) {
+      const u = new URL(url)
+      cfg.pg_host = u.hostname
+      cfg.pg_db = (u.pathname || '').replace(/^\//,'')
+    }
+  } catch {}
+  res.json(cfg)
+})
+app.get('/health/migrations', async (_req, res) => {
+  const mig: any = { status: 'ok' }
+  try {
+    if (pgPool) {
+      const qcol = async (table: string, col: string) => {
+        const r = await pgPool!.query(`select 1 from information_schema.columns where table_schema='public' and table_name=$1 and column_name=$2 limit 1`, [table, col])
+        return !!r.rowCount
+      }
+      mig.recurring_frequency_months = await qcol('recurring_payments','frequency_months')
+      mig.orders_checkin = await qcol('orders','checkin')
+      mig.orders_checkout = await qcol('orders','checkout')
+    }
+  } catch (e: any) {
+    mig.status = 'error'
+    mig.error = e?.message
+  }
+  res.json(mig)
+})
 app.get('/health/version', (_req, res) => {
   let pkg: any = {}
   try { pkg = require('../package.json') } catch {}
