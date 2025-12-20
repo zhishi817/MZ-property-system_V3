@@ -11,7 +11,8 @@ export function VersionBadge() {
     fetch(`${API_BASE}/version`).then(r => r.ok ? r.json() : null).then(d => { if (mounted) setInfo(d) }).catch(() => {})
     return () => { mounted = false }
   }, [])
-  const text = `v${info?.version || 'dev'} • ${info?.buildTimestamp || ''}${info?.commit ? ` • ${info.commit.slice(0,7)}` : ''}`
-  return <span style={{ opacity: 0.7 }}>{text}</span>
+  const feCommit = process.env.NEXT_PUBLIC_COMMIT_SHA || process.env.VERCEL_GIT_COMMIT_SHA || ''
+  const apiHost = (() => { try { return new URL(API_BASE).host } catch { return '' } })()
+  const text = `FE ${feCommit ? feCommit.slice(0,7) : 'dev'} • BE ${info?.commit ? info.commit.slice(0,7) : 'unknown'} • v${info?.version || 'dev'} • ${apiHost}`
+  return <span style={{ opacity: 0.65 }}>{text}</span>
 }
-
