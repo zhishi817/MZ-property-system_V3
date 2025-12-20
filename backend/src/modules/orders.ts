@@ -670,6 +670,8 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
         skipped++; continue
       }
       const o = parsed.data
+      const ciIso = o.checkin ? `${String(o.checkin).slice(0,10)}T12:00:00` : undefined
+      const coIso = o.checkout ? `${String(o.checkout).slice(0,10)}T11:59:59` : undefined
       const key = o.idempotency_key || idempotency_key
       if (idx < 5) {
         try {
@@ -697,10 +699,10 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
       }
       const { v4: uuid } = require('uuid')
       let nights = o.nights
-      if (!nights && o.checkin && o.checkout) {
+      if (!nights && ciIso && coIso) {
         try {
-          const ci = new Date(o.checkin)
-          const co = new Date(o.checkout)
+          const ci = new Date(ciIso)
+          const co = new Date(coIso)
           const ms = co.getTime() - ci.getTime()
           nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0
         } catch { nights = 0 }
@@ -709,7 +711,7 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
       const total = round2(o.price || 0) || 0
       const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(total - cleaning) || 0))
       const avg = o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0)
-      const newOrder: Order = { id: uuid(), ...o, external_id, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key }
+      const newOrder: Order = { id: uuid(), ...o, checkin: ciIso, checkout: coIso, external_id, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key }
       if (newOrder.property_id && idToCode[newOrder.property_id]) newOrder.property_code = idToCode[newOrder.property_id]
       const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout)
       if (conflict) { results.push({ ok: false, error: 'overlap', confirmation_code: (newOrder as any).confirmation_code, source: newOrder.source, property_id: newOrder.property_id }); skipped++; continue }
@@ -804,6 +806,8 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
     const parsed = createOrderSchema.safeParse({ source, property_id, guest_name, checkin, checkout, price, cleaning_fee, currency, status, confirmation_code })
     if (!parsed.success) return res.status(400).json(parsed.error.format())
     const o = parsed.data
+    const ciIso = o.checkin ? `${String(o.checkin).slice(0,10)}T12:00:00` : undefined
+    const coIso = o.checkout ? `${String(o.checkout).slice(0,10)}T11:59:59` : undefined
     let key = o.idempotency_key || ''
     if (!key) {
       if (source === 'airbnb') {
@@ -817,10 +821,10 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
     }
     const { v4: uuid } = require('uuid')
     let nights = o.nights
-    if (!nights && o.checkin && o.checkout) {
+    if (!nights && ciIso && coIso) {
       try {
-        const ci = new Date(o.checkin)
-        const co = new Date(o.checkout)
+        const ci = new Date(ciIso)
+        const co = new Date(coIso)
         const ms = co.getTime() - ci.getTime()
         nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0
       } catch { nights = 0 }
@@ -829,7 +833,7 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
     const total = o.price || 0
     const net = o.net_income != null ? o.net_income : (total - cleaning)
     const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0)
-    const newOrder: Order = { id: uuid(), ...o, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key }
+    const newOrder: Order = { id: uuid(), ...o, checkin: ciIso, checkout: coIso, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key }
     // duplicate by (source, confirmation_code)
     try {
       if (hasPg && (newOrder as any).confirmation_code) {
@@ -1050,7 +1054,7 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
         }
       } catch {}
 
-      const payload: any = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin, checkout, price, cleaning_fee }
+      const payload: any = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkin ? `${String(checkin).slice(0,10)}T12:00:00` : undefined), checkout: (checkout ? `${String(checkout).slice(0,10)}T11:59:59` : undefined), price, cleaning_fee }
       try {
         if (hasPg) {
           if (exists && exists.id) {
