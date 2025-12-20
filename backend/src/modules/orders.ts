@@ -7,6 +7,21 @@ import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 
 export const router = Router()
 
+function dayOnly(s?: any): string | undefined {
+  if (!s) return undefined
+  try {
+    const d = new Date(s)
+    if (!isNaN(d.getTime())) {
+      const yyyy = d.getFullYear()
+      const mm = String(d.getMonth() + 1).padStart(2, '0')
+      const dd = String(d.getDate()).padStart(2, '0')
+      return `${yyyy}-${mm}-${dd}`
+    }
+  } catch {}
+  const m = /^\d{4}-\d{2}-\d{2}/.exec(String(s))
+  return m ? m[0] : undefined
+}
+
 router.get('/', async (_req, res) => {
   try {
     if (hasPg) {
@@ -26,7 +41,8 @@ router.get('/', async (_req, res) => {
         const prop = byId[pid] || byCode[pid] || byId[pid2]
         const label = (o.property_code || prop?.code || prop?.address || pid)
         const property_name = (prop?.address || undefined)
-        return property_name ? { ...o, property_code: label, property_name } : { ...o, property_code: label }
+        const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) }
+        return property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label }
       })
       return res.json(labeled)
     }
@@ -35,14 +51,16 @@ router.get('/', async (_req, res) => {
       const prop = db.properties.find((p) => String(p.id) === String(o.property_id)) || db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || (db.properties as any[]).find((p: any) => { const ln = p?.listing_names || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String((o as any).listing_name || '').toLowerCase()) })
       const property_name = prop?.address || undefined
       const label = (o.property_code || prop?.code || prop?.address || o.property_id || '')
-      return property_name ? { ...o, property_code: label, property_name } : { ...o, property_code: label }
+      const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) }
+      return property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label }
     }))
   } catch {
     return res.json(db.orders.map((o) => {
       const prop = db.properties.find((p) => String(p.id) === String(o.property_id)) || db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || (db.properties as any[]).find((p: any) => { const ln = p?.listing_names || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String((o as any).listing_name || '').toLowerCase()) })
       const property_name = prop?.address || undefined
       const label = (o.property_code || prop?.code || prop?.address || o.property_id || '')
-      return property_name ? { ...o, property_code: label, property_name } : { ...o, property_code: label }
+      const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) }
+      return property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label }
     }))
   }
 })
@@ -55,7 +73,9 @@ router.get('/:id', async (req, res) => {
     if (hasPg) {
       const remote = await pgSelect('orders', '*', { id })
       const row = Array.isArray(remote) ? remote[0] : null
-      if (row) return res.json(row)
+      if (row) {
+        return res.json({ ...row, checkin: dayOnly(row.checkin), checkout: dayOnly(row.checkout) })
+      }
     }
     // Supabase branch removed
   } catch {}
@@ -65,7 +85,7 @@ router.get('/:id', (req, res) => {
   const { id } = req.params
   const order = db.orders.find((o) => o.id === id)
   if (!order) return res.status(404).json({ message: 'order not found' })
-  return res.json(order)
+  return res.json({ ...order, checkin: dayOnly(order.checkin), checkout: dayOnly(order.checkout) })
 })
 
 const createOrderSchema = z.object({
@@ -492,6 +512,10 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
     }
     return undefined
   }
+  function normalizeName(s?: string): string {
+    const v = String(s || '')
+    return v.replace(/["'“”‘’]/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
+  }
   const rawBody = typeof req.body === 'string' ? req.body : ''
   const rowsInput: any[] = Array.isArray((req as any).body) ? (req as any).body : await parseCsv(rawBody)
   const channel = String(((req.query as any)?.channel || (req.body as any)?.channel || '')).toLowerCase()
@@ -539,8 +563,8 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
         const bn = String(p.booking_listing_name || '')
         const ai = String(p.airbnb_listing_id || '')
         const bi = String(p.booking_listing_id || '')
-        if (an) byName[`airbnb:${an.toLowerCase().trim()}`] = id
-        if (bn) byName[`booking:${bn.toLowerCase().trim()}`] = id
+        if (an) byName[`airbnb:${normalizeName(an)}`] = id
+        if (bn) byName[`booking:${normalizeName(bn)}`] = id
         if (ai) byId[`airbnb:${ai.toLowerCase().trim()}`] = id
         if (bi) byId[`booking:${bi.toLowerCase().trim()}`] = id
       })
@@ -554,13 +578,13 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
         const bn = String(p.booking_listing_name || '')
         const ai = String(p.airbnb_listing_id || '')
         const bi = String(p.booking_listing_id || '')
-        if (an) byName[`airbnb:${an.toLowerCase().trim()}`] = id
-        if (bn) byName[`booking:${bn.toLowerCase().trim()}`] = id
+        if (an) byName[`airbnb:${normalizeName(an)}`] = id
+        if (bn) byName[`booking:${normalizeName(bn)}`] = id
         if (ai) byId[`airbnb:${ai.toLowerCase().trim()}`] = id
         if (bi) byId[`booking:${bi.toLowerCase().trim()}`] = id
         const ln = (p?.listing_names || {})
         Object.entries(ln || {}).forEach(([plat, name]: any) => {
-          if (name) byName[`${String(plat).toLowerCase()}:${String(name).toLowerCase().trim()}`] = id
+          if (name) byName[`${String(plat).toLowerCase()}:${normalizeName(String(name))}`] = id
         })
       })
     }
@@ -587,7 +611,7 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
       let property_id = r.property_id || r.propertyId
       if (!property_id) {
         const keyId = listing_id && platform ? `${platform}:${String(listing_id).toLowerCase().trim()}` : ''
-        const keyName = listing_name && platform ? `${platform}:${String(listing_name).toLowerCase().trim()}` : ''
+        const keyName = listing_name && platform ? `${platform}:${normalizeName(String(listing_name))}` : ''
         property_id = (keyId && byId[keyId]) || (keyName && byName[keyName]) || (property_code ? byCode[String(property_code).toLowerCase()] : undefined)
       }
       const guest_name = getField(r, ['Guest','guest','guest_name'])
@@ -907,6 +931,10 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
       for (const k of keys) { if (obj[k] != null && String(obj[k]).trim() !== '') return String(obj[k]) }
       return undefined
     }
+    function normalizeName(s?: string): string {
+      const v = String(s || '')
+      return v.replace(/["'“”‘’]/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
+    }
     function toNumber(v: any): number | undefined { if (v == null || v === '') return undefined; const n = Number(v); return isNaN(n) ? undefined : n }
     function normAirbnb(r: Record<string, any>) {
       const confirmation_code = getField(r, ['confirmation_code','Confirmation Code','Confirmation Code (Airbnb)'])
@@ -963,10 +991,10 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
           if (code) idToCode[id] = code
           if (platform === 'airbnb' || platform === 'booking') {
             const nm = String((platform === 'airbnb' ? p.airbnb_listing_name : p.booking_listing_name) || '')
-            if (nm) byName[nm.trim().toLowerCase()] = id
+            if (nm) byName[`name:${normalizeName(nm)}`] = id
           } else {
             const ln = p?.listing_names || {}
-            Object.values(ln || {}).forEach((nm: any) => { if (nm) byName[String(nm).trim().toLowerCase()] = id })
+            Object.values(ln || {}).forEach((nm: any) => { if (nm) byName[`name:${normalizeName(String(nm))}`] = id })
           }
         })
       } else {
@@ -976,10 +1004,10 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
           if (code) idToCode[id] = code
           if (platform === 'airbnb' || platform === 'booking') {
             const nm = String((platform === 'airbnb' ? p.airbnb_listing_name : (p as any).booking_listing_name) || '')
-            if (nm) byName[nm.trim().toLowerCase()] = id
+            if (nm) byName[`name:${normalizeName(nm)}`] = id
           } else {
             const ln = (p?.listing_names || {})
-            Object.values(ln || {}).forEach((nm: any) => { if (nm) byName[String(nm).trim().toLowerCase()] = id })
+            Object.values(ln || {}).forEach((nm: any) => { if (nm) byName[`name:${normalizeName(String(nm))}`] = id })
           }
         })
       }
@@ -1015,7 +1043,7 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
       const cc = String(n.confirmation_code || '').trim()
       const ln = String(n.listing_name || '').trim()
       if (!cc) { errors.push({ rowIndex: rowIndexBase + i, listing_name: ln || undefined, reason: '确认码为空' }); continue }
-      const pid = ln ? byName[ln.toLowerCase()] : undefined
+      const pid = ln ? byName[`name:${normalizeName(ln)}`] : undefined
       if (!pid) {
         try {
           const payload: any = { id: require('uuid').v4(), channel: platform, raw_row: r, reason: 'unmatched_property', listing_name: ln, confirmation_code: cc, status: 'unmatched' }
