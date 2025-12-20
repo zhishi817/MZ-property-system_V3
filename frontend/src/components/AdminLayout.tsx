@@ -113,7 +113,16 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     }
   }
   if (!mounted) return null
-  if (!isLogin && !authed) return null
+  if (!isLogin && !authed) {
+    return (
+      <Layout style={{ minHeight: '100vh', display:'flex', alignItems:'center', justifyContent:'center' }}>
+        <Content style={{ textAlign:'center' }}>
+          <div style={{ marginBottom: 12 }}>未登录，正在跳转到登录页…</div>
+          <Link href="/login" prefetch={false}>前往登录</Link>
+        </Content>
+      </Layout>
+    )
+  }
   return (
     isLogin ? (
       <>{children}</>
