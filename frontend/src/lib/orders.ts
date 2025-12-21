@@ -34,6 +34,7 @@ export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string }
   const totalCleaning = Number(o.cleaning_fee || 0)
   const dailyNet = totalNights ? (Number((totalPrice - totalCleaning).toFixed(2)) / totalNights) : 0
   const segments: (OrderLike & { __rid: string })[] = []
+  const deductionTotal = Number((o as any).internal_deduction_total || 0)
   let s = ci
   while (s.isBefore(co)) {
     const boundary = s.add(1, 'month').startOf('month')
@@ -44,6 +45,8 @@ export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string }
     const price = Number((net + clean).toFixed(2))
     const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
     const __rid = `${o.id}|${s.format('YYYYMM')}`
+    const deductionSegment = e.isSame(co) ? deductionTotal : 0
+    const visibleNet = Number((net - deductionSegment).toFixed(2))
     segments.push({
       ...o,
       __rid,
@@ -59,7 +62,9 @@ export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string }
       price,
       cleaning_fee: clean,
       net_income: net,
-      avg_nightly_price: avg
+      avg_nightly_price: avg,
+      internal_deduction: deductionSegment,
+      visible_net_income: visibleNet
     } as any)
     s = e
   }

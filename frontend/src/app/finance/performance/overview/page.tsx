@@ -31,17 +31,17 @@ export default function PerformanceOverviewPage() {
     const base = dayjs()
     const defs = [0,1,2,3].map(i => {
       const mStart = base.subtract(i,'month').startOf('month')
-      const mEnd = base.subtract(i,'month').endOf('month')
-      const daysInMonth = mEnd.diff(mStart,'day') + 1
+      const mEndNext = mStart.add(1,'month').startOf('month')
+      const daysInMonth = mEndNext.diff(mStart,'day')
       const segs = monthSegments(orders, mStart)
       const occNights = segs.reduce((sum, o) => sum + Number(o.nights || 0), 0)
-      const rentIncome = segs.reduce((sum, o) => sum + Number((o as any).net_income || 0), 0)
+      const rentIncome = segs.reduce((sum, o) => sum + Number(((o as any).visible_net_income ?? (o as any).net_income ?? 0)), 0)
       const cleaningCount = segs.filter(o => Number(o.cleaning_fee || 0) > 0).length
       const cleaningFee = segs.reduce((s,o)=> s + Number(o.cleaning_fee || 0), 0)
       const vacancyNights = Math.max(0, (properties.length * daysInMonth) - occNights)
       const occRate = properties.length ? Math.round(((occNights / (properties.length * daysInMonth)) * 100) * 100) / 100 : 0
       const adr = occNights ? Math.round(((rentIncome / occNights) + Number.EPSILON) * 100) / 100 : 0
-      return { key: mStart.format('YYYY-MM'), label: mStart.format('YYYY-MM'), start: mStart, end: mEnd, daysInMonth, rentIncome: Math.round(rentIncome * 100) / 100, vacancy: vacancyNights, occRate, adr, cleaningFee: Math.round(cleaningFee * 100) / 100, cleaningCount }
+      return { key: mStart.format('YYYY-MM'), label: mStart.format('YYYY-MM'), start: mStart, end: mEndNext, daysInMonth, rentIncome: Math.round(rentIncome * 100) / 100, vacancy: vacancyNights, occRate, adr, cleaningFee: Math.round(cleaningFee * 100) / 100, cleaningCount }
     })
     return defs
   }, [orders, properties])
@@ -50,12 +50,26 @@ export default function PerformanceOverviewPage() {
     function propMonthStats(pid: string, start: any, end: any, dim: number) {
       const segs = monthSegments(orders.filter(o => String(o.property_id) === pid), start)
       const occNights = segs.reduce((sum, o) => sum + Number(o.nights || 0), 0)
-      const rentIncome = segs.reduce((sum, o) => sum + Number((o as any).net_income || 0), 0)
+      const rentIncome = segs.reduce((sum, o) => sum + Number(((o as any).visible_net_income ?? (o as any).net_income ?? 0)), 0)
       const cleaningFee = segs.reduce((s,o)=> s + Number(o.cleaning_fee || 0), 0)
       const cleaningCount = segs.filter(o => Number(o.cleaning_fee || 0) > 0).length
       const occRate = dim ? Math.round(((occNights / dim) * 100) * 100) / 100 : 0
       const adr = occNights ? Math.round(((rentIncome / occNights) + Number.EPSILON) * 100) / 100 : 0
-      return { rentIncome: Math.round(rentIncome * 100) / 100, vacancy: Math.max(0, dim - occNights), occRate, adr, cleaningFee: Math.round(cleaningFee * 100) / 100, cleaningCount }
+      const seen = new Set<string>()
+      segs.forEach(s => {
+        const ci = dayjs(s.checkin).startOf('day')
+        const co = dayjs(s.checkout).startOf('day')
+        const a = dayjs.max(ci, start)
+        const b = dayjs.min(co, end)
+        let d = a.startOf('day')
+        while (d.isBefore(b)) { seen.add(d.format('YYYY-MM-DD')); d = d.add(1,'day') }
+      })
+      const vacantDays: string[] = []
+      for (let i = 0; i < dim; i++) {
+        const ds = start.startOf('day').add(i,'day').format('YYYY-MM-DD')
+        if (!seen.has(ds)) vacantDays.push(ds)
+      }
+      return { rentIncome: Math.round(rentIncome * 100) / 100, vacancy: Math.max(0, dim - occNights), occRate, adr, cleaningFee: Math.round(cleaningFee * 100) / 100, cleaningCount, vacantDays }
     }
     return sortPropertiesByRegionThenCode(properties as any).map(p => {
       const row: any = { id: p.id, code: p.code || p.address || p.id }
@@ -64,6 +78,7 @@ export default function PerformanceOverviewPage() {
         const stats = propMonthStats(String(p.id), m.start, m.end, m.daysInMonth)
         row[`${key}_income`] = stats.rentIncome
         row[`${key}_vacancy`] = stats.vacancy
+        row[`${key}_vacant_days`] = stats.vacantDays
         row[`${key}_occ`] = stats.occRate
         row[`${key}_adr`] = stats.adr
         row[`${key}_clean_fee`] = stats.cleaningFee
@@ -87,7 +102,7 @@ export default function PerformanceOverviewPage() {
                 { title: '入住率', dataIndex: 'm0_occ', render: (v: number)=> `${v||0}%` },
                 { title: '平均房价', dataIndex: 'm0_adr', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
                 { title: '清洁费', dataIndex: 'm0_clean_fee', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: '清洁次数', dataIndex: 'm0_clean_cnt' },
+                { title: '清洁次数', dataIndex: 'm0_clean_cnt', className: 'month-sep' },
               ]
             },
             {
@@ -98,7 +113,7 @@ export default function PerformanceOverviewPage() {
                 { title: '入住率', dataIndex: 'm1_occ', render: (v: number)=> `${v||0}%` },
                 { title: '平均房价', dataIndex: 'm1_adr', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
                 { title: '清洁费', dataIndex: 'm1_clean_fee', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: '清洁次数', dataIndex: 'm1_clean_cnt' },
+                { title: '清洁次数', dataIndex: 'm1_clean_cnt', className: 'month-sep' },
               ]
             },
             {
@@ -109,7 +124,7 @@ export default function PerformanceOverviewPage() {
                 { title: '入住率', dataIndex: 'm2_occ', render: (v: number)=> `${v||0}%` },
                 { title: '平均房价', dataIndex: 'm2_adr', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
                 { title: '清洁费', dataIndex: 'm2_clean_fee', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: '清洁次数', dataIndex: 'm2_clean_cnt' },
+                { title: '清洁次数', dataIndex: 'm2_clean_cnt', className: 'month-sep' },
               ]
             },
             {
@@ -120,10 +135,24 @@ export default function PerformanceOverviewPage() {
                 { title: '入住率', dataIndex: 'm3_occ', render: (v: number)=> `${v||0}%` },
                 { title: '平均房价', dataIndex: 'm3_adr', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
                 { title: '清洁费', dataIndex: 'm3_clean_fee', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: '清洁次数', dataIndex: 'm3_clean_cnt' },
+                { title: '清洁次数', dataIndex: 'm3_clean_cnt', className: 'month-sep' },
               ]
             },
           ] as any} />
+      <style jsx>{`
+        :global(.ant-table-thead .month-sep),
+        :global(.ant-table-tbody .month-sep) { position: relative; }
+        :global(.ant-table-thead .month-sep::after),
+        :global(.ant-table-tbody .month-sep::after) {
+          content: '';
+          position: absolute;
+          right: 0;
+          top: 0;
+          width: 2px;
+          height: 100%;
+          background: #e8e8e8;
+        }
+      `}</style>
       </Card>
     </Card>
   )

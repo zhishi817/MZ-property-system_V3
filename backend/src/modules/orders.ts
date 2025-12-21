@@ -1,11 +1,26 @@
 import { Router, text } from 'express'
-import { db, Order, CleaningTask } from '../store'
+import { db, Order, addAudit } from '../store'
 import { z } from 'zod'
 import { requirePerm, requireAnyPerm } from '../auth'
 // Supabase removed
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 
 export const router = Router()
+
+function dayOnly(s?: any): string | undefined {
+  if (!s) return undefined
+  try {
+    const d = new Date(s)
+    if (!isNaN(d.getTime())) {
+      const yyyy = d.getFullYear()
+      const mm = String(d.getMonth() + 1).padStart(2, '0')
+      const dd = String(d.getDate()).padStart(2, '0')
+      return `${yyyy}-${mm}-${dd}`
+    }
+  } catch {}
+  const m = /^\d{4}-\d{2}-\d{2}/.exec(String(s))
+  return m ? m[0] : undefined
+}
 
 router.get('/', async (_req, res) => {
   try {
@@ -26,24 +41,52 @@ router.get('/', async (_req, res) => {
         const prop = byId[pid] || byCode[pid] || byId[pid2]
         const label = (o.property_code || prop?.code || prop?.address || pid)
         const property_name = (prop?.address || undefined)
-        return property_name ? { ...o, property_code: label, property_name } : { ...o, property_code: label }
+        const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) }
+        return property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label }
       })
-      return res.json(labeled)
+      async function enrich(rows: any[]): Promise<any[]> {
+        const ids = rows.map(r => String(r.id))
+        const totals: Record<string, number> = {}
+        try {
+          const { pgPool } = require('../dbAdapter')
+          const sql = 'SELECT order_id, COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id = ANY($1) GROUP BY order_id'
+          const rs = await pgPool?.query(sql, [ids])
+          const arr = (rs?.rows || []) as any[]
+          arr.forEach(r => { totals[String(r.order_id)] = Number(r.total || 0) })
+        } catch {}
+        return rows.map(r => {
+          const t = totals[String(r.id)] || 0
+          const vn = Number(r.net_income || 0) - t
+          return { ...r, internal_deduction_total: Number(t.toFixed(2)), visible_net_income: Number(vn.toFixed(2)) }
+        })
+      }
+      const enriched = await enrich(labeled)
+      return res.json(enriched)
     }
     // Supabase branch removed
-    return res.json(db.orders.map((o) => {
+    const out = db.orders.map((o) => {
       const prop = db.properties.find((p) => String(p.id) === String(o.property_id)) || db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || (db.properties as any[]).find((p: any) => { const ln = p?.listing_names || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String((o as any).listing_name || '').toLowerCase()) })
       const property_name = prop?.address || undefined
       const label = (o.property_code || prop?.code || prop?.address || o.property_id || '')
-      return property_name ? { ...o, property_code: label, property_name } : { ...o, property_code: label }
-    }))
+      const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) }
+      const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label }
+      const t = 0
+      const vn = Number(row.net_income || 0) - t
+      return { ...row, internal_deduction_total: 0, visible_net_income: Number(vn.toFixed(2)) }
+    })
+    return res.json(out)
   } catch {
-    return res.json(db.orders.map((o) => {
+    const out2 = db.orders.map((o) => {
       const prop = db.properties.find((p) => String(p.id) === String(o.property_id)) || db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || (db.properties as any[]).find((p: any) => { const ln = p?.listing_names || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String((o as any).listing_name || '').toLowerCase()) })
       const property_name = prop?.address || undefined
       const label = (o.property_code || prop?.code || prop?.address || o.property_id || '')
-      return property_name ? { ...o, property_code: label, property_name } : { ...o, property_code: label }
-    }))
+      const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) }
+      const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label }
+      const t = 0
+      const vn = Number(row.net_income || 0) - t
+      return { ...row, internal_deduction_total: 0, visible_net_income: Number(vn.toFixed(2)) }
+    })
+    return res.json(out2)
   }
 })
 
@@ -55,7 +98,16 @@ router.get('/:id', async (req, res) => {
     if (hasPg) {
       const remote = await pgSelect('orders', '*', { id })
       const row = Array.isArray(remote) ? remote[0] : null
-      if (row) return res.json(row)
+      if (row) {
+        let total = 0
+        try {
+          const { pgPool } = require('../dbAdapter')
+          const rs = await pgPool?.query('SELECT COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id=$1', [id])
+          total = Number((rs?.rows?.[0]?.total) || 0)
+        } catch {}
+        const vn = Number(row.net_income || 0) - total
+        return res.json({ ...row, checkin: dayOnly(row.checkin), checkout: dayOnly(row.checkout), internal_deduction_total: Number(total.toFixed(2)), visible_net_income: Number(vn.toFixed(2)) })
+      }
     }
     // Supabase branch removed
   } catch {}
@@ -65,7 +117,9 @@ router.get('/:id', (req, res) => {
   const { id } = req.params
   const order = db.orders.find((o) => o.id === id)
   if (!order) return res.status(404).json({ message: 'order not found' })
-  return res.json(order)
+  const t = 0
+  const vn = Number(order.net_income || 0) - t
+  return res.json({ ...order, checkin: dayOnly(order.checkin), checkout: dayOnly(order.checkout), internal_deduction_total: 0, visible_net_income: Number(vn.toFixed(2)) })
 })
 
 const createOrderSchema = z.object({
@@ -84,6 +138,8 @@ const createOrderSchema = z.object({
   avg_nightly_price: z.coerce.number().optional(),
   nights: z.coerce.number().optional(),
   currency: z.string().optional(),
+  payment_currency: z.string().optional(),
+  payment_received: z.boolean().optional(),
   status: z.string().optional(),
   idempotency_key: z.string().optional(),
 })
@@ -211,6 +267,8 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0))
   const avg = o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0)
   const newOrder: Order = { id: uuid(), ...o, property_id: propertyId, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key, status: 'confirmed' }
+  ;(newOrder as any).payment_currency = o.payment_currency || 'AUD'
+  ;(newOrder as any).payment_received = o.payment_received ?? false
   // overlap guard
   const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout)
   if (conflict) return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' })
@@ -241,14 +299,6 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
       const insertOrder: any = { ...newOrder }
       delete insertOrder.property_code
       const row = await pgInsert('orders', insertOrder)
-      if (newOrder.checkout) {
-        const date = newOrder.checkout
-        const hasTask = db.cleaningTasks.find((t) => t.date === date && t.property_id === newOrder.property_id)
-        if (!hasTask) {
-          const task = { id: uuid(), property_id: newOrder.property_id, date, status: 'pending' as const }
-          db.cleaningTasks.push(task)
-        }
-      }
       return res.status(201).json(row)
     } catch (e: any) {
       const msg = String(e?.message || '')
@@ -260,14 +310,6 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
           await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_confirmation_code_unique ON orders(source, confirmation_code) WHERE confirmation_code IS NOT NULL')
           const ins: any = { ...newOrder }; delete ins.property_code
           const row = await pgInsert('orders', ins)
-          if (newOrder.checkout) {
-            const date = newOrder.checkout
-            const hasTask = db.cleaningTasks.find((t) => t.date === date && t.property_id === newOrder.property_id)
-            if (!hasTask) {
-              const task = { id: uuid(), property_id: newOrder.property_id, date, status: 'pending' as const }
-              db.cleaningTasks.push(task)
-            }
-          }
           return res.status(201).json(row)
         } catch (e2: any) {
           return res.status(500).json({ message: '数据库写入失败', error: String(e2?.message || '') })
@@ -280,14 +322,6 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   // Supabase removed
   // 无远端数据库，使用内存存储
   db.orders.push(newOrder)
-  if (newOrder.checkout) {
-    const date = newOrder.checkout
-    const hasTask = db.cleaningTasks.find((t) => t.date === date && t.property_id === newOrder.property_id)
-    if (!hasTask) {
-      const task = { id: uuid(), property_id: newOrder.property_id, date, status: 'pending' as const }
-      db.cleaningTasks.push(task)
-    }
-  }
   return res.status(201).json(newOrder)
 })
 
@@ -344,8 +378,10 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   if (hasPg) {
     try {
       const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+      const allowExtra = ['payment_currency','payment_received']
+      const allowAll = [...allow, ...allowExtra]
       const payload: any = {}
-      for (const k of allow) { if ((updated as any)[k] !== undefined) payload[k] = (updated as any)[k] }
+      for (const k of allowAll) { if ((updated as any)[k] !== undefined) payload[k] = (updated as any)[k] }
       const row = await pgUpdate('orders', id, payload)
       if (idx !== -1) db.orders[idx] = row as any
       return res.json(row)
@@ -358,8 +394,9 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
           await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = \"idx_orders_confirmation_code_unique\") THEN BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
           await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_confirmation_code_unique ON orders(source, confirmation_code) WHERE confirmation_code IS NOT NULL')
           const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+          const allowExtra2 = ['payment_currency','payment_received']
           const payload2: any = {}
-          for (const k of allow) { if ((updated as any)[k] !== undefined) payload2[k] = (updated as any)[k] }
+          for (const k of [...allow, ...allowExtra2]) { if ((updated as any)[k] !== undefined) payload2[k] = (updated as any)[k] }
           const row = await pgUpdate('orders', id, payload2)
           if (idx !== -1) db.orders[idx] = row as any
           return res.json(row)
@@ -445,18 +482,7 @@ router.delete('/:id', requirePerm('order.write'), async (req, res) => {
   return res.json({ ok: true, id: removed.id })
 })
 
-router.post('/:id/generate-cleaning', requirePerm('order.write'), (req, res) => {
-  const { id } = req.params
-  const order = db.orders.find((o) => o.id === id)
-  if (!order) return res.status(404).json({ message: 'order not found' })
-  const { v4: uuid } = require('uuid')
-  const date = order.checkout || new Date().toISOString().slice(0, 10)
-  const exists = db.cleaningTasks.find((t) => t.date === date && t.property_id === order.property_id)
-  if (exists) return res.status(200).json(exists)
-  const task: CleaningTask = { id: uuid(), property_id: order.property_id, date, status: 'pending' }
-  db.cleaningTasks.push(task)
-  res.status(201).json(task)
-})
+// 清洁任务模块已移除
 
 router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','text/plain'] }), async (req, res) => {
   function toNumber(v: any): number | undefined {
@@ -491,6 +517,10 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
       if (obj[k] != null && String(obj[k]).trim() !== '') return String(obj[k])
     }
     return undefined
+  }
+  function normalizeName(s?: string): string {
+    const v = String(s || '')
+    return v.replace(/["'“”‘’]/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
   }
   const rawBody = typeof req.body === 'string' ? req.body : ''
   const rowsInput: any[] = Array.isArray((req as any).body) ? (req as any).body : await parseCsv(rawBody)
@@ -539,8 +569,8 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
         const bn = String(p.booking_listing_name || '')
         const ai = String(p.airbnb_listing_id || '')
         const bi = String(p.booking_listing_id || '')
-        if (an) byName[`airbnb:${an.toLowerCase().trim()}`] = id
-        if (bn) byName[`booking:${bn.toLowerCase().trim()}`] = id
+        if (an) byName[`airbnb:${normalizeName(an)}`] = id
+        if (bn) byName[`booking:${normalizeName(bn)}`] = id
         if (ai) byId[`airbnb:${ai.toLowerCase().trim()}`] = id
         if (bi) byId[`booking:${bi.toLowerCase().trim()}`] = id
       })
@@ -554,13 +584,13 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
         const bn = String(p.booking_listing_name || '')
         const ai = String(p.airbnb_listing_id || '')
         const bi = String(p.booking_listing_id || '')
-        if (an) byName[`airbnb:${an.toLowerCase().trim()}`] = id
-        if (bn) byName[`booking:${bn.toLowerCase().trim()}`] = id
+        if (an) byName[`airbnb:${normalizeName(an)}`] = id
+        if (bn) byName[`booking:${normalizeName(bn)}`] = id
         if (ai) byId[`airbnb:${ai.toLowerCase().trim()}`] = id
         if (bi) byId[`booking:${bi.toLowerCase().trim()}`] = id
         const ln = (p?.listing_names || {})
         Object.entries(ln || {}).forEach(([plat, name]: any) => {
-          if (name) byName[`${String(plat).toLowerCase()}:${String(name).toLowerCase().trim()}`] = id
+          if (name) byName[`${String(plat).toLowerCase()}:${normalizeName(String(name))}`] = id
         })
       })
     }
@@ -587,7 +617,7 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
       let property_id = r.property_id || r.propertyId
       if (!property_id) {
         const keyId = listing_id && platform ? `${platform}:${String(listing_id).toLowerCase().trim()}` : ''
-        const keyName = listing_name && platform ? `${platform}:${String(listing_name).toLowerCase().trim()}` : ''
+        const keyName = listing_name && platform ? `${platform}:${normalizeName(String(listing_name))}` : ''
         property_id = (keyId && byId[keyId]) || (keyName && byName[keyName]) || (property_code ? byCode[String(property_code).toLowerCase()] : undefined)
       }
       const guest_name = getField(r, ['Guest','guest','guest_name'])
@@ -907,6 +937,10 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
       for (const k of keys) { if (obj[k] != null && String(obj[k]).trim() !== '') return String(obj[k]) }
       return undefined
     }
+    function normalizeName(s?: string): string {
+      const v = String(s || '')
+      return v.replace(/["'“”‘’]/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
+    }
     function toNumber(v: any): number | undefined { if (v == null || v === '') return undefined; const n = Number(v); return isNaN(n) ? undefined : n }
     function normAirbnb(r: Record<string, any>) {
       const confirmation_code = getField(r, ['confirmation_code','Confirmation Code','Confirmation Code (Airbnb)'])
@@ -963,10 +997,10 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
           if (code) idToCode[id] = code
           if (platform === 'airbnb' || platform === 'booking') {
             const nm = String((platform === 'airbnb' ? p.airbnb_listing_name : p.booking_listing_name) || '')
-            if (nm) byName[nm.trim().toLowerCase()] = id
+            if (nm) byName[`name:${normalizeName(nm)}`] = id
           } else {
             const ln = p?.listing_names || {}
-            Object.values(ln || {}).forEach((nm: any) => { if (nm) byName[String(nm).trim().toLowerCase()] = id })
+            Object.values(ln || {}).forEach((nm: any) => { if (nm) byName[`name:${normalizeName(String(nm))}`] = id })
           }
         })
       } else {
@@ -976,10 +1010,10 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
           if (code) idToCode[id] = code
           if (platform === 'airbnb' || platform === 'booking') {
             const nm = String((platform === 'airbnb' ? p.airbnb_listing_name : (p as any).booking_listing_name) || '')
-            if (nm) byName[nm.trim().toLowerCase()] = id
+            if (nm) byName[`name:${normalizeName(nm)}`] = id
           } else {
             const ln = (p?.listing_names || {})
-            Object.values(ln || {}).forEach((nm: any) => { if (nm) byName[String(nm).trim().toLowerCase()] = id })
+            Object.values(ln || {}).forEach((nm: any) => { if (nm) byName[`name:${normalizeName(String(nm))}`] = id })
           }
         })
       }
@@ -1015,7 +1049,7 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
       const cc = String(n.confirmation_code || '').trim()
       const ln = String(n.listing_name || '').trim()
       if (!cc) { errors.push({ rowIndex: rowIndexBase + i, listing_name: ln || undefined, reason: '确认码为空' }); continue }
-      const pid = ln ? byName[ln.toLowerCase()] : undefined
+      const pid = ln ? byName[`name:${normalizeName(ln)}`] : undefined
       if (!pid) {
         try {
           const payload: any = { id: require('uuid').v4(), channel: platform, raw_row: r, reason: 'unmatched_property', listing_name: ln, confirmation_code: cc, status: 'unmatched' }
@@ -1080,4 +1114,218 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
     } catch {}
     return res.status(500).json({ message: e?.message || 'import failed', buildVersion: (process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown') })
   }
+})
+
+const deductionSchema = z.object({ amount: z.coerce.number().positive(), currency: z.string().optional(), item_desc: z.string().min(1), note: z.string().optional() })
+function monthKeyOfDate(s?: string): string {
+  const d = s ? new Date(s) : null
+  if (!d || isNaN(d.getTime())) return ''
+  const y = d.getFullYear(); const m = String(d.getMonth() + 1).padStart(2, '0')
+  return `${y}-${m}`
+}
+async function isOrderMonthLocked(order: any): Promise<boolean> {
+  try {
+    if (!hasPg) return false
+    const co = String(order?.checkout || '').slice(0,10)
+    if (!co) return false
+    const mm = monthKeyOfDate(co)
+    let landlordId: string | undefined
+    if (order?.property_id) {
+      const ps: any[] = await pgSelect('properties', 'id,landlord_id', { id: order.property_id }) as any[] || []
+      landlordId = ps[0]?.landlord_id
+    }
+    const rows: any[] = await pgSelect('payouts') as any[] || []
+    const locked = rows.some((p: any) => {
+      const pf = String(p.period_from || '').slice(0,10)
+      const pt = String(p.period_to || '').slice(0,10)
+      if (!pf || !pt) return false
+      const kmf = monthKeyOfDate(pf)
+      const kmt = monthKeyOfDate(pt)
+      const sameMonth = kmf === mm && kmt === mm
+      const landlordMatch = landlordId ? String(p.landlord_id || '') === String(landlordId) : true
+      return sameMonth && landlordMatch && String(p.status || '').toLowerCase() !== 'pending'
+    })
+    return locked
+  } catch { return false }
+}
+
+router.get('/:id/internal-deductions', requirePerm('order.deduction.manage'), async (req, res) => {
+  const { id } = req.params
+  try {
+    if (hasPg) {
+      const rows: any[] = await pgSelect('order_internal_deductions', '*', { order_id: id }) as any[] || []
+      return res.json(rows)
+    }
+    const rows = (db as any).orderInternalDeductions.filter((d: any) => d.order_id === id)
+    return res.json(rows)
+  } catch (e: any) { return res.status(500).json({ message: e?.message || 'query failed' }) }
+})
+
+router.post('/:id/internal-deductions', requirePerm('order.deduction.manage'), async (req, res) => {
+  const { id } = req.params
+  const parsed = deductionSchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const { v4: uuid } = require('uuid')
+  let order: any = db.orders.find(o => o.id === id)
+  if (!order && hasPg) { try { const rows: any[] = await pgSelect('orders', '*', { id }) as any[] || []; order = rows[0] } catch {} }
+  if (!order) return res.status(404).json({ message: 'order not found' })
+  const role = String(((req as any).user?.role) || '')
+  const singleLimit = 100
+  const totalLimit = 150
+  const amount = Number(parsed.data.amount)
+  if (role !== 'admin' && role !== 'finance_staff') {
+    if (amount > singleLimit) return res.status(403).json({ message: 'amount exceeds single limit' })
+  }
+  let existingTotal = 0
+  try {
+    if (hasPg) {
+      const { pgPool } = require('../dbAdapter')
+      const rs = await pgPool?.query('SELECT COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id=$1', [id])
+      existingTotal = Number((rs?.rows?.[0]?.total) || 0)
+    } else {
+      existingTotal = (db as any).orderInternalDeductions.filter((d: any) => d.order_id === id && d.is_active).reduce((s: number, x: any) => s + Number(x.amount || 0), 0)
+    }
+  } catch {}
+  if (role !== 'admin' && role !== 'finance_staff') {
+    if (existingTotal + amount > totalLimit) return res.status(403).json({ message: 'amount exceeds order total limit' })
+  }
+  const net = Number(order.net_income || 0)
+  if (existingTotal + amount > net && role !== 'admin' && role !== 'finance_staff') return res.status(403).json({ message: 'amount exceeds order net income' })
+  const locked = await isOrderMonthLocked(order)
+  if (locked && role === 'customer_service') return res.status(403).json({ message: 'payout locked, customer_service cannot change amount' })
+  const now = new Date().toISOString()
+  const row: any = { id: uuid(), order_id: id, amount, currency: parsed.data.currency || 'AUD', item_desc: parsed.data.item_desc, note: parsed.data.note, created_by: (req as any).user?.sub, created_at: now, is_active: true }
+  addAudit('OrderInternalDeduction', row.id, 'create', null, row, (req as any).user?.sub)
+  if (hasPg) {
+    try { const inserted = await pgInsert('order_internal_deductions', row as any); return res.status(201).json(inserted || row) } catch (e: any) {
+      const msg = String(e?.message || '')
+      try {
+        const { pgPool } = require('../dbAdapter')
+        if (/relation\s+"order_internal_deductions"\s+does\s+not\s+exist/i.test(msg)) {
+          await pgPool?.query(`CREATE TABLE IF NOT EXISTS order_internal_deductions (
+            id text PRIMARY KEY,
+            order_id text REFERENCES orders(id) ON DELETE CASCADE,
+            amount numeric NOT NULL,
+            currency text,
+            item_desc text,
+            note text,
+            created_by text,
+            created_at timestamptz DEFAULT now(),
+            is_active boolean DEFAULT true
+          )`)
+          await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_order_deductions_order_active ON order_internal_deductions(order_id, is_active)')
+        }
+        if (/column\s+"item_desc"\s+of\s+relation\s+"order_internal_deductions"\s+does\s+not\s+exist/i.test(msg)) {
+          await pgPool?.query('ALTER TABLE order_internal_deductions ADD COLUMN IF NOT EXISTS item_desc text')
+        }
+        if (/column\s+"note"\s+of\s+relation\s+"order_internal_deductions"\s+has\s+no\s+default/i.test(msg) || /null value in column "note" violates not-null constraint/i.test(msg)) {
+          await pgPool?.query('ALTER TABLE order_internal_deductions ALTER COLUMN note DROP NOT NULL')
+        }
+        const inserted2 = await pgInsert('order_internal_deductions', row as any)
+        return res.status(201).json(inserted2 || row)
+      } catch (e2: any) {
+        return res.status(500).json({ message: e2?.message || msg || 'insert failed' })
+      }
+    }
+  }
+  ;(db as any).orderInternalDeductions.push(row)
+  return res.status(201).json(row)
+})
+
+router.patch('/:id/internal-deductions/:did', requirePerm('order.deduction.manage'), async (req, res) => {
+  const { id, did } = req.params
+  const parsed = deductionSchema.partial().extend({ is_active: z.boolean().optional() }).safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  let order: any = db.orders.find(o => o.id === id)
+  if (!order && hasPg) { try { const rows: any[] = await pgSelect('orders', '*', { id }) as any[] || []; order = rows[0] } catch {} }
+  if (!order) return res.status(404).json({ message: 'order not found' })
+  const role = String(((req as any).user?.role) || '')
+  const locked = await isOrderMonthLocked(order)
+  if (locked && role === 'customer_service' && parsed.data.amount != null) return res.status(403).json({ message: 'payout locked, customer_service cannot change amount' })
+  let prev: any = null
+  if (hasPg) {
+    try { const rows: any[] = await pgSelect('order_internal_deductions', '*', { id: did }) as any[] || []; prev = rows[0] } catch {}
+  } else {
+    prev = (db as any).orderInternalDeductions.find((d: any) => d.id === did)
+  }
+  if (!prev) return res.status(404).json({ message: 'deduction not found' })
+  const amountNew = parsed.data.amount != null ? Number(parsed.data.amount) : undefined
+  const singleLimit = 100
+  const totalLimit = 150
+  if (amountNew != null && role !== 'admin' && role !== 'finance_staff') {
+    if (amountNew > singleLimit) return res.status(403).json({ message: 'amount exceeds single limit' })
+  }
+  let existingTotal = 0
+  try {
+    if (hasPg) {
+      const { pgPool } = require('../dbAdapter')
+      const rs = await pgPool?.query('SELECT COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id=$1 AND id<>$2', [id, did])
+      existingTotal = Number((rs?.rows?.[0]?.total) || 0)
+    } else {
+      existingTotal = (db as any).orderInternalDeductions.filter((d: any) => d.order_id === id && d.is_active && d.id !== did).reduce((s: number, x: any) => s + Number(x.amount || 0), 0)
+    }
+  } catch {}
+  if (amountNew != null && role !== 'admin' && role !== 'finance_staff') {
+    if (existingTotal + amountNew > totalLimit) return res.status(403).json({ message: 'amount exceeds order total limit' })
+  }
+  const net = Number(order.net_income || 0)
+  if (amountNew != null && existingTotal + amountNew > net && role !== 'admin' && role !== 'finance_staff') return res.status(403).json({ message: 'amount exceeds order net income' })
+  const updated: any = { ...prev, ...parsed.data }
+  addAudit('OrderInternalDeduction', did, 'update', prev, updated, (req as any).user?.sub)
+  if (hasPg) {
+    try { const row = await pgUpdate('order_internal_deductions', did, updated as any); return res.json(row || updated) } catch (e: any) {
+      const msg = String(e?.message || '')
+      try {
+        const { pgPool } = require('../dbAdapter')
+        if (/column\s+"item_desc"\s+of\s+relation\s+"order_internal_deductions"\s+does\s+not\s+exist/i.test(msg)) {
+          await pgPool?.query('ALTER TABLE order_internal_deductions ADD COLUMN IF NOT EXISTS item_desc text')
+        }
+        if (/null value in column "note" violates not-null constraint/i.test(msg)) {
+          await pgPool?.query('ALTER TABLE order_internal_deductions ALTER COLUMN note DROP NOT NULL')
+        }
+        const row2 = await pgUpdate('order_internal_deductions', did, updated as any)
+        return res.json(row2 || updated)
+      } catch (e2: any) {
+        try { await pgInsert('order_internal_deductions', updated as any); return res.json(updated) } catch (e3: any) { return res.status(500).json({ message: e3?.message || e2?.message || msg || 'update failed' }) }
+      }
+    }
+  }
+  const idx = (db as any).orderInternalDeductions.findIndex((d: any) => d.id === did)
+  if (idx !== -1) (db as any).orderInternalDeductions[idx] = updated
+  return res.json(updated)
+})
+
+router.delete('/:id/internal-deductions/:did', requirePerm('order.deduction.manage'), async (req, res) => {
+  const { id, did } = req.params
+  let order: any = db.orders.find(o => o.id === id)
+  if (!order && hasPg) { try { const rows: any[] = await pgSelect('orders', '*', { id }) as any[] || []; order = rows[0] } catch {} }
+  if (!order) return res.status(404).json({ message: 'order not found' })
+  const role = String(((req as any).user?.role) || '')
+  const locked = await isOrderMonthLocked(order)
+  if (locked && role === 'customer_service') return res.status(403).json({ message: 'payout locked, customer_service cannot delete physically' })
+  let prev: any = null
+  if (hasPg) {
+    try { const rows: any[] = await pgSelect('order_internal_deductions', '*', { id: did }) as any[] || []; prev = rows[0] } catch {}
+  } else { prev = (db as any).orderInternalDeductions.find((d: any) => d.id === did) }
+  if (!prev) return res.status(404).json({ message: 'deduction not found' })
+  addAudit('OrderInternalDeduction', did, 'delete', prev, null, (req as any).user?.sub)
+  if (hasPg) {
+    try { await pgDelete('order_internal_deductions', did); return res.json({ ok: true }) } catch (e: any) { return res.status(500).json({ message: e?.message || 'delete failed' }) }
+  }
+  const idx = (db as any).orderInternalDeductions.findIndex((d: any) => d.id === did)
+  if (idx !== -1) (db as any).orderInternalDeductions.splice(idx, 1)
+  return res.json({ ok: true })
+})
+router.post('/:id/confirm-payment', requirePerm('order.write'), async (req, res) => {
+  const { id } = req.params
+  let base: any = db.orders.find(o => o.id === id)
+  if (!base && hasPg) { try { const rows: any[] = await pgSelect('orders', '*', { id }) as any[] || []; base = rows[0] } catch {} }
+  if (!base) return res.status(404).json({ message: 'order not found' })
+  const before = { ...base }
+  base.payment_received = true
+  addAudit('Order', id, 'confirm_payment', before, base)
+  if (hasPg) {
+    try { const row = await pgUpdate('orders', id, { payment_received: true } as any); return res.json(row || base) } catch {}
+  }
+  return res.json(base)
 })

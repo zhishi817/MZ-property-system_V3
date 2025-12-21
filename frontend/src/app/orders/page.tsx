@@ -1,10 +1,12 @@
 "use client"
-import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, Select, Tag, InputNumber, Checkbox, Upload, Radio, Calendar, App } from 'antd'
+import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, Select, Tag, InputNumber, Checkbox, Upload, Radio, Calendar, App, Drawer, Descriptions } from 'antd'
+import { useRouter } from 'next/navigation'
 import type { UploadProps } from 'antd'
 import { useEffect, useState, useRef } from 'react'
 import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
-import { monthSegments } from '../../lib/orders'
+import { monthSegments, getMonthSegmentsForProperty } from '../../lib/orders'
+import { debugOnce } from '../../lib/debug'
 import { sortProperties } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 
@@ -14,6 +16,7 @@ type CleaningTask = { id: string; status: 'pending'|'scheduled'|'done' }
 
 export default function OrdersPage() {
   const { message } = App.useApp()
+  const router = useRouter()
   const [data, setData] = useState<Order[]>([])
   const [open, setOpen] = useState(false)
   const [form] = Form.useForm()
@@ -34,6 +37,17 @@ export default function OrdersPage() {
   const [calPid, setCalPid] = useState<string | undefined>(undefined)
   const calRef = useRef<HTMLDivElement | null>(null)
   const [monthFilter, setMonthFilter] = useState<any>(dayjs())
+  const [deductAmountEdit, setDeductAmountEdit] = useState<number>(0)
+  const [deductDescEdit, setDeductDescEdit] = useState<string>('')
+  const [deductNoteEdit, setDeductNoteEdit] = useState<string>('')
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [detail, setDetail] = useState<Order | null>(null)
+  const [detailDeductions, setDetailDeductions] = useState<any[]>([])
+  const [detailDedAmount, setDetailDedAmount] = useState<number>(0)
+  const [detailDedDesc, setDetailDedDesc] = useState<string>('')
+  const [detailDedNote, setDetailDedNote] = useState<string>('')
+  const [detailEditing, setDetailEditing] = useState<any | null>(null)
+  const [detailLoading, setDetailLoading] = useState<boolean>(false)
   function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
   function getPropertyCodeLabel(o: Order) {
     const p = getPropertyById(o.property_id)
@@ -48,7 +62,8 @@ export default function OrdersPage() {
   }
   function fmtDay(s?: string) {
     if (!s) return ''
-    const d = dayjs(toDayStr(s))
+    const ds = toDayStr(s)
+    const d = dayjs(ds, 'YYYY-MM-DD', true)
     return d.isValid() ? d.format('DD/MM/YYYY') : s
   }
   const uploadProps: UploadProps = {
@@ -119,6 +134,34 @@ export default function OrdersPage() {
     const res = await getJSON<Order[]>('/orders')
     setData(res)
   }
+  async function openDetail(record: Order) {
+    setDetail(record)
+    setDetailOpen(true)
+    setDetailLoading(true)
+    setDetailDedAmount(0); setDetailDedDesc(''); setDetailDedNote(''); setDetailEditing(null)
+    const id = record.id
+    try {
+      const [o, ds] = await Promise.all([
+        getJSON<Order>(`/orders/${id}`).catch(() => null as any),
+        fetch(`${API_BASE}/orders/${id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json()).catch(() => [])
+      ])
+      if (o) setDetail(o)
+      setDetailDeductions(Array.isArray(ds) ? ds : [])
+    } finally { setDetailLoading(false) }
+  }
+  async function saveDetailDeduction() {
+    if (!detail) return
+    const payload = { amount: detailDedAmount, item_desc: detailDedDesc, note: detailDedNote }
+    const url = `${API_BASE}/orders/${detail.id}/internal-deductions${detailEditing ? `/${detailEditing.id}` : ''}`
+    const method = detailEditing ? 'PATCH' : 'POST'
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+    if (res.ok) { message.success('已保存'); openDetail(detail.id) } else { const j = await res.json().catch(()=>({})); message.error(j?.message || '保存失败') }
+  }
+  async function deleteDetailDeduction(rec: any) {
+    if (!detail) return
+    const res = await fetch(`${API_BASE}/orders/${detail.id}/internal-deductions/${rec.id}`, { method: 'DELETE', headers: { ...authHeaders() } })
+    if (res.ok) { message.success('已删除'); openDetail(detail.id) } else { const j = await res.json().catch(()=>({})); message.error(j?.message || '删除失败') }
+  }
   useEffect(() => { load(); getJSON<any>('/properties?include_archived=true').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([])) }, [])
 
   async function openEdit(o: Order) {
@@ -137,6 +180,7 @@ export default function OrdersPage() {
       checkin: o.checkin ? dayjs(o.checkin) : undefined,
       checkout: o.checkout ? dayjs(o.checkout) : undefined,
       status: o.status || 'confirmed',
+      payment_currency: (o as any).payment_currency || 'AUD',
       guest_phone: (o as any).guest_phone || ''
     })
     // 再异步拉取完整数据并二次填充（失败时保持现有值）
@@ -154,8 +198,10 @@ export default function OrdersPage() {
         checkin: full.checkin ? dayjs(full.checkin) : undefined,
         checkout: full.checkout ? dayjs(full.checkout) : undefined,
         status: full.status || 'confirmed',
+        payment_currency: (full as any).payment_currency || 'AUD',
         guest_phone: (full as any).guest_phone || ''
       })
+      setDeductAmountEdit(0); setDeductDescEdit(''); setDeductNoteEdit('')
     } catch {
       message.warning('加载订单详情失败，使用列表数据进行编辑')
     }
@@ -223,22 +269,71 @@ export default function OrdersPage() {
   }
 
   function money(v?: number) { const n = Number(v || 0); if (!isFinite(n)) return ''; return Number(n.toFixed(2)).toFixed(2) }
+  function calcMonthAmounts(o: Order) {
+    const rawCi = (o as any).__src_checkin || o.checkin
+    const rawCo = (o as any).__src_checkout || o.checkout
+    const ci = dayjs(toDayStr(rawCi)).startOf('day')
+    const co = dayjs(toDayStr(rawCo)).startOf('day')
+    const ms = (monthFilter || dayjs()).startOf('month')
+    const meNext = ms.add(1, 'month').startOf('month')
+    const a = ci.isAfter(ms) ? ci : ms
+    const b = co.isBefore(meNext) ? co : meNext
+    const nightsMonth = Math.max(0, b.diff(a, 'day'))
+    const totalNightsAll = Number((o as any).__src_nights ?? Math.max(0, co.diff(ci, 'day')))
+    const totalPrice = Number((o as any).__src_price ?? o.price ?? 0)
+    const totalCleaning = Number((o as any).__src_cleaning_fee ?? o.cleaning_fee ?? 0)
+    const netTotal = Math.max(0, Number((totalPrice - totalCleaning).toFixed(2)))
+    const dailyNet = totalNightsAll ? netTotal / totalNightsAll : 0
+    const netMonth = Number((dailyNet * nightsMonth).toFixed(2))
+    const isLastMonth = co.isSame(ms, 'month')
+    const checkoutIsFirstDay = co.date() === 1
+    const prevMonthOfCheckout = co.subtract(1,'month')
+    const cleanMonth = (isLastMonth || (checkoutIsFirstDay && prevMonthOfCheckout.isSame(ms, 'month'))) ? totalCleaning : 0
+    const priceMonth = Number((netMonth + cleanMonth).toFixed(2))
+    const avgMonth = nightsMonth ? Number((netMonth / nightsMonth).toFixed(2)) : 0
+    return { nightsMonth, netMonth, cleanMonth, priceMonth, avgMonth }
+  }
   const columns = [
-    { title: '房号', dataIndex: 'property_code', render: (_: any, r: Order) => getPropertyCodeLabel(r) },
+    { title: '房号', dataIndex: 'property_code', render: (_: any, r: Order) => {
+      const label = getPropertyCodeLabel(r)
+      const hasDed = Number(((r as any).internal_deduction ?? (r as any).internal_deduction_total ?? 0)) > 0
+      return hasDed ? (<Space><span>{label}</span><Tag color="red">扣减</Tag></Space>) : label
+    } },
     { title: '确认码', dataIndex: 'confirmation_code' },
     { title: '来源', dataIndex: 'source' },
+    { title: '付款币种', dataIndex: 'payment_currency', render: (v:any)=> (v || 'AUD') },
     { title: '客人', dataIndex: 'guest_name' },
     // 可按需求增加显示客人电话
-    { title: '入住', dataIndex: 'checkin', render: (_: any, r: Order) => fmtDay(r.checkin) },
-    { title: '退房', dataIndex: 'checkout', render: (_: any, r: Order) => fmtDay(r.checkout) },
-    { title: '天数', dataIndex: 'nights' },
-    { title: '总租金(AUD)', dataIndex: 'price', render: (v:any)=> money(v) },
-    { title: '清洁费', dataIndex: 'cleaning_fee', render: (v:any)=> money(v) },
-    { title: '总收入', dataIndex: 'net_income', render: (v:any)=> money(v) },
-    { title: '晚均价', dataIndex: 'avg_nightly_price', render: (v:any)=> money(v) },
+    { title: '入住', dataIndex: 'checkin', render: (_: any, r: Order) => fmtDay((r as any).__src_checkin || r.checkin) },
+    { title: '退房', dataIndex: 'checkout', render: (_: any, r: Order) => fmtDay((r as any).__src_checkout || r.checkout) },
+    { title: '天数', dataIndex: 'nights', render: (_: any, r: Order) => {
+      const rawCi = (r as any).__src_checkin || r.checkin
+      const rawCo = (r as any).__src_checkout || r.checkout
+      const ci = dayjs(toDayStr(rawCi)).startOf('day')
+      const co = dayjs(toDayStr(rawCo)).startOf('day')
+      const ms = (monthFilter || dayjs()).startOf('month')
+      const meNext = ms.add(1, 'month').startOf('month')
+      const a = ci.isAfter(ms) ? ci : ms
+      const b = co.isBefore(meNext) ? co : meNext
+      return Math.max(0, b.diff(a, 'day'))
+    } },
+    { title: '当月租金(AUD)', dataIndex: 'price', render: (_:any, r:Order)=> money(((r as any).visible_net_income ?? calcMonthAmounts(r).netMonth)) },
+    { title: '订单总租金', dataIndex: '__src_price', render: (_:any, r:Order)=> money((r as any).__src_price) },
+    { title: '清洁费', dataIndex: 'cleaning_fee', render: (_:any, r:Order)=> money(calcMonthAmounts(r).cleanMonth) },
+    { title: '总收入', dataIndex: 'net_income', render: (_:any, r:Order)=> money(((r as any).visible_net_income ?? calcMonthAmounts(r).netMonth)) },
+    { title: '晚均价', dataIndex: 'avg_nightly_price', render: (_:any, r:Order)=> money(calcMonthAmounts(r).avgMonth) },
     { title: '状态', dataIndex: 'status' },
+    { title: '到账', dataIndex: 'payment_received', render: (v:any)=> v ? <Tag color="green">已到账</Tag> : <Tag>未到账</Tag> },
     { title: '操作', render: (_: any, r: Order) => (
       <Space>
+        <Button onClick={() => openDetail(r)}>查看</Button>
+        {!((r as any).payment_received) ? <Button type="primary" onClick={async ()=>{
+          const res = await fetch(`${API_BASE}/orders/${r.id}/confirm-payment`, { method: 'POST', headers: { ...authHeaders() } })
+          if (res.ok) {
+            message.success('已确认到账')
+            setData(prev => prev.map(x => x.id === r.id ? ({ ...x, payment_received: true } as any) : x))
+          } else { const j = await res.json().catch(()=>({})); message.error(j?.message || '操作失败') }
+        }}>确认到账</Button> : null}
         {hasPerm('order.write') ? <Button onClick={() => openEdit(r)}>编辑</Button> : null}
         {hasPerm('order.write') ? <Button danger onClick={() => {
           Modal.confirm({
@@ -426,10 +521,17 @@ export default function OrdersPage() {
           columns={columns as any}
           dataSource={(function(){
             const ms = (monthFilter || dayjs()).startOf('month')
-            const rows: (Order & { __rid?: string })[] = monthSegments(data as any, ms) as any
-            return rows.filter(o => {
+            const input = String(codeQuery || '').trim()
+            const matchProp = (Array.isArray(properties) ? properties : []).find(pp => {
+              const label = pp.code || pp.address || pp.id
+              return String(label).toLowerCase() === input.toLowerCase()
+            })
+            const pidFilter = matchProp?.id
+            const baseSegs: (Order & { __rid?: string })[] = getMonthSegmentsForProperty(data as any, ms, pidFilter) as any
+            debugOnce(`ORDERS_LIST_DEBUG ${ms.format('YYYY-MM')} ${pidFilter || input}`, baseSegs.map(s => s.id))
+            return baseSegs.filter(o => {
               const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
-              const codeOk = !codeQuery || codeText.includes(codeQuery.trim().toLowerCase())
+              const codeOk = pidFilter ? String(o.property_id) === pidFilter : (!codeQuery || codeText.includes(codeQuery.trim().toLowerCase()))
               const rangeOk = !dateRange || (
                 (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
                 (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
@@ -542,7 +644,7 @@ export default function OrdersPage() {
         const net = Math.max(0, price - cleaning)
         const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
         const selectedEdit = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
-        const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net, avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg, price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price, cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning }
+        const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net, avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg, price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price, cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning, payment_currency: (v.payment_currency || 'AUD') }
         const res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ ...payload, force: true }) })
         if (res.ok) {
           async function writeIncome(amount: number, cat: string, note: string) {
@@ -623,6 +725,7 @@ export default function OrdersPage() {
               const cancelFee = Number(v.cancel_fee || 0)
               const net = Math.max(0, price + lateFee + cancelFee - cleaning)
               const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+              const visible = Math.max(0, net - Number(deductAmountEdit || 0))
               return (
                 <Card size="small" style={{ marginTop: 8 }}>
                   <Space wrap>
@@ -631,13 +734,68 @@ export default function OrdersPage() {
                     {v.late_checkout || v.late_checkout_fee ? <Tag color="purple">晚退收入: {lateFee}</Tag> : null}
                     {v.cancel_fee ? <Tag color="orange">取消费: {cancelFee}</Tag> : null}
                     <Tag color="purple">晚均价: {Number(avg).toFixed(2)}</Tag>
+                    {hasPerm('order.deduction.manage') ? <Tag color="red">可见净额: {Number(visible).toFixed(2)}</Tag> : null}
                   </Space>
                 </Card>
               )
             }}
           </Form.Item>
+          {hasPerm('order.deduction.manage') ? (
+            <Card size="small" style={{ marginTop: 8 }} title="内部扣减">
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <InputNumber style={{ width: '100%' }} value={deductAmountEdit} onChange={(v)=> setDeductAmountEdit(Number(v||0))} min={0} />
+                <Input value={deductDescEdit} onChange={(e)=> setDeductDescEdit(e.target.value)} placeholder="减扣事项描述" />
+                <Input value={deductNoteEdit} onChange={(e)=> setDeductNoteEdit(e.target.value)} placeholder="备注" />
+                <Button type="primary" onClick={async () => {
+                  if (!current) return
+                  const payload = { amount: deductAmountEdit, item_desc: deductDescEdit, note: deductNoteEdit }
+                  const resp = await fetch(`${API_BASE}/orders/${current.id}/internal-deductions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+                  if (resp.ok) { message.success('扣减已保存'); setDeductAmountEdit(0); setDeductNoteEdit(''); load() } else { const j = await resp.json().catch(()=>({})); message.error(j?.message || '保存失败') }
+                }}>保存扣减</Button>
+              </Space>
+            </Card>
+          ) : null}
         </Form>
     </Modal>
+    <Drawer open={view==='list' && detailOpen} onClose={() => setDetailOpen(false)} title="订单详情" width={520}>
+      {detailLoading ? <div style={{ padding: 8 }}><span>加载中...</span></div> : null}
+      {detail && (
+        <Descriptions bordered size="small" column={1}>
+          <Descriptions.Item label="来源">{detail.source}</Descriptions.Item>
+          <Descriptions.Item label="入住">{detail.checkin ? dayjs(detail.checkin).format('DD/MM/YYYY') : ''}</Descriptions.Item>
+          <Descriptions.Item label="退房">{detail.checkout ? dayjs(detail.checkout).format('DD/MM/YYYY') : ''}</Descriptions.Item>
+          <Descriptions.Item label="状态">{detail.status}</Descriptions.Item>
+          <Descriptions.Item label="付款币种">{(detail as any).payment_currency || 'AUD'}</Descriptions.Item>
+          <Descriptions.Item label="到账状态">{(detail as any).payment_received ? '已到账' : '未到账'}</Descriptions.Item>
+          <Descriptions.Item label="原始净额">{(detail as any).net_income ?? 0}</Descriptions.Item>
+          <Descriptions.Item label="内部扣减汇总">{(detail as any).internal_deduction_total ?? 0}</Descriptions.Item>
+          <Descriptions.Item label="可见净额">{(detail as any).visible_net_income ?? ((detail as any).net_income || 0)}</Descriptions.Item>
+        </Descriptions>
+      )}
+      <Card style={{ marginTop: 12 }} title="内部扣减" extra={hasPerm('order.deduction.manage') ? (<Button onClick={() => { setDetailEditing(null); setDetailDedAmount(0); setDetailDedDesc(''); setDetailDedNote(''); }}>新增</Button>) : null}>
+        <Table size="small" pagination={false} dataSource={detailDeductions} rowKey="id" columns={[
+          { title: '金额', dataIndex: 'amount', align: 'right' },
+          { title: '币种', dataIndex: 'currency' },
+          { title: '事项描述', dataIndex: 'item_desc' },
+          { title: '备注', dataIndex: 'note' },
+          { title: '状态', dataIndex: 'is_active', render: (v: any) => v ? 'active' : 'void' },
+          { title: '操作', render: (_: any, r: any) => hasPerm('order.deduction.manage') ? (
+            <Space>
+              <Button size="small" onClick={() => { setDetailEditing(r); setDetailDedAmount(Number(r.amount||0)); setDetailDedDesc(r.item_desc || ''); setDetailDedNote(r.note || ''); }}>编辑</Button>
+              <Button size="small" danger onClick={() => deleteDetailDeduction(r)}>删除</Button>
+            </Space>
+          ) : null }
+        ]} />
+        {hasPerm('order.deduction.manage') ? (
+          <Space direction="vertical" style={{ width: '100%', marginTop: 12 }}>
+            <InputNumber value={detailDedAmount} onChange={(v) => setDetailDedAmount(Number(v||0))} min={0} style={{ width: '100%' }} />
+            <Input value={detailDedDesc} onChange={(e) => setDetailDedDesc(e.target.value)} placeholder="减扣事项描述" />
+            <Input value={detailDedNote} onChange={(e) => setDetailDedNote(e.target.value)} placeholder="备注" />
+            <Button type="primary" onClick={saveDetailDeduction}>保存扣减</Button>
+          </Space>
+        ) : null}
+      </Card>
+    </Drawer>
     <Modal open={importOpen} onCancel={() => setImportOpen(false)} footer={null} title="批量导入订单" width={960} styles={{ body: { maxHeight: 520, overflow: 'auto' } }}>
       <Upload.Dragger {...uploadProps} disabled={importing}>
         <p>点击或拖拽上传 CSV 或 Excel 文件</p>
@@ -706,3 +864,6 @@ export default function OrdersPage() {
     if (anyScheduled) return <Tag color="blue">已排班</Tag>
     return <Tag color="orange">待安排</Tag>
   }
+          <Form.Item name="payment_currency" label="付款币种" initialValue="AUD">
+            <Select options={[{ value: 'AUD', label: 'AUD' }, { value: 'RMB', label: 'RMB' }, { value: 'USD', label: 'USD' }, { value: 'EUR', label: 'EUR' }, { value: 'OTHER', label: 'Other' }]} />
+          </Form.Item>
