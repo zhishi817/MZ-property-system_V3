@@ -35,7 +35,7 @@ export default function PerformanceOverviewPage() {
       const daysInMonth = mEndNext.diff(mStart,'day')
       const segs = monthSegments(orders, mStart)
       const occNights = segs.reduce((sum, o) => sum + Number(o.nights || 0), 0)
-      const rentIncome = segs.reduce((sum, o) => sum + Number((o as any).net_income || 0), 0)
+      const rentIncome = segs.reduce((sum, o) => sum + Number(((o as any).visible_net_income ?? (o as any).net_income ?? 0)), 0)
       const cleaningCount = segs.filter(o => Number(o.cleaning_fee || 0) > 0).length
       const cleaningFee = segs.reduce((s,o)=> s + Number(o.cleaning_fee || 0), 0)
       const vacancyNights = Math.max(0, (properties.length * daysInMonth) - occNights)
@@ -50,7 +50,7 @@ export default function PerformanceOverviewPage() {
     function propMonthStats(pid: string, start: any, end: any, dim: number) {
       const segs = monthSegments(orders.filter(o => String(o.property_id) === pid), start)
       const occNights = segs.reduce((sum, o) => sum + Number(o.nights || 0), 0)
-      const rentIncome = segs.reduce((sum, o) => sum + Number((o as any).net_income || 0), 0)
+      const rentIncome = segs.reduce((sum, o) => sum + Number(((o as any).visible_net_income ?? (o as any).net_income ?? 0)), 0)
       const cleaningFee = segs.reduce((s,o)=> s + Number(o.cleaning_fee || 0), 0)
       const cleaningCount = segs.filter(o => Number(o.cleaning_fee || 0) > 0).length
       const occRate = dim ? Math.round(((occNights / dim) * 100) * 100) / 100 : 0

@@ -1,5 +1,5 @@
 "use client"
-import { Card, Descriptions, List, Badge, Space, Button, Drawer, Select, TimePicker, message } from 'antd'
+import { Card, Descriptions, Space, Button, message, Table, InputNumber, Input, Modal } from 'antd'
 import { useEffect, useState } from 'react'
 import { API_BASE } from '../../../lib/api'
 import dayjs from 'dayjs'
@@ -7,36 +7,45 @@ import { toDayStr } from '../../../lib/orders'
 import { hasPerm } from '../../../lib/auth'
 
 type Order = { id: string; source?: string; property_id?: string; checkin?: string; checkout?: string; status?: string }
-type Task = { id: string; date: string; status: 'pending'|'scheduled'|'done'; assignee_id?: string; scheduled_at?: string }
+type Deduction = { id: string; order_id: string; amount: number; currency?: string; item_desc?: string; note?: string; created_at?: string; is_active?: boolean }
 
 export default function OrderDetail({ params }: { params: { id: string } }) {
   const [order, setOrder] = useState<Order | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [staff, setStaff] = useState<{ id: string; name: string }[]>([])
-  const [open, setOpen] = useState(false)
-  const [selected, setSelected] = useState<Task | null>(null)
+  const [deductions, setDeductions] = useState<Deduction[]>([])
+  const [dedAddOpen, setDedAddOpen] = useState(false)
+  const [dedEdit, setDedEdit] = useState<Deduction | null>(null)
+  const [dedAmount, setDedAmount] = useState<number>(0)
+  const [dedDesc, setDedDesc] = useState<string>('')
+  const [dedNote, setDedNote] = useState<string>('')
 
   async function load() {
-    const o = await fetch(`${API_BASE}/orders`).then(r => r.json()).then((list: Order[]) => list.find(x => x.id === params.id))
-    setOrder(o || null)
-    const t = await fetch(`${API_BASE}/cleaning/order/${params.id}`).then(r => r.json())
-    setTasks(t)
-    const s = await fetch(`${API_BASE}/cleaning/staff`).then(r => r.json())
-    setStaff(s)
+    try {
+      const o = await fetch(`${API_BASE}/orders/${params.id}`).then(r => r.json()).catch(() => null)
+      setOrder(o || null)
+    } catch { setOrder(null) }
+    setTasks([])
+    setStaff([])
+    try {
+      const ds = await fetch(`${API_BASE}/orders/${params.id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json()).catch(() => [])
+      setDeductions(Array.isArray(ds) ? ds : [])
+    } catch { setDeductions([]) }
   }
   useEffect(() => { load() }, [params.id])
 
-  async function assign(assignee_id: string, time: any) {
-    if (!selected) return
-    const scheduled_at = dayjs((order?.checkout || selected.date) + ' ' + time.format('HH:mm')).toISOString()
-    const res = await fetch(`${API_BASE}/cleaning/tasks/${selected.id}/assign`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ assignee_id, scheduled_at }) })
-    if (res.ok) { message.success('已分配'); setOpen(false); setSelected(null); load() } else { message.error('分配失败') }
-  }
+  // 清洁任务模块已移除
 
-  async function adjustTime(task: Task, time: any) {
-    const scheduled_at = dayjs((order?.checkout || task.date) + ' ' + time.format('HH:mm')).toISOString()
-    const res = await fetch(`${API_BASE}/cleaning/tasks/${task.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ scheduled_at, status: 'scheduled' }) })
-    if (res.ok) { message.success('已调整'); load() } else { message.error('调整失败') }
+  async function saveDeduction() {
+    if (!order) return
+    const payload = { amount: dedAmount, item_desc: dedDesc, note: dedNote }
+    const res = await fetch(`${API_BASE}/orders/${order.id}/internal-deductions${dedEdit ? `/${dedEdit.id}` : ''}`, { method: dedEdit ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
+    if (res.ok) { message.success('已保存'); setDedAddOpen(false); setDedEdit(null); setDedAmount(0); setDedNote(''); load() } else { const m = await res.json().catch(()=>({})); message.error(m?.message || '保存失败') }
+  }
+  async function deleteDeduction(d: Deduction) {
+    if (!order) return
+    const res = await fetch(`${API_BASE}/orders/${order.id}/internal-deductions/${d.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+    if (res.ok) { message.success('已删除'); load() } else { const m = await res.json().catch(()=>({})); message.error(m?.message || '删除失败') }
   }
 
   return (
@@ -47,36 +56,38 @@ export default function OrderDetail({ params }: { params: { id: string } }) {
           <Descriptions.Item label="入住">{order.checkin ? dayjs(toDayStr(order.checkin)).format('DD/MM/YYYY') : ''}</Descriptions.Item>
           <Descriptions.Item label="退房">{order.checkout ? dayjs(toDayStr(order.checkout)).format('DD/MM/YYYY') : ''}</Descriptions.Item>
           <Descriptions.Item label="状态">{order.status}</Descriptions.Item>
+          <Descriptions.Item label="原始净额">{(order as any).net_income ?? 0}</Descriptions.Item>
+          <Descriptions.Item label="内部扣减汇总">{(order as any).internal_deduction_total ?? 0}</Descriptions.Item>
+          <Descriptions.Item label="可见净额">{(order as any).visible_net_income ?? ((order as any).net_income || 0)}</Descriptions.Item>
         </Descriptions>
       )}
-      <List
-        style={{ marginTop: 16 }}
-        header="清洁任务"
-        dataSource={tasks}
-        renderItem={(t) => (
-          <List.Item actions={[
-            hasPerm('cleaning.task.assign') && <Button onClick={() => { setSelected(t); setOpen(true) }}>分配</Button>,
-            hasPerm('cleaning.task.assign') && <TimePicker format="HH:mm" onChange={(time) => adjustTime(t, time)} />,
-          ].filter(Boolean) as any}>
-            <Space>
-              <Badge status={t.status === 'done' ? 'success' : t.status === 'scheduled' ? 'processing' : 'warning'} text={t.status} />
-              <span>{dayjs(t.date).format('DD/MM/YYYY')}</span>
-              {t.assignee_id && <span>负责人: {t.assignee_id}</span>}
-              {t.scheduled_at && <span>时间: {dayjs(t.scheduled_at).format('HH:mm')}</span>}
-            </Space>
-          </List.Item>
-        )}
-      />
+      {/* 清洁任务模块已移除 */}
 
-      <Drawer open={open} onClose={() => setOpen(false)} title="分配任务">
-        {selected && (
-          <Space direction="vertical" style={{ width: '100%' }}>
-            <Select placeholder="选择人员" options={staff.map(s => ({ value: s.id, label: s.name }))} onChange={(id) => (window as any)._assignee = id} style={{ width: '100%' }} />
-            <TimePicker format="HH:mm" onChange={(t) => (window as any)._time = t} style={{ width: '100%' }} />
-            <Button type="primary" onClick={() => assign((window as any)._assignee, (window as any)._time)}>确认分配</Button>
-          </Space>
-        )}
-      </Drawer>
+      {/* 清洁任务模块已移除 */}
+
+      <Card title="内部扣减" style={{ marginTop: 16 }} extra={hasPerm('order.deduction.manage') && (<Button type="primary" onClick={() => { setDedEdit(null); setDedAmount(0); setDedCategory('emergency_supply'); setDedNote(''); setDedAddOpen(true) }}>新增</Button>)}>
+        <Table size="small" pagination={false} dataSource={deductions} rowKey="id" columns={[
+          { title: '金额', dataIndex: 'amount', align: 'right' },
+          { title: '币种', dataIndex: 'currency' },
+          { title: '事项描述', dataIndex: 'item_desc' },
+          { title: '备注', dataIndex: 'note' },
+          { title: '状态', dataIndex: 'is_active', render: (v: any) => v ? 'active' : 'void' },
+          { title: '操作', render: (_: any, r: any) => hasPerm('order.deduction.manage') ? (
+            <Space>
+              <Button size="small" onClick={() => { setDedEdit(r); setDedAmount(Number(r.amount||0)); setDedDesc(r.item_desc || ''); setDedNote(r.note || ''); setDedAddOpen(true) }}>编辑</Button>
+              <Button size="small" danger onClick={() => deleteDeduction(r)}>删除</Button>
+            </Space>
+          ) : null }
+        ]} />
+      </Card>
+
+      <Modal title={dedEdit ? '编辑内部扣减' : '新增内部扣减'} open={dedAddOpen} onOk={saveDeduction} onCancel={() => { setDedAddOpen(false); setDedEdit(null) }}>
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <InputNumber value={dedAmount} onChange={(v) => setDedAmount(Number(v||0))} min={0} style={{ width: '100%' }} />
+          <Input value={dedDesc} onChange={(e) => setDedDesc(e.target.value)} placeholder="减扣事项描述" />
+          <Input value={dedNote} onChange={(e) => setDedNote(e.target.value)} placeholder="备注" />
+        </Space>
+      </Modal>
     </Card>
   )
 }

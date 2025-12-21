@@ -115,7 +115,7 @@ export default function PropertyRevenuePage() {
           const b = co.isBefore(rm.end) ? co : rm.end
           return Math.max(0, b.diff(a, 'day'))
         }
-        const rentIncome = related.reduce((sum, seg) => sum + Number((seg as any).net_income || 0), 0)
+        const rentIncome = related.reduce((sum, seg) => sum + Number(((seg as any).visible_net_income ?? (seg as any).net_income ?? 0)), 0)
         const otherIncomeTx = txs.filter(x => x.kind==='income' && x.property_id === p.id && dayjs(toDayStr(x.occurred_at)).isSame(rm.start, 'month'))
         const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount||0), 0)
         const mapIncomeCatLabel = (c?: string) => {
@@ -226,7 +226,7 @@ export default function PropertyRevenuePage() {
             const mStart = dayjs(r.month, 'MM/YYYY').startOf('month')
             const segs: any[] = monthSegments(orders.filter(o => o.property_id===r.pid), mStart)
             const fmt2 = (n: number) => (n||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })
-            const sumNet = segs.reduce((s,x)=> s + Number((x as any).net_income || 0), 0)
+            const sumNet = segs.reduce((s,x)=> s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
             const childColumns = [
               { title: '入住', dataIndex: 'check_in', width: 130, fixed: 'left' as const, align: 'left' as const, ellipsis: true, render: (v: any)=> dayjs(v).format('DD/MM/YYYY') },
               { title: '退房', dataIndex: 'check_out', width: 130, align: 'left' as const, ellipsis: true, render: (v: any)=> dayjs(v).format('DD/MM/YYYY') },
@@ -240,7 +240,7 @@ export default function PropertyRevenuePage() {
                 <Table
                   className={styles.childTable}
                   columns={childColumns as any}
-                  dataSource={segs.map(s => ({ key: s.__rid || s.id, check_in: s.checkin, check_out: s.checkout, nights: s.nights, net_rent: (s as any).net_income }))}
+                  dataSource={segs.map(s => ({ key: s.__rid || s.id, check_in: s.checkin, check_out: s.checkout, nights: s.nights, net_rent: ((s as any).visible_net_income ?? (s as any).net_income ?? 0) }))}
                   pagination={false}
                   size="small"
                   tableLayout="fixed"
@@ -350,11 +350,11 @@ export default function PropertyRevenuePage() {
                   const mStart = cur.startOf('month')
                   const mEnd = cur.endOf('month')
                   const oSeg = monthSegments(orders.filter(o => o.property_id===pid), mStart)
-                  const inc = oSeg.reduce((s,x)=> s + Number((x as any).net_income || 0), 0)
+                  const inc = oSeg.reduce((s,x)=> s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
                   const clean = oSeg.reduce((s,x)=> s + Number(x.cleaning_fee||0), 0)
                   const exp1 = txs.filter(t => t.kind==='expense' && t.property_id===pid && dayjs(t.occurred_at).isAfter(mStart.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(mEnd.add(1,'day')))
                   const other = exp1.reduce((s,x)=> s + Number(x.amount||0), 0)
-                  rowz.push({ month: mStart.format('MM/YYYY'), income: inc, cleaning: clean, other, net: inc - clean - other })
+                  rowz.push({ month: mStart.format('MM/YYYY'), income: inc, cleaning: clean, other, net: inc - other })
                   cur = cur.add(1,'month')
                 }
                 return (

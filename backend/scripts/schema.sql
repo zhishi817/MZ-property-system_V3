@@ -330,3 +330,38 @@ DROP POLICY IF EXISTS payouts_update ON payouts;
 CREATE POLICY payouts_update ON payouts FOR UPDATE USING (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role IN ('admin','ops'))) WITH CHECK (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role IN ('admin','ops')));
 DROP POLICY IF EXISTS payouts_delete ON payouts;
 CREATE POLICY payouts_delete ON payouts FOR DELETE USING (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role = 'admin'));
+
+-- Order internal deductions
+CREATE TABLE IF NOT EXISTS order_internal_deductions (
+  id text PRIMARY KEY,
+  order_id text REFERENCES orders(id) ON DELETE CASCADE,
+  amount numeric NOT NULL,
+  currency text,
+  category text,
+  note text NOT NULL,
+  created_by text,
+  created_at timestamptz DEFAULT now(),
+  is_active boolean DEFAULT true
+);
+CREATE INDEX IF NOT EXISTS idx_order_deductions_order_active ON order_internal_deductions(order_id, is_active);
+
+ALTER TABLE order_internal_deductions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS order_deductions_select ON order_internal_deductions;
+CREATE POLICY order_deductions_select ON order_internal_deductions FOR SELECT USING (true);
+DROP POLICY IF EXISTS order_deductions_insert ON order_internal_deductions;
+CREATE POLICY order_deductions_insert ON order_internal_deductions FOR INSERT WITH CHECK (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role IN ('admin','ops','finance_staff','customer_service')));
+DROP POLICY IF EXISTS order_deductions_update ON order_internal_deductions;
+CREATE POLICY order_deductions_update ON order_internal_deductions FOR UPDATE USING (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role IN ('admin','ops','finance_staff','customer_service'))) WITH CHECK (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role IN ('admin','ops','finance_staff','customer_service')));
+DROP POLICY IF EXISTS order_deductions_delete ON order_internal_deductions;
+CREATE POLICY order_deductions_delete ON order_internal_deductions FOR DELETE USING (EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid()::text AND u.role IN ('admin','ops','finance_staff','customer_service')));
+
+ALTER TABLE order_internal_deductions ADD COLUMN IF NOT EXISTS item_desc text;
+DO $$ BEGIN
+  BEGIN
+    ALTER TABLE order_internal_deductions ALTER COLUMN note DROP NOT NULL;
+  EXCEPTION WHEN others THEN
+    NULL;
+  END;
+END $$;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_received boolean DEFAULT false;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_currency text DEFAULT 'AUD';
