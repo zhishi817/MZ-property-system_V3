@@ -6,13 +6,13 @@ import { useEffect, useState, useRef } from 'react'
 import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { monthSegments, getMonthSegmentsForProperty } from '../../lib/orders'
-import { debugOnce } from '../../lib/debug'
 import { sortProperties } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 
 type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number }
 // guest_phone 在后端已支持，这里表单也支持录入
 type CleaningTask = { id: string; status: 'pending'|'scheduled'|'done' }
+const debugOnce = (..._args: any[]) => {}
 
 export default function OrdersPage() {
   const { message } = App.useApp()
