@@ -1,5 +1,5 @@
 "use client"
-import { Card, Table } from 'antd'
+import { Card, Table, DatePicker, Select, Space } from 'antd'
 import dayjs from 'dayjs'
 import minMax from 'dayjs/plugin/minMax'
 dayjs.extend(minMax)
@@ -14,6 +14,8 @@ type Property = { id: string; code?: string; address?: string }
 export default function PerformanceOverviewPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [properties, setProperties] = useState<Property[]>([])
+  const [month, setMonth] = useState<any>(dayjs())
+  const [selectedPid, setSelectedPid] = useState<string | undefined>(undefined)
   useEffect(() => {
     getJSON<Order[]>('/orders').then(j=> setOrders(Array.isArray(j)?j:[])).catch(()=>setOrders([]))
     getJSON<Property[]>('/properties').then(j=> setProperties(Array.isArray(j)?j:[])).catch(()=>setProperties([]))
@@ -28,23 +30,26 @@ export default function PerformanceOverviewPage() {
   }
 
   const months = useMemo(() => {
-    const base = dayjs()
-    const defs = [0,1,2,3].map(i => {
-      const mStart = base.subtract(i,'month').startOf('month')
+    const base = month || dayjs()
+    const offsets = [-4,-3,-2,-1,0,1,2,3,4]
+    const defs = offsets.map(off => {
+      const mStart = base.add(off,'month').startOf('month')
       const mEndNext = mStart.add(1,'month').startOf('month')
       const daysInMonth = mEndNext.diff(mStart,'day')
-      const segs = monthSegments(orders, mStart)
-      const occNights = segs.reduce((sum, o) => sum + Number(o.nights || 0), 0)
-      const rentIncome = segs.reduce((sum, o) => sum + Number(((o as any).visible_net_income ?? (o as any).net_income ?? 0)), 0)
-      const cleaningCount = segs.filter(o => Number(o.cleaning_fee || 0) > 0).length
-      const cleaningFee = segs.reduce((s,o)=> s + Number(o.cleaning_fee || 0), 0)
+      const segsAll = monthSegments(orders, mStart)
+      // 仅显示有订单的月份
+      if (!segsAll.length) return null
+      const occNights = segsAll.reduce((sum, o) => sum + Number(o.nights || 0), 0)
+      const rentIncome = segsAll.reduce((sum, o) => sum + Number(((o as any).visible_net_income ?? (o as any).net_income ?? 0)), 0)
+      const cleaningCount = segsAll.filter(o => Number(o.cleaning_fee || 0) > 0).length
+      const cleaningFee = segsAll.reduce((s,o)=> s + Number(o.cleaning_fee || 0), 0)
       const vacancyNights = Math.max(0, (properties.length * daysInMonth) - occNights)
       const occRate = properties.length ? Math.round(((occNights / (properties.length * daysInMonth)) * 100) * 100) / 100 : 0
       const adr = occNights ? Math.round(((rentIncome / occNights) + Number.EPSILON) * 100) / 100 : 0
       return { key: mStart.format('YYYY-MM'), label: mStart.format('YYYY-MM'), start: mStart, end: mEndNext, daysInMonth, rentIncome: Math.round(rentIncome * 100) / 100, vacancy: vacancyNights, occRate, adr, cleaningFee: Math.round(cleaningFee * 100) / 100, cleaningCount }
-    })
+    }).filter(Boolean) as any[]
     return defs
-  }, [orders, properties])
+  }, [orders, properties, month])
 
   const propRows = useMemo(() => {
     function propMonthStats(pid: string, start: any, end: any, dim: number) {
@@ -71,10 +76,18 @@ export default function PerformanceOverviewPage() {
       }
       return { rentIncome: Math.round(rentIncome * 100) / 100, vacancy: Math.max(0, dim - occNights), occRate, adr, cleaningFee: Math.round(cleaningFee * 100) / 100, cleaningCount, vacantDays }
     }
-    return sortPropertiesByRegionThenCode(properties as any).map(p => {
+    const plist = selectedPid ? (properties || []).filter(p => p.id === selectedPid) : sortPropertiesByRegionThenCode(properties as any)
+    const out: any[] = []
+    let curRegion: string | undefined
+    plist.forEach(p => {
+      const region = (p as any).region || '未分区'
+      if (!selectedPid && region !== curRegion) {
+        curRegion = region
+        out.push({ id: `region-${region}`, code: region, isRegion: true })
+      }
       const row: any = { id: p.id, code: p.code || p.address || p.id }
       months.forEach((m, idx) => {
-        const key = idx === 0 ? 'm0' : `m${idx}`
+        const key = `m${idx}`
         const stats = propMonthStats(String(p.id), m.start, m.end, m.daysInMonth)
         row[`${key}_income`] = stats.rentIncome
         row[`${key}_vacancy`] = stats.vacancy
@@ -84,61 +97,34 @@ export default function PerformanceOverviewPage() {
         row[`${key}_clean_fee`] = stats.cleaningFee
         row[`${key}_clean_cnt`] = stats.cleaningCount
       })
-      return row
+      out.push(row)
     })
-  }, [properties, months, orders])
+    return out
+  }, [properties, months, orders, selectedPid])
 
   return (
     <Card title="经营分析">
-      <Card size="small" title="房源月度汇总（当月 + 前三个月）">
-        <Table rowKey={(r:any)=> r.id} pagination={{ pageSize: 20 }} dataSource={propRows} scroll={{ x: 'max-content' }}
-          columns={[
-            { title: '房号', dataIndex: 'code', fixed: 'left', render: (_:any, r:any)=> r.code || r.id },
-            {
-              title: months[0]?.label ? `${months[0].label}（当月）` : '当月',
+      <Space style={{ marginBottom: 12 }} wrap>
+        <DatePicker picker="month" value={month} onChange={setMonth as any} />
+        <Select allowClear showSearch placeholder="按房号筛选" optionFilterProp="label" style={{ width: 240 }} value={selectedPid} onChange={setSelectedPid as any}
+          options={sortPropertiesByRegionThenCode(properties as any).map(p => ({ value: p.id, label: p.code || p.address || p.id }))} />
+      </Space>
+      <Card size="small" title="房源月度汇总（动态9个月，含未来月份）">
+        <Table rowKey={(r:any)=> r.id} pagination={{ pageSize: 20 }} dataSource={propRows} scroll={{ x: 'max-content' }} rowClassName={(r:any)=> r.isRegion ? 'region-row' : ''}
+          columns={([
+            { title: '房号/区域', dataIndex: 'code', fixed: 'left' as const, render: (_:any, r:any)=> r.isRegion ? (<span style={{ fontWeight: 700 }}>{r.code}</span>) : (r.code || r.id) },
+            ...months.map((m, idx) => ({
+              title: m.label + (idx === months.findIndex(mm => mm.label === (month || dayjs()).startOf('month').format('YYYY-MM')) ? '（基准）' : ''),
               children: [
-                { title: '租金收入', dataIndex: 'm0_income', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: 'Vacancy', dataIndex: 'm0_vacancy' },
-                { title: '入住率', dataIndex: 'm0_occ', render: (v: number)=> `${v||0}%` },
-                { title: '平均房价', dataIndex: 'm0_adr', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: '清洁费', dataIndex: 'm0_clean_fee', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: '清洁次数', dataIndex: 'm0_clean_cnt', className: 'month-sep' },
+                { title: '租金收入', dataIndex: `m${idx}_income`, render: (v: number, r:any)=> r.isRegion ? '' : `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
+                { title: 'Vacancy', dataIndex: `m${idx}_vacancy`, render: (v: number, r:any)=> r.isRegion ? '' : v },
+                { title: '入住率', dataIndex: `m${idx}_occ`, render: (v: number, r:any)=> r.isRegion ? '' : `${v||0}%` },
+                { title: '平均房价', dataIndex: `m${idx}_adr`, render: (v: number, r:any)=> r.isRegion ? '' : `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
+                { title: '清洁费', dataIndex: `m${idx}_clean_fee`, render: (v: number, r:any)=> r.isRegion ? '' : `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
+                { title: '清洁次数', dataIndex: `m${idx}_clean_cnt`, className: 'month-sep', render: (v: number, r:any)=> r.isRegion ? '' : v },
               ]
-            },
-            {
-              title: months[1]?.label || '上月',
-              children: [
-                { title: '租金收入', dataIndex: 'm1_income', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: 'Vacancy', dataIndex: 'm1_vacancy' },
-                { title: '入住率', dataIndex: 'm1_occ', render: (v: number)=> `${v||0}%` },
-                { title: '平均房价', dataIndex: 'm1_adr', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: '清洁费', dataIndex: 'm1_clean_fee', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: '清洁次数', dataIndex: 'm1_clean_cnt', className: 'month-sep' },
-              ]
-            },
-            {
-              title: months[2]?.label || '前2月',
-              children: [
-                { title: '租金收入', dataIndex: 'm2_income', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: 'Vacancy', dataIndex: 'm2_vacancy' },
-                { title: '入住率', dataIndex: 'm2_occ', render: (v: number)=> `${v||0}%` },
-                { title: '平均房价', dataIndex: 'm2_adr', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: '清洁费', dataIndex: 'm2_clean_fee', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: '清洁次数', dataIndex: 'm2_clean_cnt', className: 'month-sep' },
-              ]
-            },
-            {
-              title: months[3]?.label || '前3月',
-              children: [
-                { title: '租金收入', dataIndex: 'm3_income', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: 'Vacancy', dataIndex: 'm3_vacancy' },
-                { title: '入住率', dataIndex: 'm3_occ', render: (v: number)=> `${v||0}%` },
-                { title: '平均房价', dataIndex: 'm3_adr', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: '清洁费', dataIndex: 'm3_clean_fee', render: (v: number)=> `$${(v||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })}` },
-                { title: '清洁次数', dataIndex: 'm3_clean_cnt', className: 'month-sep' },
-              ]
-            },
-          ] as any} />
+            }))
+          ]) as any} />
       <style jsx>{`
         :global(.ant-table-thead .month-sep),
         :global(.ant-table-tbody .month-sep) { position: relative; }
@@ -151,6 +137,11 @@ export default function PerformanceOverviewPage() {
           width: 2px;
           height: 100%;
           background: #e8e8e8;
+        }
+        :global(.region-row td) {
+          border-top: 8px solid #efefef;
+          background: transparent;
+          font-weight: 700;
         }
       `}</style>
       </Card>
