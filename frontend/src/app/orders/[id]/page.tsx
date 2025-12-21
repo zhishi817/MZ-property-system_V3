@@ -11,7 +11,6 @@ type Deduction = { id: string; order_id: string; amount: number; currency?: stri
 
 export default function OrderDetail({ params }: { params: { id: string } }) {
   const [order, setOrder] = useState<Order | null>(null)
-  const [tasks, setTasks] = useState<Task[]>([])
   const [staff, setStaff] = useState<{ id: string; name: string }[]>([])
   const [deductions, setDeductions] = useState<Deduction[]>([])
   const [dedAddOpen, setDedAddOpen] = useState(false)
@@ -25,7 +24,6 @@ export default function OrderDetail({ params }: { params: { id: string } }) {
       const o = await fetch(`${API_BASE}/orders/${params.id}`).then(r => r.json()).catch(() => null)
       setOrder(o || null)
     } catch { setOrder(null) }
-    setTasks([])
     setStaff([])
     try {
       const ds = await fetch(`${API_BASE}/orders/${params.id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json()).catch(() => [])
@@ -65,7 +63,7 @@ export default function OrderDetail({ params }: { params: { id: string } }) {
 
       {/* 清洁任务模块已移除 */}
 
-      <Card title="内部扣减" style={{ marginTop: 16 }} extra={hasPerm('order.deduction.manage') && (<Button type="primary" onClick={() => { setDedEdit(null); setDedAmount(0); setDedCategory('emergency_supply'); setDedNote(''); setDedAddOpen(true) }}>新增</Button>)}>
+      <Card title="内部扣减" style={{ marginTop: 16 }} extra={hasPerm('order.deduction.manage') && (<Button type="primary" onClick={() => { setDedEdit(null); setDedAmount(0); setDedDesc(''); setDedNote(''); setDedAddOpen(true) }}>新增</Button>)}>
         <Table size="small" pagination={false} dataSource={deductions} rowKey="id" columns={[
           { title: '金额', dataIndex: 'amount', align: 'right' },
           { title: '币种', dataIndex: 'currency' },
