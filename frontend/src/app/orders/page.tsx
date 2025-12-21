@@ -134,12 +134,12 @@ export default function OrdersPage() {
     const res = await getJSON<Order[]>('/orders')
     setData(res)
   }
-  async function openDetail(record: Order) {
-    setDetail(record)
+  async function openDetail(record: Order | string) {
+    if (typeof record !== 'string') setDetail(record)
     setDetailOpen(true)
     setDetailLoading(true)
     setDetailDedAmount(0); setDetailDedDesc(''); setDetailDedNote(''); setDetailEditing(null)
-    const id = record.id
+    const id = typeof record === 'string' ? record : record.id
     try {
       const [o, ds] = await Promise.all([
         getJSON<Order>(`/orders/${id}`).catch(() => null as any),
