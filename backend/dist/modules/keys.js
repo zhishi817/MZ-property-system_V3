@@ -12,7 +12,6 @@ const path_1 = __importDefault(require("path"));
 const r2_1 = require("../r2");
 const auth_1 = require("../auth");
 const store_2 = require("../store");
-const supabase_1 = require("../supabase");
 const dbAdapter_1 = require("../dbAdapter");
 const uuid_1 = require("uuid");
 exports.router = (0, express_1.Router)();
@@ -24,12 +23,7 @@ exports.router.get('/', async (_req, res) => {
             const grouped = sets.map((s) => ({ ...s, items: items.filter((it) => it.key_set_id === s.id) }));
             return res.json(grouped);
         }
-        if (supabase_1.hasSupabase) {
-            const sets = (await (0, supabase_1.supaSelect)('key_sets')) || [];
-            const items = (await (0, supabase_1.supaSelect)('key_items')) || [];
-            const grouped = sets.map((s) => ({ ...s, items: items.filter((it) => it.key_set_id === s.id) }));
-            return res.json(grouped);
-        }
+        // Supabase branch removed
     }
     catch (e) { }
     const codes = (store_1.db.properties || []).map((p) => p.code).filter(Boolean);
@@ -65,10 +59,7 @@ exports.router.post('/sets', (0, auth_1.requirePerm)('keyset.manage'), async (re
             const row = await (0, dbAdapter_1.pgInsert)('key_sets', { id: (0, uuid_1.v4)(), set_type: parsed.data.set_type, status: 'available', code: parsed.data.code });
             return res.status(201).json({ ...row, items: [] });
         }
-        if (supabase_1.hasSupabase) {
-            const set = await require('../supabase').supaUpsertConflict('key_sets', { id: (0, uuid_1.v4)(), set_type: parsed.data.set_type, status: 'available', code: parsed.data.code }, 'code,set_type');
-            return res.status(201).json({ ...set, items: [] });
-        }
+        // Supabase branch removed
     }
     catch (e) { }
     const set = { id: (0, uuid_1.v4)(), set_type: parsed.data.set_type, status: 'available', code: parsed.data.code || '', items: [] };
@@ -107,27 +98,7 @@ exports.router.post('/sets/:id/flows', (0, auth_1.requirePerm)('key.flow'), asyn
             (0, store_2.addAudit)('KeySet', id, 'flow', { status: set.status, code: oldCode }, { status: updated.status, code: updated.code });
             return res.status(201).json({ set: updated, flow });
         }
-        if (supabase_1.hasSupabase) {
-            const rows = await (0, supabase_1.supaSelect)('key_sets', '*', { id });
-            const set = rows && rows[0];
-            if (!set)
-                return res.status(404).json({ message: 'set not found' });
-            const oldCode = set.code;
-            let newStatus = set.status;
-            if (parsed.data.action === 'borrow')
-                newStatus = 'in_transit';
-            else if (parsed.data.action === 'return')
-                newStatus = 'available';
-            else if (parsed.data.action === 'lost')
-                newStatus = 'lost';
-            else if (parsed.data.action === 'replace')
-                newStatus = 'replaced';
-            const newCode = parsed.data.action === 'replace' && parsed.data.new_code ? parsed.data.new_code : set.code;
-            const updated = await (0, supabase_1.supaUpdate)('key_sets', id, { status: newStatus, code: newCode });
-            const flow = await (0, supabase_1.supaInsert)('key_flows', { id: require('uuid').v4(), key_set_id: id, action: parsed.data.action, timestamp: new Date().toISOString(), note: parsed.data.note, old_code: oldCode, new_code: newCode });
-            (0, store_2.addAudit)('KeySet', id, 'flow', { status: set.status, code: oldCode }, { status: updated.status, code: updated.code });
-            return res.status(201).json({ set: updated, flow });
-        }
+        // Supabase branch removed
     }
     catch (e) { }
     const set = store_1.db.keySets.find((s) => s.id === id);
@@ -164,10 +135,7 @@ exports.router.get('/sets/:id/history', async (req, res) => {
             const flows = await (0, dbAdapter_1.pgSelect)('key_flows', '*', { key_set_id: req.params.id });
             return res.json(flows || []);
         }
-        if (supabase_1.hasSupabase) {
-            const flows = await (0, supabase_1.supaSelect)('key_flows', '*', { key_set_id: req.params.id });
-            return res.json(flows || []);
-        }
+        // Supabase branch removed
     }
     catch (e) { }
     const { id } = req.params;
@@ -184,14 +152,7 @@ exports.router.get('/sets/:id', async (req, res) => {
             const items = await (0, dbAdapter_1.pgSelect)('key_items', '*', { key_set_id: set.id });
             return res.json({ ...set, items: items || [] });
         }
-        if (supabase_1.hasSupabase) {
-            const rows = await (0, supabase_1.supaSelect)('key_sets', '*', { id: req.params.id });
-            const set = rows && rows[0];
-            if (!set)
-                return res.status(404).json({ message: 'set not found' });
-            const items = await (0, supabase_1.supaSelect)('key_items', '*', { key_set_id: set.id });
-            return res.json({ ...set, items: items || [] });
-        }
+        // Supabase branch removed
     }
     catch (e) { }
     const set = store_1.db.keySets.find((s) => s.id === req.params.id);
@@ -264,75 +225,9 @@ exports.router.post('/sets/:id/items', (0, auth_1.requirePerm)('keyset.manage'),
             const created = await (0, dbAdapter_1.pgInsert)('key_items', { id: (0, uuid_1.v4)(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: photoUrl });
             return res.status(201).json(created);
         }
-        if (supabase_1.hasSupabase) {
-            let rows = await (0, supabase_1.supaSelect)('key_sets', '*', { id: req.params.id });
-            let set = rows && rows[0];
-            if (!set) {
-                const local = store_1.db.keySets.find((s) => s.id === req.params.id);
-                const code = (local === null || local === void 0 ? void 0 : local.code) || (req.body && req.body.property_code);
-                const sType = (local === null || local === void 0 ? void 0 : local.set_type) || (req.body && req.body.set_type);
-                if (!code || !sType)
-                    return res.status(404).json({ message: 'set not found' });
-                const byCode = await (0, supabase_1.supaSelect)('key_sets', '*', { code, set_type: sType });
-                set = byCode && byCode[0];
-                if (!set) {
-                    const { v4: uuidv4 } = require('uuid');
-                    set = await (0, supabase_1.supaInsert)('key_sets', { id: uuidv4(), set_type: sType, status: ((local === null || local === void 0 ? void 0 : local.status) || 'available'), code });
-                }
-            }
-            try {
-                let photoUrl = null;
-                if (req.file) {
-                    if (r2_1.hasR2 && req.file.buffer) {
-                        const ext = path_1.default.extname(req.file.originalname);
-                        const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
-                        photoUrl = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
-                    }
-                    else {
-                        photoUrl = `/uploads/${req.file.filename}`;
-                    }
-                }
-                const item = await require('../supabase').supaUpsertConflict('key_items', { key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: photoUrl }, 'key_set_id,item_type');
-                return res.status(201).json(item);
-            }
-            catch (eUp) {
-                const existed = await (0, supabase_1.supaSelect)('key_items', '*', { key_set_id: set.id, item_type: parsed.data.item_type });
-                const existing = existed && existed[0];
-                if (existing) {
-                    let photoUrl2 = existing.photo_url;
-                    if (req.file) {
-                        if (r2_1.hasR2 && req.file.buffer) {
-                            const ext = path_1.default.extname(req.file.originalname);
-                            const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
-                            photoUrl2 = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
-                        }
-                        else {
-                            photoUrl2 = `/uploads/${req.file.filename}`;
-                        }
-                    }
-                    const updated = await (0, supabase_1.supaUpdate)('key_items', existing.id, { code: parsed.data.code, photo_url: photoUrl2 });
-                    return res.status(200).json(updated);
-                }
-                let photoUrl3 = null;
-                if (req.file) {
-                    if (r2_1.hasR2 && req.file.buffer) {
-                        const ext = path_1.default.extname(req.file.originalname);
-                        const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
-                        photoUrl3 = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
-                    }
-                    else {
-                        photoUrl3 = `/uploads/${req.file.filename}`;
-                    }
-                }
-                const created = await (0, supabase_1.supaInsert)('key_items', { id: (0, uuid_1.v4)(), key_set_id: set.id, item_type: parsed.data.item_type, code: parsed.data.code, photo_url: photoUrl3 });
-                return res.status(201).json(created);
-            }
-        }
+        // Supabase branch removed
     }
-    catch (e) {
-        if (supabase_1.hasSupabase)
-            return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'supabase insert failed' });
-    }
+    catch (e) { }
     const set = store_1.db.keySets.find((s) => s.id === req.params.id);
     if (!set)
         return res.status(404).json({ message: 'set not found' });
@@ -366,23 +261,7 @@ exports.router.patch('/sets/:id/items/:itemId', (0, auth_1.requirePerm)('keyset.
             const item = await (0, dbAdapter_1.pgUpdate)('key_items', req.params.itemId, payload);
             return res.json(item);
         }
-        if (supabase_1.hasSupabase) {
-            const payload = {};
-            if (req.body && req.body.code)
-                payload.code = String(req.body.code);
-            if (req.file) {
-                if (r2_1.hasR2 && req.file.buffer) {
-                    const ext = path_1.default.extname(req.file.originalname);
-                    const key = `key-items/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
-                    payload.photo_url = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
-                }
-                else {
-                    payload.photo_url = `/uploads/${req.file.filename}`;
-                }
-            }
-            const item = await (0, supabase_1.supaUpdate)('key_items', req.params.itemId, payload);
-            return res.json(item);
-        }
+        // Supabase branch removed
     }
     catch (e) { }
     const set = store_1.db.keySets.find((s) => s.id === req.params.id);
@@ -412,10 +291,7 @@ exports.router.delete('/sets/:id/items/:itemId', (0, auth_1.requirePerm)('keyset
             await (0, dbAdapter_1.pgDelete)('key_items', req.params.itemId);
             return res.json({ ok: true });
         }
-        if (supabase_1.hasSupabase) {
-            await (0, supabase_1.supaDelete)('key_items', req.params.itemId);
-            return res.json({ ok: true });
-        }
+        // Supabase branch removed
     }
     catch (e) { }
     const set = store_1.db.keySets.find((s) => s.id === req.params.id);
@@ -438,14 +314,7 @@ exports.router.get('/sets', async (req, res) => {
             const rows = await (0, dbAdapter_1.pgSelect)('key_sets', '*', { code: property_code });
             return res.json(rows);
         }
-        if (supabase_1.hasSupabase) {
-            if (!property_code) {
-                const sets = await (0, supabase_1.supaSelect)('key_sets');
-                return res.json(sets);
-            }
-            const rows = await (0, supabase_1.supaSelect)('key_sets', '*', { code: property_code });
-            return res.json(rows);
-        }
+        // Supabase branch removed
     }
     catch (e) { }
     if (!property_code)

@@ -95,6 +95,7 @@ export default function RecurringPage() {
       const accNo = r.pay_account_number || r.account_number
       const bpayCode = r.bpay_code || r.pay_bpay_code
       const bpayRef = r.pay_ref || r.bpay_ref
+      const bankRef = r.pay_ref
       const mobile = r.pay_mobile_number || r.mobile_number
       return (
         <div style={{ fontSize:12, lineHeight:1.6, whiteSpace:'normal' }}>
@@ -102,6 +103,7 @@ export default function RecurringPage() {
           {accountName ? <div>收款方: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, accountName)}>{accountName}</span></div> : null}
           {(bsb || accNo) ? <div>BSB: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, bsb)}>{bsb || '-'}</span> | Acc: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, accNo)}>{accNo || '-'}</span></div> : null}
           {(bpayCode || bpayRef) ? <div>Bpay: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, bpayCode)}>{bpayCode || '-'}</span> | Ref: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, bpayRef)}>{bpayRef || '-'}</span></div> : null}
+          {(type==='bank_account' && bankRef) ? <div>Ref: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, bankRef)}>{bankRef}</span></div> : null}
           {mobile ? <div>Mobile: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, mobile)}>{mobile}</span></div> : null}
         </div>
       )
@@ -266,7 +268,7 @@ export default function RecurringPage() {
     if (saving) return
     setSaving(true)
     const v = await form.validateFields()
-    const payload = { ...v, amount: v.amount!=null?Number(v.amount):undefined, frequency_months: v.frequency_months!=null?Number(v.frequency_months):undefined }
+    const payload = { ...v, report_category: (v.scope==='property' ? (v.report_category || defaultReportCategoryByName(v.category)) : undefined), amount: v.amount!=null?Number(v.amount):undefined, frequency_months: v.frequency_months!=null?Number(v.frequency_months):undefined }
     try {
       if (editing) {
         const url = `${API_BASE}/recurring/payments/${editing.id}`
@@ -363,9 +365,26 @@ export default function RecurringPage() {
             {value:'车贷',label:'车贷'},
             {value:'other',label:'其他'}
           ]} /></Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.scope!==cur.scope || prev.category!==cur.category}>
+            {()=> (form.getFieldValue('scope')==='property' ? (
+              <Form.Item name="report_category" label="营收报表归类" rules={[{ required: true }]} initialValue={defaultReportCategoryByName(form.getFieldValue('category'))}>
+                <Select options={[
+                  { value: 'parking_fee', label: '车位费' },
+                  { value: 'electricity', label: '电费' },
+                  { value: 'water', label: '水费' },
+                  { value: 'gas', label: '气费' },
+                  { value: 'internet', label: '网费' },
+                  { value: 'consumables', label: '消耗品费' },
+                  { value: 'body_corp', label: '物业费' },
+                  { value: 'council', label: '市政费' },
+                  { value: 'other', label: '其他支出' },
+                ]} />
+              </Form.Item>
+            ) : null)}
+          </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.category!==cur.category}>
             {()=> (form.getFieldValue('category')==='other' ? (
-              <Form.Item name="category_detail" label="类别描述" rules={[{ required: true }]}>
+              <Form.Item name="category_detail" label="类别描述" rules={[{ required: true }]}> 
                 <Input />
               </Form.Item>
             ) : null)}
@@ -391,6 +410,7 @@ export default function RecurringPage() {
                 <>
                   <Form.Item name="pay_bsb" label="BSB"><Input /></Form.Item>
                   <Form.Item name="pay_account_number" label="账户"><Input /></Form.Item>
+                  <Form.Item name="pay_ref" label="Reference"><Input /></Form.Item>
                 </>
               ) : null)}
             </Form.Item>
@@ -437,4 +457,16 @@ function copyAtMouse(e: any, val?: string) {
   tip.style.pointerEvents = 'none'
   document.body.appendChild(tip)
   window.setTimeout(() => { try { document.body.removeChild(tip) } catch {} }, 2000)
+}
+function defaultReportCategoryByName(cat?: string): string {
+  const v = String(cat || '').toLowerCase()
+  if (v.includes('carpark') || v.includes('车位')) return 'parking_fee'
+  if (v.includes('owners') || v.includes('body') || v.includes('物业')) return 'body_corp'
+  if (v.includes('internet') || v.includes('nbn') || v.includes('网')) return 'internet'
+  if (v.includes('water') && !v.includes('hot')) return 'water'
+  if (v.includes('electric')) return 'electricity'
+  if (v.includes('gas') || v.includes('hot')) return 'gas'
+  if (v.includes('consumable') || v.includes('消耗')) return 'consumables'
+  if (v.includes('council') || v.includes('市政')) return 'council'
+  return 'other'
 }

@@ -6,7 +6,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.router = void 0;
 const express_1 = require("express");
 const store_1 = require("../store");
-const supabase_1 = require("../supabase");
 const dbAdapter_1 = require("../dbAdapter");
 const multer_1 = __importDefault(require("multer"));
 const path_1 = __importDefault(require("path"));
@@ -18,11 +17,6 @@ exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 exports.router.get('/', async (_req, res) => {
     try {
-        if (supabase_1.hasSupabase) {
-            const raw = await (0, supabase_1.supaSelect)('finance_transactions');
-            const rows = Array.isArray(raw) ? raw : [];
-            return res.json(rows);
-        }
         if (dbAdapter_1.hasPg) {
             const raw = await (0, dbAdapter_1.pgSelect)('finance_transactions');
             const rows = Array.isArray(raw) ? raw : [];
@@ -45,15 +39,6 @@ exports.router.post('/', (0, auth_1.requirePerm)('finance.tx.write'), async (req
     const tx = { id: uuid(), occurred_at: parsed.data.occurred_at || new Date().toISOString(), ...parsed.data };
     store_1.db.financeTransactions.push(tx);
     (0, store_1.addAudit)('FinanceTransaction', tx.id, 'create', null, tx);
-    if (supabase_1.hasSupabase) {
-        try {
-            const row = await (0, supabase_1.supaInsert)('finance_transactions', tx);
-            return res.status(201).json(row || tx);
-        }
-        catch (e) {
-            return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'supabase insert failed' });
-        }
-    }
     if (dbAdapter_1.hasPg) {
         try {
             const row = await (0, dbAdapter_1.pgInsert)('finance_transactions', tx);
@@ -65,7 +50,7 @@ exports.router.post('/', (0, auth_1.requirePerm)('finance.tx.write'), async (req
     }
     return res.status(201).json(tx);
 });
-exports.router.post('/invoices', (0, auth_1.requirePerm)('finance.tx.write'), upload.single('file'), async (req, res) => {
+exports.router.post('/invoices', (0, auth_1.requireAnyPerm)(['finance.tx.write', 'property_expenses.write', 'company_expenses.write']), upload.single('file'), async (req, res) => {
     if (!req.file)
         return res.status(400).json({ message: 'missing file' });
     try {
@@ -158,11 +143,6 @@ exports.router.post('/send-annual', (0, auth_1.requirePerm)('finance.payout'), (
 });
 exports.router.get('/payouts', async (_req, res) => {
     try {
-        if (supabase_1.hasSupabase) {
-            const raw = await (0, supabase_1.supaSelect)('payouts');
-            const rows = Array.isArray(raw) ? raw : [];
-            return res.json(rows);
-        }
         if (dbAdapter_1.hasPg) {
             const raw = await (0, dbAdapter_1.pgSelect)('payouts');
             const rows = Array.isArray(raw) ? raw : [];
@@ -179,11 +159,6 @@ exports.router.get('/company-payouts', async (_req, res) => {
     try {
         if (dbAdapter_1.hasPg) {
             const raw = await (0, dbAdapter_1.pgSelect)('company_payouts');
-            const rows = Array.isArray(raw) ? raw : [];
-            return res.json(rows);
-        }
-        else if (supabase_1.hasSupabase) {
-            const raw = await (0, supabase_1.supaSelect)('company_payouts');
             const rows = Array.isArray(raw) ? raw : [];
             return res.json(rows);
         }
@@ -215,23 +190,13 @@ exports.router.post('/company-payouts', (0, auth_1.requirePerm)('finance.payout'
             return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'pg insert failed' });
         }
     }
-    else if (supabase_1.hasSupabase) {
-        try {
-            await (0, supabase_1.supaInsert)('company_payouts', p);
-            await (0, supabase_1.supaInsert)('finance_transactions', tx);
-            return res.status(201).json(p);
-        }
-        catch (e) {
-            return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'supabase insert failed' });
-        }
-    }
     return res.status(201).json(p);
 });
 exports.router.patch('/company-payouts/:id', (0, auth_1.requirePerm)('finance.payout'), async (req, res) => {
     const { id } = req.params;
     const idx = store_1.db.companyPayouts.findIndex(x => x.id === id);
     const prev = idx !== -1 ? store_1.db.companyPayouts[idx] : undefined;
-    if (!prev && !dbAdapter_1.hasPg && !supabase_1.hasSupabase)
+    if (!prev && !dbAdapter_1.hasPg)
         return res.status(404).json({ message: 'not found' });
     const body = req.body;
     const updated = { ...(prev || {}), ...body, id };
@@ -259,20 +224,6 @@ exports.router.patch('/company-payouts/:id', (0, auth_1.requirePerm)('finance.pa
             catch (_b) { }
         }
     }
-    else if (supabase_1.hasSupabase) {
-        try {
-            const row = await (0, supabase_1.supaUpdate)('company_payouts', id, updated);
-            return res.json(row || updated);
-        }
-        catch (_c) {
-            try {
-                const { supaUpsert } = require('../supabase');
-                const row2 = await supaUpsert('company_payouts', updated);
-                return res.json(row2 || updated);
-            }
-            catch (_d) { }
-        }
-    }
     return res.json(updated);
 });
 exports.router.delete('/company-payouts/:id', (0, auth_1.requirePerm)('finance.payout'), async (req, res) => {
@@ -293,18 +244,6 @@ exports.router.delete('/company-payouts/:id', (0, auth_1.requirePerm)('finance.p
         }
         catch (_a) { }
     }
-    else if (supabase_1.hasSupabase) {
-        try {
-            await (0, supabase_1.supaDelete)('company_payouts', id);
-            const linked = await (0, supabase_1.supaSelect)('finance_transactions', '*', { ref_type: 'company_payout', ref_id: id });
-            for (const r of (linked || [])) {
-                if (r === null || r === void 0 ? void 0 : r.id)
-                    await (0, supabase_1.supaDelete)('finance_transactions', r.id);
-            }
-            return res.json({ ok: true });
-        }
-        catch (_b) { }
-    }
     return res.json({ ok: true });
 });
 const payoutSchema = zod_1.z.object({ landlord_id: zod_1.z.string(), period_from: zod_1.z.string(), period_to: zod_1.z.string(), amount: zod_1.z.number().min(0), invoice_no: zod_1.z.string().optional() });
@@ -319,16 +258,7 @@ exports.router.post('/payouts', (0, auth_1.requirePerm)('finance.payout'), async
     const tx = { id: uuid(), kind: 'expense', amount: p.amount, currency: 'AUD', occurred_at: new Date().toISOString(), ref_type: 'payout', ref_id: p.id, note: `landlord payout ${p.landlord_id}` };
     store_1.db.financeTransactions.push(tx);
     (0, store_1.addAudit)('FinanceTransaction', tx.id, 'create', null, tx);
-    if (supabase_1.hasSupabase) {
-        try {
-            await (0, supabase_1.supaInsert)('payouts', p);
-            await (0, supabase_1.supaInsert)('finance_transactions', tx);
-            return res.status(201).json(p);
-        }
-        catch (e) {
-            return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'supabase insert failed' });
-        }
-    }
+    // Supabase branch removed
     if (dbAdapter_1.hasPg) {
         try {
             await (0, dbAdapter_1.pgInsert)('payouts', p);
@@ -348,19 +278,12 @@ exports.router.patch('/payouts/:id', (0, auth_1.requirePerm)('finance.payout'), 
     const before = { ...p };
     Object.assign(p, req.body);
     (0, store_1.addAudit)('Payout', p.id, 'update', before, p);
-    if (supabase_1.hasSupabase) {
-        try {
-            const row = await (0, supabase_1.supaUpdate)('payouts', p.id, p);
-            return res.json(row || p);
-        }
-        catch (_a) { }
-    }
-    else if (dbAdapter_1.hasPg) {
+    if (dbAdapter_1.hasPg) {
         try {
             const row = await (0, dbAdapter_1.pgUpdate)('payouts', p.id, p);
             return res.json(row || p);
         }
-        catch (_b) { }
+        catch (_a) { }
     }
     return res.json(p);
 });
@@ -369,11 +292,6 @@ exports.router.get('/payouts/:id', async (req, res) => {
     try {
         if (dbAdapter_1.hasPg) {
             const rows = await (0, dbAdapter_1.pgSelect)('payouts', '*', { id });
-            if (rows && rows[0])
-                return res.json(rows[0]);
-        }
-        else if (supabase_1.hasSupabase) {
-            const rows = await (0, supabase_1.supaSelect)('payouts', '*', { id });
             if (rows && rows[0])
                 return res.json(rows[0]);
         }
@@ -390,19 +308,7 @@ exports.router.delete('/payouts/:id', (0, auth_1.requirePerm)('finance.payout'),
     if (idx !== -1)
         store_1.db.payouts.splice(idx, 1);
     store_1.db.financeTransactions = store_1.db.financeTransactions.filter(t => !(t.ref_type === 'payout' && t.ref_id === id));
-    if (supabase_1.hasSupabase) {
-        try {
-            await (0, supabase_1.supaDelete)('payouts', id);
-            const linked = await (0, supabase_1.supaSelect)('finance_transactions', '*', { ref_type: 'payout', ref_id: id });
-            for (const r of (linked || [])) {
-                if (r === null || r === void 0 ? void 0 : r.id)
-                    await (0, supabase_1.supaDelete)('finance_transactions', r.id);
-            }
-            return res.json({ ok: true });
-        }
-        catch (_a) { }
-    }
-    else if (dbAdapter_1.hasPg) {
+    if (dbAdapter_1.hasPg) {
         try {
             await (0, dbAdapter_1.pgDelete)('payouts', id);
             const linked = await (0, dbAdapter_1.pgSelect)('finance_transactions', '*', { ref_type: 'payout', ref_id: id });
@@ -412,7 +318,7 @@ exports.router.delete('/payouts/:id', (0, auth_1.requirePerm)('finance.payout'),
             }
             return res.json({ ok: true });
         }
-        catch (_b) { }
+        catch (_a) { }
     }
     return res.json({ ok: true });
 });
@@ -430,31 +336,17 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('finance.tx.write'), async 
         store_1.db.financeTransactions[idx] = updated;
     else
         store_1.db.financeTransactions.push(updated);
-    if (supabase_1.hasSupabase) {
-        try {
-            const row = await (0, supabase_1.supaUpdate)('finance_transactions', id, updated);
-            return res.json(row || updated);
-        }
-        catch (_a) {
-            try {
-                const { supaUpsert } = require('../supabase');
-                const row2 = await supaUpsert('finance_transactions', updated);
-                return res.json(row2 || updated);
-            }
-            catch (_b) { }
-        }
-    }
-    else if (dbAdapter_1.hasPg) {
+    if (dbAdapter_1.hasPg) {
         try {
             const row = await (0, dbAdapter_1.pgUpdate)('finance_transactions', id, updated);
             return res.json(row || updated);
         }
-        catch (_c) {
+        catch (_a) {
             try {
                 await (0, dbAdapter_1.pgInsert)('finance_transactions', updated);
                 return res.json(updated);
             }
-            catch (_d) { }
+            catch (_b) { }
         }
     }
     return res.json(updated);
@@ -464,19 +356,12 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('finance.tx.write'), async
     const idx = store_1.db.financeTransactions.findIndex(x => x.id === id);
     if (idx !== -1)
         store_1.db.financeTransactions.splice(idx, 1);
-    if (supabase_1.hasSupabase) {
-        try {
-            await (0, supabase_1.supaDelete)('finance_transactions', id);
-            return res.json({ ok: true });
-        }
-        catch (_a) { }
-    }
-    else if (dbAdapter_1.hasPg) {
+    if (dbAdapter_1.hasPg) {
         try {
             await (0, dbAdapter_1.pgDelete)('finance_transactions', id);
             return res.json({ ok: true });
         }
-        catch (_b) { }
+        catch (_a) { }
     }
     return res.json({ ok: true });
 });

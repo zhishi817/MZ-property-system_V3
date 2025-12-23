@@ -127,6 +127,93 @@ router.post('/send-annual', requirePerm('finance.payout'), (req, res) => {
   res.json({ ok: true })
 })
 
+// Property revenue aggregated by fixed expenses report_category and order income
+router.get('/property-revenue', async (req, res) => {
+  try {
+    const { property_id, property_code, month } = (req.query || {}) as any
+    if (!month || (!(property_id) && !(property_code))) return res.status(400).json({ message: 'missing month or property' })
+    const ym = String(month)
+    const y = Number(ym.slice(0,4))
+    const m = Number(ym.slice(5,7))
+    if (!y || !m) return res.status(400).json({ message: 'invalid month format' })
+    const start = new Date(Date.UTC(y, m - 1, 1))
+    const end = new Date(Date.UTC(y, m, 0))
+    let pid = String(property_id || '')
+    let pcode = String(property_code || '')
+    let label = ''
+    if (hasPg) {
+      try {
+        const { pgPool } = require('../dbAdapter')
+        if (pgPool) {
+          if (!pid && pcode) {
+            const qr = await pgPool.query('SELECT id,code,address FROM properties WHERE lower(code) = lower($1) LIMIT 1', [pcode])
+            if (qr.rows && qr.rows[0]) pid = qr.rows[0].id, label = qr.rows[0].code || qr.rows[0].address || ''
+          } else if (pid) {
+            const qr = await pgPool.query('SELECT id,code,address FROM properties WHERE id = $1 LIMIT 1', [pid])
+            if (qr.rows && qr.rows[0]) label = qr.rows[0].code || qr.rows[0].address || ''
+          }
+        }
+      } catch {}
+    }
+    const cols = { parking_fee: 0, electricity: 0, water: 0, gas: 0, internet: 0, consumables: 0, body_corp: 0, council: 0, other: 0 }
+    let rentIncome = 0
+    try {
+      if (hasPg) {
+        const orders = await pgSelect('orders', '*', { property_id: pid })
+        const ords: any[] = Array.isArray(orders) ? orders : []
+        function toDate(s: any): Date | null { try { return s ? new Date(String(s)) : null } catch { return null } }
+        function overlapNights(ci?: any, co?: any): number {
+          const a = toDate(ci)
+          const b = toDate(co)
+          if (!a || !b) return 0
+          const A = a > start ? a : start
+          const B = b < end ? b : end
+          const ms = B.getTime() - A.getTime()
+          return ms > 0 ? Math.floor(ms / (24 * 3600 * 1000)) : 0
+        }
+        for (const o of ords) {
+          const ov = overlapNights(o.checkin, o.checkout)
+          const nights = Number(o.nights || 0) || 0
+          const visNet = Number((o as any).visible_net_income ?? o.net_income ?? 0)
+          if (ov > 0 && nights > 0) rentIncome += (visNet * ov) / nights
+        }
+        const pe = await pgSelect('property_expenses', '*', { property_id: pid, month_key: ym })
+        const peRows: any[] = Array.isArray(pe) ? pe : []
+        const rp = await pgSelect('recurring_payments', '*')
+        const rpRows: any[] = Array.isArray(rp) ? rp : []
+        const map: Record<string, string> = Object.fromEntries(rpRows.map(r => [String(r.id), String((r as any).report_category || 'other')]))
+        for (const e of peRows) {
+          const fid = String((e as any).fixed_expense_id || '')
+          if (!fid) continue
+          const cat = map[fid] || 'other'
+          const amt = Number((e as any).amount || 0)
+          if (cat in cols) (cols as any)[cat] += amt
+          else cols.other += amt
+        }
+      }
+    } catch {}
+    const totalExpense = Object.values(cols).reduce((s, v) => s + Number(v || 0), 0)
+    const payload = {
+      property_code: label || pcode || pid,
+      month: ym,
+      parking_fee: -Number(cols.parking_fee || 0),
+      electricity: -Number(cols.electricity || 0),
+      water: -Number(cols.water || 0),
+      gas: -Number(cols.gas || 0),
+      internet: -Number(cols.internet || 0),
+      consumables: -Number(cols.consumables || 0),
+      body_corp: -Number(cols.body_corp || 0),
+      council: -Number(cols.council || 0),
+      other: -Number(cols.other || 0),
+      total_expense: -Number(totalExpense || 0),
+      net_income: Number(rentIncome || 0) - Number(totalExpense || 0)
+    }
+    return res.json(payload)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'property-revenue failed' })
+  }
+})
+
 router.get('/payouts', async (_req, res) => {
   try {
     

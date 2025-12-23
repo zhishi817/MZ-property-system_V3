@@ -34,6 +34,7 @@ export default function PropertyRevenuePage() {
       try {
         const fin: any[] = await getJSON<Tx[]>('/finance')
         const pexp: any[] = await apiList<any[]>('property_expenses')
+        const recurs: any[] = await apiList<any[]>('recurring_payments')
         const mapCat = (c?: string) => {
           const v = String(c || '')
           if (v === 'gas_hot_water') return 'gas'
@@ -42,6 +43,7 @@ export default function PropertyRevenuePage() {
           if (v === 'council_rate') return 'council'
           return v
         }
+        const mapReport: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.report_category||'')]))
         const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).map((r: any) => ({
           id: r.id,
           kind: 'expense',
@@ -52,7 +54,12 @@ export default function PropertyRevenuePage() {
           category: mapCat(r.category),
           // 其他支出描述
           ...(r.category_detail ? { category_detail: r.category_detail } : {}),
-          ...(r.invoice_url ? { invoice_url: r.invoice_url } : {})
+          ...(r.invoice_url ? { invoice_url: r.invoice_url } : {}),
+          ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
+          ...(r.month_key ? { month_key: r.month_key } : {}),
+          ...(r.due_date ? { due_date: r.due_date } : {}),
+          ...(r.status ? { status: r.status } : {}),
+          ...(r.fixed_expense_id ? { report_category: (mapReport[String(r.fixed_expense_id)] || 'other') } : {})
         }))
         const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
           id: t.id,
@@ -71,6 +78,53 @@ export default function PropertyRevenuePage() {
     getJSON<any>('/properties').then((j)=>setProperties(j||[])).catch(()=>setProperties([]))
     getJSON<Landlord[]>('/landlords').then(setLandlords).catch(()=>setLandlords([]))
   }, [])
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const fin: any[] = await getJSON<Tx[]>('/finance')
+        const pexp: any[] = await apiList<any[]>('property_expenses')
+        const recurs: any[] = await apiList<any[]>('recurring_payments')
+        const mapCat = (c?: string) => {
+          const v = String(c || '')
+          if (v === 'gas_hot_water') return 'gas'
+          if (v === 'consumables') return 'consumable'
+          if (v === 'owners_corp') return 'property_fee'
+          if (v === 'council_rate') return 'council'
+          return v
+        }
+        const mapReport: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.report_category||'')]))
+        const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).map((r: any) => ({
+          id: r.id,
+          kind: 'expense',
+          amount: Number(r.amount || 0),
+          currency: r.currency || 'AUD',
+          property_id: r.property_id || undefined,
+          occurred_at: r.occurred_at,
+          category: mapCat(r.category),
+          ...(r.category_detail ? { category_detail: r.category_detail } : {}),
+          ...(r.invoice_url ? { invoice_url: r.invoice_url } : {}),
+          ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
+          ...(r.month_key ? { month_key: r.month_key } : {}),
+          ...(r.due_date ? { due_date: r.due_date } : {}),
+          ...(r.status ? { status: r.status } : {}),
+          ...(r.fixed_expense_id ? { report_category: (mapReport[String(r.fixed_expense_id)] || 'other') } : {})
+        }))
+        const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
+          id: t.id,
+          kind: t.kind,
+          amount: Number(t.amount || 0),
+          currency: t.currency || 'AUD',
+          property_id: t.property_id || undefined,
+          occurred_at: t.occurred_at,
+          category: mapCat(t.category),
+          ...(t.category_detail ? { category_detail: t.category_detail } : {}),
+          ...(t.invoice_url ? { invoice_url: t.invoice_url } : {})
+        }))
+        setTxs([...finMapped, ...peMapped])
+      } catch {}
+    })()
+  }, [month])
   const start = useMemo(() => {
     const base = month || dayjs()
     if (period === 'fiscal-year') {
@@ -132,18 +186,19 @@ export default function PropertyRevenuePage() {
         const avg = nights ? Math.round(((rentIncome / nights) + Number.EPSILON)*100)/100 : 0
         const landlord = landlords.find(l => (l.property_ids||[]).includes(p.id))
         const mgmt = landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON)*100)/100 : 0
-        const sumCat = (c: string) => e.filter(xx=>xx.category===c).reduce((s,x)=> s + Number(x.amount||0), 0)
-        const electricity = sumCat('electricity')
-        const water = sumCat('water')
-        const gas = sumCat('gas')
-        const internet = sumCat('internet')
-        const consumable = sumCat('consumable')
-        const carpark = sumCat('carpark')
-        const ownercorp = sumCat('property_fee')
-        const council = sumCat('council')
-        const other = sumCat('other')
-        const otherExpenseDesc = (e.filter(xx=>xx.category==='other' && (xx as any).category_detail).map(xx => String((xx as any).category_detail || '').trim()).filter(Boolean))
-        const otherExpenseDescStr = Array.from(new Set(otherExpenseDesc)).join('、') || '-'
+        const byReport = (key: string) => e.filter(xx=> String((xx as any).report_category||'')===key).reduce((s,x)=> s + Number(x.amount||0), 0)
+        const carpark = byReport('parking_fee')
+        const electricity = byReport('electricity')
+        const water = byReport('water')
+        const gas = byReport('gas')
+        const internet = byReport('internet')
+        const consumable = byReport('consumables')
+        const ownercorp = byReport('body_corp')
+        const council = byReport('council')
+        const other = byReport('other')
+        const otherCats = e.filter(xx=> String((xx as any).report_category||'')==='other').map(xx => String((xx as any).category || '')).map(s=> s.trim()).filter(Boolean)
+        const otherDetailFromCat = e.filter(xx=> String((xx as any).report_category||'')==='other' && (xx as any).category_detail).map(xx => String((xx as any).category_detail || '').trim()).filter(Boolean)
+        const otherExpenseDescStr = Array.from(new Set([...otherCats, ...otherDetailFromCat])).join('、') || '-'
         const totalExp = mgmt + electricity + water + gas + internet + consumable + carpark + ownercorp + council + other
         const net = Math.round(((totalIncome - totalExp) + Number.EPSILON)*100)/100
         out.push({ key: `${p.id}-${rm.label}`, pid: p.id, month: rm.label, code: p.code || p.id, address: p.address, occRate, avg, totalIncome, rentIncome, otherIncome, otherIncomeDesc, mgmt, electricity, water, gas, internet, consumable, carpark, ownercorp, council, other, otherExpenseDesc: otherExpenseDescStr, totalExp, net })

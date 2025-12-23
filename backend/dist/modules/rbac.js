@@ -9,7 +9,6 @@ const store_1 = require("../store");
 const persistence_1 = require("../persistence");
 const zod_1 = require("zod");
 const auth_1 = require("../auth");
-const supabase_1 = require("../supabase");
 const dbAdapter_1 = require("../dbAdapter");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 exports.router = (0, express_1.Router)();
@@ -23,11 +22,21 @@ exports.router.get('/role-permissions', async (req, res) => {
     const { role_id } = req.query;
     try {
         if (dbAdapter_1.hasPg) {
-            const rows = await (0, dbAdapter_1.pgSelect)('role_permissions', '*', role_id ? { role_id } : undefined) || [];
+            let rows = await (0, dbAdapter_1.pgSelect)('role_permissions', '*', role_id ? { role_id } : undefined) || [];
+            if (role_id && (!rows || rows.length === 0)) {
+                const alt = role_id.startsWith('role.') ? role_id.replace(/^role\./, '') : `role.${role_id}`;
+                const altRows = await (0, dbAdapter_1.pgSelect)('role_permissions', '*', { role_id: alt }) || [];
+                if (altRows && altRows.length)
+                    rows = altRows;
+            }
             return res.json(rows);
         }
     }
     catch (e) {
+        try {
+            console.error(`[RBAC] outer error role_id=${role_id} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')} stack=${String((e === null || e === void 0 ? void 0 : e.stack) || '')}`);
+        }
+        catch (_a) { }
         return res.status(500).json({ message: e.message });
     }
     const list = role_id ? store_1.db.rolePermissions.filter(rp => rp.role_id === role_id) : store_1.db.rolePermissions;
@@ -97,24 +106,56 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
                 console.log(`[RBAC] write start env=${process.env.NODE_ENV} hasPg=${dbAdapter_1.hasPg} host=${host} db=${dbname} role_id=${role_id} count=${set.size}`);
             }
             catch (_b) { }
-            const { pgRunInTransaction, pgDeleteWhere, pgInsertOnConflictDoNothing } = require('../dbAdapter');
+            try {
+                const { pgPool } = require('../dbAdapter');
+                if (pgPool) {
+                    await pgPool.query(`CREATE TABLE IF NOT EXISTS role_permissions (
+            id text PRIMARY KEY,
+            role_id text NOT NULL,
+            permission_code text NOT NULL,
+            created_at timestamptz DEFAULT now()
+          );`);
+                    await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_role_perm ON role_permissions(role_id, permission_code);');
+                }
+            }
+            catch (e) {
+                console.error(`[RBAC] schema ensure error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')} stack=${String((e === null || e === void 0 ? void 0 : e.stack) || '')}`);
+            }
+            const { pgPool } = require('../dbAdapter');
             const { v4: uuid } = require('uuid');
-            await pgRunInTransaction(async (client) => {
+            if (!pgPool) {
+                console.error('[RBAC] no pgPool');
+                return res.status(500).json({ message: 'database not available' });
+            }
+            const client = await pgPool.connect();
+            let inserted = 0;
+            try {
+                console.log(`[RBAC] txn begin role_id=${role_id}`);
+                await client.query('BEGIN');
+                const normalizedId = role_id.startsWith('role.') ? role_id : `role.${role_id}`;
+                const altId = role_id.startsWith('role.') ? role_id.replace(/^role\./, '') : role_id;
+                await client.query('DELETE FROM role_permissions WHERE role_id = $1 OR role_id = $2', [normalizedId, altId]);
+                for (const code of Array.from(set)) {
+                    const id = uuid();
+                    const sql = 'INSERT INTO role_permissions (id, role_id, permission_code) VALUES ($1,$2,$3) ON CONFLICT (role_id, permission_code) DO NOTHING RETURNING id';
+                    const r = await client.query(sql, [id, normalizedId, code]);
+                    if (r && r.rows && r.rows[0])
+                        inserted++;
+                }
+                await client.query('COMMIT');
+                console.log(`[RBAC] write done role_id=${role_id} inserted=${inserted}`);
+            }
+            catch (e) {
                 try {
-                    await pgDeleteWhere('role_permissions', { role_id }, client);
-                    let inserted = 0;
-                    for (const code of Array.from(set)) {
-                        const r = await pgInsertOnConflictDoNothing('role_permissions', { id: uuid(), role_id, permission_code: code }, ['role_id', 'permission_code'], client);
-                        if (r)
-                            inserted++;
-                    }
-                    console.log(`[RBAC] write done role_id=${role_id} inserted=${inserted}`);
+                    await client.query('ROLLBACK');
                 }
-                catch (e) {
-                    console.error(`[RBAC] write error role_id=${role_id} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-                    throw e;
-                }
-            });
+                catch (_c) { }
+                console.error(`[RBAC] write error role_id=${role_id} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')} stack=${String((e === null || e === void 0 ? void 0 : e.stack) || '')}`);
+                return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'write failed' });
+            }
+            finally {
+                client.release();
+            }
             return res.json({ ok: true });
         }
     }
@@ -124,10 +165,10 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
     store_1.db.rolePermissions = store_1.db.rolePermissions.filter(rp => rp.role_id !== role_id);
     Array.from(set).forEach(code => store_1.db.rolePermissions.push({ role_id, permission_code: code }));
     try {
-        if (!dbAdapter_1.hasPg && !supabase_1.hasSupabase)
+        if (!dbAdapter_1.hasPg)
             (0, persistence_1.saveRolePermissions)(store_1.db.rolePermissions);
     }
-    catch (_c) { }
+    catch (_d) { }
     res.json({ ok: true });
 });
 // current user's permissions
@@ -141,7 +182,12 @@ exports.router.get('/my-permissions', auth_1.auth, async (req, res) => {
         return res.json([]);
     try {
         if (dbAdapter_1.hasPg) {
-            const rows = await (0, dbAdapter_1.pgSelect)('role_permissions', 'permission_code', { role_id: role.id }) || [];
+            let rows = await (0, dbAdapter_1.pgSelect)('role_permissions', 'permission_code', { role_id: role.id }) || [];
+            if (!rows || rows.length === 0) {
+                const altRows = await (0, dbAdapter_1.pgSelect)('role_permissions', 'permission_code', { role_id: role.name }) || [];
+                if (altRows && altRows.length)
+                    rows = altRows;
+            }
             const list = rows.map((r) => r.permission_code);
             return res.json(list);
         }
@@ -161,10 +207,7 @@ exports.router.get('/users', (0, auth_1.requirePerm)('rbac.manage'), async (_req
             const rows = await (0, dbAdapter_1.pgSelect)('users') || [];
             return res.json(rows);
         }
-        if (supabase_1.hasSupabase) {
-            const rows = await (0, supabase_1.supaSelect)('users') || [];
-            return res.json(rows);
-        }
+        // Supabase branch removed
         return res.json([]);
     }
     catch (e) {
@@ -183,10 +226,7 @@ exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req
             const created = await (0, dbAdapter_1.pgInsert)('users', row);
             return res.status(201).json(created || row);
         }
-        if (supabase_1.hasSupabase) {
-            const created = await (0, supabase_1.supaInsert)('users', row);
-            return res.status(201).json(created || row);
-        }
+        // Supabase branch removed
         return res.status(201).json(row);
     }
     catch (e) {
@@ -208,10 +248,7 @@ exports.router.patch('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async
             const updated = await (0, dbAdapter_1.pgUpdate)('users', id, payload);
             return res.json(updated || { id, ...payload });
         }
-        if (supabase_1.hasSupabase) {
-            const updated = await (0, supabase_1.supaUpdate)('users', id, payload);
-            return res.json(updated || { id, ...payload });
-        }
+        // Supabase branch removed
         return res.json({ id, ...payload });
     }
     catch (e) {
@@ -225,10 +262,7 @@ exports.router.delete('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), asyn
             await (0, dbAdapter_1.pgDelete)('users', id);
             return res.json({ ok: true });
         }
-        if (supabase_1.hasSupabase) {
-            await (0, supabase_1.supaDelete)('users', id);
-            return res.json({ ok: true });
-        }
+        // Supabase branch removed
         return res.json({ ok: true });
     }
     catch (e) {

@@ -20,12 +20,12 @@ export default forwardRef<HTMLDivElement, {
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
   const relatedOrders = monthSegments(orders.filter(o => (!propertyId || o.property_id === propertyId)), start)
-  const simpleMode = true
+  const simpleMode = false
   const expensesInMonth = txs.filter(t => t.kind === 'expense' && (!propertyId || t.property_id === propertyId) && dayjs(toDayStr(t.occurred_at)).isSame(start, 'month'))
   const orderIncomeShare = relatedOrders.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
   const rentIncome = orderIncomeShare
-  const otherIncomeTx = simpleMode ? [] : txs.filter(t => t.kind === 'income' && (!propertyId || t.property_id === propertyId) && dayjs(toDayStr(t.occurred_at)).isSame(start, 'month'))
-  const otherIncome = simpleMode ? 0 : otherIncomeTx.reduce((s,x)=> s + Number(x.amount || 0), 0)
+  const otherIncomeTx = txs.filter(t => t.kind === 'income' && (!propertyId || t.property_id === propertyId) && dayjs(toDayStr(t.occurred_at)).isSame(start, 'month'))
+  const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount || 0), 0)
   const mapIncomeCatLabel = (c?: string) => {
     const v = String(c || '')
     if (v === 'late_checkout') return '晚退房费'
@@ -40,8 +40,15 @@ export default forwardRef<HTMLDivElement, {
   const dailyAverage = occupiedNights ? Math.round(((totalIncome / occupiedNights) + Number.EPSILON) * 100) / 100 : 0
   const landlord = landlords.find(l => (l.property_ids || []).includes(propertyId || ''))
   const property = properties.find(pp => pp.id === (propertyId || ''))
-  const managementFee = simpleMode ? 0 : (landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON) * 100) / 100 : 0)
-  const sumByCat = (cat: string) => (simpleMode ? 0 : expensesInMonth.filter(e => e.category === cat).reduce((s, x) => s + Number(x.amount || 0), 0))
+  const managementFee = (landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON) * 100) / 100 : 0)
+  function catKey(e: any): string {
+    const raw = String((e?.report_category || e?.category || '')).toLowerCase()
+    if (raw === 'parking_fee' || raw === 'carpark') return 'carpark'
+    if (raw === 'body_corp' || raw === 'property_fee') return 'property_fee'
+    if (raw === 'consumables' || raw === 'consumable') return 'consumable'
+    return raw
+  }
+  const sumByCat = (cat: string) => expensesInMonth.filter(e => catKey(e) === cat).reduce((s, x) => s + Number(x.amount || 0), 0)
   const catElectricity = sumByCat('electricity')
   const catWater = sumByCat('water')
   const catGas = sumByCat('gas')
@@ -51,8 +58,10 @@ export default forwardRef<HTMLDivElement, {
   const catOwnerCorp = sumByCat('property_fee')
   const catCouncil = sumByCat('council')
   const catOther = sumByCat('other')
-  const otherExpenseDesc = Array.from(new Set(expensesInMonth.filter(e => e.category === 'other' && (e as any).category_detail).map(e => String((e as any).category_detail || '').trim()).filter(Boolean))).join('、') || '-'
-  const totalExpense = simpleMode ? 0 : (managementFee + catElectricity + catWater + catGas + catInternet + catConsumable + catCarpark + catOwnerCorp + catCouncil + catOther)
+  const otherCats = expensesInMonth.filter(e => catKey(e) === 'other').map(e => String((e as any).category || '')).map(s => s.trim()).filter(Boolean)
+  const otherDetailFromCat = expensesInMonth.filter(e => catKey(e) === 'other' && (e as any).category_detail).map(e => String((e as any).category_detail || '').trim()).filter(Boolean)
+  const otherExpenseDesc = Array.from(new Set([...otherCats, ...otherDetailFromCat])).join('、') || '-'
+  const totalExpense = (managementFee + catElectricity + catWater + catGas + catInternet + catConsumable + catCarpark + catOwnerCorp + catCouncil + catOther)
   const netIncome = Math.round(((totalIncome - totalExpense) + Number.EPSILON) * 100) / 100
   const isImg = (u?: string) => !!u && /\.(png|jpg|jpeg|gif)$/i.test(u)
   const isPdf = (u?: string) => !!u && /\.pdf$/i.test(u)
