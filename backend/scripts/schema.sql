@@ -365,3 +365,6 @@ DO $$ BEGIN
 END $$;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_received boolean DEFAULT false;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_currency text DEFAULT 'AUD';
+-- Property recurring payments reporting category for revenue mapping
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS report_category text;
+

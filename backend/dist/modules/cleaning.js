@@ -5,19 +5,12 @@ const express_1 = require("express");
 const store_1 = require("../store");
 const zod_1 = require("zod");
 const auth_1 = require("../auth");
-const supabase_1 = require("../supabase");
 const dbAdapter_1 = require("../dbAdapter");
 exports.router = (0, express_1.Router)();
 exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), (req, res) => {
     const { date } = req.query;
     if (dbAdapter_1.hasPg) {
         (0, dbAdapter_1.pgSelect)('cleaning_tasks', '*', date ? { date } : undefined)
-            .then((data) => res.json(data))
-            .catch((err) => res.status(500).json({ message: err.message }));
-        return;
-    }
-    if (supabase_1.hasSupabase) {
-        (0, supabase_1.supaSelect)('cleaning_tasks', '*', date ? { date } : undefined)
             .then((data) => res.json(data))
             .catch((err) => res.status(500).json({ message: err.message }));
         return;
@@ -51,12 +44,6 @@ exports.router.post('/tasks', (req, res) => {
             .catch((_err) => res.status(201).json(task));
         return;
     }
-    if (supabase_1.hasSupabase) {
-        (0, supabase_1.supaInsert)('cleaning_tasks', task)
-            .then((row) => res.status(201).json(row))
-            .catch((err) => res.status(500).json({ message: err.message }));
-        return;
-    }
     return res.status(201).json(task);
 });
 exports.router.get('/staff', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), (req, res) => {
@@ -84,12 +71,6 @@ exports.router.post('/tasks/:id/assign', (0, auth_1.requirePerm)('cleaning.task.
         (0, dbAdapter_1.pgUpdate)('cleaning_tasks', task.id, { assignee_id: task.assignee_id, scheduled_at: task.scheduled_at, status: task.status })
             .then((row) => res.json(row || task))
             .catch((_err) => res.json(task));
-        return;
-    }
-    if (supabase_1.hasSupabase) {
-        (0, supabase_1.supaUpdate)('cleaning_tasks', task.id, { assignee_id: task.assignee_id, scheduled_at: task.scheduled_at, status: task.status })
-            .then((row) => res.json(row))
-            .catch((err) => res.status(500).json({ message: err.message }));
         return;
     }
     return res.json(task);
@@ -139,12 +120,6 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
         (0, dbAdapter_1.pgUpdate)('cleaning_tasks', task.id, parsed.data)
             .then((row) => res.json(row || task))
             .catch((_err) => res.json(task));
-        return;
-    }
-    if (supabase_1.hasSupabase) {
-        (0, supabase_1.supaUpdate)('cleaning_tasks', task.id, parsed.data)
-            .then((row) => res.json(row))
-            .catch((err) => res.status(500).json({ message: err.message }));
         return;
     }
     return res.json(task);

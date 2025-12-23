@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.router = void 0;
 const express_1 = require("express");
 const store_1 = require("../store");
-const supabase_1 = require("../supabase");
+// Supabase removed
 const dbAdapter_1 = require("../dbAdapter");
 const zod_1 = require("zod");
 const auth_1 = require("../auth");
@@ -12,20 +12,7 @@ exports.router = (0, express_1.Router)();
 exports.router.get('/', (req, res) => {
     const q = req.query || {};
     const includeArchived = String(q.include_archived || '').toLowerCase() === 'true';
-    if (supabase_1.hasSupabase) {
-        const handle = (rows) => {
-            const arr = Array.isArray(rows) ? rows : [];
-            return res.json(includeArchived ? arr : arr.filter((x) => !x.archived));
-        };
-        (0, supabase_1.supaSelect)('landlords', '*', includeArchived ? undefined : { archived: false })
-            .then(handle)
-            .catch(() => {
-            (0, supabase_1.supaSelect)('landlords')
-                .then(handle)
-                .catch((err) => res.status(500).json({ message: err.message }));
-        });
-        return;
-    }
+    // Supabase branch removed
     if (dbAdapter_1.hasPg) {
         const filter = includeArchived ? {} : { archived: false };
         (0, dbAdapter_1.pgSelect)('landlords', '*', filter)
@@ -54,11 +41,7 @@ exports.router.post('/', (0, auth_1.requirePerm)('landlord.manage'), (req, res) 
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
     const l = { id: (0, uuid_1.v4)(), ...parsed.data };
-    if (supabase_1.hasSupabase) {
-        return (0, supabase_1.supaInsert)('landlords', l)
-            .then((row) => { (0, store_1.addAudit)('Landlord', row.id, 'create', null, row); res.status(201).json(row); })
-            .catch((err) => res.status(500).json({ message: err.message }));
-    }
+    // Supabase branch removed
     if (dbAdapter_1.hasPg) {
         return (0, dbAdapter_1.pgInsert)('landlords', l)
             .then((row) => { (0, store_1.addAudit)('Landlord', l.id, 'create', null, row); res.status(201).json(row); })
@@ -72,13 +55,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('landlord.manage'), async (
     const { id } = req.params;
     const body = req.body;
     try {
-        if (supabase_1.hasSupabase) {
-            const rows = await (0, supabase_1.supaSelect)('landlords', '*', { id });
-            const before = rows && rows[0];
-            const row = await (0, supabase_1.supaUpdate)('landlords', id, body);
-            (0, store_1.addAudit)('Landlord', id, 'update', before, row);
-            return res.json(row);
-        }
+        // Supabase branch removed
         if (dbAdapter_1.hasPg) {
             const rows = await (0, dbAdapter_1.pgSelect)('landlords', '*', { id });
             const before = rows && rows[0];
@@ -101,13 +78,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('landlord.manage'), async (
 });
 exports.router.get('/:id', (req, res) => {
     const { id } = req.params;
-    if (supabase_1.hasSupabase) {
-        (0, supabase_1.supaSelect)('landlords', '*', { id })
-            .then(rows => { if (!rows || !rows[0])
-            return res.status(404).json({ message: 'not found' }); res.json(rows[0]); })
-            .catch(err => res.status(500).json({ message: err.message }));
-        return;
-    }
+    // Supabase branch removed
     if (dbAdapter_1.hasPg) {
         (0, dbAdapter_1.pgSelect)('landlords', '*', { id })
             .then(rows => { if (!rows || !rows[0])
@@ -124,18 +95,7 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('landlord.manage'), async 
     const { id } = req.params;
     const actor = req.user;
     try {
-        if (supabase_1.hasSupabase) {
-            const rows = await (0, supabase_1.supaSelect)('landlords', '*', { id });
-            const before = rows && rows[0];
-            try {
-                const row = await (0, supabase_1.supaUpdate)('landlords', id, { archived: true });
-                (0, store_1.addAudit)('Landlord', id, 'archive', before, row, actor === null || actor === void 0 ? void 0 : actor.sub);
-                return res.json({ id, archived: true });
-            }
-            catch (e) {
-                return res.status(400).json({ message: '数据库缺少 archived 列，请先执行迁移：ALTER TABLE landlords ADD COLUMN IF NOT EXISTS archived boolean DEFAULT false;' });
-            }
-        }
+        // Supabase branch removed
         if (dbAdapter_1.hasPg) {
             const rows = await (0, dbAdapter_1.pgSelect)('landlords', '*', { id });
             const before = rows && rows[0];

@@ -100,7 +100,11 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   if (hasPerm('menu.finance')) items.push({ key: 'finance', icon: <DollarOutlined />, label: '财务管理', children: financeChildren })
   if (hasPerm('menu.cleaning') || hasPerm('cleaning.task.assign') || role === 'customer_service' || role === 'cleaning_manager' || role === 'cleaner_inspector') items.push({ key: 'cleaning', icon: <CalendarOutlined />, label: <Link href="/cleaning" prefetch={false}>清洁安排</Link> })
   if (hasPerm('menu.rbac') || hasPerm('rbac.manage')) items.push({ key: 'rbac', icon: <ProfileOutlined />, label: <Link href="/rbac" prefetch={false}>角色权限</Link> })
-  if (hasPerm('menu.cms')) items.push({ key: 'cms', icon: <ShopOutlined />, label: <Link href="/cms" prefetch={false}>CMS管理</Link> })
+  if (hasPerm('menu.cms')) items.push({ key: 'cms', icon: <ShopOutlined />, label: 'CMS管理', children: [
+    { key: 'cms-home', label: <Link href="/cms" prefetch={false}>页面管理</Link> },
+    { key: 'cms-cleaning', label: <Link href="/cms/public-cleaning" prefetch={false}>清洁公开指南</Link> },
+    { key: 'cms-cleaning-password', label: <Link href="/cms/public-cleaning-password" prefetch={false}>公开访问密码</Link> },
+  ] })
 
   
   

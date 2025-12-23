@@ -117,6 +117,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
                 payment_type text,
                 bpay_code text,
                 pay_mobile_number text,
+                report_category text,
                 created_at timestamptz DEFAULT now(),
                 updated_at timestamptz
               );`)
@@ -340,7 +341,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
             toInsert = cleaned
           } else if (resource === 'recurring_payments') {
-            const allow = ['id','property_id','scope','vendor','category','category_detail','amount','due_day_of_month','frequency_months','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource','payment_type','bpay_code','pay_mobile_number']
+            const allow = ['id','property_id','scope','vendor','category','category_detail','amount','due_day_of_month','frequency_months','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource','payment_type','bpay_code','pay_mobile_number','report_category']
             const cleaned: any = { id: payload.id }
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -580,7 +581,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 created_at timestamptz DEFAULT now(),
                 updated_at timestamptz
               );`)
-              const allow = ['id','property_id','scope','vendor','category','category_detail','amount','due_day_of_month','frequency_months','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource','payment_type','bpay_code','pay_mobile_number']
+              const allow = ['id','property_id','scope','vendor','category','category_detail','amount','due_day_of_month','frequency_months','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource','payment_type','bpay_code','pay_mobile_number','report_category']
               const cleaned: any = { id: payload.id }
               for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
               if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -614,14 +615,14 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               const { pgPool } = require('../dbAdapter')
               if (pgPool) {
                 await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS category_detail text;')
-                const allow = ['id','property_id','scope','vendor','category','category_detail','amount','due_day_of_month','frequency_months','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource','payment_type','bpay_code','pay_mobile_number']
-                const cleaned: any = { id: payload.id }
-                for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
-                if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
-                const row2 = await pgInsert(resource, cleaned)
-                addAudit(resource, String((row2 as any)?.id || ''), 'create', null, row2, (req as any).user?.sub)
-                return res.status(201).json(row2)
-              }
+              const allow = ['id','property_id','scope','vendor','category','category_detail','amount','due_day_of_month','frequency_months','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource','payment_type','bpay_code','pay_mobile_number']
+              const cleaned: any = { id: payload.id }
+              for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+              if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+              const row2 = await pgInsert(resource, cleaned)
+              addAudit(resource, String((row2 as any)?.id || ''), 'create', null, row2, (req as any).user?.sub)
+              return res.status(201).json(row2)
+            }
             } catch (e5) {
               return res.status(500).json({ message: (e5 as any)?.message || 'create failed (column add)' })
             }
@@ -688,6 +689,22 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               }
             } catch (e9) {
               return res.status(500).json({ message: (e9 as any)?.message || 'create failed (column add)' })
+            }
+          } else if (resource === 'recurring_payments' && /column\s+"?report_category"?\s+of\s+relation\s+"?recurring_payments"?\s+does\s+not\s+exist/i.test(msg)) {
+            try {
+              const { pgPool } = require('../dbAdapter')
+              if (pgPool) {
+                await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS report_category text;')
+                const allow = ['id','property_id','scope','vendor','category','category_detail','amount','due_day_of_month','frequency_months','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource','payment_type','bpay_code','pay_mobile_number','report_category']
+                const cleaned: any = { id: payload.id }
+                for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+                if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+                const row2 = await pgInsert(resource, cleaned)
+                addAudit(resource, String((row2 as any)?.id || ''), 'create', null, row2, (req as any).user?.sub)
+                return res.status(201).json(row2)
+              }
+            } catch (e10) {
+              return res.status(500).json({ message: (e10 as any)?.message || 'create failed (column add)' })
             }
           }
           return res.status(500).json({ message: msg || 'create failed' })
@@ -761,7 +778,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
         toUpdate = cleaned
       } else if (resource === 'recurring_payments') {
-        const allow = ['property_id','scope','vendor','category','category_detail','amount','due_day_of_month','frequency_months','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource','payment_type','bpay_code','pay_mobile_number']
+        const allow = ['property_id','scope','vendor','category','category_detail','amount','due_day_of_month','frequency_months','remind_days_before','status','last_paid_date','next_due_date','pay_account_name','pay_bsb','pay_account_number','pay_ref','expense_id','expense_resource','payment_type','bpay_code','pay_mobile_number','report_category']
         const cleaned: any = {}
         for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
         if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -802,6 +819,10 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         if (resource === 'recurring_payments' && /column\s+"?frequency_months"?\s+of\s+relation\s+"?recurring_payments"?\s+does\s+not\s+exist/i.test(msg)) {
           const { pgPool } = require('../dbAdapter')
           if (pgPool) await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS frequency_months integer;')
+          row = await pgUpdate(resource, id, toUpdate)
+        } else if (resource === 'recurring_payments' && /column\s+"?report_category"?\s+of\s+relation\s+"?recurring_payments"?\s+does\s+not\s+exist/i.test(msg)) {
+          const { pgPool } = require('../dbAdapter')
+          if (pgPool) await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS report_category text;')
           row = await pgUpdate(resource, id, toUpdate)
         } else {
           throw e

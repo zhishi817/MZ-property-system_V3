@@ -15,7 +15,6 @@ const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const uuid_1 = require("uuid");
 const store_1 = require("./store");
 const dbAdapter_1 = require("./dbAdapter");
-const supabase_1 = require("./supabase");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const SECRET = process.env.JWT_SECRET || 'dev-secret';
 const SESSION_MAX_AGE_HOURS = Number(process.env.SESSION_MAX_AGE_HOURS || 5);
@@ -33,19 +32,9 @@ async function login(req, res) {
     const { username, password } = req.body || {};
     if (!username || !password)
         return res.status(400).json({ message: 'missing credentials' });
-    // DB first（优先 Supabase，其次 Postgres；分别容错）
+    // DB first（Postgres；容错）
     let row = null;
-    if (supabase_1.hasSupabase) {
-        try {
-            const byUser = await (0, supabase_1.supaSelect)('users', '*', { username });
-            row = byUser && byUser[0];
-            if (!row) {
-                const byEmail = await (0, supabase_1.supaSelect)('users', '*', { email: username });
-                row = byEmail && byEmail[0];
-            }
-        }
-        catch (_a) { }
-    }
+    // Supabase branch removed
     if (!row && dbAdapter_1.hasPg) {
         try {
             const byUser = await (0, dbAdapter_1.pgSelect)('users', '*', { username });
@@ -55,7 +44,7 @@ async function login(req, res) {
                 row = byEmail && byEmail[0];
             }
         }
-        catch (_b) { }
+        catch (_a) { }
     }
     if (row) {
         const ok = await bcryptjs_1.default.compare(password, row.password_hash);
@@ -77,7 +66,7 @@ async function login(req, res) {
                 });
                 sid = String(sidNew);
             }
-            catch (_c) { }
+            catch (_b) { }
         }
         const payload = { sub: row.id, role: row.role, username: row.username };
         if (sid)
@@ -109,7 +98,7 @@ async function login(req, res) {
                     });
                     sid = String(sidNew);
                 }
-                catch (_d) { }
+                catch (_c) { }
             }
             const payload = { sub: found.id, role: found.role, username: found.username || found.email };
             if (sid)
@@ -215,11 +204,7 @@ async function setDeletePassword(req, res) {
             const row = await pgUpdate('users', user.sub, { delete_password_hash: hash });
             return res.json({ ok: true });
         }
-        if (supabase_1.hasSupabase) {
-            const { supaUpdate } = require('./supabase');
-            await supaUpdate('users', user.sub, { delete_password_hash: hash });
-            return res.json({ ok: true });
-        }
+        // Supabase branch removed
         return res.status(200).json({ ok: true });
     }
     catch (e) {
@@ -227,17 +212,33 @@ async function setDeletePassword(req, res) {
     }
 }
 function requireResourcePerm(kind) {
-    return (req, res, next) => {
+    return async (req, res, next) => {
         var _a;
         const user = req.user;
         if (!user)
             return res.status(401).json({ message: 'unauthorized' });
-        const role = String(user.role || '');
+        const roleName = String(user.role || '');
         const resource = String(((_a = req.params) === null || _a === void 0 ? void 0 : _a.resource) || '');
         if (!resource)
             return res.status(400).json({ message: 'missing resource' });
         const code = `${resource}.${kind}`;
-        const ok = (0, store_1.roleHasPermission)(role, code);
+        let ok = false;
+        try {
+            const { hasPg, pgSelect } = require('./dbAdapter');
+            if (hasPg) {
+                const role = store_1.db.roles.find(r => r.name === roleName);
+                const rid = (role === null || role === void 0 ? void 0 : role.id) || roleName;
+                let rows = await pgSelect('role_permissions', 'permission_code', { role_id: rid, permission_code: code }) || [];
+                if ((!rows || !rows.length) && (role === null || role === void 0 ? void 0 : role.name)) {
+                    const altRows = await pgSelect('role_permissions', 'permission_code', { role_id: role.name, permission_code: code }) || [];
+                    rows = altRows && altRows.length ? altRows : rows;
+                }
+                ok = Array.isArray(rows) && rows.length > 0;
+            }
+        }
+        catch (_b) { }
+        if (!ok)
+            ok = (0, store_1.roleHasPermission)(roleName, code);
         if (!ok)
             return res.status(403).json({ message: 'forbidden' });
         next();

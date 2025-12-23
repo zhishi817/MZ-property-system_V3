@@ -21,6 +21,8 @@ import maintenanceRouter from './modules/maintenance'
 import crudRouter from './modules/crud'
 import recurringRouter from './modules/recurring'
 import { auth } from './auth'
+import publicRouter from './modules/public'
+import publicAdminRouter from './modules/public_admin'
 // 环境保险锁（允许缺省采用智能默认，不再抛错）
 let appEnv = process.env.APP_ENV
 let dbRole = process.env.DATABASE_ROLE
@@ -130,6 +132,8 @@ app.get('/health/version', (_req, res) => {
   const build = process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown'
   res.json({ build, version: pkg.version || 'unknown', node_env: process.env.NODE_ENV || 'unknown', started_at: new Date().toISOString() })
 })
+// Public endpoints (no auth)
+app.use('/public', publicRouter)
 // Auth middleware comes AFTER health routes
 app.use(auth)
 const uploadDir = path.join(process.cwd(), 'uploads')
@@ -152,6 +156,7 @@ app.use('/audits', auditsRouter)
 app.use('/rbac', rbacRouter)
 app.use('/version', versionRouter)
 app.use('/maintenance', maintenanceRouter)
+app.use('/public', publicAdminRouter)
 
 const port = process.env.PORT ? Number(process.env.PORT) : 4001
 app.listen(port, () => {
