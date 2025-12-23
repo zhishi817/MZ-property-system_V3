@@ -44,6 +44,18 @@ export default function PropertyRevenuePage() {
           return v
         }
         const mapReport: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.report_category||'')]))
+        const toReportCat = (raw?: string) => {
+          const v = String(raw||'').toLowerCase()
+          if (v.includes('carpark') || v.includes('车位')) return 'parking_fee'
+          if (v.includes('owners') || v.includes('body') || v.includes('物业')) return 'body_corp'
+          if (v.includes('internet') || v.includes('nbn') || v.includes('网')) return 'internet'
+          if (v.includes('electric')) return 'electricity'
+          if (v.includes('water') && !v.includes('hot')) return 'water'
+          if (v.includes('gas') || v.includes('hot')) return 'gas'
+          if (v.includes('consumable') || v.includes('消耗')) return 'consumables'
+          if (v.includes('council') || v.includes('市政')) return 'council'
+          return 'other'
+        }
         const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).map((r: any) => ({
           id: r.id,
           kind: 'expense',
@@ -59,7 +71,7 @@ export default function PropertyRevenuePage() {
           ...(r.month_key ? { month_key: r.month_key } : {}),
           ...(r.due_date ? { due_date: r.due_date } : {}),
           ...(r.status ? { status: r.status } : {}),
-          ...(r.fixed_expense_id ? { report_category: (mapReport[String(r.fixed_expense_id)] || 'other') } : {})
+          report_category: (r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail)
         }))
         const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
           id: t.id,
