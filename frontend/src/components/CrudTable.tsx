@@ -74,13 +74,15 @@ export default function CrudTable({ resource, columns, fields }: { resource: str
   )
 }
 
+type GuideStepItem = { type: 'text'|'image'; text?: string; url?: string; caption?: string }
+type GuideBlock = { type: 'text'|'heading'|'image'|'step'; text?: string; url?: string; caption?: string; title?: string; contents?: GuideStepItem[] }
 function RichContentEditor({ form, fieldKey }: { form: any; fieldKey: string }) {
-  const [blocks, setBlocks] = useState<Array<{ type: 'text'|'image'|'heading'|'step'; text?: string; url?: string; caption?: string; title?: string; contents?: Array<{ type:'text'|'image'; text?: string; url?: string; caption?: string }> }>>([])
+  const [blocks, setBlocks] = useState<GuideBlock[]>([])
   const [initialLoaded, setInitialLoaded] = useState(false)
   const { message } = App.useApp()
 
   function parseInitial(html: string) {
-    const arr: Array<{ type: 'text'|'image'|'heading'|'step'; text?: string; url?: string; caption?: string; title?: string; contents?: Array<{ type:'text'|'image'; text?: string; url?: string; caption?: string }> }> = []
+    const arr: GuideBlock[] = []
     try {
       const div = document.createElement('div')
       div.innerHTML = html || ''
@@ -91,21 +93,21 @@ function RichContentEditor({ form, fieldKey }: { form: any; fieldKey: string }) 
       } else {
         Array.from(div.childNodes).forEach((n: any) => {
           if (n.tagName === 'P') {
-            arr.push({ type: 'text', text: n.textContent || '' })
+            arr.push({ type: 'text' as const, text: n.textContent || '' })
           } else if (n.tagName === 'FIGURE') {
             const img = n.querySelector('img')
             const fc = n.querySelector('figcaption')
-            if (img) arr.push({ type: 'image', url: img.getAttribute('src') || '', caption: fc?.textContent || '' })
+            if (img) arr.push({ type: 'image' as const, url: img.getAttribute('src') || '', caption: fc?.textContent || '' })
           } else if (n.tagName === 'IMG') {
-            arr.push({ type: 'image', url: n.getAttribute('src') || '' })
+            arr.push({ type: 'image' as const, url: n.getAttribute('src') || '' })
           } else if (n.tagName === 'H2') {
-            arr.push({ type: 'heading', text: n.textContent || '' })
+            arr.push({ type: 'heading' as const, text: n.textContent || '' })
           } else if (n.tagName === 'OL') {
-            const steps: any[] = []
+            const steps: GuideBlock[] = []
             Array.from(n.children).forEach((li: any) => {
               const t = li.querySelector('strong')?.textContent || ''
-              const subTexts = Array.from(li.querySelectorAll('ol li')).map((x: any) => ({ type:'text', text: x.textContent || '' }))
-              const figs = Array.from(li.querySelectorAll('figure')).map((f: any) => ({ type:'image', url: f.querySelector('img')?.getAttribute('src') || '', caption: f.querySelector('figcaption')?.textContent || '' }))
+              const subTexts: GuideStepItem[] = Array.from(li.querySelectorAll('ol li')).map((x: any) => ({ type:'text', text: x.textContent || '' } as const))
+              const figs: GuideStepItem[] = Array.from(li.querySelectorAll('figure')).map((f: any) => ({ type:'image', url: f.querySelector('img')?.getAttribute('src') || '', caption: f.querySelector('figcaption')?.textContent || '' } as const))
               steps.push({ type:'step', title: t, contents: [...subTexts, ...figs] })
             })
             arr.push(...steps)
@@ -125,7 +127,7 @@ function RichContentEditor({ form, fieldKey }: { form: any; fieldKey: string }) 
     setInitialLoaded(true)
   }, [initialLoaded, form, fieldKey])
 
-  function toHTML(b: Array<{ type: 'text'|'image'|'heading'|'step'; text?: string; url?: string; caption?: string; title?: string; contents?: Array<{ type:'text'|'image'; text?: string; url?: string; caption?: string }> }>): string {
+  function toHTML(b: GuideBlock[]): string {
     const parts: string[] = []
     let inSteps = false
     b.forEach(x => {
@@ -153,14 +155,14 @@ function RichContentEditor({ form, fieldKey }: { form: any; fieldKey: string }) 
     return parts.join('\n')
   }
 
-  function syncForm(b = blocks) { try { form.setFieldsValue({ [fieldKey]: toHTML(b) }) } catch {} }
+  function syncForm(b: GuideBlock[] = blocks) { try { form.setFieldsValue({ [fieldKey]: toHTML(b) }) } catch {} }
 
-  function addText() { const nb = [...blocks, { type: 'text', text: '' }]; setBlocks(nb); syncForm(nb) }
-  function addHeading() { const nb = [...blocks, { type: 'heading', text: '' }]; setBlocks(nb); syncForm(nb) }
-  function addStep() { const nb = [...blocks, { type: 'step', title: '', contents: [] }]; setBlocks(nb); syncForm(nb) }
-  function addImage(url: string) { const nb = [...blocks, { type: 'image', url }]; setBlocks(nb); syncForm(nb) }
-  function addStepText(idx: number) { const nb = blocks.slice(); const c = Array.isArray(nb[idx].contents) ? nb[idx].contents : []; c.push({ type:'text', text:'' }); nb[idx].contents = c; setBlocks(nb); syncForm(nb) }
-  function addStepImage(idx: number, url: string) { const nb = blocks.slice(); const c = Array.isArray(nb[idx].contents) ? nb[idx].contents : []; c.push({ type:'image', url }); nb[idx].contents = c; setBlocks(nb); syncForm(nb) }
+  function addText() { const nb = [...blocks, { type: 'text' as const, text: '' }]; setBlocks(nb); syncForm(nb) }
+  function addHeading() { const nb = [...blocks, { type: 'heading' as const, text: '' }]; setBlocks(nb); syncForm(nb) }
+  function addStep() { const nb = [...blocks, { type: 'step' as const, title: '', contents: [] as GuideStepItem[] }]; setBlocks(nb); syncForm(nb) }
+  function addImage(url: string) { const nb = [...blocks, { type: 'image' as const, url }]; setBlocks(nb); syncForm(nb) }
+  function addStepText(idx: number) { const nb = blocks.slice(); const c = Array.isArray(nb[idx].contents) ? nb[idx].contents : []; c.push({ type:'text' as const, text:'' }); nb[idx].contents = c; setBlocks(nb); syncForm(nb) }
+  function addStepImage(idx: number, url: string) { const nb = blocks.slice(); const c = Array.isArray(nb[idx].contents) ? nb[idx].contents : []; c.push({ type:'image' as const, url }); nb[idx].contents = c; setBlocks(nb); syncForm(nb) }
 
   async function uploadFile(file: File, stepIndex?: number) {
     const fd = new FormData()
