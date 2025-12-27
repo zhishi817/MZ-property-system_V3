@@ -93,6 +93,17 @@ export type FinanceTransaction = {
   category_detail?: string
 }
 
+export type ExpenseInvoice = {
+  id: string
+  expense_id: string
+  url: string
+  file_name?: string
+  mime_type?: string
+  file_size?: number
+  created_at?: string
+  created_by?: string
+}
+
 export type Payout = {
   id: string
   landlord_id: string
@@ -168,6 +179,7 @@ export const db = {
   financeTransactions: [] as FinanceTransaction[],
   payouts: [] as Payout[],
   companyPayouts: [] as CompanyPayout[],
+  expenseInvoices: [] as ExpenseInvoice[],
   orderInternalDeductions: [] as OrderInternalDeduction[],
   users: [] as { id: string; email: string; username?: string; role: string; password_hash?: string }[],
   roles: [] as { id: string; name: string }[],

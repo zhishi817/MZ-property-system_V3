@@ -2,12 +2,14 @@
 import dayjs from 'dayjs'
 import { monthSegments, toDayStr, parseDateOnly } from '../lib/orders'
 import { Table } from 'antd'
-import { forwardRef } from 'react'
+import { forwardRef, useEffect, useState } from 'react'
+import { authHeaders } from '../lib/api'
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4001'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; invoice_url?: string; note?: string }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
+type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
 
 export default forwardRef<HTMLDivElement, {
   month: string
@@ -22,6 +24,21 @@ export default forwardRef<HTMLDivElement, {
   const relatedOrders = monthSegments(orders.filter(o => (!propertyId || o.property_id === propertyId)), start)
   const simpleMode = false
   const expensesInMonth = txs.filter(t => t.kind === 'expense' && (!propertyId || t.property_id === propertyId) && dayjs(toDayStr(t.occurred_at)).isSame(start, 'month'))
+  const [invoiceMap, setInvoiceMap] = useState<Record<string, ExpenseInvoice[]>>({})
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!propertyId) { setInvoiceMap({}); return }
+        const from = start.format('YYYY-MM-DD')
+        const to = endNext.subtract(1,'day').format('YYYY-MM-DD')
+        const res = await fetch(`${API_BASE}/finance/expense-invoices/search?property_id=${encodeURIComponent(propertyId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { headers: authHeaders() })
+        const rows: ExpenseInvoice[] = res.ok ? (await res.json()) : []
+        const map: Record<string, ExpenseInvoice[]> = {}
+        rows.forEach((r: any) => { const k = String(r.expense_id); (map[k] = map[k] || []).push(r) })
+        setInvoiceMap(map)
+      } catch { setInvoiceMap({}) }
+    })()
+  }, [propertyId, month])
   const orderIncomeShare = relatedOrders.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
   const rentIncome = orderIncomeShare
   const otherIncomeTx = txs.filter(t => t.kind === 'income' && (!propertyId || t.property_id === propertyId) && dayjs(toDayStr(t.occurred_at)).isSame(start, 'month'))
@@ -248,17 +265,26 @@ export default forwardRef<HTMLDivElement, {
               <span>-${fmt(Number(e.amount||0))}</span>
             </div>
                 <div style={{ fontSize:12 }}>{dayjs(toDayStr(e.occurred_at)).format('DD/MM/YYYY')}</div>
-            {isImg(e.invoice_url) ? (
-              <img src={resolveUrl(e.invoice_url)} style={{ width:'100%', marginTop:6 }} alt="invoice" />
-            ) : isPdf(e.invoice_url) ? (
-              <object data={resolveUrl(e.invoice_url)} type="application/pdf" style={{ width:'100%', height: 600, marginTop:6 }}>
-                <a href={resolveUrl(e.invoice_url)} target="_blank" rel="noreferrer">查看发票</a>
-              </object>
-            ) : e.invoice_url ? (
-              <a href={resolveUrl(e.invoice_url)} target="_blank" rel="noreferrer" style={{ display:'inline-block', marginTop:6 }}>查看发票</a>
-            ) : (
-              <div style={{ fontSize:12, color:'#888', marginTop:6 }}>未上传发票</div>
-            )}
+            {(() => {
+              const invs = invoiceMap[e.id] || []
+              if (!invs.length) return (<div style={{ fontSize:12, color:'#888', marginTop:6 }}>未上传发票</div>)
+              return (
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap: 8, marginTop:6 }}>
+                  {invs.map((iv) => {
+                    const u = resolveUrl(iv.url)
+                    return isImg(iv.url) ? (
+                      <img key={iv.id} src={u} style={{ width:'100%' }} alt="invoice" />
+                    ) : isPdf(iv.url) ? (
+                      <object key={iv.id} data={u} type="application/pdf" style={{ width:'100%', height: 300 }}>
+                        <a href={u} target="_blank" rel="noreferrer">查看发票</a>
+                      </object>
+                    ) : (
+                      <a key={iv.id} href={u} target="_blank" rel="noreferrer">查看发票</a>
+                    )
+                  })}
+                </div>
+              )
+            })()}
           </div>
         ))}
       </div>

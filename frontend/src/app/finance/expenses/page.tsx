@@ -7,7 +7,8 @@ import { API_BASE, getJSON, authHeaders, apiList, apiCreate, apiUpdate, apiDelet
 import { sortProperties } from '../../../lib/properties'
 import { hasPerm } from '../../../lib/auth'
 
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; invoice_url?: string; occurred_at: string; note?: string }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; occurred_at: string; note?: string }
+type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
 
 export default function ExpensesPage() {
   const [form] = Form.useForm()
@@ -19,6 +20,8 @@ export default function ExpensesPage() {
   const [editing, setEditing] = useState<Tx | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [invoiceOpen, setInvoiceOpen] = useState<{ expenseId: string } | null>(null)
+  const [invoices, setInvoices] = useState<ExpenseInvoice[]>([])
   const [codeQuery, setCodeQuery] = useState('')
   const [catFilter, setCatFilter] = useState<string | undefined>(undefined)
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
@@ -29,7 +32,7 @@ export default function ExpensesPage() {
     const resource = 'property_expenses'
     if (canViewList) {
       const rows: any[] = await apiList<any[]>(resource)
-      const mapped: Tx[] = (rows || []).map((r: any) => ({ id: r.id, kind: 'expense', amount: Number(r.amount || 0), currency: r.currency || 'AUD', category: r.category, category_detail: r.category_detail, property_id: r.property_id || undefined, property_code: r.property_code || undefined, invoice_url: r.invoice_url, occurred_at: r.occurred_at, note: r.note }))
+      const mapped: Tx[] = (rows || []).map((r: any) => ({ id: r.id, kind: 'expense', amount: Number(r.amount || 0), currency: r.currency || 'AUD', category: r.category, category_detail: r.category_detail, property_id: r.property_id || undefined, property_code: r.property_code || undefined, occurred_at: r.occurred_at, note: r.note }))
       setList(mapped)
     } else {
       setList([])
@@ -40,14 +43,12 @@ export default function ExpensesPage() {
     if (saving) return
     setSaving(true)
     const v = await form.validateFields()
-    const invoiceUrl = form.getFieldValue('invoice_url')
     const payload = {
       kind: 'expense',
       amount: Number(v.amount || 0),
       currency: v.currency || 'AUD',
       category: v.category,
       property_id: v.property_id,
-      invoice_url: invoiceUrl,
       note: v.note,
       category_detail: v.category === 'other' ? (v.other_detail || '') : undefined,
       occurred_at: dayjs(v.occurred_at).format('YYYY-MM-DD')
@@ -60,11 +61,22 @@ export default function ExpensesPage() {
       message.error(e?.message || '提交失败')
     } finally { setSaving(false) }
   }
-  async function uploadFile(file: any) {
+  async function openInvoices(expenseId: string) {
+    try {
+      const rows = await getJSON<ExpenseInvoice[]>(`/finance/expense-invoices/${expenseId}`)
+      setInvoices(Array.isArray(rows) ? rows : [])
+      setInvoiceOpen({ expenseId })
+    } catch { setInvoices([]); setInvoiceOpen({ expenseId }) }
+  }
+  async function uploadExpenseInvoice(expenseId: string, file: any) {
     const fd = new FormData(); fd.append('file', file)
-    const res = await fetch(`${API_BASE}/finance/invoices`, { method: 'POST', headers: { ...authHeaders() }, body: fd })
-    if (res.ok) { const j = await res.json(); form.setFieldsValue({ invoice_url: j.url }); message.success('上传成功') } else { message.error('上传失败') }
+    const res = await fetch(`${API_BASE}/finance/expense-invoices/${expenseId}/upload`, { method: 'POST', headers: { ...authHeaders() }, body: fd })
+    if (res.ok) { message.success('上传成功'); const rows = await getJSON<ExpenseInvoice[]>(`/finance/expense-invoices/${expenseId}`); setInvoices(Array.isArray(rows) ? rows : []) } else { message.error('上传失败') }
     return false
+  }
+  async function removeExpenseInvoice(id: string, expenseId: string) {
+    const res = await fetch(`${API_BASE}/finance/expense-invoices/${id}`, { method: 'DELETE', headers: { ...authHeaders() } })
+    if (res.ok) { message.success('已删除'); const rows = await getJSON<ExpenseInvoice[]>(`/finance/expense-invoices/${expenseId}`); setInvoices(Array.isArray(rows) ? rows : []) } else { message.error('删除失败') }
   }
   const CATS = [
     { value: 'electricity', label: '电费' },
@@ -78,6 +90,7 @@ export default function ExpensesPage() {
     { value: 'other', label: '其他' }
   ]
   const catLabel = (v?: string) => (CATS.find(c => c.value === v)?.label || v || '-')
+  const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const columns = [
     { title: '日期', dataIndex: 'occurred_at', render: (v: string) => dayjs(v).format('DD/MM/YYYY') },
     { title: '房号', dataIndex: 'property_code', render: (v: string, r: any) => (v || (()=>{ const p = properties.find(x => x.id === r.property_id); return p?.code || r.property_id || '-' })()) },
@@ -85,19 +98,17 @@ export default function ExpensesPage() {
       if (!r?.category) return '-'
       return r.category === 'other' ? `其他: ${r.category_detail || ''}` : catLabel(r.category)
     } },
-    { title: '金额', dataIndex: 'amount' },
-    { title: '币种', dataIndex: 'currency' },
-    { title: '发票', dataIndex: 'invoice_url', render: (v: string) => {
-      const url = v && /^https?:\/\//.test(v) ? v : (v ? `${API_BASE}${v}` : '')
-      return url ? <Button type="link" onClick={() => { setPreviewUrl(url); setPreviewOpen(true) }}>查看</Button> : '-'
-    } },
+    { title: '金额', dataIndex: 'amount', render: (v: number) => `$${fmt(Number(v || 0))}` },
+    { title: '发票', key: 'invoices', render: (_: any, r: Tx) => (
+      <Button type="link" onClick={() => openInvoices(r.id)}>管理发票</Button>
+    ) },
     { title: '备注', dataIndex: 'note' },
     { title: '操作', render: (_: any, r: Tx) => (hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) ? (
       <Space>
         <Button onClick={() => { setEditing(r); setOpen(true); form.setFieldsValue({
           occurred_at: dayjs(r.occurred_at), property_id: r.property_id, category: r.category,
           other_detail: r.category === 'other' ? r.category_detail : undefined,
-          amount: r.amount, currency: r.currency, note: r.note, invoice_url: r.invoice_url,
+          amount: r.amount, currency: r.currency, note: r.note,
         }) }}>编辑</Button>
         {hasPerm('property_expenses.delete') && (
         <Button danger onClick={() => {
@@ -193,18 +204,34 @@ export default function ExpensesPage() {
           <Form.Item name="note" label="备注">
             <Input />
           </Form.Item>
-          <Form.Item label="发票">
-            <Upload beforeUpload={uploadFile} maxCount={1} accept=".pdf,.jpg,.jpeg,.png">
+          
+        </Form>
+      </Modal>
+      <Modal open={!!invoiceOpen} onCancel={() => { setInvoiceOpen(null); setInvoices([]) }} footer={null} width={900} title="发票管理">
+        {invoiceOpen ? (
+          <>
+            <Upload beforeUpload={(file) => uploadExpenseInvoice(invoiceOpen.expenseId, file)} multiple accept=".pdf,.jpg,.jpeg,.png" showUploadList={false} fileList={[]}
+            key={invoiceOpen.expenseId}>
               <Button icon={<UploadOutlined />}>上传发票</Button>
             </Upload>
-            {form.getFieldValue('invoice_url') ? (
-              <Button type="link" style={{ marginLeft: 8 }} onClick={() => { const v = form.getFieldValue('invoice_url'); const url = v && /^https?:\/\//.test(v) ? v : (v ? `${API_BASE}${v}` : ''); if (url) { setPreviewUrl(url); setPreviewOpen(true) } }}>已上传，查看</Button>
-            ) : null}
-          </Form.Item>
-          <Form.Item name="invoice_url" hidden>
-            <Input />
-          </Form.Item>
-        </Form>
+            <Table
+              rowKey={(r: any) => r.id}
+              columns={[
+                { title: '文件名', dataIndex: 'file_name' },
+                { title: '预览', render: (_: any, rec: ExpenseInvoice) => {
+                  const u = rec.url && /^https?:\/\//.test(rec.url) ? rec.url : (rec.url ? `${API_BASE}${rec.url}` : '')
+                  return u ? <Button type="link" onClick={() => { setPreviewUrl(u); setPreviewOpen(true) }}>查看</Button> : '-'
+                } },
+                { title: '操作', render: (_: any, rec: ExpenseInvoice) => (
+                  <Button danger onClick={() => removeExpenseInvoice(rec.id, invoiceOpen.expenseId)}>删除</Button>
+                ) }
+              ] as any}
+              dataSource={invoices}
+              pagination={false}
+              style={{ marginTop: 12 }}
+            />
+          </>
+        ) : null}
       </Modal>
       <Modal open={previewOpen} onCancel={() => setPreviewOpen(false)} footer={null} width={900} title="发票预览">
         {previewUrl ? (

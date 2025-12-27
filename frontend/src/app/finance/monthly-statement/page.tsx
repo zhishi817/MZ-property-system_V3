@@ -4,10 +4,11 @@ import dayjs from 'dayjs'
 import { monthSegments } from '../../../lib/orders'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { getJSON } from '../../../lib/api'
+import { getJSON, API_BASE } from '../../../lib/api'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; invoice_url?: string; note?: string }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; note?: string }
+type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 
 export default function MonthlyStatementPage() {
@@ -33,6 +34,20 @@ export default function MonthlyStatementPage() {
     if (!start || !end) return [] as Tx[]
     return txs.filter(t => t.kind === 'expense' && (!propertyId || t.property_id === propertyId) && dayjs(t.occurred_at).isAfter(start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(end.add(1,'day')))
   }, [txs, propertyId, start, end])
+  const [invoiceMap, setInvoiceMap] = useState<Record<string, ExpenseInvoice[]>>({})
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!propertyId || !start || !end) { setInvoiceMap({}); return }
+        const from = start.format('YYYY-MM-DD')
+        const to = end.format('YYYY-MM-DD')
+        const rows = await getJSON<ExpenseInvoice[]>(`/finance/expense-invoices/search?property_id=${encodeURIComponent(propertyId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+        const map: Record<string, ExpenseInvoice[]> = {}
+        rows.forEach((r: any) => { const k = String(r.expense_id); (map[k] = map[k] || []).push(r) })
+        setInvoiceMap(map)
+      } catch { setInvoiceMap({}) }
+    })()
+  }, [propertyId, start, end])
   const totalIncome = useMemo(() => ordersInMonth.reduce((s: number, x: any) => s + Number((x as any).net_income || 0), 0), [ordersInMonth])
   const occupiedNights = useMemo(() => ordersInMonth.reduce((s: number, x: any) => s + Number(x.nights || 0), 0), [ordersInMonth])
   const daysInMonth = end && start ? end.diff(start, 'day') + 1 : 30
@@ -129,13 +144,22 @@ export default function MonthlyStatementPage() {
                 <span>-${fmt(Number(e.amount||0))}</span>
               </div>
               <div style={{ fontSize:12 }}>{dayjs(e.occurred_at).format('DD/MM/YYYY')}</div>
-              {isImg(e.invoice_url) ? (
-                <img src={e.invoice_url} style={{ width:'100%', marginTop:6 }} alt="invoice" />
-              ) : e.invoice_url ? (
-                <a href={e.invoice_url} target="_blank" rel="noreferrer" style={{ display:'inline-block', marginTop:6 }}>查看发票</a>
-              ) : (
-                <div style={{ fontSize:12, color:'#888', marginTop:6 }}>未上传发票</div>
-              )}
+              {(() => {
+                const invs = invoiceMap[e.id] || []
+                if (!invs.length) return (<div style={{ fontSize:12, color:'#888', marginTop:6 }}>未上传发票</div>)
+                return (
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap: 8, marginTop:6 }}>
+                    {invs.map((iv) => {
+                      const u = /^https?:\/\//.test(iv.url) ? iv.url : `${API_BASE}${iv.url}`
+                      return isImg(iv.url) ? (
+                        <img key={iv.id} src={u} style={{ width:'100%' }} alt="invoice" />
+                      ) : (
+                        <a key={iv.id} href={u} target="_blank" rel="noreferrer">查看发票</a>
+                      )
+                    })}
+                  </div>
+                )
+              })()}
             </div>
           ))}
         </div>

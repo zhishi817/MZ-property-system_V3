@@ -1,6 +1,7 @@
 import dotenv from 'dotenv'
 import path from 'path'
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local'), override: true })
+dotenv.config({ path: path.resolve(__dirname, '../.env.local'), override: true })
 dotenv.config()
 import express from 'express'
 import cors from 'cors'
@@ -18,6 +19,7 @@ import { router as auditsRouter } from './modules/audits'
 import { router as rbacRouter } from './modules/rbac'
 import { router as versionRouter } from './modules/version'
 import maintenanceRouter from './modules/maintenance'
+import { router as jobsRouter } from './modules/jobs'
 import crudRouter from './modules/crud'
 import recurringRouter from './modules/recurring'
 import { auth } from './auth'
@@ -156,6 +158,7 @@ app.use('/audits', auditsRouter)
 app.use('/rbac', rbacRouter)
 app.use('/version', versionRouter)
 app.use('/maintenance', maintenanceRouter)
+app.use('/jobs', jobsRouter)
 app.use('/public', publicAdminRouter)
 
 const port = process.env.PORT ? Number(process.env.PORT) : 4001

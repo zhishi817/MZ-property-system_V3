@@ -92,6 +92,14 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE INDEX IF NOT EXISTS idx_orders_property ON orders(property_id);
 CREATE INDEX IF NOT EXISTS idx_orders_checkout ON orders(checkout);
 
+-- Email sync state for IMAP incremental/backfill
+CREATE TABLE IF NOT EXISTS email_sync_state (
+  account text PRIMARY KEY,
+  last_uid bigint DEFAULT 0,
+  last_checked_at timestamptz,
+  last_backfill_at timestamptz
+);
+
 -- Cleaning tasks table
 CREATE TABLE IF NOT EXISTS cleaning_tasks (
   id text PRIMARY KEY,

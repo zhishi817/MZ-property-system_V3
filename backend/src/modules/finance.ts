@@ -4,12 +4,14 @@ import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
 import { hasR2, r2Upload } from '../r2'
+import fs from 'fs'
 import { z } from 'zod'
 import { requirePerm, requireAnyPerm } from '../auth'
 import { PDFDocument } from 'pdf-lib'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
+const memUpload = multer({ storage: multer.memoryStorage() })
 
 router.get('/', async (_req, res) => {
   try {
@@ -55,6 +57,168 @@ router.post('/invoices', requireAnyPerm(['finance.tx.write','property_expenses.w
     return res.status(201).json({ url })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'upload failed' })
+  }
+})
+
+// Expense-specific invoice resource
+router.get('/expense-invoices/:expenseId', requireAnyPerm(['property_expenses.view','finance.tx.write','property_expenses.write']), async (req, res) => {
+  const { expenseId } = req.params
+  try {
+    if (hasPg) {
+      try {
+        const rows = await pgSelect('expense_invoices', '*', { expense_id: expenseId })
+        return res.json(Array.isArray(rows) ? rows : [])
+      } catch (e: any) {
+        const msg = String(e?.message || '')
+        const { pgPool } = require('../dbAdapter')
+        if (pgPool && /relation\s+"?expense_invoices"?\s+does\s+not\s+exist/i.test(msg)) {
+          await pgPool.query(`CREATE TABLE IF NOT EXISTS expense_invoices (
+            id text PRIMARY KEY,
+            expense_id text REFERENCES property_expenses(id) ON DELETE CASCADE,
+            url text NOT NULL,
+            file_name text,
+            mime_type text,
+            file_size integer,
+            created_at timestamptz DEFAULT now(),
+            created_by text
+          );`)
+          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_expense_invoices_expense ON expense_invoices(expense_id);')
+          const rows2 = await pgSelect('expense_invoices', '*', { expense_id: expenseId })
+          return res.json(Array.isArray(rows2) ? rows2 : [])
+        }
+        throw e
+      }
+    }
+    const rows = db.expenseInvoices.filter((x: any) => String(x.expense_id) === String(expenseId))
+    return res.json(rows)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'list failed' })
+  }
+})
+
+router.post('/expense-invoices/:expenseId/upload', requireAnyPerm(['property_expenses.write','finance.tx.write']), memUpload.single('file'), async (req, res) => {
+  const { expenseId } = req.params
+  if (!req.file) return res.status(400).json({ message: 'missing file' })
+  try {
+    const user = (req as any).user || {}
+    const { v4: uuid } = require('uuid')
+    const ext = path.extname(req.file.originalname) || ''
+    let url = ''
+    if (hasR2 && (req.file as any).buffer) {
+      const key = `expenses/${expenseId}/${uuid()}${ext}`
+      url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    } else {
+      const dir = path.join(process.cwd(), 'uploads', 'expenses', expenseId)
+      await fs.promises.mkdir(dir, { recursive: true })
+      const name = `${uuid()}${ext}`
+      const full = path.join(dir, name)
+      await fs.promises.writeFile(full, (req.file as any).buffer)
+      url = `/uploads/expenses/${expenseId}/${name}`
+    }
+    if (hasPg) {
+      try {
+        const row = await pgInsert('expense_invoices', {
+          id: uuid(),
+          expense_id: expenseId,
+          url,
+          file_name: req.file.originalname,
+          mime_type: req.file.mimetype,
+          file_size: req.file.size,
+          created_by: user?.sub || user?.username || null
+        } as any)
+        return res.status(201).json(row || { url })
+      } catch (e: any) {
+        const msg = String(e?.message || '')
+        const { pgPool } = require('../dbAdapter')
+        if (pgPool && /relation\s+"?expense_invoices"?\s+does\s+not\s+exist/i.test(msg)) {
+          await pgPool.query(`CREATE TABLE IF NOT EXISTS expense_invoices (
+            id text PRIMARY KEY,
+            expense_id text REFERENCES property_expenses(id) ON DELETE CASCADE,
+            url text NOT NULL,
+            file_name text,
+            mime_type text,
+            file_size integer,
+            created_at timestamptz DEFAULT now(),
+            created_by text
+          );`)
+          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_expense_invoices_expense ON expense_invoices(expense_id);')
+          const row2 = await pgInsert('expense_invoices', {
+            id: uuid(), expense_id: expenseId, url,
+            file_name: req.file.originalname, mime_type: req.file.mimetype,
+            file_size: req.file.size, created_by: user?.sub || user?.username || null
+          } as any)
+          return res.status(201).json(row2 || { url })
+        }
+        throw e
+      }
+    }
+    const id = uuid()
+    db.expenseInvoices.push({ id, expense_id: expenseId, url, file_name: req.file.originalname, mime_type: req.file.mimetype, file_size: req.file.size, created_at: new Date().toISOString(), created_by: user?.sub || user?.username || undefined } as any)
+    return res.status(201).json({ id, url })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'upload failed' })
+  }
+})
+
+router.delete('/expense-invoices/:id', requireAnyPerm(['property_expenses.write','finance.tx.write']), async (req, res) => {
+  const { id } = req.params
+  try {
+    if (hasPg) {
+      try { await pgDelete('expense_invoices', id); return res.json({ ok: true }) } catch (e: any) {
+        const msg = String(e?.message || '')
+        const { pgPool } = require('../dbAdapter')
+        if (pgPool && /relation\s+"?expense_invoices"?\s+does\s+not\s+exist/i.test(msg)) {
+          await pgPool.query(`CREATE TABLE IF NOT EXISTS expense_invoices (
+            id text PRIMARY KEY,
+            expense_id text REFERENCES property_expenses(id) ON DELETE CASCADE,
+            url text NOT NULL,
+            file_name text,
+            mime_type text,
+            file_size integer,
+            created_at timestamptz DEFAULT now(),
+            created_by text
+          );`)
+          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_expense_invoices_expense ON expense_invoices(expense_id);')
+          await pgDelete('expense_invoices', id)
+          return res.json({ ok: true })
+        }
+        throw e
+      }
+    }
+    const idx = db.expenseInvoices.findIndex((x: any) => x.id === id)
+    if (idx !== -1) db.expenseInvoices.splice(idx, 1)
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'delete failed' })
+  }
+})
+
+// Query invoices by property and occurred_at range via expense join
+router.get('/expense-invoices/search', requireAnyPerm(['property_expenses.view','finance.tx.write','property_expenses.write']), async (req, res) => {
+  const { property_id, from, to } = (req.query || {}) as any
+  if (!property_id || !from || !to) return res.status(400).json({ message: 'missing property_id/from/to' })
+  try {
+    if (hasPg) {
+      const { pgPool } = require('../dbAdapter')
+      if (pgPool) {
+        const sql = `SELECT i.* FROM expense_invoices i JOIN property_expenses e ON i.expense_id = e.id WHERE e.property_id = $1 AND e.occurred_at >= $2 AND e.occurred_at <= $3 ORDER BY i.created_at ASC`
+        const r = await pgPool.query(sql, [property_id, from, to])
+        return res.json(r.rows || [])
+      }
+    }
+    const rows = db.expenseInvoices.filter((ii: any) => {
+      const exp = (db as any).property_expenses?.find?.((e: any) => String(e.id) === String(ii.expense_id))
+      if (!exp) return false
+      const pidOk = String(exp.property_id || '') === String(property_id)
+      const dt = exp.occurred_at ? new Date(exp.occurred_at) : null
+      const fromD = new Date(String(from))
+      const toD = new Date(String(to))
+      const inRange = dt ? (dt >= fromD && dt <= toD) : false
+      return pidOk && inRange
+    })
+    return res.json(rows)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'search failed' })
   }
 })
 

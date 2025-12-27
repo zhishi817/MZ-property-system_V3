@@ -48,6 +48,11 @@ export default function OrdersPage() {
   const [detailDedNote, setDetailDedNote] = useState<string>('')
   const [detailEditing, setDetailEditing] = useState<any | null>(null)
   const [detailLoading, setDetailLoading] = useState<boolean>(false)
+  const [syncing, setSyncing] = useState<boolean>(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewSamples, setPreviewSamples] = useState<any[]>([])
+  const [previewStats, setPreviewStats] = useState<any | null>(null)
   function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
   function getPropertyCodeLabel(o: Order) {
     const p = getPropertyById(o.property_id)
@@ -133,6 +138,57 @@ export default function OrdersPage() {
   async function load() {
     const res = await getJSON<Order[]>('/orders')
     setData(res)
+  }
+  async function refreshAirbnbOrders() {
+    if (syncing) return
+    setSyncing(true)
+    try {
+      const res = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ mode: 'incremental', max_messages: 50 }) })
+      if (res.status === 409) { message.warning('正在同步中，请稍后再试'); return }
+      const j = await res.json().catch(() => null)
+      if (res.ok) {
+        const s = j || {}
+        message.success(`同步完成：扫描 ${Number(s.scanned||0)}，命中 ${Number(s.matched||0)}，新增 ${Number(s.inserted||0)}，重复 ${Number(s.skipped_duplicate||0)}，失败 ${Number(s.failed||0)}`)
+        load()
+      } else {
+        let msg = (j && j.message) ? String(j.message) : `同步失败（HTTP ${res.status}）`
+        if (/pg required/i.test(msg)) msg = '未连接数据库，请配置 DATABASE_URL'
+        if (/missing imap accounts/i.test(msg)) msg = '未配置 AIRBNB_IMAP_USER/AIRBNB_IMAP_PASS'
+        message.error(msg)
+      }
+    } catch {
+      message.error('同步失败')
+    } finally {
+      setSyncing(false)
+    }
+  }
+  async function previewTodayEmails() {
+    if (previewLoading) return
+    setPreviewOpen(true)
+    setPreviewLoading(true)
+    try {
+      const day = dayjs().format('YYYY-MM-DD')
+      const body = { mode: 'backfill', from_date: day, to_date: day, dry_run: true, batch_tag: 'airbnb_email_import_preview', max_messages: 50, preview_limit: 20 }
+      const res = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+      const j = await res.json().catch(() => null)
+      if (res.status === 409) {
+        message.warning('正在同步中，请稍后再试')
+      } else if (res.ok) {
+        setPreviewStats(j || {})
+        const arr = Array.isArray(j?.parsed_results) ? j.parsed_results : (Array.isArray(j?.samples) ? j.samples : [])
+        setPreviewSamples(arr)
+        const s = j || {}
+        message.success(`预览完成：扫描 ${Number(s.scanned||0)}，命中 ${Number(s.matched||0)}，失败 ${Number(s.failed||0)}`)
+      } else {
+        let msg = (j && j.message) ? String(j.message) : `预览失败（HTTP ${res.status}）`
+        if (/imap/i.test(msg)) msg = 'IMAP 连接失败'
+        message.error(msg)
+      }
+    } catch {
+      message.error('预览失败')
+    } finally {
+      setPreviewLoading(false)
+    }
   }
   async function openDetail(record: Order | string) {
     if (typeof record !== 'string') setDetail(record)
@@ -468,7 +524,7 @@ export default function OrdersPage() {
   }
 
   return (
-    <Card title="订单管理" extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}</Space>}>
+    <Card title="订单管理" extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}{hasPerm('order.manage') ? <Button loading={syncing} disabled={syncing} onClick={refreshAirbnbOrders}>手动刷新 Airbnb 订单</Button> : null}{hasPerm('order.manage') ? <Button disabled={previewLoading} onClick={previewTodayEmails}>预览今天邮件</Button> : null}</Space>}>
       <Space style={{ marginBottom: 12 }} wrap>
         <Radio.Group value={view} onChange={(e)=>setView(e.target.value)}>
           <Radio.Button value="list">列表</Radio.Button>
@@ -635,6 +691,32 @@ export default function OrdersPage() {
           }}
         </Form.Item>
       </Form>
+    </Modal>
+    <Modal open={previewOpen} onCancel={() => setPreviewOpen(false)} footer={null} title="Airbnb 邮件预览（今天）" width={1000}>
+      {previewStats ? (
+        <Space style={{ marginBottom: 12 }}>
+          <Tag color="blue">扫描 {Number(previewStats.scanned||0)}</Tag>
+          <Tag color="green">命中 {Number(previewStats.matched||0)}</Tag>
+          <Tag>新增 {Number(previewStats.inserted||0)}</Tag>
+          <Tag>重复 {Number(previewStats.skipped_duplicate||0)}</Tag>
+          <Tag color="red">失败 {Number(previewStats.failed||0)}</Tag>
+        </Space>
+      ) : null}
+      <Table rowKey={(r:any)=> String(r.confirmation_code||'') + String(r.checkin||'')} dataSource={previewSamples} pagination={{ pageSize: 10 }} size="small" scroll={{ x: 'max-content' }} loading={previewLoading}
+        columns={[
+          { title: '确认码', dataIndex: 'confirmation_code' },
+          { title: '客人', dataIndex: 'guest_name' },
+          { title: 'Listing 名称', dataIndex: 'listing_name' },
+          { title: '入住', dataIndex: 'checkin' },
+          { title: '退房', dataIndex: 'checkout' },
+          { title: '天数', dataIndex: 'nights' },
+          { title: 'You earn', dataIndex: 'price' },
+          { title: '清洁费', dataIndex: 'cleaning_fee' },
+          { title: '净收入', dataIndex: 'net_income' },
+          { title: '晚均价', dataIndex: 'avg_nightly_price' },
+          { title: '房号匹配', dataIndex: 'property_match', render: (v:any)=> v ? <Tag color="green">已匹配</Tag> : <Tag color="red">未匹配</Tag> },
+        ] as any}
+      />
     </Modal>
     <Modal open={editOpen} onCancel={() => setEditOpen(false)} onOk={async () => {
         const v = await editForm.validateFields()
