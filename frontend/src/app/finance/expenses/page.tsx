@@ -34,7 +34,12 @@ export default function ExpensesPage() {
     if (canViewList) {
       const rows: any[] = await apiList<any[]>(resource)
       const mapped: Tx[] = (rows || []).map((r: any) => ({ id: r.id, kind: 'expense', amount: Number(r.amount || 0), currency: r.currency || 'AUD', category: r.category, category_detail: r.category_detail, property_id: r.property_id || undefined, property_code: r.property_code || undefined, occurred_at: r.occurred_at, created_at: r.created_at, note: r.note }))
-      setList(mapped)
+      const sorted = mapped.sort((a, b) => {
+        const av = a.created_at ? new Date(a.created_at).getTime() : (a.occurred_at ? new Date(a.occurred_at).getTime() : 0)
+        const bv = b.created_at ? new Date(b.created_at).getTime() : (b.occurred_at ? new Date(b.occurred_at).getTime() : 0)
+        return bv - av
+      })
+      setList(sorted)
     } else {
       setList([])
     }
