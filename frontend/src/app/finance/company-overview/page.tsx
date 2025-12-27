@@ -66,7 +66,6 @@ export default function PropertyRevenuePage() {
           category: mapCat(r.category),
           // 其他支出描述
           ...(r.category_detail ? { category_detail: r.category_detail } : {}),
-          ...(r.invoice_url ? { invoice_url: r.invoice_url } : {}),
           ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
           ...(r.month_key ? { month_key: r.month_key } : {}),
           ...(r.due_date ? { due_date: r.due_date } : {}),
@@ -82,7 +81,6 @@ export default function PropertyRevenuePage() {
           occurred_at: t.occurred_at,
           category: mapCat(t.category),
           ...(t.category_detail ? { category_detail: t.category_detail } : {})
-          ,...(t.invoice_url ? { invoice_url: t.invoice_url } : {})
         }))
         setTxs([...finMapped, ...peMapped])
       } catch { setTxs([]) }
@@ -115,7 +113,6 @@ export default function PropertyRevenuePage() {
           occurred_at: r.occurred_at,
           category: mapCat(r.category),
           ...(r.category_detail ? { category_detail: r.category_detail } : {}),
-          ...(r.invoice_url ? { invoice_url: r.invoice_url } : {}),
           ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
           ...(r.month_key ? { month_key: r.month_key } : {}),
           ...(r.due_date ? { due_date: r.due_date } : {}),
@@ -130,8 +127,7 @@ export default function PropertyRevenuePage() {
           property_id: t.property_id || undefined,
           occurred_at: t.occurred_at,
           category: mapCat(t.category),
-          ...(t.category_detail ? { category_detail: t.category_detail } : {}),
-          ...(t.invoice_url ? { invoice_url: t.invoice_url } : {})
+          ...(t.category_detail ? { category_detail: t.category_detail } : {})
         }))
         setTxs([...finMapped, ...peMapped])
       } catch {}
@@ -373,7 +369,12 @@ export default function PropertyRevenuePage() {
           if (!upRes.ok) throw new Error(`HTTP ${upRes.status}`)
           const upJson = await upRes.json()
           const statementUrl = upJson?.url
-          const invUrls = txs.filter(t => t.kind==='expense' && t.property_id===previewPid && dayjs(t.occurred_at).isAfter(start!.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(end!.add(1,'day'))).map(t => (t as any).invoice_url).filter((u: any) => !!u)
+          const from = start!.format('YYYY-MM-DD')
+          const to = end!.format('YYYY-MM-DD')
+          const invList = await getJSON<any[]>(`/finance/expense-invoices/search?property_id=${encodeURIComponent(previewPid!)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+          const invUrls = (Array.isArray(invList) ? invList : [])
+            .map((r: any) => (r.url && /^https?:\/\//.test(r.url)) ? r.url : (r.url ? `${API_BASE}${r.url}` : ''))
+            .filter((u: any) => !!u)
           try {
             const resp = await fetch(`${API_BASE}/finance/merge-pdf`, { method:'POST', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ statement_pdf_url: statementUrl, invoice_urls: invUrls }) })
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`)

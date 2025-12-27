@@ -23,6 +23,8 @@ exports.db = {
     financeTransactions: [],
     payouts: [],
     companyPayouts: [],
+    expenseInvoices: [],
+    orderInternalDeductions: [],
     users: [],
     roles: [],
     permissions: [],
@@ -122,6 +124,7 @@ if (exports.db.roles.length === 0) {
         { code: 'inventory.move' },
         { code: 'landlord.manage' },
         { code: 'rbac.manage' },
+        { code: 'order.deduction.manage' },
         // menu visibility controls
         { code: 'menu.dashboard' },
         { code: 'menu.landlords' },
@@ -148,13 +151,13 @@ if (exports.db.roles.length === 0) {
     // 管理员：所有权限
     grant(adminId, exports.db.permissions.map(p => p.code));
     // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
-    grant(csId, ['property.write', 'order.view', 'order.write', 'order.manage', 'cleaning.view', 'finance.tx.write', 'menu.dashboard', 'menu.properties', 'menu.finance', 'menu.cleaning', 'menu.cms']);
+    grant(csId, ['property.write', 'order.view', 'order.write', 'order.manage', 'order.deduction.manage', 'cleaning.view', 'finance.tx.write', 'menu.dashboard', 'menu.properties', 'menu.finance', 'menu.cleaning', 'menu.cms']);
     // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
     grant(cleanMgrId, ['cleaning.schedule.manage', 'cleaning.task.assign', 'menu.cleaning', 'menu.dashboard']);
     // 清洁/检查人员：无写权限，仅查看（后端接口默认允许 GET）
     grant(cleanerId, ['menu.cleaning', 'menu.dashboard']);
     // 财务人员：财务结算与交易录入、房东/房源管理
-    grant(financeId, ['finance.payout', 'finance.tx.write', 'landlord.manage', 'property.write', 'menu.finance', 'menu.landlords', 'menu.properties', 'menu.dashboard']);
+    grant(financeId, ['finance.payout', 'finance.tx.write', 'order.deduction.manage', 'landlord.manage', 'property.write', 'menu.finance', 'menu.landlords', 'menu.properties', 'menu.dashboard']);
     // 仓库管理员：仓库与钥匙管理
     grant(inventoryId, ['inventory.move', 'keyset.manage', 'key.flow', 'menu.inventory', 'menu.keys', 'menu.dashboard']);
     // 维修人员：暂无写接口，预留
@@ -166,6 +169,7 @@ const defaultPerms = [
     'keyset.manage', 'key.flow',
     'cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign',
     'finance.payout', 'finance.tx.write',
+    'order.deduction.manage',
     'inventory.move', 'landlord.manage',
     'rbac.manage',
     'menu.dashboard', 'menu.landlords', 'menu.properties', 'menu.keys', 'menu.inventory', 'menu.finance', 'menu.cleaning', 'menu.rbac', 'menu.cms'

@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const dotenv_1 = __importDefault(require("dotenv"));
 const path_1 = __importDefault(require("path"));
 dotenv_1.default.config({ path: path_1.default.resolve(process.cwd(), '.env.local'), override: true });
+dotenv_1.default.config({ path: path_1.default.resolve(__dirname, '../.env.local'), override: true });
 dotenv_1.default.config();
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
@@ -23,9 +24,12 @@ const audits_1 = require("./modules/audits");
 const rbac_1 = require("./modules/rbac");
 const version_1 = require("./modules/version");
 const maintenance_1 = __importDefault(require("./modules/maintenance"));
+const jobs_1 = require("./modules/jobs");
 const crud_1 = __importDefault(require("./modules/crud"));
 const recurring_1 = __importDefault(require("./modules/recurring"));
 const auth_2 = require("./auth");
+const public_1 = __importDefault(require("./modules/public"));
+const public_admin_1 = __importDefault(require("./modules/public_admin"));
 // 环境保险锁（允许缺省采用智能默认，不再抛错）
 let appEnv = process.env.APP_ENV;
 let dbRole = process.env.DATABASE_ROLE;
@@ -145,6 +149,8 @@ app.get('/health/version', (_req, res) => {
     const build = process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown';
     res.json({ build, version: pkg.version || 'unknown', node_env: process.env.NODE_ENV || 'unknown', started_at: new Date().toISOString() });
 });
+// Public endpoints (no auth)
+app.use('/public', public_1.default);
 // Auth middleware comes AFTER health routes
 app.use(auth_2.auth);
 const uploadDir = path_1.default.join(process.cwd(), 'uploads');
@@ -166,6 +172,8 @@ app.use('/audits', audits_1.router);
 app.use('/rbac', rbac_1.router);
 app.use('/version', version_1.router);
 app.use('/maintenance', maintenance_1.default);
+app.use('/jobs', jobs_1.router);
+app.use('/public', public_admin_1.default);
 const port = process.env.PORT ? Number(process.env.PORT) : 4001;
 app.listen(port, () => {
     console.log(`Server listening on port ${port}`);

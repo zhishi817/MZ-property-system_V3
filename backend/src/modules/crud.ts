@@ -323,7 +323,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
         } else {
           let toInsert: any = payload
           if (resource === 'property_expenses') {
-            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status']
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status']
             const cleaned: any = { id: payload.id }
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -332,7 +332,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
             toInsert = cleaned
           } else if (resource === 'company_expenses') {
-            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status']
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status']
             const cleaned: any = { id: payload.id }
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -444,7 +444,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;')
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;')
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;')
-              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status']
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status']
               const cleaned: any = { id: payload.id }
               for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
               if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -598,7 +598,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               const { pgPool } = require('../dbAdapter')
               if (pgPool) {
                 await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
-                const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url']
+                const allow = ['id','occurred_at','amount','currency','category','category_detail','note']
                 const cleaned: any = { id: payload.id }
                 for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
                 if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -760,7 +760,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
     if (hasPg) {
       let toUpdate: any = payload
       if (resource === 'property_expenses') {
-        const allow = ['occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','fixed_expense_id','month_key','due_date','paid_date','status']
+        const allow = ['occurred_at','amount','currency','category','category_detail','note','property_id','fixed_expense_id','month_key','due_date','paid_date','status']
         const cleaned: any = {}
         for (const k of allow) { if (payload[k] !== undefined) cleaned[k] = payload[k] }
         if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -769,7 +769,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
         toUpdate = cleaned
       } else if (resource === 'company_expenses') {
-        const allow = ['occurred_at','amount','currency','category','category_detail','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status']
+        const allow = ['occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status']
         const cleaned: any = {}
         for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
         if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)

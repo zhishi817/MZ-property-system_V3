@@ -51,28 +51,55 @@ exports.router.get('/', async (_req, res) => {
                 const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) };
                 return property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
             });
-            return res.json(labeled);
+            async function enrich(rows) {
+                const ids = rows.map(r => String(r.id));
+                const totals = {};
+                try {
+                    const { pgPool } = require('../dbAdapter');
+                    const sql = 'SELECT order_id, COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id = ANY($1) GROUP BY order_id';
+                    const rs = await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query(sql, [ids]));
+                    const arr = ((rs === null || rs === void 0 ? void 0 : rs.rows) || []);
+                    arr.forEach(r => { totals[String(r.order_id)] = Number(r.total || 0); });
+                }
+                catch (_a) { }
+                return rows.map(r => {
+                    const t = totals[String(r.id)] || 0;
+                    const vn = Number(r.net_income || 0) - t;
+                    return { ...r, internal_deduction_total: Number(t.toFixed(2)), visible_net_income: Number(vn.toFixed(2)) };
+                });
+            }
+            const enriched = await enrich(labeled);
+            return res.json(enriched);
         }
         // Supabase branch removed
-        return res.json(store_1.db.orders.map((o) => {
+        const out = store_1.db.orders.map((o) => {
             const prop = store_1.db.properties.find((p) => String(p.id) === String(o.property_id)) || store_1.db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || store_1.db.properties.find((p) => { const ln = (p === null || p === void 0 ? void 0 : p.listing_names) || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String(o.listing_name || '').toLowerCase()); });
             const property_name = (prop === null || prop === void 0 ? void 0 : prop.address) || undefined;
             const label = (o.property_code || (prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || o.property_id || '');
             const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) };
-            return property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
-        }));
+            const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
+            const t = 0;
+            const vn = Number(row.net_income || 0) - t;
+            return { ...row, internal_deduction_total: 0, visible_net_income: Number(vn.toFixed(2)) };
+        });
+        return res.json(out);
     }
     catch (_b) {
-        return res.json(store_1.db.orders.map((o) => {
+        const out2 = store_1.db.orders.map((o) => {
             const prop = store_1.db.properties.find((p) => String(p.id) === String(o.property_id)) || store_1.db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || store_1.db.properties.find((p) => { const ln = (p === null || p === void 0 ? void 0 : p.listing_names) || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String(o.listing_name || '').toLowerCase()); });
             const property_name = (prop === null || prop === void 0 ? void 0 : prop.address) || undefined;
             const label = (o.property_code || (prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || o.property_id || '');
             const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) };
-            return property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
-        }));
+            const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
+            const t = 0;
+            const vn = Number(row.net_income || 0) - t;
+            return { ...row, internal_deduction_total: 0, visible_net_income: Number(vn.toFixed(2)) };
+        });
+        return res.json(out2);
     }
 });
 exports.router.get('/:id', async (req, res) => {
+    var _a, _b;
     const { id } = req.params;
     const local = store_1.db.orders.find((o) => o.id === id);
     if (local)
@@ -82,12 +109,20 @@ exports.router.get('/:id', async (req, res) => {
             const remote = await (0, dbAdapter_1.pgSelect)('orders', '*', { id });
             const row = Array.isArray(remote) ? remote[0] : null;
             if (row) {
-                return res.json({ ...row, checkin: dayOnly(row.checkin), checkout: dayOnly(row.checkout) });
+                let total = 0;
+                try {
+                    const { pgPool } = require('../dbAdapter');
+                    const rs = await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('SELECT COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id=$1', [id]));
+                    total = Number(((_b = (_a = rs === null || rs === void 0 ? void 0 : rs.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.total) || 0);
+                }
+                catch (_c) { }
+                const vn = Number(row.net_income || 0) - total;
+                return res.json({ ...row, checkin: dayOnly(row.checkin), checkout: dayOnly(row.checkout), internal_deduction_total: Number(total.toFixed(2)), visible_net_income: Number(vn.toFixed(2)) });
             }
         }
         // Supabase branch removed
     }
-    catch (_a) { }
+    catch (_d) { }
     return res.status(404).json({ message: 'order not found' });
 });
 exports.router.get('/:id', (req, res) => {
@@ -95,7 +130,9 @@ exports.router.get('/:id', (req, res) => {
     const order = store_1.db.orders.find((o) => o.id === id);
     if (!order)
         return res.status(404).json({ message: 'order not found' });
-    return res.json({ ...order, checkin: dayOnly(order.checkin), checkout: dayOnly(order.checkout) });
+    const t = 0;
+    const vn = Number(order.net_income || 0) - t;
+    return res.json({ ...order, checkin: dayOnly(order.checkin), checkout: dayOnly(order.checkout), internal_deduction_total: 0, visible_net_income: Number(vn.toFixed(2)) });
 });
 const createOrderSchema = zod_1.z.object({
     source: zod_1.z.string(),
@@ -113,6 +150,8 @@ const createOrderSchema = zod_1.z.object({
     avg_nightly_price: zod_1.z.coerce.number().optional(),
     nights: zod_1.z.coerce.number().optional(),
     currency: zod_1.z.string().optional(),
+    payment_currency: zod_1.z.string().optional(),
+    payment_received: zod_1.z.boolean().optional(),
     status: zod_1.z.string().optional(),
     idempotency_key: zod_1.z.string().optional(),
 });
@@ -227,7 +266,7 @@ async function hasOrderOverlap(propertyId, checkin, checkout, excludeId) {
     return false;
 }
 exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.manage']), async (req, res) => {
-    var _a, _b;
+    var _a, _b, _c;
     const parsed = createOrderSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -238,7 +277,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
         if (ci && co && !(ci < co))
             return res.status(400).json({ message: '入住日期必须早于退房日期' });
     }
-    catch (_c) { }
+    catch (_d) { }
     let propertyId = o.property_id || (o.property_code ? ((_a = store_1.db.properties.find(p => (p.code || '') === o.property_code)) === null || _a === void 0 ? void 0 : _a.id) : undefined);
     // 如果传入的 property_id 不存在于 PG，则尝试用房号 code 在 PG 中查找并替换
     if (dbAdapter_1.hasPg) {
@@ -251,7 +290,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                     propertyId = byCode[0].id;
             }
         }
-        catch (_d) { }
+        catch (_e) { }
     }
     const key = o.idempotency_key || `${propertyId || ''}-${o.checkin || ''}-${o.checkout || ''}`;
     const exists = store_1.db.orders.find((x) => x.idempotency_key === key);
@@ -267,7 +306,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
             const ms = co.getTime() - ci.getTime();
             nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
         }
-        catch (_e) {
+        catch (_f) {
             nights = 0;
         }
     }
@@ -276,6 +315,8 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
     const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0));
     const avg = o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0);
     const newOrder = { id: uuid(), ...o, property_id: propertyId, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key, status: 'confirmed' };
+    newOrder.payment_currency = o.payment_currency || 'AUD';
+    newOrder.payment_received = (_c = o.payment_received) !== null && _c !== void 0 ? _c : false;
     // overlap guard
     const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout);
     if (conflict)
@@ -289,7 +330,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                 return res.status(409).json({ message: '确认码已存在' });
         }
     }
-    catch (_f) { }
+    catch (_g) { }
     if (dbAdapter_1.hasPg) {
         try {
             if (newOrder.property_id) {
@@ -307,19 +348,11 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                         await (0, dbAdapter_1.pgInsert)('properties', payload);
                     }
                 }
-                catch (_g) { }
+                catch (_h) { }
             }
             const insertOrder = { ...newOrder };
             delete insertOrder.property_code;
             const row = await (0, dbAdapter_1.pgInsert)('orders', insertOrder);
-            if (newOrder.checkout) {
-                const date = newOrder.checkout;
-                const hasTask = store_1.db.cleaningTasks.find((t) => t.date === date && t.property_id === newOrder.property_id);
-                if (!hasTask) {
-                    const task = { id: uuid(), property_id: newOrder.property_id, date, status: 'pending' };
-                    store_1.db.cleaningTasks.push(task);
-                }
-            }
             return res.status(201).json(row);
         }
         catch (e) {
@@ -333,14 +366,6 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                     const ins = { ...newOrder };
                     delete ins.property_code;
                     const row = await (0, dbAdapter_1.pgInsert)('orders', ins);
-                    if (newOrder.checkout) {
-                        const date = newOrder.checkout;
-                        const hasTask = store_1.db.cleaningTasks.find((t) => t.date === date && t.property_id === newOrder.property_id);
-                        if (!hasTask) {
-                            const task = { id: uuid(), property_id: newOrder.property_id, date, status: 'pending' };
-                            store_1.db.cleaningTasks.push(task);
-                        }
-                    }
                     return res.status(201).json(row);
                 }
                 catch (e2) {
@@ -355,14 +380,6 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
     // Supabase removed
     // 无远端数据库，使用内存存储
     store_1.db.orders.push(newOrder);
-    if (newOrder.checkout) {
-        const date = newOrder.checkout;
-        const hasTask = store_1.db.cleaningTasks.find((t) => t.date === date && t.property_id === newOrder.property_id);
-        if (!hasTask) {
-            const task = { id: uuid(), property_id: newOrder.property_id, date, status: 'pending' };
-            store_1.db.cleaningTasks.push(task);
-        }
-    }
     return res.status(201).json(newOrder);
 });
 exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req, res) => {
@@ -424,8 +441,10 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
     if (dbAdapter_1.hasPg) {
         try {
             const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
+            const allowExtra = ['payment_currency', 'payment_received'];
+            const allowAll = [...allow, ...allowExtra];
             const payload = {};
-            for (const k of allow) {
+            for (const k of allowAll) {
                 if (updated[k] !== undefined)
                     payload[k] = updated[k];
             }
@@ -443,8 +462,9 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = \"idx_orders_confirmation_code_unique\") THEN BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;'));
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_confirmation_code_unique ON orders(source, confirmation_code) WHERE confirmation_code IS NOT NULL'));
                     const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
+                    const allowExtra2 = ['payment_currency', 'payment_received'];
                     const payload2 = {};
-                    for (const k of allow) {
+                    for (const k of [...allow, ...allowExtra2]) {
                         if (updated[k] !== undefined)
                             payload2[k] = updated[k];
                     }
@@ -544,20 +564,7 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('order.write'), async (req
     }
     return res.json({ ok: true, id: removed.id });
 });
-exports.router.post('/:id/generate-cleaning', (0, auth_1.requirePerm)('order.write'), (req, res) => {
-    const { id } = req.params;
-    const order = store_1.db.orders.find((o) => o.id === id);
-    if (!order)
-        return res.status(404).json({ message: 'order not found' });
-    const { v4: uuid } = require('uuid');
-    const date = order.checkout || new Date().toISOString().slice(0, 10);
-    const exists = store_1.db.cleaningTasks.find((t) => t.date === date && t.property_id === order.property_id);
-    if (exists)
-        return res.status(200).json(exists);
-    const task = { id: uuid(), property_id: order.property_id, date, status: 'pending' };
-    store_1.db.cleaningTasks.push(task);
-    res.status(201).json(task);
-});
+// 清洁任务模块已移除
 exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, express_1.text)({ type: ['text/csv', 'text/plain'] }), async (req, res) => {
     var _a, _b;
     function toNumber(v) {
@@ -1362,4 +1369,314 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
         catch (_f) { }
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'import failed', buildVersion: (process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown') });
     }
+});
+const deductionSchema = zod_1.z.object({ amount: zod_1.z.coerce.number().positive(), currency: zod_1.z.string().optional(), item_desc: zod_1.z.string().min(1), note: zod_1.z.string().optional() });
+function monthKeyOfDate(s) {
+    const d = s ? new Date(s) : null;
+    if (!d || isNaN(d.getTime()))
+        return '';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    return `${y}-${m}`;
+}
+async function isOrderMonthLocked(order) {
+    var _a;
+    try {
+        if (!dbAdapter_1.hasPg)
+            return false;
+        const co = String((order === null || order === void 0 ? void 0 : order.checkout) || '').slice(0, 10);
+        if (!co)
+            return false;
+        const mm = monthKeyOfDate(co);
+        let landlordId;
+        if (order === null || order === void 0 ? void 0 : order.property_id) {
+            const ps = await (0, dbAdapter_1.pgSelect)('properties', 'id,landlord_id', { id: order.property_id }) || [];
+            landlordId = (_a = ps[0]) === null || _a === void 0 ? void 0 : _a.landlord_id;
+        }
+        const rows = await (0, dbAdapter_1.pgSelect)('payouts') || [];
+        const locked = rows.some((p) => {
+            const pf = String(p.period_from || '').slice(0, 10);
+            const pt = String(p.period_to || '').slice(0, 10);
+            if (!pf || !pt)
+                return false;
+            const kmf = monthKeyOfDate(pf);
+            const kmt = monthKeyOfDate(pt);
+            const sameMonth = kmf === mm && kmt === mm;
+            const landlordMatch = landlordId ? String(p.landlord_id || '') === String(landlordId) : true;
+            return sameMonth && landlordMatch && String(p.status || '').toLowerCase() !== 'pending';
+        });
+        return locked;
+    }
+    catch (_b) {
+        return false;
+    }
+}
+exports.router.get('/:id/internal-deductions', (0, auth_1.requirePerm)('order.deduction.manage'), async (req, res) => {
+    const { id } = req.params;
+    try {
+        if (dbAdapter_1.hasPg) {
+            const rows = await (0, dbAdapter_1.pgSelect)('order_internal_deductions', '*', { order_id: id }) || [];
+            return res.json(rows);
+        }
+        const rows = store_1.db.orderInternalDeductions.filter((d) => d.order_id === id);
+        return res.json(rows);
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'query failed' });
+    }
+});
+exports.router.post('/:id/internal-deductions', (0, auth_1.requirePerm)('order.deduction.manage'), async (req, res) => {
+    var _a, _b, _c, _d, _e;
+    const { id } = req.params;
+    const parsed = deductionSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json(parsed.error.format());
+    const { v4: uuid } = require('uuid');
+    let order = store_1.db.orders.find(o => o.id === id);
+    if (!order && dbAdapter_1.hasPg) {
+        try {
+            const rows = await (0, dbAdapter_1.pgSelect)('orders', '*', { id }) || [];
+            order = rows[0];
+        }
+        catch (_f) { }
+    }
+    if (!order)
+        return res.status(404).json({ message: 'order not found' });
+    const role = String(((_a = req.user) === null || _a === void 0 ? void 0 : _a.role) || '');
+    const singleLimit = 100;
+    const totalLimit = 150;
+    const amount = Number(parsed.data.amount);
+    if (role !== 'admin' && role !== 'finance_staff') {
+        if (amount > singleLimit)
+            return res.status(403).json({ message: 'amount exceeds single limit' });
+    }
+    let existingTotal = 0;
+    try {
+        if (dbAdapter_1.hasPg) {
+            const { pgPool } = require('../dbAdapter');
+            const rs = await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('SELECT COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id=$1', [id]));
+            existingTotal = Number(((_c = (_b = rs === null || rs === void 0 ? void 0 : rs.rows) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.total) || 0);
+        }
+        else {
+            existingTotal = store_1.db.orderInternalDeductions.filter((d) => d.order_id === id && d.is_active).reduce((s, x) => s + Number(x.amount || 0), 0);
+        }
+    }
+    catch (_g) { }
+    if (role !== 'admin' && role !== 'finance_staff') {
+        if (existingTotal + amount > totalLimit)
+            return res.status(403).json({ message: 'amount exceeds order total limit' });
+    }
+    const net = Number(order.net_income || 0);
+    if (existingTotal + amount > net && role !== 'admin' && role !== 'finance_staff')
+        return res.status(403).json({ message: 'amount exceeds order net income' });
+    const locked = await isOrderMonthLocked(order);
+    if (locked && role === 'customer_service')
+        return res.status(403).json({ message: 'payout locked, customer_service cannot change amount' });
+    const now = new Date().toISOString();
+    const row = { id: uuid(), order_id: id, amount, currency: parsed.data.currency || 'AUD', item_desc: parsed.data.item_desc, note: parsed.data.note, created_by: (_d = req.user) === null || _d === void 0 ? void 0 : _d.sub, created_at: now, is_active: true };
+    (0, store_1.addAudit)('OrderInternalDeduction', row.id, 'create', null, row, (_e = req.user) === null || _e === void 0 ? void 0 : _e.sub);
+    if (dbAdapter_1.hasPg) {
+        try {
+            const inserted = await (0, dbAdapter_1.pgInsert)('order_internal_deductions', row);
+            return res.status(201).json(inserted || row);
+        }
+        catch (e) {
+            const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+            try {
+                const { pgPool } = require('../dbAdapter');
+                if (/relation\s+"order_internal_deductions"\s+does\s+not\s+exist/i.test(msg)) {
+                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query(`CREATE TABLE IF NOT EXISTS order_internal_deductions (
+            id text PRIMARY KEY,
+            order_id text REFERENCES orders(id) ON DELETE CASCADE,
+            amount numeric NOT NULL,
+            currency text,
+            item_desc text,
+            note text,
+            created_by text,
+            created_at timestamptz DEFAULT now(),
+            is_active boolean DEFAULT true
+          )`));
+                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE INDEX IF NOT EXISTS idx_order_deductions_order_active ON order_internal_deductions(order_id, is_active)'));
+                }
+                if (/column\s+"item_desc"\s+of\s+relation\s+"order_internal_deductions"\s+does\s+not\s+exist/i.test(msg)) {
+                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE order_internal_deductions ADD COLUMN IF NOT EXISTS item_desc text'));
+                }
+                if (/column\s+"note"\s+of\s+relation\s+"order_internal_deductions"\s+has\s+no\s+default/i.test(msg) || /null value in column "note" violates not-null constraint/i.test(msg)) {
+                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE order_internal_deductions ALTER COLUMN note DROP NOT NULL'));
+                }
+                const inserted2 = await (0, dbAdapter_1.pgInsert)('order_internal_deductions', row);
+                return res.status(201).json(inserted2 || row);
+            }
+            catch (e2) {
+                return res.status(500).json({ message: (e2 === null || e2 === void 0 ? void 0 : e2.message) || msg || 'insert failed' });
+            }
+        }
+    }
+    ;
+    store_1.db.orderInternalDeductions.push(row);
+    return res.status(201).json(row);
+});
+exports.router.patch('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('order.deduction.manage'), async (req, res) => {
+    var _a, _b, _c, _d;
+    const { id, did } = req.params;
+    const parsed = deductionSchema.partial().extend({ is_active: zod_1.z.boolean().optional() }).safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json(parsed.error.format());
+    let order = store_1.db.orders.find(o => o.id === id);
+    if (!order && dbAdapter_1.hasPg) {
+        try {
+            const rows = await (0, dbAdapter_1.pgSelect)('orders', '*', { id }) || [];
+            order = rows[0];
+        }
+        catch (_e) { }
+    }
+    if (!order)
+        return res.status(404).json({ message: 'order not found' });
+    const role = String(((_a = req.user) === null || _a === void 0 ? void 0 : _a.role) || '');
+    const locked = await isOrderMonthLocked(order);
+    if (locked && role === 'customer_service' && parsed.data.amount != null)
+        return res.status(403).json({ message: 'payout locked, customer_service cannot change amount' });
+    let prev = null;
+    if (dbAdapter_1.hasPg) {
+        try {
+            const rows = await (0, dbAdapter_1.pgSelect)('order_internal_deductions', '*', { id: did }) || [];
+            prev = rows[0];
+        }
+        catch (_f) { }
+    }
+    else {
+        prev = store_1.db.orderInternalDeductions.find((d) => d.id === did);
+    }
+    if (!prev)
+        return res.status(404).json({ message: 'deduction not found' });
+    const amountNew = parsed.data.amount != null ? Number(parsed.data.amount) : undefined;
+    const singleLimit = 100;
+    const totalLimit = 150;
+    if (amountNew != null && role !== 'admin' && role !== 'finance_staff') {
+        if (amountNew > singleLimit)
+            return res.status(403).json({ message: 'amount exceeds single limit' });
+    }
+    let existingTotal = 0;
+    try {
+        if (dbAdapter_1.hasPg) {
+            const { pgPool } = require('../dbAdapter');
+            const rs = await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('SELECT COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id=$1 AND id<>$2', [id, did]));
+            existingTotal = Number(((_c = (_b = rs === null || rs === void 0 ? void 0 : rs.rows) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.total) || 0);
+        }
+        else {
+            existingTotal = store_1.db.orderInternalDeductions.filter((d) => d.order_id === id && d.is_active && d.id !== did).reduce((s, x) => s + Number(x.amount || 0), 0);
+        }
+    }
+    catch (_g) { }
+    if (amountNew != null && role !== 'admin' && role !== 'finance_staff') {
+        if (existingTotal + amountNew > totalLimit)
+            return res.status(403).json({ message: 'amount exceeds order total limit' });
+    }
+    const net = Number(order.net_income || 0);
+    if (amountNew != null && existingTotal + amountNew > net && role !== 'admin' && role !== 'finance_staff')
+        return res.status(403).json({ message: 'amount exceeds order net income' });
+    const updated = { ...prev, ...parsed.data };
+    (0, store_1.addAudit)('OrderInternalDeduction', did, 'update', prev, updated, (_d = req.user) === null || _d === void 0 ? void 0 : _d.sub);
+    if (dbAdapter_1.hasPg) {
+        try {
+            const row = await (0, dbAdapter_1.pgUpdate)('order_internal_deductions', did, updated);
+            return res.json(row || updated);
+        }
+        catch (e) {
+            const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+            try {
+                const { pgPool } = require('../dbAdapter');
+                if (/column\s+"item_desc"\s+of\s+relation\s+"order_internal_deductions"\s+does\s+not\s+exist/i.test(msg)) {
+                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE order_internal_deductions ADD COLUMN IF NOT EXISTS item_desc text'));
+                }
+                if (/null value in column "note" violates not-null constraint/i.test(msg)) {
+                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE order_internal_deductions ALTER COLUMN note DROP NOT NULL'));
+                }
+                const row2 = await (0, dbAdapter_1.pgUpdate)('order_internal_deductions', did, updated);
+                return res.json(row2 || updated);
+            }
+            catch (e2) {
+                try {
+                    await (0, dbAdapter_1.pgInsert)('order_internal_deductions', updated);
+                    return res.json(updated);
+                }
+                catch (e3) {
+                    return res.status(500).json({ message: (e3 === null || e3 === void 0 ? void 0 : e3.message) || (e2 === null || e2 === void 0 ? void 0 : e2.message) || msg || 'update failed' });
+                }
+            }
+        }
+    }
+    const idx = store_1.db.orderInternalDeductions.findIndex((d) => d.id === did);
+    if (idx !== -1)
+        store_1.db.orderInternalDeductions[idx] = updated;
+    return res.json(updated);
+});
+exports.router.delete('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('order.deduction.manage'), async (req, res) => {
+    var _a, _b;
+    const { id, did } = req.params;
+    let order = store_1.db.orders.find(o => o.id === id);
+    if (!order && dbAdapter_1.hasPg) {
+        try {
+            const rows = await (0, dbAdapter_1.pgSelect)('orders', '*', { id }) || [];
+            order = rows[0];
+        }
+        catch (_c) { }
+    }
+    if (!order)
+        return res.status(404).json({ message: 'order not found' });
+    const role = String(((_a = req.user) === null || _a === void 0 ? void 0 : _a.role) || '');
+    const locked = await isOrderMonthLocked(order);
+    if (locked && role === 'customer_service')
+        return res.status(403).json({ message: 'payout locked, customer_service cannot delete physically' });
+    let prev = null;
+    if (dbAdapter_1.hasPg) {
+        try {
+            const rows = await (0, dbAdapter_1.pgSelect)('order_internal_deductions', '*', { id: did }) || [];
+            prev = rows[0];
+        }
+        catch (_d) { }
+    }
+    else {
+        prev = store_1.db.orderInternalDeductions.find((d) => d.id === did);
+    }
+    if (!prev)
+        return res.status(404).json({ message: 'deduction not found' });
+    (0, store_1.addAudit)('OrderInternalDeduction', did, 'delete', prev, null, (_b = req.user) === null || _b === void 0 ? void 0 : _b.sub);
+    if (dbAdapter_1.hasPg) {
+        try {
+            await (0, dbAdapter_1.pgDelete)('order_internal_deductions', did);
+            return res.json({ ok: true });
+        }
+        catch (e) {
+            return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'delete failed' });
+        }
+    }
+    const idx = store_1.db.orderInternalDeductions.findIndex((d) => d.id === did);
+    if (idx !== -1)
+        store_1.db.orderInternalDeductions.splice(idx, 1);
+    return res.json({ ok: true });
+});
+exports.router.post('/:id/confirm-payment', (0, auth_1.requirePerm)('order.write'), async (req, res) => {
+    const { id } = req.params;
+    let base = store_1.db.orders.find(o => o.id === id);
+    if (!base && dbAdapter_1.hasPg) {
+        try {
+            const rows = await (0, dbAdapter_1.pgSelect)('orders', '*', { id }) || [];
+            base = rows[0];
+        }
+        catch (_a) { }
+    }
+    if (!base)
+        return res.status(404).json({ message: 'order not found' });
+    const before = { ...base };
+    base.payment_received = true;
+    (0, store_1.addAudit)('Order', id, 'confirm_payment', before, base);
+    if (dbAdapter_1.hasPg) {
+        try {
+            const row = await (0, dbAdapter_1.pgUpdate)('orders', id, { payment_received: true });
+            return res.json(row || base);
+        }
+        catch (_b) { }
+    }
+    return res.json(base);
 });

@@ -277,7 +277,6 @@ CREATE TABLE IF NOT EXISTS property_expenses (
   category text,
   category_detail text,
   note text,
-  invoice_url text,
   created_at timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_property_expenses_pid ON property_expenses(property_id);
@@ -290,6 +289,19 @@ ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;
 ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses ON company_expenses(occurred_at, category, amount, (coalesce(note,'')));
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses ON property_expenses(property_id, occurred_at, category, amount, (coalesce(note,'')));
+
+-- Independent invoices bound strictly to property_expenses.id
+CREATE TABLE IF NOT EXISTS expense_invoices (
+  id text PRIMARY KEY,
+  expense_id text REFERENCES property_expenses(id) ON DELETE CASCADE,
+  url text NOT NULL,
+  file_name text,
+  mime_type text,
+  file_size integer,
+  created_at timestamptz DEFAULT now(),
+  created_by text
+);
+CREATE INDEX IF NOT EXISTS idx_expense_invoices_expense ON expense_invoices(expense_id);
 
 -- Split incomes: company_incomes and property_incomes
 CREATE TABLE IF NOT EXISTS company_incomes (
