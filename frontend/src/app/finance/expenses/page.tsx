@@ -22,6 +22,7 @@ export default function ExpensesPage() {
   const [previewOpen, setPreviewOpen] = useState(false)
   const [invoiceOpen, setInvoiceOpen] = useState<{ expenseId: string } | null>(null)
   const [invoices, setInvoices] = useState<ExpenseInvoice[]>([])
+  const [pendingFiles, setPendingFiles] = useState<any[]>([])
   const [codeQuery, setCodeQuery] = useState('')
   const [catFilter, setCatFilter] = useState<string | undefined>(undefined)
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
@@ -55,8 +56,19 @@ export default function ExpensesPage() {
     }
     const resource = 'property_expenses'
     try {
-      if (editing) await apiUpdate(resource, editing.id, payload); else await apiCreate(resource, payload)
-      message.success(editing ? '已更新支出' : '已记录支出'); form.resetFields(); setOpen(false); setEditing(null); load()
+      if (editing) {
+        await apiUpdate(resource, editing.id, payload)
+        if (pendingFiles.length) {
+          for (const f of pendingFiles) { await uploadExpenseInvoice(editing.id, f) }
+        }
+      } else {
+        const created: any = await apiCreate(resource, payload)
+        const expId = created?.id
+        if (expId && pendingFiles.length) {
+          for (const f of pendingFiles) { await uploadExpenseInvoice(expId, f) }
+        }
+      }
+      message.success(editing ? '已更新支出' : '已记录支出'); form.resetFields(); setPendingFiles([]); setOpen(false); setEditing(null); load()
     } catch (e: any) {
       message.error(e?.message || '提交失败')
     } finally { setSaving(false) }
@@ -71,7 +83,15 @@ export default function ExpensesPage() {
   async function uploadExpenseInvoice(expenseId: string, file: any) {
     const fd = new FormData(); fd.append('file', file)
     const res = await fetch(`${API_BASE}/finance/expense-invoices/${expenseId}/upload`, { method: 'POST', headers: { ...authHeaders() }, body: fd })
-    if (res.ok) { message.success('上传成功'); const rows = await getJSON<ExpenseInvoice[]>(`/finance/expense-invoices/${expenseId}`); setInvoices(Array.isArray(rows) ? rows : []) } else { message.error('上传失败') }
+    if (res.ok) {
+      const j = await res.json().catch(() => ({} as any))
+      message.success('上传成功')
+      const rows = await getJSON<ExpenseInvoice[]>(`/finance/expense-invoices/${expenseId}`)
+      setInvoices(Array.isArray(rows) ? rows : [])
+      const urlRaw = (j && (j.url || (j[0]?.url))) as string | undefined
+      const raw = urlRaw ? (/^https?:\/\//.test(urlRaw) ? urlRaw : `${API_BASE}${urlRaw}`) : ''
+      if (invoiceOpen && raw) { const bust = raw + (raw.includes('?') ? '&' : '?') + `_=${Date.now()}`; setPreviewUrl(bust); setPreviewOpen(true) }
+    } else { message.error('上传失败') }
     return false
   }
   async function removeExpenseInvoice(id: string, expenseId: string) {
@@ -204,6 +224,20 @@ export default function ExpensesPage() {
           <Form.Item name="note" label="备注">
             <Input />
           </Form.Item>
+          <Form.Item label="发票（可选）">
+            <Upload
+              multiple
+              beforeUpload={(file) => { setPendingFiles(prev => [...prev, file]); return false }}
+              fileList={pendingFiles as any}
+              onRemove={(file) => { setPendingFiles(prev => prev.filter((f: any) => (f.uid || f.name) !== (file as any).uid && (f.uid || f.name) !== (file as any).name)) }}
+              accept=".pdf,.jpg,.jpeg,.png"
+            >
+              <Button icon={<UploadOutlined />}>选择发票</Button>
+            </Upload>
+            {editing ? (
+              <Button type="link" style={{ marginLeft: 8 }} onClick={() => { setInvoiceOpen({ expenseId: editing.id }); openInvoices(editing.id) }}>已关联发票</Button>
+            ) : null}
+          </Form.Item>
           
         </Form>
       </Modal>
@@ -219,7 +253,8 @@ export default function ExpensesPage() {
               columns={[
                 { title: '文件名', dataIndex: 'file_name' },
                 { title: '预览', render: (_: any, rec: ExpenseInvoice) => {
-                  const u = rec.url && /^https?:\/\//.test(rec.url) ? rec.url : (rec.url ? `${API_BASE}${rec.url}` : '')
+                  const raw = rec.url && /^https?:\/\//.test(rec.url) ? rec.url : (rec.url ? `${API_BASE}${rec.url}` : '')
+                  const u = raw ? withBust(raw) : ''
                   return u ? <Button type="link" onClick={() => { setPreviewUrl(u); setPreviewOpen(true) }}>查看</Button> : '-'
                 } },
                 { title: '操作', render: (_: any, rec: ExpenseInvoice) => (
@@ -236,14 +271,15 @@ export default function ExpensesPage() {
       <Modal open={previewOpen} onCancel={() => setPreviewOpen(false)} footer={null} width={900} title="发票预览">
         {previewUrl ? (
           (/\.pdf($|\?)/i.test(previewUrl) ? (
-            <object data={previewUrl} type="application/pdf" style={{ width:'100%', height: 680 }}>
+            <object data={previewUrl} type="application/pdf" style={{ width:'100%', height: 680 }} key={previewUrl}>
               <a href={previewUrl} target="_blank" rel="noreferrer">打开原文件</a>
             </object>
           ) : (
-            <img src={previewUrl} style={{ maxWidth:'100%' }} />
+            <img src={previewUrl} style={{ maxWidth:'100%' }} key={previewUrl} />
           ))
         ) : null}
       </Modal>
     </Card>
   )
 }
+  function withBust(u: string): string { if (!u) return ''; const sep = u.includes('?') ? '&' : '?'; return `${u}${sep}_=${Date.now()}` }

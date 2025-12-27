@@ -51,7 +51,9 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         }
         const w = buildWhere(Object.keys(filter).length ? filter : undefined)
         let orderBy = ''
-        if (resource === 'property_expenses' || resource === 'company_expenses') {
+        if (resource === 'property_expenses') {
+          orderBy = ' ORDER BY due_date DESC NULLS LAST, paid_date DESC NULLS LAST, occurred_at DESC'
+        } else if (resource === 'company_expenses') {
           orderBy = ' ORDER BY due_date ASC NULLS LAST, paid_date ASC NULLS LAST, occurred_at ASC'
         } else if (resource === 'recurring_payments') {
           orderBy = ' ORDER BY next_due_date ASC NULLS LAST, due_day_of_month ASC, vendor ASC'
@@ -60,14 +62,9 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         }
         if (pgPool) {
           try {
-            if (resource === 'property_expenses') {
-              const rowsRaw = await pgSelect(resource, '*', Object.keys(filter).length ? filter : undefined)
-              rows.push(...(Array.isArray(rowsRaw) ? rowsRaw : []))
-            } else {
-              const sql = `SELECT * FROM ${resource}${w.clause}${orderBy}`
-              const resq = await pgPool.query(sql, w.values)
-              rows.push(...(resq?.rows || []))
-            }
+            const sql = `SELECT * FROM ${resource}${w.clause}${orderBy}`
+            const resq = await pgPool.query(sql, w.values)
+            rows.push(...(resq?.rows || []))
           } catch (e: any) {
             const msg = String(e?.message || '')
             if (resource === 'fixed_expenses' && /relation\s+"?fixed_expenses"?\s+does\s+not\s+exist/i.test(msg)) {
@@ -149,7 +146,19 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
     // in-memory fallback
     const arr = (db as any)[camelToArrayKey(resource)] || []
     let filtered = arr.filter((r: any) => Object.entries(filter).every(([k,v]) => (r?.[k]) == v))
-    if (resource === 'property_expenses' || resource === 'company_expenses') {
+    if (resource === 'property_expenses') {
+      filtered = filtered.sort((a: any, b: any) => {
+        const av = a?.due_date ? new Date(a.due_date).getTime() : Number.NEGATIVE_INFINITY
+        const bv = b?.due_date ? new Date(b.due_date).getTime() : Number.NEGATIVE_INFINITY
+        if (av !== bv) return bv - av
+        const ap = a?.paid_date ? new Date(a.paid_date).getTime() : Number.NEGATIVE_INFINITY
+        const bp = b?.paid_date ? new Date(b.paid_date).getTime() : Number.NEGATIVE_INFINITY
+        if (ap !== bp) return bp - ap
+        const ao = a?.occurred_at ? new Date(a.occurred_at).getTime() : Number.NEGATIVE_INFINITY
+        const bo = b?.occurred_at ? new Date(b.occurred_at).getTime() : Number.NEGATIVE_INFINITY
+        return bo - ao
+      })
+    } else if (resource === 'company_expenses') {
       filtered = filtered.sort((a: any, b: any) => {
         const av = a?.due_date ? new Date(a.due_date).getTime() : Number.POSITIVE_INFINITY
         const bv = b?.due_date ? new Date(b.due_date).getTime() : Number.POSITIVE_INFINITY
