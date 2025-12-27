@@ -7,7 +7,7 @@ import { API_BASE, getJSON, authHeaders, apiList, apiCreate, apiUpdate, apiDelet
 import { sortProperties } from '../../../lib/properties'
 import { hasPerm } from '../../../lib/auth'
 
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; occurred_at: string; note?: string }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; occurred_at: string; created_at?: string; note?: string }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
 
 export default function ExpensesPage() {
@@ -33,7 +33,7 @@ export default function ExpensesPage() {
     const resource = 'property_expenses'
     if (canViewList) {
       const rows: any[] = await apiList<any[]>(resource)
-      const mapped: Tx[] = (rows || []).map((r: any) => ({ id: r.id, kind: 'expense', amount: Number(r.amount || 0), currency: r.currency || 'AUD', category: r.category, category_detail: r.category_detail, property_id: r.property_id || undefined, property_code: r.property_code || undefined, occurred_at: r.occurred_at, note: r.note }))
+      const mapped: Tx[] = (rows || []).map((r: any) => ({ id: r.id, kind: 'expense', amount: Number(r.amount || 0), currency: r.currency || 'AUD', category: r.category, category_detail: r.category_detail, property_id: r.property_id || undefined, property_code: r.property_code || undefined, occurred_at: r.occurred_at, created_at: r.created_at, note: r.note }))
       setList(mapped)
     } else {
       setList([])
@@ -112,7 +112,7 @@ export default function ExpensesPage() {
   const catLabel = (v?: string) => (CATS.find(c => c.value === v)?.label || v || '-')
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const columns = [
-    { title: '日期', dataIndex: 'occurred_at', render: (v: string) => dayjs(v).format('DD/MM/YYYY') },
+    { title: '日期', dataIndex: 'created_at', render: (_: any, r: Tx) => dayjs(r.created_at || r.occurred_at).format('DD/MM/YYYY') },
     { title: '房号', dataIndex: 'property_code', render: (v: string, r: any) => (v || (()=>{ const p = properties.find(x => x.id === r.property_id); return p?.code || r.property_id || '-' })()) },
     { title: '类别', dataIndex: 'category', render: (_: any, r: Tx) => {
       if (!r?.category) return '-'
