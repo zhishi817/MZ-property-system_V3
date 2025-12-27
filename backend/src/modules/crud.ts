@@ -52,7 +52,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         const w = buildWhere(Object.keys(filter).length ? filter : undefined)
         let orderBy = ''
         if (resource === 'property_expenses') {
-          orderBy = ' ORDER BY created_at DESC'
+          orderBy = ' ORDER BY paid_date DESC NULLS LAST, due_date DESC NULLS LAST, occurred_at DESC'
         } else if (resource === 'company_expenses') {
           orderBy = ' ORDER BY due_date ASC NULLS LAST, paid_date ASC NULLS LAST, occurred_at ASC'
         } else if (resource === 'recurring_payments') {
@@ -148,9 +148,15 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
     let filtered = arr.filter((r: any) => Object.entries(filter).every(([k,v]) => (r?.[k]) == v))
     if (resource === 'property_expenses') {
       filtered = filtered.sort((a: any, b: any) => {
-        const av = a?.created_at ? new Date(a.created_at).getTime() : Number.NEGATIVE_INFINITY
-        const bv = b?.created_at ? new Date(b.created_at).getTime() : Number.NEGATIVE_INFINITY
-        return bv - av
+        const ap = a?.paid_date ? new Date(a.paid_date).getTime() : Number.NEGATIVE_INFINITY
+        const bp = b?.paid_date ? new Date(b.paid_date).getTime() : Number.NEGATIVE_INFINITY
+        if (ap !== bp) return bp - ap
+        const ad = a?.due_date ? new Date(a.due_date).getTime() : Number.NEGATIVE_INFINITY
+        const bd = b?.due_date ? new Date(b.due_date).getTime() : Number.NEGATIVE_INFINITY
+        if (ad !== bd) return bd - ad
+        const ao = a?.occurred_at ? new Date(a.occurred_at).getTime() : Number.NEGATIVE_INFINITY
+        const bo = b?.occurred_at ? new Date(b.occurred_at).getTime() : Number.NEGATIVE_INFINITY
+        return bo - ao
       })
     } else if (resource === 'company_expenses') {
       filtered = filtered.sort((a: any, b: any) => {
@@ -333,6 +339,14 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
             if (cleaned.due_date) cleaned.due_date = String(cleaned.due_date).slice(0,10)
             if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
+            try {
+              const d = cleaned.paid_date || cleaned.occurred_at
+              if (d && !cleaned.month_key) {
+                const y = String(d).slice(0,4)
+                const m = String(d).slice(5,7)
+                if (y && m) cleaned.month_key = `${y}-${m}`
+              }
+            } catch {}
             toInsert = cleaned
           } else if (resource === 'company_expenses') {
             const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status']
@@ -770,6 +784,14 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
         if (cleaned.due_date) cleaned.due_date = String(cleaned.due_date).slice(0,10)
         if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
+        try {
+          const d = cleaned.paid_date || cleaned.occurred_at
+          if (d && !cleaned.month_key) {
+            const y = String(d).slice(0,4)
+            const m = String(d).slice(5,7)
+            if (y && m) cleaned.month_key = `${y}-${m}`
+          }
+        } catch {}
         toUpdate = cleaned
       } else if (resource === 'company_expenses') {
         const allow = ['occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status']

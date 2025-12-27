@@ -386,12 +386,32 @@ exports.router.get('/property-revenue', async (req, res) => {
                 const rp = await (0, dbAdapter_1.pgSelect)('recurring_payments', '*');
                 const rpRows = Array.isArray(rp) ? rp : [];
                 const map = Object.fromEntries(rpRows.map(r => [String(r.id), String(r.report_category || 'other')]));
+                function toReportCat(raw, detail) {
+                    const v = String(raw || '').toLowerCase();
+                    const d = String(detail || '').toLowerCase();
+                    const s = v + ' ' + d;
+                    if (s.includes('carpark') || s.includes('车位'))
+                        return 'parking_fee';
+                    if (s.includes('owners') || s.includes('body') || s.includes('物业'))
+                        return 'body_corp';
+                    if (s.includes('internet') || s.includes('nbn') || s.includes('网'))
+                        return 'internet';
+                    if (s.includes('electric'))
+                        return 'electricity';
+                    if (s.includes('water') && !s.includes('hot'))
+                        return 'water';
+                    if (s.includes('gas') || s.includes('hot'))
+                        return 'gas';
+                    if (s.includes('consumable') || s.includes('消耗'))
+                        return 'consumables';
+                    if (s.includes('council') || s.includes('市政'))
+                        return 'council';
+                    return 'other';
+                }
                 for (const e of peRows) {
                     const fid = String(e.fixed_expense_id || '');
-                    if (!fid)
-                        continue;
-                    const cat = map[fid] || 'other';
                     const amt = Number(e.amount || 0);
+                    const cat = fid ? (map[fid] || 'other') : toReportCat(String(e.category || ''), String(e.category_detail || ''));
                     if (cat in cols)
                         cols[cat] += amt;
                     else

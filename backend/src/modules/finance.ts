@@ -346,11 +346,24 @@ router.get('/property-revenue', async (req, res) => {
         const rp = await pgSelect('recurring_payments', '*')
         const rpRows: any[] = Array.isArray(rp) ? rp : []
         const map: Record<string, string> = Object.fromEntries(rpRows.map(r => [String(r.id), String((r as any).report_category || 'other')]))
+        function toReportCat(raw?: string, detail?: string): string {
+          const v = String(raw||'').toLowerCase()
+          const d = String(detail||'').toLowerCase()
+          const s = v + ' ' + d
+          if (s.includes('carpark') || s.includes('车位')) return 'parking_fee'
+          if (s.includes('owners') || s.includes('body') || s.includes('物业')) return 'body_corp'
+          if (s.includes('internet') || s.includes('nbn') || s.includes('网')) return 'internet'
+          if (s.includes('electric')) return 'electricity'
+          if (s.includes('water') && !s.includes('hot')) return 'water'
+          if (s.includes('gas') || s.includes('hot')) return 'gas'
+          if (s.includes('consumable') || s.includes('消耗')) return 'consumables'
+          if (s.includes('council') || s.includes('市政')) return 'council'
+          return 'other'
+        }
         for (const e of peRows) {
           const fid = String((e as any).fixed_expense_id || '')
-          if (!fid) continue
-          const cat = map[fid] || 'other'
           const amt = Number((e as any).amount || 0)
+          const cat = fid ? (map[fid] || 'other') : toReportCat(String((e as any).category || ''), String((e as any).category_detail || ''))
           if (cat in cols) (cols as any)[cat] += amt
           else cols.other += amt
         }
