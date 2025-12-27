@@ -35,9 +35,9 @@ export default function ExpensesPage() {
       const rows: any[] = await apiList<any[]>(resource)
       const mapped: Tx[] = (rows || []).map((r: any) => ({ id: r.id, kind: 'expense', amount: Number(r.amount || 0), currency: r.currency || 'AUD', category: r.category, category_detail: r.category_detail, property_id: r.property_id || undefined, property_code: r.property_code || undefined, fixed_expense_id: r.fixed_expense_id || undefined, occurred_at: r.occurred_at, due_date: r.due_date, paid_date: r.paid_date, created_at: r.created_at, note: r.note }))
       const sorted = mapped.sort((a, b) => {
-        const ap = a.paid_date ? new Date(a.paid_date).getTime() : (a.due_date ? new Date(a.due_date).getTime() : (a.occurred_at ? new Date(a.occurred_at).getTime() : (a.created_at ? new Date(a.created_at).getTime() : 0)))
-        const bp = b.paid_date ? new Date(b.paid_date).getTime() : (b.due_date ? new Date(b.due_date).getTime() : (b.occurred_at ? new Date(b.occurred_at).getTime() : (b.created_at ? new Date(b.created_at).getTime() : 0)))
-        return bp - ap
+        const ad = a.fixed_expense_id ? (a.created_at ? new Date(a.created_at).getTime() : 0) : (a.occurred_at ? new Date(a.occurred_at).getTime() : 0)
+        const bd = b.fixed_expense_id ? (b.created_at ? new Date(b.created_at).getTime() : 0) : (b.occurred_at ? new Date(b.occurred_at).getTime() : 0)
+        return bd - ad
       })
       setList(sorted)
     } else {
@@ -118,9 +118,9 @@ export default function ExpensesPage() {
   const catLabel = (v?: string) => (CATS.find(c => c.value === v)?.label || v || '-')
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const columns = [
-    { title: '日期', dataIndex: 'paid_date', render: (_: any, r: Tx) => {
-      const d = r.fixed_expense_id ? (r.paid_date || r.due_date) : (r.paid_date || r.occurred_at)
-      return dayjs(d || r.created_at).format('DD/MM/YYYY')
+    { title: '日期', dataIndex: 'occurred_at', render: (_: any, r: Tx) => {
+      const d = r.fixed_expense_id ? r.created_at : r.occurred_at
+      return dayjs(d).format('DD/MM/YYYY')
     } },
     { title: '房号', dataIndex: 'property_code', render: (v: string, r: any) => (v || (()=>{ const p = properties.find(x => x.id === r.property_id); return p?.code || r.property_id || '-' })()) },
     { title: '类别', dataIndex: 'category', render: (_: any, r: Tx) => {
@@ -168,7 +168,7 @@ export default function ExpensesPage() {
           const label = String((x as any).property_code || (()=>{ const p = properties.find(pp => pp.id === x.property_id); return p?.code || '' })() || '')
           const codeOk = (!codeQuery || label.toLowerCase().includes(codeQuery.trim().toLowerCase()))
           const catOk = !catFilter || x.category === catFilter
-          const baseDate = x.paid_date || x.due_date || x.occurred_at || x.created_at
+          const baseDate = x.fixed_expense_id ? x.created_at : x.occurred_at
           const inRange = !dateRange || (!dateRange[0] || dayjs(baseDate).diff(dateRange[0], 'day') >= 0) && (!dateRange[1] || dayjs(baseDate).diff(dateRange[1], 'day') <= 0)
           const kindOk = x.kind === 'expense'
           const scopeOk = !!x.property_id
