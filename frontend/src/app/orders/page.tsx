@@ -1,5 +1,5 @@
 "use client"
-import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, Select, Tag, InputNumber, Checkbox, Upload, Radio, Calendar, App, Drawer, Descriptions } from 'antd'
+import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, Select, Tag, InputNumber, Checkbox, Upload, Radio, Calendar, App, Drawer, Descriptions, Tabs } from 'antd'
 import { useRouter } from 'next/navigation'
 import type { UploadProps } from 'antd'
 import { useEffect, useState, useRef } from 'react'
@@ -48,11 +48,23 @@ export default function OrdersPage() {
   const [detailDedNote, setDetailDedNote] = useState<string>('')
   const [detailEditing, setDetailEditing] = useState<any | null>(null)
   const [detailLoading, setDetailLoading] = useState<boolean>(false)
-  const [syncing, setSyncing] = useState<boolean>(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewSamples, setPreviewSamples] = useState<any[]>([])
   const [previewStats, setPreviewStats] = useState<any | null>(null)
+  const [previewFailures, setPreviewFailures] = useState<any[]>([])
+  const [previewSkips, setPreviewSkips] = useState<any[]>([])
+  const [previewDryRun, setPreviewDryRun] = useState<boolean>(true)
+  const [previewJobId, setPreviewJobId] = useState<string>('')
+  const [previewFailuresHistory, setPreviewFailuresHistory] = useState<any[]>([])
+  const [previewAutoUids, setPreviewAutoUids] = useState<number[]>([])
+  const [previewDay, setPreviewDay] = useState<any>(dayjs())
+  const [previewUidsText, setPreviewUidsText] = useState<string>('')
+  type PreviewRow = { confirmation_code?: string; guest_name?: string; listing_name?: string; checkin?: string; checkout?: string; nights?: number; youEarn?: number | null; cleaning_fee?: number | null; net_income?: number | null; avg_nightly_price?: number | null; property_match?: boolean }
+  const [rows, setRows] = useState<PreviewRow[]>([])
+  const [selfCheckOpen, setSelfCheckOpen] = useState(false)
+  const [selfCheckLoading, setSelfCheckLoading] = useState(false)
+  const [selfCheckData, setSelfCheckData] = useState<any | null>(null)
   function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
   function getPropertyCodeLabel(o: Order) {
     const p = getPropertyById(o.property_id)
@@ -139,27 +151,42 @@ export default function OrdersPage() {
     const res = await getJSON<Order[]>('/orders')
     setData(res)
   }
-  async function refreshAirbnbOrders() {
-    if (syncing) return
-    setSyncing(true)
+  
+
+  async function manualImportAirbnb() {
     try {
-      const res = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ mode: 'incremental', max_messages: 50 }) })
-      if (res.status === 409) { message.warning('正在同步中，请稍后再试'); return }
+      const res = await fetch(`${API_BASE}/jobs/email-import/manual`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ limit: 50 }) })
       const j = await res.json().catch(() => null)
       if (res.ok) {
-        const s = j || {}
-        message.success(`同步完成：扫描 ${Number(s.scanned||0)}，命中 ${Number(s.matched||0)}，新增 ${Number(s.inserted||0)}，重复 ${Number(s.skipped_duplicate||0)}，失败 ${Number(s.failed||0)}`)
-        load()
+        const s = j?.summary || {}
+        message.success(`导入完成：新增 ${Number(s.inserted||0)}，更新 ${Number(s.updated||0)}，跳过 ${Number(s.skipped||0)}，失败 ${Number(s.failed||0)}`)
+        try {
+          const fails = Array.isArray(j?.details) ? (j.details as any[]) : []
+          const list = fails.filter(d => d?.status === 'failed')
+          if (list.length) {
+            const parts: Record<string, number> = {}
+            list.forEach(d => { const r = String(d?.reason||'unknown'); parts[r] = (parts[r]||0) + 1; const extra = d?.db_code ? ` db_code=${d.db_code} db_msg=${d.db_message||''}` : '' ; console.warn(`[导入失败] uid=${d?.uid} 主题=${d?.subject||''} 原因=${r}${extra}`) })
+            const summaryText = Object.keys(parts).map(k => `${k}:${parts[k]}`).join(', ')
+            if (summaryText) message.info(`失败 ${list.length}（${summaryText}）`)
+          }
+        } catch {}
+        try {
+          const arr = await getJSON<Order[]>('/orders')
+          setData(arr)
+          const dates = arr.map(o => { const s = String(o.checkin||'').slice(0,10); return s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? dayjs(s) : null }).filter(Boolean) as any[]
+          if (dates.length) {
+            let latest = dates[0]
+            for (let i = 1; i < dates.length; i++) { if (dates[i].isAfter(latest)) latest = dates[i] }
+            setMonthFilter(latest.startOf('month'))
+          }
+        } catch {
+          load()
+        }
       } else {
-        let msg = (j && j.message) ? String(j.message) : `同步失败（HTTP ${res.status}）`
-        if (/pg required/i.test(msg)) msg = '未连接数据库，请配置 DATABASE_URL'
-        if (/missing imap accounts/i.test(msg)) msg = '未配置 AIRBNB_IMAP_USER/AIRBNB_IMAP_PASS'
-        message.error(msg)
+        message.error(j?.message || `导入失败（HTTP ${res.status}）`)
       }
-    } catch {
-      message.error('同步失败')
-    } finally {
-      setSyncing(false)
+    } catch (e: any) {
+      message.error('导入失败')
     }
   }
   async function previewTodayEmails() {
@@ -167,18 +194,53 @@ export default function OrdersPage() {
     setPreviewOpen(true)
     setPreviewLoading(true)
     try {
-      const day = dayjs().format('YYYY-MM-DD')
-      const body = { mode: 'backfill', from_date: day, to_date: day, dry_run: true, batch_tag: 'airbnb_email_import_preview', max_messages: 50, preview_limit: 20 }
+      const body = previewDryRun
+        ? { mode: 'preview', mel_day: previewDay.format('YYYY-MM-DD'), dry_run: true, batch_tag: 'airbnb_email_import_preview', max_messages: 50, limit: 200, job_timeout_ms: 60000, preview_limit: 20 }
+        : { mode: 'backfill', from_date: previewDay.format('YYYY-MM-DD'), to_date: previewDay.format('YYYY-MM-DD'), dry_run: false, batch_tag: 'airbnb_email_import_preview', max_messages: 50, limit: 200, job_timeout_ms: 60000, preview_limit: 20 }
       const res = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
       const j = await res.json().catch(() => null)
       if (res.status === 409) {
         message.warning('正在同步中，请稍后再试')
       } else if (res.ok) {
-        setPreviewStats(j || {})
-        const arr = Array.isArray(j?.parsed_results) ? j.parsed_results : (Array.isArray(j?.samples) ? j.samples : [])
-        setPreviewSamples(arr)
-        const s = j || {}
+        setPreviewStats((j?.summary || j) || {})
+        setPreviewJobId(String(j?.job_id || ''))
+        const arrDry = Array.isArray(j?.previewRows) ? j.previewRows : []
+        const arrReal = Array.isArray(j?.insertedRows) ? j.insertedRows : []
+        const baseArr = previewDryRun ? arrDry : arrReal
+        const responseRows: PreviewRow[] = (Array.isArray(baseArr) ? baseArr : []).map((r: any) => ({
+          confirmation_code: r?.confirmation_code ?? r?.code ?? null,
+          guest_name: r?.guest_name ?? r?.guest ?? null,
+          listing_name: r?.listing_name ?? r?.listing ?? null,
+          checkin: r?.checkin ?? null,
+          checkout: r?.checkout ?? null,
+          nights: r?.nights ?? null,
+          youEarn: r?.youEarn ?? r?.you_earn ?? r?.price ?? null,
+          cleaning_fee: r?.cleaning_fee ?? null,
+          net_income: r?.net_income ?? null,
+          avg_nightly_price: r?.avg_nightly_price ?? null,
+          property_match: r?.property_match ?? null,
+        }))
+        console.log('[email-sync-airbnb rows]', responseRows)
+        setRows(responseRows)
+        const fails = Array.isArray(j?.failures) ? j.failures : []
+        setPreviewFailures(fails)
+        const skips = Array.isArray(j?.skipped) ? j.skipped : []
+        setPreviewSkips(skips)
+        try {
+          if (j?.job_id) {
+            const r2 = await fetch(`${API_BASE}/jobs/runs/${encodeURIComponent(String(j.job_id))}/failures`, { headers: { ...authHeaders() } })
+            const h = await r2.json().catch(()=>[])
+            setPreviewFailuresHistory(Array.isArray(h) ? h : [])
+          }
+        } catch {}
+        const s = (j?.summary || {})
         message.success(`预览完成：扫描 ${Number(s.scanned||0)}，命中 ${Number(s.matched||0)}，失败 ${Number(s.failed||0)}`)
+        try {
+          const counts: Record<string, number> = {}
+          skips.forEach((x:any)=>{ const r = String(x?.reason||''); counts[r] = (counts[r]||0) + 1 })
+          const parts = Object.keys(counts).map(k=> `${k}:${counts[k]}`)
+          if (parts.length) message.info(`跳过 ${skips.length}（${parts.join(', ')}）`)
+        } catch {}
       } else {
         let msg = (j && j.message) ? String(j.message) : `预览失败（HTTP ${res.status}）`
         if (/imap/i.test(msg)) msg = 'IMAP 连接失败'
@@ -189,6 +251,255 @@ export default function OrdersPage() {
     } finally {
       setPreviewLoading(false)
     }
+  }
+  
+  async function ingestAllAutoUids() {
+    if (previewLoading) return
+    const ids = Array.isArray(previewAutoUids) ? previewAutoUids : []
+    if (!ids.length) { message.warning('无可导入 UID'); return }
+    setPreviewLoading(true)
+    try {
+      const body = { mode: 'uids', uids: ids, dry_run: false, preview_limit: Math.max(20, ids.length), job_timeout_ms: 60000 }
+      const res = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+      const j = await res.json().catch(() => null)
+      if (res.ok) {
+        setPreviewStats((j?.summary || j) || {})
+        const arr = Array.isArray(j?.insertedRows) ? j.insertedRows : []
+        const responseRows: PreviewRow[] = (Array.isArray(arr) ? arr : []).map((r: any) => ({
+          confirmation_code: r?.confirmation_code ?? r?.code ?? null,
+          guest_name: r?.guest_name ?? r?.guest ?? null,
+          listing_name: r?.listing_name ?? r?.listing ?? null,
+          checkin: r?.checkin ?? null,
+          checkout: r?.checkout ?? null,
+          nights: r?.nights ?? null,
+          youEarn: r?.youEarn ?? r?.you_earn ?? r?.price ?? null,
+          cleaning_fee: r?.cleaning_fee ?? null,
+          net_income: r?.net_income ?? null,
+          avg_nightly_price: r?.avg_nightly_price ?? null,
+          property_match: r?.property_match ?? null,
+        }))
+        setRows(responseRows)
+        const s = (j?.summary || {})
+        message.success(`导入完成：扫描 ${Number(s.scanned||0)}，命中 ${Number(s.matched||0)}，新增 ${Number(s.inserted||0)}，重复 ${Number(s.duplicates||0)}，失败 ${Number(s.failed||0)}`)
+        load()
+      } else {
+        let msg = (j && j.message) ? String(j.message) : `导入失败（HTTP ${res.status}）`
+        message.error(msg)
+      }
+    } catch {
+      message.error('导入失败')
+    } finally { setPreviewLoading(false) }
+  }
+  async function previewByUids() {
+    if (previewLoading) return
+    const ids = String(previewUidsText || '')
+      .split(',')
+      .map(s => Number(s.trim()))
+      .filter(n => Number.isFinite(n))
+    if (!ids.length) { message.warning('请输入 UID 列表，例如：74258,74259'); return }
+    setPreviewOpen(true)
+    setPreviewLoading(true)
+    try {
+      const body = { mode: 'uids', uids: ids, dry_run: true, preview_limit: Math.max(20, ids.length), job_timeout_ms: 60000 }
+      const res = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+      const j = await res.json().catch(() => null)
+      if (res.ok) {
+        setPreviewStats((j?.summary || j) || {})
+        setPreviewJobId(String(j?.job_id || ''))
+        const arr = Array.isArray(j?.previewRows) ? j.previewRows : []
+        const responseRows: PreviewRow[] = (Array.isArray(arr) ? arr : []).map((r: any) => ({
+          confirmation_code: r?.confirmation_code ?? r?.code ?? null,
+          guest_name: r?.guest_name ?? r?.guest ?? null,
+          listing_name: r?.listing_name ?? r?.listing ?? null,
+          checkin: r?.checkin ?? null,
+          checkout: r?.checkout ?? null,
+          nights: r?.nights ?? null,
+          youEarn: r?.youEarn ?? r?.you_earn ?? r?.price ?? null,
+          cleaning_fee: r?.cleaning_fee ?? null,
+          net_income: r?.net_income ?? null,
+          avg_nightly_price: r?.avg_nightly_price ?? null,
+          property_match: r?.property_match ?? null,
+        }))
+        setRows(responseRows)
+        const fails = Array.isArray(j?.failures) ? j.failures : []
+        setPreviewFailures(fails)
+        const skips = Array.isArray(j?.skipped) ? j.skipped : []
+        setPreviewSkips(skips)
+        const s = (j?.summary || {})
+        message.success(`UID 预览完成：扫描 ${Number(s.scanned||0)}，命中 ${Number(s.matched||0)}，失败 ${Number(s.failed||0)}`)
+      } else {
+        let msg = (j && j.message) ? String(j.message) : `预览失败（HTTP ${res.status}）`
+        message.error(msg)
+      }
+    } catch {
+      message.error('预览失败')
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+  async function ingestByUids() {
+    if (previewLoading) return
+    const ids = String(previewUidsText || '')
+      .split(',')
+      .map(s => Number(s.trim()))
+      .filter(n => Number.isFinite(n))
+    if (!ids.length) { message.warning('请输入 UID 列表，例如：74258,74259'); return }
+    setPreviewOpen(true)
+    setPreviewLoading(true)
+    try {
+      const body = { mode: 'uids', uids: ids, dry_run: false, preview_limit: Math.max(20, ids.length), job_timeout_ms: 60000 }
+      const res = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+      const j = await res.json().catch(() => null)
+      if (res.ok) {
+        setPreviewStats((j?.summary || j) || {})
+        setPreviewJobId(String(j?.job_id || ''))
+        const arr = Array.isArray(j?.insertedRows) ? j.insertedRows : []
+        const responseRows: PreviewRow[] = (Array.isArray(arr) ? arr : []).map((r: any) => ({
+          confirmation_code: r?.confirmation_code ?? r?.code ?? null,
+          guest_name: r?.guest_name ?? r?.guest ?? null,
+          listing_name: r?.listing_name ?? r?.listing ?? null,
+          checkin: r?.checkin ?? null,
+          checkout: r?.checkout ?? null,
+          nights: r?.nights ?? null,
+          youEarn: r?.youEarn ?? r?.you_earn ?? r?.price ?? null,
+          cleaning_fee: r?.cleaning_fee ?? null,
+          net_income: r?.net_income ?? null,
+          avg_nightly_price: r?.avg_nightly_price ?? null,
+          property_match: r?.property_match ?? null,
+        }))
+        setRows(responseRows)
+        const fails = Array.isArray(j?.failures) ? j.failures : []
+        setPreviewFailures(fails)
+        const skips = Array.isArray(j?.skipped) ? j.skipped : []
+        setPreviewSkips(skips)
+        const s = (j?.summary || {})
+        message.success(`UID 导入完成：扫描 ${Number(s.scanned||0)}，命中 ${Number(s.matched||0)}，新增 ${Number(s.inserted||0)}，重复 ${Number(s.duplicates||0)}，失败 ${Number(s.failed||0)}`)
+        load()
+      } else {
+        let msg = (j && j.message) ? String(j.message) : `导入失败（HTTP ${res.status}）`
+        message.error(msg)
+      }
+    } catch {
+      message.error('导入失败')
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+  async function previewAllMatchedUids() {
+    if (previewLoading) return
+    setPreviewLoading(true)
+    try {
+      const body = { mode: 'list_uids_first', first_limit: 200, preview_limit: 500, limit: 500, max_messages: 250, job_timeout_ms: 60000 }
+      const res = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+      const j = await res.json().catch(() => null)
+      if (res.status === 409) {
+        await fetch(`${API_BASE}/jobs/email-sync-airbnb/unlock`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ scope: 'preview' }) }).catch(()=>{})
+        const res2 = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+        const j2 = await res2.json().catch(()=>null)
+        if (!res2.ok) { let msg = (j2 && j2.message) ? String(j2.message) : `拉取失败（HTTP ${res2.status}）`; message.error(msg); return }
+        const ids2: number[] = Array.isArray(j2?.matched_uids) ? j2.matched_uids : []
+        setPreviewAutoUids(ids2)
+        const s2 = (j2?.summary || {})
+        message.success(`拉取 UID（前200）：扫描 ${Number(s2.scanned||0)}，命中 ${ids2.length}`)
+        const bodyPreview = { mode: 'uids', uids: ids2, dry_run: true, preview_limit: Math.max(20, ids2.length), job_timeout_ms: 60000 }
+        const r3 = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(bodyPreview) })
+        const j3 = await r3.json().catch(()=>null)
+        if (!r3.ok) { let msg = (j3 && j3.message) ? String(j3.message) : `预览失败（HTTP ${r3.status}）`; message.error(msg); return }
+        setPreviewStats((j3?.summary || j3) || {})
+        setPreviewJobId(String(j3?.job_id || ''))
+        const arr3 = Array.isArray(j3?.previewRows) ? j3.previewRows : []
+        const responseRows3: PreviewRow[] = (Array.isArray(arr3) ? arr3 : []).map((r: any) => ({
+          confirmation_code: r?.confirmation_code ?? r?.code ?? null,
+          guest_name: r?.guest_name ?? r?.guest ?? null,
+          listing_name: r?.listing_name ?? r?.listing ?? null,
+          checkin: r?.checkin ?? null,
+          checkout: r?.checkout ?? null,
+          nights: r?.nights ?? null,
+          youEarn: r?.youEarn ?? r?.you_earn ?? r?.price ?? null,
+          cleaning_fee: r?.cleaning_fee ?? null,
+          net_income: r?.net_income ?? null,
+          avg_nightly_price: r?.avg_nightly_price ?? null,
+          property_match: r?.property_match ?? null,
+        }))
+        setRows(responseRows3)
+      } else if (res.ok) {
+        const ids: number[] = Array.isArray(j?.matched_uids) ? j.matched_uids : []
+        setPreviewAutoUids(ids)
+        const s = (j?.summary || {})
+        message.success(`拉取 UID（前200）：扫描 ${Number(s.scanned||0)}，命中 ${ids.length}`)
+        const bodyPreview = { mode: 'uids', uids: ids, dry_run: true, preview_limit: Math.max(20, ids.length), job_timeout_ms: 60000 }
+        const r3 = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(bodyPreview) })
+        const j3 = await r3.json().catch(()=>null)
+        if (!r3.ok) { let msg = (j3 && j3.message) ? String(j3.message) : `预览失败（HTTP ${r3.status}）`; message.error(msg); return }
+        setPreviewStats((j3?.summary || j3) || {})
+        setPreviewJobId(String(j3?.job_id || ''))
+        const arr3 = Array.isArray(j3?.previewRows) ? j3.previewRows : []
+        const responseRows3: PreviewRow[] = (Array.isArray(arr3) ? arr3 : []).map((r: any) => ({
+          confirmation_code: r?.confirmation_code ?? r?.code ?? null,
+          guest_name: r?.guest_name ?? r?.guest ?? null,
+          listing_name: r?.listing_name ?? r?.listing ?? null,
+          checkin: r?.checkin ?? null,
+          checkout: r?.checkout ?? null,
+          nights: r?.nights ?? null,
+          youEarn: r?.youEarn ?? r?.you_earn ?? r?.price ?? null,
+          cleaning_fee: r?.cleaning_fee ?? null,
+          net_income: r?.net_income ?? null,
+          avg_nightly_price: r?.avg_nightly_price ?? null,
+          property_match: r?.property_match ?? null,
+        }))
+        setRows(responseRows3)
+      } else {
+        let msg = (j && j.message) ? String(j.message) : `拉取失败（HTTP ${res.status}）`
+        message.error(msg)
+      }
+    } catch {
+      message.error('拉取失败')
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+  async function selfCheckUid(uid: number) {
+    if (selfCheckLoading) return
+    setSelfCheckOpen(true)
+    setSelfCheckLoading(true)
+    try {
+      const body = { mode: 'single_uid', uid, dry_run: true, debug: true, dump_body_preview_len: 500 }
+      const res = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+      const j = await res.json().catch(()=>null)
+      if (res.ok) {
+        setSelfCheckData(j || {})
+        message.success(`自检完成：扫描 ${Number(j?.scanned||0)}，命中 ${Number(j?.matched||0)}，插入 ${Number(j?.inserted||0)}，失败 ${Number(j?.failed||0)}`)
+      } else {
+        message.error((j && j.message) ? String(j.message) : `自检失败（HTTP ${res.status}）`)
+      }
+    } catch {
+      message.error('自检失败')
+    } finally {
+      setSelfCheckLoading(false)
+    }
+  }
+  async function manualInsertFromEmail(rec: any) {
+    try {
+      const id = String(rec?.id || '')
+      if (!id) { message.warning('缺少记录ID'); return }
+      const pid = (rec as any).__pid || ''
+      const res = await fetch(`${API_BASE}/jobs/email-orders-raw/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ id, property_id: pid }) })
+      const j = await res.json().catch(()=>null)
+      if (res.ok) { message.success('已手动插入订单'); openFailures(); load() } else { message.error(j?.message || `插入失败（HTTP ${res.status}）`) }
+    } catch { message.error('插入失败') }
+  }
+  const [failOpen, setFailOpen] = useState(false)
+  const [failLoading, setFailLoading] = useState(false)
+  const [failRows, setFailRows] = useState<any[]>([])
+  async function openFailures() {
+    setFailOpen(true)
+    setFailLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/jobs/email-orders-raw/failures?limit=200&since_days=14`, { headers: { ...authHeaders() } })
+      const j = await res.json().catch(()=>[])
+      setFailRows(Array.isArray(j) ? j : [])
+    } catch { message.error('拉取失败记录失败') }
+    setFailLoading(false)
   }
   async function openDetail(record: Order | string) {
     if (typeof record !== 'string') setDetail(record)
@@ -524,7 +835,7 @@ export default function OrdersPage() {
   }
 
   return (
-    <Card title="订单管理" extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}{hasPerm('order.manage') ? <Button loading={syncing} disabled={syncing} onClick={refreshAirbnbOrders}>手动刷新 Airbnb 订单</Button> : null}{hasPerm('order.manage') ? <Button disabled={previewLoading} onClick={previewTodayEmails}>预览今天邮件</Button> : null}</Space>}>
+    <Card title="订单管理" extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}{hasPerm('order.manage') ? <Button onClick={manualImportAirbnb}>手动导入 Airbnb 订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={openFailures}>失败订单邮件手动入库</Button> : null}</Space>}>
       <Space style={{ marginBottom: 12 }} wrap>
         <Radio.Group value={view} onChange={(e)=>setView(e.target.value)}>
           <Radio.Button value="list">列表</Radio.Button>
@@ -577,25 +888,52 @@ export default function OrdersPage() {
           columns={columns as any}
           dataSource={(function(){
             const ms = (monthFilter || dayjs()).startOf('month')
-            const input = String(codeQuery || '').trim()
-            const matchProp = (Array.isArray(properties) ? properties : []).find(pp => {
-              const label = pp.code || pp.address || pp.id
-              return String(label).toLowerCase() === input.toLowerCase()
-            })
-            const pidFilter = matchProp?.id
-            const baseSegs: (Order & { __rid?: string })[] = getMonthSegmentsForProperty(data as any, ms, pidFilter) as any
-            debugOnce(`ORDERS_LIST_DEBUG ${ms.format('YYYY-MM')} ${pidFilter || input}`, baseSegs.map(s => s.id))
-            return baseSegs.filter(o => {
+            const me = ms.add(1, 'month').startOf('month')
+            const input = String(codeQuery || '').trim().toLowerCase()
+            const baseSegs: (Order & { __rid?: string })[] = monthSegments(data as any, ms) as any
+            const rowsPrimary = baseSegs.filter(o => {
               const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
-              const codeOk = pidFilter ? String(o.property_id) === pidFilter : (!codeQuery || codeText.includes(codeQuery.trim().toLowerCase()))
+              const listingText = String((o as any).listing_name || '').toLowerCase()
+              const sourceText = String(o.source || '').toLowerCase()
+              const guestText = String(o.guest_name || '').toLowerCase()
+              const okText = !input || codeText.includes(input) || listingText.includes(input) || sourceText.includes(input) || guestText.includes(input)
               const rangeOk = !dateRange || (
                 (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
                 (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
               )
-              return codeOk && rangeOk
+              return okText && rangeOk
+            })
+            if (rowsPrimary.length) return rowsPrimary
+            // Fallback: 当月无分段数据时显示原始订单（仍按月份筛选），便于确认导入是否成功
+            const raw = (Array.isArray(data) ? data : []).map((o: any) => {
+              const ciStr = String(o.checkin || '').slice(0,10)
+              const coStr = String(o.checkout || '').slice(0,10)
+              const ci = dayjs(ciStr, 'YYYY-MM-DD', true)
+              const co = dayjs(coStr, 'YYYY-MM-DD', true)
+              const nights = (ci.isValid() && co.isValid()) ? Math.max(0, co.diff(ci, 'day')) : Number(o.nights || 0)
+              const price = Number(o.price || 0)
+              const cleaning = Number(o.cleaning_fee || 0)
+              const net = Number((price - cleaning).toFixed(2))
+              const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+              return { ...o, __rid: o.id, nights, net_income: net, avg_nightly_price: avg }
+            })
+            return raw.filter(o => {
+              const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
+              const listingText = String((o as any).listing_name || '').toLowerCase()
+              const sourceText = String(o.source || '').toLowerCase()
+              const guestText = String(o.guest_name || '').toLowerCase()
+              const okText = !input || codeText.includes(input) || listingText.includes(input) || sourceText.includes(input) || guestText.includes(input)
+              const ci = dayjs(String(o.checkin || '').slice(0,10))
+              const co = dayjs(String(o.checkout || '').slice(0,10))
+              const monthOverlap = ci.isValid() && co.isValid() ? (ci.isBefore(me) && co.isAfter(ms)) : true
+              const rangeOk = !dateRange || (
+                (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
+                (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
+              )
+              return okText && monthOverlap && rangeOk
             })
           })()}
-          pagination={{ pageSize: 10 }}
+          pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }}
           scroll={{ x: 'max-content' }}
         />
       ) : (
@@ -692,17 +1030,56 @@ export default function OrdersPage() {
         </Form.Item>
       </Form>
     </Modal>
-    <Modal open={previewOpen} onCancel={() => setPreviewOpen(false)} footer={null} title="Airbnb 邮件预览（今天）" width={1000}>
+    <Modal open={failOpen} onCancel={()=> setFailOpen(false)} footer={null} title="失败订单邮件（可手动入库）" width={1000}>
+      <Space style={{ marginBottom: 12 }}>
+        <Button size="small" onClick={openFailures} disabled={failLoading}>刷新</Button>
+      </Space>
+      <Table size="small" loading={failLoading} rowKey={(r:any)=> String(r.id||r.uid||'')} dataSource={failRows} pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }} scroll={{ x: 'max-content' }}
+        columns={[
+          { title: 'UID', dataIndex: 'uid' },
+          { title: '主题', dataIndex: 'subject', render: (v:any)=> <span style={{ wordBreak:'break-word' }}>{v||''}</span> },
+          { title: '确认码', dataIndex: 'confirmation_code' },
+          { title: '客人', dataIndex: 'guest_name' },
+          { title: 'Listing', dataIndex: 'listing_name', render: (v:any)=> <span style={{ wordBreak:'break-word' }}>{v||''}</span> },
+          { title: '入住', dataIndex: 'checkin', render: (v:any)=> fmtDay(v) },
+          { title: '退房', dataIndex: 'checkout', render: (v:any)=> fmtDay(v) },
+          { title: '天数', dataIndex: 'nights' },
+          { title: '总租金', dataIndex: 'price' },
+          { title: '清洁费', dataIndex: 'cleaning_fee' },
+          { title: '状态', dataIndex: 'status', render: (v:any)=> <Tag color="red">{String(v||'')}</Tag> },
+          { title: '房号', render: (_:any, r:any)=> (
+            <Select showSearch optionFilterProp="label" placeholder="选择房号" style={{ width: 220 }}
+              options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))}
+              onChange={(pid, opt)=>{ (r as any).__pid = pid; (r as any).__pcode = (opt as any)?.label }} />
+          ) },
+          { title: '操作', render: (_:any, r:any)=> (
+            <Space>
+              <Button size="small" type="primary" onClick={()=> manualInsertFromEmail(r)}>手动插入</Button>
+            </Space>
+          ) },
+        ] as any}
+      />
+    </Modal>
+    <Modal open={previewOpen} onCancel={() => setPreviewOpen(false)} footer={null} title="Airbnb 邮件预览" width={1000}>
       {previewStats ? (
         <Space style={{ marginBottom: 12 }}>
           <Tag color="blue">扫描 {Number(previewStats.scanned||0)}</Tag>
           <Tag color="green">命中 {Number(previewStats.matched||0)}</Tag>
+          <Tag color="gold">跳过 {Number(previewStats.skipped||0)}</Tag>
           <Tag>新增 {Number(previewStats.inserted||0)}</Tag>
-          <Tag>重复 {Number(previewStats.skipped_duplicate||0)}</Tag>
+          <Tag>重复 {Number(previewStats.duplicates||0)}</Tag>
           <Tag color="red">失败 {Number(previewStats.failed||0)}</Tag>
         </Space>
       ) : null}
-      <Table rowKey={(r:any)=> String(r.confirmation_code||'') + String(r.checkin||'')} dataSource={previewSamples} pagination={{ pageSize: 10 }} size="small" scroll={{ x: 'max-content' }} loading={previewLoading}
+      <Space style={{ marginBottom: 12 }}>
+        <Button size="small" type="primary" onClick={previewAllMatchedUids} disabled={previewLoading}>刷新</Button>
+        <Button size="small" danger onClick={ingestAllAutoUids} disabled={previewLoading}>正式导入全部</Button>
+      </Space>
+      <Space style={{ marginBottom: 12 }}>
+        <Button size="small" type="primary" onClick={previewAllMatchedUids} disabled={previewLoading}>刷新</Button>
+        <Button size="small" danger onClick={ingestAllAutoUids} disabled={previewLoading}>正式导入全部</Button>
+      </Space>
+      <Table rowKey={(r:any)=> String(r.confirmation_code||'') + String(r.checkin||'')} dataSource={rows} pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }} size="small" scroll={{ x: 'max-content' }} loading={previewLoading}
         columns={[
           { title: '确认码', dataIndex: 'confirmation_code' },
           { title: '客人', dataIndex: 'guest_name' },
@@ -710,13 +1087,91 @@ export default function OrdersPage() {
           { title: '入住', dataIndex: 'checkin' },
           { title: '退房', dataIndex: 'checkout' },
           { title: '天数', dataIndex: 'nights' },
-          { title: 'You earn', dataIndex: 'price' },
+          { title: 'You earn', dataIndex: 'youEarn' },
           { title: '清洁费', dataIndex: 'cleaning_fee' },
           { title: '净收入', dataIndex: 'net_income' },
           { title: '晚均价', dataIndex: 'avg_nightly_price' },
-          { title: '房号匹配', dataIndex: 'property_match', render: (v:any)=> v ? <Tag color="green">已匹配</Tag> : <Tag color="red">未匹配</Tag> },
+          { title: '房号匹配', dataIndex: 'property_match', render: (v:any)=> (v===true ? <Tag color="green">已匹配</Tag> : <Tag color="red">未匹配</Tag>) },
         ] as any}
       />
+      <Card size="small" style={{ marginTop: 12 }}>
+        <Tabs items={[
+          {
+            key: 'current',
+            label: `本次导入失败（${previewFailures.filter((x:any)=> String(x?.status||'') !== 'resolved').length}）`,
+            children: (
+              <Table rowKey={(r:any)=> String(r.uid||'') + String(r.subject||'')} dataSource={previewFailures.filter((x:any)=> String(x?.status||'') !== 'resolved')} pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }} size="small" scroll={{ x: 'max-content' }}
+                columns={[
+                  { title: 'UID', dataIndex: 'uid' },
+                  { title: '主题', dataIndex: 'subject', render: (v:any)=> <span style={{ wordBreak:'break-word' }}>{v||''}</span> },
+                  { title: '发件人', dataIndex: 'from' },
+                  { title: '日期', dataIndex: 'date' },
+                  { title: '阶段', dataIndex: 'stage' },
+                  { title: '原因代码', dataIndex: 'reason', render: (v:any)=> <Tag color="red">{v}</Tag> },
+                  { title: '原因描述', dataIndex: 'reason_message' },
+                  { title: '解析预览', dataIndex: 'parse_preview', render: (v:any)=> <span style={{ wordBreak:'break-word' }}>{v||''}</span> },
+                  { title: '房号', render: (_:any, r:any)=> (
+                    <Select showSearch optionFilterProp="label" placeholder="选择房号" style={{ width: 220 }}
+                      options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))}
+                      onChange={(pid)=>{ (r as any).__pid = pid }} />
+                  ) },
+                  { title: '操作', render: (_:any, r:any)=> (
+                    <Space>
+                      <Button size="small" onClick={()=> selfCheckUid(Number(r?.uid))}>自检</Button>
+                      <Button size="small" type="primary" onClick={()=> manualInsertFromEmail(r)}>手动插入</Button>
+                    </Space>
+                  ) },
+                ] as any}
+              />
+            )
+          },
+          {
+            key: 'history',
+            label: `历史失败（${previewFailuresHistory.length}）`,
+            children: (
+              <Table rowKey={(r:any)=> String(r.uid||'') + String(r.subject||'') + String(r.created_at||'')} dataSource={previewFailuresHistory} pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }} size="small" scroll={{ x: 'max-content' }}
+                columns={[
+                  { title: 'UID', dataIndex: 'uid' },
+                  { title: '主题', dataIndex: 'subject', render: (v:any)=> <span style={{ wordBreak:'break-word' }}>{v||''}</span> },
+                  { title: '发件人', dataIndex: 'sender' },
+                  { title: '日期', dataIndex: 'email_date' },
+                  { title: '阶段', dataIndex: 'stage' },
+                  { title: '原因代码', dataIndex: 'reason_code', render: (v:any)=> <Tag color="red">{v}</Tag> },
+                  { title: '原因描述', dataIndex: 'reason_message' },
+                  { title: '状态', dataIndex: 'status', render: (v:any)=> v==='resolved'? <Tag color="green">resolved</Tag> : <Tag>unresolved</Tag> },
+                  { title: '解析预览', dataIndex: 'parse_preview', render: (v:any)=> <span style={{ wordBreak:'break-word' }}>{v||''}</span> },
+                ] as any}
+              />
+            )
+          }
+        ]} />
+      </Card>
+      <Card size="small" style={{ marginTop: 12 }} title={`跳过详情（${previewSkips.length}）`}>
+        <Table rowKey={(r:any)=> String(r.uid||'') + String(r.subject||'')} dataSource={previewSkips} pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }} size="small" scroll={{ x: 'max-content' }}
+          columns={[
+            { title: 'UID', dataIndex: 'uid' },
+            { title: '主题', dataIndex: 'subject', render: (v:any)=> <span style={{ wordBreak:'break-word' }}>{v||''}</span> },
+            { title: '发件人', dataIndex: 'from' },
+            { title: '日期', dataIndex: 'date' },
+            { title: '原因', dataIndex: 'reason', render: (v:any)=> <Tag>{String(v||'')}</Tag> },
+          ] as any}
+        />
+      </Card>
+    </Modal>
+    <Modal open={selfCheckOpen} onCancel={()=> setSelfCheckOpen(false)} footer={null} title="指定 UID 自检" width={900}>
+      <Descriptions bordered size="small" column={1}>
+        <Descriptions.Item label="Job ID">{selfCheckData?.job_id || ''}</Descriptions.Item>
+        <Descriptions.Item label="统计">扫描 {Number(selfCheckData?.scanned||0)}，命中 {Number(selfCheckData?.matched||0)}，插入 {Number(selfCheckData?.inserted||0)}，失败 {Number(selfCheckData?.failed||0)}</Descriptions.Item>
+      </Descriptions>
+      <Card style={{ marginTop: 12 }} size="small" title="阶段日志">
+        <pre style={{ whiteSpace:'pre-wrap' }}>{JSON.stringify(selfCheckData?.stage_logs || [], null, 2)}</pre>
+      </Card>
+      <Card style={{ marginTop: 12 }} size="small" title="解析结果">
+        <pre style={{ whiteSpace:'pre-wrap' }}>{JSON.stringify(selfCheckData?.parsed_results || [], null, 2)}</pre>
+      </Card>
+      <Card style={{ marginTop: 12 }} size="small" title="失败详情">
+        <pre style={{ whiteSpace:'pre-wrap' }}>{JSON.stringify(selfCheckData?.failed_details || [], null, 2)}</pre>
+      </Card>
     </Modal>
     <Modal open={editOpen} onCancel={() => setEditOpen(false)} onOk={async () => {
         const v = await editForm.validateFields()
