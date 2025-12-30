@@ -353,16 +353,16 @@ export default function PropertiesPage() {
             <Col span={8}><Form.Item label="区域"><Input value={detail?.region} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="房源分类"><Input value={detail?.biz_category === 'leased' ? '包租房源' : (detail?.biz_category === 'management_fee' ? '管理费房源' : '')} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="卧室空调"><Input value={detail?.bedroom_ac === 'none' ? '无' : (detail?.bedroom_ac === 'master_only' ? '主卧有' : (detail?.bedroom_ac === 'both' ? '两个卧室都有' : ''))} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="Airbnb Listing 名称"><Input value={detail?.airbnb_listing_name || ''} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="Booking.com Listing 名称"><Input value={detail?.booking_listing_name || ''} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="其他平台 Listing 名称"><Input value={detail?.listing_names?.other || ''} readOnly /></Form.Item></Col>
-            <Col span={24}><Form.Item label="地址"><Input value={detail?.address} readOnly /></Form.Item></Col>
+            <Col span={8}><Form.Item label="Airbnb Listing 名称"><Input.TextArea value={detail?.airbnb_listing_name || ''} readOnly autoSize={{ minRows: 1, maxRows: 3 }} style={{ wordBreak: 'break-word' }} /></Form.Item></Col>
+            <Col span={8}><Form.Item label="Booking.com Listing 名称"><Input.TextArea value={detail?.booking_listing_name || ''} readOnly autoSize={{ minRows: 1, maxRows: 3 }} style={{ wordBreak: 'break-word' }} /></Form.Item></Col>
+            <Col span={8}><Form.Item label="其他平台 Listing 名称"><Input.TextArea value={detail?.listing_names?.other || ''} readOnly autoSize={{ minRows: 1, maxRows: 3 }} style={{ wordBreak: 'break-word' }} /></Form.Item></Col>
+            <Col span={24}><Form.Item label="地址"><Input.TextArea value={detail?.address} readOnly autoSize={{ minRows: 1, maxRows: 3 }} style={{ wordBreak: 'break-word' }} /></Form.Item></Col>
             <Col span={8}><Form.Item label="房型"><Input value={detail?.type} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="可住人数"><Input value={detail?.capacity?.toString()} readOnly /></Form.Item></Col>
             <Col span={8}><Form.Item label="面积(㎡)"><Input value={detail?.area_sqm?.toString()} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="入住指南链接"><Input value={detail?.access_guide_link} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="车库指南链接"><Input value={detail?.garage_guide_link} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="床型配置"><Input value={detail?.bed_config} readOnly /></Form.Item></Col>
+            <Col span={8}><Form.Item label="入住指南链接"><Input.TextArea value={detail?.access_guide_link} readOnly autoSize={{ minRows: 1, maxRows: 3 }} style={{ wordBreak: 'break-all' }} /></Form.Item></Col>
+            <Col span={8}><Form.Item label="车库指南链接"><Input.TextArea value={detail?.garage_guide_link} readOnly autoSize={{ minRows: 1, maxRows: 3 }} style={{ wordBreak: 'break-all' }} /></Form.Item></Col>
+            <Col span={8}><Form.Item label="床型配置"><Input.TextArea value={detail?.bed_config} readOnly autoSize={{ minRows: 1, maxRows: 4 }} style={{ wordBreak: 'break-word' }} /></Form.Item></Col>
           </Row>
           <Divider orientation="left">房源大楼信息</Divider>
           <Row gutter={[16,16]}>
@@ -389,7 +389,7 @@ export default function PropertiesPage() {
           <Space>
             <Tag>创建时间: {detail?.created_at || ''}</Tag>
             <Tag>最后修改: {detail?.updated_at || ''}</Tag>
-            {detail?.updated_by ? <Tag>修改人: {detail?.updated_by}</Tag> : null}
+            {detail?.updated_by || detail?.updated_by_name ? <Tag>修改人: {detail?.updated_by_name || detail?.updated_by}</Tag> : null}
           </Space>
         </Form>
       </Modal>
