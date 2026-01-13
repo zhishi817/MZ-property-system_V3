@@ -65,6 +65,7 @@ export default function OrdersPage() {
   const [selfCheckOpen, setSelfCheckOpen] = useState(false)
   const [selfCheckLoading, setSelfCheckLoading] = useState(false)
   const [selfCheckData, setSelfCheckData] = useState<any | null>(null)
+  const [syncing, setSyncing] = useState(false)
   function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
   function getPropertyCodeLabel(o: Order) {
     const p = getPropertyById(o.property_id)
@@ -150,44 +151,36 @@ export default function OrdersPage() {
   async function load() {
     const res = await getJSON<Order[]>('/orders')
     setData(res)
+    try {
+      const dates = (Array.isArray(res) ? res : []).map(o => {
+        const s = String(o.checkin || '').slice(0,10)
+        return s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? dayjs(s) : null
+      }).filter(Boolean) as any[]
+      if (dates.length) {
+        let latest = dates[0]
+        for (let i = 1; i < dates.length; i++) { if (dates[i].isAfter(latest)) latest = dates[i] }
+        setMonthFilter(latest.startOf('month'))
+      }
+    } catch {}
   }
   
 
-  async function manualImportAirbnb() {
+  async function manualSyncOrders() {
     try {
-      const res = await fetch(`${API_BASE}/jobs/email-import/manual`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ limit: 50 }) })
-      const j = await res.json().catch(() => null)
-      if (res.ok) {
-        const s = j?.summary || {}
-        message.success(`导入完成：新增 ${Number(s.inserted||0)}，更新 ${Number(s.updated||0)}，跳过 ${Number(s.skipped||0)}，失败 ${Number(s.failed||0)}`)
-        try {
-          const fails = Array.isArray(j?.details) ? (j.details as any[]) : []
-          const list = fails.filter(d => d?.status === 'failed')
-          if (list.length) {
-            const parts: Record<string, number> = {}
-            list.forEach(d => { const r = String(d?.reason||'unknown'); parts[r] = (parts[r]||0) + 1; const extra = d?.db_code ? ` db_code=${d.db_code} db_msg=${d.db_message||''}` : '' ; console.warn(`[导入失败] uid=${d?.uid} 主题=${d?.subject||''} 原因=${r}${extra}`) })
-            const summaryText = Object.keys(parts).map(k => `${k}:${parts[k]}`).join(', ')
-            if (summaryText) message.info(`失败 ${list.length}（${summaryText}）`)
-          }
-        } catch {}
-        try {
-          const arr = await getJSON<Order[]>('/orders')
-          setData(arr)
-          const dates = arr.map(o => { const s = String(o.checkin||'').slice(0,10); return s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? dayjs(s) : null }).filter(Boolean) as any[]
-          if (dates.length) {
-            let latest = dates[0]
-            for (let i = 1; i < dates.length; i++) { if (dates[i].isAfter(latest)) latest = dates[i] }
-            setMonthFilter(latest.startOf('month'))
-          }
-        } catch {
-          load()
-        }
-      } else {
-        message.error(j?.message || `导入失败（HTTP ${res.status}）`)
+      setSyncing(true)
+      const body = { mode: 'incremental', max_per_run: 50, max_messages: 50, batch_size: 20, concurrency: 3, batch_sleep_ms: 500 }
+      const res = await fetch(`${API_BASE}/jobs/email-sync/run`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+      const j = await res.json().catch(()=>null)
+      if (res.status === 409) {
+        const r = String(j?.reason||'')
+        if (r==='cooldown') message.warning(`冷却中，cooldown_until=${String(j?.cooldown_until||'')}`)
+        else if (r==='min_interval') message.warning(`未到最小间隔，next_allowed_at=${String(j?.next_allowed_at||'')}`)
+        else message.warning(`有任务正在运行，运行开始时间=${String(j?.running_since||'')}`)
       }
-    } catch (e: any) {
-      message.error('导入失败')
-    }
+      else if (res.status === 429) { message.warning(`冷却中，cooldown_until=${String(j?.cooldown_until||'')}`) }
+      else if (res.ok) { message.success('已触发手动同步'); load() }
+      else { message.error(j?.message || `触发失败（HTTP ${res.status}）`) }
+    } catch { message.error('触发失败') } finally { setSyncing(false) }
   }
   async function previewTodayEmails() {
     if (previewLoading) return
@@ -296,6 +289,7 @@ export default function OrdersPage() {
       .split(',')
       .map(s => Number(s.trim()))
       .filter(n => Number.isFinite(n))
+      .slice(0, 50)
     if (!ids.length) { message.warning('请输入 UID 列表，例如：74258,74259'); return }
     setPreviewOpen(true)
     setPreviewLoading(true)
@@ -343,6 +337,7 @@ export default function OrdersPage() {
       .split(',')
       .map(s => Number(s.trim()))
       .filter(n => Number.isFinite(n))
+      .slice(0, 50)
     if (!ids.length) { message.warning('请输入 UID 列表，例如：74258,74259'); return }
     setPreviewOpen(true)
     setPreviewLoading(true)
@@ -389,7 +384,7 @@ export default function OrdersPage() {
     if (previewLoading) return
     setPreviewLoading(true)
     try {
-      const body = { mode: 'list_uids_first', first_limit: 200, preview_limit: 500, limit: 500, max_messages: 250, job_timeout_ms: 60000 }
+      const body = { mode: 'list_uids_first', first_limit: 50, preview_limit: 50, limit: 50, max_messages: 50, job_timeout_ms: 60000 }
       const res = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
       const j = await res.json().catch(() => null)
       if (res.status === 409) {
@@ -835,7 +830,7 @@ export default function OrdersPage() {
   }
 
   return (
-    <Card title="订单管理" extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}{hasPerm('order.manage') ? <Button onClick={manualImportAirbnb}>手动导入 Airbnb 订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={openFailures}>失败订单邮件手动入库</Button> : null}</Space>}>
+    <Card title="订单管理" extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}{hasPerm('order.manage') ? <Button onClick={manualSyncOrders} disabled={syncing}>手动同步订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={openFailures}>失败订单邮件手动入库</Button> : null}</Space>}>
       <Space style={{ marginBottom: 12 }} wrap>
         <Radio.Group value={view} onChange={(e)=>setView(e.target.value)}>
           <Radio.Button value="list">列表</Radio.Button>
@@ -1404,3 +1399,4 @@ export default function OrdersPage() {
           <Form.Item name="payment_currency" label="付款币种" initialValue="AUD">
             <Select options={[{ value: 'AUD', label: 'AUD' }, { value: 'RMB', label: 'RMB' }, { value: 'USD', label: 'USD' }, { value: 'EUR', label: 'EUR' }, { value: 'OTHER', label: 'Other' }]} />
           </Form.Item>
+  

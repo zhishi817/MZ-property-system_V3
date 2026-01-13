@@ -65,7 +65,9 @@ export default function PropertyDetail({ params }: { params: { id: string } }) {
   }
 
   return (
-    <Card title="房源详情">
+    <Card title="房源详情" extra={<Space>
+      <Button onClick={() => { window.location.href = `/properties/${params.id}/onboarding` }}>房源上新</Button>
+    </Space>}>
       <Form form={form} layout="vertical" disabled={!hasPerm('property.write')}>
         <Form.Item label="房号"><Input value={data?.code} readOnly /></Form.Item>
         <Form.Item name="address" label="地址" rules={[{ required: true }]}><Input /></Form.Item>

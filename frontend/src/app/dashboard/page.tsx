@@ -128,10 +128,17 @@ export default function DashboardPage() {
   })
 
   const platformShare = useMemo(() => {
+    const normalize = (s?: string) => {
+      const k = (s || 'other').trim().toLowerCase()
+      if (k.startsWith('airbnb')) return 'airbnb'
+      if (k.startsWith('booking')) return 'booking'
+      if (k === 'offline') return 'offline'
+      return 'other'
+    }
     const byKey: Record<string, number> = {}
     for (const o of orders) {
-      const k = (o.source || 'other').toLowerCase()
-      byKey[k] = (byKey[k] || 0) + Number(o.price || 0)
+      const key = normalize(o.source)
+      byKey[key] = (byKey[key] || 0) + Number(o.price || 0)
     }
     const total = Object.values(byKey).reduce((s, v) => s + v, 0)
     const rows = Object.entries(byKey).map(([key, value]) => ({ key, value, ratio: total > 0 ? (value / total) : 0, percent: total > 0 ? Math.round((value / total) * 100) : 0 }))

@@ -7,44 +7,49 @@ export const hasPg = !!pgPool
 function buildWhere(filters?: Record<string, any>) {
   const keys = Object.keys(filters || {})
   if (!keys.length) return { clause: '', values: [] as any[] }
-  const parts = keys.map((k, i) => `${k} = $${i + 1}`)
-  const values = keys.map((k) => (filters as any)[k])
+  const parts = keys.map((k, i) => `"${k}" = $${i + 1}`)
+  const rawValues = keys.map((k) => (filters as any)[k])
+  const values = rawValues.map((v) => (v === undefined ? null : v))
   return { clause: ` WHERE ${parts.join(' AND ')}`, values }
 }
 
-export async function pgSelect(table: string, columns = '*', filters?: Record<string, any>) {
-  if (!pgPool) return null
+export async function pgSelect(table: string, columns = '*', filters?: Record<string, any>, client?: any) {
+  const executor = client || pgPool
+  if (!executor) return null
   const w = buildWhere(filters)
   const sql = `SELECT ${columns} FROM ${table}${w.clause}`
-  const res = await pgPool.query(sql, w.values)
+  const res = await executor.query(sql, w.values)
   return res.rows
 }
 
-export async function pgInsert(table: string, payload: Record<string, any>) {
-  if (!pgPool) return null
+export async function pgInsert(table: string, payload: Record<string, any>, client?: any) {
+  const executor = client || pgPool
+  if (!executor) return null
   const keys = Object.keys(payload)
-  const cols = keys.join(',')
+  const cols = keys.map(k => `"${k}"`).join(',')
   const placeholders = keys.map((_, i) => `$${i + 1}`).join(',')
-  const values = keys.map((k) => payload[k])
+  const values = keys.map((k) => payload[k]).map(v => (v === undefined ? null : v))
   const sql = `INSERT INTO ${table} (${cols}) VALUES (${placeholders}) RETURNING *`
-  const res = await pgPool.query(sql, values)
+  const res = await executor.query(sql, values)
   return res.rows[0]
 }
 
-export async function pgUpdate(table: string, id: string, payload: Record<string, any>) {
-  if (!pgPool) return null
-  const keys = Object.keys(payload)
-  const set = keys.map((k, i) => `${k} = $${i + 1}`).join(', ')
-  const values = keys.map((k) => payload[k])
+export async function pgUpdate(table: string, id: string, payload: Record<string, any>, client?: any) {
+  const executor = client || pgPool
+  if (!executor) return null
+  const keys = Object.keys(payload).filter(k => payload[k] !== undefined)
+  const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ')
+  const values = keys.map((k) => payload[k]).map(v => (v === undefined ? null : v))
   const sql = `UPDATE ${table} SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
-  const res = await pgPool.query(sql, [...values, id])
+  const res = await executor.query(sql, [...values, id])
   return res.rows[0]
 }
 
-export async function pgDelete(table: string, id: string) {
-  if (!pgPool) return null
+export async function pgDelete(table: string, id: string, client?: any) {
+  const executor = client || pgPool
+  if (!executor) return null
   const sql = `DELETE FROM ${table} WHERE id = $1 RETURNING *`
-  const res = await pgPool.query(sql, [id])
+  const res = await executor.query(sql, [id])
   return res.rows[0]
 }
 
@@ -67,10 +72,10 @@ export async function pgRunInTransaction<T>(cb: (client: any) => Promise<T>) {
 export async function pgInsertOnConflictDoNothing(table: string, payload: Record<string, any>, conflictColumns: string[], client?: any) {
   if (!pgPool) return null
   const keys = Object.keys(payload)
-  const cols = keys.join(',')
+  const cols = keys.map(k => `"${k}"`).join(',')
   const placeholders = keys.map((_, i) => `$${i + 1}`).join(',')
-  const values = keys.map((k) => payload[k])
-  const conflict = conflictColumns.join(',')
+  const values = keys.map((k) => payload[k]).map(v => (v === undefined ? null : v))
+  const conflict = conflictColumns.map(k => `"${k}"`).join(',')
   const sql = `INSERT INTO ${table} (${cols}) VALUES (${placeholders}) ON CONFLICT (${conflict}) DO NOTHING RETURNING *`
   const executor = client || pgPool
   const res = await executor.query(sql, values)

@@ -174,7 +174,7 @@ app.use('/version', version_1.router);
 app.use('/maintenance', maintenance_1.default);
 app.use('/jobs', jobs_1.router);
 app.use('/public', public_admin_1.default);
-const port = process.env.PORT ? Number(process.env.PORT) : 4001;
+const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001);
 app.listen(port, () => {
     console.log(`Server listening on port ${port}`);
     console.log(`[DataSources] pg=${dbAdapter_1.hasPg}`);
@@ -187,4 +187,44 @@ app.listen(port, () => {
         }
     }
     catch (_a) { }
+    try {
+        const enabled = String(process.env.EMAIL_SYNC_ENABLED || 'false').toLowerCase() === 'true';
+        const interval = Number(process.env.EMAIL_SYNC_INTERVAL_MS || 300000);
+        if (enabled && dbAdapter_1.hasPg) {
+            console.log(`[EmailSyncScheduler] enabled interval_ms=${interval}`);
+            const tick = async () => {
+                try {
+                    console.log(`[EmailSyncScheduler] tick at ${new Date().toISOString()}`);
+                    await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', max_per_run: Number(process.env.EMAIL_SYNC_MAX_PER_RUN || 100), batch_size: Number(process.env.EMAIL_SYNC_BATCH_SIZE || 20), concurrency: Number(process.env.EMAIL_SYNC_CONCURRENCY || 3), batch_sleep_ms: Number(process.env.EMAIL_SYNC_BATCH_SLEEP_MS || 500), min_interval_ms: Number(process.env.EMAIL_SYNC_MIN_INTERVAL_MS || 60000) });
+                }
+                catch (e) {
+                    console.error(`[EmailSyncScheduler] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                }
+            };
+            // initial run shortly after start
+            setTimeout(tick, 5000);
+            setInterval(tick, Math.max(60000, interval));
+        }
+        else {
+            console.log(`[EmailSyncScheduler] disabled`);
+        }
+    }
+    catch (e) {
+        console.error(`[EmailSyncScheduler] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+    }
+    ;
+    (async () => {
+        var _a, _b, _c, _d, _e, _f, _g, _h;
+        try {
+            if (dbAdapter_1.hasPg) {
+                const r1 = await dbAdapter_1.pgPool.query('SELECT current_database() AS db, current_schema AS schema');
+                const r2 = await dbAdapter_1.pgPool.query('SHOW search_path');
+                const r3 = await dbAdapter_1.pgPool.query('SELECT current_schemas(true) AS schemas');
+                console.log(`[DBInfo] current_database=${String(((_b = (_a = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.db) || '')} current_schema=${String(((_d = (_c = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _c === void 0 ? void 0 : _c[0]) === null || _d === void 0 ? void 0 : _d.schema) || '')} search_path=${String(((_f = (_e = r2 === null || r2 === void 0 ? void 0 : r2.rows) === null || _e === void 0 ? void 0 : _e[0]) === null || _f === void 0 ? void 0 : _f.search_path) || '')} current_schemas=${JSON.stringify(((_h = (_g = r3 === null || r3 === void 0 ? void 0 : r3.rows) === null || _g === void 0 ? void 0 : _g[0]) === null || _h === void 0 ? void 0 : _h.schemas) || [])}`);
+            }
+        }
+        catch (e) {
+            console.error(`[DBInfo] query failed message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+        }
+    })();
 });

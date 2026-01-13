@@ -20,40 +20,44 @@ function buildWhere(filters) {
     const values = keys.map((k) => filters[k]);
     return { clause: ` WHERE ${parts.join(' AND ')}`, values };
 }
-async function pgSelect(table, columns = '*', filters) {
-    if (!exports.pgPool)
+async function pgSelect(table, columns = '*', filters, client) {
+    const executor = client || exports.pgPool;
+    if (!executor)
         return null;
     const w = buildWhere(filters);
     const sql = `SELECT ${columns} FROM ${table}${w.clause}`;
-    const res = await exports.pgPool.query(sql, w.values);
+    const res = await executor.query(sql, w.values);
     return res.rows;
 }
-async function pgInsert(table, payload) {
-    if (!exports.pgPool)
+async function pgInsert(table, payload, client) {
+    const executor = client || exports.pgPool;
+    if (!executor)
         return null;
     const keys = Object.keys(payload);
     const cols = keys.join(',');
     const placeholders = keys.map((_, i) => `$${i + 1}`).join(',');
     const values = keys.map((k) => payload[k]);
     const sql = `INSERT INTO ${table} (${cols}) VALUES (${placeholders}) RETURNING *`;
-    const res = await exports.pgPool.query(sql, values);
+    const res = await executor.query(sql, values);
     return res.rows[0];
 }
-async function pgUpdate(table, id, payload) {
-    if (!exports.pgPool)
+async function pgUpdate(table, id, payload, client) {
+    const executor = client || exports.pgPool;
+    if (!executor)
         return null;
     const keys = Object.keys(payload);
     const set = keys.map((k, i) => `${k} = $${i + 1}`).join(', ');
     const values = keys.map((k) => payload[k]);
     const sql = `UPDATE ${table} SET ${set} WHERE id = $${keys.length + 1} RETURNING *`;
-    const res = await exports.pgPool.query(sql, [...values, id]);
+    const res = await executor.query(sql, [...values, id]);
     return res.rows[0];
 }
-async function pgDelete(table, id) {
-    if (!exports.pgPool)
+async function pgDelete(table, id, client) {
+    const executor = client || exports.pgPool;
+    if (!executor)
         return null;
     const sql = `DELETE FROM ${table} WHERE id = $1 RETURNING *`;
-    const res = await exports.pgPool.query(sql, [id]);
+    const res = await executor.query(sql, [id]);
     return res.rows[0];
 }
 async function pgRunInTransaction(cb) {

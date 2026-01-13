@@ -19,7 +19,9 @@ import { router as auditsRouter } from './modules/audits'
 import { router as rbacRouter } from './modules/rbac'
 import { router as versionRouter } from './modules/version'
 import maintenanceRouter from './modules/maintenance'
-import { router as jobsRouter } from './modules/jobs'
+import { router as propertyOnboardingRouter } from './modules/propertyOnboarding'
+import { router as jobsRouter, runEmailSyncJob } from './modules/jobs'
+import cron from 'node-cron'
 import crudRouter from './modules/crud'
 import recurringRouter from './modules/recurring'
 import { auth } from './auth'
@@ -160,8 +162,9 @@ app.use('/version', versionRouter)
 app.use('/maintenance', maintenanceRouter)
 app.use('/jobs', jobsRouter)
 app.use('/public', publicAdminRouter)
+app.use('/onboarding', propertyOnboardingRouter)
 
-const port = process.env.PORT ? Number(process.env.PORT) : 4001
+const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001)
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`)
   console.log(`[DataSources] pg=${hasPg}`)
@@ -173,4 +176,87 @@ app.listen(port, () => {
       console.log(`[PG] host=${u.hostname} db=${db}`)
     }
   } catch {}
+  try {
+    const defaultEnabled = (process.env.NODE_ENV === 'production')
+    const enabled = String(process.env.EMAIL_SYNC_SCHEDULE_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true'
+    const expr = String(process.env.EMAIL_SYNC_CRON || '0 */3 * * *')
+    if (enabled && hasPg) {
+      console.log(`[email-sync][schedule] enabled cron=${expr}`)
+      const task = cron.schedule(expr, async () => {
+        const started = Date.now()
+        try {
+          const key = 987654321
+          const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [key])
+          const ok = !!(lock?.rows?.[0]?.ok)
+          if (!ok) { console.log('[email-sync][schedule] skipped_reason=already_running'); return }
+          const res = await runEmailSyncJob({ mode: 'incremental', trigger_source: 'schedule', max_per_run: Number(process.env.EMAIL_SYNC_MAX_PER_RUN || 100), batch_size: Number(process.env.EMAIL_SYNC_BATCH_SIZE || 20), concurrency: Number(process.env.EMAIL_SYNC_CONCURRENCY || 3), batch_sleep_ms: Number(process.env.EMAIL_SYNC_BATCH_SLEEP_MS || 500), min_interval_ms: Number(process.env.EMAIL_SYNC_MIN_INTERVAL_MS || 60000) })
+          const dur = Date.now() - started
+          const s = (res?.stats || {})
+          console.log(`[email-sync][schedule] scanned=${s.scanned||0} inserted=${s.inserted||0} skipped=${s.skipped_duplicate||0} failed=${s.failed||0} duration_ms=${dur}`)
+          try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [key]) } catch {}
+        } catch (e: any) {
+          console.error(`[email-sync][schedule] error message=${String(e?.message || '')}`)
+        }
+      }, { scheduled: true })
+      task.start()
+
+      // Watchdog: every 10 minutes retry recent failed UIDs
+      const wd = cron.schedule('*/10 * * * *', async () => {
+        try {
+          const key = 987654321
+          const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [key])
+          const ok = !!(lock?.rows?.[0]?.ok)
+          if (!ok) return
+          // collect recent failed uids per account; exclude duplicates/already_running
+          const sql = `
+            WITH cand AS (
+              SELECT account, uid FROM email_orders_raw WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
+              UNION ALL
+              SELECT account, uid FROM email_sync_items WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
+            )
+            SELECT DISTINCT c.account, c.uid
+            FROM cand c
+            WHERE NOT EXISTS (
+              SELECT 1 FROM email_sync_items e
+              WHERE e.account = c.account AND e.uid = c.uid AND e.status='skipped' AND e.reason IN ('duplicate','already_running','db_error')
+            )
+            ORDER BY c.account DESC, c.uid DESC
+            LIMIT 200`
+          const rs = await pgPool!.query(sql)
+          const groups: Record<string, number[]> = {}
+          for (const r of (rs?.rows || [])) {
+            const acc = String(r.account || '')
+            const uid = Number(r.uid || 0)
+            if (!acc || !uid) continue
+            if (!groups[acc]) groups[acc] = []
+            if (groups[acc].length < 50) groups[acc].push(uid)
+          }
+          for (const acc of Object.keys(groups)) {
+            const uids = groups[acc]
+            if (!uids.length) continue
+            console.log(`[email-sync][watchdog] retry account=${acc} uids=${uids.length}`)
+            try { await runEmailSyncJob({ mode: 'incremental', trigger_source: 'watchdog_retry_failed', account: acc, uids, min_interval_ms: 0, max_per_run: uids.length, batch_size: Math.min(10, uids.length), concurrency: 1, batch_sleep_ms: 0 }) } catch (e: any) { console.error(`[email-sync][watchdog] account=${acc} error=${String(e?.message || '')}`) }
+          }
+          try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [key]) } catch {}
+        } catch (e: any) { console.error(`[email-sync][watchdog] error=${String(e?.message || '')}`) }
+      }, { scheduled: true })
+      wd.start()
+    } else {
+      console.log('[email-sync][schedule] disabled')
+    }
+  } catch (e: any) {
+    console.error(`[email-sync][schedule] init error message=${String(e?.message || '')}`)
+  }
+  ;(async () => {
+    try {
+      if (hasPg) {
+        const r1 = await pgPool!.query('SELECT current_database() AS db, current_schema AS schema')
+        const r2 = await pgPool!.query('SHOW search_path')
+        const r3 = await pgPool!.query('SELECT current_schemas(true) AS schemas')
+        console.log(`[DBInfo] current_database=${String(r1?.rows?.[0]?.db||'')} current_schema=${String(r1?.rows?.[0]?.schema||'')} search_path=${String(r2?.rows?.[0]?.search_path||'')} current_schemas=${JSON.stringify(r3?.rows?.[0]?.schemas||[])}`)
+      }
+    } catch (e: any) {
+      console.error(`[DBInfo] query failed message=${String(e?.message || '')}`)
+    }
+  })()
 })

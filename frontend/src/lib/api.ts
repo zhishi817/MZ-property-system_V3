@@ -37,7 +37,22 @@ export async function postJSON<T>(path: string, body: any): Promise<T> {
 
 export async function patchJSON<T>(path: string, body: any): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok) {
+    try {
+      const ct = res.headers.get('content-type') || ''
+      if (/application\/json/i.test(ct)) {
+        const j = await res.json() as any
+        const msg = String(j?.message || j?.error || `HTTP ${res.status}`)
+        throw new Error(msg)
+      } else {
+        const t = await res.text()
+        const msg = t ? t : `HTTP ${res.status}`
+        throw new Error(msg)
+      }
+    } catch {
+      throw new Error(`HTTP ${res.status}`)
+    }
+  }
   return res.json() as Promise<T>
 }
 
