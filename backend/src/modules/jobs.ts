@@ -891,6 +891,8 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
   const result = await (async () => {
     const propIdx = await loadPropertyIndex()
     const stats = { scanned: 0, matched: 0, inserted: 0, skipped_duplicate: 0, failed: 0 }
+    const skippedReasons: Record<string, number> = {}
+    const failedReasons: Record<string, number> = {}
     const failedDetails: Array<{ uid: number; subject?: string; from?: string; reason?: string }> = []
     const { ImapFlow } = require('imapflow')
     await ensureEmailSyncItemsTables()

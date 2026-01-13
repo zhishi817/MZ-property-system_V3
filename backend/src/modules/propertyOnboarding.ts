@@ -721,7 +721,7 @@ router.post('/:id/merge-pdf', requireAnyPerm(['onboarding.manage','onboarding.re
     const merged = await PDFDocument.create()
     const baseDoc = await PDFDocument.load(baseBuf)
     const basePages = await merged.copyPages(baseDoc, baseDoc.getPageIndices())
-    basePages.forEach(p => merged.addPage(p))
+    basePages.forEach((p: any) => merged.addPage(p))
     let atts: any[] = []
     if (hasPg) {
       const rows = await pgSelect('property_onboarding_attachments', '*', { onboarding_id: id })
@@ -777,7 +777,7 @@ router.post('/:id/merge-pdf', requireAnyPerm(['onboarding.manage','onboarding.re
         try {
           const doc = await PDFDocument.load(buf)
           const pages = await merged.copyPages(doc, doc.getPageIndices())
-          pages.forEach(p => merged.addPage(p))
+          pages.forEach((p: any) => merged.addPage(p))
         } catch {}
       }
     }
@@ -819,7 +819,7 @@ router.post('/:id/merge-pdf-binary', requireAnyPerm(['onboarding.manage','onboar
     const merged = await PDFDocument.create()
     const baseDoc = await PDFDocument.load(baseBuf)
     const basePages = await merged.copyPages(baseDoc, baseDoc.getPageIndices())
-    basePages.forEach(p => merged.addPage(p))
+    basePages.forEach((p: any) => merged.addPage(p))
     let atts: any[] = []
     if (hasPg) {
       const rows = await pgSelect('property_onboarding_attachments', '*', { onboarding_id: id })
@@ -873,9 +873,9 @@ router.post('/:id/merge-pdf-binary', requireAnyPerm(['onboarding.manage','onboar
       const buf = await readBuf(String(a.url||''))
       if (buf && buf.length) {
         try {
-          const doc = await PDFDocument.load(buf)
-          const pages = await merged.copyPages(doc, doc.getPageIndices())
-          pages.forEach(p => merged.addPage(p))
+        const doc = await PDFDocument.load(buf)
+        const pages = await merged.copyPages(doc, doc.getPageIndices())
+        pages.forEach((p: any) => merged.addPage(p))
         } catch {}
       }
     }

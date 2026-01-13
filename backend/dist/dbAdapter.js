@@ -16,8 +16,9 @@ function buildWhere(filters) {
     const keys = Object.keys(filters || {});
     if (!keys.length)
         return { clause: '', values: [] };
-    const parts = keys.map((k, i) => `${k} = $${i + 1}`);
-    const values = keys.map((k) => filters[k]);
+    const parts = keys.map((k, i) => `"${k}" = $${i + 1}`);
+    const rawValues = keys.map((k) => filters[k]);
+    const values = rawValues.map((v) => (v === undefined ? null : v));
     return { clause: ` WHERE ${parts.join(' AND ')}`, values };
 }
 async function pgSelect(table, columns = '*', filters, client) {
@@ -34,9 +35,9 @@ async function pgInsert(table, payload, client) {
     if (!executor)
         return null;
     const keys = Object.keys(payload);
-    const cols = keys.join(',');
+    const cols = keys.map(k => `"${k}"`).join(',');
     const placeholders = keys.map((_, i) => `$${i + 1}`).join(',');
-    const values = keys.map((k) => payload[k]);
+    const values = keys.map((k) => payload[k]).map(v => (v === undefined ? null : v));
     const sql = `INSERT INTO ${table} (${cols}) VALUES (${placeholders}) RETURNING *`;
     const res = await executor.query(sql, values);
     return res.rows[0];
@@ -45,9 +46,9 @@ async function pgUpdate(table, id, payload, client) {
     const executor = client || exports.pgPool;
     if (!executor)
         return null;
-    const keys = Object.keys(payload);
-    const set = keys.map((k, i) => `${k} = $${i + 1}`).join(', ');
-    const values = keys.map((k) => payload[k]);
+    const keys = Object.keys(payload).filter(k => payload[k] !== undefined);
+    const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
+    const values = keys.map((k) => payload[k]).map(v => (v === undefined ? null : v));
     const sql = `UPDATE ${table} SET ${set} WHERE id = $${keys.length + 1} RETURNING *`;
     const res = await executor.query(sql, [...values, id]);
     return res.rows[0];
@@ -85,10 +86,10 @@ async function pgInsertOnConflictDoNothing(table, payload, conflictColumns, clie
     if (!exports.pgPool)
         return null;
     const keys = Object.keys(payload);
-    const cols = keys.join(',');
+    const cols = keys.map(k => `"${k}"`).join(',');
     const placeholders = keys.map((_, i) => `$${i + 1}`).join(',');
-    const values = keys.map((k) => payload[k]);
-    const conflict = conflictColumns.join(',');
+    const values = keys.map((k) => payload[k]).map(v => (v === undefined ? null : v));
+    const conflict = conflictColumns.map(k => `"${k}"`).join(',');
     const sql = `INSERT INTO ${table} (${cols}) VALUES (${placeholders}) ON CONFLICT (${conflict}) DO NOTHING RETURNING *`;
     const executor = client || exports.pgPool;
     const res = await executor.query(sql, values);

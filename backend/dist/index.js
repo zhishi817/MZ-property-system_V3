@@ -24,7 +24,9 @@ const audits_1 = require("./modules/audits");
 const rbac_1 = require("./modules/rbac");
 const version_1 = require("./modules/version");
 const maintenance_1 = __importDefault(require("./modules/maintenance"));
+const propertyOnboarding_1 = require("./modules/propertyOnboarding");
 const jobs_1 = require("./modules/jobs");
+const node_cron_1 = __importDefault(require("node-cron"));
 const crud_1 = __importDefault(require("./modules/crud"));
 const recurring_1 = __importDefault(require("./modules/recurring"));
 const auth_2 = require("./auth");
@@ -174,6 +176,7 @@ app.use('/version', version_1.router);
 app.use('/maintenance', maintenance_1.default);
 app.use('/jobs', jobs_1.router);
 app.use('/public', public_admin_1.default);
+app.use('/onboarding', propertyOnboarding_1.router);
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001);
 app.listen(port, () => {
     console.log(`Server listening on port ${port}`);
@@ -188,29 +191,101 @@ app.listen(port, () => {
     }
     catch (_a) { }
     try {
-        const enabled = String(process.env.EMAIL_SYNC_ENABLED || 'false').toLowerCase() === 'true';
-        const interval = Number(process.env.EMAIL_SYNC_INTERVAL_MS || 300000);
+        const defaultEnabled = (process.env.NODE_ENV === 'production');
+        const enabled = String(process.env.EMAIL_SYNC_SCHEDULE_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true';
+        const expr = String(process.env.EMAIL_SYNC_CRON || '0 */3 * * *');
         if (enabled && dbAdapter_1.hasPg) {
-            console.log(`[EmailSyncScheduler] enabled interval_ms=${interval}`);
-            const tick = async () => {
+            console.log(`[email-sync][schedule] enabled cron=${expr}`);
+            const task = node_cron_1.default.schedule(expr, async () => {
+                var _a, _b;
+                const started = Date.now();
                 try {
-                    console.log(`[EmailSyncScheduler] tick at ${new Date().toISOString()}`);
-                    await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', max_per_run: Number(process.env.EMAIL_SYNC_MAX_PER_RUN || 100), batch_size: Number(process.env.EMAIL_SYNC_BATCH_SIZE || 20), concurrency: Number(process.env.EMAIL_SYNC_CONCURRENCY || 3), batch_sleep_ms: Number(process.env.EMAIL_SYNC_BATCH_SLEEP_MS || 500), min_interval_ms: Number(process.env.EMAIL_SYNC_MIN_INTERVAL_MS || 60000) });
+                    const key = 987654321;
+                    const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [key]);
+                    const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
+                    if (!ok) {
+                        console.log('[email-sync][schedule] skipped_reason=already_running');
+                        return;
+                    }
+                    const res = await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', trigger_source: 'schedule', max_per_run: Number(process.env.EMAIL_SYNC_MAX_PER_RUN || 100), batch_size: Number(process.env.EMAIL_SYNC_BATCH_SIZE || 20), concurrency: Number(process.env.EMAIL_SYNC_CONCURRENCY || 3), batch_sleep_ms: Number(process.env.EMAIL_SYNC_BATCH_SLEEP_MS || 500), min_interval_ms: Number(process.env.EMAIL_SYNC_MIN_INTERVAL_MS || 60000) });
+                    const dur = Date.now() - started;
+                    const s = ((res === null || res === void 0 ? void 0 : res.stats) || {});
+                    console.log(`[email-sync][schedule] scanned=${s.scanned || 0} inserted=${s.inserted || 0} skipped=${s.skipped_duplicate || 0} failed=${s.failed || 0} duration_ms=${dur}`);
+                    try {
+                        await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [key]);
+                    }
+                    catch (_c) { }
                 }
                 catch (e) {
-                    console.error(`[EmailSyncScheduler] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                    console.error(`[email-sync][schedule] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
                 }
-            };
-            // initial run shortly after start
-            setTimeout(tick, 5000);
-            setInterval(tick, Math.max(60000, interval));
+            }, { scheduled: true });
+            task.start();
+            // Watchdog: every 10 minutes retry recent failed UIDs
+            const wd = node_cron_1.default.schedule('*/10 * * * *', async () => {
+                var _a, _b;
+                try {
+                    const key = 987654321;
+                    const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [key]);
+                    const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
+                    if (!ok)
+                        return;
+                    // collect recent failed uids per account; exclude duplicates/already_running
+                    const sql = `
+            WITH cand AS (
+              SELECT account, uid FROM email_orders_raw WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
+              UNION ALL
+              SELECT account, uid FROM email_sync_items WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
+            )
+            SELECT DISTINCT c.account, c.uid
+            FROM cand c
+            WHERE NOT EXISTS (
+              SELECT 1 FROM email_sync_items e
+              WHERE e.account = c.account AND e.uid = c.uid AND e.status='skipped' AND e.reason IN ('duplicate','already_running','db_error')
+            )
+            ORDER BY c.account DESC, c.uid DESC
+            LIMIT 200`;
+                    const rs = await dbAdapter_1.pgPool.query(sql);
+                    const groups = {};
+                    for (const r of ((rs === null || rs === void 0 ? void 0 : rs.rows) || [])) {
+                        const acc = String(r.account || '');
+                        const uid = Number(r.uid || 0);
+                        if (!acc || !uid)
+                            continue;
+                        if (!groups[acc])
+                            groups[acc] = [];
+                        if (groups[acc].length < 50)
+                            groups[acc].push(uid);
+                    }
+                    for (const acc of Object.keys(groups)) {
+                        const uids = groups[acc];
+                        if (!uids.length)
+                            continue;
+                        console.log(`[email-sync][watchdog] retry account=${acc} uids=${uids.length}`);
+                        try {
+                            await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', trigger_source: 'watchdog_retry_failed', account: acc, uids, min_interval_ms: 0, max_per_run: uids.length, batch_size: Math.min(10, uids.length), concurrency: 1, batch_sleep_ms: 0 });
+                        }
+                        catch (e) {
+                            console.error(`[email-sync][watchdog] account=${acc} error=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                        }
+                    }
+                    try {
+                        await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [key]);
+                    }
+                    catch (_c) { }
+                }
+                catch (e) {
+                    console.error(`[email-sync][watchdog] error=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                }
+            }, { scheduled: true });
+            wd.start();
         }
         else {
-            console.log(`[EmailSyncScheduler] disabled`);
+            console.log('[email-sync][schedule] disabled');
         }
     }
     catch (e) {
-        console.error(`[EmailSyncScheduler] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+        console.error(`[email-sync][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
     }
     ;
     (async () => {
