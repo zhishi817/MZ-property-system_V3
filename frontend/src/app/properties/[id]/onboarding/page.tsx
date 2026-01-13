@@ -12,7 +12,7 @@ import { zhToEn } from '../../../../lib/translator'
 type Onb = { id: string; property_id: string; address_snapshot?: string; owner_user_id?: string; onboarding_date?: string; status?: string; remark?: string; daily_items_total?: number; furniture_appliance_total?: number; decor_total?: number; oneoff_fees_total?: number; grand_total?: number }
 type PriceItem = { id: string; category?: string; item_name: string; unit_price: number; unit?: string; default_quantity?: number }
 type Item = { id: string; onboarding_id: string; group: 'daily'|'furniture'|'appliance'|'decor'; category?: string; item_name: string; brand?: string; condition?: 'New'|'Used'; quantity: number; unit_price: number; total_price: number; is_custom?: boolean; remark?: string }
-type Fee = { id: string; onboarding_id: string; fee_type: string; name: string; unit_price: number; quantity: number; total_price: number; include_in_property_cost: boolean; waived?: boolean }
+type Fee = { id: string; onboarding_id: string; fee_type: string; name: string; unit_price: number; quantity: number; total_price: number; include_in_property_cost: boolean; waived?: boolean; remark?: string }
 
 export default function PropertyOnboardingPage({ params }: { params: { id: string } }) {
   const pid = params.id
@@ -484,6 +484,23 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
   const [editForm] = Form.useForm()
   const [previewOpen, setPreviewOpen] = useState(false)
   const modalRef = useRef<HTMLDivElement>(null)
+  function groupDaily(arr: Item[]): any[] {
+    const src = arr
+    const byCat: Record<string, Item[]> = {}
+    for (const it of src) {
+      const key = (typeof it.category === 'string' && it.category) ? it.category : '其他'
+      if (!byCat[key]) byCat[key] = []
+      byCat[key].push(it)
+    }
+    const cats = Object.keys(byCat).sort()
+    if (!cats.length) return src
+    const out: any[] = []
+    for (const cat of cats) {
+      out.push({ id: `grp-${cat}`, isGroup: true, group: 'daily', category: cat })
+      out.push(...byCat[cat])
+    }
+    return out
+  }
   async function deleteItemOptimistic(rr: Item) {
     const prev = items.slice()
     setItems((arr) => arr.filter((it) => it.id !== rr.id))
@@ -702,25 +719,10 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
             }}
           />
           <div style={{ marginTop: 12 }}>
-            <Table
+              <Table
               rowKey={(r)=>r.id}
               columns={itemColumns as any}
-              dataSource={(function(){
-                const src = items.filter(i=>i.group==='daily')
-                const byCat: Record<string, Item[]> = {}
-                src.forEach((it)=> {
-                  const c = (it.category && String(it.category).trim()) || '其他'
-                  (byCat[c] = byCat[c] || []).push(it)
-                })
-                const cats = Object.keys(byCat).sort()
-                if (!cats.length) return src
-                const out: any[] = []
-                for (const cat of cats) {
-                  out.push({ id: `grp-${cat}`, isGroup: true, group: 'daily', category: cat })
-                  out.push(...byCat[cat])
-                }
-                return out
-              })()}
+              dataSource={groupDaily(items.filter(i=>i.group==='daily'))}
               pagination={false}
               size="small"
               expandable={undefined}
@@ -832,7 +834,7 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
                       <th style={{ textAlign:'left', padding:'6px 8px', borderBottom:'1px solid #eee' }}>{dict[pdfLang].th.supplier}</th>
                       <th style={{ textAlign:'right', padding:'6px 8px', borderBottom:'1px solid #eee' }}>{dict[pdfLang].th.qty}</th>
                       <th style={{ textAlign:'right', padding:'6px 8px', borderBottom:'1px solid #eee' }}>{dict[pdfLang].th.unit}</th>
-                      <th style={{ textAlign:'right', padding:'6px 8px', borderBottom:'1px solid #eee' }}>{dict[pdfLang].th.subtotal}</th>
+                      <th style={{ textAlign:'right', padding:'6px 8px', borderBottom:'1px solid #eee' }}>{dict[pdfLang].th.total}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -851,7 +853,7 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
                   </tbody>
                 </table>
 
-                <h4 style={{ marginTop:16 }}>{dict[pdfLang].sec.fa}</h4>
+                <h4 style={{ marginTop:16 }}>{pdfLang==='zh' ? '家具/家电' : 'Furniture & Appliances'}</h4>
                 <table style={{ width:'100%', borderCollapse:'collapse', tableLayout:'fixed' }}>
                   <colgroup>
                     <col style={{ width:'38%' }} />
