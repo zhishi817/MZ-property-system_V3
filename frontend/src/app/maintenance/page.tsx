@@ -89,7 +89,7 @@ export default function MaintenancePage() {
     doc.text(String(cfg.company_phone || '043260187'), 40, headY + 46)
     doc.text(`ABN : ${String(cfg.company_abn || '30666510863')}`, 40, headY + 64)
     try {
-      const logoPath = String(cfg.logo_path || '/company-logo.png')
+      const logoPath = String(cfg.logo_path || '/mz-logo.png')
       const img = await fetch(logoPath).then(r=>r.blob()).then(b=>new Promise<string>((res)=>{ const fr = new FileReader(); fr.onload = ()=>res(String(fr.result)); fr.readAsDataURL(b) }))
       doc.addImage(img, 'PNG', 460, 40, 96, 96)
     } catch {}
@@ -253,4 +253,3 @@ export default function MaintenancePage() {
     </Space>
   )
 }
-

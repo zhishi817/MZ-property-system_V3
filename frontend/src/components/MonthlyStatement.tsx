@@ -126,7 +126,7 @@ export default forwardRef<HTMLDivElement, {
   return (
     <div ref={ref as any} style={{ padding: 24, fontFamily: 'Times New Roman, Times, serif' }}>
       <div className="print-header" style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-        <img src="/company-logo.png" alt="Company Logo" style={{ height: 64 }} />
+        <img src="/mz-logo.png" alt="Company Logo" style={{ height: 64 }} />
         <div style={{ flex: 1, marginLeft: 12 }}></div>
         <div style={{ textAlign:'right', minWidth: 420 }}>
           <div style={{ fontSize: 34, fontWeight: 700, letterSpacing: 1 }}>MONTHLY STATEMENT</div>
