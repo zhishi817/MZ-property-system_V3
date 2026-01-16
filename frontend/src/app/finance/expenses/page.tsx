@@ -27,6 +27,7 @@ export default function ExpensesPage() {
   const [catFilter, setCatFilter] = useState<string | undefined>(undefined)
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [mode] = useState<'property'>('property')
+  const [pageSize, setPageSize] = useState<number>(10)
   const role = (typeof window !== 'undefined') ? (localStorage.getItem('role') || sessionStorage.getItem('role')) : null
   const canViewList = (role === 'admin') || hasPerm('menu.finance') || hasPerm('property_expenses.view') || role === 'customer_service' || hasPerm('finance.tx.write')
   async function load() {
@@ -60,6 +61,14 @@ export default function ExpensesPage() {
       occurred_at: dayjs(v.paid_date).format('YYYY-MM-DD'),
       paid_date: dayjs(v.paid_date).format('YYYY-MM-DD')
     }
+    const monthKey = dayjs(v.paid_date).format('YYYY-MM')
+    const existsDup = list.some((x) => (
+      String(x.property_id||'')===String(v.property_id||'') &&
+      String(x.category||'')===String(v.category||'') &&
+      dayjs(x.paid_date||x.occurred_at).format('YYYY-MM')===monthKey &&
+      Number(x.amount||0)===Number(v.amount||0)
+    ))
+    if (!editing && existsDup) { message.warning('检测到同房源同月份同类别同金额的记录已存在，已阻止重复提交'); setSaving(false); return }
     const resource = 'property_expenses'
     try {
       if (editing) {
@@ -173,7 +182,7 @@ export default function ExpensesPage() {
           const kindOk = x.kind === 'expense'
           const scopeOk = !!x.property_id
           return kindOk && scopeOk && codeOk && catOk && inRange
-        })} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }} />
+        })} pagination={{ pageSize, showSizeChanger: true, pageSizeOptions: [10,20,50,100], onChange: (_p, ps) => setPageSize(ps), onShowSizeChange: (_p, ps) => setPageSize(ps) }} scroll={{ x: 'max-content' }} />
       )}
       <Modal open={open} onCancel={() => setOpen(false)} onOk={submit} confirmLoading={saving} title="记录支出">
         <Form form={form} layout="vertical">
@@ -251,7 +260,7 @@ export default function ExpensesPage() {
           
         </Form>
       </Modal>
-      <Modal open={!!invoiceOpen} onCancel={() => { setInvoiceOpen(null); setInvoices([]) }} footer={null} width={900} title="发票管理">
+      <Modal open={!!invoiceOpen} onCancel={() => { setInvoiceOpen(null); setInvoices([]) }} footer={null} width={1350} title="发票管理">
         {invoiceOpen ? (
           <>
             <Upload beforeUpload={(file) => uploadExpenseInvoice(invoiceOpen.expenseId, file)} multiple accept=".pdf,.jpg,.jpeg,.png" showUploadList={false} fileList={[]}
@@ -268,12 +277,12 @@ export default function ExpensesPage() {
                   if (!u) return '-'
                   if (/\.pdf($|\?)/i.test(u)) {
                     return (
-                      <object data={u} type="application/pdf" style={{ width:'100%', height: 260 }} key={u}>
+                      <object data={u} type="application/pdf" style={{ width:'100%', height: 390 }} key={u}>
                         <a href={u} target="_blank" rel="noreferrer">打开原文件</a>
                       </object>
                     )
                   }
-                  return <img src={u} style={{ maxWidth:'100%', maxHeight: 260 }} alt="invoice" />
+                  return <img src={u} style={{ maxWidth:'100%', maxHeight: 390 }} alt="invoice" />
                 } },
                 { title: '操作', render: (_: any, rec: ExpenseInvoice) => (
                   <Button danger onClick={() => removeExpenseInvoice(rec.id, invoiceOpen.expenseId)}>删除</Button>

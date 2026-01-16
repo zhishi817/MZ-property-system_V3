@@ -202,7 +202,7 @@ app.listen(port, () => {
           const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [key])
           const ok = !!(lock?.rows?.[0]?.ok)
           if (!ok) { console.log('[email-sync][schedule] skipped_reason=already_running'); return }
-          const res = await runEmailSyncJob({ mode: 'incremental', trigger_source: 'schedule', max_per_run: Number(process.env.EMAIL_SYNC_MAX_PER_RUN || 100), batch_size: Number(process.env.EMAIL_SYNC_BATCH_SIZE || 20), concurrency: Number(process.env.EMAIL_SYNC_CONCURRENCY || 3), batch_sleep_ms: Number(process.env.EMAIL_SYNC_BATCH_SLEEP_MS || 500), min_interval_ms: Number(process.env.EMAIL_SYNC_MIN_INTERVAL_MS || 60000) })
+          const res = await runEmailSyncJob({ mode: 'incremental', trigger_source: 'schedule', max_per_run: Math.min(50, Number(process.env.EMAIL_SYNC_MAX_PER_RUN || 50)), batch_size: Math.min(20, Number(process.env.EMAIL_SYNC_BATCH_SIZE || 20)), concurrency: Math.min(1, Number(process.env.EMAIL_SYNC_CONCURRENCY || 1)), batch_sleep_ms: Number(process.env.EMAIL_SYNC_BATCH_SLEEP_MS || 0), min_interval_ms: Number(process.env.EMAIL_SYNC_MIN_INTERVAL_MS || 60000) })
           const dur = Date.now() - started
           const s = (res?.stats || {})
           console.log(`[email-sync][schedule] scanned=${s.scanned||0} inserted=${s.inserted||0} skipped=${s.skipped_duplicate||0} failed=${s.failed||0} duration_ms=${dur}`)
@@ -305,4 +305,29 @@ app.listen(port, () => {
       console.error(`[cleaning-timeout] init error message=${String(e?.message || '')}`)
     }
   })()
-})
+  })
+  app.get('/health/login', async (_req, res) => {
+    const started = Date.now()
+    try {
+      if (hasPg) {
+        const r = await pgPool!.query('SELECT 1 AS ok')
+        const dur = Date.now() - started
+        return res.json({ ok: true, db_ok: !!(r?.rows?.[0]?.ok), latency_ms: dur })
+      }
+      return res.json({ ok: true, db_ok: false, latency_ms: Date.now() - started })
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, message: String(e?.message || ''), latency_ms: Date.now() - started })
+    }
+  })
+
+  app.get('/health/email-sync', async (_req, res) => {
+    try {
+      if (hasPg) {
+        const r = await pgPool!.query('SELECT id, status, scanned, inserted, failed, created_at FROM email_sync_runs ORDER BY created_at DESC LIMIT 1')
+        return res.json({ last_run: r?.rows?.[0] || null })
+      }
+      return res.json({ last_run: null })
+    } catch (e: any) {
+      return res.status(500).json({ message: String(e?.message || '') })
+    }
+  })

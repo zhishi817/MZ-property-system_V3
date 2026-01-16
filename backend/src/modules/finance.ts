@@ -341,8 +341,20 @@ router.get('/property-revenue', async (req, res) => {
           const visNet = Number((o as any).visible_net_income ?? o.net_income ?? 0)
           if (ov > 0 && nights > 0) rentIncome += (visNet * ov) / nights
         }
-        const pe = await pgSelect('property_expenses', '*', { property_id: pid, month_key: ym })
-        const peRows: any[] = Array.isArray(pe) ? pe : []
+        let peRows: any[] = []
+        try {
+          const { pgPool } = require('../dbAdapter')
+          if (pgPool) {
+            const sql = `SELECT * FROM property_expenses
+              WHERE (property_id = $1 OR lower(property_id) = lower($2))
+                AND (
+                  month_key = $3 OR
+                  date_trunc('month', COALESCE(paid_date, occurred_at)::date) = date_trunc('month', to_date($3,'YYYY-MM'))
+                )`
+            const rs = await pgPool.query(sql, [pid || null, pcode || null, ym])
+            peRows = rs.rows || []
+          }
+        } catch {}
         const rp = await pgSelect('recurring_payments', '*')
         const rpRows: any[] = Array.isArray(rp) ? rp : []
         const map: Record<string, string> = Object.fromEntries(rpRows.map(r => [String(r.id), String((r as any).report_category || 'other')]))
@@ -367,6 +379,10 @@ router.get('/property-revenue', async (req, res) => {
           if (cat in cols) (cols as any)[cat] += amt
           else cols.other += amt
         }
+        const missingMonthKey = peRows.filter((e: any) => !e.month_key).length
+        const warnings: string[] = []
+        if (missingMonthKey > 0) warnings.push(`expenses_without_month_key=${missingMonthKey}`)
+        if (warnings.length) (payload as any).warnings = warnings
       }
     } catch {}
     const totalExpense = Object.values(cols).reduce((s, v) => s + Number(v || 0), 0)
@@ -570,4 +586,36 @@ router.delete('/:id', requirePerm('finance.tx.write'), async (req, res) => {
     try { await pgDelete('finance_transactions', id); return res.json({ ok: true }) } catch {}
   }
   return res.json({ ok: true })
+})
+// Deduplicate property_expenses by (property_id, month_key, category, amount)
+router.post('/dedup-property-expenses', requireAnyPerm(['property_expenses.write','finance.tx.write']), async (_req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.status(500).json({ message: 'pg pool unavailable' })
+    const dupSql = `
+      SELECT property_id, month_key, category, amount, array_agg(id ORDER BY coalesce(updated_at, created_at, now()) DESC) AS ids
+      FROM property_expenses
+      WHERE month_key IS NOT NULL
+      GROUP BY property_id, month_key, category, amount
+      HAVING COUNT(*) > 1
+    `
+    const qr = await pgPool.query(dupSql)
+    const groups = qr.rows || []
+    let merged = 0, removed = 0, marked = 0
+    for (const g of groups) {
+      const ids: string[] = g.ids || []
+      if (!ids.length) continue
+      const keep = ids[0]
+      const drop = ids.slice(1)
+      if (drop.length) {
+        await pgPool.query('DELETE FROM property_expenses WHERE id = ANY($1::text[])', [drop])
+        removed += drop.length
+      }
+      merged++
+    }
+    return res.json({ merged_groups: merged, removed_records: removed, marked_conflicts: marked })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'dedup failed' })
+  }
 })
