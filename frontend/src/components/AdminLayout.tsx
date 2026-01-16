@@ -86,6 +86,11 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     { key: 'maintenance-overview', label: <Link href="/maintenance/overview" prefetch={false}>维修总览</Link> },
     { key: 'maintenance-records', label: <Link href="/maintenance" prefetch={false}>维修记录</Link> },
   ] })
+  if (hasPerm('menu.onboarding')) items.push({ key: 'onboarding', icon: <ProfileOutlined />, label: '房源上新', children: [
+    { key: 'onboarding-list', label: <Link href="/onboarding" prefetch={false}>上新管理</Link> },
+    { key: 'onboarding-prices', label: <Link href="/onboarding/prices" prefetch={false}>日用品价格表</Link> },
+    { key: 'onboarding-fa-prices', label: <Link href="/onboarding/fa-prices" prefetch={false}>家具/家电价格表</Link> },
+  ] })
   if (hasPerm('menu.inventory')) items.push({ key: 'inventory', icon: <ProfileOutlined />, label: <Link href="/inventory" prefetch={false}>仓库库存</Link> })
   const financeChildren: any[] = []
   if (hasPerm('menu.finance.orders.visible')) financeChildren.push({ key: 'orders', label: <Link href="/orders" prefetch={false}>订单管理</Link> })
@@ -100,6 +105,9 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   if (hasPerm('menu.finance')) items.push({ key: 'finance', icon: <DollarOutlined />, label: '财务管理', children: financeChildren })
   if (hasPerm('menu.cleaning') || hasPerm('cleaning.task.assign') || role === 'customer_service' || role === 'cleaning_manager' || role === 'cleaner_inspector') items.push({ key: 'cleaning', icon: <CalendarOutlined />, label: <Link href="/cleaning" prefetch={false}>清洁安排</Link> })
   if (hasPerm('menu.rbac') || hasPerm('rbac.manage')) items.push({ key: 'rbac', icon: <ProfileOutlined />, label: <Link href="/rbac" prefetch={false}>角色权限</Link> })
+  if (hasPerm('menu.jobs.email_sync.visible')) items.push({ key: 'jobs', icon: <ProfileOutlined />, label: '系统任务', children: [
+    { key: 'jobs-email-sync', label: <Link href="/jobs/email-sync" prefetch={false}>邮件同步</Link> },
+  ] })
   if (hasPerm('menu.cms')) items.push({ key: 'cms', icon: <ShopOutlined />, label: 'CMS管理', children: [
     { key: 'cms-home', label: <Link href="/cms" prefetch={false}>页面管理</Link> },
     { key: 'cms-cleaning', label: <Link href="/cms/public-cleaning" prefetch={false}>清洁公开指南</Link> },

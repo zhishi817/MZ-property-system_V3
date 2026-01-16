@@ -10,7 +10,7 @@ dayjs.extend(isSameOrAfter)
 import { useEffect, useMemo, useState } from 'react'
 import { API_BASE, getJSON } from '../../lib/api'
 import { monthSegments, toDayStr, parseDateOnly } from '../../lib/orders'
-import { PieChart as RePieChart, Pie as RePie, Cell as ReCell, Tooltip as ReTooltip, Legend as ReLegend, ResponsiveContainer } from 'recharts'
+import { PieChart as RePieChart, Pie as RePie, Cell as ReCell, Tooltip as ReTooltip, Legend as ReLegend, ResponsiveContainer, BarChart as ReBarChart, Bar as ReBar, LineChart as ReLineChart, Line as ReLine, XAxis as ReXAxis, YAxis as ReYAxis, CartesianGrid as ReCartesianGrid } from 'recharts'
 
 type Property = { id: string; code?: string; address?: string; region?: string; biz_category?: 'leased'|'management_fee' }
 type Order = { id: string; source?: string; property_id?: string; checkin?: string; checkout?: string; nights?: number; avg_nightly_price?: number; net_income?: number; price?: number }
@@ -24,11 +24,20 @@ export default function DashboardPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [expenses, setExpenses] = useState<PropertyExpense[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
+  const [orderSummary, setOrderSummary] = useState<{ total_orders: number; next7days: { date: string; checkin_count: number; checkout_count: number }[] }>({ total_orders: 0, next7days: [] })
   useEffect(() => {
     getJSON<Property[]>('/properties').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([]))
     getJSON<Order[]>('/orders').then((j) => setOrders(Array.isArray(j) ? j : [])).catch(() => setOrders([]))
     getJSON<PropertyExpense[]>('/crud/property_expenses').then((j) => setExpenses(Array.isArray(j) ? j : [])).catch(() => setExpenses([]))
     getJSON<Landlord[]>('/landlords').then((j) => setLandlords(Array.isArray(j) ? j : [])).catch(() => setLandlords([]))
+    const loadSummary = () => getJSON<{ total_orders: number; next7days: { date: string; checkin_count: number; checkout_count: number }[] }>('/stats/orders-summary').then(setOrderSummary).catch(() => setOrderSummary({ total_orders: 0, next7days: [] }))
+    loadSummary()
+    try {
+      const es = new EventSource(`${API_BASE}/events/orders`)
+      es.onmessage = () => { loadSummary() }
+      es.onerror = () => { /* silent */ }
+      return () => { es.close() }
+    } catch {}
   }, [])
 
   const totalProps = properties.length
@@ -53,7 +62,7 @@ export default function DashboardPage() {
     { name: '管理费房源', value: manageCount },
     { name: '未知', value: unknownCount },
   ]
-  const COLORS = ['#3A7BFA', '#8B5CF6', '#A0AEC0']
+  const COLORS = ['#EEE8A9', '#3996D1', '#A0AEC0']
 
   function ManagementTypePieChart() {
     return (
@@ -128,10 +137,17 @@ export default function DashboardPage() {
   })
 
   const platformShare = useMemo(() => {
+    const normalize = (s?: string) => {
+      const k = (s || 'other').trim().toLowerCase()
+      if (k.startsWith('airbnb')) return 'airbnb'
+      if (k.startsWith('booking')) return 'booking'
+      if (k === 'offline') return 'offline'
+      return 'other'
+    }
     const byKey: Record<string, number> = {}
     for (const o of orders) {
-      const k = (o.source || 'other').toLowerCase()
-      byKey[k] = (byKey[k] || 0) + Number(o.price || 0)
+      const key = normalize(o.source)
+      byKey[key] = (byKey[key] || 0) + Number(o.price || 0)
     }
     const total = Object.values(byKey).reduce((s, v) => s + v, 0)
     const rows = Object.entries(byKey).map(([key, value]) => ({ key, value, ratio: total > 0 ? (value / total) : 0, percent: total > 0 ? Math.round((value / total) * 100) : 0 }))
@@ -231,14 +247,14 @@ export default function DashboardPage() {
 
   function Bar({ value, max }: { value: number, max: number }) {
     const w = max ? Math.max(6, (value / max) * 180) : 6
-    return <div style={{ width: w, height: 12, background: '#1677ff', borderRadius: 4 }} />
+    return <div style={{ width: w, height: 12, background: '#3996D1', borderRadius: 4 }} />
   }
 
   const maxRegion = Math.max(1, ...regionCounts.map(r => r.count))
 
   function Pie({ leased, managed, unknown }: { leased: number, managed: number, unknown: number }) {
     const total = Math.max(leased + managed + unknown, 1)
-    const colors = { leased: '#2f80ed', managed: '#8b5cf6', unknown: '#bfbfbf' }
+    const colors = { leased: '#EEE8A9', managed: '#3996D1', unknown: '#bfbfbf' }
     const lAngle = (leased / total) * 360
     const mAngle = (managed / total) * 360
     const uAngle = Math.max(0, 360 - lAngle - mAngle)
@@ -328,8 +344,35 @@ export default function DashboardPage() {
     <Space direction="vertical" style={{ width: '100%' }}>
       
       <Row gutter={[16, 16]}>
-        <Col xs={24} md={12}><Card style={{ height: 140 }}><Space direction="vertical" style={{ width:'100%', height:'100%', justifyContent:'center' }}><Statistic title="总房源数量" value={totalProps} valueStyle={{ fontSize: 26 }} /></Space></Card></Col>
-        <Col xs={24} md={12}><Card style={{ height: 140 }}><Space direction="vertical" style={{ width:'100%', height:'100%', justifyContent:'center' }}><Statistic title="房东数量" value={landlords.length} valueStyle={{ fontSize: 26 }} /></Space></Card></Col>
+        <Col xs={24} md={8}><Card style={{ height: 160 }}><Space direction="vertical" style={{ width:'100%', height:'100%', justifyContent:'center' }}><Statistic title="总房源数量" value={totalProps} valueStyle={{ fontSize: 26 }} /></Space></Card></Col>
+        <Col xs={24} md={8}><Card style={{ height: 160 }}><Space direction="vertical" style={{ width:'100%', height:'100%', justifyContent:'center' }}><Statistic title="房东数量" value={landlords.length} valueStyle={{ fontSize: 26 }} /></Space></Card></Col>
+        <Col xs={24} md={8}><Card title="订单总量" style={{ height: 160 }}><Space direction="vertical" style={{ width:'100%', height:'100%', justifyContent:'center' }}><Statistic title="总订单数" value={orderSummary.total_orders} valueStyle={{ fontSize: 26 }} /></Space></Card></Col>
+      </Row>
+
+      <Row gutter={[16,16]}>
+        <Col xs={24} md={24}>
+          <Card title="未来一周入住/退房趋势" extra={<div style={{ display:'flex', alignItems:'center', gap:12 }}>
+            <span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+              <span style={{ width:12, height:12, borderRadius:2, background:'#E59C24' }} />
+              <span>入住</span>
+            </span>
+            <span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+              <span style={{ width:12, height:12, borderRadius:2, background:'#3996D1' }} />
+              <span>退房</span>
+            </span>
+          </div>} style={{ height: 360 }}>
+            <ResponsiveContainer width="100%" height={300}>
+              <ReBarChart data={orderSummary.next7days} margin={{ top: 10, right: 20, left: 0, bottom: 40 }}>
+                <ReCartesianGrid strokeDasharray="3 3" />
+                <ReXAxis dataKey="date" tickMargin={10} />
+                <ReYAxis allowDecimals={false} />
+                <ReTooltip />
+                <ReBar dataKey="checkin_count" name="入住" fill="#E59C24" radius={[4,4,0,0]} />
+                <ReBar dataKey="checkout_count" name="退房" fill="#3996D1" radius={[4,4,0,0]} />
+              </ReBarChart>
+            </ResponsiveContainer>
+          </Card>
+        </Col>
       </Row>
       <Row gutter={[16,16]}>
         <Col xs={24} md={12}><Card title="房源管理类型占比" style={{ height: 300 }}><ManagementTypePieChart /></Card></Col>
@@ -365,7 +408,7 @@ export default function DashboardPage() {
           {occupancyByRegion.map(r => (
             <div key={r.region} style={{ display:'flex', alignItems:'center', gap:8 }}>
               <div style={{ width: 120 }}>{r.region}</div>
-              <div style={{ width: 240, background:'#eee', borderRadius:4 }}><div style={{ width: `${Math.min(100, Math.max(0, r.occ))}%`, height: 12, background:'#52c41a', borderRadius:4 }} /></div>
+              <div style={{ width: 240, background:'#eee', borderRadius:4 }}><div style={{ width: `${Math.min(100, Math.max(0, r.occ))}%`, height: 12, background:'#3996D1', borderRadius:4 }} /></div>
               <div>{r.occ}%</div>
             </div>
           ))}

@@ -99,6 +99,20 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE INDEX IF NOT EXISTS idx_orders_property ON orders(property_id);
 CREATE INDEX IF NOT EXISTS idx_orders_checkout ON orders(checkout);
 
+-- Email sync state for IMAP incremental/backfill
+CREATE TABLE IF NOT EXISTS email_sync_state (
+  account text PRIMARY KEY,
+  last_uid bigint DEFAULT 0,
+  last_checked_at timestamptz,
+  last_backfill_at timestamptz,
+  last_connected_at timestamptz,
+  consecutive_failures integer DEFAULT 0,
+  cooldown_until timestamptz
+);
+ALTER TABLE email_sync_state ADD COLUMN IF NOT EXISTS last_connected_at timestamptz;
+ALTER TABLE email_sync_state ADD COLUMN IF NOT EXISTS consecutive_failures integer DEFAULT 0;
+ALTER TABLE email_sync_state ADD COLUMN IF NOT EXISTS cooldown_until timestamptz;
+
 CREATE TABLE IF NOT EXISTS order_import_staging (
   id text PRIMARY KEY,
   channel text,
@@ -234,6 +248,69 @@ CREATE TABLE IF NOT EXISTS payouts (
   created_at timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_payouts_landlord ON payouts(landlord_id);
+
+-- Email sync run metrics
+CREATE TABLE IF NOT EXISTS email_sync_runs (
+  id bigserial PRIMARY KEY,
+  account text NOT NULL,
+  scanned integer DEFAULT 0,
+  matched integer DEFAULT 0,
+  inserted integer DEFAULT 0,
+  failed integer DEFAULT 0,
+  skipped_duplicate integer DEFAULT 0,
+  last_uid_before bigint,
+  last_uid_after bigint,
+  error_code text,
+  error_message text,
+  duration_ms integer,
+  status text,
+  started_at timestamptz DEFAULT now(),
+  ended_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_email_sync_runs_account_started ON email_sync_runs(account, started_at);
+
+ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS found_uids_count integer DEFAULT 0;
+ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS matched_count integer DEFAULT 0;
+ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS failed_count integer DEFAULT 0;
+ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS cursor_after bigint;
+
+-- Email sync per-UID audit items
+CREATE TABLE IF NOT EXISTS email_sync_items (
+  id bigserial PRIMARY KEY,
+  run_id uuid,
+  account text,
+  uid bigint,
+  status text,
+  error_code text,
+  error_message text,
+  message_id text,
+  mailbox text,
+  subject text,
+  sender text,
+  header_date timestamptz,
+  reason text,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_email_sync_items_run_uid ON email_sync_items(run_id, uid);
+
+ALTER TABLE email_sync_items ADD COLUMN IF NOT EXISTS confirmation_code text;
+ALTER TABLE email_sync_items ADD COLUMN IF NOT EXISTS error_code text;
+ALTER TABLE email_sync_items ADD COLUMN IF NOT EXISTS error_message text;
+
+-- Raw email archive for matched messages
+CREATE TABLE IF NOT EXISTS email_orders_raw (
+  source text NOT NULL,
+  uid bigint,
+  message_id text,
+  header_date timestamptz,
+  envelope jsonb,
+  html text,
+  plain text,
+  status text,
+  created_at timestamptz DEFAULT now(),
+  UNIQUE(source, uid),
+  UNIQUE(message_id)
+);
 
 -- Company-level payouts (not tied to a single landlord)
 CREATE TABLE IF NOT EXISTS company_payouts (
@@ -402,3 +479,121 @@ CREATE INDEX IF NOT EXISTS idx_fixed_expenses_scope ON fixed_expenses(scope);
 CREATE INDEX IF NOT EXISTS idx_fixed_expenses_status ON fixed_expenses(status);
 CREATE INDEX IF NOT EXISTS idx_company_expenses_month_fixed ON company_expenses(month_key, fixed_expense_id);
 CREATE INDEX IF NOT EXISTS idx_property_expenses_month_fixed ON property_expenses(month_key, fixed_expense_id);
+
+-- Property Onboarding: 主记录
+CREATE TABLE IF NOT EXISTS property_onboarding (
+  id text PRIMARY KEY,
+  property_id text REFERENCES properties(id) ON DELETE SET NULL,
+  address_snapshot text,
+  owner_user_id text,
+  onboarding_date date,
+  status text,
+  remark text,
+  daily_items_total numeric DEFAULT 0,
+  furniture_appliance_total numeric DEFAULT 0,
+  decor_total numeric DEFAULT 0,
+  oneoff_fees_total numeric DEFAULT 0,
+  grand_total numeric DEFAULT 0,
+  created_at timestamptz DEFAULT now(),
+  created_by text,
+  updated_at timestamptz,
+  updated_by text
+);
+CREATE INDEX IF NOT EXISTS idx_onboarding_property ON property_onboarding(property_id);
+
+-- Property Onboarding Items: 日用品/家具/家电/软装
+CREATE TABLE IF NOT EXISTS property_onboarding_items (
+  id text PRIMARY KEY,
+  onboarding_id text REFERENCES property_onboarding(id) ON DELETE CASCADE,
+  "group" text,
+  category text,
+  item_name text,
+  brand text,
+  condition text,
+  quantity integer DEFAULT 1,
+  unit_price numeric DEFAULT 0,
+  total_price numeric DEFAULT 0,
+  is_custom boolean DEFAULT false,
+  price_list_id text,
+  remark text,
+  created_at timestamptz DEFAULT now(),
+  created_by text
+);
+CREATE INDEX IF NOT EXISTS idx_onboarding_items_onb ON property_onboarding_items(onboarding_id);
+CREATE INDEX IF NOT EXISTS idx_onboarding_items_group ON property_onboarding_items("group");
+CREATE INDEX IF NOT EXISTS idx_onboarding_items_category ON property_onboarding_items(category);
+
+-- 固定日用品价格表（可维护）
+CREATE TABLE IF NOT EXISTS daily_items_price_list (
+  id text PRIMARY KEY,
+  category text,
+  item_name text NOT NULL,
+  unit_price numeric NOT NULL,
+  currency text DEFAULT 'AUD',
+  is_active boolean DEFAULT true,
+  updated_at timestamptz,
+  updated_by text
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_daily_items_price ON daily_items_price_list(category, item_name);
+ALTER TABLE daily_items_price_list ADD COLUMN IF NOT EXISTS unit text;
+ALTER TABLE daily_items_price_list ADD COLUMN IF NOT EXISTS default_quantity integer;
+ALTER TABLE property_onboarding_items ADD COLUMN IF NOT EXISTS unit text;
+
+-- 家具/家电价格表（可维护）
+CREATE TABLE IF NOT EXISTS fa_items_price_list (
+  id text PRIMARY KEY,
+  grp text,
+  item_name text NOT NULL,
+  unit_price numeric NOT NULL,
+  currency text DEFAULT 'AUD',
+  unit text,
+  default_quantity integer,
+  is_active boolean DEFAULT true,
+  updated_at timestamptz,
+  updated_by text
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_fa_items_price ON fa_items_price_list(grp, item_name);
+
+-- 一次性上线费用
+CREATE TABLE IF NOT EXISTS property_onboarding_fees (
+  id text PRIMARY KEY,
+  onboarding_id text REFERENCES property_onboarding(id) ON DELETE CASCADE,
+  fee_type text,
+  name text,
+  unit_price numeric DEFAULT 0,
+  quantity integer DEFAULT 1,
+  total_price numeric DEFAULT 0,
+  include_in_property_cost boolean DEFAULT true,
+  remark text,
+  created_at timestamptz DEFAULT now(),
+  created_by text
+);
+CREATE INDEX IF NOT EXISTS idx_onboarding_fees_onb ON property_onboarding_fees(onboarding_id);
+CREATE INDEX IF NOT EXISTS idx_onboarding_fees_type ON property_onboarding_fees(fee_type);
+
+-- 发票/附件
+CREATE TABLE IF NOT EXISTS property_onboarding_attachments (
+  id text PRIMARY KEY,
+  onboarding_id text REFERENCES property_onboarding(id) ON DELETE CASCADE,
+  item_id text REFERENCES property_onboarding_items(id) ON DELETE SET NULL,
+  fee_id text REFERENCES property_onboarding_fees(id) ON DELETE SET NULL,
+  url text NOT NULL,
+  file_name text,
+  mime_type text,
+  file_size integer,
+  created_at timestamptz DEFAULT now(),
+  created_by text
+);
+CREATE INDEX IF NOT EXISTS idx_onboarding_attachments_onb ON property_onboarding_attachments(onboarding_id);
+
+CREATE TABLE IF NOT EXISTS order_cancellations (
+  id uuid PRIMARY KEY,
+  confirmation_code text UNIQUE,
+  message_id text,
+  header_date timestamptz,
+  subject text,
+  sender text,
+  source text,
+  account text,
+  created_at timestamptz DEFAULT now()
+);

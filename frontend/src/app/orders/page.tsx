@@ -24,6 +24,7 @@ export default function OrdersPage() {
   const [editForm] = Form.useForm()
   const [current, setCurrent] = useState<Order | null>(null)
   const [codeQuery, setCodeQuery] = useState('')
+  const [confQuery, setConfQuery] = useState('')
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [importOpen, setImportOpen] = useState(false)
@@ -36,7 +37,7 @@ export default function OrdersPage() {
   const [calMonth, setCalMonth] = useState(dayjs())
   const [calPid, setCalPid] = useState<string | undefined>(undefined)
   const calRef = useRef<HTMLDivElement | null>(null)
-  const [monthFilter, setMonthFilter] = useState<any>(dayjs())
+  const [monthFilter, setMonthFilter] = useState<any | null>(null)
   const [deductAmountEdit, setDeductAmountEdit] = useState<number>(0)
   const [deductDescEdit, setDeductDescEdit] = useState<string>('')
   const [deductNoteEdit, setDeductNoteEdit] = useState<string>('')
@@ -65,6 +66,7 @@ export default function OrdersPage() {
   const [selfCheckOpen, setSelfCheckOpen] = useState(false)
   const [selfCheckLoading, setSelfCheckLoading] = useState(false)
   const [selfCheckData, setSelfCheckData] = useState<any | null>(null)
+  const [syncing, setSyncing] = useState(false)
   function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
   function getPropertyCodeLabel(o: Order) {
     const p = getPropertyById(o.property_id)
@@ -153,41 +155,22 @@ export default function OrdersPage() {
   }
   
 
-  async function manualImportAirbnb() {
+  async function manualSyncOrders() {
     try {
-      const res = await fetch(`${API_BASE}/jobs/email-import/manual`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ limit: 50 }) })
-      const j = await res.json().catch(() => null)
-      if (res.ok) {
-        const s = j?.summary || {}
-        message.success(`导入完成：新增 ${Number(s.inserted||0)}，更新 ${Number(s.updated||0)}，跳过 ${Number(s.skipped||0)}，失败 ${Number(s.failed||0)}`)
-        try {
-          const fails = Array.isArray(j?.details) ? (j.details as any[]) : []
-          const list = fails.filter(d => d?.status === 'failed')
-          if (list.length) {
-            const parts: Record<string, number> = {}
-            list.forEach(d => { const r = String(d?.reason||'unknown'); parts[r] = (parts[r]||0) + 1; const extra = d?.db_code ? ` db_code=${d.db_code} db_msg=${d.db_message||''}` : '' ; console.warn(`[导入失败] uid=${d?.uid} 主题=${d?.subject||''} 原因=${r}${extra}`) })
-            const summaryText = Object.keys(parts).map(k => `${k}:${parts[k]}`).join(', ')
-            if (summaryText) message.info(`失败 ${list.length}（${summaryText}）`)
-          }
-        } catch {}
-        try {
-          const arr = await getJSON<Order[]>('/orders')
-          setData(arr)
-          const dates = arr.map(o => { const s = String(o.checkin||'').slice(0,10); return s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? dayjs(s) : null }).filter(Boolean) as any[]
-          if (dates.length) {
-            let latest = dates[0]
-            for (let i = 1; i < dates.length; i++) { if (dates[i].isAfter(latest)) latest = dates[i] }
-            setMonthFilter(latest.startOf('month'))
-          }
-        } catch {
-          load()
-        }
-      } else {
-        message.error(j?.message || `导入失败（HTTP ${res.status}）`)
+      setSyncing(true)
+      const body = { mode: 'incremental', max_per_run: 50, max_messages: 50, batch_size: 20, concurrency: 3, batch_sleep_ms: 500 }
+      const res = await fetch(`${API_BASE}/jobs/email-sync/run`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+      const j = await res.json().catch(()=>null)
+      if (res.status === 409) {
+        const r = String(j?.reason||'')
+        if (r==='cooldown') message.warning(`冷却中，cooldown_until=${String(j?.cooldown_until||'')}`)
+        else if (r==='min_interval') message.warning(`未到最小间隔，next_allowed_at=${String(j?.next_allowed_at||'')}`)
+        else message.warning(`有任务正在运行，运行开始时间=${String(j?.running_since||'')}`)
       }
-    } catch (e: any) {
-      message.error('导入失败')
-    }
+      else if (res.status === 429) { message.warning(`冷却中，cooldown_until=${String(j?.cooldown_until||'')}`) }
+      else if (res.ok) { message.success('已触发手动同步'); load() }
+      else { message.error(j?.message || `触发失败（HTTP ${res.status}）`) }
+    } catch { message.error('触发失败') } finally { setSyncing(false) }
   }
   async function previewTodayEmails() {
     if (previewLoading) return
@@ -296,6 +279,7 @@ export default function OrdersPage() {
       .split(',')
       .map(s => Number(s.trim()))
       .filter(n => Number.isFinite(n))
+      .slice(0, 50)
     if (!ids.length) { message.warning('请输入 UID 列表，例如：74258,74259'); return }
     setPreviewOpen(true)
     setPreviewLoading(true)
@@ -343,6 +327,7 @@ export default function OrdersPage() {
       .split(',')
       .map(s => Number(s.trim()))
       .filter(n => Number.isFinite(n))
+      .slice(0, 50)
     if (!ids.length) { message.warning('请输入 UID 列表，例如：74258,74259'); return }
     setPreviewOpen(true)
     setPreviewLoading(true)
@@ -389,7 +374,7 @@ export default function OrdersPage() {
     if (previewLoading) return
     setPreviewLoading(true)
     try {
-      const body = { mode: 'list_uids_first', first_limit: 200, preview_limit: 500, limit: 500, max_messages: 250, job_timeout_ms: 60000 }
+      const body = { mode: 'list_uids_first', first_limit: 50, preview_limit: 50, limit: 50, max_messages: 50, job_timeout_ms: 60000 }
       const res = await fetch(`${API_BASE}/jobs/email-sync-airbnb`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
       const j = await res.json().catch(() => null)
       if (res.status === 409) {
@@ -480,10 +465,11 @@ export default function OrdersPage() {
   }
   async function manualInsertFromEmail(rec: any) {
     try {
-      const id = String(rec?.id || '')
-      if (!id) { message.warning('缺少记录ID'); return }
+      const uid = Number(rec?.uid || 0)
+      const message_id = String(rec?.message_id || rec?.id || '')
+      if (!uid && !message_id) { message.warning('缺少UID或message_id'); return }
       const pid = (rec as any).__pid || ''
-      const res = await fetch(`${API_BASE}/jobs/email-orders-raw/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ id, property_id: pid }) })
+      const res = await fetch(`${API_BASE}/jobs/email-orders-raw/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ uid, message_id, property_id: pid }) })
       const j = await res.json().catch(()=>null)
       if (res.ok) { message.success('已手动插入订单'); openFailures(); load() } else { message.error(j?.message || `插入失败（HTTP ${res.status}）`) }
     } catch { message.error('插入失败') }
@@ -674,6 +660,7 @@ export default function OrdersPage() {
     { title: '入住', dataIndex: 'checkin', render: (_: any, r: Order) => fmtDay((r as any).__src_checkin || r.checkin) },
     { title: '退房', dataIndex: 'checkout', render: (_: any, r: Order) => fmtDay((r as any).__src_checkout || r.checkout) },
     { title: '天数', dataIndex: 'nights', render: (_: any, r: Order) => {
+      if (!monthFilter) return Number(((r as any).__src_nights ?? r.nights ?? 0))
       const rawCi = (r as any).__src_checkin || r.checkin
       const rawCo = (r as any).__src_checkout || r.checkout
       const ci = dayjs(toDayStr(rawCi)).startOf('day')
@@ -684,11 +671,14 @@ export default function OrdersPage() {
       const b = co.isBefore(meNext) ? co : meNext
       return Math.max(0, b.diff(a, 'day'))
     } },
-    { title: '当月租金(AUD)', dataIndex: 'price', render: (_:any, r:Order)=> money(((r as any).visible_net_income ?? calcMonthAmounts(r).netMonth)) },
-    { title: '订单总租金', dataIndex: '__src_price', render: (_:any, r:Order)=> money((r as any).__src_price) },
-    { title: '清洁费', dataIndex: 'cleaning_fee', render: (_:any, r:Order)=> money(calcMonthAmounts(r).cleanMonth) },
-    { title: '总收入', dataIndex: 'net_income', render: (_:any, r:Order)=> money(((r as any).visible_net_income ?? calcMonthAmounts(r).netMonth)) },
-    { title: '晚均价', dataIndex: 'avg_nightly_price', render: (_:any, r:Order)=> money(calcMonthAmounts(r).avgMonth) },
+    { title: '当月租金(AUD)', dataIndex: 'price', render: (_:any, r:Order)=> monthFilter ? money(((r as any).visible_net_income ?? calcMonthAmounts(r).netMonth)) : money((r as any).__src_price ?? r.price) },
+    { title: '订单总租金', dataIndex: '__src_price', render: (_:any, r:Order)=> {
+      const total = ((r as any).__src_price ?? r.price ?? (((r as any).net_income || 0) + ((r as any).cleaning_fee || 0)))
+      return money(total)
+    } },
+    { title: '清洁费', dataIndex: 'cleaning_fee', render: (_:any, r:Order)=> monthFilter ? money(calcMonthAmounts(r).cleanMonth) : money(r.cleaning_fee) },
+    { title: '总收入', dataIndex: 'net_income', render: (_:any, r:Order)=> monthFilter ? money(((r as any).visible_net_income ?? calcMonthAmounts(r).netMonth)) : money((r as any).net_income ?? r.net_income) },
+    { title: '晚均价', dataIndex: 'avg_nightly_price', render: (_:any, r:Order)=> monthFilter ? money(calcMonthAmounts(r).avgMonth) : money((r as any).avg_nightly_price ?? r.avg_nightly_price) },
     { title: '状态', dataIndex: 'status' },
     { title: '到账', dataIndex: 'payment_received', render: (v:any)=> v ? <Tag color="green">已到账</Tag> : <Tag>未到账</Tag> },
     { title: '操作', render: (_: any, r: Order) => (
@@ -835,7 +825,7 @@ export default function OrdersPage() {
   }
 
   return (
-    <Card title="订单管理" extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}{hasPerm('order.manage') ? <Button onClick={manualImportAirbnb}>手动导入 Airbnb 订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={openFailures}>失败订单邮件手动入库</Button> : null}</Space>}>
+    <Card title="订单管理" extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}{hasPerm('order.manage') ? <Button onClick={manualSyncOrders} disabled={syncing}>手动同步订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={openFailures}>失败订单邮件手动入库</Button> : null}</Space>}>
       <Space style={{ marginBottom: 12 }} wrap>
         <Radio.Group value={view} onChange={(e)=>setView(e.target.value)}>
           <Radio.Button value="list">列表</Radio.Button>
@@ -844,7 +834,8 @@ export default function OrdersPage() {
         {view==='list' ? (
           <>
             <Input placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} style={{ width: 200 }} />
-            <DatePicker picker="month" value={monthFilter} onChange={setMonthFilter as any} />
+            <Input placeholder="按确认码搜索" allowClear value={confQuery} onChange={(e) => setConfQuery(e.target.value)} style={{ width: 200 }} />
+            <DatePicker picker="month" value={monthFilter as any} onChange={setMonthFilter as any} allowClear placeholder="选择月份(可选)" />
             <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} format="DD/MM/YYYY" />
           </>
         ) : (
@@ -890,21 +881,50 @@ export default function OrdersPage() {
             const ms = (monthFilter || dayjs()).startOf('month')
             const me = ms.add(1, 'month').startOf('month')
             const input = String(codeQuery || '').trim().toLowerCase()
-            const baseSegs: (Order & { __rid?: string })[] = monthSegments(data as any, ms) as any
-            const rowsPrimary = baseSegs.filter(o => {
-              const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
-              const listingText = String((o as any).listing_name || '').toLowerCase()
-              const sourceText = String(o.source || '').toLowerCase()
-              const guestText = String(o.guest_name || '').toLowerCase()
-              const okText = !input || codeText.includes(input) || listingText.includes(input) || sourceText.includes(input) || guestText.includes(input)
-              const rangeOk = !dateRange || (
-                (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
-                (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
-              )
-              return okText && rangeOk
-            })
-            if (rowsPrimary.length) return rowsPrimary
-            // Fallback: 当月无分段数据时显示原始订单（仍按月份筛选），便于确认导入是否成功
+            const confInput = String(confQuery || '').trim().toLowerCase()
+            if (confInput) {
+              const raw = (Array.isArray(data) ? data : []).map((o: any) => {
+                const ciStr = String(o.checkin || '').slice(0,10)
+                const coStr = String(o.checkout || '').slice(0,10)
+                const ci = dayjs(ciStr, 'YYYY-MM-DD', true)
+                const co = dayjs(coStr, 'YYYY-MM-DD', true)
+                const nights = (ci.isValid() && co.isValid()) ? Math.max(0, co.diff(ci, 'day')) : Number(o.nights || 0)
+              const price = Number(o.price || 0)
+              const cleaning = Number(o.cleaning_fee || 0)
+              const net = Number((price - cleaning).toFixed(2))
+              const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+                return { ...o, __rid: o.id, nights, net_income: net, avg_nightly_price: avg, __src_price: price }
+              })
+              return raw.filter(o => {
+                const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
+                const listingText = String((o as any).listing_name || '').toLowerCase()
+                const sourceText = String(o.source || '').toLowerCase()
+                const guestText = String(o.guest_name || '').toLowerCase()
+                const okText = !input || codeText.includes(input) || listingText.includes(input) || sourceText.includes(input) || guestText.includes(input)
+                const confText = String((o as any).confirmation_code || '').toLowerCase()
+                const okConf = confText.includes(confInput)
+                return okText && okConf
+              })
+            }
+            if (monthFilter) {
+              const baseSegs: (Order & { __rid?: string })[] = monthSegments(data as any, ms) as any
+              const rowsPrimary = baseSegs.filter(o => {
+                const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
+                const listingText = String((o as any).listing_name || '').toLowerCase()
+                const sourceText = String(o.source || '').toLowerCase()
+                const guestText = String(o.guest_name || '').toLowerCase()
+                const okText = !input || codeText.includes(input) || listingText.includes(input) || sourceText.includes(input) || guestText.includes(input)
+                const confText = String((o as any).confirmation_code || '').toLowerCase()
+                const okConf = !confInput || confText.includes(confInput)
+                const rangeOk = !dateRange || (
+                  (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
+                  (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
+                )
+                return okText && okConf && rangeOk
+              })
+              if (rowsPrimary.length) return rowsPrimary
+            }
+            // 默认显示原始订单（全部），可选按月份/范围筛选
             const raw = (Array.isArray(data) ? data : []).map((o: any) => {
               const ciStr = String(o.checkin || '').slice(0,10)
               const coStr = String(o.checkout || '').slice(0,10)
@@ -915,7 +935,7 @@ export default function OrdersPage() {
               const cleaning = Number(o.cleaning_fee || 0)
               const net = Number((price - cleaning).toFixed(2))
               const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
-              return { ...o, __rid: o.id, nights, net_income: net, avg_nightly_price: avg }
+              return { ...o, __rid: o.id, nights, net_income: net, avg_nightly_price: avg, __src_price: price }
             })
             return raw.filter(o => {
               const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
@@ -923,14 +943,16 @@ export default function OrdersPage() {
               const sourceText = String(o.source || '').toLowerCase()
               const guestText = String(o.guest_name || '').toLowerCase()
               const okText = !input || codeText.includes(input) || listingText.includes(input) || sourceText.includes(input) || guestText.includes(input)
+              const confText = String((o as any).confirmation_code || '').toLowerCase()
+              const okConf = !confInput || confText.includes(confInput)
               const ci = dayjs(String(o.checkin || '').slice(0,10))
               const co = dayjs(String(o.checkout || '').slice(0,10))
-              const monthOverlap = ci.isValid() && co.isValid() ? (ci.isBefore(me) && co.isAfter(ms)) : true
+              const monthOverlap = !monthFilter ? true : (ci.isValid() && co.isValid() ? (ci.isBefore(me) && co.isAfter(ms)) : true)
               const rangeOk = !dateRange || (
                 (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
                 (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
               )
-              return okText && monthOverlap && rangeOk
+              return okText && okConf && monthOverlap && rangeOk
             })
           })()}
           pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }}
@@ -1033,6 +1055,19 @@ export default function OrdersPage() {
     <Modal open={failOpen} onCancel={()=> setFailOpen(false)} footer={null} title="失败订单邮件（可手动入库）" width={1000}>
       <Space style={{ marginBottom: 12 }}>
         <Button size="small" onClick={openFailures} disabled={failLoading}>刷新</Button>
+        <Button size="small" type="primary" onClick={async ()=>{
+          try {
+            const items = (failRows || []).map((r:any)=> ({ uid: Number(r?.uid||0)||undefined, message_id: String(r?.message_id||'')||undefined, property_id: String((r as any).__pid||'') })).filter(x=> !!x.property_id)
+            if (!items.length) { message.warning('请选择房号'); return }
+            const res = await fetch(`${API_BASE}/jobs/email-orders-raw/resolve-bulk`, { method: 'POST', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ items }) })
+            const j = await res.json().catch(()=>null)
+            if (res.ok) {
+              const s = j || {}
+              message.success(`已插入 ${Number(s.inserted||0)}，重复 ${Number(s.duplicate||0)}，失败 ${Number(s.failed||0)}`)
+              openFailures(); load()
+            } else { message.error(j?.message || '批量插入失败') }
+          } catch { message.error('批量插入失败') }
+        }}>全部插入</Button>
       </Space>
       <Table size="small" loading={failLoading} rowKey={(r:any)=> String(r.id||r.uid||'')} dataSource={failRows} pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }} scroll={{ x: 'max-content' }}
         columns={[
@@ -1306,7 +1341,7 @@ export default function OrdersPage() {
           <Descriptions.Item label="到账状态">{(detail as any).payment_received ? '已到账' : '未到账'}</Descriptions.Item>
           <Descriptions.Item label="原始净额">{(detail as any).net_income ?? 0}</Descriptions.Item>
           <Descriptions.Item label="内部扣减汇总">{(detail as any).internal_deduction_total ?? 0}</Descriptions.Item>
-          <Descriptions.Item label="可见净额">{(detail as any).visible_net_income ?? ((detail as any).net_income || 0)}</Descriptions.Item>
+          <Descriptions.Item label="可见净额">{(detail as any).visible_net_income ?? (((detail as any).net_income ?? 0))}</Descriptions.Item>
         </Descriptions>
       )}
       <Card style={{ marginTop: 12 }} title="内部扣减" extra={hasPerm('order.deduction.manage') ? (<Button onClick={() => { setDetailEditing(null); setDetailDedAmount(0); setDetailDedDesc(''); setDetailDedNote(''); }}>新增</Button>) : null}>
@@ -1404,3 +1439,4 @@ export default function OrdersPage() {
           <Form.Item name="payment_currency" label="付款币种" initialValue="AUD">
             <Select options={[{ value: 'AUD', label: 'AUD' }, { value: 'RMB', label: 'RMB' }, { value: 'USD', label: 'USD' }, { value: 'EUR', label: 'EUR' }, { value: 'OTHER', label: 'Other' }]} />
           </Form.Item>
+  

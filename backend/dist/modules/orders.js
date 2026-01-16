@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.router = void 0;
 const express_1 = require("express");
 const store_1 = require("../store");
+const events_1 = require("./events");
 const zod_1 = require("zod");
 const auth_1 = require("../auth");
 // Supabase removed
@@ -353,6 +354,10 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
             const insertOrder = { ...newOrder };
             delete insertOrder.property_code;
             const row = await (0, dbAdapter_1.pgInsert)('orders', insertOrder);
+            try {
+                (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: row === null || row === void 0 ? void 0 : row.id });
+            }
+            catch (_j) { }
             return res.status(201).json(row);
         }
         catch (e) {
@@ -380,6 +385,10 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
     // Supabase removed
     // 无远端数据库，使用内存存储
     store_1.db.orders.push(newOrder);
+    try {
+        (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: newOrder.id });
+    }
+    catch (_k) { }
     return res.status(201).json(newOrder);
 });
 exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req, res) => {
@@ -451,6 +460,10 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
             const row = await (0, dbAdapter_1.pgUpdate)('orders', id, payload);
             if (idx !== -1)
                 store_1.db.orders[idx] = row;
+            try {
+                (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
+            }
+            catch (_f) { }
             return res.json(row);
         }
         catch (e) {
@@ -483,6 +496,10 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
         }
     }
     // Supabase branch removed
+    try {
+        (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
+    }
+    catch (_g) { }
     return res.json(updated);
 });
 exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), (req, res) => {
@@ -538,6 +555,10 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('order.write'), async (req
         try {
             const row = await (0, dbAdapter_1.pgDelete)('orders', id);
             removed = removed || row;
+            try {
+                (0, events_1.broadcastOrdersUpdated)({ action: 'delete', id });
+            }
+            catch (_a) { }
             return res.json({ ok: true, id });
         }
         catch (e) {
@@ -547,6 +568,10 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('order.write'), async (req
     // Supabase branch removed
     if (!removed)
         return res.status(404).json({ message: 'order not found' });
+    try {
+        (0, events_1.broadcastOrdersUpdated)({ action: 'delete', id });
+    }
+    catch (_b) { }
     return res.json({ ok: true, id: removed.id });
 });
 exports.router.delete('/:id', (0, auth_1.requirePerm)('order.write'), async (req, res) => {
@@ -1082,11 +1107,19 @@ exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage
                 await (0, dbAdapter_1.pgUpdate)('order_import_staging', id, { status: 'resolved', property_id, resolved_at: new Date().toISOString() });
             }
             catch (_d) { }
+            try {
+                (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: newOrder.id });
+            }
+            catch (_e) { }
         }
         else {
             const idx = store_1.db.orderImportStaging.findIndex((x) => x.id === id);
             if (idx !== -1)
                 store_1.db.orderImportStaging[idx] = { ...store_1.db.orderImportStaging[idx], status: 'resolved', property_id, resolved_at: new Date().toISOString() };
+            try {
+                (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: newOrder.id });
+            }
+            catch (_f) { }
         }
         return res.status(201).json(newOrder);
     }
@@ -1343,12 +1376,20 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                             row.property_code = idToCode[pid];
                         store_1.db.orders.push(row);
                     }
+                    try {
+                        (0, events_1.broadcastOrdersUpdated)({ action: exists ? 'update' : 'create', id: ((exists === null || exists === void 0 ? void 0 : exists.id) || undefined) });
+                    }
+                    catch (_f) { }
                 }
                 else {
                     if (exists)
                         Object.assign(exists, payload);
                     else
                         store_1.db.orders.push({ id: require('uuid').v4(), ...payload });
+                    try {
+                        (0, events_1.broadcastOrdersUpdated)({ action: exists ? 'update' : 'create' });
+                    }
+                    catch (_g) { }
                 }
                 successCount++;
             }
@@ -1366,7 +1407,7 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
             else
                 store_1.db.orderImportStaging.push(payload);
         }
-        catch (_f) { }
+        catch (_h) { }
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'import failed', buildVersion: (process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown') });
     }
 });

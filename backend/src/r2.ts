@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 
 const endpoint = process.env.R2_ENDPOINT || ''
 const accessKeyId = process.env.R2_ACCESS_KEY_ID || ''
@@ -20,4 +20,39 @@ export async function r2Upload(key: string, contentType: string, body: Buffer) {
     : pb
   const base = cleaned || `${endpoint.replace(/\/$/, '')}/${bucket}`
   return `${base}/${key}`
+}
+
+export function r2Status() {
+  const missing: string[] = []
+  if (!endpoint) missing.push('R2_ENDPOINT')
+  if (!accessKeyId) missing.push('R2_ACCESS_KEY_ID')
+  if (!secretAccessKey) missing.push('R2_SECRET_ACCESS_KEY')
+  if (!bucket) missing.push('R2_BUCKET')
+  return { hasR2, endpoint, bucket, publicBase, missing }
+}
+
+function computePublicBase(): string {
+  const pb = (publicBase || '').replace(/\/$/, '')
+  const cleaned = pb && /\.r2\.dev($|\/)/.test(pb)
+    ? pb.replace(new RegExp(`/${bucket}$`), '')
+    : pb
+  return cleaned || `${endpoint.replace(/\/$/, '')}/${bucket}`
+}
+
+export async function r2DeleteByUrl(url: string): Promise<boolean> {
+  try {
+    if (!hasR2 || !r2) return false
+    const clean = String(url || '').replace(/\?[^#]*$/, '')
+    const base1 = computePublicBase()
+    const base2 = `${endpoint.replace(/\/$/, '')}/${bucket}`
+    let key = ''
+    if (clean.startsWith(base1 + '/')) key = clean.slice(base1.length + 1)
+    else if (clean.startsWith(base2 + '/')) key = clean.slice(base2.length + 1)
+    else return false
+    if (!key) return false
+    await r2.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }))
+    return true
+  } catch {
+    return false
+  }
 }

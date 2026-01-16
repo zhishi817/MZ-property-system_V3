@@ -8,6 +8,7 @@ exports.login = login;
 exports.auth = auth;
 exports.requirePerm = requirePerm;
 exports.requireAnyPerm = requireAnyPerm;
+exports.allowCronTokenOrPerm = allowCronTokenOrPerm;
 exports.me = me;
 exports.setDeletePassword = setDeletePassword;
 exports.requireResourcePerm = requireResourcePerm;
@@ -177,6 +178,24 @@ function requireAnyPerm(codes) {
         const role = user.role;
         const ok = codes.some((c) => (0, store_1.roleHasPermission)(role, c));
         if (!ok)
+            return res.status(403).json({ message: 'forbidden' });
+        next();
+    };
+}
+function allowCronTokenOrPerm(code) {
+    return (req, res, next) => {
+        const h = String(req.headers.authorization || '');
+        const hasBearer = h.startsWith('Bearer ');
+        const token = hasBearer ? h.slice(7) : '';
+        const cron = String(process.env.JOB_CRON_TOKEN || '');
+        if (cron && token && token === cron) {
+            return next();
+        }
+        const user = req.user;
+        if (!user)
+            return res.status(401).json({ message: 'unauthorized' });
+        const role = String(user.role || '');
+        if (!(0, store_1.roleHasPermission)(role, code))
             return res.status(403).json({ message: 'forbidden' });
         next();
     };

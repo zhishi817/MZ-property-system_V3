@@ -7,7 +7,11 @@
     "build": "tsc -p .",
     "start": "node dist/index.js",
     "db:init": "ts-node-dev --transpile-only scripts/init_db.ts",
-    "db:seed-user": "ts-node-dev --transpile-only scripts/seed_user.ts"
+    "db:seed-user": "ts-node-dev --transpile-only scripts/seed_user.ts",
+    "db:fix-year-2026": "ts-node-dev --transpile-only scripts/run_fix_year_2026.ts",
+    "test:email-year-rule": "ts-node-dev --transpile-only scripts/test_email_year_rule.ts",
+    "db:fix-email-year-v2": "ts-node-dev --transpile-only scripts/fix_email_orders_year_v2.ts",
+    "db:alter-email-meta": "ts-node-dev --transpile-only scripts/run_alter_orders_email_meta.ts"
   },
   "dependencies": {
     "pdf-lib": "^1.17.1",
@@ -26,7 +30,8 @@
     "zod": "^3.23.8",
     "imapflow": "^1.0.136",
     "mailparser": "^3.9.0",
-    "cheerio": "^1.0.0"
+    "cheerio": "^1.0.0",
+    "node-cron": "^3.0.3"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.2",

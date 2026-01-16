@@ -1,5 +1,6 @@
 import { Router, text } from 'express'
 import { db, Order, addAudit } from '../store'
+import { broadcastOrdersUpdated } from './events'
 import { z } from 'zod'
 import { requirePerm, requireAnyPerm } from '../auth'
 // Supabase removed
@@ -299,6 +300,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
       const insertOrder: any = { ...newOrder }
       delete insertOrder.property_code
       const row = await pgInsert('orders', insertOrder)
+      try { broadcastOrdersUpdated({ action: 'create', id: row?.id }) } catch {}
       return res.status(201).json(row)
     } catch (e: any) {
       const msg = String(e?.message || '')
@@ -322,6 +324,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   // Supabase removed
   // 无远端数据库，使用内存存储
   db.orders.push(newOrder)
+  try { broadcastOrdersUpdated({ action: 'create', id: newOrder.id }) } catch {}
   return res.status(201).json(newOrder)
 })
 
@@ -384,6 +387,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
       for (const k of allowAll) { if ((updated as any)[k] !== undefined) payload[k] = (updated as any)[k] }
       const row = await pgUpdate('orders', id, payload)
       if (idx !== -1) db.orders[idx] = row as any
+      try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
       return res.json(row)
     } catch (e: any) {
       const msg = String(e?.message || '')
@@ -409,6 +413,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
     }
   }
   // Supabase branch removed
+  try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
   return res.json(updated)
 })
 router.patch('/:id', requirePerm('order.write'), (req, res) => {
@@ -461,6 +466,7 @@ router.delete('/:id', requirePerm('order.write'), async (req, res) => {
     try {
       const row = await pgDelete('orders', id)
       removed = removed || (row as any)
+      try { broadcastOrdersUpdated({ action: 'delete', id }) } catch {}
       return res.json({ ok: true, id })
     } catch (e) {
       return res.status(500).json({ message: '数据库删除失败' })
@@ -468,6 +474,7 @@ router.delete('/:id', requirePerm('order.write'), async (req, res) => {
   }
   // Supabase branch removed
   if (!removed) return res.status(404).json({ message: 'order not found' })
+  try { broadcastOrdersUpdated({ action: 'delete', id }) } catch {}
   return res.json({ ok: true, id: removed.id })
 })
 router.delete('/:id', requirePerm('order.write'), async (req, res) => {
@@ -483,6 +490,17 @@ router.delete('/:id', requirePerm('order.write'), async (req, res) => {
 })
 
 // 清洁任务模块已移除
+
+router.post('/:id/generate-cleaning', requireAnyPerm(['order.manage','cleaning.schedule.manage']), async (req, res) => {
+  const { id } = req.params
+  try {
+    const { deriveCleaningTaskFromOrder } = require('../services/cleaningDerive')
+    const row = await deriveCleaningTaskFromOrder(String(id))
+    return res.json({ ok: true, task: row })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'derive_failed' })
+  }
+})
 
 router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','text/plain'] }), async (req, res) => {
   function toNumber(v: any): number | undefined {
@@ -876,9 +894,11 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
     if (hasPg) {
       try { await pgInsert('orders', newOrder as any) } catch {}
       try { await pgUpdate('order_import_staging', id, { status: 'resolved', property_id, resolved_at: new Date().toISOString() }) } catch {}
+      try { broadcastOrdersUpdated({ action: 'create', id: newOrder.id }) } catch {}
     } else {
       const idx = (db as any).orderImportStaging.findIndex((x: any) => x.id === id)
       if (idx !== -1) (db as any).orderImportStaging[idx] = { ...(db as any).orderImportStaging[idx], status: 'resolved', property_id, resolved_at: new Date().toISOString() }
+      try { broadcastOrdersUpdated({ action: 'create', id: newOrder.id }) } catch {}
     }
     return res.status(201).json(newOrder)
   } catch (e: any) {
@@ -1098,8 +1118,10 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
             if (row?.id && idToCode[pid]) row.property_code = idToCode[pid]
             db.orders.push(row as any)
           }
+          try { broadcastOrdersUpdated({ action: exists ? 'update' : 'create', id: (exists?.id || undefined) }) } catch {}
         } else {
           if (exists) Object.assign(exists, payload); else db.orders.push({ id: require('uuid').v4(), ...payload })
+          try { broadcastOrdersUpdated({ action: exists ? 'update' : 'create' }) } catch {}
         }
         successCount++
       } catch (e: any) {
