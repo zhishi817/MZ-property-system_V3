@@ -380,13 +380,12 @@ router.get('/property-revenue', async (req, res) => {
           else cols.other += amt
         }
         const missingMonthKey = peRows.filter((e: any) => !e.month_key).length
-        const warnings: string[] = []
+        var warnings: string[] = []
         if (missingMonthKey > 0) warnings.push(`expenses_without_month_key=${missingMonthKey}`)
-        if (warnings.length) (payload as any).warnings = warnings
       }
     } catch {}
     const totalExpense = Object.values(cols).reduce((s, v) => s + Number(v || 0), 0)
-    const payload = {
+    const payload: any = {
       property_code: label || pcode || pid,
       month: ym,
       parking_fee: -Number(cols.parking_fee || 0),
@@ -401,6 +400,7 @@ router.get('/property-revenue', async (req, res) => {
       total_expense: -Number(totalExpense || 0),
       net_income: Number(rentIncome || 0) - Number(totalExpense || 0)
     }
+    if (warnings && warnings.length) payload.warnings = warnings
     return res.json(payload)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'property-revenue failed' })
