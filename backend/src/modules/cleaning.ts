@@ -90,7 +90,7 @@ router.post('/schedule/rebalance', requirePerm('cleaning.schedule.manage'), (req
   res.json({ updated: pending.length })
 })
 
-const patchSchema = z.object({ scheduled_at: z.string().optional(), status: z.enum(['pending','scheduled','done']).optional(), assignee_id: z.string().optional(), old_code: z.string().optional(), new_code: z.string().optional(), note: z.string().optional(), checkout_time: z.string().optional(), checkin_time: z.string().optional() })
+const patchSchema = z.object({ scheduled_at: z.string().optional(), status: z.enum(['pending','scheduled','in_progress','ready','canceled','done']).optional(), assignee_id: z.string().optional(), old_code: z.string().optional(), new_code: z.string().optional(), note: z.string().optional(), checkout_time: z.string().optional(), checkin_time: z.string().optional() })
 
 router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), (req, res) => {
   const { id } = req.params
@@ -99,7 +99,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), (req, res) => {
   const task = db.cleaningTasks.find((t) => t.id === id)
   if (!task) return res.status(404).json({ message: 'task not found' })
   if (parsed.data.scheduled_at) task.scheduled_at = parsed.data.scheduled_at
-  if (parsed.data.status) task.status = parsed.data.status
+  if (parsed.data.status) task.status = (parsed.data.status === 'done' ? 'ready' : parsed.data.status)
   if (parsed.data.assignee_id) task.assignee_id = parsed.data.assignee_id
   if (parsed.data.old_code !== undefined) task.old_code = parsed.data.old_code
   if (parsed.data.new_code !== undefined) task.new_code = parsed.data.new_code

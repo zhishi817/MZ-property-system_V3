@@ -14,10 +14,14 @@ import { router as inventoryRouter } from './modules/inventory'
 import { router as financeRouter } from './modules/finance'
 import { router as cleaningRouter } from './modules/cleaning'
 import { router as configRouter } from './modules/config'
+import cleaningAppRouter from './modules/cleaning_app'
 import { router as authRouter } from './modules/auth'
 import { router as auditsRouter } from './modules/audits'
 import { router as rbacRouter } from './modules/rbac'
 import { router as versionRouter } from './modules/version'
+import { router as statsRouter } from './modules/stats'
+import { router as eventsRouter } from './modules/events'
+import notificationsRouter from './modules/notifications'
 import maintenanceRouter from './modules/maintenance'
 import { router as propertyOnboardingRouter } from './modules/propertyOnboarding'
 import { router as jobsRouter, runEmailSyncJob } from './modules/jobs'
@@ -59,8 +63,13 @@ if (isProd && hasPg) {
 }
 
 const app = express()
+const allowList = String(process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean)
 const corsOpts: cors.CorsOptions = {
-  origin: true,
+  origin: (origin, cb) => {
+    if (!allowList.length) return cb(null, true)
+    const ok = !origin || allowList.includes(origin)
+    cb(null, ok)
+  },
   credentials: false,
   methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization']
@@ -154,11 +163,15 @@ app.use('/finance', financeRouter)
 app.use('/crud', crudRouter)
 app.use('/recurring', recurringRouter)
 app.use('/cleaning', cleaningRouter)
+app.use('/cleaning-app', cleaningAppRouter)
 app.use('/config', configRouter)
 app.use('/auth', authRouter)
 app.use('/audits', auditsRouter)
 app.use('/rbac', rbacRouter)
 app.use('/version', versionRouter)
+app.use('/stats', statsRouter)
+app.use('/events', eventsRouter)
+app.use('/notifications', notificationsRouter)
 app.use('/maintenance', maintenanceRouter)
 app.use('/jobs', jobsRouter)
 app.use('/public', publicAdminRouter)
@@ -200,7 +213,8 @@ app.listen(port, () => {
       }, { scheduled: true })
       task.start()
 
-      // Watchdog: every 10 minutes retry recent failed UIDs
+      const wdEnabled = String(process.env.EMAIL_SYNC_WATCHDOG_ENABLED || 'true').toLowerCase() === 'true'
+      if (wdEnabled) {
       const wd = cron.schedule('*/10 * * * *', async () => {
         try {
           const key = 987654321
@@ -241,6 +255,9 @@ app.listen(port, () => {
         } catch (e: any) { console.error(`[email-sync][watchdog] error=${String(e?.message || '')}`) }
       }, { scheduled: true })
       wd.start()
+      } else {
+        console.log('[email-sync][watchdog] disabled')
+      }
     } else {
       console.log('[email-sync][schedule] disabled')
     }
@@ -256,7 +273,36 @@ app.listen(port, () => {
         console.log(`[DBInfo] current_database=${String(r1?.rows?.[0]?.db||'')} current_schema=${String(r1?.rows?.[0]?.schema||'')} search_path=${String(r2?.rows?.[0]?.search_path||'')} current_schemas=${JSON.stringify(r3?.rows?.[0]?.schemas||[])}`)
       }
     } catch (e: any) {
-      console.error(`[DBInfo] query failed message=${String(e?.message || '')}`)
+  console.log(`[DBInfo] query failed message=${String(e?.message || '')}`)
+  }
+  })()
+  ;(async () => {
+    try {
+      const enableCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true'
+      if (enableCleaning && hasPg) {
+        const expr = String(process.env.CLEANING_START_TIMEOUT_CRON || '*/15 * * * *')
+        const threshMin = Number(process.env.CLEANING_START_TIMEOUT_MINUTES || 60)
+        const task = cron.schedule(expr, async () => {
+          try {
+            const sql = `select id, assignee_id, scheduled_at, key_photo_uploaded_at from cleaning_tasks where date=now()::date and status='scheduled'`
+            const rs = await pgPool!.query(sql)
+            for (const r of (rs?.rows || [])) {
+              const sch = r.scheduled_at ? new Date(r.scheduled_at) : null
+              const hasKeyPhoto = !!r.key_photo_uploaded_at
+              if (!sch || hasKeyPhoto) continue
+              const diff = Date.now() - sch.getTime()
+              if (diff > threshMin * 60 * 1000) {
+                console.log(`[cleaning-timeout] task=${r.id} assignee=${r.assignee_id} overdue_minutes=${Math.round(diff/60000)}`)
+              }
+            }
+          } catch (e: any) {
+            console.error(`[cleaning-timeout] error message=${String(e?.message || '')}`)
+          }
+        }, { scheduled: true })
+        task.start()
+      }
+    } catch (e: any) {
+      console.error(`[cleaning-timeout] init error message=${String(e?.message || '')}`)
     }
   })()
 })

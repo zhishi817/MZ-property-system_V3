@@ -156,6 +156,21 @@ export function requireAnyPerm(codes: string[]) {
   }
 }
 
+export function allowCronTokenOrPerm(code: string) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const h = String(req.headers.authorization || '')
+    const hasBearer = h.startsWith('Bearer ')
+    const token = hasBearer ? h.slice(7) : ''
+    const cron = String(process.env.JOB_CRON_TOKEN || '')
+    if (cron && token && token === cron) { return next() }
+    const user = (req as any).user
+    if (!user) return res.status(401).json({ message: 'unauthorized' })
+    const role = String(user.role || '')
+    if (!roleHasPermission(role, code)) return res.status(403).json({ message: 'forbidden' })
+    next()
+  }
+}
+
 export function me(req: Request, res: Response) {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })

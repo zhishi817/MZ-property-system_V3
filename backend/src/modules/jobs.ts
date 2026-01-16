@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { requirePerm } from '../auth'
+import { requirePerm, allowCronTokenOrPerm } from '../auth'
 import { hasPg, pgPool, pgSelect, pgInsertOnConflictDoNothing, pgInsert, pgRunInTransaction } from '../dbAdapter'
 import { v4 as uuid } from 'uuid'
 import type { PoolClient } from 'pg'
@@ -23,11 +23,12 @@ export function ymdInTz(d: Date, tz: string): { year: number; month: number; day
 }
 
 export function inferYearByDelta(baseYear: number, baseMonth: number, parsedMonth: number): number {
-  const delta = parsedMonth - baseMonth
-  if (baseMonth === 12 && parsedMonth === 1) return baseYear + 1
-  if (baseMonth === 1 && parsedMonth === 12) return baseYear - 1
-  if (delta >= 2) return baseYear + 1
-  if (delta <= -10) return baseYear - 1
+  const bm = Number(baseMonth)
+  const pm = Number(parsedMonth)
+  if (bm === 12 && (pm === 1 || pm === 2)) return baseYear + 1
+  if (bm === 11 && pm === 1) return baseYear + 1
+  if (bm === 1 && (pm === 12 || pm === 11)) return baseYear - 1
+  if (bm === 2 && pm === 12) return baseYear - 1
   return baseYear
 }
 
@@ -422,8 +423,13 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
     const labelRe = kind === 'checkin' ? /check\s*[--–—]?\s*in/i : /check\s*[--–—]?\s*out/i
     const idx = bodyText.search(labelRe)
     if (idx < 0) return {}
-    const window = bodyText.slice(idx, idx + 120)
-    const m = /([A-Za-z]{3,9}),?\s*(\d{1,2})\s+([A-Za-z]{3,9})/i.exec(window)
+    const windowRaw = bodyText.slice(idx, idx + 120)
+    const joinFix = kind === 'checkin'
+      ? /(check\s*[--–—]?\s*in)(Sun|Mon|Tue|Wed|Thu|Fri|Sat)/i
+      : /(check\s*[--–—]?\s*out)(Sun|Mon|Tue|Wed|Thu|Fri|Sat)/i
+    const window = windowRaw.replace(joinFix, '$1 $2')
+    const dayRe = /\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s*(\d{1,2})\s+([A-Za-z]{3,9})/i
+    const m = dayRe.exec(window)
     if (!m) return {}
     const day = Number(m[2])
     const mon = parseMonthStr(m[3] || '') || 0
@@ -494,11 +500,13 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
   const isNewBookingConfirmed = /new booking confirmed/i.test(subj)
   const isReservationAltered = /reservation altered/i.test(subj)
   const isReservationCancelled = /reservation (cancelled|canceled)/i.test(subj)
-  const isOrderMail = isReservationConfirmed || isNewBookingConfirmed || isReservationAltered || isReservationCancelled
+  const isCancelViaSubject = /\bcancel\s+reservation\b/i.test(subj)
+  const isCancelViaBody = /\bcancel\s+reservation\b/i.test(String((parsed.text || '') + ' ' + (parsed.html || '')))
+  const isOrderMail = isReservationConfirmed || isNewBookingConfirmed || isReservationAltered || isReservationCancelled || isCancelViaSubject
   if (!isAirbnb || !isOrderMail) {
     return { matched: false, inserted: false, skipped_duplicate: false, failed: false, reason: 'not_whitelisted', last_uid: Number(msg.uid || 0) }
   }
-  const isCancellationMail = isReservationCancelled || /^cancelled:\s*reservation/i.test(subj)
+  const isCancellationMail = isReservationCancelled || /^cancelled:\s*reservation/i.test(subj) || isCancelViaSubject || isCancelViaBody
   const cc = (String(fields.confirmation_code || '').match(/\b[A-Z0-9]{8,10}\b/)?.[0] || '').trim()
   if (!cc) {
     if (!dryRun && hasPg) {
@@ -521,7 +529,7 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
     return { matched: false, inserted: false, skipped_duplicate: false, failed: false, reason: 'no_confirmation_code', sample, last_uid: Number(msg.uid || 0) }
   }
   if (isCancellationMail) {
-    const ccCancel = (String(fields.confirmation_code || '').match(/\b[A-Z0-9]{8,10}\b/)?.[0] || '').trim()
+    const ccCancel = (String(fields.confirmation_code || subj || '').match(/\b[A-Z0-9]{8,10}\b/)?.[0] || '').trim()
     if (!ccCancel) {
       return { matched: false, inserted: false, skipped_duplicate: false, failed: false, reason: 'no_confirmation_code', last_uid: Number(msg.uid || 0) }
     }
@@ -541,6 +549,7 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
         if (pgPool) {
           const upd = await pgPool.query('UPDATE orders SET status=$2 WHERE confirmation_code=$1 RETURNING id', [ccCancel, 'cancelled'])
           const oid = upd?.rows?.[0]?.id || null
+          try { if (oid) { const { deriveCleaningTaskFromOrder } = require('../services/cleaningDerive'); await deriveCleaningTaskFromOrder(String(oid)) } } catch {}
           return { matched: true, inserted: false, skipped_duplicate: false, failed: false, updated: !!oid, order_id: oid, last_uid: Number(msg.uid || 0) }
         }
       } catch (e: any) {
@@ -592,6 +601,7 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
       const dup: any[] = await pgSelect('orders', 'id', { source: sourceTag, confirmation_code: cc, property_id: pid }) as any[] || []
       if (Array.isArray(dup) && dup[0]) {
         console.log(JSON.stringify({ tag: 'orders_write_done', action: 'duplicate_check', upserted: false, duplicate: true, order_id: dup[0].id }))
+        try { const { deriveCleaningTaskFromOrder } = require('../services/cleaningDerive'); await deriveCleaningTaskFromOrder(String(dup[0].id)) } catch {}
         return { matched: true, inserted: false, skipped_duplicate: true, failed: false, order_id: dup[0].id, last_uid: Number(msg.uid || 0) }
       }
     } catch {}
@@ -600,6 +610,7 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
       safeDbLog('orders','upsert', payload, { conflict: ['idempotency_key'] })
       const row = await pgInsertOnConflictDoNothing('orders', payload, ['idempotency_key'])
       console.log(JSON.stringify({ tag: 'orders_write_done', action: 'upsert', upserted: !!row, duplicate: !row, order_id: row?.id || null }))
+      try { const { deriveCleaningTaskFromOrder } = require('../services/cleaningDerive'); if (row?.id) await deriveCleaningTaskFromOrder(String(row.id)) } catch {}
       return { matched: true, inserted: !!row, skipped_duplicate: !row, failed: false, order_id: row?.id, last_uid: Number(msg.uid || 0) }
     } catch (e: any) {
       console.error(JSON.stringify({ tag: 'db_write_failed', table: 'orders', columns: Object.keys(payload), conflict: ['idempotency_key'], code: String((e as any)?.code || ''), message: String(e?.message || ''), payload_keys: Object.keys(payload), payload_sample: { idempotency_key, external_id: cc, property_id: pid, guest_name: fields.guest_name, checkin: ci, checkout: co } }))
@@ -715,7 +726,7 @@ router.post('/api/email-sync/run', requirePerm('order.manage'), async (req, res)
   }
 })
 
-router.post('/email-sync/run', requirePerm('order.manage'), async (req, res) => {
+router.post('/email-sync/run', allowCronTokenOrPerm('order.manage'), async (req, res) => {
   const parsed = reqSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const { mode, from_date, to_date, dry_run, batch_tag, max_messages, commit_every, max_per_run, batch_size, concurrency, batch_sleep_ms, min_interval_ms } = parsed.data
@@ -742,6 +753,57 @@ router.post('/email-sync/run', requirePerm('order.manage'), async (req, res) => 
     if (e?.next_allowed_at) payload.next_allowed_at = e.next_allowed_at
     if (e?.running_since) payload.running_since = e.running_since
     return res.status(status).json(payload)
+  }
+})
+
+router.post('/email-sync/retry', requirePerm('order.manage'), async (req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const account = String((req.body || {}).account || '')
+    const reasonRaw = (Array.isArray((req.body || {}).reasons) ? (req.body as any).reasons : [String((req.body || {}).reason || '')]).filter(Boolean).map((s: any) => String(s))
+    const limit = Number((req.body || {}).limit || 100)
+    const reasonsMap: Record<string, string[]> = {
+      retryable: ['uid_processing_failed','raw_write_failed','db_error'],
+      parse_failed: ['parse_error','missing_field'],
+      property_not_mapped: ['property_not_found'],
+      db_error: ['db_error']
+    }
+    let reasons: string[] = []
+    for (const r of reasonRaw) { const k = String(r || '').toLowerCase(); reasons = reasons.concat(reasonsMap[k] || [k]) }
+    reasons = Array.from(new Set(reasons.filter(Boolean)))
+    if (!reasons.length) return res.status(400).json({ message: 'reasons_required' })
+    const conds: any[] = []
+    const where: string[] = ["status IN ('failed','skipped')", 'uid IS NOT NULL']
+    if (account) { where.push('account=$1'); conds.push(account) }
+    const placeholders = reasons.map((_, i) => `$${(conds.length + i + 1)}`)
+    where.push(`reason = ANY(ARRAY[${placeholders.join(',')}])`)
+    conds.push(...reasons)
+    where.push('next_retry_at IS NULL OR next_retry_at < now()')
+    const sel = await dbq().query(`SELECT DISTINCT uid, account FROM email_sync_items WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT $${conds.length + 1}`, [...conds, limit])
+    const rows: Array<{ uid: number; account: string }> = sel?.rows || []
+    const sched: Array<{ uid: number; account: string; next_retry_at: string }> = []
+    for (const r of rows) {
+      const adjust = await dbq().query('UPDATE email_sync_items SET status=\'retry\', retry_count=coalesce(retry_count,0), next_retry_at=COALESCE(next_retry_at, now()) WHERE account=$1 AND uid=$2 AND status IN (\'failed\',\'skipped\')', [String(r.account || ''), Number(r.uid || 0)])
+      const q = await dbq().query('SELECT next_retry_at FROM email_sync_items WHERE account=$1 AND uid=$2 AND status=\'retry\' ORDER BY next_retry_at DESC LIMIT 1', [String(r.account||''), Number(r.uid||0)])
+      const next = q?.rows?.[0]?.next_retry_at
+      sched.push({ uid: Number(r.uid||0), account: String(r.account||''), next_retry_at: next })
+    }
+    return res.json({ ok: true, scheduled: sched.length, items: sched })
+  } catch (e: any) {
+    return res.status(500).json({ message: 'retry_failed', detail: String(e?.message || '') })
+  }
+})
+
+const genRangeSchema = z.object({ from: z.string(), to: z.string(), type: z.string().optional() })
+router.post('/cleaning/generate-for-date-range', requirePerm('cleaning.schedule.manage'), async (req, res) => {
+  const parsed = genRangeSchema.safeParse(req.body || req.query || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    const { deriveCleaningTasksForDateRange } = require('../services/cleaningDerive')
+    const r = await deriveCleaningTasksForDateRange(parsed.data.from, parsed.data.to, parsed.data.type)
+    return res.json(r)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'generate_failed' })
   }
 })
 
@@ -851,6 +913,120 @@ router.get('/email-sync-status', requirePerm('order.manage'), async (_req, res) 
     return res.status(500).json({ message: 'status_failed', detail: String(e?.message || '') })
   }
 })
+router.get('/email-orders-raw/failures', requirePerm('order.manage'), async (req, res) => {
+  try {
+    if (!hasPg) return res.json([])
+    const sinceDays = Number(((req.query || {}) as any).since_days || 14)
+    const limit = Math.min(500, Number(((req.query || {}) as any).limit || 200))
+    const q = await pgPool!.query(`
+      SELECT uid, message_id, subject, sender, header_date, confirmation_code, guest_name, listing_name, checkin, checkout, price, cleaning_fee, status
+      FROM email_orders_raw
+      WHERE created_at >= now() - ($1 || ':days')::interval
+      ORDER BY created_at DESC
+      LIMIT $2
+    `, [String(sinceDays), limit])
+    const rows = (q.rows || []).map(r => {
+      let nights = 0
+      try { const a = r.checkin ? new Date(String(r.checkin)) : null; const b = r.checkout ? new Date(String(r.checkout)) : null; if (a && b) { const ms = b.getTime() - a.getTime(); nights = ms > 0 ? Math.round(ms / (1000*60*60*24)) : 0 } } catch {}
+      return { uid: r.uid, id: r.message_id, message_id: r.message_id, subject: r.subject, from: r.sender, date: r.header_date, confirmation_code: r.confirmation_code, guest_name: r.guest_name, listing_name: r.listing_name, checkin: r.checkin, checkout: r.checkout, nights, price: r.price, cleaning_fee: r.cleaning_fee, status: r.status }
+    })
+    return res.json(rows)
+  } catch (e: any) { return res.status(500).json({ message: 'list_failed', detail: String(e?.message || '') }) }
+})
+router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const body: any = req.body || {}
+    const uid = Number(body.uid || 0) || undefined
+    const message_id = String(body.id || body.message_id || '') || undefined
+    const property_id = String(body.property_id || '') || undefined
+    if (!uid && !message_id) return res.status(400).json({ message: 'uid_or_message_id_required' })
+    if (!property_id) return res.status(400).json({ message: 'property_id_required' })
+    let row: any = null
+    if (uid) { const rs = await pgPool!.query('SELECT * FROM email_orders_raw WHERE uid=$1 ORDER BY created_at DESC LIMIT 1', [uid]); row = rs?.rows?.[0] }
+    if (!row && message_id) { const rs2 = await pgPool!.query('SELECT * FROM email_orders_raw WHERE message_id=$1 ORDER BY created_at DESC LIMIT 1', [message_id]); row = rs2?.rows?.[0] }
+    if (!row) return res.status(404).json({ message: 'raw_not_found' })
+    function dayOnly(v: any): string | undefined {
+      try { const d = new Date(v); if (!isNaN(d.getTime())) return d.toISOString().slice(0,10) } catch {}
+      const s = String(v || '')
+      const m = /^\d{4}-\d{2}-\d{2}/.exec(s)
+      return m ? m[0] : undefined
+    }
+    const ci = row.checkin ? dayOnly(row.checkin) : undefined
+    const co = row.checkout ? dayOnly(row.checkout) : undefined
+    let nights = 0
+    try { const a = row.checkin ? new Date(row.checkin) : null; const b = row.checkout ? new Date(row.checkout) : null; if (a && b) { const ms = b.getTime() - a.getTime(); nights = ms > 0 ? Math.round(ms / (1000*60*60*24)) : 0 } } catch {}
+    const price = Number(row.price || 0)
+    const cleaning = Number(row.cleaning_fee || 0)
+    const net = Number((price - cleaning).toFixed(2))
+    const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+    const payload: any = { id: uuid(), source: 'airbnb_email', property_id, guest_name: row.guest_name || null, checkin: ci, checkout: co, price, cleaning_fee: cleaning, net_income: net, avg_nightly_price: avg, nights, currency: 'AUD', status: 'confirmed', confirmation_code: row.confirmation_code || null, idempotency_key: `airbnb_email:${String(row.confirmation_code || '')}` }
+    try {
+      const dup: any[] = await pgSelect('orders', 'id', { source: payload.source, confirmation_code: payload.confirmation_code, property_id }) as any[] || []
+      if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: 'duplicate' })
+    } catch {}
+    try {
+      const rowIns = await pgInsert('orders', payload)
+      return res.status(201).json(rowIns)
+    } catch (e: any) {
+      return res.status(500).json({ message: 'insert_failed', detail: String(e?.message || '') })
+    }
+  } catch (e: any) { return res.status(500).json({ message: 'resolve_failed', detail: String(e?.message || '') }) }
+})
+router.post('/email-orders-raw/resolve-bulk', requirePerm('order.manage'), async (req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const body: any = req.body || {}
+    const items: Array<{ uid?: number; message_id?: string; property_id: string }> = Array.isArray(body.items) ? body.items : []
+    if (!items.length) return res.status(400).json({ message: 'items_required' })
+    function dayOnly(v: any): string | undefined {
+      try { const d = new Date(v); if (!isNaN(d.getTime())) return d.toISOString().slice(0,10) } catch {}
+      const s = String(v || '')
+      const m = /^\d{4}-\d{2}-\d{2}/.exec(s)
+      return m ? m[0] : undefined
+    }
+    const results: Array<{ ok: boolean; uid?: number; message_id?: string; property_id?: string; id?: string; error?: string }> = []
+    let inserted = 0, duplicate = 0, failed = 0, missing = 0
+    for (const it of items) {
+      try {
+        const uid = Number(it?.uid || 0) || undefined
+        const mid = String(it?.message_id || '') || undefined
+        const pid = String(it?.property_id || '') || undefined
+        if (!uid && !mid) { results.push({ ok: false, error: 'uid_or_message_id_required', property_id: pid }); missing++; continue }
+        if (!pid) { results.push({ ok: false, error: 'property_id_required', uid, message_id: mid }); missing++; continue }
+        let row: any = null
+        if (uid) { const rs = await pgPool!.query('SELECT * FROM email_orders_raw WHERE uid=$1 ORDER BY created_at DESC LIMIT 1', [uid]); row = rs?.rows?.[0] }
+        if (!row && mid) { const rs2 = await pgPool!.query('SELECT * FROM email_orders_raw WHERE message_id=$1 ORDER BY created_at DESC LIMIT 1', [mid]); row = rs2?.rows?.[0] }
+        if (!row) { results.push({ ok: false, error: 'raw_not_found', uid, message_id: mid, property_id: pid }); failed++; continue }
+        const ci = row.checkin ? dayOnly(row.checkin) : undefined
+        const co = row.checkout ? dayOnly(row.checkout) : undefined
+        let nights = 0
+        try { const a = row.checkin ? new Date(row.checkin) : null; const b = row.checkout ? new Date(row.checkout) : null; if (a && b) { const ms = b.getTime() - a.getTime(); nights = ms > 0 ? Math.round(ms / (1000*60*60*24)) : 0 } } catch {}
+        const price = Number(row.price || 0)
+        const cleaning = Number(row.cleaning_fee || 0)
+        const net = Number((price - cleaning).toFixed(2))
+        const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+        const payload: any = { id: uuid(), source: 'airbnb_email', property_id: pid, guest_name: row.guest_name || null, checkin: ci, checkout: co, price, cleaning_fee: cleaning, net_income: net, avg_nightly_price: avg, nights, currency: 'AUD', status: 'confirmed', confirmation_code: row.confirmation_code || null, idempotency_key: `airbnb_email:${String(row.confirmation_code || '')}` }
+        try {
+          const dup: any[] = await pgSelect('orders', 'id', { source: payload.source, confirmation_code: payload.confirmation_code, property_id: pid }) as any[] || []
+          if (Array.isArray(dup) && dup[0]) { results.push({ ok: false, error: 'duplicate', uid, message_id: mid, property_id: pid }); duplicate++; continue }
+        } catch {}
+        try {
+          const rowIns = await pgInsert('orders', payload)
+          results.push({ ok: true, uid, message_id: mid, property_id: pid, id: rowIns?.id })
+          inserted++
+        } catch (e: any) {
+          results.push({ ok: false, error: String(e?.message || 'insert_failed'), uid, message_id: mid, property_id: pid })
+          failed++
+        }
+      } catch (e: any) {
+        results.push({ ok: false, error: String(e?.message || 'error') })
+        failed++
+      }
+    }
+    return res.json({ inserted, duplicate, failed, missing, results })
+  } catch (e: any) { return res.status(500).json({ message: 'resolve_bulk_failed', detail: String(e?.message || '') }) }
+})
 export type EmailSyncOptions = {
   mode?: 'incremental'|'backfill'
   from_date?: string
@@ -886,6 +1062,11 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
     }
   } catch {}
   let accounts = getAccounts()
+  const allowListRaw = String(process.env.EMAIL_SYNC_ALLOWED_ACCOUNTS || '').trim()
+  if (allowListRaw) {
+    const allow = allowListRaw.split(',').map(s => s.trim()).filter(Boolean)
+    accounts = accounts.filter(a => allow.includes(String(a.user)))
+  }
   if (account) accounts = accounts.filter(a => String(a.user || '') === String(account))
   if (!accounts.length) throw Object.assign(new Error('missing imap accounts'), { status: 400 })
   const result = await (async () => {
@@ -978,10 +1159,23 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
       let insertedAny = false
       let failureCode: string | null = null
       let failureMessage: string | null = null
+      let retryPhasePending = true
+      let retryDueUids: number[] = []
+      try {
+        const rs = await dbq(dbClient).query('SELECT DISTINCT uid FROM email_sync_items WHERE account=$1 AND status=\'retry\' AND uid IS NOT NULL AND next_retry_at IS NOT NULL AND next_retry_at <= now() ORDER BY next_retry_at ASC LIMIT $2', [acc.user, HARD_CAP])
+        retryDueUids = (rs?.rows || []).map((r: any) => Number(r.uid || 0)).filter((n: number) => Number.isFinite(n))
+      } catch {}
       while (true) {
         const limit = Math.min(Number(max_messages_capped || HARD_CAP), Number(max_per_run_capped || HARD_CAP) - processedTotal)
         if (limit <= 0) break
-        const uidList = (Array.isArray(uids_capped) && uids_capped.length) ? uids_capped : await fetchUids(imap, mode === 'incremental' ? { uidFrom: lastUid, limit } : { since: windowFrom, before: windowTo, limit })
+        let uidList: number[]
+        if (retryPhasePending && retryDueUids.length) {
+          uidList = retryDueUids.slice(0, limit)
+          retryDueUids = retryDueUids.slice(uidList.length)
+          if (!retryDueUids.length) retryPhasePending = false
+        } else {
+          uidList = (Array.isArray(uids_capped) && uids_capped.length) ? (uids_capped as number[]) : await fetchUids(imap, mode === 'incremental' ? { uidFrom: lastUid, limit } : { since: windowFrom, before: windowTo, limit })
+        }
         if (!uidList.length) break
         const batches: number[][] = []
         for (let i = 0; i < uidList.length; i += Number(batch_size)) batches.push(uidList.slice(i, i + Number(batch_size)))
@@ -1109,6 +1303,19 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                       console.error(JSON.stringify({ tag: 'items_update_rowcount_error', account: acc.user, run_id: runIdKeyStr, uid, expected: 1, actual: rc2 }))
                       hadFailure = true; if (!failureCode) failureCode = 'items_update_rowcount_error'; if (!failureMessage) failureMessage = `items_update_rowcount_error uid=${uid}`
                     }
+                    try {
+                      if (statusItem !== 'failed') {
+                        await dbq(dbClient).query("UPDATE email_sync_items SET status='skipped', reason='duplicate' WHERE account=$1 AND uid=$2 AND status='retry'", [acc.user, uid])
+                      } else {
+                        const inc = await dbq(dbClient).query('UPDATE email_sync_items SET retry_count=coalesce(retry_count,0)+1 WHERE account=$1 AND uid=$2 AND status=\'retry\'', [acc.user, uid])
+                        const rq = await dbq(dbClient).query('SELECT retry_count FROM email_sync_items WHERE account=$1 AND uid=$2 AND status=\'retry\' ORDER BY next_retry_at DESC LIMIT 1', [acc.user, uid])
+                        const rc = Number(rq?.rows?.[0]?.retry_count || 0)
+                        let minutes = 5
+                        if (rc >= 2) minutes = 15
+                        if (rc >= 3) minutes = 60
+                        await dbq(dbClient).query("UPDATE email_sync_items SET next_retry_at = now() + ($3 || ':minutes')::interval, status = CASE WHEN retry_count >= 3 THEN 'failed' ELSE 'retry' END WHERE account=$1 AND uid=$2 AND status='retry'", [acc.user, uid, String(minutes)])
+                      }
+                    } catch {}
                     console.log(JSON.stringify({ tag: 'STEP5_item_update_done', uid, run_id: startRunId, account: acc.user, item_id: itemId, status: updPayload.status, reason: updPayload.reason }))
                     try {
                       const parse_ok = !!r.matched
@@ -1167,7 +1374,10 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                     const isCandidate = !!(subjectOk && foundConf && foundDates)
                     const shouldWriteRaw = (isCandidate && !!r.failed) || DEBUG_RAW
                     if (shouldWriteRaw) {
-                      const rawPayload = { source: 'imap', uid, message_id: messageId2 || null, header_date: headerDate2 || null, envelope: JSON.stringify(envelope || {}), html: String(p2?.html || ''), plain: String(p2?.text || ''), status: r.failed ? 'failed' : (r.matched ? 'matched' : 'fetched'), subject: String(env?.subject || ''), sender: String(env?.from?.text || ''), account: acc.user, confirmation_code: (String(fields2.confirmation_code || '')).match(/\b[A-Z0-9]{8,10}\b/)?.[0] || null, guest_name: fields2.guest_name || null, listing_name: fields2.listing_name || null, checkin: fields2.checkin || null, checkout: fields2.checkout || null, extra: { parse_ok: isCandidate, reason: (r as any).reason || null } }
+                      const priceVal = Number(fields2.price || 0)
+                      const cleanVal = Number(fields2.cleaning_fee || 0)
+                      const netVal = Number((priceVal - cleanVal).toFixed(2))
+                      const rawPayload = { source: 'imap', uid, message_id: messageId2 || null, header_date: headerDate2 || null, envelope: JSON.stringify(envelope || {}), html: String(p2?.html || ''), plain: String(p2?.text || ''), status: r.failed ? 'failed' : (r.matched ? 'matched' : 'fetched'), subject: String(env?.subject || ''), sender: String(env?.from?.text || ''), account: acc.user, confirmation_code: (String(fields2.confirmation_code || '')).match(/\b[A-Z0-9]{8,10}\b/)?.[0] || null, guest_name: fields2.guest_name || null, listing_name: fields2.listing_name || null, checkin: fields2.checkin || null, checkout: fields2.checkout || null, price: isFinite(priceVal) ? priceVal : null, cleaning_fee: isFinite(cleanVal) ? cleanVal : null, net_income: isFinite(netVal) ? netVal : null, nights: fields2.nights || null, extra: { parse_ok: isCandidate, reason: (r as any).reason || null } }
                       safeDbLog('email_orders_raw','upsert', rawPayload, { conflict: messageId2 ? ['message_id'] : ['source','uid'] })
                       const rawRes = await pgInsertOnConflictDoNothing('email_orders_raw', rawPayload, messageId2 ? ['message_id'] : ['source','uid'], dbClient)
                       console.log(JSON.stringify({ tag: 'STEP4_raw_upsert_done', uid, run_id: startRunId, account: acc.user, inserted: !!rawRes, conflict: messageId2 ? 'message_id' : 'source+uid', candidate: isCandidate, failed_order: !!r.failed }))

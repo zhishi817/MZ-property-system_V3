@@ -139,8 +139,10 @@ export type OrderInternalDeduction = {
 export type CleaningTask = {
   id: string
   property_id?: string
+  order_id?: string
+  type?: string
   date: string
-  status: 'pending' | 'scheduled' | 'done'
+  status: 'pending' | 'scheduled' | 'in_progress' | 'ready' | 'canceled'
   assignee_id?: string
   scheduled_at?: string
   old_code?: string
@@ -148,6 +150,18 @@ export type CleaningTask = {
   note?: string
   checkout_time?: string
   checkin_time?: string
+  auto_managed?: boolean
+  locked?: boolean
+  reschedule_required?: boolean
+  started_at?: string
+  finished_at?: string
+  key_photo_uploaded_at?: string
+  lockbox_video_uploaded_at?: string
+  geo_lat?: number
+  geo_lng?: number
+  cleaned?: boolean
+  restocked?: boolean
+  inspected?: boolean
 }
 
 export type OrderImportStaging = {
@@ -342,6 +356,18 @@ if (db.roles.length === 0) {
     { code: 'menu.finance.orders.visible' },
     { code: 'menu.finance.company_overview.visible' },
     { code: 'menu.finance.company_revenue.visible' },
+    { code: 'cleaning_app.tasks.view.self' },
+    { code: 'cleaning_app.tasks.start' },
+    { code: 'cleaning_app.tasks.finish' },
+    { code: 'cleaning_app.issues.report' },
+    { code: 'cleaning_app.media.upload' },
+    { code: 'cleaning_app.restock.manage' },
+    { code: 'cleaning_app.inspect.finish' },
+    { code: 'cleaning_app.ready.set' },
+    { code: 'cleaning_app.calendar.view.all' },
+    { code: 'cleaning_app.assign' },
+    { code: 'cleaning_app.sse.subscribe' },
+    { code: 'cleaning_app.push.subscribe' }
   ]
   function grant(roleId: string, codes: string[]) {
     codes.forEach(c => db.rolePermissions.push({ role_id: roleId, permission_code: c }))
@@ -349,11 +375,11 @@ if (db.roles.length === 0) {
   // 管理员：所有权限
   grant(adminId, db.permissions.map(p => p.code))
   // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
-  grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','cleaning.view','finance.tx.write','onboarding.manage','onboarding.read','menu.dashboard','menu.properties','menu.finance','menu.cleaning','menu.cms','menu.onboarding'])
+  grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','cleaning.view','finance.tx.write','onboarding.manage','onboarding.read','menu.dashboard','menu.properties','menu.finance','menu.cleaning','menu.cms','menu.onboarding','cleaning_app.sse.subscribe'])
   // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
-  grant(cleanMgrId, ['cleaning.schedule.manage','cleaning.task.assign','menu.cleaning','menu.dashboard'])
+  grant(cleanMgrId, ['cleaning.schedule.manage','cleaning.task.assign','menu.cleaning','menu.dashboard','cleaning_app.calendar.view.all','cleaning_app.assign','cleaning_app.sse.subscribe'])
   // 清洁/检查人员：无写权限，仅查看（后端接口默认允许 GET）
-  grant(cleanerId, ['menu.cleaning','menu.dashboard'])
+  grant(cleanerId, ['menu.cleaning','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 财务人员：财务结算与交易录入、房东/房源管理
   grant(financeId, ['finance.payout','finance.tx.write','order.deduction.manage','landlord.manage','property.write','onboarding.manage','onboarding.read','menu.finance','menu.landlords','menu.properties','menu.onboarding','menu.dashboard'])
   // 仓库管理员：仓库与钥匙管理

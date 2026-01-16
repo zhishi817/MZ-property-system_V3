@@ -23,6 +23,8 @@ const auth_1 = require("./modules/auth");
 const audits_1 = require("./modules/audits");
 const rbac_1 = require("./modules/rbac");
 const version_1 = require("./modules/version");
+const stats_1 = require("./modules/stats");
+const events_1 = require("./modules/events");
 const maintenance_1 = __importDefault(require("./modules/maintenance"));
 const propertyOnboarding_1 = require("./modules/propertyOnboarding");
 const jobs_1 = require("./modules/jobs");
@@ -173,6 +175,8 @@ app.use('/auth', auth_1.router);
 app.use('/audits', audits_1.router);
 app.use('/rbac', rbac_1.router);
 app.use('/version', version_1.router);
+app.use('/stats', stats_1.router);
+app.use('/events', events_1.router);
 app.use('/maintenance', maintenance_1.default);
 app.use('/jobs', jobs_1.router);
 app.use('/public', public_admin_1.default);
@@ -221,17 +225,18 @@ app.listen(port, () => {
                 }
             }, { scheduled: true });
             task.start();
-            // Watchdog: every 10 minutes retry recent failed UIDs
-            const wd = node_cron_1.default.schedule('*/10 * * * *', async () => {
-                var _a, _b;
-                try {
-                    const key = 987654321;
-                    const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [key]);
-                    const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
-                    if (!ok)
-                        return;
-                    // collect recent failed uids per account; exclude duplicates/already_running
-                    const sql = `
+            const wdEnabled = String(process.env.EMAIL_SYNC_WATCHDOG_ENABLED || 'true').toLowerCase() === 'true';
+            if (wdEnabled) {
+                const wd = node_cron_1.default.schedule('*/10 * * * *', async () => {
+                    var _a, _b;
+                    try {
+                        const key = 987654321;
+                        const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [key]);
+                        const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
+                        if (!ok)
+                            return;
+                        // collect recent failed uids per account; exclude duplicates/already_running
+                        const sql = `
             WITH cand AS (
               SELECT account, uid FROM email_orders_raw WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
               UNION ALL
@@ -245,40 +250,44 @@ app.listen(port, () => {
             )
             ORDER BY c.account DESC, c.uid DESC
             LIMIT 200`;
-                    const rs = await dbAdapter_1.pgPool.query(sql);
-                    const groups = {};
-                    for (const r of ((rs === null || rs === void 0 ? void 0 : rs.rows) || [])) {
-                        const acc = String(r.account || '');
-                        const uid = Number(r.uid || 0);
-                        if (!acc || !uid)
-                            continue;
-                        if (!groups[acc])
-                            groups[acc] = [];
-                        if (groups[acc].length < 50)
-                            groups[acc].push(uid);
-                    }
-                    for (const acc of Object.keys(groups)) {
-                        const uids = groups[acc];
-                        if (!uids.length)
-                            continue;
-                        console.log(`[email-sync][watchdog] retry account=${acc} uids=${uids.length}`);
+                        const rs = await dbAdapter_1.pgPool.query(sql);
+                        const groups = {};
+                        for (const r of ((rs === null || rs === void 0 ? void 0 : rs.rows) || [])) {
+                            const acc = String(r.account || '');
+                            const uid = Number(r.uid || 0);
+                            if (!acc || !uid)
+                                continue;
+                            if (!groups[acc])
+                                groups[acc] = [];
+                            if (groups[acc].length < 50)
+                                groups[acc].push(uid);
+                        }
+                        for (const acc of Object.keys(groups)) {
+                            const uids = groups[acc];
+                            if (!uids.length)
+                                continue;
+                            console.log(`[email-sync][watchdog] retry account=${acc} uids=${uids.length}`);
+                            try {
+                                await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', trigger_source: 'watchdog_retry_failed', account: acc, uids, min_interval_ms: 0, max_per_run: uids.length, batch_size: Math.min(10, uids.length), concurrency: 1, batch_sleep_ms: 0 });
+                            }
+                            catch (e) {
+                                console.error(`[email-sync][watchdog] account=${acc} error=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                            }
+                        }
                         try {
-                            await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', trigger_source: 'watchdog_retry_failed', account: acc, uids, min_interval_ms: 0, max_per_run: uids.length, batch_size: Math.min(10, uids.length), concurrency: 1, batch_sleep_ms: 0 });
+                            await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [key]);
                         }
-                        catch (e) {
-                            console.error(`[email-sync][watchdog] account=${acc} error=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-                        }
+                        catch (_c) { }
                     }
-                    try {
-                        await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [key]);
+                    catch (e) {
+                        console.error(`[email-sync][watchdog] error=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
                     }
-                    catch (_c) { }
-                }
-                catch (e) {
-                    console.error(`[email-sync][watchdog] error=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-                }
-            }, { scheduled: true });
-            wd.start();
+                }, { scheduled: true });
+                wd.start();
+            }
+            else {
+                console.log('[email-sync][watchdog] disabled');
+            }
         }
         else {
             console.log('[email-sync][schedule] disabled');
