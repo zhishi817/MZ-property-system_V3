@@ -321,6 +321,7 @@ router.get('/property-revenue', async (req, res) => {
     }
     const cols = { parking_fee: 0, electricity: 0, water: 0, gas: 0, internet: 0, consumables: 0, body_corp: 0, council: 0, other: 0 }
     let rentIncome = 0
+    let warnings: string[] = []
     try {
       if (hasPg) {
         const orders = await pgSelect('orders', '*', { property_id: pid })
@@ -380,7 +381,6 @@ router.get('/property-revenue', async (req, res) => {
           else cols.other += amt
         }
         const missingMonthKey = peRows.filter((e: any) => !e.month_key).length
-        var warnings: string[] = []
         if (missingMonthKey > 0) warnings.push(`expenses_without_month_key=${missingMonthKey}`)
       }
     } catch {}
@@ -400,7 +400,7 @@ router.get('/property-revenue', async (req, res) => {
       total_expense: -Number(totalExpense || 0),
       net_income: Number(rentIncome || 0) - Number(totalExpense || 0)
     }
-    if (warnings && warnings.length) payload.warnings = warnings
+    if (warnings.length) payload.warnings = warnings
     return res.json(payload)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'property-revenue failed' })
