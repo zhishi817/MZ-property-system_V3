@@ -1,5 +1,23 @@
 # Changelog
 
+## Dev (2026-01-16)
+
+- Email sync
+  - Enforce 50-mail hard cap across all triggers (manual/preview/schedule)
+  - Skip non-order mails early with `reason=not_whitelisted` (no raw/orders writes)
+  - Add cancellation ingestion: write `order_cancellations` (unique by confirmation_code), update matching order `status=cancelled`
+  - Fix: prevent empty string writes to `orders.checkin/checkout` (use null when missing)
+  - Failures list API now excludes rows already inserted to orders
+- UI
+  - Fix login and reports logo path to `/mz-logo.png`
+  - Orders page: manual sync button, and improved failure handling views
+- Schema
+  - Add `order_cancellations` table to `schema_neon.sql` and runtime ensure
+- Build
+  - Remove invalid import `pgDeleteByUrl` from notifications module
+
+Commit: 81b6e30
+
 ## v0.2.1 (2025-12-21)
 
 - Orders: Implement order-level internal deductions (Admin/Finance/CS only), with audit logging.
