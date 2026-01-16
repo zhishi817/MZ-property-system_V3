@@ -919,10 +919,13 @@ router.get('/email-orders-raw/failures', requirePerm('order.manage'), async (req
     const sinceDays = Number(((req.query || {}) as any).since_days || 14)
     const limit = Math.min(500, Number(((req.query || {}) as any).limit || 200))
     const q = await pgPool!.query(`
-      SELECT uid, message_id, subject, sender, header_date, confirmation_code, guest_name, listing_name, checkin, checkout, price, cleaning_fee, status
-      FROM email_orders_raw
-      WHERE created_at >= now() - ($1 || ':days')::interval
-      ORDER BY created_at DESC
+      SELECT r.uid, r.message_id, r.subject, r.sender, r.header_date, r.confirmation_code, r.guest_name, r.listing_name, r.checkin, r.checkout, r.price, r.cleaning_fee, r.status
+      FROM email_orders_raw r
+      LEFT JOIN orders o ON o.confirmation_code = r.confirmation_code
+      WHERE r.created_at >= now() - ($1 || ':days')::interval
+        AND COALESCE(r.status,'') = 'failed'
+        AND o.id IS NULL
+      ORDER BY r.created_at DESC
       LIMIT $2
     `, [String(sinceDays), limit])
     const rows = (q.rows || []).map(r => {

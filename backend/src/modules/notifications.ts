@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { requireAnyPerm, requirePerm } from '../auth'
-import { hasPg, pgInsert, pgDeleteByUrl, pgSelect } from '../dbAdapter'
+import { hasPg, pgInsert, pgSelect } from '../dbAdapter'
 
 export const router = Router()
 
