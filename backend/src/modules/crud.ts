@@ -271,10 +271,18 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
         if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '重复记录：公司支出已存在' })
       }
       if (resource === 'property_expenses') {
+        try {
+          const d = payload.paid_date || payload.occurred_at
+          if (d && !payload.month_key) {
+            const y = String(d).slice(0,4)
+            const m = String(d).slice(5,7)
+            if (y && m) payload.month_key = `${y}-${m}`
+          }
+        } catch {}
         const dup = payload.fixed_expense_id && payload.month_key
           ? await pgSelect(resource, '*', { fixed_expense_id: payload.fixed_expense_id, month_key: payload.month_key })
-          : await pgSelect(resource, '*', { property_id: payload.property_id, occurred_at: payload.occurred_at, category: payload.category, amount: payload.amount, note: payload.note })
-        if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '重复记录：房源支出已存在' })
+          : await pgSelect(resource, '*', { property_id: payload.property_id, month_key: payload.month_key, category: payload.category, amount: payload.amount })
+        if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '重复记录：房源支出已存在（同房源、同月份、同类别、同金额）' })
       }
       if (resource === 'company_incomes') {
         const dup = await pgSelect(resource, '*', { occurred_at: payload.occurred_at, category: payload.category, amount: payload.amount, note: payload.note })
