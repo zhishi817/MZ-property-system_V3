@@ -84,7 +84,7 @@ export default function LoginPage() {
       <Card className="login-card">
         <div className="login-logo-wrap" style={{ display: 'flex', justifyContent: 'center' }}>
           <div style={{ position: 'relative', width: '240px', height: '64px' }}>
-            <Image src="/company-logo.png" alt="MZ Property" fill sizes="240px" style={{ objectFit: 'contain', objectPosition: 'center' }} priority />
+            <Image src="/mz-logo.png" alt="MZ Property" fill sizes="240px" style={{ objectFit: 'contain', objectPosition: 'center' }} priority />
           </div>
         </div>
         <Form form={form} layout="vertical" initialValues={{ remember: true }} requiredMark={false}>

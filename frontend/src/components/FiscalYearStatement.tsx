@@ -69,7 +69,7 @@ export default forwardRef<HTMLDivElement, {
     <div ref={ref as any} style={{ padding: 16, fontFamily: 'Times New Roman, Times, serif' }}>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr 1.4fr', alignItems:'center', columnGap: 16 }}>
         <div style={{ display:'flex', alignItems:'center' }}>
-          <img src="/company-logo.png" alt="Company Logo" style={{ height: 70 }} />
+          <img src="/mz-logo.png" alt="Company Logo" style={{ height: 70 }} />
         </div>
         <div style={{ textAlign:'center' }}>
           <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: 1 }}>MONTHLY INCOME AND EXPENDITURE SUMMARY</div>
