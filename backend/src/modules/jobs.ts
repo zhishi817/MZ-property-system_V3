@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { requirePerm, allowCronTokenOrPerm } from '../auth'
 import { hasPg, pgPool, pgSelect, pgInsertOnConflictDoNothing, pgInsert, pgRunInTransaction } from '../dbAdapter'
 import { v4 as uuid } from 'uuid'
-import type { PoolClient } from 'pg'
+import { PoolClient } from 'pg'
 
 type JobMode = 'incremental' | 'backfill'
 
@@ -181,6 +181,31 @@ async function ensureEmailSyncTables() {
   );`)
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_email_sync_runs_account_started ON email_sync_runs(account, started_at)')
   await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS trigger_source text')
+}
+
+export async function resolveUidSinceDate(account: string, startDate: string): Promise<number> {
+  const { ImapFlow } = require('imapflow')
+  const accounts = getAccounts()
+  const acc = accounts.find(a => String(a.user) === String(account))
+  if (!acc) throw Object.assign(new Error('missing imap account'), { status: 400, reason: 'missing_account' })
+  const imap = new ImapFlow({ host: 'imap.exmail.qq.com', port: 993, secure: true, auth: { user: acc.user, pass: acc.pass }, socketTimeout: Number(process.env.EMAIL_SYNC_SOCKET_TIMEOUT_MS || 120000) })
+  try {
+    await imap.connect()
+    await imap.mailboxOpen(acc.folder)
+    const sinceDate = new Date(`${startDate}T00:00:00`)
+    const list: number[] = await imap.search({ since: sinceDate }, { uid: true })
+    if (!Array.isArray(list) || list.length === 0) throw Object.assign(new Error('no uid since date'), { status: 404, reason: 'no_uid_since_date' })
+    const minUid = Math.min(...list)
+    if (!Number.isFinite(minUid)) throw Object.assign(new Error('invalid uid'), { status: 500, reason: 'invalid_uid' })
+    return minUid
+  } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (/auth/i.test(msg)) throw Object.assign(new Error('imap auth failed'), { status: 401, reason: 'imap_auth_failed' })
+    if (/timeout|socket|network|unavailable/i.test(msg)) throw Object.assign(new Error('imap network error'), { status: 503, reason: 'imap_network_error' })
+    throw Object.assign(new Error('imap search failed'), { status: Number(e?.status || 500), reason: e?.reason || 'imap_search_failed' })
+  } finally {
+    try { await imap.logout() } catch {}
+  }
 }
 
 async function cleanupStaleRunning() {
@@ -696,7 +721,7 @@ router.post('/email-sync-airbnb', requirePerm('order.manage'), async (req, res) 
   }
 })
 
-router.post('/api/email-sync/run', requirePerm('order.manage'), async (req, res) => {
+router.post('/email-sync/run', requirePerm('order.manage'), async (req, res) => {
   const parsed = reqSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const { mode, from_date, to_date, dry_run, batch_tag, max_messages, commit_every, max_per_run, batch_size, concurrency, batch_sleep_ms, min_interval_ms } = parsed.data
@@ -723,6 +748,26 @@ router.post('/api/email-sync/run', requirePerm('order.manage'), async (req, res)
     if (e?.next_allowed_at) payload.next_allowed_at = e.next_allowed_at
     if (e?.running_since) payload.running_since = e.running_since
     return res.status(status).json(payload)
+  }
+})
+
+router.post('/email-sync/backfill', requirePerm('order.manage'), async (req, res) => {
+  try {
+    const body = req.body || {}
+    const account = String(body.account || '').trim()
+    const startDate = String(body.startDate || '').trim()
+    if (!account || !startDate || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return res.status(400).json({ message: 'account_and_startDate_required' })
+    try { await ensureEmailSyncTables() } catch {}
+    const minUid = await resolveUidSinceDate(account, startDate)
+    const setLast = Number(minUid) - 1
+    await pgPool!.query('UPDATE email_sync_state SET last_uid=$2, last_backfill_at=now() WHERE account=$1', [account, setLast])
+    const info = { tag: 'backfill_init', account, startDate, min_uid: minUid, set_last_uid: setLast, scan_limit: 50 }
+    console.log(JSON.stringify(info))
+    const result = await runEmailSyncJob({ mode: 'incremental', account, max_per_run: 50, max_messages: 50, batch_size: 20, concurrency: 1, batch_sleep_ms: 0, min_interval_ms: 0, trigger_source: 'backfill_api' })
+    return res.json(Object.assign({}, info, { ok: true, schedule_runs: result?.schedule_runs || [], stats: result?.stats || {} }))
+  } catch (e: any) {
+    const status = Number(e?.status || 500)
+    return res.status(status).json({ message: e?.message || 'backfill_failed', reason: e?.reason || 'unknown' })
   }
 })
 
