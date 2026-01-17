@@ -1,0 +1,21 @@
+name: Email Sync Trigger
+
+on:
+  schedule:
+    - cron: "0 */2 * * *"   # 每2小时（UTC）
+  workflow_dispatch: {}     # 允许手动 Run
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger email sync
+        run: |
+          set -e
+          echo "Calling: ${{ secrets.CRON_URL }}"
+          curl -sS -X POST "${{ secrets.CRON_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.JOB_CRON_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"account":"customer_service_1@mzpropertygroup.com","max_per_run":50,"max_messages":50}' \
+            --max-time 180 \
+            -w "\nHTTP_STATUS:%{http_code}\n"
