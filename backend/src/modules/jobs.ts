@@ -721,6 +721,19 @@ router.post('/email-sync-airbnb', requirePerm('order.manage'), async (req, res) 
   }
 })
 
+// Cron trigger for Render/externals: accepts JOB_CRON_TOKEN and bypasses min_interval
+router.post('/email-sync/cron-trigger', require('../auth').allowCronTokenOrPerm('order.manage'), async (req, res) => {
+  const body = req.body || {}
+  const account = String(body.account || '')
+  const max = Number(body.max_per_run || 50)
+  try {
+    const result = await runEmailSyncJob({ mode: 'incremental', account: account || undefined, max_per_run: Math.min(50, max), max_messages: Math.min(50, Number(body.max_messages || 50)), batch_size: Math.min(20, Number(body.batch_size || 20)), concurrency: 1, batch_sleep_ms: 0, min_interval_ms: 0, trigger_source: 'external_cron' })
+    return res.json({ ok: true, stats: result?.stats || {}, schedule_runs: result?.schedule_runs || [] })
+  } catch (e: any) {
+    return res.status(Number(e?.status || 500)).json({ message: e?.message || 'cron-trigger failed', reason: e?.reason || 'unknown' })
+  }
+})
+
 router.post('/email-sync/run', requirePerm('order.manage'), async (req, res) => {
   const parsed = reqSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -871,8 +884,8 @@ router.get('/email-sync-runs', requirePerm('order.manage'), async (req, res) => 
         if (cols.includes(k)) selFields.push(k)
       }
       // finished_at vs ended_at compatibility
+      if (cols.includes('ended_at')) selFields.push('ended_at')
       if (cols.includes('finished_at')) selFields.push('finished_at')
-      else if (cols.includes('ended_at')) selFields.push('ended_at AS finished_at')
       // legacy cursor fields
       if (cols.includes('cursor_before')) selFields.push('cursor_before')
       if (cols.includes('cursor_after')) selFields.push('cursor_after')
@@ -882,6 +895,8 @@ router.get('/email-sync-runs', requirePerm('order.manage'), async (req, res) => 
       // add created_at alias for UI ordering/display
       if (!selFields.includes('started_at')) selFields.push('started_at')
       selFields.push('started_at AS created_at')
+      // include primary id if exists
+      if (cols.includes('id')) selFields.push('id')
       const sel = selFields.join(', ')
       rows = await pgPool!.query(`SELECT ${sel} FROM email_sync_runs ${account ? 'WHERE account=$1' : ''} ORDER BY started_at DESC LIMIT $${account ? 2 : 1}`, account ? [account, limit] : [limit])
     } catch {
