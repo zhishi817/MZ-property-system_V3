@@ -132,18 +132,46 @@ async function logSyncFinish(runId: string | number | null, account: string, m: 
   if (!runId) return
   const isStr = typeof runId === 'string'
   if (isStr) {
-    await dbq(dbClient).query('UPDATE email_sync_runs SET scanned=$2, matched=$3, inserted=$4, failed=$5, skipped_duplicate=$6, found_uids_count=$7, matched_count=$8, failed_count=$9, last_uid_before=$10, last_uid_after=$11, duration_ms=$12, status=$13, finished_at=now(), cursor_after=$14, error_message=$15, skipped_reason_counts=$16, failed_reason_counts=$17 WHERE run_id=$1', [runId, m.scanned, m.matched, m.inserted, m.failed, m.skipped_duplicate, m.scanned, m.matched, m.failed, m.last_uid_before, m.last_uid_after, m.duration_ms, String(m.status || (m.failed > 0 ? 'failed' : 'success')), m.cursor_after ?? m.last_uid_after ?? null, m.error_message ?? null, m.skipped_reason_counts ? JSON.stringify(m.skipped_reason_counts) : null, m.failed_reason_counts ? JSON.stringify(m.failed_reason_counts) : null])
+    {
+      const cols = (await dbq(dbClient).query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='email_sync_runs'")).rows.map((r:any)=>String(r.column_name))
+      const endCol = cols.includes('ended_at') ? 'ended_at' : (cols.includes('finished_at') ? 'finished_at' : null)
+      const sets = ['scanned=$2','matched=$3','inserted=$4','failed=$5','skipped_duplicate=$6','found_uids_count=$7','matched_count=$8','failed_count=$9','last_uid_before=$10','last_uid_after=$11','duration_ms=$12','status=$13','cursor_after=$14','error_message=$15','skipped_reason_counts=$16','failed_reason_counts=$17']
+      if (endCol) sets.push(`${endCol}=now()`)
+      const sql = `UPDATE email_sync_runs SET ${sets.join(', ')} WHERE run_id=$1`
+      await dbq(dbClient).query(sql, [runId, m.scanned, m.matched, m.inserted, m.failed, m.skipped_duplicate, m.scanned, m.matched, m.failed, m.last_uid_before, m.last_uid_after, m.duration_ms, String(m.status || (m.failed > 0 ? 'failed' : 'success')), m.cursor_after ?? m.last_uid_after ?? null, m.error_message ?? null, m.skipped_reason_counts ? JSON.stringify(m.skipped_reason_counts) : null, m.failed_reason_counts ? JSON.stringify(m.failed_reason_counts) : null])
+    }
   } else {
-    await dbq(dbClient).query('UPDATE email_sync_runs SET scanned=$2, matched=$3, inserted=$4, failed=$5, skipped_duplicate=$6, found_uids_count=$7, matched_count=$8, failed_count=$9, last_uid_before=$10, last_uid_after=$11, duration_ms=$12, status=$13, ended_at=now(), cursor_after=$14, error_message=$15, skipped_reason_counts=$16, failed_reason_counts=$17 WHERE id=$1', [runId, m.scanned, m.matched, m.inserted, m.failed, m.skipped_duplicate, m.scanned, m.matched, m.failed, m.last_uid_before, m.last_uid_after, m.duration_ms, String(m.status || (m.failed > 0 ? 'failed' : 'success')), m.cursor_after ?? m.last_uid_after ?? null, m.error_message ?? null, m.skipped_reason_counts ? JSON.stringify(m.skipped_reason_counts) : null, m.failed_reason_counts ? JSON.stringify(m.failed_reason_counts) : null])
+    {
+      const cols = (await dbq(dbClient).query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='email_sync_runs'")).rows.map((r:any)=>String(r.column_name))
+      const endCol = cols.includes('ended_at') ? 'ended_at' : (cols.includes('finished_at') ? 'finished_at' : null)
+      const sets = ['scanned=$2','matched=$3','inserted=$4','failed=$5','skipped_duplicate=$6','found_uids_count=$7','matched_count=$8','failed_count=$9','last_uid_before=$10','last_uid_after=$11','duration_ms=$12','status=$13','cursor_after=$14','error_message=$15','skipped_reason_counts=$16','failed_reason_counts=$17']
+      if (endCol) sets.push(`${endCol}=now()`)
+      const sql = `UPDATE email_sync_runs SET ${sets.join(', ')} WHERE id=$1`
+      await dbq(dbClient).query(sql, [runId, m.scanned, m.matched, m.inserted, m.failed, m.skipped_duplicate, m.scanned, m.matched, m.failed, m.last_uid_before, m.last_uid_after, m.duration_ms, String(m.status || (m.failed > 0 ? 'failed' : 'success')), m.cursor_after ?? m.last_uid_after ?? null, m.error_message ?? null, m.skipped_reason_counts ? JSON.stringify(m.skipped_reason_counts) : null, m.failed_reason_counts ? JSON.stringify(m.failed_reason_counts) : null])
+    }
   }
 }
 async function logSyncError(runId: string | number | null, account: string, error_code: string, error_message: string, duration_ms: number, last_uid_after?: number, dbClient?: PoolClient) {
   if (!runId) return
   const isStr = typeof runId === 'string'
   if (isStr) {
-    await dbq(dbClient).query('UPDATE email_sync_runs SET error_code=$2, error_message=$3, duration_ms=$4, status=$5, last_uid_after=$6, finished_at=now() WHERE run_id=$1', [runId, error_code, error_message, duration_ms, 'failed', last_uid_after])
+    {
+      const cols = (await dbq(dbClient).query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='email_sync_runs'")).rows.map((r:any)=>String(r.column_name))
+      const endCol = cols.includes('ended_at') ? 'ended_at' : (cols.includes('finished_at') ? 'finished_at' : null)
+      const sets = ['error_code=$2','error_message=$3','duration_ms=$4','status=$5','last_uid_after=$6']
+      if (endCol) sets.push(`${endCol}=now()`)
+      const sql = `UPDATE email_sync_runs SET ${sets.join(', ')} WHERE run_id=$1`
+      await dbq(dbClient).query(sql, [runId, error_code, error_message, duration_ms, 'failed', last_uid_after])
+    }
   } else {
-    await dbq(dbClient).query('UPDATE email_sync_runs SET error_code=$2, error_message=$3, duration_ms=$4, status=$5, last_uid_after=$6, ended_at=now() WHERE id=$1', [runId, error_code, error_message, duration_ms, 'failed', last_uid_after])
+    {
+      const cols = (await dbq(dbClient).query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='email_sync_runs'")).rows.map((r:any)=>String(r.column_name))
+      const endCol = cols.includes('ended_at') ? 'ended_at' : (cols.includes('finished_at') ? 'finished_at' : null)
+      const sets = ['error_code=$2','error_message=$3','duration_ms=$4','status=$5','last_uid_after=$6']
+      if (endCol) sets.push(`${endCol}=now()`)
+      const sql = `UPDATE email_sync_runs SET ${sets.join(', ')} WHERE id=$1`
+      await dbq(dbClient).query(sql, [runId, error_code, error_message, duration_ms, 'failed', last_uid_after])
+    }
   }
 }
 
@@ -869,7 +897,6 @@ router.post('/cleaning/generate-for-date-range', requirePerm('cleaning.schedule.
 router.get('/email-sync-runs', requirePerm('order.manage'), async (req, res) => {
   try {
     try { await ensureEmailSyncTables() } catch {}
-    try { await pgPool!.query("UPDATE email_sync_runs SET status='success', ended_at=COALESCE(ended_at, now()), duration_ms=COALESCE(duration_ms, ROUND(EXTRACT(EPOCH FROM (now() - started_at))*1000)) WHERE status='running' AND started_at < now() - interval '2 minutes'") } catch {}
     const account = String((req.query || {}).account || '').trim()
     const limit = Number((req.query || {}).limit || 20)
     if (!hasPg) return res.json({ items: [], message: 'pg not configured' })
@@ -935,7 +962,6 @@ router.get('/email-sync-status', requirePerm('order.manage'), async (_req, res) 
   try {
     try { await ensureEmailSyncTables() } catch {}
     try { await cleanupStaleRunning() } catch {}
-    try { await pgPool!.query("UPDATE email_sync_runs SET status='success', ended_at=COALESCE(ended_at, now()), duration_ms=COALESCE(duration_ms, ROUND(EXTRACT(EPOCH FROM (now() - started_at))*1000)) WHERE status='running' AND started_at < now() - interval '2 minutes'") } catch {}
     if (!hasPg) return res.json({ items: [], message: 'pg not configured' })
     let accRows: any[] = []
     try {
@@ -962,7 +988,7 @@ router.get('/email-sync-status', requirePerm('order.manage'), async (_req, res) 
       try { runningRow = await pgPool!.query("SELECT id FROM email_sync_runs WHERE account=$1 AND status='running' AND started_at > now() - interval '10 minutes' ORDER BY started_at DESC LIMIT 1", [account]) } catch {}
       out.push({
         account,
-        running: !!(runningRow?.rows?.[0]) || lockHeld,
+        running: !!(runningRow?.rows?.[0]),
         last_run: lastRun?.rows?.[0] || null,
         last_uid: Number(s.last_uid || 0),
         last_connected_at: s.last_connected_at || null,
