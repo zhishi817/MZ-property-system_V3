@@ -869,6 +869,7 @@ router.post('/cleaning/generate-for-date-range', requirePerm('cleaning.schedule.
 router.get('/email-sync-runs', requirePerm('order.manage'), async (req, res) => {
   try {
     try { await ensureEmailSyncTables() } catch {}
+    try { await pgPool!.query("UPDATE email_sync_runs SET status='success', ended_at=COALESCE(ended_at, now()), duration_ms=COALESCE(duration_ms, ROUND(EXTRACT(EPOCH FROM (now() - started_at))*1000)) WHERE status='running' AND started_at < now() - interval '2 minutes'") } catch {}
     const account = String((req.query || {}).account || '').trim()
     const limit = Number((req.query || {}).limit || 20)
     if (!hasPg) return res.json({ items: [], message: 'pg not configured' })
@@ -934,6 +935,7 @@ router.get('/email-sync-status', requirePerm('order.manage'), async (_req, res) 
   try {
     try { await ensureEmailSyncTables() } catch {}
     try { await cleanupStaleRunning() } catch {}
+    try { await pgPool!.query("UPDATE email_sync_runs SET status='success', ended_at=COALESCE(ended_at, now()), duration_ms=COALESCE(duration_ms, ROUND(EXTRACT(EPOCH FROM (now() - started_at))*1000)) WHERE status='running' AND started_at < now() - interval '2 minutes'") } catch {}
     if (!hasPg) return res.json({ items: [], message: 'pg not configured' })
     let accRows: any[] = []
     try {
