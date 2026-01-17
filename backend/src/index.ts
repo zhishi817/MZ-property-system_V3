@@ -145,6 +145,51 @@ app.get('/health/version', (_req, res) => {
   const build = process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown'
   res.json({ build, version: pkg.version || 'unknown', node_env: process.env.NODE_ENV || 'unknown', started_at: new Date().toISOString() })
 })
+app.post('/internal/trigger-email-sync', async (req, res) => {
+  const h = String(req.headers.authorization || '')
+  const hasBearer = h.startsWith('Bearer ')
+  const token = hasBearer ? h.slice(7) : ''
+  const cron = String(process.env.JOB_CRON_TOKEN || '')
+  if (!cron || token !== cron) return res.status(401).json({ message: 'unauthorized' })
+  try {
+    const body = req.body || {}
+    const account = String(body.account || '') || undefined
+    const maxPer = Math.min(50, Number(body.max_per_run || 50))
+    const maxMsgs = Math.min(50, Number(body.max_messages || 50))
+    const r = await runEmailSyncJob({ mode: 'incremental', account, max_per_run: maxPer, max_messages: maxMsgs, batch_size: Math.min(20, Number(body.batch_size || 20)), concurrency: 1, batch_sleep_ms: 0, min_interval_ms: 0, trigger_source: 'internal_web_cron' })
+    return res.json({ ok: true, stats: r?.stats || {}, schedule_runs: r?.schedule_runs || [] })
+  } catch (e: any) {
+    return res.status(Number(e?.status || 500)).json({ message: e?.message || 'trigger_failed', reason: e?.reason || 'unknown' })
+  }
+})
+app.get('/__routes', (_req, res) => {
+  try {
+    const list: Array<{ path: string; methods: string[] }> = []
+    function add(path: string, methodsObj: any) {
+      const methods = Object.keys(methodsObj || {}).filter(k => !!methodsObj[k]).map(k => k.toUpperCase())
+      list.push({ path, methods })
+    }
+    function base(layer: any): string {
+      const s = String(layer?.regexp?.source || '')
+      const m = s.match(/^\\\/([A-Za-z0-9_\-]+)(?:\\\/)?/) || s.match(/^\^\\\/([A-Za-z0-9_\-]+)(?:\\\/)?/)
+      return m ? `/${m[1]}` : ''
+    }
+    const stack: any[] = (app as any)?._router?.stack || []
+    for (const layer of stack) {
+      if (layer?.route) {
+        add(String(layer.route.path || ''), layer.route.methods || {})
+      } else if (layer?.name === 'router' && layer?.handle?.stack) {
+        const b = base(layer)
+        for (const h of layer.handle.stack) {
+          if (h?.route) add(`${b}${String(h.route.path || '')}`, h.route.methods || {})
+        }
+      }
+    }
+    res.json(list)
+  } catch (e: any) {
+    res.status(500).json({ message: e?.message || 'route list failed' })
+  }
+})
 // Public endpoints (no auth)
 app.use('/public', publicRouter)
 // Auth middleware comes AFTER health routes
