@@ -21,6 +21,12 @@ type SyncRun = {
   error_message?: string
   started_at?: string
   ended_at?: string
+  found_uids_count?: number
+  matched_count?: number
+  failed_count?: number
+  skipped_reason_counts?: Record<string, number>
+  failed_reason_counts?: Record<string, number>
+  cursor_after?: number
 }
 
 type StatusItem = {
@@ -84,13 +90,7 @@ export default function EmailSyncStatusPage() {
   useEffect(() => { loadStatus() }, [])
   useEffect(() => { loadRuns() }, [selectedAccount])
 
-  const totals = runs.reduce((s, r) => ({
-    scanned: s.scanned + Number(r.scanned || 0),
-    matched: s.matched + Number(r.matched || 0),
-    inserted: s.inserted + Number(r.inserted || 0),
-    duplicate: s.duplicate + Number((r as any).skipped_duplicate || 0),
-    failed: s.failed + Number(r.failed || 0)
-  }), { scanned: 0, matched: 0, inserted: 0, duplicate: 0, failed: 0 })
+  
 
   const columns = [
     { title: '账户', dataIndex: 'account' },
@@ -138,11 +138,33 @@ export default function EmailSyncStatusPage() {
       }
       return null
     } },
-    { title: '扫描', dataIndex: 'scanned' },
-    { title: '命中', dataIndex: 'matched' },
-    { title: '新增', dataIndex: 'inserted' },
-    { title: '重复', dataIndex: 'skipped_duplicate' },
-    { title: '失败', dataIndex: 'failed' },
+    { title: '扫描', dataIndex: 'scanned', render: (v:any, row:any)=> {
+      const n = Number(v||0)
+      const f = Number(row?.found_uids_count||0)
+      const tip = `发现UID ${f || n}`
+      return <Tag color="blue" title={tip}>扫描 {n}</Tag>
+    } },
+    { title: '命中', dataIndex: 'matched', render: (v:any, row:any)=> {
+      const n = Number(v||0)
+      const m = Number(row?.matched_count||n)
+      const tip = `命中 ${m}`
+      return <Tag color="green" title={tip}>命中 {n}</Tag>
+    } },
+    { title: '新增', dataIndex: 'inserted', render: (v:any)=> <Tag color="green">新增 {Number(v||0)}</Tag> },
+    { title: '重复', dataIndex: 'skipped_duplicate', render: (v:any, row:any)=> {
+      const n = Number(v||0)
+      const map = (row?.skipped_reason_counts || {}) as Record<string, number>
+      const items = Object.entries(map).filter(([k])=> !!k).map(([k,c])=> `${k}: ${c}`)
+      const tip = items.length ? items.join(' | ') : '无明细'
+      return <Tag title={tip}>重复 {n}</Tag>
+    } },
+    { title: '失败', dataIndex: 'failed', render: (v:any, row:any)=> {
+      const n = Number(v||0)
+      const map = (row?.failed_reason_counts || {}) as Record<string, number>
+      const items = Object.entries(map).filter(([k])=> !!k).map(([k,c])=> `${k}: ${c}`)
+      const tip = items.length ? items.join(' | ') : '无明细'
+      return <Tag color="red" title={tip}>失败 {n}</Tag>
+    } },
     { title: '断点前', dataIndex: 'last_uid_before' },
     { title: '断点后', dataIndex: 'last_uid_after' },
     { title: '错误代码', dataIndex: 'error_code', render: (v:any)=> v ? <Tag color="red">{String(v)}</Tag> : '' },
@@ -154,13 +176,6 @@ export default function EmailSyncStatusPage() {
     <Card title="邮件同步状态" extra={<Space><Button size="small" onClick={loadStatus} disabled={loading}>刷新</Button>{selectedAccount ? <Button size="small" onClick={()=> loadRuns(selectedAccount!)} disabled={runsLoading}>刷新记录</Button> : null}{selectedAccount && hasPerm('order.manage') ? <Button size="small" type="primary" onClick={()=> triggerSync(selectedAccount!)}>触发同步</Button> : null}</Space>}>
       <Table rowKey={(r:any)=> String(r.account)} columns={columns as any} dataSource={items} loading={loading} pagination={{ defaultPageSize: 10, showSizeChanger: true }} scroll={{ x: 'max-content' }} />
       <Card size="small" style={{ marginTop: 12 }} title={`运行记录${selectedAccount ? `（${selectedAccount}）` : ''}`}>
-        <Space style={{ marginBottom: 8 }} wrap>
-          <Tag color="blue">扫描总数 {totals.scanned}</Tag>
-          <Tag color="green">命中 {totals.matched}</Tag>
-          <Tag color="green">新增 {totals.inserted}</Tag>
-          <Tag>重复 {totals.duplicate}</Tag>
-          <Tag color="red">失败 {totals.failed}</Tag>
-        </Space>
         {notice==='no_runs_yet' ? <Tag color="gold">尚未发生任何同步运行</Tag> : null}
         <Table size="small" rowKey={(r:any)=> String((r as any).id || (r as any).run_id)} columns={runCols as any} dataSource={runs} loading={runsLoading} pagination={{ defaultPageSize: 10, showSizeChanger: true }} scroll={{ x: 'max-content' }} />
       </Card>

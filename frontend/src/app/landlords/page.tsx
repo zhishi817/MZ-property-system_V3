@@ -2,6 +2,7 @@
 import { Table, Card, Button, Modal, Form, Input, InputNumber, Space, message, Select, Tag, Switch } from 'antd'
 import { useEffect, useState } from 'react'
 import { API_BASE, getJSON } from '../../lib/api'
+import { sortProperties, cmpPropertyCode } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 
 type Landlord = {
@@ -106,7 +107,11 @@ export default function LandlordsPage() {
     { title: '银行账户', dataIndex: 'payout_account', ellipsis: true, responsive: ['md','lg','xl'] },
     { title: '房源', dataIndex: 'property_ids', render: (ids: string[]) => (
       <Space wrap>
-        {(ids || []).map(id => {
+        {((ids || []).slice().sort((a,b)=> {
+          const pa = properties.find(x=> x.id===a)
+          const pb = properties.find(x=> x.id===b)
+          return cmpPropertyCode(pa?.code, pb?.code)
+        })).map(id => {
           const p = properties.find(x => x.id === id)
           const label = p ? (p.code || p.address || id) : id
           return <Tag key={id}>{label}</Tag>
@@ -138,10 +143,15 @@ export default function LandlordsPage() {
         dataSource={(Array.isArray(data) ? data : []).filter(l => {
           const q = query.trim().toLowerCase()
           if (!q) return true
+          const propLabels = (l.property_ids || []).map(id => {
+            const p = properties.find(x => x.id === id)
+            return (p?.code || p?.address || id || '').toLowerCase()
+          })
           return (
             (l.name || '').toLowerCase().includes(q) ||
             (l.phone || '').toLowerCase().includes(q) ||
-            (l.email || '').toLowerCase().includes(q)
+            (l.email || '').toLowerCase().includes(q) ||
+            propLabels.some(s => s.includes(q))
           )
         })}
         pagination={{ pageSize: 10 }}
@@ -159,7 +169,14 @@ export default function LandlordsPage() {
           <Form.Item name="payout_bsb" label="BSB"><Input /></Form.Item>
           <Form.Item name="payout_account" label="银行账户"><Input /></Form.Item>
           <Form.Item name="property_ids" label="被管理的房源">
-            <Select mode="multiple" placeholder="选择房源" options={(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: (p.code || p.address || p.id) }))} />
+            <Select
+              mode="multiple"
+              placeholder="选择房源"
+              showSearch
+              optionFilterProp="label"
+              filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())}
+              options={sortProperties(Array.isArray(properties)?properties:[]).map(p=>({ value: p.id, label: (p.code || p.address || p.id) }))}
+            />
           </Form.Item>
         </Form>
       </Modal>
@@ -174,7 +191,14 @@ export default function LandlordsPage() {
           <Form.Item name="payout_bsb" label="BSB"><Input /></Form.Item>
           <Form.Item name="payout_account" label="银行账户"><Input /></Form.Item>
           <Form.Item name="property_ids" label="被管理的房源">
-            <Select mode="multiple" placeholder="选择房源" options={(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: (p.code || p.address || p.id) }))} />
+            <Select
+              mode="multiple"
+              placeholder="选择房源"
+              showSearch
+              optionFilterProp="label"
+              filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())}
+              options={sortProperties(Array.isArray(properties)?properties:[]).map(p=>({ value: p.id, label: (p.code || p.address || p.id) }))}
+            />
           </Form.Item>
         </Form>
       </Modal>
@@ -188,7 +212,11 @@ export default function LandlordsPage() {
           <Form.Item label="银行账户"><Input value={detail?.payout_account} readOnly /></Form.Item>
           <Form.Item label="房源">
             <Space wrap>
-              {(detail?.property_ids || []).map(id => {
+              {((detail?.property_ids || []).slice().sort((a,b)=> {
+                const pa = properties.find(x=> x.id===a)
+                const pb = properties.find(x=> x.id===b)
+                return cmpPropertyCode(pa?.code, pb?.code)
+              })).map(id => {
                 const p = (Array.isArray(properties) ? properties : []).find(x => x.id === id)
                 const label = p ? (p.code || p.address || id) : id
                 return <Tag key={id}>{label}</Tag>
