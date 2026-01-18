@@ -13,6 +13,22 @@ export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
 const memUpload = multer({ storage: multer.memoryStorage() })
 
+function toReportCat(raw?: string, detail?: string): string {
+  const v = String(raw||'').toLowerCase()
+  const d = String(detail||'').toLowerCase()
+  const s = v + ' ' + d
+  if (['carpark'].includes(v) || s.includes('车位')) return 'parking_fee'
+  if (['owners_corp','ownerscorp','body_corp','bodycorp'].includes(v) || s.includes('物业')) return 'body_corp'
+  if (['internet','nbn'].includes(v) || s.includes('internet') || s.includes('nbn') || s.includes('网')) return 'internet'
+  if (['electricity'].includes(v) || s.includes('electric') || s.includes('电')) return 'electricity'
+  if (['water'].includes(v) || ((s.includes('water') || s.includes('水')) && !s.includes('热'))) return 'water'
+  if (['gas','gas_hot_water','hot_water'].includes(v) || s.includes('gas') || s.includes('热水') || s.includes('煤气')) return 'gas'
+  if (['consumables'].includes(v) || s.includes('consumable') || s.includes('消耗')) return 'consumables'
+  if (['council_rate','council'].includes(v) || s.includes('council') || s.includes('市政')) return 'council'
+  if (s.includes('management_fee') || s.includes('管理费')) return 'management_fee'
+  return 'other'
+}
+
 router.get('/', async (_req, res) => {
   try {
     
