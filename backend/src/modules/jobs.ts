@@ -137,7 +137,23 @@ async function logSyncFinish(runId: string | number | null, account: string, m: 
     {
       const cols = (await dbq(dbClient).query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='email_sync_runs'")).rows.map((r:any)=>String(r.column_name))
       const endCol = cols.includes('ended_at') ? 'ended_at' : (cols.includes('finished_at') ? 'finished_at' : null)
-      const sets = ['scanned=$2','matched=$3','inserted=$4','failed=$5','skipped_duplicate=$6','found_uids_count=$7','matched_count=$8','failed_count=$9','last_uid_before=$10','last_uid_after=$11','duration_ms=$12','status=$13','cursor_after=$14','error_message=$15','skipped_reason_counts=$16','failed_reason_counts=$17']
+      const sets: string[] = []
+      if (cols.includes('scanned')) sets.push('scanned=$2')
+      if (cols.includes('matched')) sets.push('matched=$3')
+      if (cols.includes('inserted')) sets.push('inserted=$4')
+      if (cols.includes('failed')) sets.push('failed=$5')
+      if (cols.includes('skipped_duplicate')) sets.push('skipped_duplicate=$6')
+      if (cols.includes('found_uids_count')) sets.push('found_uids_count=$7')
+      if (cols.includes('matched_count')) sets.push('matched_count=$8')
+      if (cols.includes('failed_count')) sets.push('failed_count=$9')
+      if (cols.includes('last_uid_before')) sets.push('last_uid_before=$10')
+      if (cols.includes('last_uid_after')) sets.push('last_uid_after=$11')
+      if (cols.includes('duration_ms')) sets.push('duration_ms=$12')
+      if (cols.includes('status')) sets.push('status=$13')
+      if (cols.includes('cursor_after')) sets.push('cursor_after=$14')
+      if (cols.includes('error_message')) sets.push('error_message=$15')
+      if (cols.includes('skipped_reason_counts')) sets.push('skipped_reason_counts=$16')
+      if (cols.includes('failed_reason_counts')) sets.push('failed_reason_counts=$17')
       if (endCol) sets.push(`${endCol}=now()`)
       const sql = `UPDATE email_sync_runs SET ${sets.join(', ')} WHERE run_id=$1`
       await dbq(dbClient).query(sql, [runId, m.scanned, m.matched, m.inserted, m.failed, m.skipped_duplicate, m.scanned, m.matched, m.failed, m.last_uid_before, m.last_uid_after, m.duration_ms, String(m.status || (m.failed > 0 ? 'failed' : 'success')), m.cursor_after ?? m.last_uid_after ?? null, m.error_message ?? null, m.skipped_reason_counts ? JSON.stringify(m.skipped_reason_counts) : null, m.failed_reason_counts ? JSON.stringify(m.failed_reason_counts) : null])
@@ -147,7 +163,23 @@ async function logSyncFinish(runId: string | number | null, account: string, m: 
     {
       const cols = (await dbq(dbClient).query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='email_sync_runs'")).rows.map((r:any)=>String(r.column_name))
       const endCol = cols.includes('ended_at') ? 'ended_at' : (cols.includes('finished_at') ? 'finished_at' : null)
-      const sets = ['scanned=$2','matched=$3','inserted=$4','failed=$5','skipped_duplicate=$6','found_uids_count=$7','matched_count=$8','failed_count=$9','last_uid_before=$10','last_uid_after=$11','duration_ms=$12','status=$13','cursor_after=$14','error_message=$15','skipped_reason_counts=$16','failed_reason_counts=$17']
+      const sets: string[] = []
+      if (cols.includes('scanned')) sets.push('scanned=$2')
+      if (cols.includes('matched')) sets.push('matched=$3')
+      if (cols.includes('inserted')) sets.push('inserted=$4')
+      if (cols.includes('failed')) sets.push('failed=$5')
+      if (cols.includes('skipped_duplicate')) sets.push('skipped_duplicate=$6')
+      if (cols.includes('found_uids_count')) sets.push('found_uids_count=$7')
+      if (cols.includes('matched_count')) sets.push('matched_count=$8')
+      if (cols.includes('failed_count')) sets.push('failed_count=$9')
+      if (cols.includes('last_uid_before')) sets.push('last_uid_before=$10')
+      if (cols.includes('last_uid_after')) sets.push('last_uid_after=$11')
+      if (cols.includes('duration_ms')) sets.push('duration_ms=$12')
+      if (cols.includes('status')) sets.push('status=$13')
+      if (cols.includes('cursor_after')) sets.push('cursor_after=$14')
+      if (cols.includes('error_message')) sets.push('error_message=$15')
+      if (cols.includes('skipped_reason_counts')) sets.push('skipped_reason_counts=$16')
+      if (cols.includes('failed_reason_counts')) sets.push('failed_reason_counts=$17')
       if (endCol) sets.push(`${endCol}=now()`)
       const sql = `UPDATE email_sync_runs SET ${sets.join(', ')} WHERE id=$1`
       await dbq(dbClient).query(sql, [runId, m.scanned, m.matched, m.inserted, m.failed, m.skipped_duplicate, m.scanned, m.matched, m.failed, m.last_uid_before, m.last_uid_after, m.duration_ms, String(m.status || (m.failed > 0 ? 'failed' : 'success')), m.cursor_after ?? m.last_uid_after ?? null, m.error_message ?? null, m.skipped_reason_counts ? JSON.stringify(m.skipped_reason_counts) : null, m.failed_reason_counts ? JSON.stringify(m.failed_reason_counts) : null])
@@ -215,6 +247,20 @@ async function ensureEmailSyncTables() {
   );`)
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_email_sync_runs_account_started ON email_sync_runs(account, started_at)')
   await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS trigger_source text')
+  // Backfill columns for legacy schemas
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS scanned integer DEFAULT 0')
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS matched integer DEFAULT 0')
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS inserted integer DEFAULT 0')
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS failed integer DEFAULT 0')
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS skipped_duplicate integer DEFAULT 0')
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS last_uid_before bigint')
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS last_uid_after bigint')
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS error_code text')
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS error_message text')
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS duration_ms integer')
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS status text')
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS started_at timestamptz DEFAULT now()')
+  await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS ended_at timestamptz')
 }
 
 async function ensureJobStateChangesTable() {
@@ -944,7 +990,7 @@ router.get('/email-sync-runs', requirePerm('order.manage'), async (req, res) => 
       const selFields: string[] = []
       if (cols.includes('run_id')) selFields.push('run_id')
       if (cols.includes('account')) selFields.push('account')
-      for (const k of ['scanned','matched','inserted','failed','skipped_duplicate','last_uid_before','last_uid_after','error_code','error_message','duration_ms','status','started_at']) {
+      for (const k of ['scanned','matched','inserted','failed','skipped_duplicate','last_uid_before','last_uid_after','error_code','error_message','duration_ms','status','started_at','found_uids_count','matched_count','failed_count','skipped_reason_counts','failed_reason_counts']) {
         if (cols.includes(k)) selFields.push(k)
       }
       // finished_at vs ended_at compatibility

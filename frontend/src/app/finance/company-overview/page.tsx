@@ -46,6 +46,7 @@ export default function PropertyRevenuePage() {
         const mapReport: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.report_category||'')]))
         const toReportCat = (raw?: string) => {
           const v = String(raw||'').toLowerCase()
+          if (v.includes('management_fee') || v.includes('管理费')) return 'management_fee'
           if (v.includes('carpark') || v.includes('车位')) return 'parking_fee'
           if (v.includes('owners') || v.includes('body') || v.includes('物业')) return 'body_corp'
           if (v.includes('internet') || v.includes('nbn') || v.includes('网')) return 'internet'
@@ -56,22 +57,29 @@ export default function PropertyRevenuePage() {
           if (v.includes('council') || v.includes('市政')) return 'council'
           return 'other'
         }
-        const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).map((r: any) => ({
-          id: r.id,
-          kind: 'expense',
-          amount: Number(r.amount || 0),
-          currency: r.currency || 'AUD',
-          property_id: r.property_id || undefined,
-          occurred_at: r.occurred_at,
-          category: mapCat(r.category),
-          // 其他支出描述
-          ...(r.category_detail ? { category_detail: r.category_detail } : {}),
-          ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
-          ...(r.month_key ? { month_key: r.month_key } : {}),
-          ...(r.due_date ? { due_date: r.due_date } : {}),
-          ...(r.status ? { status: r.status } : {}),
-          report_category: (r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail)
-        }))
+        const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).map((r: any) => {
+          const code = String(r.property_code || '').trim()
+          const pidRaw = r.property_id || undefined
+          const match = properties.find(pp => (pp.code || '') === code)
+          const pidNorm = (pidRaw && properties.some(pp => pp.id === pidRaw)) ? pidRaw : (match ? match.id : pidRaw)
+          return ({
+            id: r.id,
+            kind: 'expense',
+            amount: Number(r.amount || 0),
+            currency: r.currency || 'AUD',
+            property_id: pidNorm,
+            occurred_at: r.occurred_at,
+            category: mapCat(r.category),
+            // 其他支出描述
+            ...(r.property_code ? { property_code: r.property_code } : {}),
+            ...(r.category_detail ? { category_detail: r.category_detail } : {}),
+            ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
+            ...(r.month_key ? { month_key: r.month_key } : {}),
+            ...(r.due_date ? { due_date: r.due_date } : {}),
+            ...(r.status ? { status: r.status } : {}),
+            report_category: (r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail)
+          })
+        })
         const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
           id: t.id,
           kind: t.kind,
@@ -104,21 +112,41 @@ export default function PropertyRevenuePage() {
           return v
         }
         const mapReport: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.report_category||'')]))
-        const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).map((r: any) => ({
-          id: r.id,
-          kind: 'expense',
-          amount: Number(r.amount || 0),
-          currency: r.currency || 'AUD',
-          property_id: r.property_id || undefined,
-          occurred_at: r.occurred_at,
-          category: mapCat(r.category),
-          ...(r.category_detail ? { category_detail: r.category_detail } : {}),
-          ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
-          ...(r.month_key ? { month_key: r.month_key } : {}),
-          ...(r.due_date ? { due_date: r.due_date } : {}),
-          ...(r.status ? { status: r.status } : {}),
-          ...(r.fixed_expense_id ? { report_category: (mapReport[String(r.fixed_expense_id)] || 'other') } : {})
-        }))
+        const toReportCat = (raw?: string) => {
+          const v = String(raw||'').toLowerCase()
+          if (v.includes('management_fee') || v.includes('管理费')) return 'management_fee'
+          if (v.includes('carpark') || v.includes('车位')) return 'parking_fee'
+          if (v.includes('owners') || v.includes('body') || v.includes('物业')) return 'body_corp'
+          if (v.includes('internet') || v.includes('nbn') || v.includes('网')) return 'internet'
+          if (v.includes('electric') || v.includes('电')) return 'electricity'
+          if ((v.includes('water') || v.includes('水')) && !v.includes('hot')) return 'water'
+          if (v.includes('gas') || v.includes('hot') || v.includes('热水')) return 'gas'
+          if (v.includes('consumable') || v.includes('消耗')) return 'consumables'
+          if (v.includes('council') || v.includes('市政')) return 'council'
+          return 'other'
+        }
+        const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).map((r: any) => {
+          const code = String(r.property_code || '').trim()
+          const pidRaw = r.property_id || undefined
+          const match = properties.find(pp => (pp.code || '') === code)
+          const pidNorm = (pidRaw && properties.some(pp => pp.id === pidRaw)) ? pidRaw : (match ? match.id : pidRaw)
+          return ({
+            id: r.id,
+            kind: 'expense',
+            amount: Number(r.amount || 0),
+            currency: r.currency || 'AUD',
+            property_id: pidNorm,
+            occurred_at: r.occurred_at,
+            category: mapCat(r.category),
+            ...(r.property_code ? { property_code: r.property_code } : {}),
+            ...(r.category_detail ? { category_detail: r.category_detail } : {}),
+            ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
+            ...(r.month_key ? { month_key: r.month_key } : {}),
+            ...(r.due_date ? { due_date: r.due_date } : {}),
+            ...(r.status ? { status: r.status } : {}),
+            report_category: (r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail)
+          })
+        })
         const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
           id: t.id,
           kind: t.kind,
@@ -166,10 +194,26 @@ export default function PropertyRevenuePage() {
       cur = cur.add(1,'month')
     }
     for (const p of list) {
+      if (process.env.NODE_ENV === 'development') {
+        const selectedPropertyCode = String(p.code || '')
+        const selectedMonth = (month || dayjs()).format('YYYY-MM')
+        const monthKey = (x: any) => dayjs(toDayStr((x as any).occurred_at)).format('YYYY-MM')
+        const expenses = (txs || []).filter(x => x.kind==='expense')
+        console.log('expense candidates for code', selectedPropertyCode,
+          expenses.filter(x => String((x as any).property_code || '').includes(selectedPropertyCode) || String((x as any).property_id || '').includes(String(p.id)))
+        )
+        console.log('expense after month filter', expenses.filter(x => monthKey(x) === selectedMonth))
+      }
       for (const rm of rangeMonths) {
         const related = getMonthSegmentsForProperty(orders as any, rm.start, String(p.id))
         debugOnce(`REVENUE_DEBUG ${rm.label} ${String(p.id)}`, related.map(s => s.id))
-        const e = txs.filter(x => x.kind==='expense' && x.property_id === p.id && dayjs(toDayStr(x.occurred_at)).isSame(rm.start, 'month'))
+        const e = txs.filter(x => {
+          if (x.kind !== 'expense') return false
+          const pidOk = (x.property_id === p.id) || (String((x as any).property_code || '') === String(p.code || ''))
+          const baseDateRaw: any = (x as any).paid_date || x.occurred_at || (x as any).created_at
+          const inMonth = baseDateRaw ? dayjs(toDayStr(baseDateRaw)).isSame(rm.start, 'month') : false
+          return pidOk && inMonth
+        })
         function overlap(s: any) {
           const ci = parseDateOnly(toDayStr(s.checkin))
           const co = parseDateOnly(toDayStr(s.checkout))
@@ -192,8 +236,11 @@ export default function PropertyRevenuePage() {
         const daysInMonth = rm.end.diff(rm.start,'day')
         const occRate = daysInMonth ? Math.round(((nights / daysInMonth)*100 + Number.EPSILON)*100)/100 : 0
         const avg = nights ? Math.round(((rentIncome / nights) + Number.EPSILON)*100)/100 : 0
-        const landlord = landlords.find(l => (l.property_ids||[]).includes(p.id))
-        const mgmt = landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON)*100)/100 : 0
+        const landlordByList = landlords.find(l => (l.property_ids||[]).includes(p.id))
+        const landlordByLink = landlords.find(l => String((l as any).id||'') === String((p as any).landlord_id||''))
+        const rate = landlordByList?.management_fee_rate ?? landlordByLink?.management_fee_rate ?? 0
+        const mgmtRecorded = e.filter(xx=> String((xx as any).report_category||'')==='management_fee').reduce((s,x)=> s + Number(x.amount||0), 0)
+        const mgmt = mgmtRecorded ? mgmtRecorded : (rate ? Math.round(((rentIncome * rate) + Number.EPSILON)*100)/100 : 0)
         const byReport = (key: string) => e.filter(xx=> String((xx as any).report_category||'')===key).reduce((s,x)=> s + Number(x.amount||0), 0)
         const carpark = byReport('parking_fee')
         const electricity = byReport('electricity')

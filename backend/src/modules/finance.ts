@@ -319,7 +319,7 @@ router.get('/property-revenue', async (req, res) => {
         }
       } catch {}
     }
-    const cols = { parking_fee: 0, electricity: 0, water: 0, gas: 0, internet: 0, consumables: 0, body_corp: 0, council: 0, other: 0 }
+    const cols = { parking_fee: 0, electricity: 0, water: 0, gas: 0, internet: 0, consumables: 0, body_corp: 0, council: 0, other: 0, management_fee: 0 }
     let rentIncome = 0
     let warnings: string[] = []
     try {
@@ -363,14 +363,25 @@ router.get('/property-revenue', async (req, res) => {
           const v = String(raw||'').toLowerCase()
           const d = String(detail||'').toLowerCase()
           const s = v + ' ' + d
-          if (s.includes('carpark') || s.includes('车位')) return 'parking_fee'
-          if (s.includes('owners') || s.includes('body') || s.includes('物业')) return 'body_corp'
+          // explicit category values
+          if (['carpark'].includes(v)) return 'parking_fee'
+          if (['owners_corp','ownerscorp','body_corp','bodycorp'].includes(v)) return 'body_corp'
+          if (['internet','nbn'].includes(v)) return 'internet'
+          if (['electricity'].includes(v)) return 'electricity'
+          if (['water'].includes(v)) return 'water'
+          if (['gas','gas_hot_water','hot_water'].includes(v)) return 'gas'
+          if (['consumables'].includes(v)) return 'consumables'
+          if (['council_rate','council'].includes(v)) return 'council'
+          // heuristics & Chinese labels
+          if (s.includes('车位')) return 'parking_fee'
+          if (s.includes('物业')) return 'body_corp'
           if (s.includes('internet') || s.includes('nbn') || s.includes('网')) return 'internet'
-          if (s.includes('electric')) return 'electricity'
-          if (s.includes('water') && !s.includes('hot')) return 'water'
-          if (s.includes('gas') || s.includes('hot')) return 'gas'
+          if (s.includes('electric') || s.includes('电')) return 'electricity'
+          if ((s.includes('water') || s.includes('水')) && !s.includes('热')) return 'water'
+          if (s.includes('gas') || s.includes('热水') || s.includes('煤气')) return 'gas'
           if (s.includes('consumable') || s.includes('消耗')) return 'consumables'
           if (s.includes('council') || s.includes('市政')) return 'council'
+          if (s.includes('管理费') || s.includes('management')) return 'management_fee'
           return 'other'
         }
         for (const e of peRows) {
@@ -382,9 +393,24 @@ router.get('/property-revenue', async (req, res) => {
         }
         const missingMonthKey = peRows.filter((e: any) => !e.month_key).length
         if (missingMonthKey > 0) warnings.push(`expenses_without_month_key=${missingMonthKey}`)
+        // Auto compute management fee from landlord config
+        try {
+          const props = await pgSelect('properties', 'id,landlord_id', { id: pid })
+          const prop = Array.isArray(props) ? props[0] : null
+          let rate = 0
+          if (prop?.landlord_id) {
+            const lrows = await pgSelect('landlords', 'id,management_fee_rate', { id: prop.landlord_id })
+            const ll = Array.isArray(lrows) ? lrows[0] : null
+            rate = Number((ll as any)?.management_fee_rate || 0)
+          }
+          if (rate && rentIncome) {
+            const fee = Number(((rentIncome * rate)).toFixed(2))
+            cols.management_fee += fee
+          }
+        } catch {}
       }
     } catch {}
-    const totalExpense = Object.values(cols).reduce((s, v) => s + Number(v || 0), 0)
+    const totalExpense = Object.entries(cols).reduce((s, [k, v]) => s + (k === 'management_fee' ? Number(v || 0) : Number(v || 0)), 0)
     const payload: any = {
       property_code: label || pcode || pid,
       month: ym,
@@ -397,6 +423,7 @@ router.get('/property-revenue', async (req, res) => {
       body_corp: -Number(cols.body_corp || 0),
       council: -Number(cols.council || 0),
       other: -Number(cols.other || 0),
+      management_fee: -Number(cols.management_fee || 0),
       total_expense: -Number(totalExpense || 0),
       net_income: Number(rentIncome || 0) - Number(totalExpense || 0)
     }
@@ -404,6 +431,155 @@ router.get('/property-revenue', async (req, res) => {
     return res.json(payload)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'property-revenue failed' })
+  }
+})
+
+// Auto-calc management fee for a property and month, persist into property_expenses and finance_transactions
+router.post('/management-fee/calc', requireAnyPerm(['property_expenses.write','finance.tx.write']), async (req, res) => {
+  try {
+    const { property_id, property_code, month } = (req.body || {}) as any
+    if (!month || (!(property_id) && !(property_code))) return res.status(400).json({ message: 'missing month or property' })
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const ym = String(month)
+    const y = Number(ym.slice(0,4)), m = Number(ym.slice(5,7))
+    if (!y || !m) return res.status(400).json({ message: 'invalid month format' })
+    const start = new Date(Date.UTC(y, m - 1, 1))
+    const end = new Date(Date.UTC(y, m, 0))
+    let pid = String(property_id || '')
+    let pcode = String(property_code || '')
+    const { pgPool } = require('../dbAdapter')
+    // resolve property id by code
+    if (!pid && pcode) {
+      const qr = await pgPool!.query('SELECT id, landlord_id FROM properties WHERE lower(code)=lower($1) LIMIT 1', [pcode])
+      pid = qr.rows?.[0]?.id || ''
+    }
+    if (!pid) return res.status(404).json({ message: 'property_not_found' })
+    // compute rent income for target month
+    const orders = await pgSelect('orders', '*', { property_id: pid })
+    const ords: any[] = Array.isArray(orders) ? orders : []
+    function toDate(s: any): Date | null { try { return s ? new Date(String(s)) : null } catch { return null } }
+    function overlapNights(ci?: any, co?: any): number {
+      const a = toDate(ci), b = toDate(co)
+      if (!a || !b) return 0
+      const A = a > start ? a : start
+      const B = b < end ? b : end
+      const ms = B.getTime() - A.getTime()
+      return ms > 0 ? Math.floor(ms / (24 * 3600 * 1000)) : 0
+    }
+    let rentIncome = 0
+    for (const o of ords) {
+      const ov = overlapNights(o.checkin, o.checkout)
+      const nights = Number(o.nights || 0) || 0
+      const visNet = Number((o as any).visible_net_income ?? o.net_income ?? 0)
+      if (ov > 0 && nights > 0) rentIncome += (visNet * ov) / nights
+    }
+    // read landlord rate
+    const propRows = await pgSelect('properties', 'id,landlord_id,code', { id: pid })
+    const prop = Array.isArray(propRows) ? propRows[0] : null
+    const lid = prop?.landlord_id
+    if (!lid) return res.status(400).json({ message: 'landlord_not_linked' })
+    const llRows = await pgSelect('landlords', 'id,management_fee_rate', { id: lid })
+    const landlord = Array.isArray(llRows) ? llRows[0] : null
+    const rate = Number((landlord as any)?.management_fee_rate || 0)
+    if (!rate) return res.status(400).json({ message: 'management_fee_rate_missing' })
+    if (!rentIncome) return res.status(400).json({ message: 'rent_income_zero' })
+    const fee = Number(((rentIncome * rate)).toFixed(2))
+    // upsert property_expenses
+    const { v4: uuid } = require('uuid')
+    const occurred = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0,10)
+    const existing = await pgSelect('property_expenses', '*', { property_id: pid, month_key: ym, category: 'management_fee' })
+    let expRow: any
+    if (Array.isArray(existing) && existing[0]) {
+      const id = existing[0].id
+      expRow = await pgUpdate('property_expenses', id, { amount: fee, occurred_at: occurred, note: `auto management fee ${ym}` } as any)
+    } else {
+      expRow = await pgInsert('property_expenses', { id: uuid(), property_id: pid, amount: fee, category: 'management_fee', occurred_at: occurred, month_key: ym, note: `auto management fee ${ym}` } as any)
+    }
+    // write finance transaction for integration
+    const tx: FinanceTransaction = { id: uuid(), kind: 'expense', amount: fee, currency: 'AUD', occurred_at: new Date().toISOString(), ref_type: 'property_expense', ref_id: expRow?.id || (existing?.[0]?.id || null), property_id: pid, category: 'management_fee', note: `management fee ${prop?.code || pid} ${ym}` }
+    await pgInsert('finance_transactions', tx as any)
+    addAudit('FinanceTransaction', tx.id, 'create', null, tx)
+    // return with double-check snapshot
+    const recorded = await pgSelect('property_expenses', '*', { property_id: pid, month_key: ym, category: 'management_fee' })
+    const diff = Math.abs(Number((recorded?.[0]?.amount || 0)) - fee)
+    return res.status(201).json({ property_id: pid, month: ym, rent_income: Number(rentIncome.toFixed(2)), rate, fee, recorded_fee: Number((recorded?.[0]?.amount || 0)), diff })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'calc_failed' })
+  }
+})
+
+router.get('/management-fee/history', requireAnyPerm(['property_expenses.view','finance.tx.write']), async (req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const { property_id, month_from, month_to } = (req.query || {}) as any
+    const conds: any[] = []
+    const where: string[] = ["category = 'management_fee'"]
+    if (property_id) { where.push('property_id = $1'); conds.push(property_id) }
+    if (month_from && month_to) { where.push('month_key BETWEEN $2 AND $3'); conds.push(month_from, month_to) }
+    const { pgPool } = require('../dbAdapter')
+    const rs = await pgPool!.query(`SELECT * FROM property_expenses WHERE ${where.join(' AND ')} ORDER BY month_key DESC`, conds)
+    return res.json(rs.rows || [])
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'history_failed' })
+  }
+})
+
+// Validation endpoint: compare raw expenses aggregation for a property and month
+router.get('/property-revenue/validate', async (req, res) => {
+  try {
+    const { property_id, property_code, month } = (req.query || {}) as any
+    if (!month || (!(property_id) && !(property_code))) return res.status(400).json({ message: 'missing month or property' })
+    const ym = String(month)
+    let pid = String(property_id || '')
+    let pcode = String(property_code || '')
+    if (hasPg) {
+      try {
+        const { pgPool } = require('../dbAdapter')
+        if (pgPool) {
+          if (!pid && pcode) {
+            const qr = await pgPool.query('SELECT id,code FROM properties WHERE lower(code) = lower($1) LIMIT 1', [pcode])
+            if (qr.rows && qr.rows[0]) pid = qr.rows[0].id
+          }
+        }
+      } catch {}
+    }
+    const totals: Record<string, number> = { parking_fee: 0, electricity: 0, water: 0, gas: 0, internet: 0, consumables: 0, body_corp: 0, council: 0, other: 0 }
+    if (hasPg) {
+      try {
+        const { pgPool } = require('../dbAdapter')
+        if (pgPool) {
+          const sql = `SELECT * FROM property_expenses
+            WHERE (property_id = $1 OR lower(property_id) = lower($2))
+              AND (
+                month_key = $3 OR
+                date_trunc('month', COALESCE(paid_date, occurred_at)::date) = date_trunc('month', to_date($3,'YYYY-MM'))
+              )`
+          const rs = await pgPool.query(sql, [pid || null, pcode || null, ym])
+          const rows = rs.rows || []
+          for (const e of rows) {
+            const fid = String((e as any).fixed_expense_id || '')
+            const amt = Number((e as any).amount || 0)
+            let cat = 'other'
+            if (fid) {
+              try {
+                const rp = await pgSelect('recurring_payments', '*', { id: fid })
+                const r = Array.isArray(rp) ? rp[0] : null
+                cat = String((r as any)?.report_category || 'other')
+              } catch {}
+            } else {
+              cat = toReportCat(String((e as any).category || ''), String((e as any).category_detail || ''))
+            }
+            if (totals[cat] === undefined) totals[cat] = 0
+            totals[cat] += amt
+          }
+        }
+      } catch (e: any) {
+        return res.status(500).json({ message: e?.message || 'validate failed' })
+      }
+    }
+    return res.json({ property_id: pid, property_code: pcode, month: ym, totals })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'validate failed' })
   }
 })
 
