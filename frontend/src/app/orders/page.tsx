@@ -67,6 +67,9 @@ export default function OrdersPage() {
   const [selfCheckLoading, setSelfCheckLoading] = useState(false)
   const [selfCheckData, setSelfCheckData] = useState<any | null>(null)
   const [syncing, setSyncing] = useState(false)
+  const [dupOpen, setDupOpen] = useState(false)
+  const [dupLoading, setDupLoading] = useState(false)
+  const [dupResult, setDupResult] = useState<any | null>(null)
   function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
   function getPropertyCodeLabel(o: Order) {
     const p = getPropertyById(o.property_id)
@@ -592,6 +595,18 @@ export default function OrdersPage() {
       nights,
       currency: 'AUD',
     }
+    setDupLoading(true)
+    try {
+      const pre = await fetch(`${API_BASE}/orders/validate-duplicate`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+      const j = await pre.json().catch(()=>null)
+      setDupResult(j || null)
+      if (pre.ok && j?.is_duplicate) {
+        setDupOpen(true)
+        setDupLoading(false)
+        return
+      }
+    } catch {}
+    setDupLoading(false)
     const res = await fetch(`${API_BASE}/orders/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
     if (res.status === 201) {
       const created = await res.json()
@@ -610,6 +625,54 @@ export default function OrdersPage() {
       let msg = '创建失败'
       try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} }
       message.error(msg)
+    }
+  }
+
+  async function proceedCreateForce() {
+    const v = form.getFieldsValue()
+    const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
+    const price = Number(v.price || 0)
+    const cleaning = Number(v.cleaning_fee || 0)
+    const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+    const cancelFee = Number(v.cancel_fee || 0)
+    const net = Math.max(0, price + lateFee + cancelFee - cleaning)
+    const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+    const selectedNew = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
+    const payload = {
+      source: v.source,
+      status: v.status || 'confirmed',
+      property_id: v.property_id,
+      property_code: v.property_code || selectedNew?.code || selectedNew?.address || v.property_id,
+      confirmation_code: v.confirmation_code,
+      guest_name: v.guest_name,
+      guest_phone: v.guest_phone,
+      checkin: v.checkin.format('YYYY-MM-DD') + 'T12:00:00',
+      checkout: v.checkout.format('YYYY-MM-DD') + 'T11:59:59',
+      price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price,
+      cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning,
+      net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net,
+      avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg,
+      nights,
+      currency: 'AUD',
+      force: true
+    }
+    const res = await fetch(`${API_BASE}/orders/sync?force=true`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+    if (res.status === 201 || res.status === 200) {
+      const created = await res.json().catch(()=>null)
+      message.success(res.status===201 ? '订单已创建' : '已覆盖更新重复订单')
+      setDupOpen(false); setOpen(false); form.resetFields(); load()
+      const lateFee2 = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+      const cancelFee2 = Number(v.cancel_fee || 0)
+      async function writeIncome(amount: number, cat: string, note: string) {
+        if (!amount || amount <= 0) return
+        const tx = { kind: 'income', amount: Number(amount), currency: 'AUD', occurred_at: v.checkout.format('YYYY-MM-DD'), note, category: cat, property_id: v.property_id, ref_type: 'order', ref_id: created?.id }
+        await fetch(`${API_BASE}/finance`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(tx) }).catch(() => {})
+      }
+      await writeIncome(lateFee2, 'late_checkout', 'Late checkout income')
+      if ((v.status || '') === 'canceled') await writeIncome(cancelFee2, 'cancel_fee', 'Cancelation fee')
+    } else {
+      const j = await res.json().catch(()=>({}))
+      message.error(j?.message || '覆盖创建失败')
     }
   }
 
@@ -1051,6 +1114,31 @@ export default function OrdersPage() {
           }}
         </Form.Item>
       </Form>
+    </Modal>
+    <Modal open={dupOpen} onCancel={()=> setDupOpen(false)} footer={null} title="疑似重复订单" width={900}>
+      {dupLoading ? <div>校验中...</div> : null}
+      {!dupLoading && dupResult && dupResult.is_duplicate ? (
+        <>
+          <Space style={{ marginBottom: 12 }} wrap>
+            {(dupResult?.reasons || []).map((r:string)=> (<Tag key={r} color="red">{r.replace('confirmation_code_duplicate','确认码重复').replace('content_duplicate','内容重复').replace('recent_duplicate','15分钟内重复')}</Tag>))}
+          </Space>
+          <Table rowKey={(r:any)=> String(r.id||r.confirmation_code||'')} dataSource={Array.isArray(dupResult?.similar_orders)? dupResult.similar_orders : []} pagination={{ defaultPageSize: 5 }} size="small" scroll={{ x: 'max-content' }}
+            columns={[
+              { title: '房号', dataIndex: 'property_code' },
+              { title: '确认码', dataIndex: 'confirmation_code' },
+              { title: '客人', dataIndex: 'guest_name' },
+              { title: '入住', dataIndex: 'checkin' },
+              { title: '退房', dataIndex: 'checkout' },
+              { title: '状态', dataIndex: 'status' },
+              { title: '操作', render: (_:any, r:any)=> (<Space><Button size="small" onClick={()=> openDetail(r.id)}>查看</Button>{hasPerm('order.cancel.override') ? <Button size="small" danger onClick={async ()=> { const res = await fetch(`${API_BASE}/orders/${r.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ status: 'cancelled' }) }); if (res.ok) { message.success('已取消重复订单'); setDupOpen(false); load() } else { const j = await res.json().catch(()=>({})); message.error(j?.message || '取消失败') } }}>取消</Button> : null}</Space>) }
+            ] as any}
+          />
+          <Space style={{ marginTop: 12 }}>
+            {hasPerm('order.create.override') ? <Button type="primary" onClick={proceedCreateForce}>继续创建（覆盖）</Button> : <Tag color="orange">无覆盖创建权限</Tag>}
+            <Button onClick={()=> setDupOpen(false)}>返回</Button>
+          </Space>
+        </>
+      ) : null}
     </Modal>
     <Modal open={failOpen} onCancel={()=> setFailOpen(false)} footer={null} title="失败订单邮件（可手动入库）" width={1000}>
       <Space style={{ marginBottom: 12 }}>

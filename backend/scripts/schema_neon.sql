@@ -426,6 +426,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_src_cc_pid_unique ON orders(source, confirmation_code, property_id) WHERE confirmation_code IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_conf_pid_unique ON orders(confirmation_code, property_id) WHERE confirmation_code IS NOT NULL AND property_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS recurring_payments (
   id text PRIMARY KEY,
@@ -595,5 +596,30 @@ CREATE TABLE IF NOT EXISTS order_cancellations (
   sender text,
   source text,
   account text,
+  created_at timestamptz DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS order_duplicate_attempts (
+  id text PRIMARY KEY,
+  payload jsonb,
+  reasons text[],
+  similar_ids text[],
+  actor_id text,
+  created_at timestamptz DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS expense_fingerprints (
+  key text PRIMARY KEY,
+  expire_at timestamptz NOT NULL,
+  created_at timestamptz DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS expense_dedup_logs (
+  id text PRIMARY KEY,
+  resource text NOT NULL,
+  resource_id text,
+  fingerprint text,
+  mode text,
+  result text,
+  operator_id text,
+  reasons text[],
+  latency_ms integer,
   created_at timestamptz DEFAULT now()
 );

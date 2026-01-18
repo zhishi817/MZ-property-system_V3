@@ -23,6 +23,111 @@ function dayOnly(s?: any): string | undefined {
   return m ? m[0] : undefined
 }
 
+async function findSimilarOrders(candidate: any): Promise<{ reasons: string[]; similar: any[]; duplicateByCodeId?: string }> {
+  const reasons: string[] = []
+  const similar: any[] = []
+  const cc = String(candidate?.confirmation_code || '').trim()
+  const pid = String(candidate?.property_id || '').trim()
+  const gn = String(candidate?.guest_name || '').trim().toLowerCase()
+  const gp = String(candidate?.guest_phone || '').trim()
+  const ci = String(candidate?.checkin || '').slice(0,10)
+  const co = String(candidate?.checkout || '').slice(0,10)
+  const price = Number(candidate?.price || 0)
+  const nowIso = new Date().toISOString()
+  try {
+    if (hasPg) {
+      const rows: any[] = (await pgSelect('orders')) || []
+      const sameCode = rows.filter(r => cc && String(r.confirmation_code || '').trim() === cc && (!pid || String(r.property_id || '') === pid))
+      if (sameCode.length) { reasons.push('confirmation_code_duplicate'); similar.push(...sameCode); if (sameCode[0]?.id) (candidate as any).__dup_id = sameCode[0].id }
+      const sameContent = rows.filter(r => {
+        const rPid = String(r.property_id || '')
+        const rGn = String(r.guest_name || '').trim().toLowerCase()
+        const rGp = String(r.guest_phone || '').trim()
+        const rCi = String(r.checkin || '').slice(0,10)
+        const rCo = String(r.checkout || '').slice(0,10)
+        const rPrice = Number(r.price || 0)
+        const nameMatch = !!gn && rGn === gn
+        const phoneMatch = !!gp && rGp === gp
+        const whoMatch = (nameMatch || phoneMatch)
+        const propertyMatch = !!pid && rPid === pid
+        const rangeMatch = !!ci && !!co && rCi === ci && rCo === co
+        const priceMatch = isFinite(price) && isFinite(rPrice) && Math.abs(rPrice - price) < 0.01
+        return propertyMatch && whoMatch && rangeMatch && priceMatch
+      })
+      if (sameContent.length) { reasons.push('content_duplicate'); similar.push(...sameContent.filter(x=> !similar.find(y=> y.id===x.id))) }
+      const near = rows.filter(r => {
+        const rCi = String(r.checkin || '').slice(0,10)
+        const rCo = String(r.checkout || '').slice(0,10)
+        const sameRange = !!ci && !!co && rCi === ci && rCo === co
+        const samePid = !!pid && String(r.property_id || '') === pid
+        const createdAt = new Date(String(r.created_at || r.createdAt || nowIso))
+        const within15m = isFinite(createdAt.getTime()) ? (Math.abs(Date.now() - createdAt.getTime()) <= 15 * 60 * 1000) : false
+        const whoMatch = (String(r.guest_name || '').trim().toLowerCase() === gn) || (!!gp && String(r.guest_phone || '').trim() === gp)
+        return sameRange && samePid && whoMatch && within15m
+      })
+      if (near.length) { reasons.push('recent_duplicate'); similar.push(...near.filter(x=> !similar.find(y=> y.id===x.id))) }
+      const dupByCodeId = sameCode[0]?.id ? String(sameCode[0].id) : undefined
+      return { reasons: Array.from(new Set(reasons)), similar, duplicateByCodeId: dupByCodeId }
+    }
+  } catch {}
+  const localRows = db.orders
+  const sameCode = localRows.filter(r => cc && String((r as any).confirmation_code || '').trim() === cc && (!pid || String(r.property_id || '') === pid))
+  if (sameCode.length) { reasons.push('confirmation_code_duplicate'); similar.push(...sameCode); if ((sameCode[0] as any)?.id) (candidate as any).__dup_id = (sameCode[0] as any).id }
+  const sameContent = localRows.filter(r => {
+    const rPid = String(r.property_id || '')
+    const rGn = String(r.guest_name || '').trim().toLowerCase()
+    const rGp = String((r as any).guest_phone || '').trim()
+    const rCi = String(r.checkin || '').slice(0,10)
+    const rCo = String(r.checkout || '').slice(0,10)
+    const rPrice = Number(r.price || 0)
+    const nameMatch = !!gn && rGn === gn
+    const phoneMatch = !!gp && rGp === gp
+    const whoMatch = (nameMatch || phoneMatch)
+    const propertyMatch = !!pid && rPid === pid
+    const rangeMatch = !!ci && !!co && rCi === ci && rCo === co
+    const priceMatch = isFinite(price) && isFinite(rPrice) && Math.abs(rPrice - price) < 0.01
+    return propertyMatch && whoMatch && rangeMatch && priceMatch
+  })
+  if (sameContent.length) { reasons.push('content_duplicate'); similar.push(...sameContent.filter(x=> !similar.find(y=> y.id===x.id))) }
+  const near = localRows.filter(r => {
+    const rCi = String(r.checkin || '').slice(0,10)
+    const rCo = String(r.checkout || '').slice(0,10)
+    const sameRange = !!ci && !!co && rCi === ci && rCo === co
+    const samePid = !!pid && String(r.property_id || '') === pid
+    const createdAt = new Date(String((r as any).created_at || nowIso))
+    const within15m = isFinite(createdAt.getTime()) ? (Math.abs(Date.now() - createdAt.getTime()) <= 15 * 60 * 1000) : false
+    const whoMatch = (String(r.guest_name || '').trim().toLowerCase() === gn) || (!!gp && String((r as any).guest_phone || '').trim() === gp)
+    return sameRange && samePid && whoMatch && within15m
+  })
+  if (near.length) { reasons.push('recent_duplicate'); similar.push(...near.filter(x=> !similar.find(y=> y.id===x.id))) }
+  const dupByCodeId = (sameCode[0] as any)?.id ? String((sameCode[0] as any).id) : undefined
+  return { reasons: Array.from(new Set(reasons)), similar, duplicateByCodeId: dupByCodeId }
+}
+
+async function recordDuplicateAttempt(payload: any, reasons: string[], similar: any[], actor?: any) {
+  try {
+    const row: any = { id: require('uuid').v4(), payload, reasons, similar_ids: similar.map(x => x.id), actor_id: actor?.sub, created_at: new Date().toISOString() }
+    addAudit('OrderDuplicate', row.id, 'attempt', null, row, actor?.sub)
+    if (hasPg) {
+      try { await pgInsert('order_duplicate_attempts', row as any) } catch (e: any) {
+        const msg = String(e?.message || '')
+        try {
+          const { pgPool } = require('../dbAdapter')
+          await pgPool?.query(`CREATE TABLE IF NOT EXISTS order_duplicate_attempts (
+            id text PRIMARY KEY,
+            payload jsonb,
+            reasons text[],
+            similar_ids text[],
+            actor_id text,
+            created_at timestamptz DEFAULT now()
+          )`)
+          await pgInsert('order_duplicate_attempts', row as any)
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
 router.get('/', async (_req, res) => {
   try {
     if (hasPg) {
@@ -128,7 +233,7 @@ const createOrderSchema = z.object({
   external_id: z.string().optional(),
   property_id: z.string().optional(),
   property_code: z.string().optional(),
-  confirmation_code: z.coerce.string().min(1),
+  confirmation_code: z.coerce.string().optional(),
   guest_name: z.string().optional(),
   guest_phone: z.string().optional(),
   checkin: z.coerce.string().optional(),
@@ -232,6 +337,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   const parsed = createOrderSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const o = parsed.data
+  const force = String((req.body as any).force ?? (req.query as any).force ?? '').toLowerCase() === 'true'
   try {
     const ci = normalizeStart(o.checkin || '')
     const co = normalizeEnd(o.checkout || '')
@@ -270,6 +376,13 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   const newOrder: Order = { id: uuid(), ...o, property_id: propertyId, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key, status: 'confirmed' }
   ;(newOrder as any).payment_currency = o.payment_currency || 'AUD'
   ;(newOrder as any).payment_received = o.payment_received ?? false
+  try {
+    const dup = await findSimilarOrders({ ...newOrder })
+    if (dup.reasons.length) {
+      await recordDuplicateAttempt(newOrder, dup.reasons, dup.similar, (req as any).user)
+      if (!force) return res.status(409).json({ message: '疑似重复订单', reasons: dup.reasons, similar_orders: dup.similar })
+    }
+  } catch {}
   // overlap guard
   const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout)
   if (conflict) return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' })
@@ -277,8 +390,22 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   try {
     const cc = (newOrder as any).confirmation_code
     if (hasPg && cc) {
-      const dup: any[] = (await pgSelect('orders', 'id', { source: newOrder.source, confirmation_code: cc })) || []
-      if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '确认码已存在' })
+      const dupAny: any[] = (await pgSelect('orders', '*', { confirmation_code: cc, property_id: newOrder.property_id })) || []
+      const dupAny2: any[] = (await pgSelect('orders', '*', { source: newOrder.source, confirmation_code: cc, property_id: newOrder.property_id })) || []
+      const dup = Array.isArray(dupAny2) && dupAny2[0] ? dupAny2 : dupAny
+      if (Array.isArray(dup) && dup[0]) {
+        if (force) {
+          try {
+            const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code','payment_currency','payment_received']
+            const payload: any = {}
+            for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
+            const row = await pgUpdate('orders', String(dup[0].id), payload)
+            try { broadcastOrdersUpdated({ action: 'update', id: String(dup[0].id) }) } catch {}
+            return res.status(200).json(row || dup[0])
+          } catch {}
+        }
+        return res.status(409).json({ message: '确认码已存在', existing_order_id: String(dup[0].id) })
+      }
     }
   } catch {}
   if (hasPg) {
@@ -328,6 +455,24 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   return res.status(201).json(newOrder)
 })
 
+router.post('/validate-duplicate', requireAnyPerm(['order.create','order.manage']), async (req, res) => {
+  const parsed = createOrderSchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const o = parsed.data
+  const propertyId = o.property_id || (o.property_code ? (db.properties.find(p => (p.code || '') === o.property_code)?.id) : undefined)
+  const candidate = { ...o, property_id: propertyId }
+  try {
+    const dup = await findSimilarOrders(candidate)
+    if (dup.reasons.length) {
+      await recordDuplicateAttempt(candidate, dup.reasons, dup.similar, (req as any).user)
+      return res.json({ is_duplicate: true, reasons: dup.reasons, similar_orders: dup.similar })
+    }
+    return res.json({ is_duplicate: false, reasons: [], similar_orders: [] })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'check_failed' })
+  }
+})
+
 router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   const { id } = req.params
   const parsed = updateOrderSchema.safeParse(req.body)
@@ -366,6 +511,19 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0))
   const avg = o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0)
   const updated: Order = { ...base, ...o, id, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg }
+  const prevStatus = String(prev?.status || '')
+  const nextStatus = String((updated as any)?.status || '')
+  if (prevStatus !== 'cancelled' && nextStatus === 'cancelled') {
+    const role = String(((req as any).user?.role) || '')
+    const locked = await isOrderMonthLocked(prev)
+    if (!locked) {
+      const { roleHasPermission } = require('../store')
+      if (!roleHasPermission(role, 'order.cancel')) return res.status(403).json({ message: 'no permission to cancel' })
+    } else {
+      const { roleHasPermission } = require('../store')
+      if (!roleHasPermission(role, 'order.cancel.override')) return res.status(403).json({ message: 'payout locked, override cancel required' })
+    }
+  }
   const changedCore = (
     (updated.property_id || '') !== (prev?.property_id || '') ||
     ((updated.checkin || '').slice(0,10)) !== ((prev?.checkin || '').slice(0,10)) ||
@@ -693,15 +851,7 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
         checkin = ciIso
         checkout = coIso
       }
-      if (source === 'airbnb' && !confirmation_code) {
-        const reason = 'missing_field:confirmation_code'
-        try {
-          const payload: any = { id: require('uuid').v4(), channel: platform, raw_row: r, reason, listing_name, listing_id, property_code, status: 'unmatched' }
-          if (hasPg) { await pgInsert('order_import_staging', payload) } else { (db as any).orderImportStaging.push(payload) }
-          results.push({ ok: false, error: reason, id: payload.id, listing_name, confirmation_code, source, property_id })
-        } catch { results.push({ ok: false, error: reason }) }
-        skipped++; continue
-      }
+      // 不再因缺少确认码阻断，后续以 idempotency_key 与时间段冲突进行保护
       if (source === 'booking' && !external_id) {
         const reason = 'missing_field:reservation_number'
         try {
@@ -845,7 +995,6 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
     }
     const source = mapPlatform(String(row.channel || r.source || ''), r)
     const confirmation_code = String((row.confirmation_code || getVal(r, ['confirmation_code','Confirmation Code','Reservation Number'])) || '').trim()
-    if (!confirmation_code) return res.status(400).json({ message: '确认码为空' })
     const guest_name = getVal(r, ['Guest','guest','guest_name','Booker Name'])
     const checkin = getVal(r, ['checkin','check_in','start_date','Start date','Arrival'])
     const checkout = getVal(r, ['checkout','check_out','end_date','End date','Departure'])
@@ -864,12 +1013,13 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
     const coIso = o.checkout ? `${String(o.checkout).slice(0,10)}T11:59:59` : undefined
     let key = o.idempotency_key || ''
     if (!key) {
-      if (source === 'airbnb') {
-        key = `airbnb|${String(o.confirmation_code || '').trim()}`
-      } else if (source === 'booking') {
-        key = `booking|${String(o.confirmation_code || '').trim()}`
+      const defaultKey = `${source}|${String(o.checkin || '').slice(0,10)}|${String(o.checkout || '').slice(0,10)}|${String(o.guest_name || '').trim()}`
+      if (source === 'airbnb' && (o as any).confirmation_code) {
+        key = `airbnb|${String((o as any).confirmation_code || '').trim()}`
+      } else if (source === 'booking' && (o as any).confirmation_code) {
+        key = `booking|${String((o as any).confirmation_code || '').trim()}`
       } else {
-        key = `${source}|${String(o.checkin || '').slice(0,10)}|${String(o.checkout || '').slice(0,10)}|${String(o.guest_name || '').trim()}`
+        key = defaultKey
       }
       key = key.toLowerCase().trim()
     }
@@ -1082,7 +1232,7 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
       const n = normalize(r)
       const cc = String(n.confirmation_code || '').trim()
       const ln = String(n.listing_name || '').trim()
-      if (!cc) { errors.push({ rowIndex: rowIndexBase + i, listing_name: ln || undefined, reason: '确认码为空' }); continue }
+      // 确认码缺失不再阻断，后续使用时间段冲突与可选内容重复校验保障
       const pid = ln ? byName[`name:${normalizeName(ln)}`] : undefined
       if (!pid) {
         try {

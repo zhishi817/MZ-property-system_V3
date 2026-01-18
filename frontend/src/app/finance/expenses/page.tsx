@@ -17,6 +17,8 @@ export default function ExpensesPage() {
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [dupOpen, setDupOpen] = useState(false)
+  const [dupResult, setDupResult] = useState<any | null>(null)
   const [editing, setEditing] = useState<Tx | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
@@ -61,14 +63,11 @@ export default function ExpensesPage() {
       occurred_at: dayjs(v.paid_date).format('YYYY-MM-DD'),
       paid_date: dayjs(v.paid_date).format('YYYY-MM-DD')
     }
-    const monthKey = dayjs(v.paid_date).format('YYYY-MM')
-    const existsDup = list.some((x) => (
-      String(x.property_id||'')===String(v.property_id||'') &&
-      String(x.category||'')===String(v.category||'') &&
-      dayjs(x.paid_date||x.occurred_at).format('YYYY-MM')===monthKey &&
-      Number(x.amount||0)===Number(v.amount||0)
-    ))
-    if (!editing && existsDup) { message.warning('检测到同房源同月份同类别同金额的记录已存在，已阻止重复提交'); setSaving(false); return }
+    try {
+      const res = await fetch(`${API_BASE}/finance/expenses/validate-duplicate`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ ...payload, mode: 'exact' }) })
+      const j = await res.json().catch(()=>null)
+      if (res.ok && j?.is_duplicate) { setDupResult(j); setDupOpen(true); setSaving(false); return }
+    } catch {}
     const resource = 'property_expenses'
     try {
       if (editing) {
@@ -87,6 +86,17 @@ export default function ExpensesPage() {
     } catch (e: any) {
       message.error(e?.message || '提交失败')
     } finally { setSaving(false) }
+  }
+  async function proceedCreateForce() {
+    const v = form.getFieldsValue()
+    const payload = {
+      kind: 'expense', amount: Number(v.amount || 0), currency: v.currency || 'AUD', category: v.category, property_id: v.property_id,
+      note: v.note, category_detail: v.category === 'other' ? (v.other_detail || '') : undefined, occurred_at: dayjs(v.paid_date).format('YYYY-MM-DD'), paid_date: dayjs(v.paid_date).format('YYYY-MM-DD')
+    }
+    try {
+      const created: any = editing ? await apiUpdate('property_expenses', editing.id, payload) : await apiCreate('property_expenses', payload)
+      message.success(editing ? '已更新支出' : '已记录支出'); form.resetFields(); setPendingFiles([]); setOpen(false); setEditing(null); setDupOpen(false); load()
+    } catch (e: any) { message.error(e?.message || '提交失败') }
   }
   async function openInvoices(expenseId: string) {
     try {
@@ -126,10 +136,21 @@ export default function ExpensesPage() {
   ]
   const catLabel = (v?: string) => (CATS.find(c => c.value === v)?.label || v || '-')
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  function melDay(s: any): string {
+    try {
+      const d = new Date(String(s))
+      const fmt = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' })
+      const parts = fmt.formatToParts(d)
+      const Y = parts.find(p => p.type === 'year')?.value || '0000'
+      const M = parts.find(p => p.type === 'month')?.value || '00'
+      const D = parts.find(p => p.type === 'day')?.value || '00'
+      return `${D}/${M}/${Y}`
+    } catch { return s ? dayjs(s).format('DD/MM/YYYY') : '-' }
+  }
   const columns = [
     { title: '日期', dataIndex: 'occurred_at', render: (_: any, r: Tx) => {
       const d = r.fixed_expense_id ? r.created_at : r.occurred_at
-      return dayjs(d).format('DD/MM/YYYY')
+      return melDay(d)
     } },
     { title: '房号', dataIndex: 'property_code', render: (v: string, r: any) => (v || (()=>{ const p = properties.find(x => x.id === r.property_id); return p?.code || r.property_id || '-' })()) },
     { title: '类别', dataIndex: 'category', render: (_: any, r: Tx) => {
@@ -259,6 +280,27 @@ export default function ExpensesPage() {
           </Form.Item>
           
         </Form>
+      </Modal>
+      <Modal open={dupOpen} onCancel={() => setDupOpen(false)} footer={null} title="疑似重复支出" width={860}>
+        {dupResult ? (
+          <>
+            <Alert type="warning" message={`检测到重复风险：${(dupResult.reasons||[]).join(', ')}`} showIcon style={{ marginBottom: 12 }} />
+            <Space style={{ marginBottom: 12 }}>验证编号: <code>{dupResult.verification_id}</code></Space>
+            <Table rowKey={(r:any)=> r.id} dataSource={Array.isArray(dupResult.similar)? dupResult.similar : []} size="small" pagination={{ defaultPageSize: 5 }}
+              columns={[
+                { title:'房号', render: (_:any, r:any) => { const p = properties.find(x => String(x.id)===String(r.property_id)); return p?.code || r.property_code || r.property_id } },
+                { title:'类别', dataIndex:'category' },
+                { title:'金额', dataIndex:'amount' },
+                { title:'付款日', render: (_:any, r:any) => melDay(r.paid_date || r.occurred_at) },
+                { title:'备注', dataIndex:'note' }
+              ] as any}
+            />
+            <Space style={{ marginTop: 12 }}>
+              <Button type="primary" onClick={proceedCreateForce}>继续提交（确认非重复）</Button>
+              <Button onClick={()=> setDupOpen(false)}>返回</Button>
+            </Space>
+          </>
+        ) : null}
       </Modal>
       <Modal open={!!invoiceOpen} onCancel={() => { setInvoiceOpen(null); setInvoices([]) }} footer={null} width={1350} title="发票管理">
         {invoiceOpen ? (
