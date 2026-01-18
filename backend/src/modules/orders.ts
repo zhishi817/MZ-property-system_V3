@@ -531,8 +531,14 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
     }
   }
   function getField(obj: any, keys: string[]): string | undefined {
+    const map: Record<string, any> = {}
+    Object.keys(obj || {}).forEach((kk) => { const nk = String(kk).toLowerCase().replace(/\s+/g, '_').trim(); map[nk] = (obj as any)[kk] })
     for (const k of keys) {
-      if (obj[k] != null && String(obj[k]).trim() !== '') return String(obj[k])
+      const v1 = (obj as any)[k]
+      if (v1 != null && String(v1).trim() !== '') return String(v1)
+      const nk = String(k).toLowerCase().replace(/\s+/g, '_').trim()
+      const v2 = map[nk]
+      if (v2 != null && String(v2).trim() !== '') return String(v2)
     }
     return undefined
   }
@@ -954,7 +960,15 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
     }
 
     function getField(obj: any, keys: string[]): string | undefined {
-      for (const k of keys) { if (obj[k] != null && String(obj[k]).trim() !== '') return String(obj[k]) }
+      const map: Record<string, any> = {}
+      Object.keys(obj || {}).forEach((kk) => { const nk = String(kk).toLowerCase().replace(/\s+/g, '_').trim(); map[nk] = (obj as any)[kk] })
+      for (const k of keys) {
+        const v1 = (obj as any)[k]
+        if (v1 != null && String(v1).trim() !== '') return String(v1)
+        const nk = String(k).toLowerCase().replace(/\s+/g, '_').trim()
+        const v2 = map[nk]
+        if (v2 != null && String(v2).trim() !== '') return String(v2)
+      }
       return undefined
     }
     function normalizeName(s?: string): string {
