@@ -101,8 +101,9 @@ async function addFailureAndMaybeCooldown(account: string, threshold: number, co
   const rs = await pgPool.query('UPDATE email_sync_state SET consecutive_failures = coalesce(consecutive_failures,0) + 1 WHERE account=$1 RETURNING consecutive_failures', [account])
   const n = Number(rs?.rows?.[0]?.consecutive_failures || 0)
   if (n >= threshold) {
-    const crs = await pgPool.query('UPDATE email_sync_state SET cooldown_until = now() + ($2 || \':minutes\')::interval WHERE account=$1 RETURNING cooldown_until', [account, String(cooldownMinutes)])
+    const crs = await pgPool.query("UPDATE email_sync_state SET cooldown_until = now() + ($2 || ':minutes')::interval WHERE account=$1 RETURNING cooldown_until", [account, String(cooldownMinutes)])
     const cd = crs?.rows?.[0]?.cooldown_until
+    try { await logJobStateChange({ job_type: 'email_sync', account, event: 'cooldown_set', next: { cooldown_until: cd } }) } catch {}
     return { cooldown_until: cd }
   }
   return {}
@@ -125,6 +126,7 @@ async function logSyncStart(account: string, last_uid_before: number | null, uid
     const r = await dbq(dbClient).query('INSERT INTO email_sync_runs (account, trigger_source, last_uid_before, status, started_at) VALUES ($1,$2,$3,$4,now()) RETURNING id, run_id', [account, trigger_source ?? null, last_uid_before ?? null, 'running'])
     const iid = r?.rows?.[0]?.id
     const rid = r?.rows?.[0]?.run_id
+    try { await logJobStateChange({ job_type: 'email_sync', account, run_id: rid ?? iid, event: 'run_started', next: { status: 'running', last_uid_before } }, dbClient) } catch {}
     return (iid != null ? Number(iid) : (rid != null ? String(rid) : null))
   } catch (e) { return null }
 }
@@ -132,18 +134,50 @@ async function logSyncFinish(runId: string | number | null, account: string, m: 
   if (!runId) return
   const isStr = typeof runId === 'string'
   if (isStr) {
-    await dbq(dbClient).query('UPDATE email_sync_runs SET scanned=$2, matched=$3, inserted=$4, failed=$5, skipped_duplicate=$6, found_uids_count=$7, matched_count=$8, failed_count=$9, last_uid_before=$10, last_uid_after=$11, duration_ms=$12, status=$13, finished_at=now(), cursor_after=$14, error_message=$15, skipped_reason_counts=$16, failed_reason_counts=$17 WHERE run_id=$1', [runId, m.scanned, m.matched, m.inserted, m.failed, m.skipped_duplicate, m.scanned, m.matched, m.failed, m.last_uid_before, m.last_uid_after, m.duration_ms, String(m.status || (m.failed > 0 ? 'failed' : 'success')), m.cursor_after ?? m.last_uid_after ?? null, m.error_message ?? null, m.skipped_reason_counts ? JSON.stringify(m.skipped_reason_counts) : null, m.failed_reason_counts ? JSON.stringify(m.failed_reason_counts) : null])
+    {
+      const cols = (await dbq(dbClient).query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='email_sync_runs'")).rows.map((r:any)=>String(r.column_name))
+      const endCol = cols.includes('ended_at') ? 'ended_at' : (cols.includes('finished_at') ? 'finished_at' : null)
+      const sets = ['scanned=$2','matched=$3','inserted=$4','failed=$5','skipped_duplicate=$6','found_uids_count=$7','matched_count=$8','failed_count=$9','last_uid_before=$10','last_uid_after=$11','duration_ms=$12','status=$13','cursor_after=$14','error_message=$15','skipped_reason_counts=$16','failed_reason_counts=$17']
+      if (endCol) sets.push(`${endCol}=now()`)
+      const sql = `UPDATE email_sync_runs SET ${sets.join(', ')} WHERE run_id=$1`
+      await dbq(dbClient).query(sql, [runId, m.scanned, m.matched, m.inserted, m.failed, m.skipped_duplicate, m.scanned, m.matched, m.failed, m.last_uid_before, m.last_uid_after, m.duration_ms, String(m.status || (m.failed > 0 ? 'failed' : 'success')), m.cursor_after ?? m.last_uid_after ?? null, m.error_message ?? null, m.skipped_reason_counts ? JSON.stringify(m.skipped_reason_counts) : null, m.failed_reason_counts ? JSON.stringify(m.failed_reason_counts) : null])
+      try { await logJobStateChange({ job_type: 'email_sync', account, run_id: runId, event: 'run_completed', prev: { status: 'running' }, next: { status: String(m.status || (m.failed > 0 ? 'failed' : 'success')), scanned: m.scanned, inserted: m.inserted, failed: m.failed, last_uid_after: m.last_uid_after } }, dbClient) } catch {}
+    }
   } else {
-    await dbq(dbClient).query('UPDATE email_sync_runs SET scanned=$2, matched=$3, inserted=$4, failed=$5, skipped_duplicate=$6, found_uids_count=$7, matched_count=$8, failed_count=$9, last_uid_before=$10, last_uid_after=$11, duration_ms=$12, status=$13, ended_at=now(), cursor_after=$14, error_message=$15, skipped_reason_counts=$16, failed_reason_counts=$17 WHERE id=$1', [runId, m.scanned, m.matched, m.inserted, m.failed, m.skipped_duplicate, m.scanned, m.matched, m.failed, m.last_uid_before, m.last_uid_after, m.duration_ms, String(m.status || (m.failed > 0 ? 'failed' : 'success')), m.cursor_after ?? m.last_uid_after ?? null, m.error_message ?? null, m.skipped_reason_counts ? JSON.stringify(m.skipped_reason_counts) : null, m.failed_reason_counts ? JSON.stringify(m.failed_reason_counts) : null])
+    {
+      const cols = (await dbq(dbClient).query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='email_sync_runs'")).rows.map((r:any)=>String(r.column_name))
+      const endCol = cols.includes('ended_at') ? 'ended_at' : (cols.includes('finished_at') ? 'finished_at' : null)
+      const sets = ['scanned=$2','matched=$3','inserted=$4','failed=$5','skipped_duplicate=$6','found_uids_count=$7','matched_count=$8','failed_count=$9','last_uid_before=$10','last_uid_after=$11','duration_ms=$12','status=$13','cursor_after=$14','error_message=$15','skipped_reason_counts=$16','failed_reason_counts=$17']
+      if (endCol) sets.push(`${endCol}=now()`)
+      const sql = `UPDATE email_sync_runs SET ${sets.join(', ')} WHERE id=$1`
+      await dbq(dbClient).query(sql, [runId, m.scanned, m.matched, m.inserted, m.failed, m.skipped_duplicate, m.scanned, m.matched, m.failed, m.last_uid_before, m.last_uid_after, m.duration_ms, String(m.status || (m.failed > 0 ? 'failed' : 'success')), m.cursor_after ?? m.last_uid_after ?? null, m.error_message ?? null, m.skipped_reason_counts ? JSON.stringify(m.skipped_reason_counts) : null, m.failed_reason_counts ? JSON.stringify(m.failed_reason_counts) : null])
+      try { await logJobStateChange({ job_type: 'email_sync', account, run_id: runId, event: 'run_completed', prev: { status: 'running' }, next: { status: String(m.status || (m.failed > 0 ? 'failed' : 'success')), scanned: m.scanned, inserted: m.inserted, failed: m.failed, last_uid_after: m.last_uid_after } }, dbClient) } catch {}
+    }
   }
 }
 async function logSyncError(runId: string | number | null, account: string, error_code: string, error_message: string, duration_ms: number, last_uid_after?: number, dbClient?: PoolClient) {
   if (!runId) return
   const isStr = typeof runId === 'string'
   if (isStr) {
-    await dbq(dbClient).query('UPDATE email_sync_runs SET error_code=$2, error_message=$3, duration_ms=$4, status=$5, last_uid_after=$6, finished_at=now() WHERE run_id=$1', [runId, error_code, error_message, duration_ms, 'failed', last_uid_after])
+    {
+      const cols = (await dbq(dbClient).query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='email_sync_runs'")).rows.map((r:any)=>String(r.column_name))
+      const endCol = cols.includes('ended_at') ? 'ended_at' : (cols.includes('finished_at') ? 'finished_at' : null)
+      const sets = ['error_code=$2','error_message=$3','duration_ms=$4','status=$5','last_uid_after=$6']
+      if (endCol) sets.push(`${endCol}=now()`)
+      const sql = `UPDATE email_sync_runs SET ${sets.join(', ')} WHERE run_id=$1`
+      await dbq(dbClient).query(sql, [runId, error_code, error_message, duration_ms, 'failed', last_uid_after])
+      try { await logJobStateChange({ job_type: 'email_sync', account, run_id: runId, event: 'run_failed', prev: { status: 'running' }, next: { status: 'failed', error_code, error_message } }, dbClient) } catch {}
+    }
   } else {
-    await dbq(dbClient).query('UPDATE email_sync_runs SET error_code=$2, error_message=$3, duration_ms=$4, status=$5, last_uid_after=$6, ended_at=now() WHERE id=$1', [runId, error_code, error_message, duration_ms, 'failed', last_uid_after])
+    {
+      const cols = (await dbq(dbClient).query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='email_sync_runs'")).rows.map((r:any)=>String(r.column_name))
+      const endCol = cols.includes('ended_at') ? 'ended_at' : (cols.includes('finished_at') ? 'finished_at' : null)
+      const sets = ['error_code=$2','error_message=$3','duration_ms=$4','status=$5','last_uid_after=$6']
+      if (endCol) sets.push(`${endCol}=now()`)
+      const sql = `UPDATE email_sync_runs SET ${sets.join(', ')} WHERE id=$1`
+      await dbq(dbClient).query(sql, [runId, error_code, error_message, duration_ms, 'failed', last_uid_after])
+      try { await logJobStateChange({ job_type: 'email_sync', account, run_id: runId, event: 'run_failed', prev: { status: 'running' }, next: { status: 'failed', error_code, error_message } }, dbClient) } catch {}
+    }
   }
 }
 
@@ -181,6 +215,34 @@ async function ensureEmailSyncTables() {
   );`)
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_email_sync_runs_account_started ON email_sync_runs(account, started_at)')
   await pgPool.query('ALTER TABLE email_sync_runs ADD COLUMN IF NOT EXISTS trigger_source text')
+}
+
+async function ensureJobStateChangesTable() {
+  try { await pgPool!.query(`CREATE TABLE IF NOT EXISTS job_state_changes (
+    id uuid PRIMARY KEY,
+    job_type text,
+    account text,
+    run_id text,
+    event text,
+    prev jsonb,
+    next jsonb,
+    trigger_source text,
+    reason text,
+    created_at timestamptz DEFAULT now()
+  );`) } catch {}
+  try { await pgPool!.query('CREATE INDEX IF NOT EXISTS idx_job_state_changes_account_created ON job_state_changes(account, created_at)') } catch {}
+}
+
+async function logJobStateChange(payload: { job_type: string; account?: string; run_id?: string | number | null; event: string; prev?: any; next?: any; trigger_source?: string; reason?: string }, client?: PoolClient) {
+  try {
+    const enabled = String(process.env.JOB_STATE_LOG_ENABLED || 'true').toLowerCase() === 'true'
+    if (!enabled || !pgPool) return
+    await ensureJobStateChangesTable()
+    const exec = client || pgPool!
+    const id = require('uuid').v4()
+    const row = { id, job_type: payload.job_type, account: payload.account || null, run_id: payload.run_id != null ? String(payload.run_id) : null, event: payload.event, prev: payload.prev ? JSON.stringify(payload.prev) : null, next: payload.next ? JSON.stringify(payload.next) : null, trigger_source: payload.trigger_source || null, reason: payload.reason || null }
+    await exec.query('INSERT INTO job_state_changes (id, job_type, account, run_id, event, prev, next, trigger_source, reason) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9)', [row.id, row.job_type, row.account, row.run_id, row.event, row.prev, row.next, row.trigger_source, row.reason])
+  } catch {}
 }
 
 export async function resolveUidSinceDate(account: string, startDate: string): Promise<number> {
@@ -773,7 +835,9 @@ router.post('/email-sync/backfill', requirePerm('order.manage'), async (req, res
     try { await ensureEmailSyncTables() } catch {}
     const minUid = await resolveUidSinceDate(account, startDate)
     const setLast = Number(minUid) - 1
+    const prev = await pgPool!.query('SELECT last_uid FROM email_sync_state WHERE account=$1', [account])
     await pgPool!.query('UPDATE email_sync_state SET last_uid=$2, last_backfill_at=now() WHERE account=$1', [account, setLast])
+    try { await logJobStateChange({ job_type: 'email_sync', account, event: 'last_uid_updated', prev: { last_uid: prev?.rows?.[0]?.last_uid ?? null }, next: { last_uid: setLast }, trigger_source: 'backfill_api' }) } catch {}
     const info = { tag: 'backfill_init', account, startDate, min_uid: minUid, set_last_uid: setLast, scan_limit: 50 }
     console.log(JSON.stringify(info))
     const result = await runEmailSyncJob({ mode: 'incremental', account, max_per_run: 50, max_messages: 50, batch_size: 20, concurrency: 1, batch_sleep_ms: 0, min_interval_ms: 0, trigger_source: 'backfill_api' })
@@ -909,6 +973,19 @@ router.get('/email-sync-runs', requirePerm('order.manage'), async (req, res) => 
   }
 })
 
+router.get('/state-changes', requirePerm('order.manage'), async (req, res) => {
+  try {
+    await ensureJobStateChangesTable()
+    const account = String((req.query || {}).account || '')
+    const limit = Math.min(200, Number((req.query || {}).limit || 50))
+    const sql = account ? 'SELECT * FROM job_state_changes WHERE account=$1 ORDER BY created_at DESC LIMIT $2' : 'SELECT * FROM job_state_changes ORDER BY created_at DESC LIMIT $1'
+    const rows = account ? (await pgPool!.query(sql, [account, limit])).rows : (await pgPool!.query(sql, [limit])).rows
+    return res.json(rows)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'state-changes failed' })
+  }
+})
+
 // Debug single UID
 router.get('/debug/email-sync-item', requirePerm('order.manage'), async (req, res) => {
   try {
@@ -960,7 +1037,7 @@ router.get('/email-sync-status', requirePerm('order.manage'), async (_req, res) 
       try { runningRow = await pgPool!.query("SELECT id FROM email_sync_runs WHERE account=$1 AND status='running' AND started_at > now() - interval '10 minutes' ORDER BY started_at DESC LIMIT 1", [account]) } catch {}
       out.push({
         account,
-        running: !!(runningRow?.rows?.[0]) || lockHeld,
+        running: !!(runningRow?.rows?.[0]),
         last_run: lastRun?.rows?.[0] || null,
         last_uid: Number(s.last_uid || 0),
         last_connected_at: s.last_connected_at || null,
@@ -1172,8 +1249,8 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
       const nowTs = Date.now()
       if (lastConnAt && (nowTs - new Date(lastConnAt).getTime()) < Number(min_interval_ms)) {
         const msg = `min_interval_ms=${min_interval_ms}`
-        if (typeof startRunId === 'string') { await dbq(dbClient).query("UPDATE email_sync_runs SET status='skipped', error_code=$2, error_message=$3, ended_at=now() WHERE run_id=$1", [startRunId, 'min_interval', msg]) }
-        else { await dbq(dbClient).query("UPDATE email_sync_runs SET status='skipped', error_code=$2, error_message=$3, ended_at=now() WHERE id=$1", [startRunId, 'min_interval', msg]) }
+        if (typeof startRunId === 'string') { await dbq(dbClient).query("UPDATE email_sync_runs SET status='skipped', error_code=$2, error_message=$3, ended_at=now() WHERE run_id=$1", [startRunId, 'min_interval', msg]); try { await logJobStateChange({ job_type: 'email_sync', account, run_id: startRunId, event: 'run_skipped_min_interval', next: { status: 'skipped', reason: 'min_interval' }, trigger_source }, dbClient) } catch {} }
+        else { await dbq(dbClient).query("UPDATE email_sync_runs SET status='skipped', error_code=$2, error_message=$3, ended_at=now() WHERE id=$1", [startRunId, 'min_interval', msg]); try { await logJobStateChange({ job_type: 'email_sync', account, run_id: startRunId, event: 'run_skipped_min_interval', next: { status: 'skipped', reason: 'min_interval' }, trigger_source }, dbClient) } catch {} }
         const next_allowed_at = lastConnAt ? new Date(lastConnAt.getTime() + Number(min_interval_ms)).toISOString() : undefined
         throw Object.assign(new Error('min interval'), { status: 409, reason: 'min_interval', next_allowed_at })
       }
