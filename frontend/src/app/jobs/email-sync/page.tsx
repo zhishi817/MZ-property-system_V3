@@ -84,6 +84,14 @@ export default function EmailSyncStatusPage() {
   useEffect(() => { loadStatus() }, [])
   useEffect(() => { loadRuns() }, [selectedAccount])
 
+  const totals = runs.reduce((s, r) => ({
+    scanned: s.scanned + Number(r.scanned || 0),
+    matched: s.matched + Number(r.matched || 0),
+    inserted: s.inserted + Number(r.inserted || 0),
+    duplicate: s.duplicate + Number((r as any).skipped_duplicate || 0),
+    failed: s.failed + Number(r.failed || 0)
+  }), { scanned: 0, matched: 0, inserted: 0, duplicate: 0, failed: 0 })
+
   const columns = [
     { title: '账户', dataIndex: 'account' },
     { title: '运行中', dataIndex: 'running', render: (v: boolean) => v ? <Tag color="blue">running</Tag> : <Tag>idle</Tag> },
@@ -146,6 +154,13 @@ export default function EmailSyncStatusPage() {
     <Card title="邮件同步状态" extra={<Space><Button size="small" onClick={loadStatus} disabled={loading}>刷新</Button>{selectedAccount ? <Button size="small" onClick={()=> loadRuns(selectedAccount!)} disabled={runsLoading}>刷新记录</Button> : null}{selectedAccount && hasPerm('order.manage') ? <Button size="small" type="primary" onClick={()=> triggerSync(selectedAccount!)}>触发同步</Button> : null}</Space>}>
       <Table rowKey={(r:any)=> String(r.account)} columns={columns as any} dataSource={items} loading={loading} pagination={{ defaultPageSize: 10, showSizeChanger: true }} scroll={{ x: 'max-content' }} />
       <Card size="small" style={{ marginTop: 12 }} title={`运行记录${selectedAccount ? `（${selectedAccount}）` : ''}`}>
+        <Space style={{ marginBottom: 8 }} wrap>
+          <Tag color="blue">扫描总数 {totals.scanned}</Tag>
+          <Tag color="green">命中 {totals.matched}</Tag>
+          <Tag color="green">新增 {totals.inserted}</Tag>
+          <Tag>重复 {totals.duplicate}</Tag>
+          <Tag color="red">失败 {totals.failed}</Tag>
+        </Space>
         {notice==='no_runs_yet' ? <Tag color="gold">尚未发生任何同步运行</Tag> : null}
         <Table size="small" rowKey={(r:any)=> String((r as any).id || (r as any).run_id)} columns={runCols as any} dataSource={runs} loading={runsLoading} pagination={{ defaultPageSize: 10, showSizeChanger: true }} scroll={{ x: 'max-content' }} />
       </Card>
