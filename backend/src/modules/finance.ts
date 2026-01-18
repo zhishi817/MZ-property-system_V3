@@ -6,6 +6,7 @@ import path from 'path'
 import { hasR2, r2Upload } from '../r2'
 import fs from 'fs'
 import { z } from 'zod'
+import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } from '../fingerprint'
 import { requirePerm, requireAnyPerm } from '../auth'
 import { PDFDocument } from 'pdf-lib'
 
@@ -809,5 +810,59 @@ router.post('/dedup-property-expenses', requireAnyPerm(['property_expenses.write
     return res.json({ merged_groups: merged, removed_records: removed, marked_conflicts: marked })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'dedup failed' })
+  }
+})
+
+router.post('/expenses/validate-duplicate', requireAnyPerm(['property_expenses.write','finance.tx.write']), async (req, res) => {
+  try {
+    const body = req.body || {}
+    const mode = String(body.mode || 'exact') === 'fuzzy' ? 'fuzzy' : 'exact'
+    const fp = buildExpenseFingerprint(body, mode as any)
+    const started = Date.now()
+    const result: any = { verification_id: fp, is_duplicate: false, reasons: [], similar: [] }
+    if (await hasFingerprint(fp)) { result.is_duplicate = true; result.reasons.push('fingerprint_recent'); }
+    if (hasPg) {
+      const occ = String(body.paid_date || body.occurred_at || '')
+      const whereExact = { property_id: body.property_id, month_key: (occ ? occ.slice(0,7) : body.month_key), category: body.category, amount: Number(body.amount||0) }
+      const ex = await pgSelect('property_expenses', '*', whereExact)
+      if (Array.isArray(ex) && ex[0]) { result.is_duplicate = true; result.reasons.push('unique_match'); result.similar.push(ex[0]) }
+      try {
+        const { pgPool } = require('../dbAdapter')
+        const sql = `SELECT * FROM property_expenses WHERE property_id=$1 AND category=$2 AND abs(amount - $3) <= 1 AND occurred_at BETWEEN (to_date($4,'YYYY-MM-DD') - interval '1 day') AND (to_date($4,'YYYY-MM-DD') + interval '1 day') LIMIT 10`
+        const rs = await pgPool!.query(sql, [body.property_id, body.category, Number(body.amount||0), occ.slice(0,10)])
+        if (rs.rowCount) { result.is_duplicate = true; result.reasons.push('fuzzy_window'); result.similar.push(...rs.rows) }
+      } catch {}
+    }
+    await addDedupLog({ resource: 'property_expenses', fingerprint: fp, mode: mode as any, result: result.is_duplicate ? 'hit' : 'miss', operator_id: (req as any).user?.sub || null, reasons: result.reasons, latency_ms: Date.now() - started })
+    return res.json(result)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'validate_failed' })
+  }
+})
+
+router.post('/expenses/scan-duplicates', requireAnyPerm(['property_expenses.write','finance.tx.write']), async (_req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const { pgPool } = require('../dbAdapter')
+    const sql = `SELECT property_id, month_key, category, amount, COUNT(*) AS cnt FROM property_expenses WHERE month_key IS NOT NULL GROUP BY property_id, month_key, category, amount HAVING COUNT(*) > 1 ORDER BY cnt DESC LIMIT 100`
+    const rs = await pgPool!.query(sql)
+    const groups = rs.rows || []
+    return res.json({ groups })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'scan_failed' })
+  }
+})
+
+router.get('/duplicates/metrics', requireAnyPerm(['property_expenses.view','finance.tx.write']), async (_req, res) => {
+  try {
+    if (!hasPg) return res.json({ duplicate_rate_24h: 0, hits_24h: 0, validations_24h: 0 })
+    const { pgPool } = require('../dbAdapter')
+    const rs = await pgPool!.query(`SELECT count(*) FILTER (WHERE result='hit') AS hits, count(*) AS total FROM expense_dedup_logs WHERE created_at > now() - interval '24 hours'`)
+    const hits = Number(rs.rows?.[0]?.hits || 0)
+    const total = Number(rs.rows?.[0]?.total || 0)
+    const rate = total ? Number(((hits / total) * 100).toFixed(2)) : 0
+    return res.json({ duplicate_rate_24h: rate, hits_24h: hits, validations_24h: total })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'metrics_failed' })
   }
 })
