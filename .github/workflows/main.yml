@@ -3,12 +3,18 @@ name: Email Sync Trigger
 on:
   schedule:
     - cron: "0 */2 * * *"   # 每2小时（UTC）
-  workflow_dispatch: {}     # 允许手动 Run
+  workflow_dispatch: {}
 
 jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
+      - name: Check backend version
+        run: |
+          set -e
+          echo "Checking: ${{ secrets.HEALTH_URL }}"
+          curl -sS "${{ secrets.HEALTH_URL }}" -w "\nHTTP_STATUS:%{http_code}\n"
+
       - name: Trigger email sync
         run: |
           set -e
