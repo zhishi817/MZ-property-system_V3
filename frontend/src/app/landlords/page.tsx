@@ -42,7 +42,10 @@ export default function LandlordsPage() {
 
   async function submitCreate() {
     const v = await form.validateFields()
-    const res = await fetch(`${API_BASE}/landlords`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(v) })
+    const emails = Array.isArray((v as any).emails) ? (v as any).emails.filter(Boolean) : ((v as any).email ? [(v as any).email] : [])
+    const payload = { ...v, emails }
+    delete (payload as any).email
+    const res = await fetch(`${API_BASE}/landlords`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('房东已创建'); setOpen(false); form.resetFields(); load() }
     else {
       let msg = '创建失败'
@@ -51,10 +54,17 @@ export default function LandlordsPage() {
     }
   }
 
-  function openEdit(record: Landlord) { setCurrent(record); setEditOpen(true); editForm.setFieldsValue(record) }
+  function openEdit(record: Landlord) {
+    setCurrent(record); setEditOpen(true)
+    const emails = Array.isArray(record.emails) ? record.emails : (record.email ? [record.email] : [])
+    editForm.setFieldsValue({ ...record, emails })
+  }
   async function submitEdit() {
     const v = await editForm.validateFields()
-    const res = await fetch(`${API_BASE}/landlords/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(v) })
+    const emails = Array.isArray((v as any).emails) ? (v as any).emails.filter(Boolean) : ((v as any).email ? [(v as any).email] : [])
+    const payload = { ...v, emails }
+    delete (payload as any).email
+    const res = await fetch(`${API_BASE}/landlords/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('房东已更新'); setEditOpen(false); load() }
     else {
       let msg = '更新失败'
@@ -101,7 +111,10 @@ export default function LandlordsPage() {
   const columns = [
     { title: '姓名', dataIndex: 'name', ellipsis: true, responsive: ['xs','sm','md','lg','xl'] },
     { title: '联系方式', dataIndex: 'phone', ellipsis: true, responsive: ['xs','sm','md','lg','xl'] },
-    { title: '邮箱', dataIndex: 'email', ellipsis: true, responsive: ['sm','md','lg','xl'] },
+    { title: '邮箱', dataIndex: 'emails', ellipsis: true, responsive: ['sm','md','lg','xl'], render: (_: any, r: Landlord) => {
+      const arr = Array.isArray(r.emails) ? r.emails : (r.email ? [r.email] : [])
+      return arr.length ? arr.join(', ') : ''
+    } },
     { title: '管理费', dataIndex: 'management_fee_rate', render: (v: number) => (v != null ? `${(v * 100).toFixed(1)}%` : ''), responsive: ['sm','md','lg','xl'] },
     { title: 'BSB', dataIndex: 'payout_bsb', ellipsis: true, responsive: ['md','lg','xl'] },
     { title: '银行账户', dataIndex: 'payout_account', ellipsis: true, responsive: ['md','lg','xl'] },
@@ -150,7 +163,7 @@ export default function LandlordsPage() {
           return (
             (l.name || '').toLowerCase().includes(q) ||
             (l.phone || '').toLowerCase().includes(q) ||
-            (l.email || '').toLowerCase().includes(q) ||
+            ((Array.isArray(l.emails) ? l.emails.join(',') : (l.email || '')).toLowerCase().includes(q)) ||
             propLabels.some(s => s.includes(q))
           )
         })}
@@ -162,7 +175,9 @@ export default function LandlordsPage() {
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="房东姓名" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="phone" label="联系方式"><Input /></Form.Item>
-          <Form.Item name="email" label="邮箱" rules={[{ type: 'email', message: '邮箱格式不正确' }]}><Input /></Form.Item>
+          <Form.Item name="emails" label="邮箱" rules={[{ validator: (_, v) => (Array.isArray(v) ? v : []).every((x: any) => !x || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(x))) ? Promise.resolve() : Promise.reject('邮箱格式不正确') }]}>
+            <Select mode="tags" tokenSeparators={[',',';',' ']} open={false} placeholder="输入后按回车，可添加多个邮箱" />
+          </Form.Item>
           <Form.Item name="management_fee_rate" label="管理费">
             <InputNumber min={0} max={1} step={0.001} precision={3} style={{ width: '100%' }} />
           </Form.Item>
@@ -184,7 +199,9 @@ export default function LandlordsPage() {
         <Form form={editForm} layout="vertical">
           <Form.Item name="name" label="房东姓名" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="phone" label="联系方式"><Input /></Form.Item>
-          <Form.Item name="email" label="邮箱" rules={[{ type: 'email', message: '邮箱格式不正确' }]}><Input /></Form.Item>
+          <Form.Item name="emails" label="邮箱" rules={[{ validator: (_, v) => (Array.isArray(v) ? v : []).every((x: any) => !x || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(x))) ? Promise.resolve() : Promise.reject('邮箱格式不正确') }]}>
+            <Select mode="tags" tokenSeparators={[',',';',' ']} open={false} placeholder="输入后按回车，可添加多个邮箱" />
+          </Form.Item>
           <Form.Item name="management_fee_rate" label="管理费">
             <InputNumber min={0} max={1} step={0.001} precision={3} style={{ width: '100%' }} />
           </Form.Item>
@@ -206,7 +223,7 @@ export default function LandlordsPage() {
         <Form layout="vertical" initialValues={detail || {}}>
           <Form.Item label="房东姓名"><Input value={detail?.name} readOnly /></Form.Item>
           <Form.Item label="联系方式"><Input value={detail?.phone} readOnly /></Form.Item>
-          <Form.Item label="邮箱"><Input value={detail?.email} readOnly /></Form.Item>
+          <Form.Item label="邮箱"><Input value={(Array.isArray(detail?.emails) ? detail?.emails?.join(', ') : (detail?.email || ''))} readOnly /></Form.Item>
           <Form.Item label="管理费"><Input value={detail?.management_fee_rate != null ? `${(detail.management_fee_rate * 100).toFixed(1)}%` : ''} readOnly /></Form.Item>
           <Form.Item label="BSB"><Input value={detail?.payout_bsb} readOnly /></Form.Item>
           <Form.Item label="银行账户"><Input value={detail?.payout_account} readOnly /></Form.Item>
