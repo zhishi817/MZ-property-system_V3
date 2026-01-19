@@ -269,7 +269,7 @@ app.listen(port, () => {
           // collect recent failed uids per account; exclude duplicates/already_running
           const sql = `
             WITH cand AS (
-              SELECT account, uid FROM email_orders_raw WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
+              SELECT account, uid FROM email_orders_raw WHERE status IN ('failed','unmatched_property') AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
               UNION ALL
               SELECT account, uid FROM email_sync_items WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
             )

@@ -1104,10 +1104,8 @@ router.get('/email-orders-raw/failures', requirePerm('order.manage'), async (req
     const q = await pgPool!.query(`
       SELECT r.uid, r.message_id, r.subject, r.sender, r.header_date, r.confirmation_code, r.guest_name, r.listing_name, r.checkin, r.checkout, r.price, r.cleaning_fee, r.status
       FROM email_orders_raw r
-      LEFT JOIN orders o ON o.confirmation_code = r.confirmation_code
       WHERE r.created_at >= now() - ($1 || ':days')::interval
-        AND COALESCE(r.status,'') = 'failed'
-        AND o.id IS NULL
+        AND COALESCE(r.status,'') IN ('failed','unmatched_property')
       ORDER BY r.created_at DESC
       LIMIT $2
     `, [String(sinceDays), limit])
@@ -1563,7 +1561,8 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                       const priceVal = Number(fields2.price || 0)
                       const cleanVal = Number(fields2.cleaning_fee || 0)
                       const netVal = Number((priceVal - cleanVal).toFixed(2))
-                      const rawPayload = { source: 'imap', uid, message_id: messageId2 || null, header_date: headerDate2 || null, envelope: JSON.stringify(envelope || {}), html: String(p2?.html || ''), plain: String(p2?.text || ''), status: r.failed ? 'failed' : (r.matched ? 'matched' : 'fetched'), subject: String(env?.subject || ''), sender: String(env?.from?.text || ''), account: acc.user, confirmation_code: (String(fields2.confirmation_code || '')).match(/\b[A-Z0-9]{8,10}\b/)?.[0] || null, guest_name: fields2.guest_name || null, listing_name: fields2.listing_name || null, checkin: fields2.checkin || null, checkout: fields2.checkout || null, price: isFinite(priceVal) ? priceVal : null, cleaning_fee: isFinite(cleanVal) ? cleanVal : null, net_income: isFinite(netVal) ? netVal : null, nights: fields2.nights || null, extra: { parse_ok: isCandidate, reason: (r as any).reason || null } }
+                      const statusRaw = (String((r as any)?.reason || '') === 'property_not_found') ? 'unmatched_property' : 'parsed'
+                      const rawPayload = { source: 'imap', uid, message_id: messageId2 || null, header_date: headerDate2 || null, envelope: JSON.stringify(envelope || {}), html: String(p2?.html || ''), plain: String(p2?.text || ''), status: statusRaw, subject: String(env?.subject || ''), sender: String(env?.from?.text || ''), account: acc.user, confirmation_code: (String(fields2.confirmation_code || '')).match(/\b[A-Z0-9]{8,10}\b/)?.[0] || null, guest_name: fields2.guest_name || null, listing_name: fields2.listing_name || null, checkin: fields2.checkin || null, checkout: fields2.checkout || null, price: isFinite(priceVal) ? priceVal : null, cleaning_fee: isFinite(cleanVal) ? cleanVal : null, net_income: isFinite(netVal) ? netVal : null, nights: fields2.nights || null, extra: { parse_ok: isCandidate, reason: (r as any).reason || null } }
                       safeDbLog('email_orders_raw','upsert', rawPayload, { conflict: messageId2 ? ['message_id'] : ['source','uid'] })
                       const rawRes = await pgInsertOnConflictDoNothing('email_orders_raw', rawPayload, messageId2 ? ['message_id'] : ['source','uid'], dbClient)
                       console.log(JSON.stringify({ tag: 'STEP4_raw_upsert_done', uid, run_id: startRunId, account: acc.user, inserted: !!rawRes, conflict: messageId2 ? 'message_id' : 'source+uid', candidate: isCandidate, failed_order: !!r.failed }))
