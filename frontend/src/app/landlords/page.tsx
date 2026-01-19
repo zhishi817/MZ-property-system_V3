@@ -10,6 +10,7 @@ type Landlord = {
   name: string
   phone?: string
   email?: string
+  emails?: string[]
   management_fee_rate?: number
   payout_bsb?: string
   payout_account?: string
@@ -56,7 +57,8 @@ export default function LandlordsPage() {
 
   function openEdit(record: Landlord) {
     setCurrent(record); setEditOpen(true)
-    const emails = Array.isArray(record.emails) ? record.emails : (record.email ? [record.email] : [])
+    const rr: any = record as any
+    const emails = Array.isArray(rr.emails) ? rr.emails : (record.email ? [record.email] : [])
     editForm.setFieldsValue({ ...record, emails })
   }
   async function submitEdit() {
@@ -112,7 +114,8 @@ export default function LandlordsPage() {
     { title: '姓名', dataIndex: 'name', ellipsis: true, responsive: ['xs','sm','md','lg','xl'] },
     { title: '联系方式', dataIndex: 'phone', ellipsis: true, responsive: ['xs','sm','md','lg','xl'] },
     { title: '邮箱', dataIndex: 'emails', ellipsis: true, responsive: ['sm','md','lg','xl'], render: (_: any, r: Landlord) => {
-      const arr = Array.isArray(r.emails) ? r.emails : (r.email ? [r.email] : [])
+      const rr: any = r as any
+      const arr = Array.isArray(rr.emails) ? rr.emails : (r.email ? [r.email] : [])
       return arr.length ? arr.join(', ') : ''
     } },
     { title: '管理费', dataIndex: 'management_fee_rate', render: (v: number) => (v != null ? `${(v * 100).toFixed(1)}%` : ''), responsive: ['sm','md','lg','xl'] },
@@ -163,7 +166,7 @@ export default function LandlordsPage() {
           return (
             (l.name || '').toLowerCase().includes(q) ||
             (l.phone || '').toLowerCase().includes(q) ||
-            ((Array.isArray(l.emails) ? l.emails.join(',') : (l.email || '')).toLowerCase().includes(q)) ||
+            ((Array.isArray((l as any).emails) ? (l as any).emails.join(',') : (l.email || '')).toLowerCase().includes(q)) ||
             propLabels.some(s => s.includes(q))
           )
         })}
