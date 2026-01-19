@@ -1117,6 +1117,26 @@ router.get('/email-orders-raw/failures', requirePerm('order.manage'), async (req
     return res.json(rows)
   } catch (e: any) { return res.status(500).json({ message: 'list_failed', detail: String(e?.message || '') }) }
 })
+
+router.post('/email-orders-raw/reclassify', requirePerm('order.manage'), async (req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const sinceDays = Number(((req.body || {}) as any).since_days || 365)
+    const { pgPool } = require('../dbAdapter')
+    const sql = `UPDATE email_orders_raw SET status='unmatched_property'
+      WHERE status='failed'
+        AND listing_name IS NOT NULL
+        AND confirmation_code IS NOT NULL
+        AND checkin IS NOT NULL
+        AND checkout IS NOT NULL
+        AND (price IS NOT NULL OR net_income IS NOT NULL)
+        AND created_at >= now() - ($1 || ':days')::interval`;
+    const r = await pgPool!.query(sql, [String(sinceDays)])
+    return res.json({ reclassified: Number(r.rowCount || 0), since_days: sinceDays })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'reclassify_failed' })
+  }
+})
 router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req, res) => {
   try {
     if (!hasPg) return res.status(400).json({ message: 'pg required' })
