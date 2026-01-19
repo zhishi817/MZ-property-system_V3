@@ -26,6 +26,7 @@ router.get('/', (req, res) => {
 const schema = z.object({
   name: z.string().min(1),
   phone: z.string().optional(),
+  emails: z.array(z.string()).optional(),
   email: z.string().optional(),
   management_fee_rate: z.number().optional(),
   payout_bsb: z.string().optional(),
@@ -33,6 +34,9 @@ const schema = z.object({
   property_ids: z.array(z.string()).optional(),
 }).transform((v) => {
   const m = (v as any)
+  if (!Array.isArray(m.emails)) m.emails = (m.email ? [m.email] : [])
+  m.emails = (Array.isArray(m.emails) ? m.emails : []).map((s: any) => String(s||'').trim()).filter(Boolean)
+  if (!m.email && Array.isArray(m.emails) && m.emails[0]) m.email = m.emails[0]
   if (m.management_fee !== undefined && m.management_fee_rate === undefined) m.management_fee_rate = m.management_fee
   return m
 })
@@ -54,7 +58,14 @@ router.post('/', requirePerm('landlord.manage'), (req, res) => {
 
 router.patch('/:id', requirePerm('landlord.manage'), async (req, res) => {
   const { id } = req.params
-  const body = req.body as Partial<Landlord>
+  const bodyRaw = req.body as Partial<Landlord>
+  const body: Partial<Landlord> = { ...bodyRaw }
+  if (Array.isArray((body as any).emails)) {
+    (body as any).emails = (body as any).emails.map((s: any) => String(s||'').trim()).filter(Boolean)
+    if (!(body as any).email && (body as any).emails[0]) (body as any).email = (body as any).emails[0]
+  } else if ((body as any).email) {
+    (body as any).emails = [(body as any).email]
+  }
   try {
     // Supabase branch removed
     if (hasPg) {

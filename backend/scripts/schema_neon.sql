@@ -77,6 +77,9 @@ CREATE TABLE IF NOT EXISTS landlords (
 );
 CREATE INDEX IF NOT EXISTS idx_landlords_name ON landlords(name);
 
+ALTER TABLE landlords ADD COLUMN IF NOT EXISTS emails text[];
+CREATE INDEX IF NOT EXISTS idx_landlords_emails_gin ON landlords USING gin (emails);
+
 CREATE TABLE IF NOT EXISTS orders (
   id text PRIMARY KEY,
   source text,

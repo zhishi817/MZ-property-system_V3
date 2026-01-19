@@ -72,6 +72,7 @@ export type Landlord = {
   name: string
   phone?: string
   email?: string
+  emails?: string[]
   management_fee_rate?: number
   payout_bsb?: string
   payout_account?: string
@@ -282,8 +283,8 @@ if (db.landlords.length === 0) {
   const p1 = db.properties[0]?.id
   const p2 = db.properties[1]?.id
   db.landlords.push(
-    { id: uuid(), name: 'MZ Holdings', phone: '0400 000 000', email: 'owner@mz.com', management_fee_rate: 0.1, payout_bsb: '062000', payout_account: '123456', property_ids: p1 ? [p1] : [] },
-    { id: uuid(), name: 'John Doe', phone: '0411 111 111', email: 'john@example.com', management_fee_rate: 0.08, payout_bsb: '063000', payout_account: '654321', property_ids: p2 ? [p2] : [] }
+    { id: uuid(), name: 'MZ Holdings', phone: '0400 000 000', email: 'owner@mz.com', emails: ['owner@mz.com','finance@mz.com'], management_fee_rate: 0.1, payout_bsb: '062000', payout_account: '123456', property_ids: p1 ? [p1] : [] },
+    { id: uuid(), name: 'John Doe', phone: '0411 111 111', email: 'john@example.com', emails: ['john@example.com'], management_fee_rate: 0.08, payout_bsb: '063000', payout_account: '654321', property_ids: p2 ? [p2] : [] }
   )
 }
 

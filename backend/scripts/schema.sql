@@ -72,6 +72,7 @@ CREATE INDEX IF NOT EXISTS idx_landlords_name ON landlords(name);
 
 ALTER TABLE landlords ADD COLUMN IF NOT EXISTS property_ids text[];
 ALTER TABLE landlords ADD COLUMN IF NOT EXISTS archived boolean DEFAULT false;
+ALTER TABLE landlords ADD COLUMN IF NOT EXISTS emails text[];
 
 -- Orders table
 CREATE TABLE IF NOT EXISTS orders (
