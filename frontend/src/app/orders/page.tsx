@@ -485,8 +485,22 @@ export default function OrdersPage() {
     setFailLoading(true)
     try {
       const res = await fetch(`${API_BASE}/jobs/email-orders-raw/failures?limit=200&since_days=14`, { headers: { ...authHeaders() } })
-      const j = await res.json().catch(()=>[])
-      setFailRows(Array.isArray(j) ? j : [])
+      if (!res.ok) {
+        const ct = res.headers.get('content-type')||''
+        const j = /application\/json/i.test(ct) ? await res.json().catch(()=>({})) : { message: await res.text().catch(()=>`HTTP ${res.status}`) }
+        message.error(String((j as any)?.message || `拉取失败（HTTP ${res.status}）`))
+        setFailRows([])
+      } else {
+        const j = await res.json().catch(()=>[])
+        const arr = Array.isArray(j) ? j : []
+        if (arr.length === 0) {
+          const res2 = await fetch(`${API_BASE}/jobs/email-orders-raw/failures?limit=200&since_days=365`, { headers: { ...authHeaders() } })
+          const j2 = await res2.json().catch(()=>[])
+          setFailRows(Array.isArray(j2) ? j2 : [])
+        } else {
+          setFailRows(arr)
+        }
+      }
     } catch { message.error('拉取失败记录失败') }
     setFailLoading(false)
   }
@@ -1170,6 +1184,7 @@ export default function OrdersPage() {
           { title: '总租金', dataIndex: 'price' },
           { title: '清洁费', dataIndex: 'cleaning_fee' },
           { title: '状态', dataIndex: 'status', render: (v:any)=> <Tag color="red">{String(v||'')}</Tag> },
+          { title: '失败原因', dataIndex: 'reason', render: (v:any, r:any)=> <span style={{ wordBreak:'break-word' }}>{String(v||'')}</span> },
           { title: '房号', render: (_:any, r:any)=> (
             <Select showSearch optionFilterProp="label" placeholder="选择房号" style={{ width: 220 }}
               options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))}

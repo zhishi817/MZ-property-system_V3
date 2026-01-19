@@ -1102,17 +1102,18 @@ router.get('/email-orders-raw/failures', requirePerm('order.manage'), async (req
     const sinceDays = Number(((req.query || {}) as any).since_days || 14)
     const limit = Math.min(500, Number(((req.query || {}) as any).limit || 200))
     const q = await pgPool!.query(`
-      SELECT r.uid, r.message_id, r.subject, r.sender, r.header_date, r.confirmation_code, r.guest_name, r.listing_name, r.checkin, r.checkout, r.price, r.cleaning_fee, r.status
+      SELECT r.uid, r.message_id, r.subject, r.sender, r.header_date, r.confirmation_code, r.guest_name, r.listing_name, r.checkin, r.checkout, r.price, r.cleaning_fee, r.status,
+        COALESCE(r.extra->>'reason', NULL) AS reason
       FROM email_orders_raw r
       WHERE r.created_at >= now() - ($1 || ':days')::interval
-        AND COALESCE(r.status,'') IN ('failed','unmatched_property')
+        AND COALESCE(r.status,'') IN ('failed','unmatched_property','parsed')
       ORDER BY r.created_at DESC
       LIMIT $2
     `, [String(sinceDays), limit])
     const rows = (q.rows || []).map(r => {
       let nights = 0
       try { const a = r.checkin ? new Date(String(r.checkin)) : null; const b = r.checkout ? new Date(String(r.checkout)) : null; if (a && b) { const ms = b.getTime() - a.getTime(); nights = ms > 0 ? Math.round(ms / (1000*60*60*24)) : 0 } } catch {}
-      return { uid: r.uid, id: r.message_id, message_id: r.message_id, subject: r.subject, from: r.sender, date: r.header_date, confirmation_code: r.confirmation_code, guest_name: r.guest_name, listing_name: r.listing_name, checkin: r.checkin, checkout: r.checkout, nights, price: r.price, cleaning_fee: r.cleaning_fee, status: r.status }
+      return { uid: r.uid, id: r.message_id, message_id: r.message_id, subject: r.subject, from: r.sender, date: r.header_date, confirmation_code: r.confirmation_code, guest_name: r.guest_name, listing_name: r.listing_name, checkin: r.checkin, checkout: r.checkout, nights, price: r.price, cleaning_fee: r.cleaning_fee, status: r.status, reason: r.reason }
     })
     return res.json(rows)
   } catch (e: any) { return res.status(500).json({ message: 'list_failed', detail: String(e?.message || '') }) }
