@@ -10,7 +10,7 @@ exports.pgInsertOnConflictDoNothing = pgInsertOnConflictDoNothing;
 exports.pgDeleteWhere = pgDeleteWhere;
 const pg_1 = require("pg");
 const conn = process.env.DATABASE_URL || '';
-exports.pgPool = conn ? new pg_1.Pool({ connectionString: conn, ssl: { rejectUnauthorized: false } }) : null;
+exports.pgPool = conn ? new pg_1.Pool({ connectionString: conn, ssl: { rejectUnauthorized: false }, max: Number(process.env.PG_POOL_MAX || 10), idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000), connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 10000) }) : null;
 exports.hasPg = !!exports.pgPool;
 function buildWhere(filters) {
     const keys = Object.keys(filters || {});

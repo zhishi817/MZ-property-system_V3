@@ -25,6 +25,7 @@ exports.router.get('/', (req, res) => {
 const schema = zod_1.z.object({
     name: zod_1.z.string().min(1),
     phone: zod_1.z.string().optional(),
+    emails: zod_1.z.array(zod_1.z.string()).optional(),
     email: zod_1.z.string().optional(),
     management_fee_rate: zod_1.z.number().optional(),
     payout_bsb: zod_1.z.string().optional(),
@@ -32,6 +33,11 @@ const schema = zod_1.z.object({
     property_ids: zod_1.z.array(zod_1.z.string()).optional(),
 }).transform((v) => {
     const m = v;
+    if (!Array.isArray(m.emails))
+        m.emails = (m.email ? [m.email] : []);
+    m.emails = (Array.isArray(m.emails) ? m.emails : []).map((s) => String(s || '').trim()).filter(Boolean);
+    if (!m.email && Array.isArray(m.emails) && m.emails[0])
+        m.email = m.emails[0];
     if (m.management_fee !== undefined && m.management_fee_rate === undefined)
         m.management_fee_rate = m.management_fee;
     return m;
@@ -53,7 +59,16 @@ exports.router.post('/', (0, auth_1.requirePerm)('landlord.manage'), (req, res) 
 });
 exports.router.patch('/:id', (0, auth_1.requirePerm)('landlord.manage'), async (req, res) => {
     const { id } = req.params;
-    const body = req.body;
+    const bodyRaw = req.body;
+    const body = { ...bodyRaw };
+    if (Array.isArray(body.emails)) {
+        body.emails = body.emails.map((s) => String(s || '').trim()).filter(Boolean);
+        if (!body.email && body.emails[0])
+            body.email = body.emails[0];
+    }
+    else if (body.email) {
+        body.emails = [body.email];
+    }
     try {
         // Supabase branch removed
         if (dbAdapter_1.hasPg) {

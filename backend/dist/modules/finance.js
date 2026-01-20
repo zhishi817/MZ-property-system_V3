@@ -12,11 +12,36 @@ const path_1 = __importDefault(require("path"));
 const r2_1 = require("../r2");
 const fs_1 = __importDefault(require("fs"));
 const zod_1 = require("zod");
+const fingerprint_1 = require("../fingerprint");
 const auth_1 = require("../auth");
 const pdf_lib_1 = require("pdf-lib");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
+function toReportCat(raw, detail) {
+    const v = String(raw || '').toLowerCase();
+    const d = String(detail || '').toLowerCase();
+    const s = v + ' ' + d;
+    if (['carpark'].includes(v) || s.includes('车位'))
+        return 'parking_fee';
+    if (['owners_corp', 'ownerscorp', 'body_corp', 'bodycorp'].includes(v) || s.includes('物业'))
+        return 'body_corp';
+    if (['internet', 'nbn'].includes(v) || s.includes('internet') || s.includes('nbn') || s.includes('网'))
+        return 'internet';
+    if (['electricity'].includes(v) || s.includes('electric') || s.includes('电'))
+        return 'electricity';
+    if (['water'].includes(v) || ((s.includes('water') || s.includes('水')) && !s.includes('热')))
+        return 'water';
+    if (['gas', 'gas_hot_water', 'hot_water'].includes(v) || s.includes('gas') || s.includes('热水') || s.includes('煤气'))
+        return 'gas';
+    if (['consumables'].includes(v) || s.includes('consumable') || s.includes('消耗'))
+        return 'consumables';
+    if (['council_rate', 'council'].includes(v) || s.includes('council') || s.includes('市政'))
+        return 'council';
+    if (s.includes('management_fee') || s.includes('管理费'))
+        return 'management_fee';
+    return 'other';
+}
 exports.router.get('/', async (_req, res) => {
     try {
         if (dbAdapter_1.hasPg) {
@@ -352,8 +377,9 @@ exports.router.get('/property-revenue', async (req, res) => {
             }
             catch (_c) { }
         }
-        const cols = { parking_fee: 0, electricity: 0, water: 0, gas: 0, internet: 0, consumables: 0, body_corp: 0, council: 0, other: 0 };
+        const cols = { parking_fee: 0, electricity: 0, water: 0, gas: 0, internet: 0, consumables: 0, body_corp: 0, council: 0, other: 0, management_fee: 0 };
         let rentIncome = 0;
+        let warnings = [];
         try {
             if (dbAdapter_1.hasPg) {
                 const orders = await (0, dbAdapter_1.pgSelect)('orders', '*', { property_id: pid });
@@ -381,8 +407,21 @@ exports.router.get('/property-revenue', async (req, res) => {
                     if (ov > 0 && nights > 0)
                         rentIncome += (visNet * ov) / nights;
                 }
-                const pe = await (0, dbAdapter_1.pgSelect)('property_expenses', '*', { property_id: pid, month_key: ym });
-                const peRows = Array.isArray(pe) ? pe : [];
+                let peRows = [];
+                try {
+                    const { pgPool } = require('../dbAdapter');
+                    if (pgPool) {
+                        const sql = `SELECT * FROM property_expenses
+              WHERE (property_id = $1 OR lower(property_id) = lower($2))
+                AND (
+                  month_key = $3 OR
+                  date_trunc('month', COALESCE(paid_date, occurred_at)::date) = date_trunc('month', to_date($3,'YYYY-MM'))
+                )`;
+                        const rs = await pgPool.query(sql, [pid || null, pcode || null, ym]);
+                        peRows = rs.rows || [];
+                    }
+                }
+                catch (_d) { }
                 const rp = await (0, dbAdapter_1.pgSelect)('recurring_payments', '*');
                 const rpRows = Array.isArray(rp) ? rp : [];
                 const map = Object.fromEntries(rpRows.map(r => [String(r.id), String(r.report_category || 'other')]));
@@ -390,22 +429,42 @@ exports.router.get('/property-revenue', async (req, res) => {
                     const v = String(raw || '').toLowerCase();
                     const d = String(detail || '').toLowerCase();
                     const s = v + ' ' + d;
-                    if (s.includes('carpark') || s.includes('车位'))
+                    // explicit category values
+                    if (['carpark'].includes(v))
                         return 'parking_fee';
-                    if (s.includes('owners') || s.includes('body') || s.includes('物业'))
+                    if (['owners_corp', 'ownerscorp', 'body_corp', 'bodycorp'].includes(v))
+                        return 'body_corp';
+                    if (['internet', 'nbn'].includes(v))
+                        return 'internet';
+                    if (['electricity'].includes(v))
+                        return 'electricity';
+                    if (['water'].includes(v))
+                        return 'water';
+                    if (['gas', 'gas_hot_water', 'hot_water'].includes(v))
+                        return 'gas';
+                    if (['consumables'].includes(v))
+                        return 'consumables';
+                    if (['council_rate', 'council'].includes(v))
+                        return 'council';
+                    // heuristics & Chinese labels
+                    if (s.includes('车位'))
+                        return 'parking_fee';
+                    if (s.includes('物业'))
                         return 'body_corp';
                     if (s.includes('internet') || s.includes('nbn') || s.includes('网'))
                         return 'internet';
-                    if (s.includes('electric'))
+                    if (s.includes('electric') || s.includes('电'))
                         return 'electricity';
-                    if (s.includes('water') && !s.includes('hot'))
+                    if ((s.includes('water') || s.includes('水')) && !s.includes('热'))
                         return 'water';
-                    if (s.includes('gas') || s.includes('hot'))
+                    if (s.includes('gas') || s.includes('热水') || s.includes('煤气'))
                         return 'gas';
                     if (s.includes('consumable') || s.includes('消耗'))
                         return 'consumables';
                     if (s.includes('council') || s.includes('市政'))
                         return 'council';
+                    if (s.includes('管理费') || s.includes('management'))
+                        return 'management_fee';
                     return 'other';
                 }
                 for (const e of peRows) {
@@ -417,10 +476,29 @@ exports.router.get('/property-revenue', async (req, res) => {
                     else
                         cols.other += amt;
                 }
+                const missingMonthKey = peRows.filter((e) => !e.month_key).length;
+                if (missingMonthKey > 0)
+                    warnings.push(`expenses_without_month_key=${missingMonthKey}`);
+                // Auto compute management fee from landlord config
+                try {
+                    const props = await (0, dbAdapter_1.pgSelect)('properties', 'id,landlord_id', { id: pid });
+                    const prop = Array.isArray(props) ? props[0] : null;
+                    let rate = 0;
+                    if (prop === null || prop === void 0 ? void 0 : prop.landlord_id) {
+                        const lrows = await (0, dbAdapter_1.pgSelect)('landlords', 'id,management_fee_rate', { id: prop.landlord_id });
+                        const ll = Array.isArray(lrows) ? lrows[0] : null;
+                        rate = Number((ll === null || ll === void 0 ? void 0 : ll.management_fee_rate) || 0);
+                    }
+                    if (rate && rentIncome) {
+                        const fee = Number(((rentIncome * rate)).toFixed(2));
+                        cols.management_fee += fee;
+                    }
+                }
+                catch (_e) { }
             }
         }
-        catch (_d) { }
-        const totalExpense = Object.values(cols).reduce((s, v) => s + Number(v || 0), 0);
+        catch (_f) { }
+        const totalExpense = Object.entries(cols).reduce((s, [k, v]) => s + (k === 'management_fee' ? Number(v || 0) : Number(v || 0)), 0);
         const payload = {
             property_code: label || pcode || pid,
             month: ym,
@@ -433,13 +511,195 @@ exports.router.get('/property-revenue', async (req, res) => {
             body_corp: -Number(cols.body_corp || 0),
             council: -Number(cols.council || 0),
             other: -Number(cols.other || 0),
+            management_fee: -Number(cols.management_fee || 0),
             total_expense: -Number(totalExpense || 0),
             net_income: Number(rentIncome || 0) - Number(totalExpense || 0)
         };
+        if (warnings.length)
+            payload.warnings = warnings;
         return res.json(payload);
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'property-revenue failed' });
+    }
+});
+// Auto-calc management fee for a property and month, persist into property_expenses and finance_transactions
+exports.router.post('/management-fee/calc', (0, auth_1.requireAnyPerm)(['property_expenses.write', 'finance.tx.write']), async (req, res) => {
+    var _a, _b, _c, _d, _e, _f, _g;
+    try {
+        const { property_id, property_code, month } = (req.body || {});
+        if (!month || (!(property_id) && !(property_code)))
+            return res.status(400).json({ message: 'missing month or property' });
+        if (!dbAdapter_1.hasPg)
+            return res.status(400).json({ message: 'pg required' });
+        const ym = String(month);
+        const y = Number(ym.slice(0, 4)), m = Number(ym.slice(5, 7));
+        if (!y || !m)
+            return res.status(400).json({ message: 'invalid month format' });
+        const start = new Date(Date.UTC(y, m - 1, 1));
+        const end = new Date(Date.UTC(y, m, 0));
+        let pid = String(property_id || '');
+        let pcode = String(property_code || '');
+        const { pgPool } = require('../dbAdapter');
+        // resolve property id by code
+        if (!pid && pcode) {
+            const qr = await pgPool.query('SELECT id, landlord_id FROM properties WHERE lower(code)=lower($1) LIMIT 1', [pcode]);
+            pid = ((_b = (_a = qr.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.id) || '';
+        }
+        if (!pid)
+            return res.status(404).json({ message: 'property_not_found' });
+        // compute rent income for target month
+        const orders = await (0, dbAdapter_1.pgSelect)('orders', '*', { property_id: pid });
+        const ords = Array.isArray(orders) ? orders : [];
+        function toDate(s) { try {
+            return s ? new Date(String(s)) : null;
+        }
+        catch (_a) {
+            return null;
+        } }
+        function overlapNights(ci, co) {
+            const a = toDate(ci), b = toDate(co);
+            if (!a || !b)
+                return 0;
+            const A = a > start ? a : start;
+            const B = b < end ? b : end;
+            const ms = B.getTime() - A.getTime();
+            return ms > 0 ? Math.floor(ms / (24 * 3600 * 1000)) : 0;
+        }
+        let rentIncome = 0;
+        for (const o of ords) {
+            const ov = overlapNights(o.checkin, o.checkout);
+            const nights = Number(o.nights || 0) || 0;
+            const visNet = Number((_d = (_c = o.visible_net_income) !== null && _c !== void 0 ? _c : o.net_income) !== null && _d !== void 0 ? _d : 0);
+            if (ov > 0 && nights > 0)
+                rentIncome += (visNet * ov) / nights;
+        }
+        // read landlord rate
+        const propRows = await (0, dbAdapter_1.pgSelect)('properties', 'id,landlord_id,code', { id: pid });
+        const prop = Array.isArray(propRows) ? propRows[0] : null;
+        const lid = prop === null || prop === void 0 ? void 0 : prop.landlord_id;
+        if (!lid)
+            return res.status(400).json({ message: 'landlord_not_linked' });
+        const llRows = await (0, dbAdapter_1.pgSelect)('landlords', 'id,management_fee_rate', { id: lid });
+        const landlord = Array.isArray(llRows) ? llRows[0] : null;
+        const rate = Number((landlord === null || landlord === void 0 ? void 0 : landlord.management_fee_rate) || 0);
+        if (!rate)
+            return res.status(400).json({ message: 'management_fee_rate_missing' });
+        if (!rentIncome)
+            return res.status(400).json({ message: 'rent_income_zero' });
+        const fee = Number(((rentIncome * rate)).toFixed(2));
+        // upsert property_expenses
+        const { v4: uuid } = require('uuid');
+        const occurred = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 10);
+        const existing = await (0, dbAdapter_1.pgSelect)('property_expenses', '*', { property_id: pid, month_key: ym, category: 'management_fee' });
+        let expRow;
+        if (Array.isArray(existing) && existing[0]) {
+            const id = existing[0].id;
+            expRow = await (0, dbAdapter_1.pgUpdate)('property_expenses', id, { amount: fee, occurred_at: occurred, note: `auto management fee ${ym}` });
+        }
+        else {
+            expRow = await (0, dbAdapter_1.pgInsert)('property_expenses', { id: uuid(), property_id: pid, amount: fee, category: 'management_fee', occurred_at: occurred, month_key: ym, note: `auto management fee ${ym}` });
+        }
+        // write finance transaction for integration
+        const tx = { id: uuid(), kind: 'expense', amount: fee, currency: 'AUD', occurred_at: new Date().toISOString(), ref_type: 'property_expense', ref_id: (expRow === null || expRow === void 0 ? void 0 : expRow.id) || (((_e = existing === null || existing === void 0 ? void 0 : existing[0]) === null || _e === void 0 ? void 0 : _e.id) || null), property_id: pid, category: 'management_fee', note: `management fee ${(prop === null || prop === void 0 ? void 0 : prop.code) || pid} ${ym}` };
+        await (0, dbAdapter_1.pgInsert)('finance_transactions', tx);
+        (0, store_1.addAudit)('FinanceTransaction', tx.id, 'create', null, tx);
+        // return with double-check snapshot
+        const recorded = await (0, dbAdapter_1.pgSelect)('property_expenses', '*', { property_id: pid, month_key: ym, category: 'management_fee' });
+        const diff = Math.abs(Number((((_f = recorded === null || recorded === void 0 ? void 0 : recorded[0]) === null || _f === void 0 ? void 0 : _f.amount) || 0)) - fee);
+        return res.status(201).json({ property_id: pid, month: ym, rent_income: Number(rentIncome.toFixed(2)), rate, fee, recorded_fee: Number((((_g = recorded === null || recorded === void 0 ? void 0 : recorded[0]) === null || _g === void 0 ? void 0 : _g.amount) || 0)), diff });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'calc_failed' });
+    }
+});
+exports.router.get('/management-fee/history', (0, auth_1.requireAnyPerm)(['property_expenses.view', 'finance.tx.write']), async (req, res) => {
+    try {
+        if (!dbAdapter_1.hasPg)
+            return res.status(400).json({ message: 'pg required' });
+        const { property_id, month_from, month_to } = (req.query || {});
+        const conds = [];
+        const where = ["category = 'management_fee'"];
+        if (property_id) {
+            where.push('property_id = $1');
+            conds.push(property_id);
+        }
+        if (month_from && month_to) {
+            where.push('month_key BETWEEN $2 AND $3');
+            conds.push(month_from, month_to);
+        }
+        const { pgPool } = require('../dbAdapter');
+        const rs = await pgPool.query(`SELECT * FROM property_expenses WHERE ${where.join(' AND ')} ORDER BY month_key DESC`, conds);
+        return res.json(rs.rows || []);
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'history_failed' });
+    }
+});
+// Validation endpoint: compare raw expenses aggregation for a property and month
+exports.router.get('/property-revenue/validate', async (req, res) => {
+    try {
+        const { property_id, property_code, month } = (req.query || {});
+        if (!month || (!(property_id) && !(property_code)))
+            return res.status(400).json({ message: 'missing month or property' });
+        const ym = String(month);
+        let pid = String(property_id || '');
+        let pcode = String(property_code || '');
+        if (dbAdapter_1.hasPg) {
+            try {
+                const { pgPool } = require('../dbAdapter');
+                if (pgPool) {
+                    if (!pid && pcode) {
+                        const qr = await pgPool.query('SELECT id,code FROM properties WHERE lower(code) = lower($1) LIMIT 1', [pcode]);
+                        if (qr.rows && qr.rows[0])
+                            pid = qr.rows[0].id;
+                    }
+                }
+            }
+            catch (_a) { }
+        }
+        const totals = { parking_fee: 0, electricity: 0, water: 0, gas: 0, internet: 0, consumables: 0, body_corp: 0, council: 0, other: 0 };
+        if (dbAdapter_1.hasPg) {
+            try {
+                const { pgPool } = require('../dbAdapter');
+                if (pgPool) {
+                    const sql = `SELECT * FROM property_expenses
+            WHERE (property_id = $1 OR lower(property_id) = lower($2))
+              AND (
+                month_key = $3 OR
+                date_trunc('month', COALESCE(paid_date, occurred_at)::date) = date_trunc('month', to_date($3,'YYYY-MM'))
+              )`;
+                    const rs = await pgPool.query(sql, [pid || null, pcode || null, ym]);
+                    const rows = rs.rows || [];
+                    for (const e of rows) {
+                        const fid = String(e.fixed_expense_id || '');
+                        const amt = Number(e.amount || 0);
+                        let cat = 'other';
+                        if (fid) {
+                            try {
+                                const rp = await (0, dbAdapter_1.pgSelect)('recurring_payments', '*', { id: fid });
+                                const r = Array.isArray(rp) ? rp[0] : null;
+                                cat = String((r === null || r === void 0 ? void 0 : r.report_category) || 'other');
+                            }
+                            catch (_b) { }
+                        }
+                        else {
+                            cat = toReportCat(String(e.category || ''), String(e.category_detail || ''));
+                        }
+                        if (totals[cat] === undefined)
+                            totals[cat] = 0;
+                        totals[cat] += amt;
+                    }
+                }
+            }
+            catch (e) {
+                return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'validate failed' });
+            }
+        }
+        return res.json({ property_id: pid, property_code: pcode, month: ym, totals });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'validate failed' });
     }
 });
 exports.router.get('/payouts', async (_req, res) => {
@@ -665,4 +925,110 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('finance.tx.write'), async
         catch (_a) { }
     }
     return res.json({ ok: true });
+});
+// Deduplicate property_expenses by (property_id, month_key, category, amount)
+exports.router.post('/dedup-property-expenses', (0, auth_1.requireAnyPerm)(['property_expenses.write', 'finance.tx.write']), async (_req, res) => {
+    try {
+        if (!dbAdapter_1.hasPg)
+            return res.status(400).json({ message: 'pg required' });
+        const { pgPool } = require('../dbAdapter');
+        if (!pgPool)
+            return res.status(500).json({ message: 'pg pool unavailable' });
+        const dupSql = `
+      SELECT property_id, month_key, category, amount, array_agg(id ORDER BY coalesce(updated_at, created_at, now()) DESC) AS ids
+      FROM property_expenses
+      WHERE month_key IS NOT NULL
+      GROUP BY property_id, month_key, category, amount
+      HAVING COUNT(*) > 1
+    `;
+        const qr = await pgPool.query(dupSql);
+        const groups = qr.rows || [];
+        let merged = 0, removed = 0, marked = 0;
+        for (const g of groups) {
+            const ids = g.ids || [];
+            if (!ids.length)
+                continue;
+            const keep = ids[0];
+            const drop = ids.slice(1);
+            if (drop.length) {
+                await pgPool.query('DELETE FROM property_expenses WHERE id = ANY($1::text[])', [drop]);
+                removed += drop.length;
+            }
+            merged++;
+        }
+        return res.json({ merged_groups: merged, removed_records: removed, marked_conflicts: marked });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'dedup failed' });
+    }
+});
+exports.router.post('/expenses/validate-duplicate', (0, auth_1.requireAnyPerm)(['property_expenses.write', 'finance.tx.write']), async (req, res) => {
+    var _a;
+    try {
+        const body = req.body || {};
+        const mode = String(body.mode || 'exact') === 'fuzzy' ? 'fuzzy' : 'exact';
+        const fp = (0, fingerprint_1.buildExpenseFingerprint)(body, mode);
+        const started = Date.now();
+        const result = { verification_id: fp, is_duplicate: false, reasons: [], similar: [] };
+        if (await (0, fingerprint_1.hasFingerprint)(fp)) {
+            result.is_duplicate = true;
+            result.reasons.push('fingerprint_recent');
+        }
+        if (dbAdapter_1.hasPg) {
+            const occ = String(body.paid_date || body.occurred_at || '');
+            const whereExact = { property_id: body.property_id, month_key: (occ ? occ.slice(0, 7) : body.month_key), category: body.category, amount: Number(body.amount || 0) };
+            const ex = await (0, dbAdapter_1.pgSelect)('property_expenses', '*', whereExact);
+            if (Array.isArray(ex) && ex[0]) {
+                result.is_duplicate = true;
+                result.reasons.push('unique_match');
+                result.similar.push(ex[0]);
+            }
+            try {
+                const { pgPool } = require('../dbAdapter');
+                const sql = `SELECT * FROM property_expenses WHERE property_id=$1 AND category=$2 AND abs(amount - $3) <= 1 AND occurred_at BETWEEN (to_date($4,'YYYY-MM-DD') - interval '1 day') AND (to_date($4,'YYYY-MM-DD') + interval '1 day') LIMIT 10`;
+                const rs = await pgPool.query(sql, [body.property_id, body.category, Number(body.amount || 0), occ.slice(0, 10)]);
+                if (rs.rowCount) {
+                    result.is_duplicate = true;
+                    result.reasons.push('fuzzy_window');
+                    result.similar.push(...rs.rows);
+                }
+            }
+            catch (_b) { }
+        }
+        await (0, fingerprint_1.addDedupLog)({ resource: 'property_expenses', fingerprint: fp, mode: mode, result: result.is_duplicate ? 'hit' : 'miss', operator_id: ((_a = req.user) === null || _a === void 0 ? void 0 : _a.sub) || null, reasons: result.reasons, latency_ms: Date.now() - started });
+        return res.json(result);
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'validate_failed' });
+    }
+});
+exports.router.post('/expenses/scan-duplicates', (0, auth_1.requireAnyPerm)(['property_expenses.write', 'finance.tx.write']), async (_req, res) => {
+    try {
+        if (!dbAdapter_1.hasPg)
+            return res.status(400).json({ message: 'pg required' });
+        const { pgPool } = require('../dbAdapter');
+        const sql = `SELECT property_id, month_key, category, amount, COUNT(*) AS cnt FROM property_expenses WHERE month_key IS NOT NULL GROUP BY property_id, month_key, category, amount HAVING COUNT(*) > 1 ORDER BY cnt DESC LIMIT 100`;
+        const rs = await pgPool.query(sql);
+        const groups = rs.rows || [];
+        return res.json({ groups });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'scan_failed' });
+    }
+});
+exports.router.get('/duplicates/metrics', (0, auth_1.requireAnyPerm)(['property_expenses.view', 'finance.tx.write']), async (_req, res) => {
+    var _a, _b, _c, _d;
+    try {
+        if (!dbAdapter_1.hasPg)
+            return res.json({ duplicate_rate_24h: 0, hits_24h: 0, validations_24h: 0 });
+        const { pgPool } = require('../dbAdapter');
+        const rs = await pgPool.query(`SELECT count(*) FILTER (WHERE result='hit') AS hits, count(*) AS total FROM expense_dedup_logs WHERE created_at > now() - interval '24 hours'`);
+        const hits = Number(((_b = (_a = rs.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.hits) || 0);
+        const total = Number(((_d = (_c = rs.rows) === null || _c === void 0 ? void 0 : _c[0]) === null || _d === void 0 ? void 0 : _d.total) || 0);
+        const rate = total ? Number(((hits / total) * 100).toFixed(2)) : 0;
+        return res.json({ duplicate_rate_24h: rate, hits_24h: hits, validations_24h: total });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'metrics_failed' });
+    }
 });
