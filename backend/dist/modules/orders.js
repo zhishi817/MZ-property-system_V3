@@ -972,8 +972,8 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                 property_id = (keyId && byId[keyId]) || (keyName && byName[keyName]) || (property_code ? byCode[String(property_code).toLowerCase()] : undefined);
             }
             const guest_name = getField(r, ['Guest', 'guest', 'guest_name']);
-            let checkin = getField(r, ['checkin', 'check_in', 'start_date', 'Start date']);
-            let checkout = getField(r, ['checkout', 'check_out', 'end_date', 'End date']);
+            let checkin = getField(r, ['checkin', 'check_in', 'start_date', 'Start date', 'Arrival']);
+            let checkout = getField(r, ['checkout', 'check_out', 'end_date', 'End date', 'Departure']);
             const reservation_number = getField(r, ['Reservation number', 'Reservation Number', 'reservation_number']);
             const external_id = source === 'booking' ? reservation_number : undefined;
             let idempotency_key = '';
@@ -1071,8 +1071,10 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                 continue;
             }
             const o = parsed.data;
-            const ciIso = o.checkin ? `${String(o.checkin).slice(0, 10)}T12:00:00` : undefined;
-            const coIso = o.checkout ? `${String(o.checkout).slice(0, 10)}T11:59:59` : undefined;
+            const ciDay = dayOnly(o.checkin);
+            const coDay = dayOnly(o.checkout);
+            const ciIso = ciDay ? `${ciDay}T12:00:00` : undefined;
+            const coIso = coDay ? `${coDay}T11:59:59` : undefined;
             const key = o.idempotency_key || idempotency_key;
             if (idx < 5) {
                 try {
@@ -1537,7 +1539,9 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
             const source = platform;
             const checkin = n.check_in || undefined;
             const checkout = n.check_out || undefined;
-            if (platform === 'airbnb' && (!checkin || !checkout)) {
+            const checkinDay = dayOnly(checkin);
+            const checkoutDay = dayOnly(checkout);
+            if ((!checkinDay || !checkoutDay)) {
                 const det = !checkin ? 'invalid_date:Start date' : 'invalid_date:End date';
                 try {
                     const payload = { id: require('uuid').v4(), channel: platform, raw_row: r, reason: det, listing_name: ln, confirmation_code: cc, status: 'unmatched' };
@@ -1566,7 +1570,7 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                 }
             }
             catch (_e) { }
-            const payload = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkin ? `${String(checkin).slice(0, 10)}T12:00:00` : undefined), checkout: (checkout ? `${String(checkout).slice(0, 10)}T11:59:59` : undefined), price, cleaning_fee };
+            const payload = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkinDay ? `${checkinDay}T12:00:00` : undefined), checkout: (checkoutDay ? `${checkoutDay}T11:59:59` : undefined), price, cleaning_fee };
             try {
                 if (dbAdapter_1.hasPg) {
                     if (exists && exists.id) {

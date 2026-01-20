@@ -32,6 +32,7 @@ export default function OrdersPage() {
   const [importing, setImporting] = useState(false)
   const [importSummary, setImportSummary] = useState<{ inserted: number; skipped: number; reason_counts?: Record<string, number> } | null>(null)
   const [importResults, setImportResults] = useState<any[]>([])
+  const [importErrors, setImportErrors] = useState<any[]>([])
   const [unmatched, setUnmatched] = useState<any[]>([])
   const [importPlatform, setImportPlatform] = useState<'airbnb'|'booking'|'other'>('airbnb')
   const [view, setView] = useState<'list'|'calendar'>('list')
@@ -110,6 +111,7 @@ export default function OrdersPage() {
           if (res.ok) {
             setImportSummary({ inserted: Number(j?.inserted || 0), skipped: Number(j?.skipped || 0), reason_counts: j?.reason_counts || {} })
             setImportResults(Array.isArray(j?.results) ? (j.results || []).slice(0, 20) : [])
+            setImportErrors([])
             message.success(`导入完成：新增 ${j?.inserted || 0}，跳过 ${j?.skipped || 0}`)
             const list = Array.isArray(j?.results) ? j.results.filter((r:any)=> r && r.error === 'unmatched_property').map((r:any)=> ({ id: r.id, listing_name: r.listing_name, confirmation_code: r.confirmation_code, channel: r.source || 'unknown', reason: 'unmatched_property' })) : []
             setUnmatched(list)
@@ -131,6 +133,8 @@ export default function OrdersPage() {
           if (res.ok) {
             const errors = Array.isArray(j?.errors) ? j.errors : []
             setImportSummary({ inserted: Number(j?.successCount || 0), skipped: Number(j?.errorCount || 0) })
+            setImportResults([])
+            setImportErrors(errors.slice(0, 200))
             message.success(`导入完成：新增 ${j?.successCount || 0}，失败 ${j?.errorCount || 0}`)
             const list = errors.filter((e:any)=> e?.reason === '找不到房号' || e?.reason === 'unmatched_property').map((e:any)=> ({ id: e.stagingId, listing_name: e.listing_name, confirmation_code: e.confirmation_code, channel: 'unknown', reason: 'unmatched_property' }))
             setUnmatched(list)
@@ -1527,6 +1531,21 @@ export default function OrdersPage() {
                 { title: 'Listing 名称', dataIndex: 'listing_name', render: (v:any)=> <span style={{ wordBreak:'break-all' }}>{v||''}</span> },
                 { title: '房号', dataIndex: 'property_code' },
                 { title: '详情', dataIndex: 'detail', render: (v:any)=> v ? <span style={{ wordBreak:'break-all' }}>{String(v)}</span> : '' },
+              ] as any}
+            />
+          ) : null}
+          {importErrors.length ? (
+            <Table rowKey={(r:any)=> String(r?.stagingId||r?.confirmation_code||r?.rowIndex||Math.random())}
+              dataSource={importErrors}
+              pagination={false}
+              style={{ marginTop: 12 }}
+              size="small"
+              scroll={{ x: 'max-content', y: 240 }}
+              columns={[
+                { title: '行号', dataIndex: 'rowIndex' },
+                { title: '确认码', dataIndex: 'confirmation_code', render: (v:any)=> <span style={{ wordBreak:'break-all' }}>{v||''}</span> },
+                { title: 'Listing 名称', dataIndex: 'listing_name', render: (v:any)=> <span style={{ wordBreak:'break-all' }}>{v||''}</span> },
+                { title: '失败原因', dataIndex: 'reason', render: (v:any)=> <span style={{ wordBreak:'break-all' }}>{String(v||'')}</span> },
               ] as any}
             />
           ) : null}
