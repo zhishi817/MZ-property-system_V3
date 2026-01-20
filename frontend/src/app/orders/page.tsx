@@ -1348,8 +1348,14 @@ export default function OrdersPage() {
         const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
         const selectedEdit = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
         const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net, avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg, price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price, cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning, payment_currency: (v.payment_currency || 'AUD') }
-        const res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ ...payload, force: true }) })
-        if (res.ok) {
+        let res: Response | null = null
+        try {
+          res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ ...payload, force: true }) })
+        } catch (e: any) {
+          message.error('网络错误，更新失败')
+          return
+        }
+        if (res!.ok) {
           async function writeIncome(amount: number, cat: string, note: string) {
             if (!amount || amount <= 0) return
             const tx = { kind: 'income', amount: Number(amount), currency: 'AUD', occurred_at: dayjs(v.checkout).format('YYYY-MM-DD'), note, category: cat, property_id: v.property_id, ref_type: 'order', ref_id: current?.id }
@@ -1363,7 +1369,7 @@ export default function OrdersPage() {
         }
         else {
           let msg = '更新失败'
-          try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} }
+          try { const j = await res!.json(); if (j?.message) msg = j.message } catch { try { msg = await res!.text() } catch {} }
           message.error(msg)
         }
       }} title="编辑订单">
