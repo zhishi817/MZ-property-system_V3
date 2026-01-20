@@ -1000,12 +1000,17 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                 }
                 catch (_d) { }
             }
-            const priceRaw = toNumber(getField(r, ['Amount', 'amount', 'price']));
+            const priceRaw = toNumber(getField(r, ['Total Payment', 'total_payment', 'Amount', 'amount', 'price']));
             const cleaningRaw = toNumber(getField(r, ['Cleaning fee', 'cleaning_fee']));
-            const price = round2(priceRaw);
+            const price = source === 'booking' && priceRaw != null ? Number(((priceRaw || 0) * 0.835).toFixed(2)) : round2(priceRaw);
             const cleaning_fee = round2(cleaningRaw);
             const currency = r.currency || 'AUD';
             const status = r.status || 'confirmed';
+            if (source === 'booking' && String(status).toLowerCase() !== 'confirmed') {
+                results.push({ ok: false, error: 'invalid_status', listing_name, confirmation_code });
+                skipped++;
+                continue;
+            }
             // Airbnb 日期严格按 MM/DD/YYYY 解析，失败写入 staging
             if (platform === 'airbnb') {
                 const ciIso = parseAirbnbDate(checkin || '');
@@ -1328,6 +1333,7 @@ exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage
     }
 });
 exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.manage'), async (req, res) => {
+    var _a, _b;
     try {
         const body = req.body || {};
         const platformRaw = String(body.platform || '').trim().toLowerCase();
@@ -1441,7 +1447,7 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
         try {
             console.log('IMPORT_BUILD', buildVersion);
         }
-        catch (_a) { }
+        catch (_c) { }
         const normalize = platform === 'airbnb' ? normAirbnb : (platform === 'booking' ? normBooking : normOther);
         // build property match indexes
         const byName = {};
@@ -1486,7 +1492,7 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                 });
             }
         }
-        catch (_b) { }
+        catch (_d) { }
         function isBlankRecord(rec) {
             const vals = Object.values(rec || {}).map(v => String(v || '').trim());
             return vals.every(v => v === '');
@@ -1511,6 +1517,7 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
         const errors = [];
         let successCount = 0;
         let rowIndexBase = 2; // 首行数据通常为第2行
+        const tStart = Date.now();
         for (let i = 0; i < recordsAll.length; i++) {
             const r = recordsAll[i] || {};
             if (isBlankRecord(r))
@@ -1531,7 +1538,7 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                         store_1.db.orderImportStaging.push(payload);
                     errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: '找不到房号', stagingId: payload.id });
                 }
-                catch (_c) {
+                catch (_e) {
                     errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: '找不到房号' });
                 }
                 continue;
@@ -1550,14 +1557,45 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                     else
                         store_1.db.orderImportStaging.push(payload);
                 }
-                catch (_d) { }
+                catch (_f) { }
                 errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'invalid_date' });
                 continue;
             }
-            const price = n.amount != null ? round2(Number(n.amount)) : undefined;
+            const tpRawStr = getField(r, ['Total Payment', 'total_payment', 'Amount', 'amount']);
+            const tpRawNum = tpRawStr != null ? Number(tpRawStr) : NaN;
+            let price = undefined;
+            if (platform === 'booking') {
+                if (tpRawStr == null || String(tpRawStr).trim() === '') {
+                    errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'missing_data' });
+                    continue;
+                }
+                if (!isFinite(tpRawNum)) {
+                    errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'invalid_format' });
+                    continue;
+                }
+                const p = Number((tpRawNum * 0.835).toFixed(2));
+                if (!(p > 0) || p > 1000000) {
+                    errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'amount_out_of_range' });
+                    continue;
+                }
+                price = p;
+            }
+            else {
+                price = n.amount != null ? round2(Number(n.amount)) : undefined;
+            }
             const cleaning_fee = n.cleaning_fee != null ? round2(Number(n.cleaning_fee)) : undefined;
             const status = n.status || 'confirmed';
             const guest_name = n.guest_name || undefined;
+            if (platform === 'booking' && status !== 'confirmed') {
+                errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'invalid_status' });
+                continue;
+            }
+            if (platform === 'booking') {
+                if (!cc || !guest_name || !checkinDay || !checkoutDay) {
+                    errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'missing_data' });
+                    continue;
+                }
+            }
             // upsert by (source, confirmation_code)
             let exists = null;
             try {
@@ -1569,15 +1607,52 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                     exists = store_1.db.orders.find(o => o.confirmation_code === cc && o.source === source);
                 }
             }
-            catch (_e) { }
-            const payload = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkinDay ? `${checkinDay}T12:00:00` : undefined), checkout: (checkoutDay ? `${checkoutDay}T11:59:59` : undefined), price, cleaning_fee };
+            catch (_g) { }
+            const payload = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkinDay ? `${checkinDay}T12:00:00` : undefined), checkout: (checkoutDay ? `${checkoutDay}T11:59:59` : undefined), price, cleaning_fee, total_payment_raw: (platform === 'booking' ? Number(tpRawStr) : undefined), processed_status: (platform === 'booking' ? 'computed_0_835' : undefined) };
             try {
                 if (dbAdapter_1.hasPg) {
                     if (exists && exists.id) {
-                        await (0, dbAdapter_1.pgUpdate)('orders', exists.id, payload);
+                        try {
+                            await (0, dbAdapter_1.pgUpdate)('orders', exists.id, payload);
+                        }
+                        catch (e) {
+                            const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+                            try {
+                                const { pgPool } = require('../dbAdapter');
+                                if (/column\s+"total_payment_raw"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) {
+                                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric'));
+                                }
+                                if (/column\s+"processed_status"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) {
+                                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text'));
+                                }
+                                await (0, dbAdapter_1.pgUpdate)('orders', exists.id, payload);
+                            }
+                            catch (e2) {
+                                throw e2;
+                            }
+                        }
                     }
                     else {
-                        const row = await (0, dbAdapter_1.pgInsert)('orders', { id: require('uuid').v4(), ...payload });
+                        let row;
+                        try {
+                            row = await (0, dbAdapter_1.pgInsert)('orders', { id: require('uuid').v4(), ...payload });
+                        }
+                        catch (e) {
+                            const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+                            try {
+                                const { pgPool } = require('../dbAdapter');
+                                if (/column\s+"total_payment_raw"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) {
+                                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric'));
+                                }
+                                if (/column\s+"processed_status"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) {
+                                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text'));
+                                }
+                                row = await (0, dbAdapter_1.pgInsert)('orders', { id: require('uuid').v4(), ...payload });
+                            }
+                            catch (e2) {
+                                throw e2;
+                            }
+                        }
                         if ((row === null || row === void 0 ? void 0 : row.id) && idToCode[pid])
                             row.property_code = idToCode[pid];
                         store_1.db.orders.push(row);
@@ -1585,7 +1660,7 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                     try {
                         (0, events_1.broadcastOrdersUpdated)({ action: exists ? 'update' : 'create', id: ((exists === null || exists === void 0 ? void 0 : exists.id) || undefined) });
                     }
-                    catch (_f) { }
+                    catch (_h) { }
                 }
                 else {
                     if (exists)
@@ -1595,15 +1670,22 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                     try {
                         (0, events_1.broadcastOrdersUpdated)({ action: exists ? 'update' : 'create' });
                     }
-                    catch (_g) { }
+                    catch (_j) { }
                 }
                 successCount++;
+                try {
+                    (0, store_1.addAudit)('OrderImportAudit', ((exists === null || exists === void 0 ? void 0 : exists.id) || (payload === null || payload === void 0 ? void 0 : payload.confirmation_code) || 'unknown'), 'process', null, { source_platform: platform, external_id: cc, total_payment_raw: (platform === 'booking' ? Number(tpRawStr) : undefined), price, status: 'ok', actor_id: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub, processed_at: new Date().toISOString() }, (_b = req.user) === null || _b === void 0 ? void 0 : _b.sub);
+                }
+                catch (_k) { }
             }
             catch (e) {
                 errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: '写入失败: ' + String((e === null || e === void 0 ? void 0 : e.message) || '') });
             }
         }
-        return res.json({ successCount, errorCount: errors.length, errors, buildVersion });
+        const tSpent = Date.now() - tStart;
+        const mem = process.memoryUsage();
+        const cpu = process.cpuUsage();
+        return res.json({ successCount, errorCount: errors.length, errors, buildVersion, metrics: { ms: tSpent, rss: mem.rss, heapUsed: mem.heapUsed, cpuUserMicros: cpu.user, cpuSystemMicros: cpu.system } });
     }
     catch (e) {
         try {
@@ -1613,7 +1695,7 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
             else
                 store_1.db.orderImportStaging.push(payload);
         }
-        catch (_h) { }
+        catch (_l) { }
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'import failed', buildVersion: (process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown') });
     }
 });

@@ -758,13 +758,13 @@ export default function OrdersPage() {
       const b = co.isBefore(meNext) ? co : meNext
       return Math.max(0, b.diff(a, 'day'))
     } },
-    { title: '当月租金(AUD)', dataIndex: 'price', render: (_:any, r:Order)=> monthFilter ? money(((r as any).visible_net_income ?? calcMonthAmounts(r).netMonth)) : money((r as any).__src_price ?? r.price) },
+    { title: '当月租金(AUD)', dataIndex: 'price', render: (_:any, r:Order)=> monthFilter ? money(calcMonthAmounts(r).priceMonth) : '' },
     { title: '订单总租金', dataIndex: '__src_price', render: (_:any, r:Order)=> {
       const total = ((r as any).__src_price ?? r.price ?? (((r as any).net_income || 0) + ((r as any).cleaning_fee || 0)))
       return money(total)
     } },
     { title: '清洁费', dataIndex: 'cleaning_fee', render: (_:any, r:Order)=> monthFilter ? money(calcMonthAmounts(r).cleanMonth) : money(r.cleaning_fee) },
-    { title: '总收入', dataIndex: 'net_income', render: (_:any, r:Order)=> monthFilter ? money(((r as any).visible_net_income ?? calcMonthAmounts(r).netMonth)) : money((r as any).net_income ?? r.net_income) },
+    { title: '总收入', dataIndex: 'net_income', render: (_:any, r:Order)=> monthFilter ? money(calcMonthAmounts(r).netMonth) : money((r as any).net_income ?? r.net_income) },
     { title: '晚均价', dataIndex: 'avg_nightly_price', render: (_:any, r:Order)=> monthFilter ? money(calcMonthAmounts(r).avgMonth) : money((r as any).avg_nightly_price ?? r.avg_nightly_price) },
     { title: '状态', dataIndex: 'status' },
     { title: '到账', dataIndex: 'payment_received', render: (v:any)=> v ? <Tag color="green">已到账</Tag> : <Tag>未到账</Tag> },
