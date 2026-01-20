@@ -91,7 +91,7 @@ exports.router.post('/schedule/rebalance', (0, auth_1.requirePerm)('cleaning.sch
     }
     res.json({ updated: pending.length });
 });
-const patchSchema = zod_1.z.object({ scheduled_at: zod_1.z.string().optional(), status: zod_1.z.enum(['pending', 'scheduled', 'done']).optional(), assignee_id: zod_1.z.string().optional(), old_code: zod_1.z.string().optional(), new_code: zod_1.z.string().optional(), note: zod_1.z.string().optional(), checkout_time: zod_1.z.string().optional(), checkin_time: zod_1.z.string().optional() });
+const patchSchema = zod_1.z.object({ scheduled_at: zod_1.z.string().optional(), status: zod_1.z.enum(['pending', 'scheduled', 'in_progress', 'ready', 'canceled', 'done']).optional(), assignee_id: zod_1.z.string().optional(), old_code: zod_1.z.string().optional(), new_code: zod_1.z.string().optional(), note: zod_1.z.string().optional(), checkout_time: zod_1.z.string().optional(), checkin_time: zod_1.z.string().optional() });
 exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign'), (req, res) => {
     const { id } = req.params;
     const parsed = patchSchema.safeParse(req.body);
@@ -103,7 +103,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
     if (parsed.data.scheduled_at)
         task.scheduled_at = parsed.data.scheduled_at;
     if (parsed.data.status)
-        task.status = parsed.data.status;
+        task.status = (parsed.data.status === 'done' ? 'ready' : parsed.data.status);
     if (parsed.data.assignee_id)
         task.assignee_id = parsed.data.assignee_id;
     if (parsed.data.old_code !== undefined)

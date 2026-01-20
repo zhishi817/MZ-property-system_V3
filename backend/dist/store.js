@@ -89,7 +89,7 @@ function addAudit(entity, entity_id, action, before, after, actor_id) {
 if (exports.db.landlords.length === 0) {
     const p1 = (_a = exports.db.properties[0]) === null || _a === void 0 ? void 0 : _a.id;
     const p2 = (_b = exports.db.properties[1]) === null || _b === void 0 ? void 0 : _b.id;
-    exports.db.landlords.push({ id: (0, uuid_1.v4)(), name: 'MZ Holdings', phone: '0400 000 000', email: 'owner@mz.com', management_fee_rate: 0.1, payout_bsb: '062000', payout_account: '123456', property_ids: p1 ? [p1] : [] }, { id: (0, uuid_1.v4)(), name: 'John Doe', phone: '0411 111 111', email: 'john@example.com', management_fee_rate: 0.08, payout_bsb: '063000', payout_account: '654321', property_ids: p2 ? [p2] : [] });
+    exports.db.landlords.push({ id: (0, uuid_1.v4)(), name: 'MZ Holdings', phone: '0400 000 000', email: 'owner@mz.com', emails: ['owner@mz.com', 'finance@mz.com'], management_fee_rate: 0.1, payout_bsb: '062000', payout_account: '123456', property_ids: p1 ? [p1] : [] }, { id: (0, uuid_1.v4)(), name: 'John Doe', phone: '0411 111 111', email: 'john@example.com', emails: ['john@example.com'], management_fee_rate: 0.08, payout_bsb: '063000', payout_account: '654321', property_ids: p2 ? [p2] : [] });
 }
 if (exports.db.financeTransactions.length === 0) {
     exports.db.financeTransactions.push({ id: (0, uuid_1.v4)(), kind: 'income', amount: 220.0, currency: 'AUD', ref_type: 'order', ref_id: 'o-1', occurred_at: new Date().toISOString(), note: '房费' }, { id: (0, uuid_1.v4)(), kind: 'expense', amount: 60.0, currency: 'AUD', ref_type: 'cleaning', ref_id: 'w-1', occurred_at: new Date().toISOString(), note: '清洁费' });
@@ -114,6 +114,9 @@ if (exports.db.roles.length === 0) {
         { code: 'order.create' },
         { code: 'order.write' },
         { code: 'order.sync' },
+        { code: 'order.create.override' },
+        { code: 'order.cancel' },
+        { code: 'order.cancel.override' },
         { code: 'keyset.manage' },
         { code: 'key.flow' },
         { code: 'cleaning.view' },
@@ -147,6 +150,18 @@ if (exports.db.roles.length === 0) {
         { code: 'menu.finance.orders.visible' },
         { code: 'menu.finance.company_overview.visible' },
         { code: 'menu.finance.company_revenue.visible' },
+        { code: 'cleaning_app.tasks.view.self' },
+        { code: 'cleaning_app.tasks.start' },
+        { code: 'cleaning_app.tasks.finish' },
+        { code: 'cleaning_app.issues.report' },
+        { code: 'cleaning_app.media.upload' },
+        { code: 'cleaning_app.restock.manage' },
+        { code: 'cleaning_app.inspect.finish' },
+        { code: 'cleaning_app.ready.set' },
+        { code: 'cleaning_app.calendar.view.all' },
+        { code: 'cleaning_app.assign' },
+        { code: 'cleaning_app.sse.subscribe' },
+        { code: 'cleaning_app.push.subscribe' }
     ];
     function grant(roleId, codes) {
         codes.forEach(c => exports.db.rolePermissions.push({ role_id: roleId, permission_code: c }));
@@ -154,13 +169,13 @@ if (exports.db.roles.length === 0) {
     // 管理员：所有权限
     grant(adminId, exports.db.permissions.map(p => p.code));
     // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
-    grant(csId, ['property.write', 'order.view', 'order.write', 'order.manage', 'order.deduction.manage', 'cleaning.view', 'finance.tx.write', 'onboarding.manage', 'onboarding.read', 'menu.dashboard', 'menu.properties', 'menu.finance', 'menu.cleaning', 'menu.cms', 'menu.onboarding']);
+    grant(csId, ['property.write', 'order.view', 'order.write', 'order.manage', 'order.deduction.manage', 'order.cancel', 'cleaning.view', 'finance.tx.write', 'onboarding.manage', 'onboarding.read', 'menu.dashboard', 'menu.properties', 'menu.finance', 'menu.cleaning', 'menu.cms', 'menu.onboarding', 'cleaning_app.sse.subscribe']);
     // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
-    grant(cleanMgrId, ['cleaning.schedule.manage', 'cleaning.task.assign', 'menu.cleaning', 'menu.dashboard']);
+    grant(cleanMgrId, ['cleaning.schedule.manage', 'cleaning.task.assign', 'menu.cleaning', 'menu.dashboard', 'cleaning_app.calendar.view.all', 'cleaning_app.assign', 'cleaning_app.sse.subscribe']);
     // 清洁/检查人员：无写权限，仅查看（后端接口默认允许 GET）
-    grant(cleanerId, ['menu.cleaning', 'menu.dashboard']);
+    grant(cleanerId, ['menu.cleaning', 'menu.dashboard', 'cleaning_app.tasks.view.self', 'cleaning_app.tasks.start', 'cleaning_app.tasks.finish', 'cleaning_app.issues.report', 'cleaning_app.media.upload']);
     // 财务人员：财务结算与交易录入、房东/房源管理
-    grant(financeId, ['finance.payout', 'finance.tx.write', 'order.deduction.manage', 'landlord.manage', 'property.write', 'onboarding.manage', 'onboarding.read', 'menu.finance', 'menu.landlords', 'menu.properties', 'menu.onboarding', 'menu.dashboard']);
+    grant(financeId, ['finance.payout', 'finance.tx.write', 'order.deduction.manage', 'order.cancel', 'landlord.manage', 'property.write', 'onboarding.manage', 'onboarding.read', 'menu.finance', 'menu.landlords', 'menu.properties', 'menu.onboarding', 'menu.dashboard']);
     // 仓库管理员：仓库与钥匙管理
     grant(inventoryId, ['inventory.move', 'keyset.manage', 'key.flow', 'menu.inventory', 'menu.keys', 'menu.dashboard']);
     // 维修人员：暂无写接口，预留

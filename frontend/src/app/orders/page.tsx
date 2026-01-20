@@ -5,11 +5,12 @@ import type { UploadProps } from 'antd'
 import { useEffect, useState, useRef } from 'react'
 import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
+import { sortOrders } from '../../lib/orderSort'
 import { monthSegments, getMonthSegmentsForProperty } from '../../lib/orders'
 import { sortProperties } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 
-type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number }
+type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number; email_header_at?: string }
 // guest_phone 在后端已支持，这里表单也支持录入
 type CleaningTask = { id: string; status: 'pending'|'scheduled'|'done' }
 const debugOnce = (..._args: any[]) => {}
@@ -38,6 +39,8 @@ export default function OrdersPage() {
   const [calPid, setCalPid] = useState<string | undefined>(undefined)
   const calRef = useRef<HTMLDivElement | null>(null)
   const [monthFilter, setMonthFilter] = useState<any | null>(null)
+  const [sortKey, setSortKey] = useState<'email_header_at'|'checkin'|'checkout'>('email_header_at')
+  const [sortOrder, setSortOrder] = useState<'ascend'|'descend'>('descend')
   const [deductAmountEdit, setDeductAmountEdit] = useState<number>(0)
   const [deductDescEdit, setDeductDescEdit] = useState<string>('')
   const [deductNoteEdit, setDeductNoteEdit] = useState<string>('')
@@ -736,6 +739,9 @@ export default function OrdersPage() {
     // 可按需求增加显示客人电话
     { title: '入住', dataIndex: 'checkin', render: (_: any, r: Order) => fmtDay((r as any).__src_checkin || r.checkin) },
     { title: '退房', dataIndex: 'checkout', render: (_: any, r: Order) => fmtDay((r as any).__src_checkout || r.checkout) },
+    { title: '邮件时间', dataIndex: 'email_header_at', render: (v:any)=> v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '',
+      sorter: (a: any, b: any) => { const av = a.email_header_at ? dayjs(a.email_header_at).valueOf() : 0; const bv = b.email_header_at ? dayjs(b.email_header_at).valueOf() : 0; return av - bv },
+      sortDirections: ['ascend','descend'], sortOrder: sortKey==='email_header_at' ? sortOrder : undefined },
     { title: '天数', dataIndex: 'nights', render: (_: any, r: Order) => {
       if (!monthFilter) return Number(((r as any).__src_nights ?? r.nights ?? 0))
       const rawCi = (r as any).__src_checkin || r.checkin
@@ -797,6 +803,9 @@ export default function OrdersPage() {
   const monthStart = baseMonth.startOf('month')
   const monthEnd = baseMonth.endOf('month')
   function dayStr(v: any): string { try { return toDayStr(v) } catch { return '' } }
+  function applySort(list: any[]): any[] {
+    return sortOrders(list as any, sortKey, sortOrder)
+  }
   function splitOrderByMonths(o: Order): (Order & { __rid?: string })[] {
     const ciDay = dayStr(o.checkin)
     const coDay = dayStr(o.checkout)
@@ -854,13 +863,16 @@ export default function OrdersPage() {
   function dayCell(date: any) {
     if (!calPid) return null
     const dateStr = dayjs(date).format('YYYY-MM-DD')
-    const orders = data
+    const orders = sortOrders(
+      data
       .filter(o => {
         const ciDay = dayStr(o.checkin)
         const coDay = dayStr(o.checkout)
         return o.property_id === calPid && ciDay && coDay && ciDay <= dateStr && coDay > dateStr
-      })
-      .sort((a,b)=> dayjs(a.checkin!).valueOf() - dayjs(b.checkin!).valueOf())
+      }) as any,
+      sortKey,
+      sortOrder
+    )
     if (!orders.length) return null
     return (
       <div style={{ position:'relative', minHeight: 64, overflow:'visible' }}>
@@ -908,6 +920,16 @@ export default function OrdersPage() {
           <Radio.Button value="list">列表</Radio.Button>
           <Radio.Button value="calendar">日历</Radio.Button>
         </Radio.Group>
+        <Select value={`${sortKey}:${sortOrder}`} onChange={(v)=>{ const [k, o] = String(v).split(':') as any; setSortKey(k); setSortOrder(o) }}
+          options={[
+            { value: 'email_header_at:descend', label: '按邮件时间(新→旧)' },
+            { value: 'email_header_at:ascend', label: '按邮件时间(旧→新)' },
+            { value: 'checkin:ascend', label: '按入住(早→晚)' },
+            { value: 'checkin:descend', label: '按入住(晚→早)' },
+            { value: 'checkout:ascend', label: '按退房(早→晚)' },
+            { value: 'checkout:descend', label: '按退房(晚→早)' }
+          ]}
+        />
         {view==='list' ? (
           <>
             <Input placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} style={{ width: 200 }} />
@@ -972,7 +994,7 @@ export default function OrdersPage() {
               const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
                 return { ...o, __rid: o.id, nights, net_income: net, avg_nightly_price: avg, __src_price: price }
               })
-              return raw.filter(o => {
+              const filtered1 = raw.filter(o => {
                 const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
                 const listingText = String((o as any).listing_name || '').toLowerCase()
                 const sourceText = String(o.source || '').toLowerCase()
@@ -982,6 +1004,7 @@ export default function OrdersPage() {
                 const okConf = confText.includes(confInput)
                 return okText && okConf
               })
+              return applySort(filtered1)
             }
             if (monthFilter) {
               const baseSegs: (Order & { __rid?: string })[] = monthSegments(data as any, ms) as any
@@ -999,7 +1022,7 @@ export default function OrdersPage() {
                 )
                 return okText && okConf && rangeOk
               })
-              if (rowsPrimary.length) return rowsPrimary
+              if (rowsPrimary.length) return applySort(rowsPrimary)
             }
             // 默认显示原始订单（全部），可选按月份/范围筛选
             const raw = (Array.isArray(data) ? data : []).map((o: any) => {
@@ -1014,7 +1037,7 @@ export default function OrdersPage() {
               const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
               return { ...o, __rid: o.id, nights, net_income: net, avg_nightly_price: avg, __src_price: price }
             })
-            return raw.filter(o => {
+            const filtered2 = raw.filter(o => {
               const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
               const listingText = String((o as any).listing_name || '').toLowerCase()
               const sourceText = String(o.source || '').toLowerCase()
@@ -1031,6 +1054,7 @@ export default function OrdersPage() {
               )
               return okText && okConf && monthOverlap && rangeOk
             })
+            return applySort(filtered2)
           })()}
           pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }}
           scroll={{ x: 'max-content' }}

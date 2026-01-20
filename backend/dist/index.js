@@ -19,12 +19,14 @@ const inventory_1 = require("./modules/inventory");
 const finance_1 = require("./modules/finance");
 const cleaning_1 = require("./modules/cleaning");
 const config_1 = require("./modules/config");
+const cleaning_app_1 = __importDefault(require("./modules/cleaning_app"));
 const auth_1 = require("./modules/auth");
 const audits_1 = require("./modules/audits");
 const rbac_1 = require("./modules/rbac");
 const version_1 = require("./modules/version");
 const stats_1 = require("./modules/stats");
 const events_1 = require("./modules/events");
+const notifications_1 = __importDefault(require("./modules/notifications"));
 const maintenance_1 = __importDefault(require("./modules/maintenance"));
 const propertyOnboarding_1 = require("./modules/propertyOnboarding");
 const jobs_1 = require("./modules/jobs");
@@ -68,8 +70,14 @@ if (isProd && dbAdapter_1.hasPg) {
         throw new Error('DATABASE_URL 需包含 sslmode=require');
 }
 const app = (0, express_1.default)();
+const allowList = String(process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 const corsOpts = {
-    origin: true,
+    origin: (origin, cb) => {
+        if (!allowList.length)
+            return cb(null, true);
+        const ok = !origin || allowList.includes(origin);
+        cb(null, ok);
+    },
     credentials: false,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
@@ -153,6 +161,58 @@ app.get('/health/version', (_req, res) => {
     const build = process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown';
     res.json({ build, version: pkg.version || 'unknown', node_env: process.env.NODE_ENV || 'unknown', started_at: new Date().toISOString() });
 });
+app.post('/internal/trigger-email-sync', async (req, res) => {
+    const h = String(req.headers.authorization || '');
+    const hasBearer = h.startsWith('Bearer ');
+    const token = hasBearer ? h.slice(7) : '';
+    const cron = String(process.env.JOB_CRON_TOKEN || '');
+    if (!cron || token !== cron)
+        return res.status(401).json({ message: 'unauthorized' });
+    try {
+        const body = req.body || {};
+        const account = String(body.account || '') || undefined;
+        const maxPer = Math.min(50, Number(body.max_per_run || 50));
+        const maxMsgs = Math.min(50, Number(body.max_messages || 50));
+        const r = await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', account, max_per_run: maxPer, max_messages: maxMsgs, batch_size: Math.min(20, Number(body.batch_size || 20)), concurrency: 1, batch_sleep_ms: 0, min_interval_ms: 0, trigger_source: 'internal_web_cron' });
+        return res.json({ ok: true, stats: (r === null || r === void 0 ? void 0 : r.stats) || {}, schedule_runs: (r === null || r === void 0 ? void 0 : r.schedule_runs) || [] });
+    }
+    catch (e) {
+        return res.status(Number((e === null || e === void 0 ? void 0 : e.status) || 500)).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'trigger_failed', reason: (e === null || e === void 0 ? void 0 : e.reason) || 'unknown' });
+    }
+});
+app.get('/__routes', (_req, res) => {
+    var _a, _b;
+    try {
+        const list = [];
+        function add(path, methodsObj) {
+            const methods = Object.keys(methodsObj || {}).filter(k => !!methodsObj[k]).map(k => k.toUpperCase());
+            list.push({ path, methods });
+        }
+        function base(layer) {
+            var _a;
+            const s = String(((_a = layer === null || layer === void 0 ? void 0 : layer.regexp) === null || _a === void 0 ? void 0 : _a.source) || '');
+            const m = s.match(/^\\\/([A-Za-z0-9_\-]+)(?:\\\/)?/) || s.match(/^\^\\\/([A-Za-z0-9_\-]+)(?:\\\/)?/);
+            return m ? `/${m[1]}` : '';
+        }
+        const stack = ((_a = app === null || app === void 0 ? void 0 : app._router) === null || _a === void 0 ? void 0 : _a.stack) || [];
+        for (const layer of stack) {
+            if (layer === null || layer === void 0 ? void 0 : layer.route) {
+                add(String(layer.route.path || ''), layer.route.methods || {});
+            }
+            else if ((layer === null || layer === void 0 ? void 0 : layer.name) === 'router' && ((_b = layer === null || layer === void 0 ? void 0 : layer.handle) === null || _b === void 0 ? void 0 : _b.stack)) {
+                const b = base(layer);
+                for (const h of layer.handle.stack) {
+                    if (h === null || h === void 0 ? void 0 : h.route)
+                        add(`${b}${String(h.route.path || '')}`, h.route.methods || {});
+                }
+            }
+        }
+        res.json(list);
+    }
+    catch (e) {
+        res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'route list failed' });
+    }
+});
 // Public endpoints (no auth)
 app.use('/public', public_1.default);
 // Auth middleware comes AFTER health routes
@@ -170,6 +230,7 @@ app.use('/finance', finance_1.router);
 app.use('/crud', crud_1.default);
 app.use('/recurring', recurring_1.default);
 app.use('/cleaning', cleaning_1.router);
+app.use('/cleaning-app', cleaning_app_1.default);
 app.use('/config', config_1.router);
 app.use('/auth', auth_1.router);
 app.use('/audits', audits_1.router);
@@ -177,6 +238,7 @@ app.use('/rbac', rbac_1.router);
 app.use('/version', version_1.router);
 app.use('/stats', stats_1.router);
 app.use('/events', events_1.router);
+app.use('/notifications', notifications_1.default);
 app.use('/maintenance', maintenance_1.default);
 app.use('/jobs', jobs_1.router);
 app.use('/public', public_admin_1.default);
@@ -211,7 +273,7 @@ app.listen(port, () => {
                         console.log('[email-sync][schedule] skipped_reason=already_running');
                         return;
                     }
-                    const res = await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', trigger_source: 'schedule', max_per_run: Number(process.env.EMAIL_SYNC_MAX_PER_RUN || 100), batch_size: Number(process.env.EMAIL_SYNC_BATCH_SIZE || 20), concurrency: Number(process.env.EMAIL_SYNC_CONCURRENCY || 3), batch_sleep_ms: Number(process.env.EMAIL_SYNC_BATCH_SLEEP_MS || 500), min_interval_ms: Number(process.env.EMAIL_SYNC_MIN_INTERVAL_MS || 60000) });
+                    const res = await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', trigger_source: 'schedule', max_per_run: Math.min(50, Number(process.env.EMAIL_SYNC_MAX_PER_RUN || 50)), batch_size: Math.min(20, Number(process.env.EMAIL_SYNC_BATCH_SIZE || 20)), concurrency: Math.min(1, Number(process.env.EMAIL_SYNC_CONCURRENCY || 1)), batch_sleep_ms: Number(process.env.EMAIL_SYNC_BATCH_SLEEP_MS || 0), min_interval_ms: Number(process.env.EMAIL_SYNC_MIN_INTERVAL_MS || 60000) });
                     const dur = Date.now() - started;
                     const s = ((res === null || res === void 0 ? void 0 : res.stats) || {});
                     console.log(`[email-sync][schedule] scanned=${s.scanned || 0} inserted=${s.inserted || 0} skipped=${s.skipped_duplicate || 0} failed=${s.failed || 0} duration_ms=${dur}`);
@@ -238,7 +300,7 @@ app.listen(port, () => {
                         // collect recent failed uids per account; exclude duplicates/already_running
                         const sql = `
             WITH cand AS (
-              SELECT account, uid FROM email_orders_raw WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
+              SELECT account, uid FROM email_orders_raw WHERE status IN ('failed','unmatched_property') AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
               UNION ALL
               SELECT account, uid FROM email_sync_items WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
             )
@@ -308,7 +370,67 @@ app.listen(port, () => {
             }
         }
         catch (e) {
-            console.error(`[DBInfo] query failed message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+            console.log(`[DBInfo] query failed message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
         }
     })();
+    (async () => {
+        try {
+            const enableCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true';
+            if (enableCleaning && dbAdapter_1.hasPg) {
+                const expr = String(process.env.CLEANING_START_TIMEOUT_CRON || '*/15 * * * *');
+                const threshMin = Number(process.env.CLEANING_START_TIMEOUT_MINUTES || 60);
+                const task = node_cron_1.default.schedule(expr, async () => {
+                    try {
+                        const sql = `select id, assignee_id, scheduled_at, key_photo_uploaded_at from cleaning_tasks where date=now()::date and status='scheduled'`;
+                        const rs = await dbAdapter_1.pgPool.query(sql);
+                        for (const r of ((rs === null || rs === void 0 ? void 0 : rs.rows) || [])) {
+                            const sch = r.scheduled_at ? new Date(r.scheduled_at) : null;
+                            const hasKeyPhoto = !!r.key_photo_uploaded_at;
+                            if (!sch || hasKeyPhoto)
+                                continue;
+                            const diff = Date.now() - sch.getTime();
+                            if (diff > threshMin * 60 * 1000) {
+                                console.log(`[cleaning-timeout] task=${r.id} assignee=${r.assignee_id} overdue_minutes=${Math.round(diff / 60000)}`);
+                            }
+                        }
+                    }
+                    catch (e) {
+                        console.error(`[cleaning-timeout] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                    }
+                }, { scheduled: true });
+                task.start();
+            }
+        }
+        catch (e) {
+            console.error(`[cleaning-timeout] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+        }
+    })();
+});
+app.get('/health/login', async (_req, res) => {
+    var _a, _b;
+    const started = Date.now();
+    try {
+        if (dbAdapter_1.hasPg) {
+            const r = await dbAdapter_1.pgPool.query('SELECT 1 AS ok');
+            const dur = Date.now() - started;
+            return res.json({ ok: true, db_ok: !!((_b = (_a = r === null || r === void 0 ? void 0 : r.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok), latency_ms: dur });
+        }
+        return res.json({ ok: true, db_ok: false, latency_ms: Date.now() - started });
+    }
+    catch (e) {
+        return res.status(500).json({ ok: false, message: String((e === null || e === void 0 ? void 0 : e.message) || ''), latency_ms: Date.now() - started });
+    }
+});
+app.get('/health/email-sync', async (_req, res) => {
+    var _a;
+    try {
+        if (dbAdapter_1.hasPg) {
+            const r = await dbAdapter_1.pgPool.query('SELECT id, status, scanned, inserted, failed, created_at FROM email_sync_runs ORDER BY created_at DESC LIMIT 1');
+            return res.json({ last_run: ((_a = r === null || r === void 0 ? void 0 : r.rows) === null || _a === void 0 ? void 0 : _a[0]) || null });
+        }
+        return res.json({ last_run: null });
+    }
+    catch (e) {
+        return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || '') });
+    }
 });
