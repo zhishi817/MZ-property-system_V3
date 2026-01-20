@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS order_import_staging (
   raw_row jsonb,
   reason text,
   listing_name text,
+  confirmation_code text,
   listing_id text,
   property_code text,
   property_id text REFERENCES properties(id) ON DELETE SET NULL,

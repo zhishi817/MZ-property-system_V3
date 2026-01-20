@@ -298,6 +298,16 @@ function toIsoString(v: any): string {
   if (typeof v === 'string') return v
   try { const d = new Date(v); return isNaN(d.getTime()) ? '' : d.toISOString() } catch { return '' }
 }
+
+async function ensureOrdersColumns() {
+  try {
+    if (!hasPg) return
+    const { pgPool } = require('../dbAdapter')
+    await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
+    await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric')
+    await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text')
+  } catch {}
+}
 function round2(n?: number): number | undefined {
   if (n == null) return undefined
   const x = Number(n)
@@ -983,9 +993,23 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
     if (hasPg) {
       const rows: any[] = (await pgSelect('order_import_staging', '*', { id })) || []
       row = Array.isArray(rows) ? rows[0] : null
-      } else {
-        row = (db as any).orderImportStaging.find((x: any) => x.id === id)
+      if (!row) {
+        try {
+          const { pgPool } = require('../dbAdapter')
+          const ln = String(body.listing_name || '').trim()
+          if (ln) {
+            const sql = 'SELECT * FROM order_import_staging WHERE status=\'unmatched\' AND listing_name=$1 ORDER BY created_at DESC LIMIT 1'
+            const rs = await pgPool?.query(sql, [ln])
+            row = rs?.rows?.[0] || null
+          }
+        } catch {}
+        if (!row) {
+          try { row = (db as any).orderImportStaging.find((x: any) => x.id === id) } catch {}
+        }
       }
+    } else {
+      row = (db as any).orderImportStaging.find((x: any) => x.id === id)
+    }
     if (!row) return res.status(404).json({ message: 'staging not found' })
     const r = row.raw_row || {}
     function getVal(obj: any, keys: string[]): string | undefined { for (const k of keys) { const v = obj[k]; if (v != null && String(v).trim() !== '') return String(v) } return undefined }
@@ -999,8 +1023,10 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
     const source = mapPlatform(String(row.channel || r.source || ''), r)
     const confirmation_code = String((row.confirmation_code || getVal(r, ['confirmation_code','Confirmation Code','Reservation Number'])) || '').trim()
     const guest_name = getVal(r, ['Guest','guest','guest_name','Booker Name'])
-    const checkin = getVal(r, ['checkin','check_in','start_date','Start date','Arrival'])
-    const checkout = getVal(r, ['checkout','check_out','end_date','End date','Departure'])
+    const checkinRaw = getVal(r, ['checkin','check_in','start_date','Start date','Arrival'])
+    const checkoutRaw = getVal(r, ['checkout','check_out','end_date','End date','Departure'])
+    const checkinDayStr = dayOnly(checkinRaw)
+    const checkoutDayStr = dayOnly(checkoutRaw)
     const priceRaw = getVal(r, ['price','Amount','Total Payment'])
     const cleaningRaw = getVal(r, ['cleaning_fee','Cleaning fee'])
     const price = priceRaw != null ? Number(priceRaw) : undefined
@@ -1009,7 +1035,7 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
     const stRaw = getVal(r, ['status','Status']) || ''
     const stLower = stRaw.toLowerCase()
     const status = stLower === 'ok' ? 'confirmed' : (stLower.includes('cancel') ? 'cancelled' : (stRaw ? stRaw : 'confirmed'))
-    const parsed = createOrderSchema.safeParse({ source, property_id, guest_name, checkin, checkout, price, cleaning_fee, currency, status, confirmation_code })
+    const parsed = createOrderSchema.safeParse({ source, property_id, guest_name, checkin: checkinDayStr, checkout: checkoutDayStr, price, cleaning_fee, currency, status, confirmation_code })
     if (!parsed.success) return res.status(400).json(parsed.error.format())
     const o = parsed.data
     const ciIso = o.checkin ? `${String(o.checkin).slice(0,10)}T12:00:00` : undefined
@@ -1040,9 +1066,12 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
     const total = o.price || 0
     const net = o.net_income != null ? o.net_income : (total - cleaning)
     const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0)
-    const newOrder: Order = { id: uuid(), ...o, checkin: ciIso, checkout: coIso, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key }
+    const ciDay = String(o.checkin || '').slice(0,10) || undefined
+    const coDay = String(o.checkout || '').slice(0,10) || undefined
+    const newOrder: Order = { id: uuid(), ...o, checkin: ciDay as any, checkout: coDay as any, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key }
     // duplicate by (source, confirmation_code)
     try {
+      await ensureOrdersColumns()
       if (hasPg && (newOrder as any).confirmation_code) {
         const dup: any[] = (await pgSelect('orders', 'id', { source: newOrder.source, confirmation_code: (newOrder as any).confirmation_code, property_id: newOrder.property_id })) || []
         if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '确认码已存在', confirmation_code: (newOrder as any).confirmation_code, source: newOrder.source, property_id: newOrder.property_id })
@@ -1051,9 +1080,26 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
     const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout)
     if (conflict) return res.status(409).json({ message: 'overlap' })
     if (hasPg) {
-      try { await pgInsert('orders', newOrder as any) } catch {}
-      try { await pgUpdate('order_import_staging', id, { status: 'resolved', property_id, resolved_at: new Date().toISOString() }) } catch {}
-      try { broadcastOrdersUpdated({ action: 'create', id: newOrder.id }) } catch {}
+      let insertedOk = false
+      try {
+        await ensureOrdersColumns()
+        await pgInsert('orders', newOrder as any)
+        insertedOk = true
+      } catch (e: any) {
+        try {
+          const { pgPool } = require('../dbAdapter')
+          const msg = String(e?.message || '')
+          if (/column\s+"confirmation_code"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text') }
+          await pgInsert('orders', newOrder as any)
+          insertedOk = true
+        } catch (e2: any) {
+          return res.status(500).json({ message: e2?.message || 'insert failed' })
+        }
+      }
+      if (insertedOk) {
+        try { await pgUpdate('order_import_staging', id, { status: 'resolved', property_id, resolved_at: new Date().toISOString() }) } catch {}
+        try { broadcastOrdersUpdated({ action: 'create', id: newOrder.id }) } catch {}
+      }
     } else {
       const idx = (db as any).orderImportStaging.findIndex((x: any) => x.id === id)
       if (idx !== -1) (db as any).orderImportStaging[idx] = { ...(db as any).orderImportStaging[idx], status: 'resolved', property_id, resolved_at: new Date().toISOString() }
@@ -1170,6 +1216,7 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
     const buildVersion = (process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown') as string
     try { console.log('IMPORT_BUILD', buildVersion) } catch {}
     const normalize = platform === 'airbnb' ? normAirbnb : (platform === 'booking' ? normBooking : normOther)
+    await ensureOrdersColumns()
 
     // build property match indexes
     const byName: Record<string, string> = {}
@@ -1226,7 +1273,8 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
       return !hasAny
     }
     const errors: Array<{ rowIndex: number; confirmation_code?: string; listing_name?: string; reason: string; stagingId?: string }> = []
-    let successCount = 0
+    let createdCount = 0
+    let updatedCount = 0
     let rowIndexBase = 2 // 首行数据通常为第2行
     const tStart = Date.now()
     for (let i = 0; i < recordsAll.length; i++) {
@@ -1241,7 +1289,36 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
       if (!pid) {
         try {
           const payload: any = { id: require('uuid').v4(), channel: platform, raw_row: r, reason: 'unmatched_property', listing_name: ln, confirmation_code: cc, status: 'unmatched' }
-      if (hasPg) await pgInsert('order_import_staging', payload); else (db as any).orderImportStaging.push(payload)
+          if (hasPg) {
+            try {
+              await pgInsert('order_import_staging', payload)
+            } catch (e: any) {
+              const msg = String(e?.message || '')
+              try {
+                const { pgPool } = require('../dbAdapter')
+                await pgPool?.query(`CREATE TABLE IF NOT EXISTS order_import_staging (
+                  id text PRIMARY KEY,
+                  channel text,
+                  raw_row jsonb,
+                  reason text,
+                  listing_name text,
+                  confirmation_code text,
+                  listing_id text,
+                  property_code text,
+                  property_id text REFERENCES properties(id) ON DELETE SET NULL,
+                  status text DEFAULT 'unmatched',
+                  created_at timestamptz DEFAULT now(),
+                  resolved_at timestamptz
+                )`)
+                await pgPool?.query('ALTER TABLE order_import_staging ADD COLUMN IF NOT EXISTS confirmation_code text')
+                await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_order_import_staging_status ON order_import_staging(status)')
+                await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_order_import_staging_created ON order_import_staging(created_at)')
+                await pgInsert('order_import_staging', payload)
+              } catch {}
+            }
+          } else {
+            (db as any).orderImportStaging.push(payload)
+          }
           errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: '找不到房号', stagingId: payload.id })
         } catch {
           errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: '找不到房号' })
@@ -1257,7 +1334,36 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
         const det = !checkin ? 'invalid_date:Start date' : 'invalid_date:End date'
         try {
           const payload: any = { id: require('uuid').v4(), channel: platform, raw_row: r, reason: det, listing_name: ln, confirmation_code: cc, status: 'unmatched' }
-          if (hasPg) await pgInsert('order_import_staging', payload); else (db as any).orderImportStaging.push(payload)
+          if (hasPg) {
+            try {
+              await pgInsert('order_import_staging', payload)
+            } catch (e: any) {
+              const msg = String(e?.message || '')
+              try {
+                const { pgPool } = require('../dbAdapter')
+                await pgPool?.query(`CREATE TABLE IF NOT EXISTS order_import_staging (
+                  id text PRIMARY KEY,
+                  channel text,
+                  raw_row jsonb,
+                  reason text,
+                  listing_name text,
+                  confirmation_code text,
+                  listing_id text,
+                  property_code text,
+                  property_id text REFERENCES properties(id) ON DELETE SET NULL,
+                  status text DEFAULT 'unmatched',
+                  created_at timestamptz DEFAULT now(),
+                  resolved_at timestamptz
+                )`)
+                await pgPool?.query('ALTER TABLE order_import_staging ADD COLUMN IF NOT EXISTS confirmation_code text')
+                await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_order_import_staging_status ON order_import_staging(status)')
+                await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_order_import_staging_created ON order_import_staging(created_at)')
+                await pgInsert('order_import_staging', payload)
+              } catch {}
+            }
+          } else {
+            (db as any).orderImportStaging.push(payload)
+          }
         } catch {}
         errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'invalid_date' })
         continue
@@ -1302,7 +1408,7 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
         }
       } catch {}
 
-      const payload: any = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkinDay ? `${checkinDay}T12:00:00` : undefined), checkout: (checkoutDay ? `${checkoutDay}T11:59:59` : undefined), price, cleaning_fee, total_payment_raw: (platform==='booking' ? Number(tpRawStr) : undefined), processed_status: (platform==='booking' ? 'computed_0_835' : undefined) }
+      const payload: any = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkinDay || undefined), checkout: (checkoutDay || undefined), price, cleaning_fee, total_payment_raw: (platform==='booking' ? Number(tpRawStr) : undefined), processed_status: (platform==='booking' ? 'computed_0_835' : undefined) }
       try {
         if (hasPg) {
           if (exists && exists.id) {
@@ -1310,17 +1416,20 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
               const msg = String(e?.message || '')
               try {
                 const { pgPool } = require('../dbAdapter')
+                if (/column\s+"confirmation_code"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text') }
                 if (/column\s+"total_payment_raw"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric') }
                 if (/column\s+"processed_status"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text') }
                 await pgUpdate('orders', exists.id, payload)
               } catch (e2: any) { throw e2 }
             }
+            updatedCount++
           } else {
             let row: any
             try { row = await pgInsert('orders', { id: require('uuid').v4(), ...payload }) } catch (e: any) {
               const msg = String(e?.message || '')
               try {
                 const { pgPool } = require('../dbAdapter')
+                if (/column\s+"confirmation_code"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text') }
                 if (/column\s+"total_payment_raw"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric') }
                 if (/column\s+"processed_status"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text') }
                 row = await pgInsert('orders', { id: require('uuid').v4(), ...payload })
@@ -1328,13 +1437,14 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
             }
             if (row?.id && idToCode[pid]) row.property_code = idToCode[pid]
             db.orders.push(row as any)
+            createdCount++
           }
           try { broadcastOrdersUpdated({ action: exists ? 'update' : 'create', id: (exists?.id || undefined) }) } catch {}
         } else {
           if (exists) Object.assign(exists, payload); else db.orders.push({ id: require('uuid').v4(), ...payload })
           try { broadcastOrdersUpdated({ action: exists ? 'update' : 'create' }) } catch {}
+          if (exists) updatedCount++; else createdCount++
         }
-        successCount++
         try { addAudit('OrderImportAudit', (exists?.id || payload?.confirmation_code || 'unknown'), 'process', null, { source_platform: platform, external_id: cc, total_payment_raw: (platform==='booking' ? Number(tpRawStr) : undefined), price, status: 'ok', actor_id: (req as any).user?.sub, processed_at: new Date().toISOString() }, (req as any).user?.sub) } catch {}
       } catch (e: any) {
         errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: '写入失败: ' + String(e?.message || '') })
@@ -1343,7 +1453,8 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
     const tSpent = Date.now() - tStart
     const mem = process.memoryUsage()
     const cpu = process.cpuUsage()
-    return res.json({ successCount, errorCount: errors.length, errors, buildVersion, metrics: { ms: tSpent, rss: mem.rss, heapUsed: mem.heapUsed, cpuUserMicros: cpu.user, cpuSystemMicros: cpu.system } })
+    const successCount = createdCount + updatedCount
+    return res.json({ successCount, createdCount, updatedCount, errorCount: errors.length, errors, buildVersion, metrics: { ms: tSpent, rss: mem.rss, heapUsed: mem.heapUsed, cpuUserMicros: cpu.user, cpuSystemMicros: cpu.system } })
   } catch (e: any) {
     try {
       const payload: any = { id: require('uuid').v4(), channel: 'unknown', raw_row: {}, reason: 'runtime_error', error_detail: String(e?.stack || e?.message || '') }

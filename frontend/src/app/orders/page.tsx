@@ -30,7 +30,7 @@ export default function OrdersPage() {
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [importOpen, setImportOpen] = useState(false)
   const [importing, setImporting] = useState(false)
-  const [importSummary, setImportSummary] = useState<{ inserted: number; skipped: number; reason_counts?: Record<string, number> } | null>(null)
+  const [importSummary, setImportSummary] = useState<{ inserted: number; skipped: number; updated?: number; reason_counts?: Record<string, number> } | null>(null)
   const [importResults, setImportResults] = useState<any[]>([])
   const [importErrors, setImportErrors] = useState<any[]>([])
   const [unmatched, setUnmatched] = useState<any[]>([])
@@ -132,10 +132,10 @@ export default function OrdersPage() {
           console.log('IMPORT API RESP (excel)', res.status, j)
           if (res.ok) {
             const errors = Array.isArray(j?.errors) ? j.errors : []
-            setImportSummary({ inserted: Number(j?.successCount || 0), skipped: Number(j?.errorCount || 0) })
+            setImportSummary({ inserted: Number(j?.createdCount || 0), updated: Number(j?.updatedCount || 0), skipped: Number(j?.errorCount || 0) })
             setImportResults([])
             setImportErrors(errors.slice(0, 200))
-            message.success(`导入完成：新增 ${j?.successCount || 0}，失败 ${j?.errorCount || 0}`)
+            message.success(`导入完成：新增 ${j?.createdCount || 0}，更新 ${j?.updatedCount || 0}，失败 ${j?.errorCount || 0}`)
             const list = errors.filter((e:any)=> e?.reason === '找不到房号' || e?.reason === 'unmatched_property').map((e:any)=> ({ id: e.stagingId, listing_name: e.listing_name, confirmation_code: e.confirmation_code, channel: 'unknown', reason: 'unmatched_property' }))
             setUnmatched(list)
             onSuccess && onSuccess(j, file)
@@ -697,10 +697,12 @@ export default function OrdersPage() {
     }
   }
 
-  async function resolveImport(id: string, property_id?: string) {
+  async function resolveImport(id: string, property_id?: string, listing_name?: string, confirmation_code?: string) {
     if (!property_id) { message.warning('请选择房号'); return }
+    if (!id) { message.error('缺少暂存ID，请重新导入或选择其他记录'); return }
     try {
-      const res = await fetch(`${API_BASE}/orders/import/resolve/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ property_id }) })
+      const payload = { property_id, listing_name, confirmation_code }
+      const res = await fetch(`${API_BASE}/orders/import/resolve/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
       if (res.ok || res.status === 201) { message.success('已导入到订单'); setUnmatched(u => u.filter(x => x.id !== id)); load() } else { const j = await res.json().catch(()=>({} as any)); message.error(j?.message || '导入失败') }
     } catch { message.error('导入失败') }
   }
@@ -1524,7 +1526,8 @@ export default function OrdersPage() {
         <Card size="small" style={{ marginTop: 12 }}>
           <Space wrap>
             <Tag color="green">新增: {importSummary.inserted}</Tag>
-            <Tag color="red">跳过: {importSummary.skipped}</Tag>
+            {importSummary.updated != null ? (<Tag color="blue">更新: {importSummary.updated}</Tag>) : null}
+            <Tag color="red">失败: {importSummary.skipped}</Tag>
             {Object.entries(importSummary.reason_counts || {}).map(([k,v]) => (<Tag key={k}>{k}: {v as any}</Tag>))}
           </Space>
           {importResults.length ? (
@@ -1566,7 +1569,7 @@ export default function OrdersPage() {
                   <Space>
                     <Select showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="选择房号" style={{ width: 220 }} options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))}
                       onChange={(pid)=>{ (r as any).__pid = pid }} />
-                    <Button type="primary" onClick={()=> resolveImport(r.id, (r as any).__pid)}>导入</Button>
+                    <Button type="primary" onClick={()=> resolveImport(r.id, (r as any).__pid, r.listing_name, r.confirmation_code)}>导入</Button>
                   </Space>
                 ) }
               ] as any}
