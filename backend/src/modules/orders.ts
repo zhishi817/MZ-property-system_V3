@@ -828,12 +828,13 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
           })
         } catch {}
       }
-      const priceRaw = toNumber(getField(r, ['Amount','amount','price']))
+      const priceRaw = toNumber(getField(r, ['Total Payment','total_payment','Amount','amount','price']))
       const cleaningRaw = toNumber(getField(r, ['Cleaning fee','cleaning_fee']))
-      const price = round2(priceRaw)
+      const price = source === 'booking' && priceRaw != null ? Number(((priceRaw || 0) * 0.835).toFixed(2)) : round2(priceRaw)
       const cleaning_fee = round2(cleaningRaw)
       const currency = r.currency || 'AUD'
       const status = r.status || 'confirmed'
+      if (source === 'booking' && String(status).toLowerCase() !== 'confirmed') { results.push({ ok: false, error: 'invalid_status', listing_name, confirmation_code }); skipped++; continue }
       // Airbnb 日期严格按 MM/DD/YYYY 解析，失败写入 staging
       if (platform === 'airbnb') {
         const ciIso = parseAirbnbDate(checkin || '')
@@ -1227,6 +1228,7 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
     const errors: Array<{ rowIndex: number; confirmation_code?: string; listing_name?: string; reason: string; stagingId?: string }> = []
     let successCount = 0
     let rowIndexBase = 2 // 首行数据通常为第2行
+    const tStart = Date.now()
     for (let i = 0; i < recordsAll.length; i++) {
       const r = recordsAll[i] || {}
       if (isBlankRecord(r)) continue
@@ -1260,10 +1262,34 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
         errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'invalid_date' })
         continue
       }
-      const price = n.amount != null ? (round2(Number(n.amount)) as number | undefined) : undefined
+      const tpRawStr = getField(r, ['Total Payment','total_payment','Amount','amount'])
+      const tpRawNum = tpRawStr != null ? Number(tpRawStr) : NaN
+      let price: number | undefined = undefined
+      if (platform === 'booking') {
+        if (tpRawStr == null || String(tpRawStr).trim() === '') {
+          errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'missing_data' })
+          continue
+        }
+        if (!isFinite(tpRawNum)) {
+          errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'invalid_format' })
+          continue
+        }
+        const p = Number((tpRawNum * 0.835).toFixed(2))
+        if (!(p > 0) || p > 1000000) {
+          errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'amount_out_of_range' })
+          continue
+        }
+        price = p
+      } else {
+        price = n.amount != null ? (round2(Number(n.amount)) as number | undefined) : undefined
+      }
       const cleaning_fee = n.cleaning_fee != null ? (round2(Number(n.cleaning_fee)) as number | undefined) : undefined
       const status = n.status || 'confirmed'
       const guest_name = n.guest_name || undefined
+      if (platform === 'booking' && status !== 'confirmed') { errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'invalid_status' }); continue }
+      if (platform === 'booking') {
+        if (!cc || !guest_name || !checkinDay || !checkoutDay) { errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'missing_data' }); continue }
+      }
 
       // upsert by (source, confirmation_code)
       let exists: any = null
@@ -1276,13 +1302,30 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
         }
       } catch {}
 
-      const payload: any = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkinDay ? `${checkinDay}T12:00:00` : undefined), checkout: (checkoutDay ? `${checkoutDay}T11:59:59` : undefined), price, cleaning_fee }
+      const payload: any = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkinDay ? `${checkinDay}T12:00:00` : undefined), checkout: (checkoutDay ? `${checkoutDay}T11:59:59` : undefined), price, cleaning_fee, total_payment_raw: (platform==='booking' ? Number(tpRawStr) : undefined), processed_status: (platform==='booking' ? 'computed_0_835' : undefined) }
       try {
         if (hasPg) {
           if (exists && exists.id) {
-            await pgUpdate('orders', exists.id, payload)
+            try { await pgUpdate('orders', exists.id, payload) } catch (e: any) {
+              const msg = String(e?.message || '')
+              try {
+                const { pgPool } = require('../dbAdapter')
+                if (/column\s+"total_payment_raw"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric') }
+                if (/column\s+"processed_status"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text') }
+                await pgUpdate('orders', exists.id, payload)
+              } catch (e2: any) { throw e2 }
+            }
           } else {
-            const row = await pgInsert('orders', { id: require('uuid').v4(), ...payload })
+            let row: any
+            try { row = await pgInsert('orders', { id: require('uuid').v4(), ...payload }) } catch (e: any) {
+              const msg = String(e?.message || '')
+              try {
+                const { pgPool } = require('../dbAdapter')
+                if (/column\s+"total_payment_raw"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric') }
+                if (/column\s+"processed_status"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text') }
+                row = await pgInsert('orders', { id: require('uuid').v4(), ...payload })
+              } catch (e2: any) { throw e2 }
+            }
             if (row?.id && idToCode[pid]) row.property_code = idToCode[pid]
             db.orders.push(row as any)
           }
@@ -1292,11 +1335,15 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
           try { broadcastOrdersUpdated({ action: exists ? 'update' : 'create' }) } catch {}
         }
         successCount++
+        try { addAudit('OrderImportAudit', (exists?.id || payload?.confirmation_code || 'unknown'), 'process', null, { source_platform: platform, external_id: cc, total_payment_raw: (platform==='booking' ? Number(tpRawStr) : undefined), price, status: 'ok', actor_id: (req as any).user?.sub, processed_at: new Date().toISOString() }, (req as any).user?.sub) } catch {}
       } catch (e: any) {
         errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: '写入失败: ' + String(e?.message || '') })
       }
     }
-    return res.json({ successCount, errorCount: errors.length, errors, buildVersion })
+    const tSpent = Date.now() - tStart
+    const mem = process.memoryUsage()
+    const cpu = process.cpuUsage()
+    return res.json({ successCount, errorCount: errors.length, errors, buildVersion, metrics: { ms: tSpent, rss: mem.rss, heapUsed: mem.heapUsed, cpuUserMicros: cpu.user, cpuSystemMicros: cpu.system } })
   } catch (e: any) {
     try {
       const payload: any = { id: require('uuid').v4(), channel: 'unknown', raw_row: {}, reason: 'runtime_error', error_detail: String(e?.stack || e?.message || '') }
