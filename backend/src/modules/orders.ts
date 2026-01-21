@@ -1500,6 +1500,75 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
   }
 })
 
+router.post('/actions/dedupeByConfirmationCode', requirePerm('order.manage'), async (req, res) => {
+  try {
+    const body: any = req.body || {}
+    const dryRun = String(body.dry_run || '').toLowerCase() === 'true' || body.dry_run === true
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    await ensureOrdersColumns()
+    const rows: any[] = (await pgSelect('orders', 'id,confirmation_code,source,property_id,guest_name,guest_phone,checkin,checkout,price,cleaning_fee,net_income,avg_nightly_price,nights,currency,status,email_header_at,created_at')) || []
+    const groups = new Map<string, any[]>()
+    for (const r of rows) {
+      const cc = String(r.confirmation_code || '').trim()
+      if (!cc) continue
+      const arr = groups.get(cc) || []
+      arr.push(r)
+      groups.set(cc, arr)
+    }
+    const pickLonger = (a?: string, b?: string) => { const s = String(a||''); const t = String(b||''); return (t.length > s.length) ? (t || undefined) : (s || undefined) }
+    const pickDefined = (a: any, b: any) => (a !== undefined && a !== null && String(a) !== '' ? a : (b !== undefined && b !== null && String(b) !== '' ? b : undefined))
+    const srcPriority = (s?: string) => {
+      const v = String(s||'').toLowerCase()
+      if (v === 'airbnb') return 0
+      if (v === 'booking') return 1
+      if (v === 'airbnb_email' || v === 'booking_email' || v.endsWith('_email')) return 2
+      if (v === 'offline') return 3
+      return 9
+    }
+    const results: any[] = []
+    await pgRunInTransaction(async (client: any) => {
+      for (const [cc, arr] of groups.entries()) {
+        if (!arr || arr.length <= 1) continue
+        const sorted = arr.slice().sort((a, b) => srcPriority(a.source) - srcPriority(b.source) || new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime())
+        const master = sorted[0]
+        const others = sorted.slice(1)
+        const merged: any = { id: master.id }
+        for (const r of others) {
+          merged.source = master.source
+          merged.property_id = pickDefined(master.property_id, r.property_id)
+          merged.guest_name = pickLonger(master.guest_name, r.guest_name)
+          merged.guest_phone = pickDefined(master.guest_phone, r.guest_phone)
+          merged.checkin = pickDefined(master.checkin, r.checkin)
+          merged.checkout = pickDefined(master.checkout, r.checkout)
+          merged.price = pickDefined(master.price, r.price)
+          merged.cleaning_fee = pickDefined(master.cleaning_fee, r.cleaning_fee)
+          merged.net_income = pickDefined(master.net_income, r.net_income)
+          merged.avg_nightly_price = pickDefined(master.avg_nightly_price, r.avg_nightly_price)
+          merged.nights = pickDefined(master.nights, r.nights)
+          merged.currency = pickDefined(master.currency, r.currency)
+          merged.status = pickDefined(master.status, r.status)
+          const e1 = master.email_header_at ? new Date(master.email_header_at) : null
+          const e2 = r.email_header_at ? new Date(r.email_header_at) : null
+          merged.email_header_at = (e1 && e2) ? (e1 < e2 ? master.email_header_at : r.email_header_at) : (master.email_header_at || r.email_header_at || undefined)
+        }
+        if (!dryRun) {
+          const payload: any = {}
+          for (const k of ['source','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','email_header_at']) {
+            if (merged[k] !== undefined) payload[k] = merged[k]
+          }
+          await pgUpdate('orders', master.id, payload, client)
+          for (const r of others) { await pgDelete('orders', r.id, client) }
+        }
+        results.push({ confirmation_code: cc, kept_id: master.id, deleted_ids: others.map(o => o.id) })
+      }
+    })
+    if (!dryRun) { await ensureOrdersIndexes() }
+    return res.json({ ok: true, deduped: results.length, items: results })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'dedupe_failed' })
+  }
+})
+
 const deductionSchema = z.object({ amount: z.coerce.number().positive(), currency: z.string().optional(), item_desc: z.string().min(1), note: z.string().optional() })
 function monthKeyOfDate(s?: string): string {
   const d = s ? new Date(s) : null
