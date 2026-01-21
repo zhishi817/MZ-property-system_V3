@@ -25,7 +25,7 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
   if (!hasPg) return res.status(500).json({ message: 'pg not available' })
   const { id } = req.params
   const body = req.body || {}
-  const allowed = ['amount','vendor','category','category_detail','due_day_of_month','frequency_months','status','pay_account_name','pay_bsb','pay_account_number','pay_ref','payment_type','bpay_code','pay_mobile_number']
+  const allowed = ['amount','vendor','category','category_detail','due_day_of_month','frequency_months','status','pay_account_name','pay_bsb','pay_account_number','pay_ref','payment_type','bpay_code','pay_mobile_number','report_category']
   const payload: Record<string, any> = {}
   allowed.forEach(k => { if (body[k] != null) payload[k] = body[k] })
   const currentMonth = currentMonthKeyAU()
