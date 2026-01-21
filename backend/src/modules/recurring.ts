@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requirePerm } from '../auth'
+import { requireAnyPerm } from '../auth'
 import { addAudit } from '../store'
 import { hasPg, pgRunInTransaction } from '../dbAdapter'
 
@@ -21,7 +21,7 @@ function computeDueISO(monthKey: string, dueDay: number): string {
   return `${String(y)}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`
 }
 
-router.patch('/payments/:id', requirePerm('recurring_payments.write'), async (req, res) => {
+router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','finance.tx.write']), async (req, res) => {
   if (!hasPg) return res.status(500).json({ message: 'pg not available' })
   const { id } = req.params
   const body = req.body || {}

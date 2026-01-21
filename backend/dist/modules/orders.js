@@ -354,6 +354,29 @@ function toIsoString(v) {
         return '';
     }
 }
+async function ensureOrdersColumns() {
+    try {
+        if (!dbAdapter_1.hasPg)
+            return;
+        const { pgPool } = require('../dbAdapter');
+        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text'));
+        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric'));
+        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text'));
+    }
+    catch (_a) { }
+}
+async function ensureOrdersIndexes() {
+    try {
+        if (!dbAdapter_1.hasPg)
+            return;
+        const { pgPool } = require('../dbAdapter');
+        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text'));
+        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_src_cc_pid_unique") THEN BEGIN DROP INDEX IF EXISTS idx_orders_src_cc_pid_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;'));
+        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_conf_pid_unique") THEN BEGIN DROP INDEX IF EXISTS idx_orders_conf_pid_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;'));
+        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_confirmation_code_unique ON orders(confirmation_code) WHERE confirmation_code IS NOT NULL'));
+    }
+    catch (_a) { }
+}
 function round2(n) {
     if (n == null)
         return undefined;
@@ -468,9 +491,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
     try {
         const cc = newOrder.confirmation_code;
         if (dbAdapter_1.hasPg && cc) {
-            const dupAny = (await (0, dbAdapter_1.pgSelect)('orders', '*', { confirmation_code: cc, property_id: newOrder.property_id })) || [];
-            const dupAny2 = (await (0, dbAdapter_1.pgSelect)('orders', '*', { source: newOrder.source, confirmation_code: cc, property_id: newOrder.property_id })) || [];
-            const dup = Array.isArray(dupAny2) && dupAny2[0] ? dupAny2 : dupAny;
+            const dup = (await (0, dbAdapter_1.pgSelect)('orders', '*', { confirmation_code: cc })) || [];
             if (Array.isArray(dup) && dup[0]) {
                 if (force) {
                     try {
@@ -515,6 +536,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
             }
             const insertOrder = { ...newOrder };
             delete insertOrder.property_code;
+            await ensureOrdersIndexes();
             const row = await (0, dbAdapter_1.pgInsert)('orders', insertOrder);
             try {
                 (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: row === null || row === void 0 ? void 0 : row.id });
@@ -530,6 +552,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text'));
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = \"idx_orders_confirmation_code_unique\") THEN BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;'));
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_confirmation_code_unique ON orders(source, confirmation_code) WHERE confirmation_code IS NOT NULL'));
+                    await ensureOrdersIndexes();
                     const ins = { ...newOrder };
                     delete ins.property_code;
                     const row = await (0, dbAdapter_1.pgInsert)('orders', ins);
@@ -1169,12 +1192,28 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                     }
                     const insertPayload = { ...newOrder };
                     delete insertPayload.property_code;
+                    await ensureOrdersIndexes();
                     await (0, dbAdapter_1.pgInsert)('orders', insertPayload);
                     writeOk = true;
                 }
                 catch (e) {
                     const code = (e && e.code) || '';
                     if (code === '23505') {
+                        try {
+                            const cc = newOrder.confirmation_code;
+                            const dup = (await (0, dbAdapter_1.pgSelect)('orders', 'id', { confirmation_code: cc })) || [];
+                            if (Array.isArray(dup) && dup[0]) {
+                                const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
+                                const payload = {};
+                                for (const k of allow) {
+                                    if (newOrder[k] !== undefined)
+                                        payload[k] = newOrder[k];
+                                }
+                                await (0, dbAdapter_1.pgUpdate)('orders', String(dup[0].id), payload);
+                                continue;
+                            }
+                        }
+                        catch (_m) { }
                         results.push({ ok: false, error: 'duplicate', confirmation_code: newOrder.confirmation_code, source: newOrder.source, property_id: newOrder.property_id });
                         skipped++;
                         continue;
@@ -1210,6 +1249,7 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
     res.json({ inserted, skipped, reason_counts, results });
 });
 exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage'), async (req, res) => {
+    var _a;
     const { id } = req.params;
     const body = req.body || {};
     const property_id = String(body.property_id || '').trim() || undefined;
@@ -1218,6 +1258,24 @@ exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage
         if (dbAdapter_1.hasPg) {
             const rows = (await (0, dbAdapter_1.pgSelect)('order_import_staging', '*', { id })) || [];
             row = Array.isArray(rows) ? rows[0] : null;
+            if (!row) {
+                try {
+                    const { pgPool } = require('../dbAdapter');
+                    const ln = String(body.listing_name || '').trim();
+                    if (ln) {
+                        const sql = 'SELECT * FROM order_import_staging WHERE status=\'unmatched\' AND listing_name=$1 ORDER BY created_at DESC LIMIT 1';
+                        const rs = await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query(sql, [ln]));
+                        row = ((_a = rs === null || rs === void 0 ? void 0 : rs.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
+                    }
+                }
+                catch (_b) { }
+                if (!row) {
+                    try {
+                        row = store_1.db.orderImportStaging.find((x) => x.id === id);
+                    }
+                    catch (_c) { }
+                }
+            }
         }
         else {
             row = store_1.db.orderImportStaging.find((x) => x.id === id);
@@ -1243,8 +1301,10 @@ exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage
         const source = mapPlatform(String(row.channel || r.source || ''), r);
         const confirmation_code = String((row.confirmation_code || getVal(r, ['confirmation_code', 'Confirmation Code', 'Reservation Number'])) || '').trim();
         const guest_name = getVal(r, ['Guest', 'guest', 'guest_name', 'Booker Name']);
-        const checkin = getVal(r, ['checkin', 'check_in', 'start_date', 'Start date', 'Arrival']);
-        const checkout = getVal(r, ['checkout', 'check_out', 'end_date', 'End date', 'Departure']);
+        const checkinRaw = getVal(r, ['checkin', 'check_in', 'start_date', 'Start date', 'Arrival']);
+        const checkoutRaw = getVal(r, ['checkout', 'check_out', 'end_date', 'End date', 'Departure']);
+        const checkinDayStr = dayOnly(checkinRaw);
+        const checkoutDayStr = dayOnly(checkoutRaw);
         const priceRaw = getVal(r, ['price', 'Amount', 'Total Payment']);
         const cleaningRaw = getVal(r, ['cleaning_fee', 'Cleaning fee']);
         const price = priceRaw != null ? Number(priceRaw) : undefined;
@@ -1253,7 +1313,7 @@ exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage
         const stRaw = getVal(r, ['status', 'Status']) || '';
         const stLower = stRaw.toLowerCase();
         const status = stLower === 'ok' ? 'confirmed' : (stLower.includes('cancel') ? 'cancelled' : (stRaw ? stRaw : 'confirmed'));
-        const parsed = createOrderSchema.safeParse({ source, property_id, guest_name, checkin, checkout, price, cleaning_fee, currency, status, confirmation_code });
+        const parsed = createOrderSchema.safeParse({ source, property_id, guest_name, checkin: checkinDayStr, checkout: checkoutDayStr, price, cleaning_fee, currency, status, confirmation_code });
         if (!parsed.success)
             return res.status(400).json(parsed.error.format());
         const o = parsed.data;
@@ -1282,7 +1342,7 @@ exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage
                 const ms = co.getTime() - ci.getTime();
                 nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
             }
-            catch (_a) {
+            catch (_d) {
                 nights = 0;
             }
         }
@@ -1290,32 +1350,70 @@ exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage
         const total = o.price || 0;
         const net = o.net_income != null ? o.net_income : (total - cleaning);
         const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0);
-        const newOrder = { id: uuid(), ...o, checkin: ciIso, checkout: coIso, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key };
-        // duplicate by (source, confirmation_code)
+        const ciDay = String(o.checkin || '').slice(0, 10) || undefined;
+        const coDay = String(o.checkout || '').slice(0, 10) || undefined;
+        const newOrder = { id: uuid(), ...o, checkin: ciDay, checkout: coDay, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key };
+        // duplicate by confirmation_code
         try {
+            await ensureOrdersColumns();
             if (dbAdapter_1.hasPg && newOrder.confirmation_code) {
-                const dup = (await (0, dbAdapter_1.pgSelect)('orders', 'id', { source: newOrder.source, confirmation_code: newOrder.confirmation_code, property_id: newOrder.property_id })) || [];
-                if (Array.isArray(dup) && dup[0])
-                    return res.status(409).json({ message: '确认码已存在', confirmation_code: newOrder.confirmation_code, source: newOrder.source, property_id: newOrder.property_id });
+                const dup = (await (0, dbAdapter_1.pgSelect)('orders', 'id', { confirmation_code: newOrder.confirmation_code })) || [];
+                if (Array.isArray(dup) && dup[0]) {
+                    try {
+                        const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
+                        const payload = {};
+                        for (const k of allow) {
+                            if (newOrder[k] !== undefined)
+                                payload[k] = newOrder[k];
+                        }
+                        const row = await (0, dbAdapter_1.pgUpdate)('orders', String(dup[0].id), payload);
+                        try {
+                            (0, events_1.broadcastOrdersUpdated)({ action: 'update', id: String(dup[0].id) });
+                        }
+                        catch (_e) { }
+                        return res.status(200).json(row || dup[0]);
+                    }
+                    catch (_f) { }
+                }
             }
         }
-        catch (_b) { }
+        catch (_g) { }
         const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout);
         if (conflict)
             return res.status(409).json({ message: 'overlap' });
         if (dbAdapter_1.hasPg) {
+            let insertedOk = false;
             try {
+                await ensureOrdersColumns();
+                await ensureOrdersIndexes();
                 await (0, dbAdapter_1.pgInsert)('orders', newOrder);
+                insertedOk = true;
             }
-            catch (_c) { }
-            try {
-                await (0, dbAdapter_1.pgUpdate)('order_import_staging', id, { status: 'resolved', property_id, resolved_at: new Date().toISOString() });
+            catch (e) {
+                try {
+                    const { pgPool } = require('../dbAdapter');
+                    const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+                    if (/column\s+"confirmation_code"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) {
+                        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text'));
+                    }
+                    await ensureOrdersIndexes();
+                    await (0, dbAdapter_1.pgInsert)('orders', newOrder);
+                    insertedOk = true;
+                }
+                catch (e2) {
+                    return res.status(500).json({ message: (e2 === null || e2 === void 0 ? void 0 : e2.message) || 'insert failed' });
+                }
             }
-            catch (_d) { }
-            try {
-                (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: newOrder.id });
+            if (insertedOk) {
+                try {
+                    await (0, dbAdapter_1.pgUpdate)('order_import_staging', id, { status: 'resolved', property_id, resolved_at: new Date().toISOString() });
+                }
+                catch (_h) { }
+                try {
+                    (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: newOrder.id });
+                }
+                catch (_j) { }
             }
-            catch (_e) { }
         }
         else {
             const idx = store_1.db.orderImportStaging.findIndex((x) => x.id === id);
@@ -1324,7 +1422,7 @@ exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage
             try {
                 (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: newOrder.id });
             }
-            catch (_f) { }
+            catch (_k) { }
         }
         return res.status(201).json(newOrder);
     }
@@ -1449,6 +1547,7 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
         }
         catch (_c) { }
         const normalize = platform === 'airbnb' ? normAirbnb : (platform === 'booking' ? normBooking : normOther);
+        await ensureOrdersColumns();
         // build property match indexes
         const byName = {};
         const idToCode = {};
@@ -1515,7 +1614,8 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
             return !hasAny;
         }
         const errors = [];
-        let successCount = 0;
+        let createdCount = 0;
+        let updatedCount = 0;
         let rowIndexBase = 2; // 首行数据通常为第2行
         const tStart = Date.now();
         for (let i = 0; i < recordsAll.length; i++) {
@@ -1532,13 +1632,42 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
             if (!pid) {
                 try {
                     const payload = { id: require('uuid').v4(), channel: platform, raw_row: r, reason: 'unmatched_property', listing_name: ln, confirmation_code: cc, status: 'unmatched' };
-                    if (dbAdapter_1.hasPg)
-                        await (0, dbAdapter_1.pgInsert)('order_import_staging', payload);
-                    else
+                    if (dbAdapter_1.hasPg) {
+                        try {
+                            await (0, dbAdapter_1.pgInsert)('order_import_staging', payload);
+                        }
+                        catch (e) {
+                            const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+                            try {
+                                const { pgPool } = require('../dbAdapter');
+                                await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query(`CREATE TABLE IF NOT EXISTS order_import_staging (
+                  id text PRIMARY KEY,
+                  channel text,
+                  raw_row jsonb,
+                  reason text,
+                  listing_name text,
+                  confirmation_code text,
+                  listing_id text,
+                  property_code text,
+                  property_id text REFERENCES properties(id) ON DELETE SET NULL,
+                  status text DEFAULT 'unmatched',
+                  created_at timestamptz DEFAULT now(),
+                  resolved_at timestamptz
+                )`));
+                                await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE order_import_staging ADD COLUMN IF NOT EXISTS confirmation_code text'));
+                                await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE INDEX IF NOT EXISTS idx_order_import_staging_status ON order_import_staging(status)'));
+                                await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE INDEX IF NOT EXISTS idx_order_import_staging_created ON order_import_staging(created_at)'));
+                                await (0, dbAdapter_1.pgInsert)('order_import_staging', payload);
+                            }
+                            catch (_e) { }
+                        }
+                    }
+                    else {
                         store_1.db.orderImportStaging.push(payload);
+                    }
                     errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: '找不到房号', stagingId: payload.id });
                 }
-                catch (_e) {
+                catch (_f) {
                     errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: '找不到房号' });
                 }
                 continue;
@@ -1552,12 +1681,41 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                 const det = !checkin ? 'invalid_date:Start date' : 'invalid_date:End date';
                 try {
                     const payload = { id: require('uuid').v4(), channel: platform, raw_row: r, reason: det, listing_name: ln, confirmation_code: cc, status: 'unmatched' };
-                    if (dbAdapter_1.hasPg)
-                        await (0, dbAdapter_1.pgInsert)('order_import_staging', payload);
-                    else
+                    if (dbAdapter_1.hasPg) {
+                        try {
+                            await (0, dbAdapter_1.pgInsert)('order_import_staging', payload);
+                        }
+                        catch (e) {
+                            const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+                            try {
+                                const { pgPool } = require('../dbAdapter');
+                                await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query(`CREATE TABLE IF NOT EXISTS order_import_staging (
+                  id text PRIMARY KEY,
+                  channel text,
+                  raw_row jsonb,
+                  reason text,
+                  listing_name text,
+                  confirmation_code text,
+                  listing_id text,
+                  property_code text,
+                  property_id text REFERENCES properties(id) ON DELETE SET NULL,
+                  status text DEFAULT 'unmatched',
+                  created_at timestamptz DEFAULT now(),
+                  resolved_at timestamptz
+                )`));
+                                await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE order_import_staging ADD COLUMN IF NOT EXISTS confirmation_code text'));
+                                await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE INDEX IF NOT EXISTS idx_order_import_staging_status ON order_import_staging(status)'));
+                                await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE INDEX IF NOT EXISTS idx_order_import_staging_created ON order_import_staging(created_at)'));
+                                await (0, dbAdapter_1.pgInsert)('order_import_staging', payload);
+                            }
+                            catch (_g) { }
+                        }
+                    }
+                    else {
                         store_1.db.orderImportStaging.push(payload);
+                    }
                 }
-                catch (_f) { }
+                catch (_h) { }
                 errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'invalid_date' });
                 continue;
             }
@@ -1596,19 +1754,19 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                     continue;
                 }
             }
-            // upsert by (source, confirmation_code)
+            // upsert by confirmation_code
             let exists = null;
             try {
                 if (dbAdapter_1.hasPg) {
-                    const dup = (await (0, dbAdapter_1.pgSelect)('orders', '*', { source, confirmation_code: cc, property_id: pid })) || [];
+                    const dup = (await (0, dbAdapter_1.pgSelect)('orders', '*', { confirmation_code: cc })) || [];
                     exists = Array.isArray(dup) ? dup[0] : null;
                 }
                 else {
-                    exists = store_1.db.orders.find(o => o.confirmation_code === cc && o.source === source);
+                    exists = store_1.db.orders.find(o => o.confirmation_code === cc);
                 }
             }
-            catch (_g) { }
-            const payload = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkinDay ? `${checkinDay}T12:00:00` : undefined), checkout: (checkoutDay ? `${checkoutDay}T11:59:59` : undefined), price, cleaning_fee, total_payment_raw: (platform === 'booking' ? Number(tpRawStr) : undefined), processed_status: (platform === 'booking' ? 'computed_0_835' : undefined) };
+            catch (_j) { }
+            const payload = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkinDay || undefined), checkout: (checkoutDay || undefined), price, cleaning_fee, total_payment_raw: (platform === 'booking' ? Number(tpRawStr) : undefined), processed_status: (platform === 'booking' ? 'computed_0_835' : undefined) };
             try {
                 if (dbAdapter_1.hasPg) {
                     if (exists && exists.id) {
@@ -1619,6 +1777,9 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                             const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
                             try {
                                 const { pgPool } = require('../dbAdapter');
+                                if (/column\s+"confirmation_code"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) {
+                                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text'));
+                                }
                                 if (/column\s+"total_payment_raw"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) {
                                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric'));
                                 }
@@ -1631,22 +1792,28 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                                 throw e2;
                             }
                         }
+                        updatedCount++;
                     }
                     else {
                         let row;
                         try {
+                            await ensureOrdersIndexes();
                             row = await (0, dbAdapter_1.pgInsert)('orders', { id: require('uuid').v4(), ...payload });
                         }
                         catch (e) {
                             const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
                             try {
                                 const { pgPool } = require('../dbAdapter');
+                                if (/column\s+"confirmation_code"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) {
+                                    await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text'));
+                                }
                                 if (/column\s+"total_payment_raw"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) {
                                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric'));
                                 }
                                 if (/column\s+"processed_status"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) {
                                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text'));
                                 }
+                                await ensureOrdersIndexes();
                                 row = await (0, dbAdapter_1.pgInsert)('orders', { id: require('uuid').v4(), ...payload });
                             }
                             catch (e2) {
@@ -1656,11 +1823,12 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                         if ((row === null || row === void 0 ? void 0 : row.id) && idToCode[pid])
                             row.property_code = idToCode[pid];
                         store_1.db.orders.push(row);
+                        createdCount++;
                     }
                     try {
                         (0, events_1.broadcastOrdersUpdated)({ action: exists ? 'update' : 'create', id: ((exists === null || exists === void 0 ? void 0 : exists.id) || undefined) });
                     }
-                    catch (_h) { }
+                    catch (_k) { }
                 }
                 else {
                     if (exists)
@@ -1670,13 +1838,16 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                     try {
                         (0, events_1.broadcastOrdersUpdated)({ action: exists ? 'update' : 'create' });
                     }
-                    catch (_j) { }
+                    catch (_l) { }
+                    if (exists)
+                        updatedCount++;
+                    else
+                        createdCount++;
                 }
-                successCount++;
                 try {
                     (0, store_1.addAudit)('OrderImportAudit', ((exists === null || exists === void 0 ? void 0 : exists.id) || (payload === null || payload === void 0 ? void 0 : payload.confirmation_code) || 'unknown'), 'process', null, { source_platform: platform, external_id: cc, total_payment_raw: (platform === 'booking' ? Number(tpRawStr) : undefined), price, status: 'ok', actor_id: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub, processed_at: new Date().toISOString() }, (_b = req.user) === null || _b === void 0 ? void 0 : _b.sub);
                 }
-                catch (_k) { }
+                catch (_m) { }
             }
             catch (e) {
                 errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: '写入失败: ' + String((e === null || e === void 0 ? void 0 : e.message) || '') });
@@ -1685,7 +1856,8 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
         const tSpent = Date.now() - tStart;
         const mem = process.memoryUsage();
         const cpu = process.cpuUsage();
-        return res.json({ successCount, errorCount: errors.length, errors, buildVersion, metrics: { ms: tSpent, rss: mem.rss, heapUsed: mem.heapUsed, cpuUserMicros: cpu.user, cpuSystemMicros: cpu.system } });
+        const successCount = createdCount + updatedCount;
+        return res.json({ successCount, createdCount, updatedCount, errorCount: errors.length, errors, buildVersion, metrics: { ms: tSpent, rss: mem.rss, heapUsed: mem.heapUsed, cpuUserMicros: cpu.user, cpuSystemMicros: cpu.system } });
     }
     catch (e) {
         try {
@@ -1695,8 +1867,89 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
             else
                 store_1.db.orderImportStaging.push(payload);
         }
-        catch (_l) { }
+        catch (_o) { }
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'import failed', buildVersion: (process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown') });
+    }
+});
+exports.router.post('/actions/dedupeByConfirmationCode', (0, auth_1.requirePerm)('order.manage'), async (req, res) => {
+    try {
+        const body = req.body || {};
+        const dryRun = String(body.dry_run || '').toLowerCase() === 'true' || body.dry_run === true;
+        if (!dbAdapter_1.hasPg)
+            return res.status(400).json({ message: 'pg required' });
+        await ensureOrdersColumns();
+        const rows = (await (0, dbAdapter_1.pgSelect)('orders', 'id,confirmation_code,source,property_id,guest_name,guest_phone,checkin,checkout,price,cleaning_fee,net_income,avg_nightly_price,nights,currency,status,email_header_at,created_at')) || [];
+        const groups = new Map();
+        for (const r of rows) {
+            const cc = String(r.confirmation_code || '').trim();
+            if (!cc)
+                continue;
+            const arr = groups.get(cc) || [];
+            arr.push(r);
+            groups.set(cc, arr);
+        }
+        const pickLonger = (a, b) => { const s = String(a || ''); const t = String(b || ''); return (t.length > s.length) ? (t || undefined) : (s || undefined); };
+        const pickDefined = (a, b) => (a !== undefined && a !== null && String(a) !== '' ? a : (b !== undefined && b !== null && String(b) !== '' ? b : undefined));
+        const srcPriority = (s) => {
+            const v = String(s || '').toLowerCase();
+            if (v === 'airbnb')
+                return 0;
+            if (v === 'booking')
+                return 1;
+            if (v === 'airbnb_email' || v === 'booking_email' || v.endsWith('_email'))
+                return 2;
+            if (v === 'offline')
+                return 3;
+            return 9;
+        };
+        const results = [];
+        await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+            for (const [cc, arr] of groups.entries()) {
+                if (!arr || arr.length <= 1)
+                    continue;
+                const sorted = arr.slice().sort((a, b) => srcPriority(a.source) - srcPriority(b.source) || new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+                const master = sorted[0];
+                const others = sorted.slice(1);
+                const merged = { id: master.id };
+                for (const r of others) {
+                    merged.source = master.source;
+                    merged.property_id = pickDefined(master.property_id, r.property_id);
+                    merged.guest_name = pickLonger(master.guest_name, r.guest_name);
+                    merged.guest_phone = pickDefined(master.guest_phone, r.guest_phone);
+                    merged.checkin = pickDefined(master.checkin, r.checkin);
+                    merged.checkout = pickDefined(master.checkout, r.checkout);
+                    merged.price = pickDefined(master.price, r.price);
+                    merged.cleaning_fee = pickDefined(master.cleaning_fee, r.cleaning_fee);
+                    merged.net_income = pickDefined(master.net_income, r.net_income);
+                    merged.avg_nightly_price = pickDefined(master.avg_nightly_price, r.avg_nightly_price);
+                    merged.nights = pickDefined(master.nights, r.nights);
+                    merged.currency = pickDefined(master.currency, r.currency);
+                    merged.status = pickDefined(master.status, r.status);
+                    const e1 = master.email_header_at ? new Date(master.email_header_at) : null;
+                    const e2 = r.email_header_at ? new Date(r.email_header_at) : null;
+                    merged.email_header_at = (e1 && e2) ? (e1 < e2 ? master.email_header_at : r.email_header_at) : (master.email_header_at || r.email_header_at || undefined);
+                }
+                if (!dryRun) {
+                    const payload = {};
+                    for (const k of ['source', 'property_id', 'guest_name', 'guest_phone', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'email_header_at']) {
+                        if (merged[k] !== undefined)
+                            payload[k] = merged[k];
+                    }
+                    await (0, dbAdapter_1.pgUpdate)('orders', master.id, payload, client);
+                    for (const r of others) {
+                        await (0, dbAdapter_1.pgDelete)('orders', r.id, client);
+                    }
+                }
+                results.push({ confirmation_code: cc, kept_id: master.id, deleted_ids: others.map(o => o.id) });
+            }
+        });
+        if (!dryRun) {
+            await ensureOrdersIndexes();
+        }
+        return res.json({ ok: true, deduped: results.length, items: results });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'dedupe_failed' });
     }
 });
 const deductionSchema = zod_1.z.object({ amount: zod_1.z.coerce.number().positive(), currency: zod_1.z.string().optional(), item_desc: zod_1.z.string().min(1), note: zod_1.z.string().optional() });
