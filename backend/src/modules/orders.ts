@@ -447,6 +447,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
       }
       const insertOrder: any = { ...newOrder }
       delete insertOrder.property_code
+      await ensureOrdersIndexes()
       const row = await pgInsert('orders', insertOrder)
       try { broadcastOrdersUpdated({ action: 'create', id: row?.id }) } catch {}
       return res.status(201).json(row)
@@ -458,6 +459,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
           await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
           await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = \"idx_orders_confirmation_code_unique\") THEN BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
           await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_confirmation_code_unique ON orders(source, confirmation_code) WHERE confirmation_code IS NOT NULL')
+          await ensureOrdersIndexes()
           const ins: any = { ...newOrder }; delete ins.property_code
           const row = await pgInsert('orders', ins)
           return res.status(201).json(row)
@@ -967,6 +969,7 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
           }
           const insertPayload: any = { ...newOrder }
           delete insertPayload.property_code
+          await ensureOrdersIndexes()
           await pgInsert('orders', insertPayload)
           writeOk = true
         } catch (e: any) {
@@ -1438,15 +1441,15 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
             updatedCount++
           } else {
             let row: any
-            try { row = await pgInsert('orders', { id: require('uuid').v4(), ...payload }) } catch (e: any) {
+            try { await ensureOrdersIndexes(); row = await pgInsert('orders', { id: require('uuid').v4(), ...payload }) } catch (e: any) {
               const msg = String(e?.message || '')
               try {
                 const { pgPool } = require('../dbAdapter')
                 if (/column\s+"confirmation_code"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text') }
                 if (/column\s+"total_payment_raw"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric') }
                 if (/column\s+"processed_status"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text') }
-                row = await pgInsert('orders', { id: require('uuid').v4(), ...payload })
-              } catch (e2: any) { throw e2 }
+                await ensureOrdersIndexes(); row = await pgInsert('orders', { id: require('uuid').v4(), ...payload }) }
+              catch (e2: any) { throw e2 }
             }
             if (row?.id && idToCode[pid]) row.property_code = idToCode[pid]
             db.orders.push(row as any)
