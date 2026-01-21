@@ -308,6 +308,17 @@ async function ensureOrdersColumns() {
     await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text')
   } catch {}
 }
+async function ensureOrdersIndexes() {
+  try {
+    if (!hasPg) return
+    const { pgPool } = require('../dbAdapter')
+    await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
+    await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_confirmation_code_unique") THEN BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
+    await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_source_confirmation_code_unique") THEN BEGIN DROP INDEX IF EXISTS idx_orders_source_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
+    await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_src_cc_pid_unique ON orders(source, confirmation_code, property_id) WHERE confirmation_code IS NOT NULL')
+    await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_conf_pid_unique ON orders(confirmation_code, property_id) WHERE confirmation_code IS NOT NULL AND property_id IS NOT NULL')
+  } catch {}
+}
 function round2(n?: number): number | undefined {
   if (n == null) return undefined
   const x = Number(n)
@@ -1083,6 +1094,7 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
       let insertedOk = false
       try {
         await ensureOrdersColumns()
+        await ensureOrdersIndexes()
         await pgInsert('orders', newOrder as any)
         insertedOk = true
       } catch (e: any) {
@@ -1090,6 +1102,7 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
           const { pgPool } = require('../dbAdapter')
           const msg = String(e?.message || '')
           if (/column\s+"confirmation_code"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text') }
+          await ensureOrdersIndexes()
           await pgInsert('orders', newOrder as any)
           insertedOk = true
         } catch (e2: any) {
