@@ -207,6 +207,12 @@ export function requireResourcePerm(kind: 'view' | 'write' | 'delete') {
     if (!resource) return res.status(400).json({ message: 'missing resource' })
     const code = `${resource}.${kind}`
     let ok = false
+    const altWritePerms: Record<string, string[]> = {
+      recurring_payments: ['finance.tx.write'],
+      fixed_expenses: ['finance.tx.write'],
+      property_expenses: ['finance.tx.write'],
+      company_expenses: ['finance.tx.write'],
+    }
     try {
       const { hasPg, pgSelect } = require('./dbAdapter')
       if (hasPg) {
@@ -220,7 +226,13 @@ export function requireResourcePerm(kind: 'view' | 'write' | 'delete') {
         ok = Array.isArray(rows) && rows.length > 0
       }
     } catch {}
-    if (!ok) ok = roleHasPermission(roleName, code)
+    if (!ok) {
+      ok = roleHasPermission(roleName, code)
+      if (!ok && kind === 'write') {
+        const alts = altWritePerms[resource] || []
+        for (const c of alts) { if (roleHasPermission(roleName, c)) { ok = true; break } }
+      }
+    }
     if (!ok) return res.status(403).json({ message: 'forbidden' })
     next()
   }
