@@ -313,10 +313,9 @@ async function ensureOrdersIndexes() {
     if (!hasPg) return
     const { pgPool } = require('../dbAdapter')
     await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
-    await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_confirmation_code_unique") THEN BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
-    await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_source_confirmation_code_unique") THEN BEGIN DROP INDEX IF EXISTS idx_orders_source_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
-    await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_src_cc_pid_unique ON orders(source, confirmation_code, property_id) WHERE confirmation_code IS NOT NULL')
-    await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_conf_pid_unique ON orders(confirmation_code, property_id) WHERE confirmation_code IS NOT NULL AND property_id IS NOT NULL')
+    await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_src_cc_pid_unique") THEN BEGIN DROP INDEX IF EXISTS idx_orders_src_cc_pid_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
+    await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_conf_pid_unique") THEN BEGIN DROP INDEX IF EXISTS idx_orders_conf_pid_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
+    await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_confirmation_code_unique ON orders(confirmation_code) WHERE confirmation_code IS NOT NULL')
   } catch {}
 }
 function round2(n?: number): number | undefined {
@@ -411,9 +410,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   try {
     const cc = (newOrder as any).confirmation_code
     if (hasPg && cc) {
-      const dupAny: any[] = (await pgSelect('orders', '*', { confirmation_code: cc, property_id: newOrder.property_id })) || []
-      const dupAny2: any[] = (await pgSelect('orders', '*', { source: newOrder.source, confirmation_code: cc, property_id: newOrder.property_id })) || []
-      const dup = Array.isArray(dupAny2) && dupAny2[0] ? dupAny2 : dupAny
+      const dup: any[] = (await pgSelect('orders', '*', { confirmation_code: cc })) || []
       if (Array.isArray(dup) && dup[0]) {
         if (force) {
           try {
@@ -447,6 +444,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
       }
       const insertOrder: any = { ...newOrder }
       delete insertOrder.property_code
+      await ensureOrdersIndexes()
       const row = await pgInsert('orders', insertOrder)
       try { broadcastOrdersUpdated({ action: 'create', id: row?.id }) } catch {}
       return res.status(201).json(row)
@@ -458,6 +456,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
           await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
           await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = \"idx_orders_confirmation_code_unique\") THEN BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
           await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_confirmation_code_unique ON orders(source, confirmation_code) WHERE confirmation_code IS NOT NULL')
+          await ensureOrdersIndexes()
           const ins: any = { ...newOrder }; delete ins.property_code
           const row = await pgInsert('orders', ins)
           return res.status(201).json(row)
@@ -967,11 +966,26 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
           }
           const insertPayload: any = { ...newOrder }
           delete insertPayload.property_code
+          await ensureOrdersIndexes()
           await pgInsert('orders', insertPayload)
           writeOk = true
         } catch (e: any) {
           const code = (e && (e as any).code) || ''
-          if (code === '23505') { results.push({ ok: false, error: 'duplicate', confirmation_code: (newOrder as any).confirmation_code, source: newOrder.source, property_id: newOrder.property_id }); skipped++; continue }
+          if (code === '23505') {
+            try {
+              const cc = (newOrder as any).confirmation_code
+              const dup: any[] = (await pgSelect('orders', 'id', { confirmation_code: cc })) || []
+              if (Array.isArray(dup) && dup[0]) {
+                const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+                const payload: any = {}
+                for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
+                await pgUpdate('orders', String(dup[0].id), payload)
+                updatedCount++
+                continue
+              }
+            } catch {}
+            results.push({ ok: false, error: 'duplicate', confirmation_code: (newOrder as any).confirmation_code, source: newOrder.source, property_id: newOrder.property_id }); skipped++; continue
+          }
           const detail = String((e as any)?.message || e)
           results.push({ ok: false, error: 'write_failed', id: newOrder.id, confirmation_code: (newOrder as any).confirmation_code, source: newOrder.source, property_id: newOrder.property_id, ...(detail ? { detail } : {}) }); skipped++; continue
         }
@@ -1080,12 +1094,21 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
     const ciDay = String(o.checkin || '').slice(0,10) || undefined
     const coDay = String(o.checkout || '').slice(0,10) || undefined
     const newOrder: Order = { id: uuid(), ...o, checkin: ciDay as any, checkout: coDay as any, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key }
-    // duplicate by (source, confirmation_code)
+    // duplicate by confirmation_code
     try {
       await ensureOrdersColumns()
       if (hasPg && (newOrder as any).confirmation_code) {
-        const dup: any[] = (await pgSelect('orders', 'id', { source: newOrder.source, confirmation_code: (newOrder as any).confirmation_code, property_id: newOrder.property_id })) || []
-        if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '确认码已存在', confirmation_code: (newOrder as any).confirmation_code, source: newOrder.source, property_id: newOrder.property_id })
+        const dup: any[] = (await pgSelect('orders', 'id', { confirmation_code: (newOrder as any).confirmation_code })) || []
+        if (Array.isArray(dup) && dup[0]) {
+          try {
+            const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+            const payload: any = {}
+            for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
+            const row = await pgUpdate('orders', String(dup[0].id), payload)
+            try { broadcastOrdersUpdated({ action: 'update', id: String(dup[0].id) }) } catch {}
+            return res.status(200).json(row || dup[0])
+          } catch {}
+        }
       }
     } catch {}
     const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout)
@@ -1410,14 +1433,14 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
         if (!cc || !guest_name || !checkinDay || !checkoutDay) { errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'missing_data' }); continue }
       }
 
-      // upsert by (source, confirmation_code)
+      // upsert by confirmation_code
       let exists: any = null
       try {
         if (hasPg) {
-          const dup: any[] = (await pgSelect('orders', '*', { source, confirmation_code: cc, property_id: pid })) || []
+          const dup: any[] = (await pgSelect('orders', '*', { confirmation_code: cc })) || []
           exists = Array.isArray(dup) ? dup[0] : null
         } else {
-          exists = db.orders.find(o => (o as any).confirmation_code === cc && o.source === source)
+          exists = db.orders.find(o => (o as any).confirmation_code === cc)
         }
       } catch {}
 
@@ -1438,15 +1461,15 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
             updatedCount++
           } else {
             let row: any
-            try { row = await pgInsert('orders', { id: require('uuid').v4(), ...payload }) } catch (e: any) {
+            try { await ensureOrdersIndexes(); row = await pgInsert('orders', { id: require('uuid').v4(), ...payload }) } catch (e: any) {
               const msg = String(e?.message || '')
               try {
                 const { pgPool } = require('../dbAdapter')
                 if (/column\s+"confirmation_code"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text') }
                 if (/column\s+"total_payment_raw"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric') }
                 if (/column\s+"processed_status"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) { await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text') }
-                row = await pgInsert('orders', { id: require('uuid').v4(), ...payload })
-              } catch (e2: any) { throw e2 }
+                await ensureOrdersIndexes(); row = await pgInsert('orders', { id: require('uuid').v4(), ...payload }) }
+              catch (e2: any) { throw e2 }
             }
             if (row?.id && idToCode[pid]) row.property_code = idToCode[pid]
             db.orders.push(row as any)
@@ -1474,6 +1497,75 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
       if (hasPg) await pgInsert('order_import_staging', payload); else (db as any).orderImportStaging.push(payload)
     } catch {}
     return res.status(500).json({ message: e?.message || 'import failed', buildVersion: (process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown') })
+  }
+})
+
+router.post('/actions/dedupeByConfirmationCode', requirePerm('order.manage'), async (req, res) => {
+  try {
+    const body: any = req.body || {}
+    const dryRun = String(body.dry_run || '').toLowerCase() === 'true' || body.dry_run === true
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    await ensureOrdersColumns()
+    const rows: any[] = (await pgSelect('orders', 'id,confirmation_code,source,property_id,guest_name,guest_phone,checkin,checkout,price,cleaning_fee,net_income,avg_nightly_price,nights,currency,status,email_header_at,created_at')) || []
+    const groups = new Map<string, any[]>()
+    for (const r of rows) {
+      const cc = String(r.confirmation_code || '').trim()
+      if (!cc) continue
+      const arr = groups.get(cc) || []
+      arr.push(r)
+      groups.set(cc, arr)
+    }
+    const pickLonger = (a?: string, b?: string) => { const s = String(a||''); const t = String(b||''); return (t.length > s.length) ? (t || undefined) : (s || undefined) }
+    const pickDefined = (a: any, b: any) => (a !== undefined && a !== null && String(a) !== '' ? a : (b !== undefined && b !== null && String(b) !== '' ? b : undefined))
+    const srcPriority = (s?: string) => {
+      const v = String(s||'').toLowerCase()
+      if (v === 'airbnb') return 0
+      if (v === 'booking') return 1
+      if (v === 'airbnb_email' || v === 'booking_email' || v.endsWith('_email')) return 2
+      if (v === 'offline') return 3
+      return 9
+    }
+    const results: any[] = []
+    await pgRunInTransaction(async (client: any) => {
+      for (const [cc, arr] of groups.entries()) {
+        if (!arr || arr.length <= 1) continue
+        const sorted = arr.slice().sort((a, b) => srcPriority(a.source) - srcPriority(b.source) || new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime())
+        const master = sorted[0]
+        const others = sorted.slice(1)
+        const merged: any = { id: master.id }
+        for (const r of others) {
+          merged.source = master.source
+          merged.property_id = pickDefined(master.property_id, r.property_id)
+          merged.guest_name = pickLonger(master.guest_name, r.guest_name)
+          merged.guest_phone = pickDefined(master.guest_phone, r.guest_phone)
+          merged.checkin = pickDefined(master.checkin, r.checkin)
+          merged.checkout = pickDefined(master.checkout, r.checkout)
+          merged.price = pickDefined(master.price, r.price)
+          merged.cleaning_fee = pickDefined(master.cleaning_fee, r.cleaning_fee)
+          merged.net_income = pickDefined(master.net_income, r.net_income)
+          merged.avg_nightly_price = pickDefined(master.avg_nightly_price, r.avg_nightly_price)
+          merged.nights = pickDefined(master.nights, r.nights)
+          merged.currency = pickDefined(master.currency, r.currency)
+          merged.status = pickDefined(master.status, r.status)
+          const e1 = master.email_header_at ? new Date(master.email_header_at) : null
+          const e2 = r.email_header_at ? new Date(r.email_header_at) : null
+          merged.email_header_at = (e1 && e2) ? (e1 < e2 ? master.email_header_at : r.email_header_at) : (master.email_header_at || r.email_header_at || undefined)
+        }
+        if (!dryRun) {
+          const payload: any = {}
+          for (const k of ['source','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','email_header_at']) {
+            if (merged[k] !== undefined) payload[k] = merged[k]
+          }
+          await pgUpdate('orders', master.id, payload, client)
+          for (const r of others) { await pgDelete('orders', r.id, client) }
+        }
+        results.push({ confirmation_code: cc, kept_id: master.id, deleted_ids: others.map(o => o.id) })
+      }
+    })
+    if (!dryRun) { await ensureOrdersIndexes() }
+    return res.json({ ok: true, deduped: results.length, items: results })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'dedupe_failed' })
   }
 })
 
