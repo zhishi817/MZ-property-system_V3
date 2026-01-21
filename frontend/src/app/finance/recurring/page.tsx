@@ -8,7 +8,7 @@ import { useEffect, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
 
-type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; is_paid?: boolean }
+type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; is_paid?: boolean }
 type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
 type Property = { id: string; code?: string; address?: string; region?: string }
 
@@ -485,7 +485,7 @@ export default function RecurringPage() {
           <Form.Item label="提前提醒天数"><InputNumber value={3} disabled style={{ width:'100%' }} /></Form.Item>
           <Form.Item name="status" label="状态" initialValue="active"><Select options={[{value:'active',label:'active'},{value:'paused',label:'paused'}]} /></Form.Item>
           {editing ? null : (
-            <Form.Item name="initial_mark" label="新增后状态" initialValue="paid"><Select options={[{value:'unpaid',label:'待支付'},{value:'paid',label:'已支付'}]} /></Form.Item>
+            <Form.Item name="initial_mark" label="新增后状态" initialValue="unpaid"><Select options={[{value:'unpaid',label:'待支付'},{value:'paid',label:'已支付'}]} /></Form.Item>
           )}
           <Space direction="vertical" style={{ width:'100%' }}>
             <Form.Item name="payment_type" label="付款类型" initialValue="bank_account">
@@ -523,6 +523,7 @@ export default function RecurringPage() {
             <Descriptions.Item label="对象">{(viewing.scope==='company' || !viewing.property_id) ? '公司' : getLabel(viewing.property_id)}</Descriptions.Item>
             <Descriptions.Item label="支出事项">{viewing.vendor || '-'}</Descriptions.Item>
             <Descriptions.Item label="支出类别">{viewing.category==='other' ? '其他' : (viewing.category || '-')}</Descriptions.Item>
+            <Descriptions.Item label="营收报表归类">{(() => { const m: Record<string,string> = { parking_fee:'车位费', electricity:'电费', water:'水费', gas:'气费', internet:'网费', consumables:'消耗品费', body_corp:'物业费', council:'市政费', other:'其他支出' }; const v = String(viewing.report_category||''); return m[v] || (v || '-') })()}</Descriptions.Item>
             <Descriptions.Item label="金额">{viewing.amount!=null?`$${Number(viewing.amount).toFixed(2)}`:'-'}</Descriptions.Item>
             <Descriptions.Item label="每月到期日">{dueForSelectedMonth(viewing) || '-'}</Descriptions.Item>
             <Descriptions.Item label="提醒">{viewing.remind_days_before!=null?`${viewing.remind_days_before}天`:'-'}</Descriptions.Item>
