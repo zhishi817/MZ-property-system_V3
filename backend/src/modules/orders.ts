@@ -4,7 +4,7 @@ import { broadcastOrdersUpdated } from './events'
 import { z } from 'zod'
 import { requirePerm, requireAnyPerm } from '../auth'
 // Supabase removed
-import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
+import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
 
 export const router = Router()
 
@@ -980,7 +980,6 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
                 const payload: any = {}
                 for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
                 await pgUpdate('orders', String(dup[0].id), payload)
-                updatedCount++
                 continue
               }
             } catch {}
