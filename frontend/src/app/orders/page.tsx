@@ -838,35 +838,6 @@ export default function OrdersPage() {
     }
   }
 
-  async function proceedUpdateByCode() {
-    const v = form.getFieldsValue()
-    const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
-    const price = Number(v.price || 0)
-    const cleaning = Number(v.cleaning_fee || 0)
-    const net = Math.max(0, price - cleaning)
-    const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
-    const selectedNew = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
-    const payload = {
-      source: v.source,
-      status: v.status || 'confirmed',
-      property_id: v.property_id,
-      property_code: v.property_code || selectedNew?.code || selectedNew?.address || v.property_id,
-      confirmation_code: v.confirmation_code,
-      guest_name: v.guest_name,
-      guest_phone: v.guest_phone,
-      checkin: v.checkin.format('YYYY-MM-DD') + 'T12:00:00',
-      checkout: v.checkout.format('YYYY-MM-DD') + 'T11:59:59',
-      price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price,
-      cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning,
-      net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net,
-      avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg,
-      nights,
-      currency: 'AUD'
-    }
-    const res = await fetch(`${API_BASE}/orders/merge-by-confirmation`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
-    if (res.ok) { message.success('已更新旧记录'); setDupOpen(false); setOpen(false); form.resetFields(); load() } else { const j = await res.json().catch(()=>({})); message.error(j?.message || '更新失败') }
-  }
-
   async function resolveImport(id: string, property_id?: string) {
     if (!property_id) { message.warning('请选择房号'); return }
     try {
@@ -1346,8 +1317,7 @@ export default function OrdersPage() {
             ] as any}
           />
           <Space style={{ marginTop: 12 }}>
-            {hasPerm('order.create.override') ? <Button type="primary" onClick={proceedCreateForce}>创建新记录（覆盖）</Button> : <Tag color="orange">无覆盖创建权限</Tag>}
-            {hasPerm('order.manage') ? <Button onClick={proceedUpdateByCode}>一键更新旧记录</Button> : null}
+            {hasPerm('order.create.override') ? <Button type="primary" onClick={proceedCreateForce}>继续创建（覆盖）</Button> : <Tag color="orange">无覆盖创建权限</Tag>}
             <Button onClick={()=> setDupOpen(false)}>返回</Button>
           </Space>
         </>

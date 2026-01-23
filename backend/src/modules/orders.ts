@@ -493,33 +493,6 @@ router.post('/validate-duplicate', requireAnyPerm(['order.create','order.manage'
   }
 })
 
-router.post('/merge-by-confirmation', requireAnyPerm(['order.create','order.manage']), async (req, res) => {
-  const parsed = createOrderSchema.safeParse(req.body)
-  if (!parsed.success) return res.status(400).json(parsed.error.format())
-  const o = parsed.data as any
-  const cc = String(o?.confirmation_code || '').trim()
-  if (!cc) return res.status(400).json({ message: 'confirmation_code_required' })
-  if (hasPg) {
-    try {
-      const dup: any[] = (await pgSelect('orders', '*', { confirmation_code: cc })) || []
-      const target = Array.isArray(dup) ? dup[0] : null
-      if (!target?.id) return res.status(404).json({ message: 'order_not_found' })
-      const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','payment_currency','payment_received']
-      const payload: any = {}
-      for (const k of allow) { if (o[k] !== undefined) payload[k] = o[k] }
-      const row = await pgUpdate('orders', String(target.id), payload)
-      try { broadcastOrdersUpdated({ action: 'update', id: String(target.id) }) } catch {}
-      return res.json(row || target)
-    } catch (e: any) { return res.status(500).json({ message: e?.message || 'merge_failed' }) }
-  }
-  const idx = db.orders.findIndex((r: any) => String((r as any).confirmation_code || '') === cc)
-  if (idx === -1) return res.status(404).json({ message: 'order_not_found' })
-  const updated = { ...db.orders[idx], ...o }
-  db.orders[idx] = updated as any
-  try { broadcastOrdersUpdated({ action: 'update', id: (updated as any).id }) } catch {}
-  return res.json(updated)
-})
-
 router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   const { id } = req.params
   const parsed = updateOrderSchema.safeParse(req.body)
