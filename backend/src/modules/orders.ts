@@ -1835,12 +1835,10 @@ async function startImportJob(csv: string, channel?: string): Promise<string> {
   const existingByCc: Set<string> = new Set()
   try {
     if (hasPg) {
-      const rowsCc: any[] = (await pgSelect('orders', 'confirmation_code,source,property_id')) || []
+      const rowsCc: any[] = (await pgSelect('orders', 'confirmation_code')) || []
       for (const r of (rowsCc || [])) {
         const cc = String(r?.confirmation_code || '').trim()
-        const src = String(r?.source || '').trim().toLowerCase()
-        const pid = String(r?.property_id || '').trim()
-        if (cc) existingByCc.add(`${src}|${cc}|${pid}`)
+        if (cc) existingByCc.add(cc)
       }
     }
   } catch {}
@@ -1892,7 +1890,7 @@ async function startImportJob(csv: string, channel?: string): Promise<string> {
       if (!ci || !co) { job.skipped++; inc('invalid_date'); job.parsed++; continue }
       if (cc && existingByCc.has(cc)) { job.skipped++; inc('duplicate'); job.parsed++; continue }
       try {
-        const payload: any = { source: src, confirmation_code: cc || undefined, property_id: pid, checkin: ci, checkout: co, status: 'confirmed' }
+        const payload: any = { source: platform, confirmation_code: cc || undefined, property_id: pid, checkin: ci, checkout: co, status: 'confirmed' }
         const parsed = createOrderSchema.safeParse(payload)
         if (!parsed.success) { job.skipped++; inc('invalid_row'); job.parsed++; continue }
         const o = parsed.data
@@ -1913,6 +1911,16 @@ async function startImportJob(csv: string, channel?: string): Promise<string> {
 }
 
 router.post('/import/start', requirePerm('order.manage'), text({ type: ['text/csv','text/plain'] }), async (req, res) => {
+  try {
+    const channel = String((req.query as any)?.channel || '')
+    const body = typeof req.body === 'string' ? req.body : ''
+    const jobId = await startImportJob(body || '', channel)
+    return res.json({ job_id: jobId })
+  } catch (e: any) { return res.status(500).json({ message: e?.message || 'start_failed' }) }
+})
+
+// Fallback alias to support old clients posting to /orders/import
+router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','text/plain','*/*'] }), async (req, res) => {
   try {
     const channel = String((req.query as any)?.channel || '')
     const body = typeof req.body === 'string' ? req.body : ''

@@ -1111,6 +1111,7 @@ router.get('/email-orders-raw/failures', requirePerm('order.manage'), async (req
       FROM email_orders_raw r
       WHERE r.created_at >= now() - ($1 || ':days')::interval
         AND COALESCE(r.status,'') IN ('failed','unmatched_property','parsed')
+        AND COALESCE(r.extra->>'resolved_order_id','') = ''
       ORDER BY r.created_at DESC
       LIMIT $2
     `, [String(sinceDays), limit])
