@@ -1844,6 +1844,26 @@ async function startImportJob(csv: string, channel?: string): Promise<string> {
   } catch {}
   let i = 0
   const inc = (k: string) => { job.reason_counts[k] = (job.reason_counts[k] || 0) + 1 }
+  function getField(obj: any, keys: string[]): string | undefined {
+    const map: Record<string, any> = {}
+    Object.keys(obj || {}).forEach((kk) => { const nk = String(kk).toLowerCase().replace(/\s+/g, '_').trim(); map[nk] = (obj as any)[kk] })
+    for (const k of keys) {
+      const v1 = (obj as any)[k]
+      if (v1 != null && String(v1).trim() !== '') return String(v1)
+      const nk = String(k).toLowerCase().replace(/\s+/g, '_').trim()
+      const v2 = map[nk]
+      if (v2 != null && String(v2).trim() !== '') return String(v2)
+    }
+    return undefined
+  }
+  function toAmount(v: any): number | undefined {
+    if (v == null) return undefined
+    const s = String(v).trim()
+    if (!s) return undefined
+    const t = s.replace(/[,]/g, '').replace(/[A-Za-z$\s]/g, '')
+    const n = Number(t)
+    return isNaN(n) ? undefined : Number(n.toFixed(2))
+  }
   const chunk = async () => {
     const end = Math.min(i + 100, rows.length)
     for (; i < end; i++) {
@@ -1889,8 +1909,28 @@ async function startImportJob(csv: string, channel?: string): Promise<string> {
       }
       if (!ci || !co) { job.skipped++; inc('invalid_date'); job.parsed++; continue }
       if (cc && existingByCc.has(cc)) { job.skipped++; inc('duplicate'); job.parsed++; continue }
+      const amtStr = getField(r, ['Amount','Total','Total Payment','price','you_earn'])
+      const cleanStr = getField(r, ['Cleaning fee','cleaning_fee'])
+      const currency = (getField(r, ['Currency','payment_currency']) || 'AUD').toUpperCase()
+      let price: number | undefined = undefined
+      if (platform === 'booking') {
+        const tpRaw = getField(r, ['Total Payment','total_payment','Amount','amount'])
+        const tpNum = tpRaw != null ? Number(String(tpRaw).replace(/[,]/g,'')) : NaN
+        if (!isFinite(tpNum)) { job.skipped++; inc('invalid_amount'); job.parsed++; continue }
+        const p = Number((tpNum * 0.835).toFixed(2))
+        if (!(p > 0)) { job.skipped++; inc('missing_amount'); job.parsed++; continue }
+        price = p
+      } else {
+        price = toAmount(amtStr)
+        if (!(price! > 0)) { job.skipped++; inc('missing_amount'); job.parsed++; continue }
+      }
+      const cleaning_fee = toAmount(cleanStr) || 0
+      let nights = 0
+      try { const a = new Date(`${ci}T00:00:00`); const b = new Date(`${co}T00:00:00`); const ms = b.getTime() - a.getTime(); nights = ms > 0 ? Math.round(ms/(1000*60*60*24)) : 0 } catch {}
+      const net = Number(((price || 0) - (cleaning_fee || 0)).toFixed(2))
+      const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
       try {
-        const payload: any = { source: platform, confirmation_code: cc || undefined, property_id: pid, checkin: ci, checkout: co, status: 'confirmed' }
+        const payload: any = { source: platform, confirmation_code: cc || undefined, property_id: pid, checkin: ci, checkout: co, status: 'confirmed', price, cleaning_fee, currency, net_income: net, avg_nightly_price: avg, nights }
         const parsed = createOrderSchema.safeParse(payload)
         if (!parsed.success) { job.skipped++; inc('invalid_row'); job.parsed++; continue }
         const o = parsed.data
