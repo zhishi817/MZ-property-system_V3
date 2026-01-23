@@ -313,8 +313,8 @@ async function ensureOrdersIndexes() {
     if (!hasPg) return
     const { pgPool } = require('../dbAdapter')
     await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
-    await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_src_cc_pid_unique") THEN BEGIN DROP INDEX IF EXISTS idx_orders_src_cc_pid_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
-    await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_conf_pid_unique") THEN BEGIN DROP INDEX IF EXISTS idx_orders_conf_pid_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
+    await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_source_confirmation_code_unique") THEN DROP INDEX idx_orders_source_confirmation_code_unique; END $$;')
+    await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_conf_pid_unique") THEN DROP INDEX idx_orders_conf_pid_unique; END $$;')
     await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_confirmation_code_unique ON orders(confirmation_code) WHERE confirmation_code IS NOT NULL')
   } catch {}
 }
@@ -800,6 +800,20 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
   const results: any[] = []
   let inserted = 0
   let skipped = 0
+  const existingByCc: Set<string> = new Set()
+  const existingProps: Set<string> = new Set()
+  try {
+    if (hasPg) {
+      const rowsCc: any[] = (await pgSelect('orders', 'confirmation_code')) || []
+      for (const r of (rowsCc || [])) {
+        const cc = String(r?.confirmation_code || '').trim()
+        if (cc) existingByCc.add(cc)
+      }
+      const propsAll: any[] = (await pgSelect('properties', 'id')) || []
+      for (const p of (propsAll || [])) { const id = String(p?.id || '').trim(); if (id) existingProps.add(id) }
+      await ensureOrdersIndexes()
+    }
+  } catch {}
   for (let idx = 0; idx < rowsInput.length; idx++) {
     const r = rowsInput[idx]
     if (isBlankOrPayoutRow(r)) { continue }
@@ -946,27 +960,23 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
         if (hasPg) {
           const cc = (newOrder as any).confirmation_code
           if (cc) {
-            const dup: any[] = (await pgSelect('orders', 'id', { source: newOrder.source, confirmation_code: cc, property_id: newOrder.property_id })) || []
-            if (Array.isArray(dup) && dup[0]) { results.push({ ok: false, error: 'duplicate', confirmation_code: cc, source: newOrder.source, property_id: newOrder.property_id }); skipped++; continue }
+            const sig = `${String(newOrder.source||'').toLowerCase()}|${String(cc).trim()}|${String(newOrder.property_id||'')}`
+            if (existingByCc.has(sig)) { results.push({ ok: false, error: 'duplicate', confirmation_code: cc, source: newOrder.source, property_id: newOrder.property_id }); skipped++; continue }
           }
         }
       } catch {}
       let writeOk = false
       if (hasPg) {
         try {
-          if (newOrder.property_id) {
-            const existsPropRows: any[] = (await pgSelect('properties', 'id', { id: newOrder.property_id })) || []
-            const existsProp = Array.isArray(existsPropRows) && !!existsPropRows[0]
-            if (!existsProp) {
-              const payload: any = { id: newOrder.property_id }
-              const codeGuess = idToCode[newOrder.property_id || '']
-              if (codeGuess) payload.code = codeGuess
-              await pgInsert('properties', payload)
-            }
+          if (newOrder.property_id && !existingProps.has(String(newOrder.property_id))) {
+            const payload: any = { id: newOrder.property_id }
+            const codeGuess = idToCode[newOrder.property_id || '']
+            if (codeGuess) payload.code = codeGuess
+            await pgInsert('properties', payload)
+            existingProps.add(String(newOrder.property_id))
           }
           const insertPayload: any = { ...newOrder }
           delete insertPayload.property_code
-          await ensureOrdersIndexes()
           await pgInsert('orders', insertPayload)
           writeOk = true
         } catch (e: any) {
@@ -1780,4 +1790,160 @@ router.post('/:id/confirm-payment', requirePerm('order.write'), async (req, res)
     try { const row = await pgUpdate('orders', id, { payment_received: true } as any); return res.json(row || base) } catch {}
   }
   return res.json(base)
+})
+type ImportJob = { id: string; channel?: string; total: number; parsed: number; inserted: number; skipped: number; reason_counts: Record<string, number>; started_at: number; finished_at?: number }
+const importJobs: Record<string, ImportJob> = {}
+
+function normalizePlatform(s?: string): string {
+  const v = String(s || '').trim().toLowerCase()
+  if (v.startsWith('airbnb')) return 'airbnb'
+  if (v.startsWith('booking')) return 'booking'
+  return v || 'offline'
+}
+
+async function startImportJob(csv: string, channel?: string): Promise<string> {
+  const parse = require('csv-parse').parse
+  const rows: any[] = await new Promise((resolve) => {
+    parse(csv || '', { columns: true, skip_empty_lines: true, bom: true, relax_column_count: true, relax_quotes: true, trim: true }, (err: any, recs: any[]) => {
+      if (err) resolve([]); else resolve(Array.isArray(recs) ? recs : [])
+    })
+  })
+  const id = require('uuid').v4()
+  importJobs[id] = { id, channel: normalizePlatform(channel), total: rows.length, parsed: 0, inserted: 0, skipped: 0, reason_counts: {}, started_at: Date.now() }
+  const job = importJobs[id]
+  const platform = job.channel || 'offline'
+  const byName: Record<string, string> = {}
+  const idToCode: Record<string, string> = {}
+  try {
+    if (hasPg) {
+      const cols = platform === 'airbnb' ? 'id,code,airbnb_listing_name' : (platform === 'booking' ? 'id,code,booking_listing_name' : 'id,code,listing_names')
+      const propsRaw: any[] = (await pgSelect('properties', cols)) || []
+      propsRaw.forEach((p: any) => {
+        const idp = String(p.id)
+        const code = String(p.code || '')
+        if (code) idToCode[idp] = code
+        if (platform === 'airbnb' || platform === 'booking') {
+          const nm = String((platform === 'airbnb' ? p.airbnb_listing_name : p.booking_listing_name) || '')
+          if (nm) byName[`name:${String(nm).toLowerCase().replace(/\s+/g,' ').trim()}`] = idp
+        } else {
+          const ln = p?.listing_names || {}
+          Object.values(ln || {}).forEach((nm: any) => { if (nm) byName[`name:${String(nm).toLowerCase().replace(/\s+/g,' ').trim()}`] = idp })
+        }
+      })
+    }
+  } catch {}
+  const existingByCc: Set<string> = new Set()
+  try {
+    if (hasPg) {
+      const rowsCc: any[] = (await pgSelect('orders', 'confirmation_code,source,property_id')) || []
+      for (const r of (rowsCc || [])) {
+        const cc = String(r?.confirmation_code || '').trim()
+        const src = String(r?.source || '').trim().toLowerCase()
+        const pid = String(r?.property_id || '').trim()
+        if (cc) existingByCc.add(`${src}|${cc}|${pid}`)
+      }
+    }
+  } catch {}
+  let i = 0
+  const inc = (k: string) => { job.reason_counts[k] = (job.reason_counts[k] || 0) + 1 }
+  const chunk = async () => {
+    const end = Math.min(i + 100, rows.length)
+    for (; i < end; i++) {
+      const r = rows[i] || {}
+      const ln = String((r['Listing'] || r['Listing name'] || r['Property Name'] || r['listing'] || r['listing_name'] || '')).trim()
+      const pid = ln ? byName[`name:${String(ln).toLowerCase().replace(/\s+/g,' ').trim()}`] : undefined
+      const cc = String((r['Confirmation Code'] || r['confirmation_code'] || r['Reservation Number'] || '') || '').trim()
+      const ciRaw = String((r['Start date'] || r['Arrival'] || r['checkin'] || '') || '').trim()
+      const coRaw = String((r['End date'] || r['Departure'] || r['checkout'] || '') || '').trim()
+      const ci = dayOnly(ciRaw)
+      const co = dayOnly(coRaw)
+      if (!pid) {
+        job.skipped++; inc('unmatched_property'); job.parsed++;
+        try {
+          const payload: any = { id: require('uuid').v4(), channel: platform, raw_row: r, reason: 'unmatched_property', listing_name: ln, confirmation_code: cc, status: 'unmatched' }
+          if (hasPg) {
+            try { await pgInsert('order_import_staging', payload) } catch (e: any) {
+              try {
+                const { pgPool } = require('../dbAdapter')
+                await pgPool?.query(`CREATE TABLE IF NOT EXISTS order_import_staging (
+                  id text PRIMARY KEY,
+                  channel text,
+                  raw_row jsonb,
+                  reason text,
+                  listing_name text,
+                  confirmation_code text,
+                  listing_id text,
+                  property_code text,
+                  property_id text REFERENCES properties(id) ON DELETE SET NULL,
+                  status text DEFAULT 'unmatched',
+                  created_at timestamptz DEFAULT now(),
+                  resolved_at timestamptz
+                )`)
+                await pgPool?.query('ALTER TABLE order_import_staging ADD COLUMN IF NOT EXISTS confirmation_code text')
+                await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_order_import_staging_status ON order_import_staging(status)')
+                await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_order_import_staging_created ON order_import_staging(created_at)')
+                await pgInsert('order_import_staging', payload)
+              } catch {}
+            }
+          } else { (db as any).orderImportStaging.push(payload) }
+        } catch {}
+        continue
+      }
+      if (!ci || !co) { job.skipped++; inc('invalid_date'); job.parsed++; continue }
+      if (cc && existingByCc.has(cc)) { job.skipped++; inc('duplicate'); job.parsed++; continue }
+      try {
+        const payload: any = { source: src, confirmation_code: cc || undefined, property_id: pid, checkin: ci, checkout: co, status: 'confirmed' }
+        const parsed = createOrderSchema.safeParse(payload)
+        if (!parsed.success) { job.skipped++; inc('invalid_row'); job.parsed++; continue }
+        const o = parsed.data
+        const ciIso = `${String(o.checkin).slice(0,10)}T12:00:00`
+        const coIso = `${String(o.checkout).slice(0,10)}T11:59:59`
+        const newOrder: any = { id: require('uuid').v4(), ...o, checkin: ciIso, checkout: coIso }
+        if (hasPg) {
+          const insertPayload: any = { ...newOrder }
+          try { await pgInsert('orders', insertPayload); job.inserted++ } catch { job.skipped++; inc('write_failed') }
+        } else { job.inserted++ }
+      } catch { job.skipped++ }
+      job.parsed++
+    }
+    if (i < rows.length) { setTimeout(chunk, 0) } else { job.finished_at = Date.now() }
+  }
+  setTimeout(chunk, 0)
+  return id
+}
+
+router.post('/import/start', requirePerm('order.manage'), text({ type: ['text/csv','text/plain'] }), async (req, res) => {
+  try {
+    const channel = String((req.query as any)?.channel || '')
+    const body = typeof req.body === 'string' ? req.body : ''
+    const jobId = await startImportJob(body || '', channel)
+    return res.json({ job_id: jobId })
+  } catch (e: any) { return res.status(500).json({ message: e?.message || 'start_failed' }) }
+})
+
+router.get('/import/jobs/:id/progress', requirePerm('order.manage'), async (req, res) => {
+  const { id } = req.params
+  const j = importJobs[id]
+  if (!j) return res.status(404).json({ message: 'job_not_found' })
+  const dur = (j.finished_at || Date.now()) - j.started_at
+  return res.json({ parsed: j.parsed, total: j.total, inserted: j.inserted, skipped: j.skipped, duration_ms: dur, reason_counts: j.reason_counts })
+})
+
+router.get('/import/unmatched', requirePerm('order.manage'), async (req, res) => {
+  const q: any = req.query || {}
+  const since = Math.max(1, Number(q.since_minutes || 60))
+  const limit = Math.max(1, Math.min(500, Number(q.limit || 200)))
+  const channel = String(q.channel || '').trim() || undefined
+  try {
+    if (hasPg) {
+      const { pgPool } = require('../dbAdapter')
+      const condChan = channel ? 'AND channel = $1' : ''
+      const sql = `SELECT id, channel, listing_name, confirmation_code, raw_row, created_at FROM order_import_staging WHERE status='unmatched' ${condChan} AND created_at > now() - interval '${since} minutes' ORDER BY created_at DESC LIMIT ${limit}`
+      const rs = await pgPool?.query(sql, channel ? [channel] : [])
+      const arr = (rs?.rows || [])
+      return res.json(arr)
+    }
+    const arr = ((db as any).orderImportStaging || []).filter((x: any) => String(x?.status||'')==='unmatched').slice(0, limit)
+    return res.json(arr)
+  } catch (e: any) { return res.status(500).json({ message: e?.message || 'list_failed' }) }
 })
