@@ -1864,6 +1864,12 @@ async function startImportJob(csv: string, channel?: string): Promise<string> {
     const n = Number(t)
     return isNaN(n) ? undefined : Number(n.toFixed(2))
   }
+  function toName(v: any): string | undefined {
+    if (v == null) return undefined
+    const s = String(v).trim()
+    if (!s) return undefined
+    return s.replace(/["'“”‘’]/g, '').replace(/\s+/g, ' ').trim()
+  }
   const chunk = async () => {
     const end = Math.min(i + 100, rows.length)
     for (; i < end; i++) {
@@ -1925,12 +1931,14 @@ async function startImportJob(csv: string, channel?: string): Promise<string> {
         if (!(price! > 0)) { job.skipped++; inc('missing_amount'); job.parsed++; continue }
       }
       const cleaning_fee = toAmount(cleanStr) || 0
+      const guestRaw = platform === 'booking' ? getField(r, ['Booker Name','booker_name','Guest','guest','guest_name']) : getField(r, ['Guest','guest','guest_name','Booker Name','booker_name'])
+      const guest_name = toName(guestRaw)
       let nights = 0
       try { const a = new Date(`${ci}T00:00:00`); const b = new Date(`${co}T00:00:00`); const ms = b.getTime() - a.getTime(); nights = ms > 0 ? Math.round(ms/(1000*60*60*24)) : 0 } catch {}
       const net = Number(((price || 0) - (cleaning_fee || 0)).toFixed(2))
       const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
       try {
-        const payload: any = { source: platform, confirmation_code: cc || undefined, property_id: pid, checkin: ci, checkout: co, status: 'confirmed', price, cleaning_fee, currency, net_income: net, avg_nightly_price: avg, nights }
+        const payload: any = { source: platform, confirmation_code: cc || undefined, property_id: pid, guest_name, checkin: ci, checkout: co, status: 'confirmed', price, cleaning_fee, currency, net_income: net, avg_nightly_price: avg, nights }
         const parsed = createOrderSchema.safeParse(payload)
         if (!parsed.success) { job.skipped++; inc('invalid_row'); job.parsed++; continue }
         const o = parsed.data
