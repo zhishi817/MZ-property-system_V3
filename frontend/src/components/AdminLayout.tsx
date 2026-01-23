@@ -124,7 +124,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
       setTimeout(() => { try { window.location.replace('/login') } catch {} }, 50)
     }
   }
-  if (!mounted) return null
+  // render consistently on SSR to avoid hydration mismatch
   if (!isLogin && !authed) {
     return (
       <Layout style={{ minHeight: '100vh', display:'flex', alignItems:'center', justifyContent:'center' }}>

@@ -30,6 +30,14 @@ export default function OrdersPage() {
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [importOpen, setImportOpen] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [importPercent, setImportPercent] = useState<number>(0)
+  const [importTotal, setImportTotal] = useState<number | null>(null)
+  const [importProcessed, setImportProcessed] = useState<number>(0)
+  const [importStage, setImportStage] = useState<'idle'|'uploading'|'processing'|'done'|'error'>('idle')
+  const [stuckReason, setStuckReason] = useState<string>('')
+  const [lastProgressAt, setLastProgressAt] = useState<number>(0)
+  const [uploadBytes, setUploadBytes] = useState<number>(0)
+  const [uploadBytesTotal, setUploadBytesTotal] = useState<number>(0)
   const [importSummary, setImportSummary] = useState<{ inserted: number; skipped: number; reason_counts?: Record<string, number> } | null>(null)
   const [importResults, setImportResults] = useState<any[]>([])
   const [importErrors, setImportErrors] = useState<any[]>([])
@@ -39,6 +47,7 @@ export default function OrdersPage() {
   const [calMonth, setCalMonth] = useState(dayjs())
   const [calPid, setCalPid] = useState<string | undefined>(undefined)
   const calRef = useRef<HTMLDivElement | null>(null)
+  const lastPctSetRef = useRef<number>(0)
   const [monthFilter, setMonthFilter] = useState<any | null>(null)
   const [sortKey, setSortKey] = useState<'email_header_at'|'checkin'|'checkout'>('email_header_at')
   const [sortOrder, setSortOrder] = useState<'ascend'|'descend'>('descend')
@@ -98,59 +107,171 @@ export default function OrdersPage() {
       console.log('IMPORT CLICKED')
       console.log('CSV FILE', file)
       setImporting(true)
+      setImportStage('uploading')
+      setStuckReason('')
+      setUploadBytes(0); setUploadBytesTotal(0)
       try {
         const f: File = file as File
         const isCsv = (f.type || '').includes('csv') || (f.name || '').toLowerCase().endsWith('.csv')
         if (isCsv) {
           const text = await f.text()
-          const headers = { 'Content-Type': 'text/csv', ...authHeaders() }
-          console.log('CALLING IMPORT API', `${API_BASE}/orders/import?channel=${importPlatform}`)
-          const res = await fetch(`${API_BASE}/orders/import?channel=${importPlatform}`, { method: 'POST', headers, body: text })
-          const j = await res.json().catch(() => null)
-          console.log('IMPORT API RESP', res.status, j)
-          if (res.ok) {
-            setImportSummary({ inserted: Number(j?.inserted || 0), skipped: Number(j?.skipped || 0), reason_counts: j?.reason_counts || {} })
-            setImportResults(Array.isArray(j?.results) ? (j.results || []).slice(0, 20) : [])
-            setImportErrors([])
-            message.success(`导入完成：新增 ${j?.inserted || 0}，跳过 ${j?.skipped || 0}`)
-            const list = Array.isArray(j?.results) ? j.results.filter((r:any)=> r && r.error === 'unmatched_property').map((r:any)=> ({ id: r.id, listing_name: r.listing_name, confirmation_code: r.confirmation_code, channel: r.source || 'unknown', reason: 'unmatched_property' })) : []
-            setUnmatched(list)
-            onSuccess && onSuccess(j, file)
-            load()
-          } else {
-            onError && onError(j)
-            message.error(j?.message || '导入失败')
+          try {
+            const worker = new Worker(new URL('../../workers/orderImportWorker.ts', import.meta.url))
+            worker.onmessage = (ev: MessageEvent) => { try { const t = Number((ev.data||{}).total||0); if (t>=0) setImportTotal(t) } catch {} }
+            worker.postMessage({ text })
+          } catch {}
+          console.log('CALLING IMPORT API', `${API_BASE}/orders/import/start?channel=${importPlatform}`)
+          const xhr = new XMLHttpRequest()
+          xhr.open('POST', `${API_BASE}/orders/import/start?channel=${importPlatform}`)
+          Object.entries(authHeaders()).forEach(([k,v])=> xhr.setRequestHeader(k, v))
+          xhr.setRequestHeader('Content-Type','text/csv')
+          xhr.upload.onprogress = (e: any) => {
+            if (e.lengthComputable) {
+              const pctUpload = Math.round((e.loaded / e.total) * 60)
+              const now = Date.now(); if (now - (lastPctSetRef.current || 0) > 100) { setImportPercent(pctUpload); lastPctSetRef.current = now }
+              setUploadBytes(e.loaded); setUploadBytesTotal(e.total)
+              setLastProgressAt(Date.now())
+            }
           }
+          xhr.onload = () => {
+            let j: any = null
+            try { j = JSON.parse(xhr.responseText || '{}') } catch {}
+            if (xhr.status>=200 && xhr.status<300) {
+              const jobId = String(j?.job_id||'')
+              if (!jobId) { setImportStage('error'); setStuckReason('缺少job_id'); setImporting(false); return }
+              setImportStage('processing')
+              const timer = window.setInterval(async () => {
+                try {
+                  const res = await fetch(`${API_BASE}/orders/import/jobs/${encodeURIComponent(jobId)}/progress`, { headers: { ...authHeaders() } })
+                  const p = await res.json().catch(()=>({}))
+                  if (res.ok) {
+                    const total = Number(p?.total||0)
+                    const parsed = Number(p?.parsed||0)
+                    const inserted = Number(p?.inserted||0)
+                    const skipped = Number(p?.skipped||0)
+                    if (total>0) setImportTotal(t => (t || total))
+                    setImportProcessed(parsed)
+                    const pctProc = total>0 ? Math.min(100, Math.round(60 + 40 * (parsed/total))) : 80
+                    setImportPercent(pctProc)
+                    if (parsed >= total && total>0) {
+                      window.clearInterval(timer)
+                      const reason_counts = (p?.reason_counts || {})
+                      setImportSummary({ inserted, skipped, reason_counts })
+                      setImportStage('done')
+                      setImportPercent(100)
+                      message.success(`导入完成：新增 ${inserted}，跳过 ${skipped}`)
+                      try {
+                        const resU = await fetch(`${API_BASE}/orders/import/unmatched?limit=200&since_minutes=120&channel=${encodeURIComponent(String(importPlatform))}`, { headers: { ...authHeaders() } })
+                        const jU = await resU.json().catch(()=>[])
+                        const arr = Array.isArray(jU) ? jU.map((r:any)=> ({ id: r.id, listing_name: r.listing_name, confirmation_code: r.confirmation_code, channel: r.channel || importPlatform, reason: 'unmatched_property' })) : []
+                        setUnmatched(arr)
+                      } catch {}
+                      setImporting(false)
+                      load()
+                    }
+                  } else {
+                    window.clearInterval(timer)
+                    setImportStage('error')
+                    setStuckReason(`进度查询错误：HTTP ${res.status}`)
+                    setImporting(false)
+                  }
+                } catch (e: any) {
+                  window.clearInterval(timer)
+                  setImportStage('error')
+                  setStuckReason(String(e?.message||'进度查询失败'))
+                  setImporting(false)
+                }
+              }, 1000)
+            } else {
+              setImportStage('error')
+              setStuckReason(`服务器返回错误：HTTP ${xhr.status}`)
+              onError && onError(j)
+              message.error(j?.message || `导入失败（HTTP ${xhr.status}）`)
+              setImporting(false)
+            }
+          }
+          xhr.onerror = () => {
+            setImportStage('error')
+            setStuckReason('网络错误或连接中断')
+            message.error('导入失败：网络错误')
+            onError && onError(new Error('network error'))
+            setImporting(false)
+          }
+          xhr.timeout = 120000
+          xhr.ontimeout = () => {
+            setImportStage('error')
+            setStuckReason('请求超时（服务器解析耗时过长或网络问题）')
+            message.error('导入失败：请求超时')
+            setImporting(false)
+          }
+          xhr.send(text)
         } else {
           const reader = new FileReader()
           const b64: string = await new Promise((resolve) => { reader.onload = () => resolve(String(reader.result)); reader.readAsDataURL(f) })
-          const headers = { 'Content-Type': 'application/json', ...authHeaders() }
           const payload = { platform: importPlatform, fileType: 'excel', fileContent: b64 }
           console.log('CALLING IMPORT API (excel)', `${API_BASE}/orders/actions/importBookings`)
-          const res = await fetch(`${API_BASE}/orders/actions/importBookings`, { method: 'POST', headers, body: JSON.stringify(payload) })
-          const j = await res.json().catch(() => null)
-          console.log('IMPORT API RESP (excel)', res.status, j)
-          if (res.ok) {
-            const errors = Array.isArray(j?.errors) ? j.errors : []
-            setImportSummary({ inserted: Number(j?.successCount || 0), skipped: Number(j?.errorCount || 0) })
-            setImportResults([])
-            setImportErrors(errors.slice(0, 200))
-            message.success(`导入完成：新增 ${j?.successCount || 0}，失败 ${j?.errorCount || 0}`)
-            const list = errors.filter((e:any)=> e?.reason === '找不到房号' || e?.reason === 'unmatched_property').map((e:any)=> ({ id: e.stagingId, listing_name: e.listing_name, confirmation_code: e.confirmation_code, channel: 'unknown', reason: 'unmatched_property' }))
-            setUnmatched(list)
-            onSuccess && onSuccess(j, file)
-            load()
-          } else {
-            onError && onError(j)
-            message.error(j?.message || '导入失败')
+          const xhr = new XMLHttpRequest()
+          xhr.open('POST', `${API_BASE}/orders/actions/importBookings`)
+          Object.entries(authHeaders()).forEach(([k,v])=> xhr.setRequestHeader(k, v))
+          xhr.setRequestHeader('Content-Type','application/json')
+          xhr.upload.onprogress = (e: any) => {
+            if (e.lengthComputable) {
+              const pctUpload = Math.round((e.loaded / e.total) * 60)
+              const now = Date.now(); if (now - (lastPctSetRef.current || 0) > 100) { setImportPercent(pctUpload); lastPctSetRef.current = now }
+              setUploadBytes(e.loaded); setUploadBytesTotal(e.total)
+              setLastProgressAt(Date.now())
+            }
           }
+          xhr.onload = () => {
+            setImportStage('processing')
+            let j: any = null
+            try { j = JSON.parse(xhr.responseText || '{}') } catch {}
+            if (xhr.status>=200 && xhr.status<300) {
+              const errors = Array.isArray(j?.errors) ? j.errors : []
+              setImportSummary({ inserted: Number(j?.successCount || 0), skipped: Number(j?.errorCount || 0) })
+              setImportResults([])
+              setImportErrors(errors.slice(0, 200))
+              const processed = Number(j?.successCount||0) + Number(j?.errorCount||0)
+              setImportProcessed(processed)
+              setImportPercent(100)
+              setImportStage('done')
+              message.success(`导入完成：新增 ${j?.successCount || 0}，失败 ${j?.errorCount || 0}`)
+              const list = errors.filter((e:any)=> e?.reason === '找不到房号' || e?.reason === 'unmatched_property').map((e:any)=> ({ id: e.stagingId, listing_name: e.listing_name, confirmation_code: e.confirmation_code, channel: 'unknown', reason: 'unmatched_property' }))
+              setUnmatched(list)
+              onSuccess && onSuccess(j, file)
+              load()
+            } else {
+              setImportStage('error')
+              setStuckReason(`服务器返回错误：HTTP ${xhr.status}`)
+              onError && onError(j)
+              message.error(j?.message || `导入失败（HTTP ${xhr.status}）`)
+            }
+            setImporting(false)
+          }
+          xhr.onerror = () => {
+            setImportStage('error')
+            setStuckReason('网络错误或连接中断')
+            message.error('导入失败：网络错误')
+            onError && onError(new Error('network error'))
+            setImporting(false)
+          }
+          xhr.timeout = 120000
+          xhr.ontimeout = () => {
+            setImportStage('error')
+            setStuckReason('请求超时（服务器解析耗时过长或网络问题）')
+            message.error('导入失败：请求超时')
+            setImporting(false)
+          }
+          xhr.send(JSON.stringify(payload))
         }
       } catch (err: any) {
         console.error('IMPORT ERROR', err)
         onError && onError(err)
         message.error('导入失败')
+        setImportStage('error')
+        setStuckReason(String(err?.message||'未知错误'))
+        setImporting(false)
       }
-      setImporting(false)
     },
     onChange(info) { console.log('UPLOAD CHANGE', info?.file?.status, info) },
     onDrop(e) { console.log('UPLOAD DROP', e?.dataTransfer?.files) },
@@ -159,9 +280,29 @@ export default function OrdersPage() {
     accept: '.csv,.xlsx,.xls,application/json,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel'
   }
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const now = Date.now()
+      if (importStage === 'uploading') {
+        if (lastProgressAt && now - lastProgressAt > 5000) setStuckReason('上传进度长时间无变化，可能网络慢或文件较大')
+      } else if (importStage === 'processing') {
+        if (lastProgressAt && now - lastProgressAt > 8000) setStuckReason('服务器正在解析导入数据，耗时较长（数据量大或去重检查）')
+      }
+    }, 1000)
+    return () => { try { window.clearInterval(timer) } catch {} }
+  }, [importStage, lastProgressAt])
+  useEffect(() => {
+    if (importSummary) setImportProcessed(Number(importSummary.inserted||0) + Number(importSummary.skipped||0))
+  }, [importSummary])
+
   async function load() {
-    const res = await getJSON<Order[]>('/orders')
-    setData(res)
+    try {
+      const res = await getJSON<Order[]>('/orders')
+      setData(Array.isArray(res) ? res : [])
+    } catch {
+      setData([])
+      try { message.error('订单列表加载失败') } catch {}
+    }
   }
   
 
@@ -1505,13 +1646,30 @@ export default function OrdersPage() {
         ) : null}
       </Card>
     </Drawer>
-    <Modal open={importOpen} onCancel={() => setImportOpen(false)} footer={null} title="批量导入订单" width={960} styles={{ body: { maxHeight: 520, overflow: 'auto' } }}>
+    <Modal open={importOpen} onCancel={() => { setImportOpen(false); setImportPercent(0); setImportProcessed(0); setImportTotal(null) }} footer={null} title="批量导入订单" width={960} styles={{ body: { maxHeight: 520, overflow: 'auto' } }}>
       <Upload.Dragger {...uploadProps} disabled={importing}>
         <p>点击或拖拽上传 CSV 或 Excel 文件</p>
         <p>平台导出 CSV 按表头解析（不依赖列顺序）：</p>
         <p>Airbnb: Listing, Start date, End date, Amount, Cleaning fee, Guest, Confirmation Code</p>
         <p>Booking: Property Name, Arrival, Departure, Total Payment, Booker Name, Reservation Number, Status</p>
       </Upload.Dragger>
+      <Card size="small" style={{ marginTop: 12 }}>
+        <Space wrap>
+          <span>上传进度</span>
+          <div style={{ minWidth: 240 }}>
+            <div style={{ display:'flex', alignItems:'center', gap: 8 }}>
+              <div style={{ flex: 1, height: 8, background:'#eee', borderRadius: 6 }}>
+                <div style={{ transform: `scaleX(${Math.max(0, Math.min(1, importPercent/100))})`, transformOrigin:'left center', height: 8, background:'#1677ff', borderRadius: 6, transition:'transform 0.2s ease', willChange:'transform' }} />
+              </div>
+              <span>{Math.round(importPercent)}%</span>
+            </div>
+          </div>
+          {importTotal != null ? <span>已处理 {importProcessed} / {importTotal}</span> : null}
+          {uploadBytesTotal ? <span>已上传 {Math.round(uploadBytes/1024)}KB / {Math.round(uploadBytesTotal/1024)}KB</span> : null}
+          <Tag color={importStage==='error'?'red': importStage==='done'?'green':'blue'}>{importStage==='uploading'?'上传中': importStage==='processing'?'服务器解析中': importStage==='done'?'完成': importStage==='error'?'失败':'闲置'}</Tag>
+          {stuckReason ? <span style={{ color:'#fa8c16' }}>{stuckReason}</span> : null}
+        </Space>
+      </Card>
       <Space style={{ marginTop: 12 }}>
         <span>Excel 平台：</span>
         <Radio.Group value={importPlatform} onChange={(e)=> setImportPlatform(e.target.value)}>

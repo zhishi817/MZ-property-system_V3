@@ -8,7 +8,7 @@ import { useEffect, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
 
-type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; is_paid?: boolean }
+type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; is_paid?: boolean; created_at?: string }
 type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
 type Property = { id: string; code?: string; address?: string; region?: string }
 
@@ -111,7 +111,7 @@ export default function RecurringPage() {
       }
       return (
         <div style={{ fontSize:12, lineHeight:1.6, whiteSpace:'normal' }}>
-          {type ? <div>付款类型: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, type)}>{type==='bank_account'?'Bank account': type==='bpay'?'Bpay':'PayID'}</span></div> : null}
+          {type ? <div>付款类型: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, type)}>{type==='bank_account'?'Bank account': type==='bpay'?'Bpay': type==='payid'?'PayID': type==='cash'?'现金':'PayID'}</span></div> : null}
           {accountName ? <div>收款方: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, accountName)}>{accountName}</span></div> : null}
           {(bsb || accNo) ? <div>BSB: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, bsb)}>{bsb || '-'}</span> | Acc: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, accNo)}>{accNo || '-'}</span></div> : null}
           {(bpayCode || bpayRef) ? <div>Bpay: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, bpayCode)}>{bpayCode || '-'}</span> | Ref: <span style={{ cursor:'pointer' }} onClick={(e)=>copyAtMouse(e, bpayRef)}>{bpayRef || '-'}</span></div> : null}
@@ -240,6 +240,12 @@ export default function RecurringPage() {
       return { ...t, amount, next_due_date, is_paid, status: is_paid ? 'paid' : (t.status||''), category }
     })
     .sort((a,b)=>{
+      const aIsConsumables = String(a.category||'')==='消耗品费' || String(a.report_category||'')==='consumables'
+      const bIsConsumables = String(b.category||'')==='消耗品费' || String(b.report_category||'')==='consumables'
+      if (aIsConsumables !== bIsConsumables) return aIsConsumables ? 1 : -1
+      const ac = a.created_at ? new Date(a.created_at).getTime() : 0
+      const bc = b.created_at ? new Date(b.created_at).getTime() : 0
+      if (ac !== bc) return bc - ac
       const ad = parseAU(a.next_due_date)
       const bd = parseAU(b.next_due_date)
       const av = ad ? ad.valueOf() : Number.POSITIVE_INFINITY
@@ -489,7 +495,7 @@ export default function RecurringPage() {
           )}
           <Space direction="vertical" style={{ width:'100%' }}>
             <Form.Item name="payment_type" label="付款类型" initialValue="bank_account">
-              <Select options={[{value:'bank_account',label:'Bank account'},{value:'bpay',label:'Bpay'},{value:'payid',label:'PayID'},{value:'rent_deduction',label:'租金扣除'}]} />
+              <Select options={[{value:'bank_account',label:'Bank account'},{value:'bpay',label:'Bpay'},{value:'payid',label:'PayID'},{value:'cash',label:'现金'},{value:'rent_deduction',label:'租金扣除'}]} />
             </Form.Item>
             <Form.Item name="pay_account_name" label="收款方"><Input /></Form.Item>
             <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.payment_type!==cur.payment_type}>
@@ -531,7 +537,7 @@ export default function RecurringPage() {
             <Descriptions.Item label="状态">{viewing.status || '-'}</Descriptions.Item>
             <Descriptions.Item label="上次付款">{fmt(viewing.last_paid_date)}</Descriptions.Item>
             <Descriptions.Item label="下次到期">{fmt(dueForSelectedMonth(viewing))}</Descriptions.Item>
-            <Descriptions.Item label="付款类型">{viewing.payment_type==='bank_account'?'Bank account': viewing.payment_type==='bpay'?'Bpay': viewing.payment_type==='payid'?'PayID': viewing.payment_type==='rent_deduction'?'租金扣除':'-'}</Descriptions.Item>
+            <Descriptions.Item label="付款类型">{viewing.payment_type==='bank_account'?'Bank account': viewing.payment_type==='bpay'?'Bpay': viewing.payment_type==='payid'?'PayID': viewing.payment_type==='cash'?'现金': viewing.payment_type==='rent_deduction'?'租金扣除':'-'}</Descriptions.Item>
             <Descriptions.Item label="收款方">{viewing.pay_account_name || '-'}</Descriptions.Item>
             <Descriptions.Item label="BSB / Acc">{(viewing.pay_bsb||viewing.pay_account_number) ? `BSB: ${viewing.pay_bsb||'-'} | Acc: ${viewing.pay_account_number||'-'}` : '-'}</Descriptions.Item>
             <Descriptions.Item label="Bpay">{(viewing.bpay_code||viewing.pay_ref) ? `Code: ${viewing.bpay_code||'-'} | Ref: ${viewing.pay_ref||'-'}` : '-'}</Descriptions.Item>

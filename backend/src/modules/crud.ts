@@ -57,7 +57,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         } else if (resource === 'company_expenses') {
           orderBy = ' ORDER BY due_date ASC NULLS LAST, paid_date ASC NULLS LAST, occurred_at ASC'
         } else if (resource === 'recurring_payments') {
-          orderBy = ' ORDER BY next_due_date ASC NULLS LAST, due_day_of_month ASC, vendor ASC'
+          orderBy = " ORDER BY CASE WHEN category='消耗品费' OR report_category='consumables' THEN 1 ELSE 0 END ASC, created_at DESC NULLS LAST, next_due_date ASC NULLS LAST, due_day_of_month ASC, vendor ASC"
         } else if (resource === 'fixed_expenses') {
           orderBy = ' ORDER BY due_day_of_month ASC, vendor ASC'
         }
@@ -173,6 +173,12 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
       })
     } else if (resource === 'recurring_payments') {
       filtered = filtered.sort((a: any, b: any) => {
+        const aIsConsumables = String(a?.category || '') === '消耗品费' || String(a?.report_category || '') === 'consumables'
+        const bIsConsumables = String(b?.category || '') === '消耗品费' || String(b?.report_category || '') === 'consumables'
+        if (aIsConsumables !== bIsConsumables) return aIsConsumables ? 1 : -1
+        const ac = a?.created_at ? new Date(a.created_at).getTime() : 0
+        const bc = b?.created_at ? new Date(b.created_at).getTime() : 0
+        if (ac !== bc) return bc - ac
         const av = a?.next_due_date ? new Date(a.next_due_date).getTime() : Number.POSITIVE_INFINITY
         const bv = b?.next_due_date ? new Date(b.next_due_date).getTime() : Number.POSITIVE_INFINITY
         if (av !== bv) return av - bv
