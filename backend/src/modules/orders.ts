@@ -1919,6 +1919,16 @@ router.post('/import/start', requirePerm('order.manage'), text({ type: ['text/cs
   } catch (e: any) { return res.status(500).json({ message: e?.message || 'start_failed' }) }
 })
 
+// Fallback alias to support old clients posting to /orders/import
+router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','text/plain','*/*'] }), async (req, res) => {
+  try {
+    const channel = String((req.query as any)?.channel || '')
+    const body = typeof req.body === 'string' ? req.body : ''
+    const jobId = await startImportJob(body || '', channel)
+    return res.json({ job_id: jobId })
+  } catch (e: any) { return res.status(500).json({ message: e?.message || 'start_failed' }) }
+})
+
 router.get('/import/jobs/:id/progress', requirePerm('order.manage'), async (req, res) => {
   const { id } = req.params
   const j = importJobs[id]
