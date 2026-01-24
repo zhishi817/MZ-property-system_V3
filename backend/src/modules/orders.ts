@@ -563,22 +563,38 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
       const allowAll = [...allow, ...allowExtra]
       const payload: any = {}
       for (const k of allowAll) { if ((updated as any)[k] !== undefined) payload[k] = (updated as any)[k] }
-      const row = await pgUpdate('orders', id, payload)
-      try {
-        const wasCancelled = prevStatus !== 'cancelled' && (nextStatus === 'cancelled' || nextStatus === 'canceled')
-        if (wasCancelled) {
-          const { v4: uuid } = require('uuid')
-          const cancelFeeBody = Number(((req.body || {}) as any).cancel_fee || 0)
-          const basePrice = Number((payload.price ?? prev?.price ?? ((payload.net_income ?? prev?.net_income || 0) + (payload.cleaning_fee ?? prev?.cleaning_fee || 0))))
-          const cancelAmount = Number(((cancelFeeBody > 0 ? cancelFeeBody : basePrice) || 0).toFixed(2))
-          if (cancelAmount > 0) {
-            const occurred_at = String((payload.checkout || prev?.checkout || new Date().toISOString())).slice(0,10)
-            const currency = String((payload.payment_currency || (prev as any)?.payment_currency || 'AUD'))
-            await pgInsert('company_incomes', { id: uuid(), occurred_at, amount: cancelAmount, currency, category: 'cancel_fee', note: `订单取消费用（订单ID：${id}）`, property_id: payload.property_id ?? prev?.property_id ?? null } as any)
-            await pgInsert('finance_transactions', { id: uuid(), kind: 'income', amount: cancelAmount, currency, occurred_at, category: 'cancel_fee', note: 'Cancelation fee', property_id: payload.property_id ?? prev?.property_id ?? null, ref_type: 'order', ref_id: id } as any)
+      const row = await pgRunInTransaction(async (client) => {
+        const r1 = await pgUpdate('orders', id, payload, client)
+        // revert cancel -> confirmed: clean up cancel_fee records atomically
+        const prevSt = prevStatus
+        const nextSt = String((updated as any)?.status || '')
+        if (prevSt === 'cancelled' && nextSt !== 'cancelled') {
+          const q1 = await client.query(`SELECT id, occurred_at, amount, currency, note, property_id FROM finance_transactions WHERE ref_type='order' AND ref_id=$1 AND category='cancel_fee'`, [id])
+          const txRows: any[] = q1.rows || []
+          for (const t of txRows) {
+            try {
+              const q2 = await client.query(
+                `DELETE FROM company_incomes
+                 WHERE category='cancel_fee'
+                   AND occurred_at=$1
+                   AND amount=$2
+                   AND (property_id IS NOT DISTINCT FROM $3)
+                   AND coalesce(note,'') = coalesce($4,'')
+                 RETURNING *`,
+                [String(t.occurred_at).slice(0,10), Number(t.amount||0), t.property_id || null, String(t.note||'')]
+              )
+              const delIncomes: any[] = q2.rows || []
+              for (const ci of delIncomes) { try { addAudit('CompanyIncome', ci.id, 'delete', ci, null) } catch {} }
+            } catch {}
+          }
+          if (txRows.length) {
+            const q3 = await client.query(`DELETE FROM finance_transactions WHERE ref_type='order' AND ref_id=$1 AND category='cancel_fee' RETURNING *`, [id])
+            const delTxs: any[] = q3.rows || []
+            for (const tx of delTxs) { try { addAudit('FinanceTransaction', tx.id, 'delete', tx, null) } catch {} }
           }
         }
-      } catch {}
+        return r1
+      })
       if (idx !== -1) db.orders[idx] = row as any
       try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
       return res.json(row)
@@ -669,44 +685,6 @@ router.delete('/:id', requirePerm('order.write'), async (req, res) => {
   if (!removed) return res.status(404).json({ message: 'order not found' })
   try { broadcastOrdersUpdated({ action: 'delete', id }) } catch {}
   return res.json({ ok: true, id: removed.id })
-})
-router.post('/:id/cancel', requireAnyPerm(['order.cancel','order.cancel.override']), async (req, res) => {
-  const { id } = req.params
-  try {
-    let prev: any = db.orders.find(o => o.id === id)
-    if (!prev && hasPg) {
-      try { const rows: any[] = await pgSelect('orders', '*', { id }) as any[] || []; prev = rows[0] } catch {}
-    }
-    if (!prev) return res.status(404).json({ message: 'order not found' })
-    const role = String(((req as any).user?.role) || '')
-    const locked = await isOrderMonthLocked(prev)
-    const { roleHasPermission } = require('../store')
-    if (!locked) {
-      if (!roleHasPermission(role, 'order.cancel')) return res.status(403).json({ message: 'no permission to cancel' })
-    } else {
-      if (!roleHasPermission(role, 'order.cancel.override')) return res.status(403).json({ message: 'payout locked, override cancel required' })
-    }
-    const basePrice = Number(prev.price ?? (Number(prev.net_income || 0) + Number(prev.cleaning_fee || 0)))
-    const cancelAmount = round2(basePrice) || 0
-    const currency = String((prev as any).payment_currency || 'AUD')
-    const occurred_at = new Date().toISOString().slice(0,10)
-    const { v4: uuid } = require('uuid')
-    let updatedRow: any = { ...prev, status: 'cancelled' }
-    const result = await pgRunInTransaction(async (client) => {
-      const updated = hasPg ? await pgUpdate('orders', id, { status: 'cancelled' }, client) : updatedRow
-      const inc = hasPg ? await pgInsert('company_incomes', { id: uuid(), occurred_at, amount: cancelAmount, currency, category: 'cancel_fee', note: `订单取消费用（订单ID：${id}）` }, client) : null
-      const tx = hasPg ? await pgInsert('finance_transactions', { id: uuid(), kind: 'income', amount: cancelAmount, currency, occurred_at, category: 'cancel_fee', note: 'Cancelation fee', property_id: prev.property_id || null, ref_type: 'order', ref_id: id }, client) : null
-      return { updated, inc, tx }
-    })
-    if (result?.updated) updatedRow = result.updated
-    const idx = db.orders.findIndex((x) => x.id === id)
-    if (idx !== -1) db.orders[idx] = updatedRow
-    try { addAudit('Order', id, 'cancel', prev, updatedRow, (req as any).user?.sub) } catch {}
-    try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
-    return res.json({ ok: true, order: updatedRow, cancel_fee: cancelAmount })
-  } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'cancel_failed' })
-  }
 })
 router.delete('/:id', requirePerm('order.write'), async (req, res) => {
   const { id } = req.params
