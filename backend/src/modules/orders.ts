@@ -563,7 +563,38 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
       const allowAll = [...allow, ...allowExtra]
       const payload: any = {}
       for (const k of allowAll) { if ((updated as any)[k] !== undefined) payload[k] = (updated as any)[k] }
-      const row = await pgUpdate('orders', id, payload)
+      const row = await pgRunInTransaction(async (client) => {
+        const r1 = await pgUpdate('orders', id, payload, client)
+        // revert cancel -> confirmed: clean up cancel_fee records atomically
+        const prevSt = prevStatus
+        const nextSt = String((updated as any)?.status || '')
+        if (prevSt === 'cancelled' && nextSt !== 'cancelled') {
+          const q1 = await client.query(`SELECT id, occurred_at, amount, currency, note, property_id FROM finance_transactions WHERE ref_type='order' AND ref_id=$1 AND category='cancel_fee'`, [id])
+          const txRows: any[] = q1.rows || []
+          for (const t of txRows) {
+            try {
+              const q2 = await client.query(
+                `DELETE FROM company_incomes
+                 WHERE category='cancel_fee'
+                   AND occurred_at=$1
+                   AND amount=$2
+                   AND (property_id IS NOT DISTINCT FROM $3)
+                   AND coalesce(note,'') = coalesce($4,'')
+                 RETURNING *`,
+                [String(t.occurred_at).slice(0,10), Number(t.amount||0), t.property_id || null, String(t.note||'')]
+              )
+              const delIncomes: any[] = q2.rows || []
+              for (const ci of delIncomes) { try { addAudit('CompanyIncome', ci.id, 'delete', ci, null) } catch {} }
+            } catch {}
+          }
+          if (txRows.length) {
+            const q3 = await client.query(`DELETE FROM finance_transactions WHERE ref_type='order' AND ref_id=$1 AND category='cancel_fee' RETURNING *`, [id])
+            const delTxs: any[] = q3.rows || []
+            for (const tx of delTxs) { try { addAudit('FinanceTransaction', tx.id, 'delete', tx, null) } catch {} }
+          }
+        }
+        return r1
+      })
       if (idx !== -1) db.orders[idx] = row as any
       try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
       return res.json(row)

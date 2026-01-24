@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } from '../fingerprint'
 import { requirePerm, requireAnyPerm } from '../auth'
 import { PDFDocument } from 'pdf-lib'
+import { pgInsertOnConflictDoNothing, pgPool } from '../dbAdapter'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -56,9 +57,93 @@ router.post('/', requirePerm('finance.tx.write'), async (req, res) => {
   db.financeTransactions.push(tx)
   addAudit('FinanceTransaction', tx.id, 'create', null, tx)
   if (hasPg) {
-    try { const row = await pgInsert('finance_transactions', tx as any); return res.status(201).json(row || tx) } catch (e: any) { return res.status(500).json({ message: e?.message || 'pg insert failed' }) }
+    try {
+      const cat0 = String((tx as any).category || '').toLowerCase()
+      if (String(tx.kind) === 'income' && cat0 === 'cancel_fee' && String((tx as any).ref_type || '') === 'order' && String((tx as any).ref_id || '')) {
+        const dup = await pgSelect('finance_transactions', '*', { ref_type: 'order', ref_id: String((tx as any).ref_id), category: 'cancel_fee' })
+        if (Array.isArray(dup) && dup[0]) {
+          return res.status(200).json(dup[0])
+        }
+      }
+      const row = await pgInsert('finance_transactions', tx as any)
+      try {
+        const cat = String((tx as any).category || '').toLowerCase()
+        if (String(tx.kind) === 'income' && (cat === 'cancel_fee' || cat === 'late_checkout' || cat === 'other' || cat === 'cleaning_fee' || cat === 'mgmt_fee')) {
+          const occurred = String(tx.occurred_at || '').slice(0, 10)
+          const rec = { id: uuid(), occurred_at: occurred || new Date().toISOString().slice(0,10), amount: Number(tx.amount || 0), currency: String(tx.currency || 'AUD'), category: cat || 'other', note: String(tx.note || ''), property_id: (tx as any).property_id || null }
+          try {
+            const dup2 = await pgSelect('company_incomes', '*', { occurred_at: rec.occurred_at, category: rec.category, amount: rec.amount, note: rec.note, property_id: rec.property_id })
+            if (!(Array.isArray(dup2) && dup2[0])) {
+              await pgInsert('company_incomes', rec as any)
+            }
+          } catch (e: any) {
+            const msg = String(e?.message || '')
+            try {
+              if (/relation\s+"?company_incomes"?\s+does\s+not\s+exist/i.test(msg)) {
+                await pgPool?.query(`CREATE TABLE IF NOT EXISTS company_incomes (
+                  id text PRIMARY KEY,
+                  occurred_at date NOT NULL,
+                  amount numeric NOT NULL,
+                  currency text NOT NULL,
+                  category text,
+                  note text,
+                  created_at timestamptz DEFAULT now()
+                );`)
+                await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_company_incomes_date ON company_incomes(occurred_at);')
+                await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_company_incomes_cat ON company_incomes(category);')
+              }
+              if (/column\s+"?property_id"?\s+of\s+relation\s+"?company_incomes"?\s+does\s+not\s+exist/i.test(msg)) {
+                await pgPool?.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;')
+                await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_company_incomes_property ON company_incomes(property_id);')
+              }
+            } catch {}
+            const dup3 = await pgSelect('company_incomes', '*', { occurred_at: rec.occurred_at, category: rec.category, amount: rec.amount, note: rec.note, property_id: rec.property_id })
+            if (!(Array.isArray(dup3) && dup3[0])) {
+              await pgInsert('company_incomes', rec as any)
+            }
+          }
+          addAudit('CompanyIncome', rec.id, 'create', null, rec as any)
+        }
+      } catch {}
+      return res.status(201).json(row || tx)
+    } catch (e: any) {
+      return res.status(500).json({ message: e?.message || 'pg insert failed' })
+    }
   }
   return res.status(201).json(tx)
+})
+
+// Backfill company_incomes from finance_transactions for a given month
+router.post('/company-incomes/backfill', requireAnyPerm(['finance.tx.write','company_incomes.write']), async (req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const month = String(((req.body || {}).month) || ((req.query || {}).month) || '')
+    if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ message: 'invalid month format' })
+    const y = Number(month.slice(0,4)), m = Number(month.slice(5,7))
+    const start = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0,10)
+    const end = new Date(Date.UTC(y, m, 0)).toISOString().slice(0,10)
+    const cats = ['cancel_fee']
+    const rs = await pgPool!.query(
+      `SELECT id, occurred_at, amount, currency, category, note, property_id
+       FROM finance_transactions
+       WHERE kind='income' AND category = ANY($1) AND occurred_at BETWEEN to_date($2,'YYYY-MM-DD') AND to_date($3,'YYYY-MM-DD')`,
+      [cats, start, end]
+    )
+    const rows: any[] = rs.rows || []
+    let inserted = 0, skipped = 0
+    for (const t of rows) {
+      const occ = String(t.occurred_at || '').slice(0,10)
+      const chk = await pgSelect('company_incomes', '*', { occurred_at: occ, category: t.category, amount: Number(t.amount || 0), note: String(t.note || '') })
+      if (Array.isArray(chk) && chk[0]) { skipped++; continue }
+      const rec: any = { id: require('uuid').v4(), occurred_at: occ, amount: Number(t.amount || 0), currency: String(t.currency || 'AUD'), category: String(t.category || 'other'), note: String(t.note || ''), property_id: String(t.property_id || '') || null }
+      await pgInsert('company_incomes', rec as any)
+      addAudit('CompanyIncome', rec.id, 'create', null, rec)
+      inserted++
+    }
+    return res.status(201).json({ month, scanned: rows.length, inserted, skipped })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'backfill_failed' })
+  }
 })
 
 router.post('/invoices', requireAnyPerm(['finance.tx.write','property_expenses.write','company_expenses.write']), upload.single('file'), async (req, res) => {

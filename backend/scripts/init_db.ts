@@ -215,6 +215,8 @@ async function run() {
     `CREATE INDEX IF NOT EXISTS idx_finance_transactions_kind ON finance_transactions(kind);`,
     `CREATE INDEX IF NOT EXISTS idx_finance_transactions_property ON finance_transactions(property_id);`
     ,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_fin_tx_cancel_fee_per_order ON finance_transactions(ref_type, ref_id, category) WHERE category = 'cancel_fee';`
+    ,
     `CREATE TABLE IF NOT EXISTS company_expenses (
       id text PRIMARY KEY,
       occurred_at date NOT NULL,
@@ -280,6 +282,9 @@ async function run() {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_company_incomes_date ON company_incomes(occurred_at);`,
     `CREATE INDEX IF NOT EXISTS idx_company_incomes_cat ON company_incomes(category);`
+    ,
+    `ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;`,
+    `CREATE INDEX IF NOT EXISTS idx_company_incomes_property ON company_incomes(property_id);`
     ,
     `CREATE TABLE IF NOT EXISTS property_incomes (
       id text PRIMARY KEY,

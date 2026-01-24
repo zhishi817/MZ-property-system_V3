@@ -907,7 +907,13 @@ export default function OrdersPage() {
     { title: '清洁费', dataIndex: 'cleaning_fee', render: (_:any, r:Order)=> monthFilter ? money(calcMonthAmounts(r).cleanMonth) : money(r.cleaning_fee) },
     { title: '总收入', dataIndex: 'net_income', render: (_:any, r:Order)=> monthFilter ? money(((r as any).visible_net_income ?? calcMonthAmounts(r).netMonth)) : money((r as any).net_income ?? r.net_income) },
     { title: '晚均价', dataIndex: 'avg_nightly_price', render: (_:any, r:Order)=> monthFilter ? money(calcMonthAmounts(r).avgMonth) : money((r as any).avg_nightly_price ?? r.avg_nightly_price) },
-    { title: '状态', dataIndex: 'status' },
+    { title: '状态', dataIndex: 'status', render: (v:any)=> {
+      const s = String(v||'').toLowerCase()
+      const isConfirmed = s === 'confirmed'
+      const isCanceled = s === 'cancelled' || s === 'canceled'
+      const color = isConfirmed ? 'green' : (isCanceled ? 'red' : 'default')
+      return <Tag color={color}>{s || '-'}</Tag>
+    } },
     { title: '到账', dataIndex: 'payment_received', render: (v:any)=> v ? <Tag color="green">已到账</Tag> : <Tag>未到账</Tag> },
     { title: '操作', render: (_: any, r: Order) => (
       <Space>

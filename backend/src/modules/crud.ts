@@ -139,6 +139,17 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
             return { ...r, property_code: label }
           })
           return res.json(labeled)
+        } else if (resource === 'company_incomes') {
+          let props: any[] = []
+          try { const propsRaw = await pgSelect('properties', 'id,code,address'); props = Array.isArray(propsRaw) ? propsRaw : [] } catch {}
+          const byId: Record<string, any> = Object.fromEntries(props.map(p => [String(p.id), p]))
+          const labeled = rows.map(r => {
+            const pid = String((r as any).property_id || '')
+            const p = byId[pid]
+            const label = p?.code || p?.address || pid || ''
+            return { ...r, property_code: label }
+          })
+          return res.json(labeled)
         }
         return res.json(rows)
       } catch {}
@@ -199,6 +210,14 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
       const labeled = filtered.map((r: any) => {
         const pid = String(r.property_id || '')
         const p = (db as any).properties.find((pp: any) => String(pp.id) === pid) || (db as any).properties.find((pp: any) => String(pp.code || '') === pid)
+        const label = (p?.code || p?.address || pid || '')
+        return { ...r, property_code: label }
+      })
+      return res.json(labeled)
+    } else if (resource === 'company_incomes') {
+      const labeled = filtered.map((r: any) => {
+        const pid = String((r as any).property_id || '')
+        const p = (db as any).properties.find((pp: any) => String(pp.id) === pid) || null
         const label = (p?.code || p?.address || pid || '')
         return { ...r, property_code: label }
       })
