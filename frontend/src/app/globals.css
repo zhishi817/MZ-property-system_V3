@@ -1,3 +1,142 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 html, body, #__next { height: 100%; }
-@import 'antd/dist/reset.css';
 body { margin: 0; background: #fff; color: #000; }
+
+/* FullCalendar 细化样式，贴近简洁风 */
+.fc { background:#ffffff; border:1px solid #eef2f7; border-radius:12px; box-shadow:0 2px 8px rgba(9,30,66,0.05); }
+.fc .fc-daygrid-day { border-color:#eef2f7; }
+.fc .fc-daygrid-day-number { color:#4b5563; }
+.fc .fc-col-header { background:#f8fafc; border-top-left-radius:12px; border-top-right-radius:12px; }
+.fc .fc-col-header-cell { border-color:#eef2f7; }
+.fc .fc-col-header-cell-cushion { color:#334155; font-weight:600; letter-spacing:.2px; }
+.fc .fc-day-today .fc-daygrid-day-number {
+  color: #1677ff;
+  border: 2px solid #1677ff;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+.fc .fc-h-event { border-radius:12px; border-width:1px; border-style:solid; box-shadow:0 1px 0 rgba(0,0,0,0.06); transition: box-shadow .2s ease; }
+.fc .fc-h-event:hover { box-shadow:0 2px 8px rgba(0,0,0,0.08); }
+
+/* 条块配色：按来源/状态映射 */
+.order-bar.bar-airbnb .fc-event-main { color: #881337; }
+.order-bar.bar-booking .fc-event-main { color: #1E3A8A; }
+.order-bar.bar-offline .fc-event-main { color: #111827; }
+.order-bar.bar-other .fc-event-main { color: #111827; }
+.order-bar.bar-canceled .fc-event-main { color: #881337; }
+
+.order-bar.bar-airbnb { background: #FFE4E6; border-color: #FB7185; }
+.order-bar.bar-booking { background: #DBEAFE; border-color: #60A5FA; }
+.order-bar.bar-offline { background: #F3F4F6; border-color: #9CA3AF; }
+.order-bar.bar-other { background: #F3F4F6; border-color: #9CA3AF; }
+.order-bar.bar-canceled { background: #FFE4E6; border-color: #FB7185; }
+
+/* 仅在开始/结束显示左右内容与圆角 */
+.order-bar { border-width:2px; }
+.fc-event-start .order-bar { border-top-left-radius: 8px; border-bottom-left-radius: 8px; border-left-width: 2px; }
+.fc-event-end .order-bar { border-top-right-radius: 8px; border-bottom-right-radius: 8px; border-right-width: 2px; }
+.order-bar .bar-left { opacity: 0.75 }
+.order-bar .bar-right { opacity: 0.75 }
+.fc-event-start .order-bar .bar-left { opacity: 1 }
+.fc-event-end .order-bar .bar-right { opacity: 1 }
+
+/* 间距与层次，贴近示例 */
+.fc-daygrid-event-harness { margin-top: 0; }
+.fc-daygrid-day-frame { min-height: 120px; padding: 8px; }
+
+.landlord-calendar .fc-daygrid-event-harness::before,
+.landlord-calendar .fc-daygrid-day-frame::before,
+.landlord-calendar .fc-daygrid-day-events::before { pointer-events: none !important; }
+.landlord-calendar .fc-event,
+.landlord-calendar .fc-h-event,
+.landlord-calendar a.fc-event {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.landlord-calendar .fc-daygrid-event.fc-event-selected,
+.landlord-calendar .fc-daygrid-event.fc-event-selected .fc-event-main,
+.landlord-calendar .fc-daygrid-event.fc-event-selected .fc-event-main-frame {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.landlord-calendar .fc-event-main,
+.landlord-calendar .fc-event-main-frame {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.landlord-calendar .fc-event:focus,
+.landlord-calendar .fc-event:focus-visible,
+.landlord-calendar a.fc-event:focus,
+.landlord-calendar a.fc-event:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+.landlord-calendar .mz-booking { border-radius: 0; }
+.landlord-calendar .fc-event-start .mz-booking { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
+.landlord-calendar .fc-event-end .mz-booking { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
+.landlord-calendar .fc-event:active,
+.landlord-calendar .fc-daygrid-event:active,
+.landlord-calendar .fc-h-event:active,
+.landlord-calendar .fc-daygrid-event:hover {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+/* 统一以 lane 类控制每条水平行的垂直偏移 */
+.landlord-calendar .mz-booking { position: relative; }
+.landlord-calendar .mz-lane-0 .mz-booking { margin-top: 0 !important; }
+.landlord-calendar .mz-lane-1 .mz-booking { margin-top: 36px !important; }
+.landlord-calendar .mz-lane-2 .mz-booking { margin-top: 72px !important; }
+.landlord-calendar .mz-lane-3 .mz-booking { margin-top: 108px !important; }
+
+/* 平台色：作用于 .mz-evt--xxx 内的 .mz-booking，全部使用 !important 保证稳定 */
+.landlord-calendar .mz-evt--airbnb .mz-booking {
+  background-color: #FFE4E6 !important;
+  border-color: #FB7185 !important;
+  color: #881337 !important;
+}
+.landlord-calendar .mz-evt--booking .mz-booking {
+  background-color: #DBEAFE !important;
+  border-color: #60A5FA !important;
+  color: #1E3A8A !important;
+}
+.landlord-calendar .mz-evt--other .mz-booking {
+  background-color: #F3F4F6 !important;
+  border-color: #9CA3AF !important;
+  color: #111827 !important;
+}
+.landlord-calendar .mz-evt.fc-event-selected .mz-booking,
+.landlord-calendar .mz-evt:active .mz-booking,
+.landlord-calendar .mz-evt:focus .mz-booking,
+.landlord-calendar .mz-evt:focus-visible .mz-booking {
+  background-color: inherit !important;
+  border-color: inherit !important;
+  color: inherit !important;
+}
+.landlord-calendar .fc-daygrid-event-harness::before,
+.landlord-calendar .fc-daygrid-day-frame::before,
+.landlord-calendar .fc-daygrid-day-events::before { pointer-events: none !important; }
+.landlord-calendar .fc-event,
+.landlord-calendar a.fc-event,
+.landlord-calendar .fc-event:focus,
+.landlord-calendar .fc-event:focus-visible,
+.landlord-calendar a.fc-event:focus,
+.landlord-calendar a.fc-event:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+.landlord-calendar a.fc-event,
+.landlord-calendar .fc-daygrid-event {
+  background: transparent !important;
+  border: none !important;
+}
