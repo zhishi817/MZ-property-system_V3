@@ -46,7 +46,10 @@ export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string }
     const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
     const __rid = `${o.id}|${s.format('YYYYMM')}`
     const deductionSegment = e.isSame(co) ? deductionTotal : 0
-    const visibleNet = Number((net - deductionSegment).toFixed(2))
+    const statusRaw = String((o as any).status || '').toLowerCase()
+    const isCanceled = statusRaw.includes('cancel')
+    const include = (!isCanceled) || !!((o as any).count_in_income)
+    const visibleNet = include ? Number((net - deductionSegment).toFixed(2)) : 0
     segments.push({
       ...o,
       __rid,
@@ -81,7 +84,10 @@ export function monthSegments(orders: OrderLike[], monthStart: any): (OrderLike 
     const a = ci.isAfter(ms) ? ci : ms
     const b = co.isBefore(meNext) ? co : meNext
     const overlap = Math.max(0, b.diff(a, 'day'))
-    return overlap > 0
+    const st = String((s as any).status || '').toLowerCase()
+    const isCanceled = st.includes('cancel')
+    const include = (!isCanceled) || !!((s as any).count_in_income)
+    return overlap > 0 && include
   })
 }
 

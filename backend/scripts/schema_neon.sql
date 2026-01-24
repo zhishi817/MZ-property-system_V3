@@ -413,6 +413,7 @@ CREATE TABLE IF NOT EXISTS property_incomes (
 CREATE INDEX IF NOT EXISTS idx_property_incomes_pid ON property_incomes(property_id);
 CREATE INDEX IF NOT EXISTS idx_property_incomes_date ON property_incomes(occurred_at);
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS count_in_income boolean;
 DO $$ BEGIN BEGIN ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_idempotency_key_key; EXCEPTION WHEN others THEN NULL; END; BEGIN DROP INDEX IF EXISTS idx_orders_idempotency_key_unique; EXCEPTION WHEN others THEN NULL; END; END $$;
 DO $$ BEGIN
   IF EXISTS (

@@ -740,7 +740,7 @@ export default function OrdersPage() {
     const net = Math.max(0, price + lateFee + cancelFee - cleaning)
     const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
     const selectedNew = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
-    const payload = {
+        const payload = {
       source: v.source,
       status: v.status || 'confirmed',
       property_id: v.property_id,
@@ -756,6 +756,7 @@ export default function OrdersPage() {
       avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg,
       nights,
       currency: 'AUD',
+          count_in_income: v.count_in_income != null ? !!v.count_in_income : ((v.status || '') === 'canceled' ? false : true),
     }
     setDupLoading(true)
     try {
@@ -1019,7 +1020,10 @@ export default function OrdersPage() {
       .filter(o => {
         const ciDay = dayStr(o.checkin)
         const coDay = dayStr(o.checkout)
-        return o.property_id === calPid && ciDay && coDay && ciDay <= dateStr && coDay > dateStr
+        const st = String((o as any).status || '').toLowerCase()
+        const isCanceled = st.includes('cancel')
+        const include = (!isCanceled) || !!(o as any).count_in_income
+        return include && o.property_id === calPid && ciDay && coDay && ciDay <= dateStr && coDay > dateStr
       }) as any,
       sortKey,
       sortOrder
@@ -1225,6 +1229,19 @@ export default function OrdersPage() {
         </Form.Item>
         <Form.Item name="status" label="状态" initialValue="confirmed"> 
           <Select options={[{ value: 'confirmed', label: '已确认' }, { value: 'canceled', label: '已取消' }]} />
+        </Form.Item>
+        <Form.Item noStyle shouldUpdate>
+          {() => {
+            const st = form.getFieldValue('status')
+            if (st === 'canceled') {
+              return (
+                <Form.Item name="count_in_income" label="算入房源营收" initialValue={false} valuePropName="checked">
+                  <Checkbox />
+                </Form.Item>
+              )
+            }
+            return null
+          }}
         </Form.Item>
         <Form.Item name="property_id" label="房号" rules={[{ required: true }]}> 
           <Select
@@ -1494,7 +1511,7 @@ export default function OrdersPage() {
         const net = Math.max(0, price - cleaning)
         const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
         const selectedEdit = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
-        const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net, avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg, price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price, cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning, payment_currency: (v.payment_currency || 'AUD') }
+        const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net, avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg, price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price, cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning, payment_currency: (v.payment_currency || 'AUD'), count_in_income: v.count_in_income != null ? !!v.count_in_income : ((v.status || '') === 'canceled' ? false : true) }
         let res: Response | null = null
         try {
           res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ ...payload, force: true }) })
@@ -1529,6 +1546,19 @@ export default function OrdersPage() {
           </Form.Item>
           <Form.Item name="status" label="状态" initialValue="confirmed"> 
             <Select options={[{ value: 'confirmed', label: '已确认' }, { value: 'canceled', label: '已取消' }]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate>
+            {() => {
+              const st = editForm.getFieldValue('status')
+              if (st === 'canceled') {
+                return (
+                  <Form.Item name="count_in_income" label="算入房源营收" initialValue={false} valuePropName="checked">
+                    <Checkbox />
+                  </Form.Item>
+                )
+              }
+              return null
+            }}
           </Form.Item>
           <Form.Item name="property_id" label="房号" rules={[{ required: true }]}> 
             <Select

@@ -163,7 +163,11 @@ router.get('/', async (_req, res) => {
         return rows.map(r => {
           const t = totals[String(r.id)] || 0
           const vn = Number(r.net_income || 0) - t
-          return { ...r, internal_deduction_total: Number(t.toFixed(2)), visible_net_income: Number(vn.toFixed(2)) }
+          const status = String((r as any).status || '').toLowerCase()
+          const isCanceled = status.includes('cancel')
+          const include = (!isCanceled) || !!(r as any).count_in_income
+          const visible = include ? Number(vn.toFixed(2)) : 0
+          return { ...r, internal_deduction_total: Number(t.toFixed(2)), visible_net_income: visible }
         })
       }
       const enriched = await enrich(labeled)
@@ -247,6 +251,7 @@ const createOrderSchema = z.object({
   payment_currency: z.string().optional(),
   payment_received: z.boolean().optional(),
   status: z.string().optional(),
+  count_in_income: z.boolean().optional(),
   idempotency_key: z.string().optional(),
 })
 const updateOrderSchema = createOrderSchema.partial()
@@ -533,6 +538,12 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   const updated: Order = { ...base, ...o, id, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg }
   const prevStatus = String(prev?.status || '')
   const nextStatus = String((updated as any)?.status || '')
+  if (nextStatus === 'cancelled' && (updated as any).count_in_income == null) {
+    (updated as any).count_in_income = false
+  }
+  if (nextStatus !== 'cancelled' && (updated as any).count_in_income == null) {
+    (updated as any).count_in_income = true
+  }
   if (prevStatus !== 'cancelled' && nextStatus === 'cancelled') {
     const role = String(((req as any).user?.role) || '')
     const locked = await isOrderMonthLocked(prev)
@@ -562,7 +573,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
       const allowExtra = ['payment_currency','payment_received']
       const allowAll = [...allow, ...allowExtra]
       const payload: any = {}
-      for (const k of allowAll) { if ((updated as any)[k] !== undefined) payload[k] = (updated as any)[k] }
+      for (const k of [...allowAll, 'count_in_income']) { if ((updated as any)[k] !== undefined) payload[k] = (updated as any)[k] }
       const row = await pgRunInTransaction(async (client) => {
         const r1 = await pgUpdate('orders', id, payload, client)
         // revert cancel -> confirmed: clean up cancel_fee records atomically
