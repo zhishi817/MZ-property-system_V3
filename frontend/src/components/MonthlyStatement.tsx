@@ -6,7 +6,7 @@ import { forwardRef, useEffect, useState } from 'react'
 import { authHeaders } from '../lib/api'
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4001'
 
-type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
+type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
@@ -21,7 +21,21 @@ export default forwardRef<HTMLDivElement, {
 }>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords }, ref) {
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
-  const relatedOrders = monthSegments(orders.filter(o => (!propertyId || o.property_id === propertyId)), start)
+  const relatedOrdersRaw = monthSegments(
+    orders.filter(o => {
+      if (propertyId && o.property_id !== propertyId) return false
+      const st = String((o as any).status || '').toLowerCase()
+      const isCanceled = st.includes('cancel')
+      const include = (!isCanceled) || !!(o as any).count_in_income
+      return include
+    }),
+    start
+  )
+  const relatedOrders = relatedOrdersRaw.filter(r => {
+    const st = String((r as any).status || '').toLowerCase()
+    const isCanceled = st.includes('cancel')
+    return (!isCanceled) || !!(r as any).count_in_income
+  })
   const simpleMode = false
   const expensesInMonth = txs.filter(t => t.kind === 'expense' && (!propertyId || t.property_id === propertyId) && dayjs(toDayStr(t.occurred_at)).isSame(start, 'month'))
   const [invoiceMap, setInvoiceMap] = useState<Record<string, ExpenseInvoice[]>>({})

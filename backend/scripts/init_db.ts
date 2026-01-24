@@ -299,6 +299,8 @@ async function run() {
     `CREATE INDEX IF NOT EXISTS idx_property_incomes_pid ON property_incomes(property_id);`,
     `CREATE INDEX IF NOT EXISTS idx_property_incomes_date ON property_incomes(occurred_at);`
     ,
+    `ALTER TABLE orders ADD COLUMN IF NOT EXISTS count_in_income boolean;`
+    ,
     `CREATE TABLE IF NOT EXISTS cms_pages (
       id text PRIMARY KEY,
       slug text UNIQUE,

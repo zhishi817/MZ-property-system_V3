@@ -442,7 +442,10 @@ router.get('/property-revenue', async (req, res) => {
           const ov = overlapNights(o.checkin, o.checkout)
           const nights = Number(o.nights || 0) || 0
           const visNet = Number((o as any).visible_net_income ?? o.net_income ?? 0)
-          if (ov > 0 && nights > 0) rentIncome += (visNet * ov) / nights
+          const status = String((o as any).status || '').toLowerCase()
+          const isCanceled = status.includes('cancel')
+          const include = (!isCanceled) || !!(o as any).count_in_income
+          if (include && ov > 0 && nights > 0) rentIncome += (visNet * ov) / nights
         }
         let peRows: any[] = []
         try {
@@ -573,7 +576,10 @@ router.post('/management-fee/calc', requireAnyPerm(['property_expenses.write','f
       const ov = overlapNights(o.checkin, o.checkout)
       const nights = Number(o.nights || 0) || 0
       const visNet = Number((o as any).visible_net_income ?? o.net_income ?? 0)
-      if (ov > 0 && nights > 0) rentIncome += (visNet * ov) / nights
+      const status = String((o as any).status || '').toLowerCase()
+      const isCanceled = status.includes('cancel')
+      const include = (!isCanceled) || !!(o as any).count_in_income
+      if (include && ov > 0 && nights > 0) rentIncome += (visNet * ov) / nights
     }
     // read landlord rate
     const propRows = await pgSelect('properties', 'id,landlord_id,code', { id: pid })
