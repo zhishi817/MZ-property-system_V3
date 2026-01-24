@@ -1,5 +1,5 @@
 "use client"
-import { Layout, Menu, Button, Space } from 'antd'
+import { Layout, Button, Space } from 'antd'
 import {
   ApartmentOutlined,
   KeyOutlined,
@@ -10,6 +10,8 @@ import {
   CalendarOutlined,
 } from '@ant-design/icons'
 import Link from 'next/link'
+import dynamic from 'next/dynamic'
+const AdminMenu = dynamic(() => import('./AdminMenu'), { ssr: false })
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { getRole, hasPerm, preloadRolePerms } from '../lib/auth'
@@ -35,7 +37,8 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setRole(getRole()) }, [])
   useEffect(() => { setMounted(true) }, [])
-  const authed = (typeof document !== 'undefined') ? /(?:^|;\s*)auth=/.test(document.cookie || '') : false
+  const authedRaw = (typeof document !== 'undefined') ? /(?:^|;\s*)auth=/.test(document.cookie || '') : false
+  const authed = mounted ? authedRaw : false
   useEffect(() => {
     if (typeof document === 'undefined') return
     const m = document.cookie.match(/(?:^|;\s*)auth=([^;]*)/)
@@ -46,13 +49,13 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     } catch {}
   }, [pathname])
   useEffect(() => {
-    if (authed) { preloadPerms().catch(() => {}) }
-  }, [authed])
+    if (mounted && authed) { preloadPerms().catch(() => {}) }
+  }, [mounted, authed])
   useEffect(() => {
-    if (authed) { preloadPerms().catch(() => {}) }
-  }, [pathname])
+    if (mounted && authed) { preloadPerms().catch(() => {}) }
+  }, [mounted, authed, pathname])
   useEffect(() => {
-    if (!authed) return
+    if (!mounted || !authed) return
     ;(async () => {
       try {
         const res = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() })
@@ -61,12 +64,13 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
         setRole((j as any)?.role || getRole())
       } catch {}
     })()
-  }, [authed])
+  }, [mounted, authed])
   useEffect(() => {
+    if (!mounted) return
     if (!isLogin && !authed) {
       try { router.replace('/login') } catch {}
     }
-  }, [isLogin, authed, router])
+  }, [mounted, isLogin, authed, router])
   const items: any[] = []
   if (hasPerm('menu.dashboard')) items.push({ key: 'dashboard', icon: <ProfileOutlined />, label: <Link href="/dashboard" prefetch={false}>总览</Link> })
   if (hasPerm('menu.landlords')) {
@@ -124,38 +128,31 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
       setTimeout(() => { try { window.location.replace('/login') } catch {} }, 50)
     }
   }
-  // render consistently on SSR to avoid hydration mismatch
-  if (!isLogin && !authed) {
-    return (
-      <Layout style={{ minHeight: '100vh', display:'flex', alignItems:'center', justifyContent:'center' }}>
-        <Content style={{ textAlign:'center' }}>
-          <div style={{ marginBottom: 12 }}>未登录，正在跳转到登录页…</div>
-          <Link href="/login" prefetch={false}>前往登录</Link>
-        </Content>
-      </Layout>
-    )
-  }
   return (
     isLogin ? (
       <>{children}</>
     ) : (
-      <Layout style={{ minHeight: '100vh' }}>
-        <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} breakpoint="md">
+      <Layout style={{ minHeight: '100vh', display:'flex' }}>
+        <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} breakpoint="md" style={{ background:'#001529', borderRight:'1px solid #e5e7eb' }} width={240}>
           <div style={{ color: '#fff', padding: 16, fontWeight: 700 }}>MZ Property</div>
-          <Menu theme="dark" mode="inline" items={items} />
+          <AdminMenu items={items} />
         </Sider>
-        <Layout>
+        <Layout style={{ display:'flex' }}>
           <Header style={{ background: '#fff', padding: '0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ fontWeight: 700, fontFamily:'SF Pro Display, Segoe UI, Roboto, Helvetica Neue, Arial' }}>后台管理</div>
             <div>
-              {authed ? (
-                <Space>
-                  <span style={{ fontFamily:'SF Pro Text, Segoe UI, Roboto, Helvetica Neue, Arial', color:'#555' }}>Hi, {username || ''}{role ? ` (${role})` : ''}</span>
-                  <Button onClick={logout}>退出</Button>
-                </Space>
-              ) : (
-                <Link href="/login" prefetch={false}>登录</Link>
-              )}
+              <Space>
+                <span style={{ fontFamily:'SF Pro Text, Segoe UI, Roboto, Helvetica Neue, Arial', color:'#555', display: authed ? 'inline' : 'none' }}>
+                  Hi, {username || ''}{role ? ` (${role})` : ''}
+                </span>
+                <Button onClick={logout} style={{ display: authed ? 'inline-flex' : 'none' }}>退出</Button>
+                <span
+                  onClick={() => { try { router.replace('/login') } catch {} }}
+                  style={{ cursor:'pointer', color:'#1677ff', display: authed ? 'none' : 'inline' }}
+                >
+                  登录
+                </span>
+              </Space>
             </div>
           </Header>
           <Content style={{ margin: '16px' }}>{children}</Content>

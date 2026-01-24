@@ -1,7 +1,8 @@
 import './globals.css'
 import 'antd/dist/reset.css'
 import type { Metadata } from 'next'
-import { AdminLayout } from '../components/AdminLayout'
+import dynamic from 'next/dynamic'
+const ClientAdminLayout = dynamic(() => import('../components/AdminLayout').then(m => m.AdminLayout), { ssr: false })
 import { ClientThemeProvider } from '../components/ClientThemeProvider'
 
 export const metadata: Metadata = {
@@ -14,7 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="zh-CN">
       <body>
         <ClientThemeProvider>
-          <AdminLayout>{children}</AdminLayout>
+          <ClientAdminLayout>{children}</ClientAdminLayout>
         </ClientThemeProvider>
       </body>
     </html>

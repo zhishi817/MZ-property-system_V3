@@ -1,14 +1,19 @@
 "use client"
-import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, Select, Tag, InputNumber, Checkbox, Upload, Radio, Calendar, App, Drawer, Descriptions, Tabs } from 'antd'
+import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, Select, Tag, InputNumber, Checkbox, Upload, Radio, App, Drawer, Descriptions, Tabs, Tooltip } from 'antd'
 import { useRouter } from 'next/navigation'
 import type { UploadProps } from 'antd'
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import dayjs from 'dayjs'
+import dynamic from 'next/dynamic'
+const FullCalendar = dynamic(() => import('@fullcalendar/react'), { ssr: false })
+import dayGridPlugin from '@fullcalendar/daygrid'
+import interactionPlugin from '@fullcalendar/interaction'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { sortOrders } from '../../lib/orderSort'
 import { monthSegments, getMonthSegmentsForProperty } from '../../lib/orders'
 import { sortProperties } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
+import { buildSegments, placeIntoLanes } from '../../lib/calendarTimeline'
 
 type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number; email_header_at?: string }
 // guest_phone 在后端已支持，这里表单也支持录入
@@ -47,6 +52,7 @@ export default function OrdersPage() {
   const [calMonth, setCalMonth] = useState(dayjs())
   const [calPid, setCalPid] = useState<string | undefined>(undefined)
   const calRef = useRef<HTMLDivElement | null>(null)
+  const [calApi, setCalApi] = useState<any>(null)
   const lastPctSetRef = useRef<number>(0)
   const [monthFilter, setMonthFilter] = useState<any | null>(null)
   const [sortKey, setSortKey] = useState<'email_header_at'|'checkin'|'checkout'>('email_header_at')
@@ -950,10 +956,70 @@ export default function OrdersPage() {
     offline: '#DC8C03',
     other: '#98B6EC'
   }
+  const sourceStyle: Record<string, { bg: string; border: string; text: string }> = {
+    airbnb: { bg: '#FFE4E6', border: '#FB7185', text: '#881337' },
+    booking: { bg: '#DBEAFE', border: '#60A5FA', text: '#1E3A8A' },
+    offline: { bg: '#F3F4F6', border: '#9CA3AF', text: '#111827' },
+    other: { bg: '#F3F4F6', border: '#9CA3AF', text: '#111827' },
+  }
+  const statusStyle: Record<string, { bg: string; border: string; text: string }> = {
+    confirmed: { bg: 'rgba(152,182,236,0.20)', border: '#5A8AD6', text: '#214A8B' },
+    canceled: { bg: 'rgba(255,159,151,0.20)', border: '#F28F87', text: '#7A2E2A' },
+    cancelled: { bg: 'rgba(255,159,151,0.20)', border: '#F28F87', text: '#7A2E2A' },
+  }
 
   const baseMonth = calMonth || dayjs()
   const monthStart = baseMonth.startOf('month')
   const monthEnd = baseMonth.endOf('month')
+  const gotoGuardRef = useRef(false)
+  function platformKey(ep: any): 'airbnb'|'booking'|'other' {
+    const raw = String((ep?.order?.source ?? ep?.platform ?? ep?.source ?? ep?.channel ?? ep?.provider ?? 'other')).toLowerCase()
+    return raw.includes('airbnb') ? 'airbnb' : (raw.includes('book') ? 'booking' : 'other')
+  }
+  const calendarEvents = useMemo(() => {
+    const orders = (data || []).filter(o => {
+      const ci = String(o.checkin || '').slice(0,10)
+      const co = String(o.checkout || '').slice(0,10)
+      if (!ci || !co) return false
+      const st = String((o as any).status || '').toLowerCase()
+      const isCanceled = st.includes('cancel')
+      const include = (!isCanceled) || !!(o as any).count_in_income
+      return include && o.property_id === calPid
+    })
+    return orders.map(o => {
+      const stKey = String((o as any).status || '').toLowerCase()
+      const styleToken = statusStyle[stKey] || (sourceStyle[o.source || 'other'] || { bg: '#F3F4F6', border: '#9CA3AF', text: '#111827' })
+      return {
+        id: String(o.id),
+        title: `${o.guest_name || ''}   $${money((o as any).__src_price ?? o.price)}`,
+        start: String(o.checkin || '').slice(0,10),
+        end: String(o.checkout || '').slice(0,10),
+        allDay: true,
+        extendedProps: { styleToken, order: o },
+      }
+    })
+  }, [data, calPid])
+  const laneMap = useMemo(() => {
+    try {
+      const segs = buildSegments(
+        calendarEvents.map(e => ({ id: e.id, checkin: e.start as any, checkout: e.end as any })) as any,
+        monthStart,
+        monthEnd
+      )
+      return placeIntoLanes(segs)
+    } catch { return {} as Record<string, number> }
+  }, [calendarEvents, monthStart.valueOf(), monthEnd.valueOf()])
+  useEffect(() => {
+    try {
+      if (view === 'calendar' && calApi) {
+        if (gotoGuardRef.current) {
+          gotoGuardRef.current = false
+          return
+        }
+        calApi.gotoDate((calMonth || dayjs()).startOf('month').toDate())
+      }
+    } catch {}
+  }, [calMonth, view, calApi])
   function dayStr(v: any): string { try { return toDayStr(v) } catch { return '' } }
   function applySort(list: any[]): any[] {
     return sortOrders(list as any, sortKey, sortOrder)
@@ -995,22 +1061,8 @@ export default function OrdersPage() {
     return coDay > ms && ciDay < me
   })
   const orderLane = (function(){
-    const lanesEnd: number[] = []
-    const map: Record<string, number> = {}
-    const toDayIndex = (d: any) => d.startOf('day').diff(monthStart.startOf('day'), 'day')
-    const segs = monthOrders.map(o => {
-      const s = dayjs(dayStr(o.checkin) || monthStart)
-      const e = dayjs(dayStr(o.checkout) || monthEnd)
-      return { id: o.id, startIdx: toDayIndex(s), endIdx: toDayIndex(e) }
-    }).sort((a,b)=> a.startIdx - b.startIdx || a.endIdx - b.endIdx)
-    for (const seg of segs) {
-      let placed = false
-      for (let i = 0; i < lanesEnd.length; i++) {
-        if (seg.startIdx >= lanesEnd[i]) { map[seg.id] = i; lanesEnd[i] = seg.endIdx; placed = true; break }
-      }
-      if (!placed) { map[seg.id] = lanesEnd.length; lanesEnd.push(seg.endIdx) }
-    }
-    return map
+    const segs = buildSegments(monthOrders as any, monthStart, monthEnd)
+    return placeIntoLanes(segs)
   })()
   function dayCell(date: any) {
     if (!calPid) return null
@@ -1029,48 +1081,83 @@ export default function OrdersPage() {
       sortOrder
     )
     if (!orders.length) return null
+    const visibleLimit = 5
+    const extraCount = Math.max(0, orders.length - visibleLimit)
     return (
-      <div style={{ position:'relative', minHeight: 64, overflow:'visible' }}>
-        {orders.slice(0,6).map((o)=> {
+      <div style={{ position:'relative', minHeight: 104, overflow:'visible' }}>
+        {orders.slice(0, visibleLimit).map((o)=> {
           const accent = sourceColor[o.source || 'other'] || '#999'
+          const stKey = String((o as any).status || '').toLowerCase()
+          const styleToken = statusStyle[stKey] || (sourceStyle[o.source || 'other'] || { bg: 'rgba(153,153,153,0.18)', border: '#999', text: '#333' })
           const ciDay = dayStr(o.checkin)
           const coDay = dayStr(o.checkout)
           const isStart = ciDay === dateStr
           const nextStr = dayjs(dateStr).add(1,'day').format('YYYY-MM-DD')
           const isEnd = coDay === nextStr // last day shown is checkout-1
-          const radiusLeft = isStart ? 16 : 3
-          const radiusRight = isEnd ? 16 : 3
+          const radiusLeft = isStart ? 12 : 0
+          const radiusRight = isEnd ? 12 : 0
           const lane = orderLane[o.id!] || 0
-          return (
-            <div key={o.id} style={{
-              position:'absolute',
-              left: -6,
-              right: -6,
-              top: 4 + lane * 32,
-              height: 'auto',
-              minHeight: 28,
-              background: '#f5f5f5',
-              color:'#000',
-              borderRadius: `${radiusLeft}px ${radiusRight}px ${radiusRight}px ${radiusLeft}px`,
-              padding:'0 8px',
-              display:'flex',
-              alignItems:'center',
-              fontSize:11,
-              lineHeight:'14px'
-            }}>
-              {isStart ? <span style={{ position:'absolute', left: -6, top:0, bottom:0, width: '33%', background: accent, borderRadius: `${radiusLeft}px 0 0 ${radiusLeft}px` }} /> : null}
-              {isEnd ? <span style={{ position:'absolute', right: -6, top:0, bottom:0, width: '33%', background: accent, borderRadius: `0 ${radiusRight}px ${radiusRight}px 0` }} /> : null}
-              <span style={{ overflow:'visible', textOverflow:'clip', whiteSpace:'normal', wordBreak:'break-word', marginLeft: isStart ? '33%' : 0, marginRight: isEnd ? '33%' : 0 }}>{(o.guest_name || '').toString()} ${money(o.price)}</span>
+          const tipTitle = (
+            <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+              <div style={{ fontWeight:600 }}>{o.guest_name || ''}</div>
+              <div>房号：{getPropertyCodeLabel(o as Order)}</div>
+              <div>入住：{fmtDay((o as any).__src_checkin || o.checkin)}，退房：{fmtDay((o as any).__src_checkout || o.checkout)}</div>
+              <div>总租金：${money((o as any).__src_price ?? o.price)}，清洁费：${money((o as any).__src_cleaning_fee ?? o.cleaning_fee)}</div>
+              <div>净收入：${money((o as any).net_income ?? o.net_income)}</div>
+              <div>确认码：{(o as any).confirmation_code || ''}</div>
             </div>
           )
+          return (
+            <Tooltip title={tipTitle} mouseEnterDelay={0.1}>
+            <div
+              key={o.id}
+              className="order-bar"
+              style={{
+                position:'absolute',
+                left: -50,
+                right: -50,
+                top: 8 + lane * 36,
+                height: 30,
+                background: styleToken.bg,
+                color: styleToken.text,
+                borderRadius: `${radiusLeft}px ${radiusRight}px ${radiusRight}px ${radiusLeft}px`,
+                padding:'0 10px',
+                display:'flex',
+                alignItems:'center',
+                justifyContent:'space-between',
+                fontSize:12,
+                lineHeight:'18px',
+                borderStyle: 'solid',
+                borderColor: styleToken.border,
+                borderWidth: 1.5,
+                borderLeftWidth: isStart ? 1.5 : 0,
+                borderRightWidth: isEnd ? 1.5 : 0,
+                boxShadow:'0 1px 0 rgba(0,0,0,0.06)',
+                transition:'box-shadow .2s ease, border-color .2s ease',
+                cursor:'pointer'
+              }}
+              onClick={()=> openDetail(String((o as any).id))}
+            >
+              <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth: isStart ? '70%' : '48%', opacity: isStart ? 1 : 0.75 }}>
+                {isStart ? `${(o.guest_name || '').toString()}` : ''}
+              </span>
+              <span style={{ fontWeight: 600, color: styleToken.text, opacity: isEnd ? 1 : 0.75 }}>
+                {isEnd ? `$${money((o as any).__src_price ?? o.price)}` : ''}
+              </span>
+            </div>
+            </Tooltip>
+          )
         })}
+        {extraCount > 0 ? (
+          <div style={{ position:'absolute', right: 6, bottom: 6, fontSize:12, color:'#8c8c8c' }}>+{extraCount} more</div>
+        ) : null}
       </div>
     )
   }
 
   return (
-    <Card title="订单管理" extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}{hasPerm('order.manage') ? <Button onClick={manualSyncOrders} disabled={syncing}>手动同步订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={openFailures}>失败订单邮件手动入库</Button> : null}</Space>}>
-      <Space style={{ marginBottom: 12 }} wrap>
+    <Card title={<span style={{ fontSize: 24, fontWeight: 600 }}>订单管理</span>} bodyStyle={{ padding: 16 }} style={{ margin: 24 }} extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}{hasPerm('order.manage') ? <Button onClick={manualSyncOrders} disabled={syncing}>手动同步订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={openFailures}>失败订单邮件手动入库</Button> : null}</Space>}>
+      <Space style={{ marginBottom: 16 }} wrap>
         <Radio.Group value={view} onChange={(e)=>setView(e.target.value)}>
           <Radio.Button value="list">列表</Radio.Button>
           <Radio.Button value="calendar">日历</Radio.Button>
@@ -1215,8 +1302,79 @@ export default function OrdersPage() {
           scroll={{ x: 'max-content' }}
         />
       ) : (
-        <div ref={calRef}>
-          <Calendar value={calMonth} onChange={setCalMonth as any} fullscreen cellRender={(date:any, info:any) => (info?.type === 'date' ? (dayCell(date) as any) : undefined)} headerRender={() => null} />
+        <div ref={calRef} className="landlord-calendar">
+          <FullCalendar
+            plugins={[dayGridPlugin, interactionPlugin]}
+            initialView="dayGridMonth"
+            headerToolbar={{ start: '', center: '', end: '' }}
+            height="auto"
+            fixedWeekCount={false}
+            firstDay={0}
+            eventOrder="-duration,-start,-id"
+            eventOrderStrict={true}
+            editable={false}
+            selectable={false}
+            eventStartEditable={false}
+            eventDurationEditable={false}
+            initialDate={(calMonth || dayjs()).format('YYYY-MM-DD')}
+            dayHeaderContent={(args) => {
+              const labels = ['Su','Mo','Tu','We','Th','Fr','Sa']
+              const idx = dayjs(args.date).day()
+              return labels[idx]
+            }}
+            datesSet={(arg) => {
+              const start = (arg as any)?.view?.currentStart || arg.startStr
+              const d = dayjs(start)
+              gotoGuardRef.current = true
+              setCalMonth(d)
+              try { setCalApi((arg as any)?.view?.calendar || null) } catch {}
+            }}
+            eventDidMount={(info) => {
+              try {
+                info.el.removeAttribute('title')
+                info.el.setAttribute('aria-label', '')
+                info.el.setAttribute('tabindex', '-1')
+              } catch {}
+            }}
+            events={calendarEvents}
+            eventClassNames={(arg) => {
+              const k = platformKey((arg.event.extendedProps as any) || {})
+              const lane = laneMap[arg.event.id] ?? 0
+              return ['mz-evt', `mz-evt--${k}`, `mz-lane-${lane}`]
+            }}
+            eventContent={(arg) => {
+              const st = (arg.event.extendedProps as any)?.styleToken || { bg:'#eee', border:'#ddd', text:'#333' }
+              const wrapper = document.createElement('div')
+              wrapper.className = 'mz-booking flex items-center justify-between text-xs'
+              wrapper.style.borderWidth = '2px'
+              wrapper.style.borderStyle = 'solid'
+              wrapper.style.width = '100%'
+              wrapper.style.height = '28px'
+              wrapper.style.padding = '0 8px'
+              wrapper.style.boxSizing = 'border-box'
+              wrapper.style.alignItems = 'center'
+              const left = document.createElement('span')
+              left.className = 'bar-left'
+              left.style.overflow = 'hidden'
+              left.style.textOverflow = 'ellipsis'
+              left.style.whiteSpace = 'nowrap'
+              left.style.fontWeight = '500'
+              left.textContent = String((arg.event.extendedProps as any)?.order?.guest_name || '')
+              const right = document.createElement('span')
+              right.className = 'bar-right'
+              right.style.fontWeight = '600'
+              right.textContent = `$${money(((arg.event.extendedProps as any)?.order as any)?.__src_price ?? ((arg.event.extendedProps as any)?.order as any)?.price)}`
+              wrapper.appendChild(left)
+              wrapper.appendChild(right)
+              return { domNodes: [wrapper] }
+            }}
+            eventClick={(info) => {
+              const o = (info.event.extendedProps as any)?.order
+              if (o?.id) openDetail(String(o.id))
+            }}
+            dayMaxEvents={true}
+            eventOverlap={false}
+          />
         </div>
       )}
       <Modal open={open} onCancel={() => setOpen(false)} onOk={submitCreate} title="新建订单">
@@ -1347,7 +1505,7 @@ export default function OrdersPage() {
       ) : null}
     </Modal>
     <Modal open={failOpen} onCancel={()=> setFailOpen(false)} footer={null} title="失败订单邮件（可手动入库）" width={1000}>
-      <Space style={{ marginBottom: 12 }}>
+      <Space style={{ marginBottom: 16 }}>
         <Button size="small" onClick={openFailures} disabled={failLoading}>刷新</Button>
         <Button size="small" type="primary" onClick={async ()=>{
           try {
