@@ -7,7 +7,7 @@ import { authHeaders } from '../lib/api'
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4001'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; invoice_url?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
 
@@ -18,7 +18,9 @@ export default forwardRef<HTMLDivElement, {
   txs: Tx[]
   properties: { id: string; code?: string; address?: string }[]
   landlords: Landlord[]
-}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords }, ref) {
+  showChinese?: boolean
+  showInvoices?: boolean
+}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords, showChinese = true, showInvoices = false }, ref) {
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
   const relatedOrdersRaw = monthSegments(
@@ -49,18 +51,42 @@ export default forwardRef<HTMLDivElement, {
         const rows: ExpenseInvoice[] = res.ok ? (await res.json()) : []
         const map: Record<string, ExpenseInvoice[]> = {}
         rows.forEach((r: any) => { const k = String(r.expense_id); (map[k] = map[k] || []).push(r) })
+        const missingIds = expensesInMonth.map(e => String(e.id)).filter(id => !(id in map))
+        if (missingIds.length) {
+          const extraLists = await Promise.all(missingIds.map(async (eid) => {
+            try {
+              const r = await fetch(`${API_BASE}/finance/expense-invoices/${encodeURIComponent(eid)}`, { headers: authHeaders() })
+              const arr: ExpenseInvoice[] = r.ok ? (await r.json()) : []
+              return { eid, arr }
+            } catch { return { eid, arr: [] as ExpenseInvoice[] } }
+          }))
+          extraLists.forEach(({ eid, arr }) => {
+            if (arr && arr.length) { map[eid] = (map[eid] || []).concat(arr) }
+          })
+        }
+        // 进一步回补：若某支出在交易记录中自带 invoice_url，也作为发票处理
+        expensesInMonth.forEach((e) => {
+          const eid = String((e as any).id)
+          const tx = (txs || []).find(t => t.kind === 'expense' && String(t.id) === eid && !!(t as any).invoice_url)
+          const urlRaw = (tx as any)?.invoice_url || ''
+          if (urlRaw) {
+            const url = /^https?:\/\//.test(urlRaw) ? urlRaw : `${API_BASE}${urlRaw}`
+            const pseudo: ExpenseInvoice = { id: `tx-${eid}`, expense_id: eid, url }
+            map[eid] = (map[eid] || []).concat([pseudo])
+          }
+        })
         setInvoiceMap(map)
       } catch { setInvoiceMap({}) }
     })()
-  }, [propertyId, month])
+  }, [propertyId, month, expensesInMonth.length])
   const orderIncomeShare = relatedOrders.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
   const rentIncome = orderIncomeShare
   const otherIncomeTx = txs.filter(t => t.kind === 'income' && (!propertyId || t.property_id === propertyId) && dayjs(toDayStr(t.occurred_at)).isSame(start, 'month'))
   const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount || 0), 0)
   const mapIncomeCatLabel = (c?: string) => {
     const v = String(c || '')
-    if (v === 'late_checkout') return '晚退房费'
-    if (v === 'cancel_fee') return '取消费'
+    if (v === 'late_checkout') return showChinese ? '晚退房费' : 'Late checkout fee'
+    if (v === 'cancel_fee') return showChinese ? '取消费' : 'Cancellation fee'
     return v || '-'
   }
   const otherIncomeDesc = Array.from(new Set(otherIncomeTx.map(t => mapIncomeCatLabel(t.category)))).filter(Boolean).join('、') || '-'
@@ -154,62 +180,62 @@ export default forwardRef<HTMLDivElement, {
         </div>
       </div>
       <div style={{ borderTop: '2px solid transparent', margin: '8px 0' }}></div>
-      <div style={{ fontWeight: 600, marginTop: 8, background:'#eef3fb', padding:'6px 8px' }}>Monthly Overview Data</div>
+      <div style={{ fontWeight: 600, marginTop: 8, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Monthly Overview Data' : 'Monthly Overview Data'}</div>
       <table style={{ width: '100%', borderCollapse:'collapse' }}>
         <tbody>
-          <tr><td style={{ padding:6 }}>Total rent income 总租金</td><td style={{ textAlign:'right', padding:6 }}>${fmt(totalIncome)}</td></tr>
-          <tr><td style={{ padding:6 }}>Occupancy Rate 入住率</td><td style={{ textAlign:'right', padding:6 }}>{fmt(occupancyRate)}%</td></tr>
-          <tr><td style={{ padding:6 }}>Daily Average 日平均租金</td><td style={{ textAlign:'right', padding:6 }}>${fmt(dailyAverage)}</td></tr>
+          <tr><td style={{ padding:6 }}>{showChinese ? 'Total rent income 总租金' : 'Total rent income'}</td><td style={{ textAlign:'right', padding:6 }}>${fmt(totalIncome)}</td></tr>
+          <tr><td style={{ padding:6 }}>{showChinese ? 'Occupancy Rate 入住率' : 'Occupancy Rate'}</td><td style={{ textAlign:'right', padding:6 }}>{fmt(occupancyRate)}%</td></tr>
+          <tr><td style={{ padding:6 }}>{showChinese ? 'Daily Average 日平均租金' : 'Daily Average'}</td><td style={{ textAlign:'right', padding:6 }}>${fmt(dailyAverage)}</td></tr>
         </tbody>
       </table>
 
-      <div style={{ fontWeight: 600, marginTop: 16, background:'#eef3fb', padding:'6px 8px' }}>Rental Details</div>
+      <div style={{ fontWeight: 600, marginTop: 16, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rental Details' : 'Rental Details'}</div>
       <div style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px' }}>
-        <span>Total Income 总收入</span><span>${fmt(totalIncome)}</span>
+        <span>{showChinese ? 'Total Income 总收入' : 'Total Income'}</span><span>${fmt(totalIncome)}</span>
       </div>
       <table style={{ width:'100%' }}>
         <tbody>
-          <tr><td style={{ padding:6, textIndent:'4ch' }}>Rent Income 租金收入</td><td style={{ textAlign:'right', padding:6 }}>${fmt(rentIncome)}</td></tr>
-          {!simpleMode && (<tr><td style={{ padding:6, textIndent:'4ch' }}>Other Income 其他收入</td><td style={{ textAlign:'right', padding:6 }}>${fmt(otherIncome)}</td></tr>)}
-          {!simpleMode && (<tr><td style={{ padding:6, textIndent:'4ch' }}>Other Income Desc 其他收入描述</td><td style={{ textAlign:'right', padding:6 }}>{otherIncomeDesc}</td></tr>)}
+          <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Rent Income 租金收入' : 'Rent Income'}</td><td style={{ textAlign:'right', padding:6 }}>${fmt(rentIncome)}</td></tr>
+          {!simpleMode && (<tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Other Income 其他收入' : 'Other Income'}</td><td style={{ textAlign:'right', padding:6 }}>${fmt(otherIncome)}</td></tr>)}
+          {!simpleMode && (<tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Other Income Desc 其他收入描述' : 'Other Income Desc'}</td><td style={{ textAlign:'right', padding:6 }}>{otherIncomeDesc}</td></tr>)}
         </tbody>
       </table>
 
       {!simpleMode && (
         <>
           <div style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px', marginTop: 8 }}>
-            <span>Total Expense 总支出</span><span>${fmt(totalExpense)}</span>
+            <span>{showChinese ? 'Total Expense 总支出' : 'Total Expense'}</span><span>${fmt(totalExpense)}</span>
           </div>
           <table style={{ width:'100%' }}>
             <tbody>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>Management Fee 管理费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(managementFee)}</td></tr>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>Electricity 电费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catElectricity)}</td></tr>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>Water 水费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catWater)}</td></tr>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>Gas / Hot water 煤气费 / 热水费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catGas)}</td></tr>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>Internet 网费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catInternet)}</td></tr>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>Monthly Consumable 消耗品费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catConsumable)}</td></tr>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>Carpark 车位费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catCarpark)}</td></tr>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>Owner's Corporation 物业费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOwnerCorp)}</td></tr>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>Council Rate 市政费</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catCouncil)}</td></tr>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>Other Expense 其他支出</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOther)}</td></tr>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>Other Expense Desc 其他支出描述</td><td style={{ textAlign:'right', padding:6 }}>{otherExpenseDesc}</td></tr>
+              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Management Fee 管理费' : 'Management Fee'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(managementFee)}</td></tr>
+              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Electricity 电费' : 'Electricity'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catElectricity)}</td></tr>
+              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Water 水费' : 'Water'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catWater)}</td></tr>
+              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Gas / Hot water 煤气费 / 热水费' : 'Gas / Hot water'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catGas)}</td></tr>
+              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Internet 网费' : 'Internet'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catInternet)}</td></tr>
+              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Monthly Consumable 消耗品费' : 'Monthly Consumable'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catConsumable)}</td></tr>
+              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Carpark 车位费' : 'Carpark'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catCarpark)}</td></tr>
+              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? `Owner's Corporation 物业费` : `Owner's Corporation`}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOwnerCorp)}</td></tr>
+              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Council Rate 市政费' : 'Council Rate'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catCouncil)}</td></tr>
+              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Other Expense 其他支出' : 'Other Expense'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOther)}</td></tr>
+              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Other Expense Desc 其他支出描述' : 'Other Expense Desc'}</td><td style={{ textAlign:'right', padding:6 }}>{otherExpenseDesc}</td></tr>
             </tbody>
           </table>
         </>
       )}
 
       <div style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px', marginTop: 8 }}>
-        <span>Net Income 净收入</span><span>${fmt(netIncome)}</span>
+        <span>{showChinese ? 'Net Income 净收入' : 'Net Income'}</span><span>${fmt(netIncome)}</span>
       </div>
 
-      <div style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>Rent Records</div>
+      <div data-keep-with-next="true" style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rent Records' : 'Rent Records'}</div>
       <table style={{ width:'100%', borderCollapse:'collapse' }}>
         <thead>
           <tr>
-            <th style={{ textAlign:'left', padding:6, borderBottom:'1px solid #ddd' }}>入住</th>
-            <th style={{ textAlign:'left', padding:6, borderBottom:'1px solid #ddd' }}>退房</th>
-            <th style={{ textAlign:'right', padding:6, borderBottom:'1px solid #ddd' }}>晚数</th>
-            <th style={{ textAlign:'right', padding:6, borderBottom:'1px solid #ddd' }}>金额</th>
+            <th style={{ textAlign:'left', padding:6, borderBottom:'1px solid #ddd' }}>{showChinese ? '入住' : 'Check-in'}</th>
+            <th style={{ textAlign:'left', padding:6, borderBottom:'1px solid #ddd' }}>{showChinese ? '退房' : 'Check-out'}</th>
+            <th style={{ textAlign:'right', padding:6, borderBottom:'1px solid #ddd' }}>{showChinese ? '晚数' : 'Nights'}</th>
+            <th style={{ textAlign:'right', padding:6, borderBottom:'1px solid #ddd' }}>{showChinese ? '金额' : 'Amount'}</th>
           </tr>
         </thead>
         <tbody>
@@ -225,41 +251,70 @@ export default forwardRef<HTMLDivElement, {
       </table>
 
 
-      <div style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>Order Calendar</div>
+      <div style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Order Calendar' : 'Order Calendar'}</div>
       {(() => {
         const weeks: Array<{ ws: any; we: any }> = []
         let cur = weekStart.clone()
         while (cur.isBefore(weekEnd.add(1,'day'))) { const ws = cur.clone(); const we = cur.clone().endOf('week'); weeks.push({ ws, we }); cur = cur.add(1,'week') }
         return (
-          <div>
+          <div className="landlord-calendar" style={{ background:'#fff', border:'1px solid #eef2f7', borderRadius:12, padding:8 }}>
             {weeks.map(({ ws, we }, idx) => {
               const { segs, laneMap, laneCount } = buildWeekSegments(ws, we)
               const daysRow = Array.from({ length: 7 }).map((_, i) => ws.startOf('day').add(i, 'day'))
+              const hasMonthDay = daysRow.some(d => d.isSame(start, 'month'))
+              if (!hasMonthDay && segs.length === 0) return null
               return (
-                <div key={idx} style={{ position:'relative', minHeight: Math.max(44, laneCount * 24 + 24), margin:'6px 0', background:'#fff' }}>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:0, padding:'2px 0', color:'#888', fontSize:11 }}>
-                    {daysRow.map((d, i) => (
-                      <div key={i} style={{ textAlign:'center' }}>{d.format('DD/MM')}</div>
-                    ))}
+                <div key={idx} style={{ position:'relative', minHeight: Math.max(120, laneCount * 36 + 48), margin:'6px 0' }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:0, padding:'2px 0', fontSize:11 }}>
+                    {daysRow.map((d, i) => {
+                      const inMonth = d.isSame(start, 'month')
+                      return (
+                        <div key={i} style={{ textAlign:'center', color: inMonth ? '#4b5563' : '#bfbfbf', fontWeight: inMonth ? 600 : 400 }}>
+                          {d.format('DD/MM')}
+                        </div>
+                      )
+                    })}
                   </div>
-                  {[0,1,2,3,4,5,6].map(dIdx => (
-                    <div key={dIdx} style={{ position:'absolute', left: `${(dIdx * 100) / 7}%`, width: `${100/7}%`, top: 22, bottom:0, borderRight:'1px dashed #eee' }} />
-                  ))}
+                  {daysRow.map((d, dIdx) => {
+                    const inMonth = d.isSame(start, 'month')
+                    return (
+                      <div key={dIdx} style={{ position:'absolute', left: `${(dIdx * 100) / 7}%`, width: `${100/7}%`, top: 22, bottom:0 }}>
+                        {!inMonth ? <div style={{ position:'absolute', inset:0, background:'#f9fafb', opacity:0.7, pointerEvents:'none', zIndex:0 }} /> : null}
+                        <div style={{ position:'absolute', right:0, top:0, bottom:0, width:1, borderRight:'1px dashed #eee' }} />
+                      </div>
+                    )
+                  })}
                   {segs.map(seg => {
                     const o = seg.o as any
                     const isStart = seg.startIdx === Math.max(0, parseDateOnly(toDayStr(o.checkin)).diff(ws.startOf('day'),'day'))
                     const isEnd = seg.endIdx === Math.max(0, parseDateOnly(toDayStr(o.checkout)).subtract(1,'day').diff(ws.startOf('day'),'day'))
-                    const accent = sourceColor[o.source || 'other'] || '#999'
+                    const platform = (() => {
+                      const s = String(o.source || '').toLowerCase()
+                      if (s.startsWith('airbnb')) return 'airbnb'
+                      if (s.startsWith('booking')) return 'booking'
+                      if (s === 'offline') return 'offline'
+                      return 'other'
+                    })()
                     const leftPct = (seg.startIdx * 100) / 7
                     const rightPct = ((6 - seg.endIdx) * 100) / 7
                     const lane = laneMap[seg.id] || 0
-                    const radiusLeft = isStart ? 12 : 3
-                    const radiusRight = isEnd ? 12 : 3
                     return (
-                      <div key={seg.id} style={{ position:'absolute', left: `${leftPct}%`, right: `${rightPct}%`, top: 26 + lane * 24, height: 20, background:'#f5f5f5', borderRadius: `${radiusLeft}px ${radiusRight}px ${radiusRight}px ${radiusLeft}px`, padding:'0 8px', display:'flex', alignItems:'center', fontSize:11, lineHeight:'20px' }}>
-                        {isStart ? <span style={{ position:'absolute', left: -6, top:0, bottom:0, width: '33%', background: accent, borderRadius: `${radiusLeft}px 0 0 ${radiusLeft}px` }} /> : null}
-                        {isEnd ? <span style={{ position:'absolute', right: -6, top:0, bottom:0, width: '33%', background: accent, borderRadius: `0 ${radiusRight}px ${radiusRight}px 0` }} /> : null}
-                        <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginLeft: isStart ? '33%' : 0, marginRight: isEnd ? '33%' : 0 }}>{String(o.guest_name || '')} ${fmt(Number(o.price || 0))}</span>
+                      <div
+                        key={seg.id}
+                        className={`mz-evt mz-evt--${platform} mz-lane-${lane} ${isStart ? 'fc-event-start' : ''} ${isEnd ? 'fc-event-end' : ''}`}
+                        style={{ position:'absolute', left: `${leftPct}%`, right: `${rightPct}%`, top: 28 + lane * 36, height: 28, zIndex: 1 }}
+                      >
+                        <div
+                          className="mz-booking"
+                          style={{ borderWidth: 2, borderStyle:'solid', width:'100%', height:'100%', padding:'0 8px', boxSizing:'border-box', display:'flex', alignItems:'center', justifyContent:'space-between', fontSize:12 }}
+                        >
+                          <span className="bar-left" style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontWeight:500 }}>
+                            {String(o.guest_name || '')}
+                          </span>
+                          <span className="bar-right" style={{ fontWeight:600 }}>
+                            ${fmt(Number(o.price || 0))}
+                          </span>
+                        </div>
                       </div>
                     )
                   })}
@@ -270,19 +325,37 @@ export default forwardRef<HTMLDivElement, {
         )
       })()}
 
-      <div style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>Expense Invoices 支出发票</div>
+      {showInvoices && (
+      <>
+      <div style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Expense Invoices 支出发票' : 'Expense Invoices'}</div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap: 12 }}>
-        {expensesInMonth.map(e => (
-          <div key={e.id} style={{ border:'1px solid #eee', padding:8 }}>
-            <div style={{ display:'flex', justifyContent:'space-between' }}>
-              <span>{e.category || '其他'}</span>
-              <span>-${fmt(Number(e.amount||0))}</span>
-            </div>
-                <div style={{ fontSize:12 }}>{dayjs(toDayStr(e.occurred_at)).format('DD/MM/YYYY')}</div>
-            {(() => {
-              const invs = invoiceMap[e.id] || []
-              if (!invs.length) return (<div style={{ fontSize:12, color:'#888', marginTop:6 }}>未上传发票</div>)
-              return (
+        {expensesInMonth.map(e => {
+          const eid = String((e as any).id)
+          const invs = (invoiceMap[eid] || []).slice()
+          if (!invs.length) {
+            const cat = catKey(e)
+            const txInv = (txs || []).filter(t => {
+              if (t.kind !== 'expense') return false
+              const baseDateRaw: any = (t as any).paid_date || t.occurred_at || (t as any).created_at
+              const inMonth = baseDateRaw ? dayjs(toDayStr(baseDateRaw)).isSame(start, 'month') : false
+              const sameCat = catKey(t) === cat
+              const hasUrl = !!(t as any).invoice_url
+              const samePid = (!propertyId) || (t.property_id === propertyId)
+              return inMonth && sameCat && hasUrl && samePid
+            })
+            txInv.forEach((t: any, idx: number) => {
+              const url = /^https?:\/\//.test(String(t.invoice_url || '')) ? String(t.invoice_url) : `${API_BASE}${String(t.invoice_url || '')}`
+              invs.push({ id: `tx-${eid}-${idx}`, expense_id: eid, url } as any)
+            })
+          }
+          return (
+            <div key={eid} style={{ border:'1px solid #eee', padding:8 }}>
+              <div style={{ display:'flex', justifyContent:'space-between' }}>
+                <span>{(e as any).category || (showChinese ? '其他' : 'Other')}</span>
+                <span>-${fmt(Number((e as any).amount||0))}</span>
+              </div>
+              <div style={{ fontSize:12 }}>{dayjs(toDayStr((e as any).occurred_at)).format('DD/MM/YYYY')}</div>
+              {invs.length ? (
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap: 8, marginTop:6 }}>
                   {invs.map((iv) => {
                     const u = resolveUrl(iv.url)
@@ -290,18 +363,22 @@ export default forwardRef<HTMLDivElement, {
                       <img key={iv.id} src={u} style={{ width:'100%' }} alt="invoice" />
                     ) : isPdf(iv.url) ? (
                       <object key={iv.id} data={u} type="application/pdf" style={{ width:'100%', height: 300 }}>
-                        <a href={u} target="_blank" rel="noreferrer">查看发票</a>
+                        <a href={u} target="_blank" rel="noreferrer">{showChinese ? '查看发票' : 'View invoice'}</a>
                       </object>
                     ) : (
-                      <a key={iv.id} href={u} target="_blank" rel="noreferrer">查看发票</a>
+                      <a key={iv.id} href={u} target="_blank" rel="noreferrer">{showChinese ? '查看发票' : 'View invoice'}</a>
                     )
                   })}
                 </div>
-              )
-            })()}
-          </div>
-        ))}
+              ) : (
+                <div style={{ fontSize:12, color:'#888', marginTop:6 }}>{showChinese ? '未上传发票' : 'No invoice uploaded'}</div>
+              )}
+            </div>
+          )
+        })}
       </div>
+      </>
+      )}
     </div>
   )
 })

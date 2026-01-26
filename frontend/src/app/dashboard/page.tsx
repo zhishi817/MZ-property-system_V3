@@ -12,7 +12,7 @@ import { API_BASE, getJSON } from '../../lib/api'
 import { monthSegments, toDayStr, parseDateOnly } from '../../lib/orders'
 import { PieChart as RePieChart, Pie as RePie, Cell as ReCell, Tooltip as ReTooltip, Legend as ReLegend, ResponsiveContainer, BarChart as ReBarChart, Bar as ReBar, LineChart as ReLineChart, Line as ReLine, XAxis as ReXAxis, YAxis as ReYAxis, CartesianGrid as ReCartesianGrid } from 'recharts'
 
-type Property = { id: string; code?: string; address?: string; region?: string; biz_category?: 'leased'|'management_fee' }
+ type Property = { id: string; code?: string; address?: string; region?: string; biz_category?: 'leased'|'management_fee'; type?: string }
 type Order = { id: string; source?: string; property_id?: string; checkin?: string; checkout?: string; nights?: number; avg_nightly_price?: number; net_income?: number; price?: number }
 type PropertyExpense = { id: string; property_id?: string; amount?: number; occurred_at?: string }
 type Landlord = { id: string; name: string }
@@ -47,6 +47,10 @@ export default function DashboardPage() {
   }
   const regions = Array.from(new Set(properties.map(p => displayRegion(p.region)).filter(r => !!r)))
   const regionCounts = regions.map(reg => ({ region: reg, count: properties.filter(p => displayRegion(p.region) === reg).length }))
+  const typeCounts = (() => {
+    const keys = ['一房一卫','两房一卫','两房两卫','三房两卫','三房三卫']
+    return keys.map(name => ({ name, count: properties.filter(p => (p.type || '') === name).length }))
+  })()
   const manageStats = (() => {
     const leased = properties.filter(p => (p.biz_category || '').toLowerCase() === 'leased').length
     const managed = properties.filter(p => (p.biz_category || '').toLowerCase() === 'management_fee').length
@@ -251,6 +255,7 @@ export default function DashboardPage() {
   }
 
   const maxRegion = Math.max(1, ...regionCounts.map(r => r.count))
+  const maxType = Math.max(1, ...typeCounts.map(r => r.count))
 
   function Pie({ leased, managed, unknown }: { leased: number, managed: number, unknown: number }) {
     const total = Math.max(leased + managed + unknown, 1)
@@ -413,6 +418,22 @@ export default function DashboardPage() {
             </div>
           ))}
         </Space></Card></Col>
+      </Row>
+      <Row gutter={[16,16]}>
+        <Col xs={24} md={24}><Card title="各房型数量" extra={<span>总计：{totalProps}</span>} style={{ height: 300 }}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            {typeCounts.map(tc => {
+              const pct = totalProps ? Math.round((tc.count * 100) / totalProps) : 0
+              return (
+                <div key={tc.name} style={{ display:'flex', alignItems:'center', gap:8 }}>
+                  <div style={{ width: 120 }}>{tc.name}</div>
+                  <Bar value={tc.count} max={maxType} />
+                  <div style={{ marginLeft:'auto', minWidth: 80, textAlign:'right' }}>{tc.count}（{pct}%）</div>
+                </div>
+              )
+            })}
+          </Space>
+        </Card></Col>
       </Row>
       
     </Space>
