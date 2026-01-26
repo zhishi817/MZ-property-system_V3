@@ -1,5 +1,5 @@
 "use client"
-import { Card, DatePicker, Table, Select, Button, Modal, message } from 'antd'
+import { Card, DatePicker, Table, Select, Button, Modal, message, Switch } from 'antd'
 import styles from './ExpandedRow.module.css'
 import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
@@ -28,6 +28,7 @@ export default function PropertyRevenuePage() {
   const printRef = useRef<HTMLDivElement>(null)
   const [period, setPeriod] = useState<'month'|'year'|'half-year'|'fiscal-year'>('month')
   const [startMonth, setStartMonth] = useState<any>(dayjs())
+  const [showChinese, setShowChinese] = useState<boolean>(true)
   useEffect(() => {
     getJSON<Order[]>('/orders').then(setOrders).catch(()=>setOrders([]))
     ;(async () => {
@@ -88,7 +89,8 @@ export default function PropertyRevenuePage() {
           property_id: t.property_id || undefined,
           occurred_at: t.occurred_at,
           category: mapCat(t.category),
-          ...(t.category_detail ? { category_detail: t.category_detail } : {})
+          ...(t.category_detail ? { category_detail: t.category_detail } : {}),
+          ...(t.invoice_url ? { invoice_url: t.invoice_url } : {})
         }))
         setTxs([...finMapped, ...peMapped])
       } catch { setTxs([]) }
@@ -380,6 +382,12 @@ export default function PropertyRevenuePage() {
               body { width: ${period==='fiscal-year' ? '277mm' : '190mm'}; margin: 0 auto; }
               table { width: 100%; border-collapse: collapse; }
               th, td { border-bottom: 1px solid #ddd; }
+              .landlord-calendar .mz-booking { border-radius: 0; }
+              .landlord-calendar .fc-event-start .mz-booking { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
+              .landlord-calendar .fc-event-end .mz-booking { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
+              .landlord-calendar .mz-evt--airbnb .mz-booking { background-color: #FFE4E6 !important; border-color: #FB7185 !important; color: #881337 !important; }
+              .landlord-calendar .mz-evt--booking .mz-booking { background-color: #DBEAFE !important; border-color: #60A5FA !important; color: #1E3A8A !important; }
+              .landlord-calendar .mz-evt--other .mz-booking { background-color: #F3F4F6 !important; border-color: #9CA3AF !important; color: #111827 !important; }
             </style>
           `
           const iframe = document.createElement('iframe')
@@ -390,7 +398,10 @@ export default function PropertyRevenuePage() {
           iframe.style.height = '0'
           document.body.appendChild(iframe)
           const doc = iframe.contentDocument || (iframe as any).document
-          const html = `<html><head><title>Statement</title>${style}<base href="${location.origin}"></head><body>${printRef.current.innerHTML}</body></html>`
+          const prop = properties.find(p => String(p.id) === String(previewPid || ''))
+          const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
+          const fileTitle = `Monthly Statement - ${month.format('YYYY-MM')}${codeLabel ? ' - ' + codeLabel : ''}`
+          const html = `<html><head><title>${fileTitle}</title>${style}<base href="${location.origin}"></head><body>${printRef.current.innerHTML}</body></html>`
           doc.open(); doc.write(html); doc.close()
           const imgs = Array.from(doc.images || [])
           await Promise.all(imgs.map((img: any) => img.complete ? Promise.resolve(null) : new Promise((resolve) => { img.addEventListener('load', resolve); img.addEventListener('error', resolve) })))
@@ -400,48 +411,188 @@ export default function PropertyRevenuePage() {
         }}>导出PDF</Button>
         <Button type="primary" onClick={async () => {
           if (!printRef.current || !previewPid) return
-          const node = printRef.current as HTMLElement
-          const canvas = await html2canvas(node, { scale: 2 })
+          const nodeOrig = printRef.current as HTMLElement
+          const node = nodeOrig.cloneNode(true) as HTMLElement
+          const mmWidth = period==='fiscal-year' ? '277mm' : '190mm'
+          const styleEl = document.createElement('style')
+          styleEl.innerHTML = `
+            html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; background:#ffffff; }
+            body { margin: 0; }
+            .__pdf_root__ { width: ${mmWidth}; margin: 0 auto; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { border-bottom: 1px solid #ddd; }
+            .landlord-calendar .mz-booking { border-radius: 0; }
+            .landlord-calendar .fc-event-start .mz-booking { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
+            .landlord-calendar .fc-event-end .mz-booking { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
+            .landlord-calendar .mz-evt--airbnb .mz-booking { background-color: #FFE4E6 !important; border-color: #FB7185 !important; color: #881337 !important; }
+            .landlord-calendar .mz-evt--booking .mz-booking { background-color: #DBEAFE !important; border-color: #60A5FA !important; color: #1E3A8A !important; }
+            .landlord-calendar .mz-evt--other .mz-booking { background-color: #F3F4F6 !important; border-color: #9CA3AF !important; color: #111827 !important; }
+          `
+          const sandbox = document.createElement('div')
+          sandbox.style.position = 'fixed'
+          sandbox.style.left = '-9999px'
+          sandbox.style.top = '0'
+          sandbox.style.width = '0'
+          sandbox.style.height = '0'
+          document.body.appendChild(sandbox)
+          sandbox.appendChild(styleEl)
+          node.className = `${node.className} __pdf_root__`.trim()
+          sandbox.appendChild(node)
+          const scaleFactor = 3
+          const canvas = await html2canvas(node, { scale: scaleFactor, useCORS: true, allowTaint: true, backgroundColor: '#ffffff' })
+          try { document.body.removeChild(sandbox) } catch {}
           const imgData = canvas.toDataURL('image/png')
           const pdf = new jsPDF('p', 'mm', 'a4')
-          const pageWidth = 210
-          const imgWidth = pageWidth - 20
-          const imgHeight = (canvas.height * imgWidth) / canvas.width
-          pdf.addImage(imgData, 'PNG', 10, 10, imgWidth, imgHeight)
+          const pageWidth = pdf.internal.pageSize.getWidth()
+          const pageHeight = pdf.internal.pageSize.getHeight()
+          const margin = 10
+          const contentWidthMm = pageWidth - margin * 2
+          const contentHeightMm = pageHeight - margin * 2
+          const pxPerMm = canvas.width / contentWidthMm
+          const pageContentHeightPx = contentHeightMm * pxPerMm
+          const anchors = Array.from(node.querySelectorAll('[data-keep-with-next="true"]')) as HTMLElement[]
+          const anchorYs = anchors.map(a => a.offsetTop * scaleFactor).sort((a,b)=>a-b)
+          const reserve = 60 * scaleFactor
+          let y = 0
+          while (y < canvas.height) {
+            let sliceHeightPx = Math.min(pageContentHeightPx, canvas.height - y)
+            const endCandidate = y + sliceHeightPx
+            const near = anchorYs.find(pos => pos > y && pos <= endCandidate && (endCandidate - pos) < reserve)
+            if (near) sliceHeightPx = Math.max(10, near - y)
+            const sliceCanvas = document.createElement('canvas')
+            sliceCanvas.width = canvas.width
+            sliceCanvas.height = sliceHeightPx
+            const ctx = sliceCanvas.getContext('2d')!
+            ctx.drawImage(canvas, 0, y, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx)
+            const sliceImg = sliceCanvas.toDataURL('image/png')
+            const sliceHeightMm = sliceHeightPx / pxPerMm
+            if (y === 0) {
+              pdf.addImage(sliceImg, 'PNG', margin, margin, contentWidthMm, sliceHeightMm)
+            } else {
+              pdf.addPage()
+              pdf.addImage(sliceImg, 'PNG', margin, margin, contentWidthMm, sliceHeightMm)
+            }
+            y += sliceHeightPx
+          }
           const statementBlob = pdf.output('blob') as Blob
           // Upload the generated statement PDF first
           const fd = new FormData()
-          fd.append('file', statementBlob, `statement-${month.format('YYYY-MM')}.pdf`)
+          {
+            const prop = properties.find(p => String(p.id) === String(previewPid || ''))
+            const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
+            const fname = `Monthly Statement - ${month.format('YYYY-MM')}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
+            fd.append('file', statementBlob, fname)
+          }
           const upRes = await fetch(`${API_BASE}/finance/invoices`, { method: 'POST', headers: { ...authHeaders() }, body: fd })
-          if (!upRes.ok) throw new Error(`HTTP ${upRes.status}`)
+          if (!upRes.ok) {
+            let errMsg = `上传报表失败（HTTP ${upRes.status}）`
+            try { const j = await upRes.json(); if (j?.message) errMsg = j.message } catch { try { errMsg = await upRes.text() } catch {} }
+            message.error(errMsg || '上传报表失败')
+            return
+          }
           const upJson = await upRes.json()
-          const statementUrl = upJson?.url
+          const statementUrlRaw = upJson?.url || ''
+          const statementUrl = /^https?:\/\//.test(statementUrlRaw) ? statementUrlRaw : (statementUrlRaw ? `${API_BASE}${statementUrlRaw}` : '')
           const from = start!.format('YYYY-MM-DD')
           const to = end!.format('YYYY-MM-DD')
           const invList = await getJSON<any[]>(`/finance/expense-invoices/search?property_id=${encodeURIComponent(previewPid!)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
-          const invUrls = (Array.isArray(invList) ? invList : [])
+          let invUrls = (Array.isArray(invList) ? invList : [])
             .map((r: any) => (r.url && /^https?:\/\//.test(r.url)) ? r.url : (r.url ? `${API_BASE}${r.url}` : ''))
             .filter((u: any) => !!u)
+          if (!invUrls.length) {
+            try {
+              const prop = properties.find(p => String(p.id) === String(previewPid || ''))
+              const codeLabel = (prop?.code || '').toString().trim()
+              const expCandidates = (txs || []).filter((x: any) => {
+                if (x.kind !== 'expense') return false
+                const pidOk = (x.property_id === previewPid) || (!!codeLabel && String((x as any).property_code || '') === codeLabel)
+                const baseDateRaw: any = (x as any).paid_date || x.occurred_at || (x as any).created_at
+                const inMonth = baseDateRaw ? dayjs(toDayStr(baseDateRaw)).isSame(start, 'month') : false
+                return pidOk && inMonth
+              })
+              const extra = await Promise.all(expCandidates.map(async (e: any) => {
+                try {
+                  const r = await fetch(`${API_BASE}/finance/expense-invoices/${encodeURIComponent(String(e.id))}`, { headers: authHeaders() })
+                  const arr: any[] = r.ok ? (await r.json()) : []
+                  return arr
+                } catch { return [] }
+              }))
+              const flat = ([] as any[]).concat(...extra)
+              const urls2 = flat.map((r: any) => (r.url && /^https?:\/\//.test(r.url)) ? r.url : (r.url ? `${API_BASE}${r.url}` : '')).filter(Boolean)
+              invUrls = urls2.length ? urls2 : invUrls
+            } catch {}
+          }
+          // 若仍为空，最终从交易记录中的 invoice_url 补齐
+          if (!invUrls.length) {
+            const txUrls = (txs || [])
+              .filter((x: any) => x.kind === 'expense' && (!!x.invoice_url) && ((x.property_id === previewPid) || String((x as any).property_code || '') === String((properties.find(p => p.id===previewPid)?.code || ''))))
+              .filter((x: any) => {
+                const baseDateRaw: any = (x as any).paid_date || x.occurred_at || (x as any).created_at
+                return baseDateRaw ? dayjs(toDayStr(baseDateRaw)).isSame(start, 'month') : false
+              })
+              .map((x: any) => (/^https?:\/\//.test(String(x.invoice_url || '')) ? String(x.invoice_url) : `${API_BASE}${String(x.invoice_url || '')}`))
+              .filter(Boolean)
+            if (txUrls.length) invUrls = txUrls
+          }
           try {
             const resp = await fetch(`${API_BASE}/finance/merge-pdf`, { method:'POST', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ statement_pdf_url: statementUrl, invoice_urls: invUrls }) })
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+            if (!resp.ok) {
+              let reason = `合并失败（HTTP ${resp.status}）`
+              try { const j = await resp.json(); if (j?.message) reason = j.message } catch { try { reason = await resp.text() } catch {} }
+              message.error(reason || '合并下载失败')
+              const url = URL.createObjectURL(statementBlob)
+              const a = document.createElement('a')
+              a.href = url
+              {
+                const prop = properties.find(p => String(p.id) === String(previewPid || ''))
+                const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
+                a.download = `Monthly Statement - ${month.format('YYYY-MM')}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
+              }
+              document.body.appendChild(a)
+              a.click()
+              document.body.removeChild(a)
+              URL.revokeObjectURL(url)
+              return
+            }
             const blob = await resp.blob()
             const url = URL.createObjectURL(blob)
             const a = document.createElement('a')
             a.href = url
-            a.download = `statement-merged-${month.format('YYYY-MM')}.pdf`
+            {
+              const prop = properties.find(p => String(p.id) === String(previewPid || ''))
+              const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
+              a.download = `Monthly Statement - ${month.format('YYYY-MM')}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
+            }
             document.body.appendChild(a)
             a.click()
             document.body.removeChild(a)
             URL.revokeObjectURL(url)
           } catch (e: any) {
             message.error(e?.message || '合并下载失败')
+            const url = URL.createObjectURL(statementBlob)
+            const a = document.createElement('a')
+            a.href = url
+            {
+              const prop = properties.find(p => String(p.id) === String(previewPid || ''))
+              const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
+              a.download = `Monthly Statement - ${month.format('YYYY-MM')}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
+            }
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            URL.revokeObjectURL(url)
           }
         }}>合并PDF下载</Button>
       </>} width={900}>
         {previewPid ? (
           period==='month' ? (
-            <MonthlyStatementView ref={printRef} month={month.format('YYYY-MM')} propertyId={previewPid || undefined} orders={orders} txs={txs} properties={properties} landlords={landlords} />
+            <>
+              <div style={{ display:'flex', justifyContent:'flex-end', marginBottom: 8 }}>
+                <span style={{ marginRight: 8 }}>包含中文说明</span>
+                <Switch checked={showChinese} onChange={setShowChinese as any} />
+              </div>
+              <MonthlyStatementView ref={printRef} month={month.format('YYYY-MM')} propertyId={previewPid || undefined} orders={orders} txs={txs} properties={properties} landlords={landlords} showChinese={showChinese} showInvoices={false} />
+            </>
           ) : period==='fiscal-year' ? (
             <FiscalYearStatement ref={printRef} baseMonth={month} propertyId={previewPid!} orders={orders} txs={txs} properties={properties} landlords={landlords} />
           ) : (
