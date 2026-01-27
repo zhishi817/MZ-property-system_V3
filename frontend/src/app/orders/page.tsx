@@ -626,6 +626,7 @@ export default function OrdersPage() {
       const message_id = String(rec?.message_id || rec?.id || '')
       if (!uid && !message_id) { message.warning('缺少UID或message_id'); return }
       const pid = (rec as any).__pid || ''
+      if (!pid) { message.warning('请选择房号'); return }
       const res = await fetch(`${API_BASE}/jobs/email-orders-raw/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ uid, message_id, property_id: pid }) })
       const j = await res.json().catch(()=>null)
       if (res.ok) { message.success('已手动插入订单'); openFailures(); load() } else {
