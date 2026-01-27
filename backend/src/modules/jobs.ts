@@ -1115,6 +1115,19 @@ router.get('/email-orders-raw/failures', requirePerm('order.manage'), async (req
     if (!hasPg) return res.json([])
     const sinceDays = Number(((req.query || {}) as any).since_days || 14)
     const limit = Math.min(500, Number(((req.query || {}) as any).limit || 200))
+    try {
+      await pgPool!.query(`
+        UPDATE email_orders_raw r
+        SET status='resolved',
+            extra = COALESCE(r.extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', o.id::text)
+        FROM orders o
+        WHERE o.confirmation_code IS NOT NULL
+          AND r.confirmation_code = o.confirmation_code
+          AND r.created_at >= now() - ($1 || ':days')::interval
+          AND COALESCE(r.status,'') IN ('failed','unmatched_property','parsed')
+          AND COALESCE(r.extra->>'resolved_order_id','') = ''
+      `, [String(sinceDays)])
+    } catch {}
     const q = await pgPool!.query(`
       SELECT r.uid, r.message_id, r.subject, r.sender, r.header_date, r.confirmation_code, r.guest_name, r.listing_name, r.checkin, r.checkout, r.price, r.cleaning_fee, r.status,
         COALESCE(r.extra->>'reason', NULL) AS reason
