@@ -446,7 +446,15 @@ async function loadPropertyIndex(): Promise<Record<string, string>> {
     if (hasPg) {
       const rowsRaw: any = await pgSelect('properties', 'id,airbnb_listing_name')
       const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
-      rows.forEach((p: any) => { const nm = String(p.airbnb_listing_name || '').trim().toLowerCase(); if (nm) byName[nm] = String(p.id) })
+      function normalizeIndexKey(s: string): string {
+        const t = normalizeText(String(s || ''))
+        const x = t.replace(/[“”]/g, '"').replace(/[‘’]/g, "'")
+        return x.trim().toLowerCase()
+      }
+      rows.forEach((p: any) => {
+        const nm = normalizeIndexKey(String(p.airbnb_listing_name || ''))
+        if (nm) byName[nm] = String(p.id)
+      })
     }
   } catch {}
   return byName
@@ -696,7 +704,7 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
     }
     return { matched: true, inserted: false, skipped_duplicate: false, failed: true, reason: 'db_unavailable', last_uid: Number(msg.uid || 0) }
   }
-  const ln = String(fields.listing_name || '').trim().toLowerCase()
+  const ln = String(fields.listing_name || '').replace(/[“”]/g, '"').replace(/[‘’]/g, "'").trim().toLowerCase()
   const pid = ln ? propIndex[ln] : undefined
   if (!pid) {
     if (!dryRun && hasPg) {
