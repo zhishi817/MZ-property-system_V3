@@ -747,6 +747,7 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
       if (Array.isArray(dup) && dup[0]) {
         console.log(JSON.stringify({ tag: 'orders_write_done', action: 'duplicate_check', upserted: false, duplicate: true, order_id: dup[0].id }))
         try { const { deriveCleaningTaskFromOrder } = require('../services/cleaningDerive'); await deriveCleaningTaskFromOrder(String(dup[0].id)) } catch {}
+        try { if (pgPool) { await pgPool.query("UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE uid=$1", [Number(msg.uid || 0), String(dup[0].id || '')]) } } catch {}
         return { matched: true, inserted: false, skipped_duplicate: true, failed: false, order_id: dup[0].id, last_uid: Number(msg.uid || 0) }
       }
     } catch {}
@@ -756,6 +757,7 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
       const row = await pgInsertOnConflictDoNothing('orders', payload, ['idempotency_key'])
       console.log(JSON.stringify({ tag: 'orders_write_done', action: 'upsert', upserted: !!row, duplicate: !row, order_id: row?.id || null }))
       try { const { deriveCleaningTaskFromOrder } = require('../services/cleaningDerive'); if (row?.id) await deriveCleaningTaskFromOrder(String(row.id)) } catch {}
+      try { if (row?.id && pgPool) { await pgPool.query("UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE uid=$1", [Number(msg.uid || 0), String(row.id || '')]) } } catch {}
       return { matched: true, inserted: !!row, skipped_duplicate: !row, failed: false, order_id: row?.id, last_uid: Number(msg.uid || 0) }
     } catch (e: any) {
       console.error(JSON.stringify({ tag: 'db_write_failed', table: 'orders', columns: Object.keys(payload), conflict: ['idempotency_key'], code: String((e as any)?.code || ''), message: String(e?.message || ''), payload_keys: Object.keys(payload), payload_sample: { idempotency_key, external_id: cc, property_id: pid, guest_name: fields.guest_name, checkin: ci, checkout: co } }))
