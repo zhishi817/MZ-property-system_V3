@@ -1653,7 +1653,7 @@ async function isOrderMonthLocked(order: any): Promise<boolean> {
   } catch { return false }
 }
 
-router.get('/:id/internal-deductions', requirePerm('order.deduction.manage'), async (req, res) => {
+router.get('/:id/internal-deductions', requireAnyPerm(['order.view','order.deduction.manage']), async (req, res) => {
   const { id } = req.params
   try {
     if (hasPg) {

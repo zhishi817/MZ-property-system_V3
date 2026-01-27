@@ -50,8 +50,12 @@ export function hasPerm(code: string): boolean {
   if (role === 'admin') return true
   const mem = cachedPerms[role]
   let list: string[] = Array.isArray(mem) ? mem : []
-  if (!list.length && typeof localStorage !== 'undefined') {
-    try { const s = localStorage.getItem(`perms:${role}`) || '[]'; list = JSON.parse(s) } catch {}
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const s = localStorage.getItem(`perms:${role}`) || '[]'
+      const latest = JSON.parse(s)
+      if (Array.isArray(latest) && latest.length) list = latest
+    } catch {}
   }
   return Array.isArray(list) ? list.includes(code) : false
 }

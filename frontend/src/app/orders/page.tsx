@@ -1783,27 +1783,25 @@ export default function OrdersPage() {
                     {v.late_checkout || v.late_checkout_fee ? <Tag color="purple">晚退收入: {lateFee}</Tag> : null}
                     {v.cancel_fee ? <Tag color="orange">取消费: {cancelFee}</Tag> : null}
                     <Tag color="purple">晚均价: {Number(avg).toFixed(2)}</Tag>
-                    {hasPerm('order.deduction.manage') ? <Tag color="red">可见净额: {Number(visible).toFixed(2)}</Tag> : null}
+                    <Tag color="red">可见净额: {Number(visible).toFixed(2)}</Tag>
                   </Space>
                 </Card>
               )
             }}
           </Form.Item>
-          {hasPerm('order.deduction.manage') ? (
-            <Card size="small" style={{ marginTop: 8 }} title="内部扣减">
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <InputNumber style={{ width: '100%' }} value={deductAmountEdit} onChange={(v)=> setDeductAmountEdit(Number(v||0))} min={0} />
-                <Input value={deductDescEdit} onChange={(e)=> setDeductDescEdit(e.target.value)} placeholder="减扣事项描述" />
-                <Input value={deductNoteEdit} onChange={(e)=> setDeductNoteEdit(e.target.value)} placeholder="备注" />
-                <Button type="primary" onClick={async () => {
-                  if (!current) return
-                  const payload = { amount: deductAmountEdit, item_desc: deductDescEdit, note: deductNoteEdit }
-                  const resp = await fetch(`${API_BASE}/orders/${current.id}/internal-deductions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
-                  if (resp.ok) { message.success('扣减已保存'); setDeductAmountEdit(0); setDeductNoteEdit(''); load() } else { const j = await resp.json().catch(()=>({})); message.error(j?.message || '保存失败') }
-                }}>保存扣减</Button>
-              </Space>
-            </Card>
-          ) : null}
+          <Card size="small" style={{ marginTop: 8 }} title="内部扣减">
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <InputNumber style={{ width: '100%' }} value={deductAmountEdit} onChange={(v)=> setDeductAmountEdit(Number(v||0))} min={0} disabled={!hasPerm('order.deduction.manage')} />
+              <Input value={deductDescEdit} onChange={(e)=> setDeductDescEdit(e.target.value)} placeholder="减扣事项描述" disabled={!hasPerm('order.deduction.manage')} />
+              <Input value={deductNoteEdit} onChange={(e)=> setDeductNoteEdit(e.target.value)} placeholder="备注" disabled={!hasPerm('order.deduction.manage')} />
+              <Button type="primary" disabled={!hasPerm('order.deduction.manage')} onClick={async () => {
+                if (!current) return
+                const payload = { amount: deductAmountEdit, item_desc: deductDescEdit, note: deductNoteEdit }
+                const resp = await fetch(`${API_BASE}/orders/${current.id}/internal-deductions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+                if (resp.ok) { message.success('扣减已保存'); setDeductAmountEdit(0); setDeductNoteEdit(''); load() } else { const j = await resp.json().catch(()=>({})); message.error(j?.message || '保存失败') }
+              }}>保存扣减</Button>
+            </Space>
+          </Card>
         </Form>
     </Modal>
     <Drawer open={view==='list' && detailOpen} onClose={() => setDetailOpen(false)} title="订单详情" width={520}>
