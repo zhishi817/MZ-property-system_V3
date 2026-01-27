@@ -73,6 +73,9 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
         if (wantDelete) set.add(`${res}.delete`)
         if (wantArchive) set.add(`${res}.archive`)
       })
+      if (menuVisible === 'menu.finance.orders.visible' && (wantWrite || wantDelete || wantArchive)) {
+        set.add('order.deduction.manage')
+      }
       // 将菜单层面的操作位移除，仅保留资源位与 .visible
       set.delete(`${base}.view`); set.delete(`${base}.write`); set.delete(`${base}.delete`); set.delete(`${base}.archive`)
     }
