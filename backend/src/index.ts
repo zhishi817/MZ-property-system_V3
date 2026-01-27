@@ -31,6 +31,7 @@ import recurringRouter from './modules/recurring'
 import { auth } from './auth'
 import publicRouter from './modules/public'
 import publicAdminRouter from './modules/public_admin'
+import { r2Status } from './r2'
 // 环境保险锁（允许缺省采用智能默认，不再抛错）
 let appEnv = process.env.APP_ENV
 let dbRole = process.env.DATABASE_ROLE
@@ -120,6 +121,9 @@ app.get('/health/config', (_req, res) => {
     }
   } catch {}
   res.json(cfg)
+})
+app.get('/health/r2', (_req, res) => {
+  try { return res.json(r2Status()) } catch { return res.json({ hasR2: false }) }
 })
 app.get('/health/migrations', async (_req, res) => {
   const mig: any = { status: 'ok' }

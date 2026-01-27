@@ -165,6 +165,23 @@ export type CleaningTask = {
   inspected?: boolean
 }
 
+export type RepairOrder = {
+  id: string
+  property_id?: string
+  category?: string
+  category_detail?: string
+  detail?: string
+  attachment_urls?: string[]
+  submitter_id?: string
+  submitter_name?: string
+  submitted_at?: string
+  urgency?: 'urgent'|'high'|'medium'|'low'
+  status?: 'pending'|'assigned'|'in_progress'|'completed'|'canceled'
+  assignee_id?: string
+  eta?: string
+  completed_at?: string
+  remark?: string
+}
 export type OrderImportStaging = {
   id: string
   channel?: string
@@ -200,6 +217,7 @@ export const db = {
   roles: [] as { id: string; name: string }[],
   permissions: [] as { code: string; name?: string }[],
   rolePermissions: [] as { role_id: string; permission_code: string }[],
+  repairOrders: [] as RepairOrder[],
 }
 
 // seed sample data
@@ -355,6 +373,8 @@ if (db.roles.length === 0) {
     { code: 'menu.properties.list.visible' },
     { code: 'menu.properties.keys.visible' },
     { code: 'menu.properties.maintenance.visible' },
+    { code: 'menu.properties.repairs.visible' },
+    { code: 'menu.properties.public_repair.visible' },
     { code: 'menu.finance.expenses.visible' },
     { code: 'menu.finance.recurring.visible' },
     { code: 'menu.finance.orders.visible' },
@@ -421,7 +441,7 @@ if (adminRole) {
 
 // granular CRUD resource permissions
 const resources = [
-  'properties','landlords','orders','cleaning_tasks','finance_transactions','company_expenses','property_expenses','fixed_expenses','company_incomes','property_incomes','recurring_payments','cms_pages','payouts','company_payouts','users','property_maintenance','order_import_staging'
+  'properties','landlords','orders','cleaning_tasks','finance_transactions','company_expenses','property_expenses','fixed_expenses','company_incomes','property_incomes','recurring_payments','cms_pages','payouts','company_payouts','users','property_maintenance','order_import_staging','repair_orders'
 ]
 resources.forEach(r => {
   const viewCode = `${r}.view`

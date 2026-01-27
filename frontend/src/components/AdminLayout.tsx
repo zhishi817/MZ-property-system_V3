@@ -32,6 +32,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   }
   const [collapsed, setCollapsed] = useState(false)
   const isLogin = pathname.startsWith('/login')
+  const isPublic = pathname.startsWith('/public')
   const [role, setRole] = useState<string | null>(null)
   const [username, setUsername] = useState<string | null>(null)
   const [mounted, setMounted] = useState(false)
@@ -67,10 +68,10 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   }, [mounted, authed])
   useEffect(() => {
     if (!mounted) return
-    if (!isLogin && !authed) {
+    if (!isLogin && !isPublic && !authed) {
       try { router.replace('/login') } catch {}
     }
-  }, [mounted, isLogin, authed, router])
+  }, [mounted, isLogin, isPublic, authed, router])
   const items: any[] = []
   if (hasPerm('menu.dashboard')) items.push({ key: 'dashboard', icon: <ProfileOutlined />, label: <Link href="/dashboard" prefetch={false}>总览</Link> })
   if (hasPerm('menu.landlords')) {
@@ -88,7 +89,8 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   }
   if (hasPerm('menu.properties.maintenance.visible')) items.push({ key: 'maintenance', icon: <ProfileOutlined />, label: '房源维修', children: [
     { key: 'maintenance-overview', label: <Link href="/maintenance/overview" prefetch={false}>维修总览</Link> },
-    { key: 'maintenance-records', label: <Link href="/maintenance" prefetch={false}>维修记录</Link> },
+    { key: 'maintenance-unified', label: <Link href="/maintenance/records" prefetch={false}>维修记录</Link> },
+    ...(hasPerm('menu.properties.public_repair.visible') ? [{ key: 'public-repair', label: <Link href="/public/repair-report" prefetch={false}>维修上报表</Link> }] : []),
   ] })
   if (hasPerm('menu.onboarding')) items.push({ key: 'onboarding', icon: <ProfileOutlined />, label: '房源上新', children: [
     { key: 'onboarding-list', label: <Link href="/onboarding" prefetch={false}>上新管理</Link> },
@@ -129,7 +131,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     }
   }
   return (
-    isLogin ? (
+    (isLogin || isPublic) ? (
       <>{children}</>
     ) : (
       <Layout style={{ minHeight: '100vh', display:'flex' }}>

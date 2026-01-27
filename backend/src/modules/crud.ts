@@ -25,6 +25,7 @@ const ALLOW: Record<string, true> = {
   users: true,
   property_maintenance: true,
   order_import_staging: true,
+  repair_orders: true,
 }
 
 function okResource(r: string): boolean { return !!ALLOW[r] }
@@ -60,6 +61,10 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
           orderBy = " ORDER BY CASE WHEN category='消耗品费' OR report_category='consumables' THEN 1 ELSE 0 END ASC, created_at DESC NULLS LAST, next_due_date ASC NULLS LAST, due_day_of_month ASC, vendor ASC"
         } else if (resource === 'fixed_expenses') {
           orderBy = ' ORDER BY due_day_of_month ASC, vendor ASC'
+        } else if (resource === 'property_maintenance') {
+          orderBy = ' ORDER BY occurred_at DESC NULLS LAST, id ASC'
+        } else if (resource === 'repair_orders') {
+          orderBy = ' ORDER BY submitted_at DESC NULLS LAST, id ASC'
         }
         if (pgPool) {
           try {
@@ -204,6 +209,20 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         const bd = Number(b?.due_day_of_month || 0)
         if (ad !== bd) return ad - bd
         return String(a?.vendor || '').localeCompare(String(b?.vendor || ''))
+      })
+    } else if (resource === 'property_maintenance') {
+      filtered = filtered.sort((a: any, b: any) => {
+        const ao = a?.occurred_at ? new Date(a.occurred_at).getTime() : Number.NEGATIVE_INFINITY
+        const bo = b?.occurred_at ? new Date(b.occurred_at).getTime() : Number.NEGATIVE_INFINITY
+        if (ao !== bo) return bo - ao
+        return String(a?.id || '').localeCompare(String(b?.id || ''))
+      })
+    } else if (resource === 'repair_orders') {
+      filtered = filtered.sort((a: any, b: any) => {
+        const asb = a?.submitted_at ? new Date(a.submitted_at).getTime() : Number.NEGATIVE_INFINITY
+        const bsb = b?.submitted_at ? new Date(b.submitted_at).getTime() : Number.NEGATIVE_INFINITY
+        if (asb !== bsb) return bsb - asb
+        return String(a?.id || '').localeCompare(String(b?.id || ''))
       })
     }
     if (resource === 'property_expenses') {
@@ -845,6 +864,29 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
   try {
     if (hasPg) {
       let toUpdate: any = payload
+      if (resource === 'property_maintenance') {
+        try {
+          const { pgPool } = require('../dbAdapter')
+          if (pgPool) {
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS urgency text;`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS assignee_id text;`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS eta date;`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
+          }
+        } catch {}
+        if (toUpdate.details && typeof toUpdate.details !== 'string') {
+          try { toUpdate.details = JSON.stringify(toUpdate.details) } catch {}
+        }
+        if (toUpdate.repair_photo_urls && !Array.isArray(toUpdate.repair_photo_urls)) {
+          toUpdate.repair_photo_urls = [toUpdate.repair_photo_urls]
+        }
+      }
       if (resource === 'property_expenses') {
         const allow = ['occurred_at','amount','currency','category','category_detail','note','property_id','fixed_expense_id','month_key','due_date','paid_date','status']
         const cleaned: any = {}
@@ -907,7 +949,23 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
       }
       let row
       try {
-        row = await pgUpdate(resource, id, toUpdate)
+        if (resource === 'property_maintenance') {
+          const { pgPool } = require('../dbAdapter')
+          if (pgPool) {
+            const keys = Object.keys(toUpdate).filter(k => toUpdate[k] !== undefined)
+            const set = keys.map((k, i) => (k === 'repair_photo_urls') ? `"repair_photo_urls" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`).join(', ')
+            const values = keys.map((k) => (k === 'repair_photo_urls')
+              ? JSON.stringify(Array.isArray(toUpdate[k]) ? toUpdate[k] : [])
+              : toUpdate[k])
+            const sql = `UPDATE property_maintenance SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
+            const res2 = await pgPool.query(sql, [...values, id])
+            row = res2.rows && res2.rows[0]
+          } else {
+            row = await pgUpdate(resource, id, toUpdate)
+          }
+        } else {
+          row = await pgUpdate(resource, id, toUpdate)
+        }
       } catch (e: any) {
         const msg = String(e?.message || '')
         if (resource === 'recurring_payments' && /column\s+"?frequency_months"?\s+of\s+relation\s+"?recurring_payments"?\s+does\s+not\s+exist/i.test(msg)) {
