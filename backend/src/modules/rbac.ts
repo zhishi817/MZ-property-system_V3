@@ -50,8 +50,8 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
     'menu.cleaning.visible': ['cleaning_tasks'],
     'menu.finance.expenses.visible': ['property_expenses'],
     'menu.finance.recurring.visible': ['recurring_payments'],
-    'menu.finance.orders.visible': ['orders'],
-    'menu.finance.company_overview.visible': ['finance_transactions','orders','properties','property_expenses'],
+    'menu.finance.orders.visible': ['order'],
+    'menu.finance.company_overview.visible': ['finance_transactions','order','properties','property_expenses'],
     'menu.finance.company_revenue.visible': ['company_incomes','company_expenses'],
     'menu.cms.visible': ['cms_pages'],
     'menu.rbac.visible': ['users'],
@@ -154,11 +154,23 @@ router.get('/my-permissions', auth, async (req, res) => {
         if (altRows && altRows.length) rows = altRows
       }
       const list = rows.map((r: any) => r.permission_code)
-      return res.json(list)
+      const normalized = new Set<string>(list)
+      ;['view','write','delete','archive'].forEach(act => {
+        const plural = `orders.${act}`
+        const singular = `order.${act}`
+        if (normalized.has(plural) && !normalized.has(singular)) normalized.add(singular)
+      })
+      return res.json(Array.from(normalized))
     }
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
   const list = db.rolePermissions.filter(rp => rp.role_id === role.id).map(rp => rp.permission_code)
-  return res.json(list)
+  const normalized = new Set<string>(list)
+  ;['view','write','delete','archive'].forEach(act => {
+    const plural = `orders.${act}`
+    const singular = `order.${act}`
+    if (normalized.has(plural) && !normalized.has(singular)) normalized.add(singular)
+  })
+  return res.json(Array.from(normalized))
 })
 
 // Users management
@@ -180,7 +192,40 @@ router.post('/users', requirePerm('rbac.manage'), async (req, res) => {
   const hash = await bcrypt.hash(parsed.data.password, 10)
   const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, role: parsed.data.role, password_hash: hash }
   try {
-    if (hasPg) { const created = await pgInsert('users', row as any); return res.status(201).json(created || row) }
+    if (hasPg) {
+      try {
+        const { pgPool } = require('../dbAdapter')
+        if (pgPool) {
+          await pgPool.query(`CREATE TABLE IF NOT EXISTS users (
+            id text PRIMARY KEY,
+            username text UNIQUE,
+            email text UNIQUE,
+            password_hash text NOT NULL,
+            role text NOT NULL,
+            created_at timestamptz DEFAULT now()
+          );`)
+          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);')
+          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);')
+          await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_password_hash text;')
+        }
+      } catch (e: any) {
+        try { console.error(`[RBAC] ensure users table error message=${String(e?.message || '')}`) } catch {}
+      }
+      try {
+        const created = await pgInsert('users', row as any)
+        return res.status(201).json(created || row)
+      } catch (e: any) {
+        const code = String((e && (e as any).code) || '')
+        const msg = String((e && (e as any).message) || '')
+        if (code === '23505' || /duplicate key value|unique constraint/i.test(msg)) {
+          return res.status(409).json({ message: '用户名或邮箱已存在' })
+        }
+        if (code === '42P01' || /relation .* does not exist/i.test(msg)) {
+          return res.status(500).json({ message: '数据库未初始化，请重试或联系管理员' })
+        }
+        return res.status(500).json({ message: msg || '创建失败' })
+      }
+    }
     // Supabase branch removed
     return res.status(201).json(row)
   } catch (e: any) { return res.status(500).json({ message: e.message }) }

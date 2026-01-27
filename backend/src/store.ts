@@ -345,6 +345,7 @@ if (db.roles.length === 0) {
     { code: 'order.create.override' },
     { code: 'order.cancel' },
     { code: 'order.cancel.override' },
+    { code: 'order.confirm_payment' },
     { code: 'keyset.manage' },
     { code: 'key.flow' },
     { code: 'cleaning.view' },
@@ -414,7 +415,7 @@ if (db.roles.length === 0) {
 
 const defaultPerms = [
   'property.view','property.write',
-  'order.view','order.create','order.write','order.sync','order.manage',
+  'order.view','order.create','order.write','order.sync','order.manage','order.confirm_payment',
   'keyset.manage','key.flow',
   'cleaning.view','cleaning.schedule.manage','cleaning.task.assign',
   'finance.payout','finance.tx.write',
