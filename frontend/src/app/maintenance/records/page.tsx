@@ -234,11 +234,11 @@ export default function MaintenanceRecordsUnified() {
           const columns = [
             { title:'房号', dataIndex:'code', width: 120 },
             { title:'工单号', dataIndex:'work_no', width: 160 },
+            { title:'紧急程度', dataIndex:'urgency', width: 120, render:(u:string)=> urgencyTag(u) },
             { title:'问题区域', dataIndex:'category', width: 120 },
             { title:'问题摘要', dataIndex:'details', ellipsis: true, width: 280, render:(d:string)=> summaryFromDetails(d) },
             { title:'提交人', dataIndex:'submitter_name', width: 120 },
             { title:'提交时间', dataIndex:'submitted_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD HH:mm') : '-' },
-            { title:'紧急程度', dataIndex:'urgency', width: 120, render:(u:string)=> urgencyTag(u) },
             { title:'当前状态', dataIndex:'status', width: 120, render:(s:string)=> statusLabel(s) },
             { title:'完成时间', dataIndex:'completed_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD HH:mm') : '-' },
             { title:'分配人员', dataIndex:'assignee_id', width: 140 },
@@ -267,8 +267,8 @@ export default function MaintenanceRecordsUnified() {
         <Space direction="vertical" style={{ width: '100%' }}>
           <div>工单ID：{viewRow?.id}</div>
           <div>房号：{(viewRow as any)?.code || viewRow?.property_id}</div>
-          <div>问题区域：{viewRow?.category}</div>
           <div>紧急程度：{urgencyLabel(viewRow?.urgency)}</div>
+          <div>问题区域：{viewRow?.category}</div>
           <div>提交人：{viewRow?.submitter_name}</div>
           <div>提交时间：{viewRow?.submitted_at ? dayjs(viewRow?.submitted_at).format('YYYY-MM-DD HH:mm') : '-'}</div>
           <div>问题详情：</div>

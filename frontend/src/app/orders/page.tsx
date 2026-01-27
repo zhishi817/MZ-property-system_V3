@@ -930,7 +930,7 @@ export default function OrdersPage() {
     { title: '操作', render: (_: any, r: Order) => (
       <Space>
         <Button onClick={() => openDetail(r)}>查看</Button>
-        {!((r as any).payment_received) ? <Button type="primary" onClick={async ()=>{
+        {hasPerm('order.confirm_payment') && !((r as any).payment_received) ? <Button type="primary" onClick={async ()=>{
           const res = await fetch(`${API_BASE}/orders/${r.id}/confirm-payment`, { method: 'POST', headers: { ...authHeaders() } })
           if (res.ok) {
             message.success('已确认到账')

@@ -1820,7 +1820,7 @@ router.delete('/:id/internal-deductions/:did', requirePerm('order.deduction.mana
   if (idx !== -1) (db as any).orderInternalDeductions.splice(idx, 1)
   return res.json({ ok: true })
 })
-router.post('/:id/confirm-payment', requirePerm('order.write'), async (req, res) => {
+router.post('/:id/confirm-payment', requirePerm('order.confirm_payment'), async (req, res) => {
   const { id } = req.params
   let base: any = db.orders.find(o => o.id === id)
   if (!base && hasPg) { try { const rows: any[] = await pgSelect('orders', '*', { id }) as any[] || []; base = rows[0] } catch {} }
