@@ -1186,6 +1186,8 @@ router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req
         const dup = await client.query('SELECT id, property_id FROM orders WHERE confirmation_code=$1 LIMIT 1', [payload.confirmation_code])
         if (dup?.rows?.[0]) { await client.query('ROLLBACK'); client.release(); return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id || ''), existing_property_id: String(dup.rows[0].property_id || '') }) }
       }
+      const propCheck = await client.query('SELECT id FROM properties WHERE id=$1 LIMIT 1', [property_id])
+      if (!propCheck?.rows?.[0]) { await client.query('ROLLBACK'); client.release(); return res.status(404).json({ message: 'property_not_found' }) }
       const ins = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, property_id, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
       const newId = String(ins?.rows?.[0]?.id || '')
       await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2) WHERE ($1 IS NOT NULL AND uid=$1) OR ($3 IS NOT NULL AND message_id=$3)`, [uid ?? null, newId || null, message_id ?? null])
@@ -1219,8 +1221,32 @@ router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req
           return res.status(500).json({ message: 'insert_failed', detail: String(e2?.message || '') })
         }
       }
+      if (/column\s+"(email_header_at|year_inferred|raw_checkin_text|raw_checkout_text|cleaning_fee|net_income|avg_nightly_price|nights)"\s+of\s+relation\s+"orders"\s+does\s+not\s+exist/i.test(msg)) {
+        try {
+          const { pgPool } = require('../dbAdapter')
+          await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS email_header_at timestamptz')
+          await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS year_inferred boolean')
+          await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS raw_checkin_text text')
+          await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS raw_checkout_text text')
+          await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS cleaning_fee numeric')
+          await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS net_income numeric')
+          await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS avg_nightly_price numeric')
+          await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS nights integer')
+          await client.query('BEGIN')
+          const ins3 = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, property_id, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
+          const newId3 = String(ins3?.rows?.[0]?.id || '')
+          await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2) WHERE ($1 IS NOT NULL AND uid=$1) OR ($3 IS NOT NULL AND message_id=$3)`, [uid ?? null, newId3 || null, message_id ?? null])
+          await client.query('COMMIT')
+          client.release()
+          return res.status(201).json({ id: newId3 })
+        } catch (e3: any) {
+          try { await client.query('ROLLBACK') } catch {}
+          client.release()
+          return res.status(500).json({ message: 'insert_failed', detail: String(e3?.message || '') })
+        }
+      }
       client.release()
-      return res.status(500).json({ message: 'insert_failed', detail: String(e?.message || '') })
+      return res.status(500).json({ message: 'insert_failed', detail: String(e?.message || ''), code: String((e as any)?.code || '') })
     }
   } catch (e: any) { return res.status(500).json({ message: 'resolve_failed', detail: String(e?.message || '') }) }
 })
@@ -1265,6 +1291,8 @@ router.post('/email-orders-raw/resolve-bulk', requirePerm('order.manage'), async
             const dup = await client.query('SELECT id, property_id FROM orders WHERE confirmation_code=$1 LIMIT 1', [payload.confirmation_code])
             if (dup?.rows?.[0]) { await client.query('ROLLBACK'); client.release(); results.push({ ok: false, error: 'duplicate', uid, message_id: mid, property_id: pid }); duplicate++; continue }
           }
+          const propCheck = await client.query('SELECT id FROM properties WHERE id=$1 LIMIT 1', [pid])
+          if (!propCheck?.rows?.[0]) { await client.query('ROLLBACK'); client.release(); results.push({ ok: false, error: 'property_not_found', uid, message_id: mid, property_id: pid }); failed++; continue }
           const ins = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, pid, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
           const newId = String(ins?.rows?.[0]?.id || '')
           await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2) WHERE ($1 IS NOT NULL AND uid=$1) OR ($3 IS NOT NULL AND message_id=$3)`, [uid ?? null, newId || null, mid ?? null])
@@ -1304,7 +1332,7 @@ router.post('/email-orders-raw/resolve-bulk', requirePerm('order.manage'), async
             }
           }
           client.release()
-          results.push({ ok: false, error: String(e?.message || 'insert_failed'), uid, message_id: mid, property_id: pid })
+          results.push({ ok: false, error: 'insert_failed', uid, message_id: mid, property_id: pid })
           failed++
         }
       } catch (e: any) {
