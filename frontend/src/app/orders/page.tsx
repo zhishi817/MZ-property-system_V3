@@ -628,7 +628,10 @@ export default function OrdersPage() {
       const pid = (rec as any).__pid || ''
       const res = await fetch(`${API_BASE}/jobs/email-orders-raw/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ uid, message_id, property_id: pid }) })
       const j = await res.json().catch(()=>null)
-      if (res.ok) { message.success('已手动插入订单'); openFailures(); load() } else { message.error(j?.message || `插入失败（HTTP ${res.status}）`) }
+      if (res.ok) { message.success('已手动插入订单'); openFailures(); load() } else {
+        const msg = (j?.detail ? String(j.detail) : '') || (j?.message === 'duplicate' ? '确认码重复' : '') || (j?.message ? String(j.message) : '')
+        message.error(msg || `插入失败（HTTP ${res.status}）`)
+      }
     } catch { message.error('插入失败') }
   }
   const [failOpen, setFailOpen] = useState(false)
