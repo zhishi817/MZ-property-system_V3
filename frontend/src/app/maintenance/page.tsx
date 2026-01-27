@@ -185,7 +185,7 @@ export default function MaintenancePage() {
 
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
-      <Card title="房源维修" extra={<Button type="primary" onClick={openCreate}>新增维修记录</Button>}>
+      <Card title="房源维修">
         <Space style={{ marginBottom: 12 }}>
           <Input placeholder="按房号搜索" allowClear value={filterProp} onChange={(e)=>setFilterProp(e.target.value)} style={{ width: 200 }} />
           <Input placeholder="按人员姓名搜索" value={filterWorker} onChange={(e)=>setFilterWorker(e.target.value)} style={{ width: 200 }} />

@@ -1313,7 +1313,7 @@ export default function OrdersPage() {
             initialView="dayGridMonth"
             headerToolbar={{ start: '', center: '', end: '' }}
             height="auto"
-            fixedWeekCount={false}
+            fixedWeekCount={true}
             firstDay={0}
             eventOrder="-duration,-start,-id"
             eventOrderStrict={true}
