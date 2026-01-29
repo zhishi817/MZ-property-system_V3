@@ -180,32 +180,15 @@ export default function RepairsPage() {
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <Card title="待维修管理">
-        <Space style={{ marginBottom: 12 }}>
-          <Button
-            onClick={() => {
-              try {
-                const origin = typeof window !== 'undefined' ? window.location.origin : ''
-                const link = `${origin}/public/repair-report`
-                navigator.clipboard?.writeText(link)
-                message.success('已复制分享链接')
-              } catch {}
-            }}
-          >
-            复制分享链接
-          </Button>
-          <Button
-            type="link"
-            onClick={() => {
-              try {
-                const origin = typeof window !== 'undefined' ? window.location.origin : ''
-                const link = `${origin}/public/repair-report`
-                window.open(link, '_blank')
-              } catch {}
-            }}
-          >
-            打开外部上报页
-          </Button>
-          <Button onClick={() => setPwdOpen(true)}>设置上报密码</Button>
+        <Space style={{ marginBottom: 12, width: '100%' }}>
+          <Input placeholder="按房号搜索" value={filterCode} onChange={e=>setFilterCode(e.target.value)} style={{ width: 180 }} />
+          <Input placeholder="按工单号搜索" value={filterWorkNo} onChange={e=>setFilterWorkNo(e.target.value)} style={{ width: 180 }} />
+          <Input placeholder="按提交人搜索" value={filterSubmitter} onChange={e=>setFilterSubmitter(e.target.value)} style={{ width: 180 }} />
+          <Select placeholder="按分类" allowClear options={catOptions} value={filterCat} onChange={v=>setFilterCat(v)} style={{ width: 160 }} />
+          <Select placeholder="按状态" allowClear options={statusOptions} value={filterStatus} onChange={v=>setFilterStatus(v)} style={{ width: 160 }} />
+          <DatePicker.RangePicker value={dateRange as any} onChange={v=>setDateRange(v as any)} />
+          <Button onClick={()=>{ /* 保留按钮，实时过滤 */ }}>搜索</Button>
+          <Button onClick={()=>{ setFilterCode(''); setFilterWorkNo(''); setFilterSubmitter(''); setFilterStatus(undefined); setFilterCat(undefined); setDateRange(null) }}>重置</Button>
           <Button type="primary" onClick={() => setCreateOpen(true)} style={{ marginLeft: 'auto' }}>新增维修记录</Button>
         </Space>
         <Space style={{ marginBottom: 12 }}>
@@ -281,7 +264,7 @@ export default function RepairsPage() {
             const j = await res.json().catch(()=>null); message.error(j?.message || '更新失败')
           }
         } catch (e: any) { message.error('更新失败') }
-      }} title="设置维修上报表密码" okText="保存">
+      }} title="设置房源报修表密码" okText="保存">
         <Form form={pwdForm} layout="vertical">
           <Form.Item
             name="new_password"

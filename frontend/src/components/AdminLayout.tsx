@@ -90,7 +90,8 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   if (hasPerm('menu.properties.maintenance.visible')) items.push({ key: 'maintenance', icon: <ProfileOutlined />, label: '房源维修', children: [
     { key: 'maintenance-overview', label: <Link href="/maintenance/overview" prefetch={false}>维修总览</Link> },
     { key: 'maintenance-unified', label: <Link href="/maintenance/records" prefetch={false}>维修记录</Link> },
-    ...(hasPerm('menu.properties.public_repair.visible') ? [{ key: 'public-repair', label: <Link href="/public/repair-report" prefetch={false}>维修上报表</Link> }] : []),
+    ...(hasPerm('menu.properties.public_repair.visible') ? [{ key: 'public-repair', label: <Link href="/maintenance/public-repair" prefetch={false}>房源报修表</Link> }] : []),
+    { key: 'maintenance-progress', label: <Link href="/maintenance/progress" prefetch={false}>维修进度表</Link> },
   ] })
   if (hasPerm('menu.onboarding')) items.push({ key: 'onboarding', icon: <ProfileOutlined />, label: '房源上新', children: [
     { key: 'onboarding-list', label: <Link href="/onboarding" prefetch={false}>上新管理</Link> },
