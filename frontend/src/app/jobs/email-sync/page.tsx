@@ -86,6 +86,22 @@ export default function EmailSyncStatusPage() {
       else { message.error(j?.message || `触发失败（HTTP ${res.status}）`) }
     } catch { message.error('触发失败') } finally { setTriggering(false) }
   }
+  async function triggerBackfillRawFailed(acc?: string) {
+    try {
+      setTriggering(true)
+      const body: any = { limit: 50, days: 90 }
+      if (acc) body.account = acc
+      const res = await fetch(`${API_BASE}/jobs/email-sync/backfill-raw-failed`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+      const j = await res.json().catch(()=>null)
+      if (res.ok) {
+        message.success('已触发失败邮件回填')
+        loadStatus()
+        if (acc) loadRuns(acc)
+      } else {
+        message.error(j?.message || `回填失败（HTTP ${res.status}）`)
+      }
+    } catch { message.error('回填失败') } finally { setTriggering(false) }
+  }
 
   useEffect(() => { loadStatus() }, [])
   useEffect(() => { loadRuns() }, [selectedAccount])
@@ -119,6 +135,7 @@ export default function EmailSyncStatusPage() {
       <Space>
         <Button size="small" onClick={() => setSelectedAccount(r.account)}>查看记录</Button>
         {hasPerm('order.manage') ? <Button size="small" type="primary" onClick={() => triggerSync(r.account)} disabled={r.running || triggering}>触发同步</Button> : null}
+        {hasPerm('order.manage') ? <Button size="small" onClick={() => triggerBackfillRawFailed(r.account)} disabled={triggering}>回填失败邮件</Button> : null}
       </Space>
     ) },
   ];
@@ -173,7 +190,7 @@ export default function EmailSyncStatusPage() {
   ];
 
   return (
-    <Card title="邮件同步状态" extra={<Space><Button size="small" onClick={loadStatus} disabled={loading}>刷新</Button>{selectedAccount ? <Button size="small" onClick={()=> loadRuns(selectedAccount!)} disabled={runsLoading}>刷新记录</Button> : null}{selectedAccount && hasPerm('order.manage') ? <Button size="small" type="primary" onClick={()=> triggerSync(selectedAccount!)}>触发同步</Button> : null}</Space>}>
+    <Card title="邮件同步状态" extra={<Space><Button size="small" onClick={loadStatus} disabled={loading}>刷新</Button>{selectedAccount ? <Button size="small" onClick={()=> loadRuns(selectedAccount!)} disabled={runsLoading}>刷新记录</Button> : null}{selectedAccount && hasPerm('order.manage') ? <Button size="small" type="primary" onClick={()=> triggerSync(selectedAccount!)}>触发同步</Button> : null}{hasPerm('order.manage') ? <Button size="small" onClick={()=> triggerBackfillRawFailed()} disabled={triggering}>回填失败邮件（全局）</Button> : null}</Space>}>
       <Table rowKey={(r:any)=> String(r.account)} columns={columns as any} dataSource={items} loading={loading} pagination={{ defaultPageSize: 10, showSizeChanger: true }} scroll={{ x: 'max-content' }} />
       <Card size="small" style={{ marginTop: 12 }} title={`运行记录${selectedAccount ? `（${selectedAccount}）` : ''}`}>
         {notice==='no_runs_yet' ? <Tag color="gold">尚未发生任何同步运行</Tag> : null}
@@ -184,6 +201,7 @@ export default function EmailSyncStatusPage() {
           <Descriptions.Item label="状态总览">GET `/jobs/email-sync-status`</Descriptions.Item>
           <Descriptions.Item label="运行记录">GET `/jobs/email-sync-runs?account=&lt;email&gt;&limit=50`</Descriptions.Item>
           <Descriptions.Item label="触发同步">POST `/jobs/email-sync-airbnb`</Descriptions.Item>
+          <Descriptions.Item label="回填失败邮件">POST `/jobs/email-sync/backfill-raw-failed`</Descriptions.Item>
         </Descriptions>
       </Card>
     </Card>

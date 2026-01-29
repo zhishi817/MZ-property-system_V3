@@ -916,35 +916,84 @@ router.post('/email-sync/backfill-raw-failed', requirePerm('order.manage'), asyn
     const account = String(body.account || '').trim()
     const limit = Math.min(50, Number(body.limit || 50))
     const days = Math.min(180, Math.max(1, Number(body.days || 90)))
-    const since = `now() - interval '${days} days'`
-    const whereAcc = account ? 'AND account = $1' : ''
-    const params: any[] = account ? [account] : []
-    const rs = await pgPool!.query(
-      `SELECT account, uid FROM email_sync_items
-       WHERE status='failed' AND reason IS DISTINCT FROM 'not_whitelisted'
-       AND created_at >= ${since} ${whereAcc}
-       ORDER BY created_at DESC LIMIT ${limit}`,
-      params
-    )
-    const byAcc: Record<string, number[]> = {}
+    const params: any[] = []
+    let where = ["status='failed'", "reason IS DISTINCT FROM 'not_whitelisted'"]
+    if (account) { where.push('account=$1'); params.push(account) }
+    where.push(`created_at >= now() - interval '${days} days'`)
+    where.push('COALESCE(confirmation_code, \'\') <> \'\'')
+    const sql = `
+      SELECT account, uid, message_id, header_date, subject, sender, reason, confirmation_code, listing_name, parse_preview, parse_probe
+      FROM email_sync_items
+      WHERE ${where.join(' AND ')}
+      AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.confirmation_code = email_sync_items.confirmation_code)
+      AND NOT EXISTS (SELECT 1 FROM email_orders_raw r WHERE r.message_id IS NOT NULL AND r.message_id = email_sync_items.message_id)
+      AND NOT EXISTS (SELECT 1 FROM email_orders_raw r2 WHERE r2.source='imap' AND r2.uid = email_sync_items.uid)
+      ORDER BY created_at DESC
+      LIMIT ${limit}
+    `
+    const rs = await pgPool!.query(sql, params)
+    let inserted = 0, duplicate = 0, failed = 0
     for (const row of rs.rows || []) {
-      const acc = String(row.account || '')
-      const uid = Number(row.uid || 0)
-      if (!acc || !Number.isFinite(uid)) continue
-      if (!byAcc[acc]) byAcc[acc] = []
-      if (byAcc[acc].length < limit) byAcc[acc].push(uid)
-    }
-    const results: Array<{ account: string; uids: number[]; ok: boolean; stats?: any }> = []
-    for (const acc of Object.keys(byAcc)) {
-      const uids = byAcc[acc].slice(0, limit)
       try {
-        const r = await runEmailSyncJob({ mode: 'incremental', account: acc, uids, max_per_run: uids.length, max_messages: uids.length, batch_size: 20, concurrency: 1, batch_sleep_ms: 0, min_interval_ms: 0, trigger_source: 'backfill_raw_failed' })
-        results.push({ account: acc, uids, ok: true, stats: r?.stats || {} })
-      } catch (e: any) {
-        results.push({ account: acc, uids, ok: false, stats: { error: e?.message || 'failed' } })
-      }
+        const acc = String(row.account || '')
+        const uid = Number(row.uid || 0) || null
+        const mid = String(row.message_id || '') || null
+        const headerDate = row.header_date || null
+        const subject = String(row.subject || '')
+        const sender = String(row.sender || '')
+        const reason = String(row.reason || '')
+        const cc = String(row.confirmation_code || '') || null
+        const probe = typeof row.parse_probe === 'object' ? row.parse_probe : null
+        const ln = String(row.listing_name || (probe?.fields_probe?.listing_name_raw || ''))
+        const mci = String(row.parse_preview || '')
+        const m1 = mci.match(/ci=(\d{4}-\d{2}-\d{2})/)
+        const m2 = mci.match(/co=(\d{4}-\d{2}-\d{2})/)
+        const checkin = m1 ? m1[1] : null
+        const checkout = m2 ? m2[1] : null
+        const price = Number(probe?.fields_probe?.amount?.price || 0)
+        const cleaning = Number(probe?.fields_probe?.amount?.cleaning_fee || 0)
+        const net = Number(((price || 0) - (cleaning || 0)).toFixed(2))
+        let nights: number | null = null
+        try {
+          if (checkin && checkout) {
+            const a = new Date(checkin as any)
+            const b = new Date(checkout as any)
+            const ms = b.getTime() - a.getTime()
+            nights = ms > 0 ? Math.round(ms / (1000*60*60*24)) : 0
+          }
+        } catch { nights = null }
+        const statusRaw = reason === 'property_not_found' ? 'unmatched_property' : 'parsed'
+        const payload = {
+          source: 'imap',
+          uid,
+          message_id: mid,
+          header_date: headerDate,
+          email_header_at: headerDate,
+          envelope: {},
+          html: null,
+          plain: null,
+          status: statusRaw,
+          subject,
+          sender,
+          account: acc,
+          confirmation_code: cc,
+          guest_name: null,
+          listing_name: ln || null,
+          checkin,
+          checkout,
+          price: Number.isFinite(price) ? price : null,
+          cleaning_fee: Number.isFinite(cleaning) ? cleaning : null,
+          net_income: Number.isFinite(net) ? net : null,
+          nights,
+          extra: { source_from: 'items_failed_backfill', reason }
+        }
+        const conflictCols = mid ? ['message_id'] : ['source','uid']
+        const rIns = await pgInsertOnConflictDoNothing('email_orders_raw', payload as any, conflictCols)
+        if (rIns) inserted++
+        else duplicate++
+      } catch { failed++ }
     }
-    return res.json({ ok: true, results })
+    return res.json({ ok: true, candidates: Number(rs.rowCount || 0), inserted, duplicates: duplicate, failed })
   } catch (e: any) {
     return res.status(500).json({ message: 'backfill_raw_failed', detail: String(e?.message || '') })
   }
