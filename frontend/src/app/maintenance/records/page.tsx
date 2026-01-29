@@ -5,6 +5,7 @@ import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { apiList, apiUpdate, apiDelete, apiCreate, getJSON, API_BASE, authHeaders } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
+import { sortProperties } from '../../../lib/properties'
 
 type RepairOrder = {
   id: string
@@ -88,6 +89,8 @@ export default function MaintenanceRecordsUnified() {
     })() : true
     return okCode && okWorkNo && okSubmitter && okStatus && okCat && okDate
   }), [rows, filterCode, filterWorkNo, filterSubmitter, filterStatus, filterCat, dateRange])
+
+  const propOptions = useMemo(() => sortProperties(props).map(p => ({ value: p.id, label: p.code || p.id })), [props])
 
   function openEdit(row: RepairOrder) {
     setEditing(row)
@@ -192,35 +195,8 @@ export default function MaintenanceRecordsUnified() {
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <Card title="维修记录">
-        <Space style={{ marginBottom: 12 }}>
-          <Button
-            onClick={() => {
-              try {
-                const origin = typeof window !== 'undefined' ? window.location.origin : ''
-                const link = `${origin}/public/repair-report`
-                navigator.clipboard?.writeText(link)
-                message.success('已复制外部上报链接')
-              } catch {}
-            }}
-          >
-            复制外部上报链接
-          </Button>
-          <Button
-            type="link"
-            onClick={() => {
-              try {
-                const origin = typeof window !== 'undefined' ? window.location.origin : ''
-                const link = `${origin}/public/repair-report`
-                window.open(link, '_blank')
-              } catch {}
-            }}
-          >
-            打开外部上报页
-          </Button>
-          <Button onClick={() => setPwdOpen(true)}>设置上报密码</Button>
-          <Button type="primary" onClick={() => setCreateOpen(true)} style={{ marginLeft: 'auto' }}>新增维修记录</Button>
-        </Space>
-        <Space style={{ marginBottom: 12 }}>
+        
+        <Space style={{ marginBottom: 12, width: '100%' }}>
           <Input placeholder="按房号搜索" value={filterCode} onChange={e=>setFilterCode(e.target.value)} style={{ width: 180 }} />
           <Input placeholder="按工单号搜索" value={filterWorkNo} onChange={e=>setFilterWorkNo(e.target.value)} style={{ width: 180 }} />
           <Input placeholder="按提交人搜索" value={filterSubmitter} onChange={e=>setFilterSubmitter(e.target.value)} style={{ width: 180 }} />
@@ -229,6 +205,7 @@ export default function MaintenanceRecordsUnified() {
           <DatePicker.RangePicker value={dateRange as any} onChange={v=>setDateRange(v as any)} />
           <Button onClick={()=>{ /* 保留按钮，实时过滤 */ }}>搜索</Button>
           <Button onClick={()=>{ setFilterCode(''); setFilterWorkNo(''); setFilterSubmitter(''); setFilterStatus(undefined); setFilterCat(undefined); setDateRange(null) }}>重置</Button>
+          <Button type="primary" onClick={() => setCreateOpen(true)} style={{ marginLeft: 'auto' }}>新增维修记录</Button>
         </Space>
         {(() => {
           const columns = [
@@ -279,6 +256,12 @@ export default function MaintenanceRecordsUnified() {
               <a key={i} href={u} target="_blank" rel="noreferrer">附件{i+1}</a>
             ))}
           </Space>
+          <div>维修前照片：</div>
+          <Space wrap>
+            {(Array.isArray((viewRow as any)?.photo_urls) ? (viewRow as any)!.photo_urls! : []).map((u: string, i: number) => (
+              <a key={i} href={u} target="_blank" rel="noreferrer">照片{i+1}</a>
+            ))}
+          </Space>
           <div>维修照片：</div>
           <Space wrap>
             {(Array.isArray(viewRow?.repair_photo_urls) ? viewRow!.repair_photo_urls! : []).map((u, i) => (
@@ -300,7 +283,7 @@ export default function MaintenanceRecordsUnified() {
             const j = await res.json().catch(()=>null); message.error(j?.message || '更新失败')
           }
         } catch (e: any) { message.error('更新失败') }
-      }} title="设置维修上报表密码" okText="保存">
+      }} title="设置房源报修表密码" okText="保存">
         <Form form={pwdForm} layout="vertical">
           <Form.Item
             name="new_password"
@@ -321,17 +304,16 @@ export default function MaintenanceRecordsUnified() {
       </Modal>
       <Modal open={createOpen} onCancel={()=>{ setCreateOpen(false); createForm.resetFields(); setCreateFiles([]); setCreatePhotos([]) }} onOk={async ()=>{
         const v = await createForm.validateFields()
-        const workNo = `R-${dayjs().format('YYYYMMDD')}-${Math.random().toString(36).slice(2,4)}${Math.random().toString(36).slice(2,2)}`
         const payload: any = {
           property_id: v.property_id,
           category: v.category,
           status: 'pending',
           submitted_at: new Date().toISOString(),
-          work_no: workNo
         }
         if (v.details) {
           try { payload.details = JSON.stringify([{ content: String(v.details || '') }]) } catch { payload.details = String(v.details || '') }
         }
+        if (v.submitter_name) payload.submitter_name = v.submitter_name
         if (createPhotos.length) payload.photo_urls = createPhotos
         try {
           await apiCreate('property_maintenance', payload)
@@ -342,15 +324,27 @@ export default function MaintenanceRecordsUnified() {
       }} title="新增维修记录" okText="保存">
         <Form form={createForm} layout="vertical">
           <Form.Item name="property_id" label="房号" rules={[{ required: true }]}>
-            <Select options={props.map(p => ({ value: p.id, label: p.code || p.id }))} showSearch optionFilterProp="label" />
+            <Select
+              options={propOptions}
+              showSearch
+              optionFilterProp="label"
+              filterOption={(input, option) => {
+                const lbl = String((option as any)?.label || '')
+                return lbl.toLowerCase().includes(String(input || '').toLowerCase())
+              }}
+              filterSort={(a, b) => String((a as any).label || '').localeCompare(String((b as any).label || ''), 'zh')}
+            />
           </Form.Item>
           <Form.Item name="category" label="问题区域" rules={[{ required: true }]}>
             <Select options={['入户走廊','客厅','厨房','卧室','阳台','浴室','其他'].map(x => ({ value:x, label:x }))} />
           </Form.Item>
+          <Form.Item name="submitter_name" label="提交人" rules={[{ required: true }]}>
+            <Input placeholder="请输入提交人姓名" />
+          </Form.Item>
           <Form.Item name="details" label="问题摘要" rules={[{ required: true, min: 3 }]}>
             <Input.TextArea rows={3} />
           </Form.Item>
-          <Form.Item label="附件照片">
+          <Form.Item label="维修前照片">
             <Upload listType="picture" multiple fileList={createFiles} onRemove={(f)=>{ setCreateFiles(fl=>fl.filter(x=>x.uid!==f.uid)); if (f.url) setCreatePhotos(u=>u.filter(x=>x!==f.url)) }}
               customRequest={async ({ file, onSuccess, onError }: any) => {
                 const fd = new FormData(); fd.append('file', file)
@@ -360,7 +354,7 @@ export default function MaintenanceRecordsUnified() {
                   if (r.ok && j?.url) { setCreatePhotos(u=>[...u, j.url]); setCreateFiles(fl=>[...fl, { uid: Math.random().toString(36).slice(2), name: file.name, status: 'done', url: j.url } as UploadFile]); onSuccess && onSuccess(j, file) } else { onError && onError(j) }
                 } catch (e) { onError && onError(e) }
               }}>
-              <Button>上传照片</Button>
+              <Button>上传维修前照片</Button>
             </Upload>
           </Form.Item>
         </Form>

@@ -908,6 +908,48 @@ router.post('/email-sync/backfill', requirePerm('order.manage'), async (req, res
   }
 })
 
+// 回填早期失败项到 email_orders_raw：按账户提取最近失败 uid 并重新处理
+router.post('/email-sync/backfill-raw-failed', requirePerm('order.manage'), async (req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const body = req.body || {}
+    const account = String(body.account || '').trim()
+    const limit = Math.min(50, Number(body.limit || 50))
+    const days = Math.min(180, Math.max(1, Number(body.days || 90)))
+    const since = `now() - interval '${days} days'`
+    const whereAcc = account ? 'AND account = $1' : ''
+    const params: any[] = account ? [account] : []
+    const rs = await pgPool!.query(
+      `SELECT account, uid FROM email_sync_items
+       WHERE status='failed' AND reason IS DISTINCT FROM 'not_whitelisted'
+       AND created_at >= ${since} ${whereAcc}
+       ORDER BY created_at DESC LIMIT ${limit}`,
+      params
+    )
+    const byAcc: Record<string, number[]> = {}
+    for (const row of rs.rows || []) {
+      const acc = String(row.account || '')
+      const uid = Number(row.uid || 0)
+      if (!acc || !Number.isFinite(uid)) continue
+      if (!byAcc[acc]) byAcc[acc] = []
+      if (byAcc[acc].length < limit) byAcc[acc].push(uid)
+    }
+    const results: Array<{ account: string; uids: number[]; ok: boolean; stats?: any }> = []
+    for (const acc of Object.keys(byAcc)) {
+      const uids = byAcc[acc].slice(0, limit)
+      try {
+        const r = await runEmailSyncJob({ mode: 'incremental', account: acc, uids, max_per_run: uids.length, max_messages: uids.length, batch_size: 20, concurrency: 1, batch_sleep_ms: 0, min_interval_ms: 0, trigger_source: 'backfill_raw_failed' })
+        results.push({ account: acc, uids, ok: true, stats: r?.stats || {} })
+      } catch (e: any) {
+        results.push({ account: acc, uids, ok: false, stats: { error: e?.message || 'failed' } })
+      }
+    }
+    return res.json({ ok: true, results })
+  } catch (e: any) {
+    return res.status(500).json({ message: 'backfill_raw_failed', detail: String(e?.message || '') })
+  }
+})
+
 router.post('/email-sync/run', allowCronTokenOrPerm('order.manage'), async (req, res) => {
   const parsed = reqSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -1702,17 +1744,18 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                     const subjectOk = /(Reservation confirmed|New booking confirmed|Reservation altered|Reservation (cancelled|canceled))/i.test(subj3)
                     const foundConf = !!((String(fields2.confirmation_code || '')).match(/\b[A-Z0-9]{8,10}\b/))
                     const foundDates = !!(fields2.checkin && fields2.checkout)
-                    const isCandidate = !!(subjectOk && foundConf && foundDates)
-                    const shouldWriteRaw = (isCandidate && !!r.failed) || DEBUG_RAW
+                    const isCandidateStrict = !!(subjectOk && foundConf && foundDates)
+                    const isCandidateLoose = !!(subjectOk && foundConf)
+                    const shouldWriteRaw = (!!r.failed || DEBUG_RAW)
                     if (shouldWriteRaw) {
                       const priceVal = Number(fields2.price || 0)
                       const cleanVal = Number(fields2.cleaning_fee || 0)
                       const netVal = Number((priceVal - cleanVal).toFixed(2))
                       const statusRaw = (String((r as any)?.reason || '') === 'property_not_found') ? 'unmatched_property' : 'parsed'
-                    const rawPayload = { source: 'imap', uid, message_id: messageId2 || null, header_date: headerDate2 || null, email_header_at: headerDate2 || null, envelope: JSON.stringify(envelope || {}), html: String(p2?.html || ''), plain: String(p2?.text || ''), status: statusRaw, subject: String(env?.subject || ''), sender: String(env?.from?.text || ''), account: acc.user, confirmation_code: (String(fields2.confirmation_code || '')).match(/\b[A-Z0-9]{8,10}\b/)?.[0] || null, guest_name: fields2.guest_name || null, listing_name: fields2.listing_name || null, checkin: fields2.checkin || null, checkout: fields2.checkout || null, price: isFinite(priceVal) ? priceVal : null, cleaning_fee: isFinite(cleanVal) ? cleanVal : null, net_income: isFinite(netVal) ? netVal : null, nights: fields2.nights || null, extra: { parse_ok: isCandidate, reason: (r as any).reason || null } }
+                    const rawPayload = { source: 'imap', uid, message_id: messageId2 || null, header_date: headerDate2 || null, email_header_at: headerDate2 || null, envelope: JSON.stringify(envelope || {}), html: String(p2?.html || ''), plain: String(p2?.text || ''), status: statusRaw, subject: String(env?.subject || ''), sender: String(env?.from?.text || ''), account: acc.user, confirmation_code: (String(fields2.confirmation_code || '')).match(/\b[A-Z0-9]{8,10}\b/)?.[0] || null, guest_name: fields2.guest_name || null, listing_name: fields2.listing_name || null, checkin: fields2.checkin || null, checkout: fields2.checkout || null, price: isFinite(priceVal) ? priceVal : null, cleaning_fee: isFinite(cleanVal) ? cleanVal : null, net_income: isFinite(netVal) ? netVal : null, nights: fields2.nights || null, extra: { parse_ok: isCandidateStrict || isCandidateLoose, reason: (r as any).reason || null } }
                       safeDbLog('email_orders_raw','upsert', rawPayload, { conflict: messageId2 ? ['message_id'] : ['source','uid'] })
                       const rawRes = await pgInsertOnConflictDoNothing('email_orders_raw', rawPayload, messageId2 ? ['message_id'] : ['source','uid'], dbClient)
-                      console.log(JSON.stringify({ tag: 'STEP4_raw_upsert_done', uid, run_id: startRunId, account: acc.user, inserted: !!rawRes, conflict: messageId2 ? 'message_id' : 'source+uid', candidate: isCandidate, failed_order: !!r.failed }))
+                      console.log(JSON.stringify({ tag: 'STEP4_raw_upsert_done', uid, run_id: startRunId, account: acc.user, inserted: !!rawRes, conflict: messageId2 ? 'message_id' : 'source+uid', candidate: (isCandidateStrict || isCandidateLoose), failed_order: !!r.failed }))
                       insertedAny = insertedAny || !!rawRes
                     }
                     // always reinforce parse_preview from final fields, only if new value is non-empty

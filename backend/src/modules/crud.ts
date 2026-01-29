@@ -380,8 +380,38 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
       try {
         if (resource === 'property_maintenance') {
           const { pgPool } = require('../dbAdapter')
-          const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, property_code)
-            VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::jsonb,$9) RETURNING *`
+          function randomSuffix(len: number): string {
+            const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+            let s = ''
+            for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)]
+            return s
+          }
+          async function genWorkNo(): Promise<string> {
+            const date = new Date().toISOString().slice(0,10).replace(/-/g,'')
+            const prefix = `R-${date}-`
+            let len = 4
+            for (;;) {
+              const candidate = prefix + randomSuffix(len)
+              try {
+                const r = await pgPool.query('SELECT 1 FROM property_maintenance WHERE work_no = $1 LIMIT 1', [candidate])
+                if (!r.rowCount) return candidate
+              } catch {
+                return candidate
+              }
+              len += 1
+              if (len > 10) return candidate
+            }
+          }
+          const workNo = payload.work_no || await genWorkNo()
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS urgency text;`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;`)
+          const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, property_code, work_no, category, status, urgency, submitted_at, submitter_name, completed_at)
+            VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`
           const detailsArr = Array.isArray(detailsRaw) ? detailsRaw : []
           if (detailsArr.length > 1) {
             const created: any[] = []
@@ -396,7 +426,14 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 payload.notes || '',
                 payload.created_by || null,
                 JSON.stringify(Array.isArray(payload.photo_urls) ? payload.photo_urls : []),
-                payload.property_code || null
+                payload.property_code || null,
+                workNo,
+                payload.category || null,
+                payload.status || 'pending',
+                payload.urgency || null,
+                payload.submitted_at || new Date().toISOString(),
+                payload.submitter_name || null,
+                payload.completed_at || null
               ]
               const r1 = await pgPool.query(sql, values)
               if (r1.rows && r1.rows[0]) created.push(r1.rows[0])
@@ -412,7 +449,14 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               payload.notes || '',
               payload.created_by || null,
               JSON.stringify(Array.isArray(payload.photo_urls) ? payload.photo_urls : []),
-              payload.property_code || null
+              payload.property_code || null,
+              workNo,
+              payload.category || null,
+              payload.status || 'pending',
+              payload.urgency || null,
+              payload.submitted_at || new Date().toISOString(),
+              payload.submitter_name || null,
+              payload.completed_at || null
             ]
             const res = await pgPool.query(sql, values)
             row = res.rows && res.rows[0]

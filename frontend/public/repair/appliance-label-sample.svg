@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="420" viewBox="0 0 720 420">
+  <defs>
+    <style>
+      .bg { fill: #f7f7f7; }
+      .frame { fill: none; stroke: #d9d9d9; stroke-width: 2; }
+      .title { fill: #333; font: 600 22px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Microsoft YaHei", sans-serif; }
+      .text { fill: #666; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Microsoft YaHei", sans-serif; }
+      .label { fill: #fff; stroke: #999; stroke-width: 1.5; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="720" height="420" rx="12"/>
+  <rect class="frame" x="12" y="12" width="696" height="396" rx="10"/>
+
+  <text class="title" x="32" y="52">电器铭牌样片示意</text>
+  <text class="text" x="32" y="86">拍摄包含「品牌」与「型号」的铭牌，常见位置：门内侧、背部或底部。</text>
+  <text class="text" x="32" y="114">照片需清晰可读，避免反光与遮挡。</text>
+
+  <rect class="label" x="56" y="164" width="608" height="196" rx="8"/>
+  <text class="text" x="72" y="198">BRAND（品牌）：Fisher &amp; Paykel（示例）</text>
+  <text class="text" x="72" y="228">MODEL（型号）：DD60S7（示例）</text>
+  <text class="text" x="72" y="258">SERIAL（序列号）：LEQ287861（示例）</text>
+  <text class="text" x="72" y="288">电压/电流等参数（示意）</text>
+  <text class="text" x="72" y="318">请对准完整铭牌进行拍摄</text>
+</svg>

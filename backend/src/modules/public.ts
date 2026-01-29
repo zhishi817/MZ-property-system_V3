@@ -14,6 +14,33 @@ const DEFAULT_PUBLIC_CLEANING_PASSWORD = process.env.PUBLIC_CLEANING_PASSWORD ||
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
 
+function randomSuffix(len: number): string {
+  const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  let s = ''
+  for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)]
+  return s
+}
+async function generateWorkNo(): Promise<string> {
+  const date = new Date().toISOString().slice(0,10).replace(/-/g,'')
+  const prefix = `R-${date}-`
+  const pool = pgPool
+  let len = 4
+  for (;;) {
+    const candidate = prefix + randomSuffix(len)
+    try {
+      if (hasPg && pool) {
+        const r = await pool.query('SELECT 1 FROM property_maintenance WHERE work_no = $1 LIMIT 1', [candidate])
+        if (!r.rowCount) return candidate
+      } else {
+        return candidate
+      }
+    } catch {
+      return candidate
+    }
+    len += 1
+    if (len > 10) return candidate
+  }
+}
 async function ensurePublicAccessTable() {
   if (!pgPool) return
   await pgPool.query(`CREATE TABLE IF NOT EXISTS public_access (
@@ -202,6 +229,8 @@ router.post('/repair/report', async (req, res) => {
   const category = String(body.category || '').trim()
   const detail = String(body.detail || '').trim()
   const attachments = Array.isArray(body.attachment_urls) ? body.attachment_urls : (body.attachment_urls ? [body.attachment_urls] : [])
+  const item_type = String(body.item_type || '').trim() || 'other'
+  const labelPhotos = Array.isArray(body.label_photo_urls) ? body.label_photo_urls : (body.label_photo_urls ? [body.label_photo_urls] : [])
   const submitter_name = String(body.submitter_name || '').trim()
   const submitter_id = String(body.submitter_id || '').trim()
   const urgency = body.urgency ? String(body.urgency) : ''
@@ -209,6 +238,7 @@ router.post('/repair/report', async (req, res) => {
   if (!category) return res.status(400).json({ message: 'missing category' })
   if (!detail) return res.status(400).json({ message: 'missing detail' })
   if (!submitter_name) return res.status(400).json({ message: 'missing submitter_name' })
+  if (item_type === 'appliance' && (!labelPhotos || labelPhotos.length === 0)) return res.status(400).json({ message: 'appliance requires label photos' })
   try {
     if (hasPg) {
       // ensure property_maintenance columns exist
@@ -222,10 +252,12 @@ router.post('/repair/report', async (req, res) => {
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
+      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS item_type text;`)
+      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS label_photo_urls jsonb;`)
       const id = uuidv4()
-      const workNo = `R-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${Math.random().toString(36).slice(2,6).toUpperCase()}`
-      const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, property_code, work_no, category, status, urgency, assignee_id, eta, submitted_at)
-        VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`
+      const workNo = await generateWorkNo()
+      const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, label_photo_urls, item_type, property_code, work_no, category, status, urgency, assignee_id, eta, submitted_at)
+        VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`
       const values = [
         id,
         property_id || null,
@@ -235,6 +267,8 @@ router.post('/repair/report', async (req, res) => {
         '',
         submitter_id || null,
         JSON.stringify(attachments || []),
+        JSON.stringify(labelPhotos || []),
+        item_type || null,
         null,
         workNo,
         category || null,
@@ -258,9 +292,11 @@ router.post('/repair/report', async (req, res) => {
       id, property_id, category, status: 'pending',
       details: JSON.stringify([{ content: detail }]),
       photo_urls: attachments,
+      label_photo_urls: labelPhotos,
+      item_type,
       created_by: submitter_id || null,
       submitted_at: new Date().toISOString(),
-      work_no: `R-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${Math.random().toString(36).slice(2,6).toUpperCase()}`
+      work_no: `R-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${randomSuffix(4)}`
     }
     ;(require('../store').db as any).propertyMaintenance = ((require('../store').db as any).propertyMaintenance || [])
     ;(require('../store').db as any).propertyMaintenance.push(row)

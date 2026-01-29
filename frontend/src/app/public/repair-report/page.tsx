@@ -15,6 +15,8 @@ export default function RepairReportPage() {
   const { message } = App.useApp()
   const [files, setFiles] = useState<UploadFile[]>([])
   const [urls, setUrls] = useState<string[]>([])
+  const [labelFiles, setLabelFiles] = useState<UploadFile[]>([])
+  const [labelUrls, setLabelUrls] = useState<string[]>([])
   const [token, setToken] = useState<string | null>(null)
   const [pwd, setPwd] = useState('')
   const [loggingIn, setLoggingIn] = useState(false)
@@ -43,6 +45,12 @@ export default function RepairReportPage() {
     { value: '其他', label: '其他' },
   ]
   const [cat, setCat] = useState<string>('客厅')
+  const typeOptions = [
+    { value: 'appliance', label: '电器' },
+    { value: 'furniture', label: '家具' },
+    { value: 'other', label: '其他' },
+  ]
+  const [itemType, setItemType] = useState<string>('other')
 
   async function ensureToken(): Promise<string | null> {
     try {
@@ -76,11 +84,17 @@ export default function RepairReportPage() {
     const v = await form.validateFields()
     const tk = await ensureToken()
     if (!tk) return
+    if (String(v.item_type || '') === 'appliance' && (!labelUrls || labelUrls.length === 0)) {
+      message.error('电器问题需上传品牌/型号照片')
+      return
+    }
     const payload = {
       property_id: v.property_id,
       category: v.category,
       detail: v.detail,
       attachment_urls: urls,
+      item_type: v.item_type || 'other',
+      label_photo_urls: labelUrls,
       submitter_name: v.submitter_name || '',
     }
     try {
@@ -88,14 +102,14 @@ export default function RepairReportPage() {
         method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk}` }, body: JSON.stringify(payload)
       })
       const j = await res.json().catch(()=>null)
-      if (res.ok) { message.success('已提交维修工单'); form.resetFields(); setFiles([]); setUrls([]) }
+      if (res.ok) { message.success('已提交维修工单'); form.resetFields(); setFiles([]); setUrls([]); setLabelFiles([]); setLabelUrls([]); setItemType('other') }
       else { message.error(j?.message || '提交失败') }
     } catch { message.error('提交失败') }
   }
 
   return (
     <div style={{ maxWidth: 720, margin: '0 auto' }}>
-      <Card title="MZ 房源维修问卷" style={{ marginTop: 24 }}>
+      <Card title="房源报修表" style={{ marginTop: 24 }}>
         <Space direction="vertical" style={{ width: '100%' }}>
           <Typography.Paragraph type="secondary">请清洁人员填写并提交维修问题。</Typography.Paragraph>
           <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
@@ -109,6 +123,9 @@ export default function RepairReportPage() {
             <Form.Item name="property_id" label="房号" rules={[{ required: true }]}><Select options={options} showSearch optionFilterProp="label" /></Form.Item>
             <Form.Item name="category" label="问题区域" rules={[{ required: true }]}>
               <Select options={categories.map(c=>({ value: c.value, label: c.label }))} value={cat} onChange={v=>setCat(String(v))} />
+            </Form.Item>
+            <Form.Item name="item_type" label="问题类型" rules={[{ required: true }]}>
+              <Select options={typeOptions} value={itemType} onChange={v=>setItemType(String(v))} />
             </Form.Item>
             <Form.Item name="detail" label="问题详情" rules={[{ required: true, min: 5 }]}><Input.TextArea rows={4} placeholder="请详细描述问题" /></Form.Item>
             <Form.Item label="上传附件">
@@ -125,7 +142,29 @@ export default function RepairReportPage() {
                 }}>
                 <Button>上传图片/视频</Button>
               </Upload>
+              <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>家具/地毯：正常拍清晰的现场照片或视频即可。</Typography.Paragraph>
             </Form.Item>
+            {itemType === 'appliance' && (
+              <Form.Item label="电器品牌/型号照片（必传）">
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <Upload listType="picture" multiple fileList={labelFiles} onRemove={(f)=>{ setLabelFiles(fl=>fl.filter(x=>x.uid!==f.uid)); if (f.url) setLabelUrls(u=>u.filter(x=>x!==f.url)) }}
+                    customRequest={async ({ file, onSuccess, onError }: any) => {
+                      let tk = token
+                      if (!tk) { tk = await ensureToken(); if (!tk) { onError && onError(new Error('unauthorized')); return } }
+                      const fd = new FormData(); fd.append('file', file)
+                      try {
+                        const r = await fetch(`${API_BASE}/public/repair/upload`, { method: 'POST', headers: { Authorization: `Bearer ${tk}` }, body: fd })
+                        const j = await r.json()
+                        if (r.ok && j?.url) { setLabelUrls(u=>[...u, j.url]); setLabelFiles(fl=>[...fl, { uid: Math.random().toString(36).slice(2), name: file.name, status: 'done', url: j.url } as UploadFile]); onSuccess && onSuccess(j, file) } else { onError && onError(j) }
+                      } catch (e) { onError && onError(e) }
+                    }}>
+                    <Button>上传铭牌样片</Button>
+                  </Upload>
+                  <Typography.Paragraph type="secondary">请拍摄电器铭牌（包含品牌与型号）。通常位于门内侧或背面。</Typography.Paragraph>
+                  <img src="/repair/appliance-label-sample.svg" alt="电器铭牌样片示意" style={{ maxWidth: '100%', borderRadius: 8, border: '1px solid #eee' }} />
+                </Space>
+              </Form.Item>
+            )}
             <Form.Item name="submitter_name" label="提交人姓名" rules={[{ required: true }]}><Input placeholder="如系统未登录，请填写姓名" /></Form.Item>
             <Form.Item>
               <Button type="primary" onClick={submit}>提交工单</Button>
