@@ -9,11 +9,12 @@ import { getJSON, apiList, API_BASE, authHeaders } from '../../../lib/api'
 import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/properties'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
 import { monthSegments, toDayStr, getMonthSegmentsForProperty, parseDateOnly } from '../../../lib/orders'
+import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../../../lib/financeTx'
 const debugOnce = (..._args: any[]) => {}
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
 
-type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number }
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string }
+type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; ref_type?: string; ref_id?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 
 export default function PropertyRevenuePage() {
@@ -42,6 +43,7 @@ export default function PropertyRevenuePage() {
           if (v === 'consumables') return 'consumable'
           if (v === 'owners_corp') return 'property_fee'
           if (v === 'council_rate') return 'council'
+          if (v.toLowerCase() === 'nbn' || v.toLowerCase() === 'internet' || v.includes('网')) return 'internet'
           return v
         }
         const mapReport: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.report_category||'')]))
@@ -51,9 +53,9 @@ export default function PropertyRevenuePage() {
           if (v.includes('carpark') || v.includes('车位')) return 'parking_fee'
           if (v.includes('owners') || v.includes('body') || v.includes('物业')) return 'body_corp'
           if (v.includes('internet') || v.includes('nbn') || v.includes('网')) return 'internet'
-          if (v.includes('electric')) return 'electricity'
-          if (v.includes('water') && !v.includes('hot')) return 'water'
-          if (v.includes('gas') || v.includes('hot')) return 'gas'
+          if (v.includes('electric') || v.includes('电')) return 'electricity'
+          if ((v.includes('water') || v.includes('水')) && !v.includes('hot') && !v.includes('热')) return 'water'
+          if (v.includes('gas') || v.includes('hot') || v.includes('热水') || v.includes('煤气')) return 'gas'
           if (v.includes('consumable') || v.includes('消耗')) return 'consumables'
           if (v.includes('council') || v.includes('市政')) return 'council'
           return 'other'
@@ -78,7 +80,7 @@ export default function PropertyRevenuePage() {
             ...(r.month_key ? { month_key: r.month_key } : {}),
             ...(r.due_date ? { due_date: r.due_date } : {}),
             ...(r.status ? { status: r.status } : {}),
-            report_category: (r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail)
+            report_category: normalizeReportCategory((r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail))
           })
         })
         const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
@@ -90,6 +92,9 @@ export default function PropertyRevenuePage() {
           occurred_at: t.occurred_at,
           category: mapCat(t.category),
           ...(t.category_detail ? { category_detail: t.category_detail } : {}),
+          ...(t.note ? { note: t.note } : {}),
+          ...(t.ref_type ? { ref_type: t.ref_type } : {}),
+          ...(t.ref_id ? { ref_id: t.ref_id } : {}),
           ...(t.invoice_url ? { invoice_url: t.invoice_url } : {})
         }))
         setTxs([...finMapped, ...peMapped])
@@ -111,6 +116,7 @@ export default function PropertyRevenuePage() {
           if (v === 'consumables') return 'consumable'
           if (v === 'owners_corp') return 'property_fee'
           if (v === 'council_rate') return 'council'
+          if (v.toLowerCase() === 'nbn' || v.toLowerCase() === 'internet' || v.includes('网')) return 'internet'
           return v
         }
         const mapReport: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.report_category||'')]))
@@ -146,7 +152,7 @@ export default function PropertyRevenuePage() {
             ...(r.month_key ? { month_key: r.month_key } : {}),
             ...(r.due_date ? { due_date: r.due_date } : {}),
             ...(r.status ? { status: r.status } : {}),
-            report_category: (r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail)
+            report_category: normalizeReportCategory((r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail))
           })
         })
         const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
@@ -157,7 +163,10 @@ export default function PropertyRevenuePage() {
           property_id: t.property_id || undefined,
           occurred_at: t.occurred_at,
           category: mapCat(t.category),
-          ...(t.category_detail ? { category_detail: t.category_detail } : {})
+          ...(t.category_detail ? { category_detail: t.category_detail } : {}),
+          ...(t.note ? { note: t.note } : {}),
+          ...(t.ref_type ? { ref_type: t.ref_type } : {}),
+          ...(t.ref_id ? { ref_id: t.ref_id } : {})
         }))
         setTxs([...finMapped, ...peMapped])
       } catch {}
@@ -187,6 +196,7 @@ export default function PropertyRevenuePage() {
   const rows = useMemo(() => {
     if (!start || !end) return [] as any[]
     const list = selectedPid ? properties.filter(pp => pp.id === selectedPid) : sortPropertiesByRegionThenCode(properties as any)
+    const orderById = new Map((orders || []).map(o => [String(o.id), o]))
     const out: any[] = []
     const rangeMonths: { start: any, end: any, label: string }[] = []
     let cur = start.startOf('month')
@@ -211,10 +221,8 @@ export default function PropertyRevenuePage() {
         debugOnce(`REVENUE_DEBUG ${rm.label} ${String(p.id)}`, related.map(s => s.id))
         const e = txs.filter(x => {
           if (x.kind !== 'expense') return false
-          const pidOk = (x.property_id === p.id) || (String((x as any).property_code || '') === String(p.code || ''))
-          const baseDateRaw: any = (x as any).paid_date || x.occurred_at || (x as any).created_at
-          const inMonth = baseDateRaw ? dayjs(toDayStr(baseDateRaw)).isSame(rm.start, 'month') : false
-          return pidOk && inMonth
+          if (!txMatchesProperty(x, p as any)) return false
+          return txInMonth(x as any, rm.start)
         })
         function overlap(s: any) {
           const ci = parseDateOnly(toDayStr(s.checkin))
@@ -224,7 +232,12 @@ export default function PropertyRevenuePage() {
           return Math.max(0, b.diff(a, 'day'))
         }
         const rentIncome = related.reduce((sum, seg) => sum + Number(((seg as any).visible_net_income ?? (seg as any).net_income ?? 0)), 0)
-        const otherIncomeTx = txs.filter(x => x.kind==='income' && x.property_id === p.id && dayjs(toDayStr(x.occurred_at)).isSame(rm.start, 'month'))
+        const otherIncomeTx = txs.filter(x => {
+          if (x.kind !== 'income') return false
+          if (x.property_id !== p.id) return false
+          if (!dayjs(toDayStr(x.occurred_at)).isSame(rm.start, 'month')) return false
+          return shouldIncludeIncomeTxInPropertyOtherIncome(x, orderById)
+        })
         const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount||0), 0)
         const mapIncomeCatLabel = (c?: string) => {
           const v = String(c || '')
@@ -243,7 +256,7 @@ export default function PropertyRevenuePage() {
         const rate = landlordByList?.management_fee_rate ?? landlordByLink?.management_fee_rate ?? 0
         const mgmtRecorded = e.filter(xx=> String((xx as any).report_category||'')==='management_fee').reduce((s,x)=> s + Number(x.amount||0), 0)
         const mgmt = mgmtRecorded ? mgmtRecorded : (rate ? Math.round(((rentIncome * rate) + Number.EPSILON)*100)/100 : 0)
-        const byReport = (key: string) => e.filter(xx=> String((xx as any).report_category||'')===key).reduce((s,x)=> s + Number(x.amount||0), 0)
+        const byReport = (key: string) => e.filter(xx => normalizeReportCategory((xx as any).report_category || (xx as any).category) === key).reduce((s,x)=> s + Number(x.amount||0), 0)
         const carpark = byReport('parking_fee')
         const electricity = byReport('electricity')
         const water = byReport('water')
