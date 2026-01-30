@@ -34,21 +34,55 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
   const { resource } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
   const filter: Record<string, any> = { ...(req.query || {}) }
+  const q = typeof (req.query as any)?.q === 'string' ? String((req.query as any).q || '').trim() : ''
+  const withTotal = String((req.query as any)?.withTotal || '') === '1'
+  const aggregate = String((req.query as any)?.aggregate || '') === '1'
+  const limit = (() => {
+    const v = (req.query as any)?.limit
+    const n = Number(Array.isArray(v) ? v[0] : v)
+    return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 5000) : undefined
+  })()
+  const offset = (() => {
+    const v = (req.query as any)?.offset
+    const n = Number(Array.isArray(v) ? v[0] : v)
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined
+  })()
   const user = (req as any).user || {}
   if (user?.role === 'customer_service' && resource === 'property_expenses') {
     filter.created_by = user.sub
   }
-  delete filter.limit; delete filter.offset; delete filter.order
+  delete filter.limit; delete filter.offset; delete filter.order; delete filter.q; delete filter.withTotal; delete filter.aggregate
   try {
     if (hasPg) {
       try {
         const rows: any[] = []
         const { pgPool } = require('../dbAdapter')
         function buildWhere(filters?: Record<string, any>) {
-          const keys = Object.keys(filters || {})
-          if (!keys.length) return { clause: '', values: [] as any[] }
-          const parts = keys.map((k, i) => `${k} = $${i + 1}`)
-          const values = keys.map((k) => (filters as any)[k])
+          const rawKeys = Object.keys(filters || {})
+          const keys = rawKeys.filter(k => /^[a-zA-Z0-9_]+$/.test(k))
+          const parts: string[] = []
+          const values: any[] = []
+          for (const k of keys) {
+            if (k.endsWith('_from')) {
+              const col = k.slice(0, -5)
+              if (/^[a-zA-Z0-9_]+$/.test(col)) {
+                values.push((filters as any)[k])
+                parts.push(`"${col}" >= $${values.length}`)
+              }
+              continue
+            }
+            if (k.endsWith('_to')) {
+              const col = k.slice(0, -3)
+              if (/^[a-zA-Z0-9_]+$/.test(col)) {
+                values.push((filters as any)[k])
+                parts.push(`"${col}" <= $${values.length}`)
+              }
+              continue
+            }
+            values.push((filters as any)[k])
+            parts.push(`"${k}" = $${values.length}`)
+          }
+          if (!parts.length) return { clause: '', values: [] as any[] }
           return { clause: ` WHERE ${parts.join(' AND ')}`, values }
         }
         const w = buildWhere(Object.keys(filter).length ? filter : undefined)
@@ -68,9 +102,56 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         }
         if (pgPool) {
           try {
-            const sql = `SELECT * FROM ${resource}${w.clause}${orderBy}`
-            const resq = await pgPool.query(sql, w.values)
+            const w2 = (() => {
+              if (resource !== 'property_maintenance' || !q) return w
+              const like = `%${q.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`
+              const idx = w.values.length + 1
+              const clause = w.clause ? `${w.clause} AND (` : ' WHERE ('
+              const or = [
+                `COALESCE("property_code",'') ILIKE $${idx} ESCAPE '\\\\'`,
+                `EXISTS (SELECT 1 FROM properties p WHERE p.id = property_maintenance.property_id AND COALESCE(p.code,'') ILIKE $${idx} ESCAPE '\\\\')`,
+                `COALESCE("property_id",'') ILIKE $${idx} ESCAPE '\\\\'`,
+                `COALESCE("work_no",'') ILIKE $${idx} ESCAPE '\\\\'`,
+                `COALESCE("category",'') ILIKE $${idx} ESCAPE '\\\\'`,
+                `COALESCE("status",'') ILIKE $${idx} ESCAPE '\\\\'`,
+                `COALESCE("submitter_name",'') ILIKE $${idx} ESCAPE '\\\\'`,
+                `COALESCE("assignee_id",'') ILIKE $${idx} ESCAPE '\\\\'`,
+                `COALESCE("details",'') ILIKE $${idx} ESCAPE '\\\\'`,
+                `COALESCE("notes",'') ILIKE $${idx} ESCAPE '\\\\'`,
+                `COALESCE("repair_notes",'') ILIKE $${idx} ESCAPE '\\\\'`,
+              ].join(' OR ')
+              return { clause: `${clause}${or})`, values: [...w.values, like] }
+            })()
+            const getLimitOffset = () => {
+              const parts: string[] = []
+              const values = [...w2.values]
+              if (typeof limit === 'number') { values.push(limit); parts.push(` LIMIT $${values.length}`) }
+              if (typeof offset === 'number') { values.push(offset); parts.push(` OFFSET $${values.length}`) }
+              return { clause: parts.join(''), values }
+            }
+            if (aggregate && resource === 'property_maintenance') {
+              const baseWhere = w2.clause
+              const vals = w2.values
+              const q1 = await pgPool.query(`SELECT COUNT(*)::int AS total FROM ${resource}${baseWhere}`, vals)
+              const q2 = await pgPool.query(`SELECT COALESCE(status,'') AS key, COUNT(*)::int AS value FROM ${resource}${baseWhere} GROUP BY COALESCE(status,'') ORDER BY value DESC`, vals)
+              const q3 = await pgPool.query(`SELECT COALESCE(category,'') AS key, COUNT(*)::int AS value FROM ${resource}${baseWhere} GROUP BY COALESCE(category,'') ORDER BY value DESC`, vals)
+              const q4 = await pgPool.query(`SELECT to_char(date_trunc('month', occurred_at::date), 'YYYY-MM') AS key, COUNT(*)::int AS value FROM ${resource}${baseWhere} GROUP BY 1 ORDER BY 1 ASC`, vals)
+              return res.json({
+                total: q1?.rows?.[0]?.total || 0,
+                by_status: q2?.rows || [],
+                by_category: q3?.rows || [],
+                by_month: q4?.rows || [],
+              })
+            }
+            const lo = getLimitOffset()
+            const sql = `SELECT * FROM ${resource}${w2.clause}${orderBy}${lo.clause}`
+            const resq = await pgPool.query(sql, lo.values)
             rows.push(...(resq?.rows || []))
+            if (withTotal || typeof limit === 'number' || typeof offset === 'number') {
+              const c = await pgPool.query(`SELECT COUNT(*)::int AS total FROM ${resource}${w2.clause}`, w2.values)
+              const total = c?.rows?.[0]?.total
+              if (typeof total === 'number') res.setHeader('X-Total-Count', String(total))
+            }
           } catch (e: any) {
             const msg = String(e?.message || '')
             if (resource === 'fixed_expenses' && /relation\s+"?fixed_expenses"?\s+does\s+not\s+exist/i.test(msg)) {
@@ -163,6 +244,24 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
     // in-memory fallback
     const arr = (db as any)[camelToArrayKey(resource)] || []
     let filtered = arr.filter((r: any) => Object.entries(filter).every(([k,v]) => (r?.[k]) == v))
+    if (resource === 'property_maintenance' && q) {
+      const s = q.toLowerCase()
+      filtered = filtered.filter((r: any) => {
+        const hay = [
+          r?.property_code,
+          r?.property_id,
+          r?.work_no,
+          r?.category,
+          r?.status,
+          r?.submitter_name,
+          r?.assignee_id,
+          r?.details,
+          r?.notes,
+          r?.repair_notes,
+        ].map((x: any) => String(x || '').toLowerCase()).join(' ')
+        return hay.includes(s)
+      })
+    }
     if (resource === 'property_expenses') {
       filtered = filtered.sort((a: any, b: any) => {
         const ap = a?.paid_date ? new Date(a.paid_date).getTime() : Number.NEGATIVE_INFINITY
@@ -225,6 +324,26 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         return String(a?.id || '').localeCompare(String(b?.id || ''))
       })
     }
+    if (aggregate && resource === 'property_maintenance') {
+      const total = filtered.length
+      const by_status: Record<string, number> = {}
+      const by_category: Record<string, number> = {}
+      const by_month: Record<string, number> = {}
+      for (const r of filtered) {
+        const st = String(r?.status || '')
+        const cat = String(r?.category || '')
+        by_status[st] = (by_status[st] || 0) + 1
+        by_category[cat] = (by_category[cat] || 0) + 1
+        const d = r?.occurred_at || r?.submitted_at || ''
+        const key = String(d || '').slice(0,7)
+        if (key && /^\d{4}-\d{2}$/.test(key)) by_month[key] = (by_month[key] || 0) + 1
+      }
+      const toPairs = (obj: Record<string, number>) => Object.entries(obj).map(([key, value]) => ({ key, value }))
+      return res.json({ total, by_status: toPairs(by_status), by_category: toPairs(by_category), by_month: toPairs(by_month).sort((a,b)=>String(a.key).localeCompare(String(b.key))) })
+    }
+    if (withTotal || typeof limit === 'number' || typeof offset === 'number') res.setHeader('X-Total-Count', String(filtered.length))
+    if (typeof offset === 'number') filtered = filtered.slice(offset)
+    if (typeof limit === 'number') filtered = filtered.slice(0, limit)
     if (resource === 'property_expenses') {
       const labeled = filtered.map((r: any) => {
         const pid = String(r.property_id || '')
@@ -410,8 +529,13 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;`)
-          const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, property_code, work_no, category, status, urgency, submitted_at, submitter_name, completed_at)
-            VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount numeric(12,2);`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_parts boolean;`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS parts_amount numeric(12,2);`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
+          const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, property_code, work_no, category, status, urgency, submitted_at, submitter_name, completed_at, maintenance_amount, has_parts, parts_amount, pay_method, pay_other_note)
+            VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`
           const detailsArr = Array.isArray(detailsRaw) ? detailsRaw : []
           if (detailsArr.length > 1) {
             const created: any[] = []
@@ -433,7 +557,12 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 payload.urgency || null,
                 payload.submitted_at || new Date().toISOString(),
                 payload.submitter_name || null,
-                payload.completed_at || null
+                payload.completed_at || null,
+                (d && (d as any).maintenance_amount !== undefined) ? Number((d as any).maintenance_amount || 0) : null,
+                (d && (d as any).has_parts !== undefined) ? !!(d as any).has_parts : null,
+                (d && (d as any).parts_amount !== undefined) ? Number((d as any).parts_amount || 0) : null,
+                (d && (d as any).pay_method !== undefined) ? String((d as any).pay_method || '') : null,
+                (d && (d as any).pay_other_note !== undefined) ? String((d as any).pay_other_note || '') : null
               ]
               const r1 = await pgPool.query(sql, values)
               if (r1.rows && r1.rows[0]) created.push(r1.rows[0])
@@ -456,7 +585,12 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               payload.urgency || null,
               payload.submitted_at || new Date().toISOString(),
               payload.submitter_name || null,
-              payload.completed_at || null
+              payload.completed_at || null,
+              payload.maintenance_amount !== undefined ? Number(payload.maintenance_amount || 0) : null,
+              payload.has_parts !== undefined ? !!payload.has_parts : null,
+              payload.parts_amount !== undefined ? Number(payload.parts_amount || 0) : null,
+              payload.pay_method !== undefined ? String(payload.pay_method || '') : null,
+              payload.pay_other_note !== undefined ? String(payload.pay_other_note || '') : null
             ]
             const res = await pgPool.query(sql, values)
             row = res.rows && res.rows[0]
@@ -997,10 +1131,10 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
           const { pgPool } = require('../dbAdapter')
           if (pgPool) {
             const keys = Object.keys(toUpdate).filter(k => toUpdate[k] !== undefined)
-            const set = keys.map((k, i) => (k === 'repair_photo_urls') ? `"repair_photo_urls" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`).join(', ')
-            const values = keys.map((k) => (k === 'repair_photo_urls')
+            const set = keys.map((k, i) => (k === 'repair_photo_urls' || k === 'photo_urls') ? `"${k}" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`).join(', ')
+            const values = keys.map((k) => ((k === 'repair_photo_urls' || k === 'photo_urls')
               ? JSON.stringify(Array.isArray(toUpdate[k]) ? toUpdate[k] : [])
-              : toUpdate[k])
+              : toUpdate[k]))
             const sql = `UPDATE property_maintenance SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
             const res2 = await pgPool.query(sql, [...values, id])
             row = res2.rows && res2.rows[0]

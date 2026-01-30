@@ -36,6 +36,7 @@ const recurring_1 = __importDefault(require("./modules/recurring"));
 const auth_2 = require("./auth");
 const public_1 = __importDefault(require("./modules/public"));
 const public_admin_1 = __importDefault(require("./modules/public_admin"));
+const r2_1 = require("./r2");
 // 环境保险锁（允许缺省采用智能默认，不再抛错）
 let appEnv = process.env.APP_ENV;
 let dbRole = process.env.DATABASE_ROLE;
@@ -132,6 +133,14 @@ app.get('/health/config', (_req, res) => {
     }
     catch (_a) { }
     res.json(cfg);
+});
+app.get('/health/r2', (_req, res) => {
+    try {
+        return res.json((0, r2_1.r2Status)());
+    }
+    catch (_a) {
+        return res.json({ hasR2: false });
+    }
 });
 app.get('/health/migrations', async (_req, res) => {
     const mig = { status: 'ok' };

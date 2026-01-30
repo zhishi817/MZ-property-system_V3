@@ -198,7 +198,11 @@ exports.router.get('/', async (_req, res) => {
                 return rows.map(r => {
                     const t = totals[String(r.id)] || 0;
                     const vn = Number(r.net_income || 0) - t;
-                    return { ...r, internal_deduction_total: Number(t.toFixed(2)), visible_net_income: Number(vn.toFixed(2)) };
+                    const status = String(r.status || '').toLowerCase();
+                    const isCanceled = status.includes('cancel');
+                    const include = (!isCanceled) || !!r.count_in_income;
+                    const visible = include ? Number(vn.toFixed(2)) : 0;
+                    return { ...r, internal_deduction_total: Number(t.toFixed(2)), visible_net_income: visible };
                 });
             }
             const enriched = await enrich(labeled);
@@ -286,6 +290,7 @@ const createOrderSchema = zod_1.z.object({
     payment_currency: zod_1.z.string().optional(),
     payment_received: zod_1.z.boolean().optional(),
     status: zod_1.z.string().optional(),
+    count_in_income: zod_1.z.boolean().optional(),
     idempotency_key: zod_1.z.string().optional(),
 });
 const updateOrderSchema = createOrderSchema.partial();
@@ -371,8 +376,8 @@ async function ensureOrdersIndexes() {
             return;
         const { pgPool } = require('../dbAdapter');
         await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text'));
-        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_src_cc_pid_unique") THEN BEGIN DROP INDEX IF EXISTS idx_orders_src_cc_pid_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;'));
-        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_conf_pid_unique") THEN BEGIN DROP INDEX IF EXISTS idx_orders_conf_pid_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;'));
+        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_source_confirmation_code_unique") THEN DROP INDEX idx_orders_source_confirmation_code_unique; END $$;'));
+        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = "idx_orders_conf_pid_unique") THEN DROP INDEX idx_orders_conf_pid_unique; END $$;'));
         await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_confirmation_code_unique ON orders(confirmation_code) WHERE confirmation_code IS NOT NULL'));
     }
     catch (_a) { }
@@ -646,6 +651,12 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
     const updated = { ...base, ...o, id, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg };
     const prevStatus = String((prev === null || prev === void 0 ? void 0 : prev.status) || '');
     const nextStatus = String((updated === null || updated === void 0 ? void 0 : updated.status) || '');
+    if (nextStatus === 'cancelled' && updated.count_in_income == null) {
+        updated.count_in_income = false;
+    }
+    if (nextStatus !== 'cancelled' && updated.count_in_income == null) {
+        updated.count_in_income = true;
+    }
     if (prevStatus !== 'cancelled' && nextStatus === 'cancelled') {
         const role = String(((_c = req.user) === null || _c === void 0 ? void 0 : _c.role) || '');
         const locked = await isOrderMonthLocked(prev);
@@ -674,11 +685,50 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
             const allowExtra = ['payment_currency', 'payment_received'];
             const allowAll = [...allow, ...allowExtra];
             const payload = {};
-            for (const k of allowAll) {
+            for (const k of [...allowAll, 'count_in_income']) {
                 if (updated[k] !== undefined)
                     payload[k] = updated[k];
             }
-            const row = await (0, dbAdapter_1.pgUpdate)('orders', id, payload);
+            const row = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                const r1 = await (0, dbAdapter_1.pgUpdate)('orders', id, payload, client);
+                // revert cancel -> confirmed: clean up cancel_fee records atomically
+                const prevSt = prevStatus;
+                const nextSt = String((updated === null || updated === void 0 ? void 0 : updated.status) || '');
+                if (prevSt === 'cancelled' && nextSt !== 'cancelled') {
+                    const q1 = await client.query(`SELECT id, occurred_at, amount, currency, note, property_id FROM finance_transactions WHERE ref_type='order' AND ref_id=$1 AND category='cancel_fee'`, [id]);
+                    const txRows = q1.rows || [];
+                    for (const t of txRows) {
+                        try {
+                            const q2 = await client.query(`DELETE FROM company_incomes
+                 WHERE category='cancel_fee'
+                   AND occurred_at=$1
+                   AND amount=$2
+                   AND (property_id IS NOT DISTINCT FROM $3)
+                   AND coalesce(note,'') = coalesce($4,'')
+                 RETURNING *`, [String(t.occurred_at).slice(0, 10), Number(t.amount || 0), t.property_id || null, String(t.note || '')]);
+                            const delIncomes = q2.rows || [];
+                            for (const ci of delIncomes) {
+                                try {
+                                    (0, store_1.addAudit)('CompanyIncome', ci.id, 'delete', ci, null);
+                                }
+                                catch (_a) { }
+                            }
+                        }
+                        catch (_b) { }
+                    }
+                    if (txRows.length) {
+                        const q3 = await client.query(`DELETE FROM finance_transactions WHERE ref_type='order' AND ref_id=$1 AND category='cancel_fee' RETURNING *`, [id]);
+                        const delTxs = q3.rows || [];
+                        for (const tx of delTxs) {
+                            try {
+                                (0, store_1.addAudit)('FinanceTransaction', tx.id, 'delete', tx, null);
+                            }
+                            catch (_c) { }
+                        }
+                    }
+                }
+                return r1;
+            });
             if (idx !== -1)
                 store_1.db.orders[idx] = row;
             try {
@@ -970,6 +1020,26 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
     const results = [];
     let inserted = 0;
     let skipped = 0;
+    const existingByCc = new Set();
+    const existingProps = new Set();
+    try {
+        if (dbAdapter_1.hasPg) {
+            const rowsCc = (await (0, dbAdapter_1.pgSelect)('orders', 'confirmation_code')) || [];
+            for (const r of (rowsCc || [])) {
+                const cc = String((r === null || r === void 0 ? void 0 : r.confirmation_code) || '').trim();
+                if (cc)
+                    existingByCc.add(cc);
+            }
+            const propsAll = (await (0, dbAdapter_1.pgSelect)('properties', 'id')) || [];
+            for (const p of (propsAll || [])) {
+                const id = String((p === null || p === void 0 ? void 0 : p.id) || '').trim();
+                if (id)
+                    existingProps.add(id);
+            }
+            await ensureOrdersIndexes();
+        }
+    }
+    catch (_d) { }
     for (let idx = 0; idx < rowsInput.length; idx++) {
         const r = rowsInput[idx];
         if (isBlankOrPayoutRow(r)) {
@@ -1021,7 +1091,7 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                         idempotencyKey: idempotency_key,
                     });
                 }
-                catch (_d) { }
+                catch (_e) { }
             }
             const priceRaw = toNumber(getField(r, ['Total Payment', 'total_payment', 'Amount', 'amount', 'price']));
             const cleaningRaw = toNumber(getField(r, ['Cleaning fee', 'cleaning_fee']));
@@ -1051,7 +1121,7 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                         }
                         results.push({ ok: false, error: reason, id: payload.id, listing_name, confirmation_code, source, property_id });
                     }
-                    catch (_e) {
+                    catch (_f) {
                         results.push({ ok: false, error: reason });
                     }
                     skipped++;
@@ -1073,7 +1143,7 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                     }
                     results.push({ ok: false, error: reason, id: payload.id, listing_name, confirmation_code, source, property_id });
                 }
-                catch (_f) {
+                catch (_g) {
                     results.push({ ok: false, error: reason });
                 }
                 skipped++;
@@ -1092,7 +1162,7 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                     }
                     results.push({ ok: false, error: reason, id: payload.id, listing_name, confirmation_code });
                 }
-                catch (_g) {
+                catch (_h) {
                     results.push({ ok: false, error: reason, listing_name, confirmation_code });
                 }
                 skipped++;
@@ -1116,7 +1186,7 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                         idempotency_key: key,
                     });
                 }
-                catch (_h) { }
+                catch (_j) { }
             }
             if (!o.property_id) {
                 const reason = 'unmatched_property';
@@ -1130,7 +1200,7 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                     }
                     results.push({ ok: false, error: reason, id: payload.id, listing_name, confirmation_code });
                 }
-                catch (_j) {
+                catch (_k) {
                     results.push({ ok: false, error: reason, listing_name, confirmation_code });
                 }
                 skipped++;
@@ -1145,7 +1215,7 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                     const ms = co.getTime() - ci.getTime();
                     nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
                 }
-                catch (_k) {
+                catch (_l) {
                     nights = 0;
                 }
             }
@@ -1166,8 +1236,8 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                 if (dbAdapter_1.hasPg) {
                     const cc = newOrder.confirmation_code;
                     if (cc) {
-                        const dup = (await (0, dbAdapter_1.pgSelect)('orders', 'id', { source: newOrder.source, confirmation_code: cc, property_id: newOrder.property_id })) || [];
-                        if (Array.isArray(dup) && dup[0]) {
+                        const sig = `${String(newOrder.source || '').toLowerCase()}|${String(cc).trim()}|${String(newOrder.property_id || '')}`;
+                        if (existingByCc.has(sig)) {
                             results.push({ ok: false, error: 'duplicate', confirmation_code: cc, source: newOrder.source, property_id: newOrder.property_id });
                             skipped++;
                             continue;
@@ -1175,24 +1245,20 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                     }
                 }
             }
-            catch (_l) { }
+            catch (_m) { }
             let writeOk = false;
             if (dbAdapter_1.hasPg) {
                 try {
-                    if (newOrder.property_id) {
-                        const existsPropRows = (await (0, dbAdapter_1.pgSelect)('properties', 'id', { id: newOrder.property_id })) || [];
-                        const existsProp = Array.isArray(existsPropRows) && !!existsPropRows[0];
-                        if (!existsProp) {
-                            const payload = { id: newOrder.property_id };
-                            const codeGuess = idToCode[newOrder.property_id || ''];
-                            if (codeGuess)
-                                payload.code = codeGuess;
-                            await (0, dbAdapter_1.pgInsert)('properties', payload);
-                        }
+                    if (newOrder.property_id && !existingProps.has(String(newOrder.property_id))) {
+                        const payload = { id: newOrder.property_id };
+                        const codeGuess = idToCode[newOrder.property_id || ''];
+                        if (codeGuess)
+                            payload.code = codeGuess;
+                        await (0, dbAdapter_1.pgInsert)('properties', payload);
+                        existingProps.add(String(newOrder.property_id));
                     }
                     const insertPayload = { ...newOrder };
                     delete insertPayload.property_code;
-                    await ensureOrdersIndexes();
                     await (0, dbAdapter_1.pgInsert)('orders', insertPayload);
                     writeOk = true;
                 }
@@ -1213,7 +1279,7 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                                 continue;
                             }
                         }
-                        catch (_m) { }
+                        catch (_o) { }
                         results.push({ ok: false, error: 'duplicate', confirmation_code: newOrder.confirmation_code, source: newOrder.source, property_id: newOrder.property_id });
                         skipped++;
                         continue;
@@ -1993,7 +2059,7 @@ async function isOrderMonthLocked(order) {
         return false;
     }
 }
-exports.router.get('/:id/internal-deductions', (0, auth_1.requirePerm)('order.deduction.manage'), async (req, res) => {
+exports.router.get('/:id/internal-deductions', (0, auth_1.requireAnyPerm)(['order.view', 'order.deduction.manage']), async (req, res) => {
     const { id } = req.params;
     try {
         if (dbAdapter_1.hasPg) {
@@ -2238,7 +2304,7 @@ exports.router.delete('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('
         store_1.db.orderInternalDeductions.splice(idx, 1);
     return res.json({ ok: true });
 });
-exports.router.post('/:id/confirm-payment', (0, auth_1.requirePerm)('order.write'), async (req, res) => {
+exports.router.post('/:id/confirm-payment', (0, auth_1.requirePerm)('order.confirm_payment'), async (req, res) => {
     const { id } = req.params;
     let base = store_1.db.orders.find(o => o.id === id);
     if (!base && dbAdapter_1.hasPg) {
@@ -2261,4 +2327,304 @@ exports.router.post('/:id/confirm-payment', (0, auth_1.requirePerm)('order.write
         catch (_b) { }
     }
     return res.json(base);
+});
+const importJobs = {};
+function normalizePlatform(s) {
+    const v = String(s || '').trim().toLowerCase();
+    if (v.startsWith('airbnb'))
+        return 'airbnb';
+    if (v.startsWith('booking'))
+        return 'booking';
+    return v || 'offline';
+}
+async function startImportJob(csv, channel) {
+    const parse = require('csv-parse').parse;
+    const rows = await new Promise((resolve) => {
+        parse(csv || '', { columns: true, skip_empty_lines: true, bom: true, relax_column_count: true, relax_quotes: true, trim: true }, (err, recs) => {
+            if (err)
+                resolve([]);
+            else
+                resolve(Array.isArray(recs) ? recs : []);
+        });
+    });
+    const id = require('uuid').v4();
+    importJobs[id] = { id, channel: normalizePlatform(channel), total: rows.length, parsed: 0, inserted: 0, skipped: 0, reason_counts: {}, started_at: Date.now() };
+    const job = importJobs[id];
+    const platform = job.channel || 'offline';
+    const byName = {};
+    const idToCode = {};
+    try {
+        if (dbAdapter_1.hasPg) {
+            const cols = platform === 'airbnb' ? 'id,code,airbnb_listing_name' : (platform === 'booking' ? 'id,code,booking_listing_name' : 'id,code,listing_names');
+            const propsRaw = (await (0, dbAdapter_1.pgSelect)('properties', cols)) || [];
+            propsRaw.forEach((p) => {
+                const idp = String(p.id);
+                const code = String(p.code || '');
+                if (code)
+                    idToCode[idp] = code;
+                if (platform === 'airbnb' || platform === 'booking') {
+                    const nm = String((platform === 'airbnb' ? p.airbnb_listing_name : p.booking_listing_name) || '');
+                    if (nm)
+                        byName[`name:${String(nm).toLowerCase().replace(/\s+/g, ' ').trim()}`] = idp;
+                }
+                else {
+                    const ln = (p === null || p === void 0 ? void 0 : p.listing_names) || {};
+                    Object.values(ln || {}).forEach((nm) => { if (nm)
+                        byName[`name:${String(nm).toLowerCase().replace(/\s+/g, ' ').trim()}`] = idp; });
+                }
+            });
+        }
+    }
+    catch (_a) { }
+    const existingByCc = new Set();
+    try {
+        if (dbAdapter_1.hasPg) {
+            const rowsCc = (await (0, dbAdapter_1.pgSelect)('orders', 'confirmation_code')) || [];
+            for (const r of (rowsCc || [])) {
+                const cc = String((r === null || r === void 0 ? void 0 : r.confirmation_code) || '').trim();
+                if (cc)
+                    existingByCc.add(cc);
+            }
+        }
+    }
+    catch (_b) { }
+    let i = 0;
+    const inc = (k) => { job.reason_counts[k] = (job.reason_counts[k] || 0) + 1; };
+    function getField(obj, keys) {
+        const map = {};
+        Object.keys(obj || {}).forEach((kk) => { const nk = String(kk).toLowerCase().replace(/\s+/g, '_').trim(); map[nk] = obj[kk]; });
+        for (const k of keys) {
+            const v1 = obj[k];
+            if (v1 != null && String(v1).trim() !== '')
+                return String(v1);
+            const nk = String(k).toLowerCase().replace(/\s+/g, '_').trim();
+            const v2 = map[nk];
+            if (v2 != null && String(v2).trim() !== '')
+                return String(v2);
+        }
+        return undefined;
+    }
+    function toAmount(v) {
+        if (v == null)
+            return undefined;
+        const s = String(v).trim();
+        if (!s)
+            return undefined;
+        const t = s.replace(/[,]/g, '').replace(/[A-Za-z$\s]/g, '');
+        const n = Number(t);
+        return isNaN(n) ? undefined : Number(n.toFixed(2));
+    }
+    function toName(v) {
+        if (v == null)
+            return undefined;
+        const s = String(v).trim();
+        if (!s)
+            return undefined;
+        return s.replace(/["'“”‘’]/g, '').replace(/\s+/g, ' ').trim();
+    }
+    const chunk = async () => {
+        const end = Math.min(i + 100, rows.length);
+        for (; i < end; i++) {
+            const r = rows[i] || {};
+            const ln = String((r['Listing'] || r['Listing name'] || r['Property Name'] || r['listing'] || r['listing_name'] || '')).trim();
+            const pid = ln ? byName[`name:${String(ln).toLowerCase().replace(/\s+/g, ' ').trim()}`] : undefined;
+            const cc = String((r['Confirmation Code'] || r['confirmation_code'] || r['Reservation Number'] || '') || '').trim();
+            const ciRaw = String((r['Start date'] || r['Arrival'] || r['checkin'] || '') || '').trim();
+            const coRaw = String((r['End date'] || r['Departure'] || r['checkout'] || '') || '').trim();
+            const ci = dayOnly(ciRaw);
+            const co = dayOnly(coRaw);
+            if (!pid) {
+                job.skipped++;
+                inc('unmatched_property');
+                job.parsed++;
+                try {
+                    const payload = { id: require('uuid').v4(), channel: platform, raw_row: r, reason: 'unmatched_property', listing_name: ln, confirmation_code: cc, status: 'unmatched' };
+                    if (dbAdapter_1.hasPg) {
+                        try {
+                            await (0, dbAdapter_1.pgInsert)('order_import_staging', payload);
+                        }
+                        catch (e) {
+                            try {
+                                const { pgPool } = require('../dbAdapter');
+                                await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query(`CREATE TABLE IF NOT EXISTS order_import_staging (
+                  id text PRIMARY KEY,
+                  channel text,
+                  raw_row jsonb,
+                  reason text,
+                  listing_name text,
+                  confirmation_code text,
+                  listing_id text,
+                  property_code text,
+                  property_id text REFERENCES properties(id) ON DELETE SET NULL,
+                  status text DEFAULT 'unmatched',
+                  created_at timestamptz DEFAULT now(),
+                  resolved_at timestamptz
+                )`));
+                                await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE order_import_staging ADD COLUMN IF NOT EXISTS confirmation_code text'));
+                                await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE INDEX IF NOT EXISTS idx_order_import_staging_status ON order_import_staging(status)'));
+                                await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE INDEX IF NOT EXISTS idx_order_import_staging_created ON order_import_staging(created_at)'));
+                                await (0, dbAdapter_1.pgInsert)('order_import_staging', payload);
+                            }
+                            catch (_a) { }
+                        }
+                    }
+                    else {
+                        store_1.db.orderImportStaging.push(payload);
+                    }
+                }
+                catch (_b) { }
+                continue;
+            }
+            if (!ci || !co) {
+                job.skipped++;
+                inc('invalid_date');
+                job.parsed++;
+                continue;
+            }
+            if (cc && existingByCc.has(cc)) {
+                job.skipped++;
+                inc('duplicate');
+                job.parsed++;
+                continue;
+            }
+            const amtStr = getField(r, ['Amount', 'Total', 'Total Payment', 'price', 'you_earn']);
+            const cleanStr = getField(r, ['Cleaning fee', 'cleaning_fee']);
+            const currency = (getField(r, ['Currency', 'payment_currency']) || 'AUD').toUpperCase();
+            let price = undefined;
+            if (platform === 'booking') {
+                const tpRaw = getField(r, ['Total Payment', 'total_payment', 'Amount', 'amount']);
+                const tpNum = tpRaw != null ? Number(String(tpRaw).replace(/[,]/g, '')) : NaN;
+                if (!isFinite(tpNum)) {
+                    job.skipped++;
+                    inc('invalid_amount');
+                    job.parsed++;
+                    continue;
+                }
+                const p = Number((tpNum * 0.835).toFixed(2));
+                if (!(p > 0)) {
+                    job.skipped++;
+                    inc('missing_amount');
+                    job.parsed++;
+                    continue;
+                }
+                price = p;
+            }
+            else {
+                price = toAmount(amtStr);
+                if (!(price > 0)) {
+                    job.skipped++;
+                    inc('missing_amount');
+                    job.parsed++;
+                    continue;
+                }
+            }
+            const cleaning_fee = toAmount(cleanStr) || 0;
+            const guestRaw = platform === 'booking' ? getField(r, ['Booker Name', 'booker_name', 'Guest', 'guest', 'guest_name']) : getField(r, ['Guest', 'guest', 'guest_name', 'Booker Name', 'booker_name']);
+            const guest_name = toName(guestRaw);
+            let nights = 0;
+            try {
+                const a = new Date(`${ci}T00:00:00`);
+                const b = new Date(`${co}T00:00:00`);
+                const ms = b.getTime() - a.getTime();
+                nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
+            }
+            catch (_c) { }
+            const net = Number(((price || 0) - (cleaning_fee || 0)).toFixed(2));
+            const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0;
+            try {
+                const payload = { source: platform, confirmation_code: cc || undefined, property_id: pid, guest_name, checkin: ci, checkout: co, status: 'confirmed', price, cleaning_fee, currency, net_income: net, avg_nightly_price: avg, nights };
+                const parsed = createOrderSchema.safeParse(payload);
+                if (!parsed.success) {
+                    job.skipped++;
+                    inc('invalid_row');
+                    job.parsed++;
+                    continue;
+                }
+                const o = parsed.data;
+                const ciIso = `${String(o.checkin).slice(0, 10)}T12:00:00`;
+                const coIso = `${String(o.checkout).slice(0, 10)}T11:59:59`;
+                const newOrder = { id: require('uuid').v4(), ...o, checkin: ciIso, checkout: coIso };
+                if (dbAdapter_1.hasPg) {
+                    const insertPayload = { ...newOrder };
+                    try {
+                        await (0, dbAdapter_1.pgInsert)('orders', insertPayload);
+                        job.inserted++;
+                    }
+                    catch (_d) {
+                        job.skipped++;
+                        inc('write_failed');
+                    }
+                }
+                else {
+                    job.inserted++;
+                }
+            }
+            catch (_e) {
+                job.skipped++;
+            }
+            job.parsed++;
+        }
+        if (i < rows.length) {
+            setTimeout(chunk, 0);
+        }
+        else {
+            job.finished_at = Date.now();
+        }
+    };
+    setTimeout(chunk, 0);
+    return id;
+}
+exports.router.post('/import/start', (0, auth_1.requirePerm)('order.manage'), (0, express_1.text)({ type: ['text/csv', 'text/plain'] }), async (req, res) => {
+    var _a;
+    try {
+        const channel = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.channel) || '');
+        const body = typeof req.body === 'string' ? req.body : '';
+        const jobId = await startImportJob(body || '', channel);
+        return res.json({ job_id: jobId });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'start_failed' });
+    }
+});
+// Fallback alias to support old clients posting to /orders/import
+exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, express_1.text)({ type: ['text/csv', 'text/plain', '*/*'] }), async (req, res) => {
+    var _a;
+    try {
+        const channel = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.channel) || '');
+        const body = typeof req.body === 'string' ? req.body : '';
+        const jobId = await startImportJob(body || '', channel);
+        return res.json({ job_id: jobId });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'start_failed' });
+    }
+});
+exports.router.get('/import/jobs/:id/progress', (0, auth_1.requirePerm)('order.manage'), async (req, res) => {
+    const { id } = req.params;
+    const j = importJobs[id];
+    if (!j)
+        return res.status(404).json({ message: 'job_not_found' });
+    const dur = (j.finished_at || Date.now()) - j.started_at;
+    return res.json({ parsed: j.parsed, total: j.total, inserted: j.inserted, skipped: j.skipped, duration_ms: dur, reason_counts: j.reason_counts });
+});
+exports.router.get('/import/unmatched', (0, auth_1.requirePerm)('order.manage'), async (req, res) => {
+    const q = req.query || {};
+    const since = Math.max(1, Number(q.since_minutes || 60));
+    const limit = Math.max(1, Math.min(500, Number(q.limit || 200)));
+    const channel = String(q.channel || '').trim() || undefined;
+    try {
+        if (dbAdapter_1.hasPg) {
+            const { pgPool } = require('../dbAdapter');
+            const condChan = channel ? 'AND channel = $1' : '';
+            const sql = `SELECT id, channel, listing_name, confirmation_code, raw_row, created_at FROM order_import_staging WHERE status='unmatched' ${condChan} AND created_at > now() - interval '${since} minutes' ORDER BY created_at DESC LIMIT ${limit}`;
+            const rs = await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query(sql, channel ? [channel] : []));
+            const arr = ((rs === null || rs === void 0 ? void 0 : rs.rows) || []);
+            return res.json(arr);
+        }
+        const arr = (store_1.db.orderImportStaging || []).filter((x) => String((x === null || x === void 0 ? void 0 : x.status) || '') === 'unmatched').slice(0, limit);
+        return res.json(arr);
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'list_failed' });
+    }
 });
