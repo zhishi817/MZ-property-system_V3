@@ -47,6 +47,10 @@ async function pgUpdate(table, id, payload, client) {
     if (!executor)
         return null;
     const keys = Object.keys(payload).filter(k => payload[k] !== undefined);
+    if (!keys.length) {
+        const res0 = await executor.query(`SELECT * FROM ${table} WHERE id = $1`, [id]);
+        return res0.rows[0] || null;
+    }
     const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
     const values = keys.map((k) => payload[k]).map(v => (v === undefined ? null : v));
     const sql = `UPDATE ${table} SET ${set} WHERE id = $${keys.length + 1} RETURNING *`;

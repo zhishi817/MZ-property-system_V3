@@ -35,19 +35,22 @@
       property_id: v.property_id,
       occurred_at: v.occurred_at ? dayjs(v.occurred_at).format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD'),
       worker_name: v.worker_name || '',
+      submitter_name: v.worker_name || '',
       notes: v.notes || '',
       status: 'completed',
       submitted_at: new Date().toISOString()
     }
     const detailsArr: any[] = Array.isArray(v.details) ? v.details : []
-    if (!detailsArr.length) { message.error('请至少添加一条工作详情'); return }
+    if (!detailsArr.length) { message.error('请至少添加一条维修详情'); return }
     try {
       let okCount = 0
       for (let i = 0; i < detailsArr.length; i++) {
         const d = detailsArr[i] || {}
         const payload: any = {
           ...base,
-          details: [{ content: String(d?.content || ''), item: String(d?.item || '') }],
+          // 问题区域映射到 category；问题摘要映射到 details[0].content
+          category: String(d?.content || ''),
+          details: [{ content: String(d?.item || ''), item: String(d?.item || '') }],
           completed_at: new Date().toISOString()
         }
         if (d?.maintenance_amount !== undefined) payload.maintenance_amount = Number(d.maintenance_amount || 0)
@@ -75,7 +78,7 @@
      <div style={{ maxWidth: 900, margin: '0 auto' }}>
        <Card title="房源维修进度表" style={{ marginTop: 24 }}>
          <Form form={form} layout="vertical" initialValues={{ occurred_at: dayjs(), details: [{ content:'', item:'' }] }}>
-           <div style={{ borderBottom: '1px solid #e6f4ff', paddingBottom: 8, marginBottom: 16, display:'flex', alignItems:'center', gap:8 }}>
+          <div style={{ borderBottom: '1px solid #e6f4ff', paddingBottom: 8, marginBottom: 16, display:'flex', alignItems:'center', gap:8 }}>
              <div style={{ width: 4, height: 18, background:'#1677ff', borderRadius: 2 }} />
              <Typography.Text style={{ color:'#1d39c4', fontWeight: 600 }}>基本信息</Typography.Text>
            </div>
@@ -98,12 +101,12 @@
            <Form.Item name="worker_name" label="工作人员姓名" rules={[{ required: true }]}>
              <Input placeholder="请输入维修人员姓名" />
            </Form.Item>
-           <div style={{ borderBottom: '1px solid #e6f4ff', paddingBottom: 8, marginBottom: 16, display:'flex', alignItems:'center', gap:8 }}>
+          <div style={{ borderBottom: '1px solid #e6f4ff', paddingBottom: 8, marginBottom: 16, display:'flex', alignItems:'center', gap:8 }}>
              <div style={{ width: 4, height: 18, background:'#1677ff', borderRadius: 2 }} />
-             <Typography.Text style={{ color:'#1d39c4', fontWeight: 600 }}>工作详情</Typography.Text>
+            <Typography.Text style={{ color:'#1d39c4', fontWeight: 600 }}>维修详情</Typography.Text>
            </div>
            <Form.List name="details" rules={[{ validator: async (_, value) => {
-             if (!value || !value.length) return Promise.reject(new Error('请至少添加一条工作详情'))
+            if (!value || !value.length) return Promise.reject(new Error('请至少添加一条维修详情'))
              return Promise.resolve()
            } }]}>
              {(fields, { add, remove }, { errors }) => (
@@ -114,21 +117,27 @@
                         key={field.key}
                         size="small"
                         style={{ borderRadius: 12, border:'1px solid #e6f4ff', background:'#fafcff', boxShadow:'0 1px 0 rgba(22,119,255,0.06)' }}
-                        title={<span style={{ color:'#1d39c4', fontWeight: 600 }}>工作详情 {idx + 1}</span>}
+                        title={<span style={{ color:'#1d39c4', fontWeight: 600 }}>维修详情 {idx + 1}</span>}
                         extra={<Button type="text" danger icon={<DeleteOutlined />} onClick={() => remove(field.name)} />}
                       >
                         <Space direction="vertical" style={{ width:'100%' }}>
-                          <Form.Item {...field} name={[field.name, 'content']} label="工作内容" rules={[{ required: true }]}>
-                            <Input placeholder="例如：更换灯泡" style={{ width: '100%' }} />
+                          <Form.Item {...field} name={[field.name, 'content']} label="问题区域" rules={[{ required: true }]}>
+                            <Select
+                              placeholder="请选择问题发生区域"
+                              style={{ width: '100%' }}
+                              options={['入户走廊','客厅','厨房','卧室','阳台','浴室','其他'].map(x => ({ value:x, label:x }))}
+                              showSearch
+                              optionFilterProp="label"
+                            />
                           </Form.Item>
-                          <Form.Item {...field} name={[field.name, 'item']} label="工作事项">
-                            <Input placeholder="例如：备件型号" style={{ width: '100%' }} />
+                          <Form.Item {...field} name={[field.name, 'item']} label="问题摘要">
+                            <Input placeholder="例如：灯具松动需紧固" style={{ width: '100%' }} />
                           </Form.Item>
                           <div style={{ border:'1px dashed #9cc5ff', padding:12, borderRadius:12, background:'#f8fbff' }}>
                             <Typography.Text style={{ color:'#1d39c4', fontWeight:600 }}>费用信息</Typography.Text>
                             <Space direction="vertical" style={{ width:'100%', marginTop:8 }}>
-                              <Form.Item {...field} name={[field.name, 'maintenance_amount']} label="维修金额">
-                                <InputNumber min={0} step={1} style={{ width:'100%' }} placeholder="请输入维修金额（元）" />
+                              <Form.Item {...field} name={[field.name, 'maintenance_amount']} label="维修金额（AUD）">
+                                <InputNumber min={0} step={1} style={{ width:'100%' }} placeholder="请输入维修金额（AUD）" />
                               </Form.Item>
                               <Form.Item {...field} name={[field.name, 'has_parts']} label="是否包含配件费" valuePropName="checked">
                                 <Switch />
@@ -140,8 +149,8 @@
                                 {() => {
                                   const hp = form.getFieldValue(['details', idx, 'has_parts'])
                                   return (
-                                    <Form.Item {...field} name={[field.name, 'parts_amount']} label="配件费金额" style={{ display: hp ? 'block' : 'none' }}>
-                                      <InputNumber min={0} step={1} style={{ width:'100%' }} placeholder="请输入配件费（元）" />
+                                    <Form.Item {...field} name={[field.name, 'parts_amount']} label="配件费金额（AUD）" style={{ display: hp ? 'block' : 'none' }}>
+                                      <InputNumber min={0} step={1} style={{ width:'100%' }} placeholder="请输入配件费（AUD）" />
                                     </Form.Item>
                                   )
                                 }}
@@ -277,7 +286,7 @@
                       onClick={() => add()}
                       style={{ border:'1px dashed #9cc5ff', borderRadius: 12, padding:12, textAlign:'center', cursor:'pointer', color:'#1677ff', background:'#f8fbff' }}
                     >
-                      <PlusOutlined /> 新增一条工作详情
+                      <PlusOutlined /> 新增一条维修详情
                     </div>
                  </Space>
                </div>

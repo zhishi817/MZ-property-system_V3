@@ -29,6 +29,7 @@ exports.db = {
     roles: [],
     permissions: [],
     rolePermissions: [],
+    repairOrders: [],
 };
 // seed sample data
 if (exports.db.keySets.length === 0) {
@@ -117,6 +118,7 @@ if (exports.db.roles.length === 0) {
         { code: 'order.create.override' },
         { code: 'order.cancel' },
         { code: 'order.cancel.override' },
+        { code: 'order.confirm_payment' },
         { code: 'keyset.manage' },
         { code: 'key.flow' },
         { code: 'cleaning.view' },
@@ -145,6 +147,8 @@ if (exports.db.roles.length === 0) {
         { code: 'menu.properties.list.visible' },
         { code: 'menu.properties.keys.visible' },
         { code: 'menu.properties.maintenance.visible' },
+        { code: 'menu.properties.repairs.visible' },
+        { code: 'menu.properties.public_repair.visible' },
         { code: 'menu.finance.expenses.visible' },
         { code: 'menu.finance.recurring.visible' },
         { code: 'menu.finance.orders.visible' },
@@ -183,7 +187,7 @@ if (exports.db.roles.length === 0) {
 }
 const defaultPerms = [
     'property.view', 'property.write',
-    'order.view', 'order.create', 'order.write', 'order.sync', 'order.manage',
+    'order.view', 'order.create', 'order.write', 'order.sync', 'order.manage', 'order.confirm_payment',
     'keyset.manage', 'key.flow',
     'cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign',
     'finance.payout', 'finance.tx.write',
@@ -213,7 +217,7 @@ if (adminRole) {
 }
 // granular CRUD resource permissions
 const resources = [
-    'properties', 'landlords', 'orders', 'cleaning_tasks', 'finance_transactions', 'company_expenses', 'property_expenses', 'fixed_expenses', 'company_incomes', 'property_incomes', 'recurring_payments', 'cms_pages', 'payouts', 'company_payouts', 'users', 'property_maintenance', 'order_import_staging'
+    'properties', 'landlords', 'orders', 'cleaning_tasks', 'finance_transactions', 'company_expenses', 'property_expenses', 'fixed_expenses', 'company_incomes', 'property_incomes', 'recurring_payments', 'cms_pages', 'payouts', 'company_payouts', 'users', 'property_maintenance', 'order_import_staging', 'repair_orders'
 ];
 resources.forEach(r => {
     const viewCode = `${r}.view`;

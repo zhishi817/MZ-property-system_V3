@@ -15,6 +15,7 @@ const zod_1 = require("zod");
 const fingerprint_1 = require("../fingerprint");
 const auth_1 = require("../auth");
 const pdf_lib_1 = require("pdf-lib");
+const dbAdapter_2 = require("../dbAdapter");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -68,7 +69,56 @@ exports.router.post('/', (0, auth_1.requirePerm)('finance.tx.write'), async (req
     (0, store_1.addAudit)('FinanceTransaction', tx.id, 'create', null, tx);
     if (dbAdapter_1.hasPg) {
         try {
+            const cat0 = String(tx.category || '').toLowerCase();
+            if (String(tx.kind) === 'income' && cat0 === 'cancel_fee' && String(tx.ref_type || '') === 'order' && String(tx.ref_id || '')) {
+                const dup = await (0, dbAdapter_1.pgSelect)('finance_transactions', '*', { ref_type: 'order', ref_id: String(tx.ref_id), category: 'cancel_fee' });
+                if (Array.isArray(dup) && dup[0]) {
+                    return res.status(200).json(dup[0]);
+                }
+            }
             const row = await (0, dbAdapter_1.pgInsert)('finance_transactions', tx);
+            try {
+                const cat = String(tx.category || '').toLowerCase();
+                if (String(tx.kind) === 'income' && (cat === 'cancel_fee' || cat === 'late_checkout' || cat === 'other' || cat === 'cleaning_fee' || cat === 'mgmt_fee')) {
+                    const occurred = String(tx.occurred_at || '').slice(0, 10);
+                    const rec = { id: uuid(), occurred_at: occurred || new Date().toISOString().slice(0, 10), amount: Number(tx.amount || 0), currency: String(tx.currency || 'AUD'), category: cat || 'other', note: String(tx.note || ''), property_id: tx.property_id || null };
+                    try {
+                        const dup2 = await (0, dbAdapter_1.pgSelect)('company_incomes', '*', { occurred_at: rec.occurred_at, category: rec.category, amount: rec.amount, note: rec.note, property_id: rec.property_id });
+                        if (!(Array.isArray(dup2) && dup2[0])) {
+                            await (0, dbAdapter_1.pgInsert)('company_incomes', rec);
+                        }
+                    }
+                    catch (e) {
+                        const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+                        try {
+                            if (/relation\s+"?company_incomes"?\s+does\s+not\s+exist/i.test(msg)) {
+                                await (dbAdapter_2.pgPool === null || dbAdapter_2.pgPool === void 0 ? void 0 : dbAdapter_2.pgPool.query(`CREATE TABLE IF NOT EXISTS company_incomes (
+                  id text PRIMARY KEY,
+                  occurred_at date NOT NULL,
+                  amount numeric NOT NULL,
+                  currency text NOT NULL,
+                  category text,
+                  note text,
+                  created_at timestamptz DEFAULT now()
+                );`));
+                                await (dbAdapter_2.pgPool === null || dbAdapter_2.pgPool === void 0 ? void 0 : dbAdapter_2.pgPool.query('CREATE INDEX IF NOT EXISTS idx_company_incomes_date ON company_incomes(occurred_at);'));
+                                await (dbAdapter_2.pgPool === null || dbAdapter_2.pgPool === void 0 ? void 0 : dbAdapter_2.pgPool.query('CREATE INDEX IF NOT EXISTS idx_company_incomes_cat ON company_incomes(category);'));
+                            }
+                            if (/column\s+"?property_id"?\s+of\s+relation\s+"?company_incomes"?\s+does\s+not\s+exist/i.test(msg)) {
+                                await (dbAdapter_2.pgPool === null || dbAdapter_2.pgPool === void 0 ? void 0 : dbAdapter_2.pgPool.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;'));
+                                await (dbAdapter_2.pgPool === null || dbAdapter_2.pgPool === void 0 ? void 0 : dbAdapter_2.pgPool.query('CREATE INDEX IF NOT EXISTS idx_company_incomes_property ON company_incomes(property_id);'));
+                            }
+                        }
+                        catch (_a) { }
+                        const dup3 = await (0, dbAdapter_1.pgSelect)('company_incomes', '*', { occurred_at: rec.occurred_at, category: rec.category, amount: rec.amount, note: rec.note, property_id: rec.property_id });
+                        if (!(Array.isArray(dup3) && dup3[0])) {
+                            await (0, dbAdapter_1.pgInsert)('company_incomes', rec);
+                        }
+                    }
+                    (0, store_1.addAudit)('CompanyIncome', rec.id, 'create', null, rec);
+                }
+            }
+            catch (_b) { }
             return res.status(201).json(row || tx);
         }
         catch (e) {
@@ -76,6 +126,41 @@ exports.router.post('/', (0, auth_1.requirePerm)('finance.tx.write'), async (req
         }
     }
     return res.status(201).json(tx);
+});
+// Backfill company_incomes from finance_transactions for a given month
+exports.router.post('/company-incomes/backfill', (0, auth_1.requireAnyPerm)(['finance.tx.write', 'company_incomes.write']), async (req, res) => {
+    try {
+        if (!dbAdapter_1.hasPg)
+            return res.status(400).json({ message: 'pg required' });
+        const month = String(((req.body || {}).month) || ((req.query || {}).month) || '');
+        if (!/^\d{4}-\d{2}$/.test(month))
+            return res.status(400).json({ message: 'invalid month format' });
+        const y = Number(month.slice(0, 4)), m = Number(month.slice(5, 7));
+        const start = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 10);
+        const end = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+        const cats = ['cancel_fee'];
+        const rs = await dbAdapter_2.pgPool.query(`SELECT id, occurred_at, amount, currency, category, note, property_id
+       FROM finance_transactions
+       WHERE kind='income' AND category = ANY($1) AND occurred_at BETWEEN to_date($2,'YYYY-MM-DD') AND to_date($3,'YYYY-MM-DD')`, [cats, start, end]);
+        const rows = rs.rows || [];
+        let inserted = 0, skipped = 0;
+        for (const t of rows) {
+            const occ = String(t.occurred_at || '').slice(0, 10);
+            const chk = await (0, dbAdapter_1.pgSelect)('company_incomes', '*', { occurred_at: occ, category: t.category, amount: Number(t.amount || 0), note: String(t.note || '') });
+            if (Array.isArray(chk) && chk[0]) {
+                skipped++;
+                continue;
+            }
+            const rec = { id: require('uuid').v4(), occurred_at: occ, amount: Number(t.amount || 0), currency: String(t.currency || 'AUD'), category: String(t.category || 'other'), note: String(t.note || ''), property_id: String(t.property_id || '') || null };
+            await (0, dbAdapter_1.pgInsert)('company_incomes', rec);
+            (0, store_1.addAudit)('CompanyIncome', rec.id, 'create', null, rec);
+            inserted++;
+        }
+        return res.status(201).json({ month, scanned: rows.length, inserted, skipped });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'backfill_failed' });
+    }
 });
 exports.router.post('/invoices', (0, auth_1.requireAnyPerm)(['finance.tx.write', 'property_expenses.write', 'company_expenses.write']), upload.single('file'), async (req, res) => {
     if (!req.file)
@@ -404,7 +489,10 @@ exports.router.get('/property-revenue', async (req, res) => {
                     const ov = overlapNights(o.checkin, o.checkout);
                     const nights = Number(o.nights || 0) || 0;
                     const visNet = Number((_b = (_a = o.visible_net_income) !== null && _a !== void 0 ? _a : o.net_income) !== null && _b !== void 0 ? _b : 0);
-                    if (ov > 0 && nights > 0)
+                    const status = String(o.status || '').toLowerCase();
+                    const isCanceled = status.includes('cancel');
+                    const include = (!isCanceled) || !!o.count_in_income;
+                    if (include && ov > 0 && nights > 0)
                         rentIncome += (visNet * ov) / nights;
                 }
                 let peRows = [];
@@ -571,7 +659,10 @@ exports.router.post('/management-fee/calc', (0, auth_1.requireAnyPerm)(['propert
             const ov = overlapNights(o.checkin, o.checkout);
             const nights = Number(o.nights || 0) || 0;
             const visNet = Number((_d = (_c = o.visible_net_income) !== null && _c !== void 0 ? _c : o.net_income) !== null && _d !== void 0 ? _d : 0);
-            if (ov > 0 && nights > 0)
+            const status = String(o.status || '').toLowerCase();
+            const isCanceled = status.includes('cancel');
+            const include = (!isCanceled) || !!o.count_in_income;
+            if (include && ov > 0 && nights > 0)
                 rentIncome += (visNet * ov) / nights;
         }
         // read landlord rate
