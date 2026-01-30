@@ -908,7 +908,7 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
       }
       const priceRaw = toNumber(getField(r, ['Total Payment','total_payment','Amount','amount','price']))
       const cleaningRaw = toNumber(getField(r, ['Cleaning fee','cleaning_fee']))
-      const price = source === 'booking' && priceRaw != null ? Number(((priceRaw || 0) * 0.835).toFixed(2)) : round2(priceRaw)
+      const price = source === 'booking' && priceRaw != null ? Number(((priceRaw || 0) * 0.83).toFixed(2)) : round2(priceRaw)
       const cleaning_fee = round2(cleaningRaw)
       const currency = r.currency || 'AUD'
       const status = r.status || 'confirmed'
@@ -1469,7 +1469,7 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
           errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'invalid_format' })
           continue
         }
-        const p = Number((tpRawNum * 0.835).toFixed(2))
+        const p = Number((tpRawNum * 0.83).toFixed(2))
         if (!(p > 0) || p > 1000000) {
           errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: 'amount_out_of_range' })
           continue
@@ -1497,7 +1497,7 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
         }
       } catch {}
 
-      const payload: any = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkinDay || undefined), checkout: (checkoutDay || undefined), price, cleaning_fee, total_payment_raw: (platform==='booking' ? Number(tpRawStr) : undefined), processed_status: (platform==='booking' ? 'computed_0_835' : undefined) }
+      const payload: any = { source, confirmation_code: cc, status, property_id: pid, guest_name, checkin: (checkinDay || undefined), checkout: (checkoutDay || undefined), price, cleaning_fee, total_payment_raw: (platform==='booking' ? Number(tpRawStr) : undefined), processed_status: (platform==='booking' ? 'computed_0_83' : undefined) }
       try {
         if (hasPg) {
           if (exists && exists.id) {
@@ -1980,7 +1980,7 @@ async function startImportJob(csv: string, channel?: string): Promise<string> {
         const tpRaw = getField(r, ['Total Payment','total_payment','Amount','amount'])
         const tpNum = tpRaw != null ? Number(String(tpRaw).replace(/[,]/g,'')) : NaN
         if (!isFinite(tpNum)) { job.skipped++; inc('invalid_amount'); job.parsed++; continue }
-        const p = Number((tpNum * 0.835).toFixed(2))
+        const p = Number((tpNum * 0.83).toFixed(2))
         if (!(p > 0)) { job.skipped++; inc('missing_amount'); job.parsed++; continue }
         price = p
       } else {

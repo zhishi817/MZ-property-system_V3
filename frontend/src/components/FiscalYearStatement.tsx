@@ -1,10 +1,11 @@
 "use client"
 import dayjs from 'dayjs'
 import { monthSegments } from '../lib/orders'
+import { shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../lib/financeTx'
 import { forwardRef } from 'react'
 
-type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number }
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string }
+type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; status?: string; count_in_income?: boolean }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; ref_type?: string; ref_id?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 
 export default forwardRef<HTMLDivElement, {
@@ -28,13 +29,19 @@ export default forwardRef<HTMLDivElement, {
   const landlord = landlords.find(l => (l.property_ids||[]).includes(propertyId))
   const property = properties.find(pp => pp.id === propertyId)
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const orderById = new Map((orders || []).map(o => [String(o.id), o]))
 
   const monthValues = monthRanges.map(r => {
     const overlapping = monthSegments(orders.filter(o => o.property_id===propertyId), r.start)
     const rentIncome = overlapping.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income) || 0), 0)
-    const otherIncome = txs.filter(t => t.kind==='income' && t.property_id===propertyId && dayjs(t.occurred_at).isAfter(r.start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(r.end.add(1,'day'))).reduce((s, x) => s + Number(x.amount || 0), 0)
+    const otherIncome = txs.filter(t => {
+      if (t.kind !== 'income') return false
+      if (!txMatchesProperty(t, { id: propertyId, code: property?.code })) return false
+      if (!txInMonth(t as any, r.start)) return false
+      return shouldIncludeIncomeTxInPropertyOtherIncome(t, orderById)
+    }).reduce((s, x) => s + Number(x.amount || 0), 0)
     const mgmt = landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON) * 100) / 100 : 0
-    const sumCat = (c: string) => txs.filter(t => t.kind==='expense' && t.property_id===propertyId && t.category===c && dayjs(t.occurred_at).isAfter(r.start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(r.end.add(1,'day'))).reduce((s, x) => s + Number(x.amount || 0), 0)
+    const sumCat = (c: string) => txs.filter(t => t.kind === 'expense' && t.category === c && txMatchesProperty(t, { id: propertyId, code: property?.code }) && txInMonth(t as any, r.start)).reduce((s, x) => s + Number(x.amount || 0), 0)
     const consumable = sumCat('consumable')
     const electricity = sumCat('electricity')
     const gas = sumCat('gas')

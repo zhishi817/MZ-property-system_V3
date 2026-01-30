@@ -1,13 +1,14 @@
 "use client"
 import dayjs from 'dayjs'
 import { monthSegments, toDayStr, parseDateOnly } from '../lib/orders'
+import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../lib/financeTx'
 import { Table } from 'antd'
 import { forwardRef, useEffect, useState } from 'react'
 import { authHeaders } from '../lib/api'
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4001'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; invoice_url?: string }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; invoice_url?: string; ref_type?: string; ref_id?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
 
@@ -50,7 +51,14 @@ export default forwardRef<HTMLDivElement, {
     return aid.localeCompare(bid)
   })
   const simpleMode = false
-  const expensesInMonth = txs.filter(t => t.kind === 'expense' && (!propertyId || t.property_id === propertyId) && dayjs(toDayStr(t.occurred_at)).isSame(start, 'month'))
+  const property = properties.find(pp => pp.id === (propertyId || ''))
+  const expensesInMonth = txs.filter(t => {
+    if (t.kind !== 'expense') return false
+    if (propertyId) {
+      if (!txMatchesProperty(t, { id: propertyId, code: property?.code })) return false
+    }
+    return txInMonth(t as any, start)
+  })
   const [invoiceMap, setInvoiceMap] = useState<Record<string, ExpenseInvoice[]>>({})
   useEffect(() => {
     (async () => {
@@ -92,7 +100,13 @@ export default forwardRef<HTMLDivElement, {
   }, [propertyId, month, expensesInMonth.length])
   const orderIncomeShare = relatedOrders.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
   const rentIncome = orderIncomeShare
-  const otherIncomeTx = txs.filter(t => t.kind === 'income' && (!propertyId || t.property_id === propertyId) && dayjs(toDayStr(t.occurred_at)).isSame(start, 'month'))
+  const orderById = new Map((orders || []).map(o => [String(o.id), o]))
+  const otherIncomeTx = txs.filter(t => {
+    if (t.kind !== 'income') return false
+    if (propertyId && t.property_id !== propertyId) return false
+    if (!dayjs(toDayStr(t.occurred_at)).isSame(start, 'month')) return false
+    return shouldIncludeIncomeTxInPropertyOtherIncome(t, orderById)
+  })
   const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount || 0), 0)
   const mapIncomeCatLabel = (c?: string) => {
     const v = String(c || '')
@@ -107,13 +121,12 @@ export default forwardRef<HTMLDivElement, {
   const occupancyRate = daysInMonth ? Math.round(((occupiedNights / daysInMonth) * 100 + Number.EPSILON) * 100) / 100 : 0
   const dailyAverage = occupiedNights ? Math.round(((totalIncome / occupiedNights) + Number.EPSILON) * 100) / 100 : 0
   const landlord = landlords.find(l => (l.property_ids || []).includes(propertyId || ''))
-  const property = properties.find(pp => pp.id === (propertyId || ''))
   const managementFee = (landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON) * 100) / 100 : 0)
   function catKey(e: any): string {
-    const raw = String((e?.report_category || e?.category || '')).toLowerCase()
-    if (raw === 'parking_fee' || raw === 'carpark') return 'carpark'
-    if (raw === 'body_corp' || raw === 'property_fee') return 'property_fee'
-    if (raw === 'consumables' || raw === 'consumable') return 'consumable'
+    const raw = normalizeReportCategory(e?.report_category || e?.category)
+    if (raw === 'parking_fee') return 'carpark'
+    if (raw === 'body_corp') return 'property_fee'
+    if (raw === 'consumables') return 'consumable'
     return raw
   }
   const sumByCat = (cat: string) => expensesInMonth.filter(e => catKey(e) === cat).reduce((s, x) => s + Number(x.amount || 0), 0)
