@@ -15,6 +15,7 @@
    const { message } = App.useApp()
   const [sharePwdOpen, setSharePwdOpen] = useState(false)
   const [shareForm] = Form.useForm()
+  const [canSetSharePwd, setCanSetSharePwd] = useState(false)
   const [preFiles, setPreFiles] = useState<Record<number, UploadFile[]>>({})
   const [preUrls, setPreUrls] = useState<Record<number, string[]>>({})
   const [postFiles, setPostFiles] = useState<Record<number, UploadFile[]>>({})
@@ -27,6 +28,18 @@
          setProps(Array.isArray(ps) ? ps : [])
        } catch { setProps([]) }
      })()
+    ;(async () => {
+      try {
+        const role = localStorage.getItem('role') || ''
+        if (role === 'maintenance_staff') { setCanSetSharePwd(false); return }
+      } catch {}
+      try {
+        const perms = await getJSON<string[]>('/rbac/my-permissions').catch(() => ([] as string[]))
+        setCanSetSharePwd(Array.isArray(perms) && perms.includes('rbac.manage'))
+      } catch {
+        setCanSetSharePwd(false)
+      }
+    })()
    }, [])
  
    const options = useMemo(() => sortProperties(props).map(p => ({ value: p.id, label: p.code || p.address || p.id })), [props])
@@ -87,7 +100,7 @@
             message.success('已复制外部分享链接')
           } catch {}
         }}>分享链接</Button>
-        <Button icon={<LockOutlined />} onClick={() => setSharePwdOpen(true)}>设置维修分享密码</Button>
+        {canSetSharePwd ? <Button icon={<LockOutlined />} onClick={() => setSharePwdOpen(true)}>设置维修分享密码</Button> : null}
       </Space>
        <Card title="房源维修进度表" style={{ marginTop: 24 }}>
          <Form form={form} layout="vertical" initialValues={{ occurred_at: dayjs(), details: [{ content:'', item:'' }] }}>

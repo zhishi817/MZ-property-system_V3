@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import bcrypt from 'bcryptjs'
-import { requirePerm, requireAnyPerm } from '../auth'
+import { requirePerm } from '../auth'
 import { hasPg, pgPool, pgSelect, pgUpdate, pgInsert } from '../dbAdapter'
 
 export const router = Router()
@@ -29,7 +29,7 @@ router.get('/cleaning-guide/password-info', requirePerm('rbac.manage'), async (_
   }
 })
 
-router.get('/maintenance-share/password-info', requireAnyPerm(['rbac.manage','property_maintenance.write']), async (_req, res) => {
+router.get('/maintenance-share/password-info', requirePerm('rbac.manage'), async (_req, res) => {
   try {
     if (hasPg) {
       await ensurePublicAccessTable()
@@ -66,9 +66,13 @@ router.post('/cleaning-guide/reset-password', requirePerm('rbac.manage'), async 
   }
 })
 
-router.post('/maintenance-share/reset-password', requireAnyPerm(['rbac.manage','property_maintenance.write']), async (req, res) => {
+router.post('/maintenance-share/reset-password', requirePerm('rbac.manage'), async (req, res) => {
   const { new_password } = req.body || {}
   if (!new_password) return res.status(400).json({ message: 'missing new_password' })
+  try {
+    const user = (req as any).user
+    if (user && String(user.role || '') === 'maintenance_staff') return res.status(403).json({ message: 'forbidden' })
+  } catch {}
   try {
     if (hasPg) {
       await ensurePublicAccessTable()
