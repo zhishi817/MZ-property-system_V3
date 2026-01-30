@@ -26,6 +26,10 @@ export default function DashboardPage() {
   const [landlords, setLandlords] = useState<Landlord[]>([])
   const [orderSummary, setOrderSummary] = useState<{ total_orders: number; next7days: { date: string; checkin_count: number; checkout_count: number }[] }>({ total_orders: 0, next7days: [] })
   useEffect(() => {
+    try {
+      const role = localStorage.getItem('role') || ''
+      if (role === 'maintenance_staff') { router.replace('/maintenance/overview'); return }
+    } catch {}
     getJSON<Property[]>('/properties').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([]))
     getJSON<Order[]>('/orders').then((j) => setOrders(Array.isArray(j) ? j : [])).catch(() => setOrders([]))
     getJSON<PropertyExpense[]>('/crud/property_expenses').then((j) => setExpenses(Array.isArray(j) ? j : [])).catch(() => setExpenses([]))
@@ -38,7 +42,7 @@ export default function DashboardPage() {
       es.onerror = () => { /* silent */ }
       return () => { es.close() }
     } catch {}
-  }, [])
+  }, [router])
 
   const totalProps = properties.length
   const displayRegion = (r?: string) => {
