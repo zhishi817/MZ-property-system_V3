@@ -372,7 +372,7 @@ export default function MaintenanceRecordsUnified() {
           String((r as any).category || ''),
           String(summary || ''),
           String((r as any).submitter_name || ''),
-          (r as any).submitted_at ? dayjs((r as any).submitted_at).format('YYYY-MM-DD HH:mm') : '',
+          (r as any).submitted_at ? dayjs((r as any).submitted_at).format('YYYY-MM-DD') : '',
           String((r as any).maintenance_amount ?? ''),
           (r as any).has_parts === true ? '是' : (r as any).has_parts === false ? '否' : '',
           String((r as any).parts_amount ?? ''),
@@ -457,7 +457,7 @@ export default function MaintenanceRecordsUnified() {
                           <div>紧急：{urgencyTag(r.urgency)}</div>
                           <div>问题区域：{String(r.category || '-')}</div>
                           <div>提交人：{String(r.submitter_name || '-')}</div>
-                          <div style={{ gridColumn:'1 / span 2' }}>提交时间：{r.submitted_at ? dayjs(r.submitted_at).format('YYYY-MM-DD HH:mm') : '-'}</div>
+                          <div style={{ gridColumn:'1 / span 2' }}>提交时间：{r.submitted_at ? dayjs(r.submitted_at).format('YYYY-MM-DD') : '-'}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>问题摘要：{summaryFromDetails(r.details)}</div>
                           <div>维修金额：{fmtAmount((r as any).maintenance_amount)}</div>
                           <div>是否有配件费：{(r as any).has_parts === true ? '是' : (r as any).has_parts === false ? '否' : '-'}</div>
@@ -489,14 +489,14 @@ export default function MaintenanceRecordsUnified() {
               { title:'问题区域', dataIndex:'category', width: 120 },
               { title:'问题摘要', dataIndex:'details', ellipsis: true, width: 280, render:(d:string)=> summaryFromDetails(d) },
               { title:'提交人', dataIndex:'submitter_name', width: 120 },
-              { title:'提交时间', dataIndex:'submitted_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD HH:mm') : '-' },
+              { title:'提交时间', dataIndex:'submitted_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD') : '-' },
               { title:'维修金额', dataIndex:'maintenance_amount', width: 140, render:(a:any)=> fmtAmount(a) },
               { title:'是否有配件费', dataIndex:'has_parts', width: 120, render:(b:boolean)=> b === true ? '是' : b === false ? '否' : '-' },
               { title:'配件费金额', dataIndex:'parts_amount', width: 140, render:(a:any)=> fmtAmount(a) },
               { title:'扣款方式', dataIndex:'pay_method', width: 140, render:(v:string)=> payMethodLabel(v) },
               { title:'其他人备注', dataIndex:'pay_other_note', width: 160 },
               { title:'状态', dataIndex:'status', width: 120, render:(s:string)=> statusTag(s) },
-              { title:'完成时间', dataIndex:'completed_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD HH:mm') : '-' },
+              { title:'完成时间', dataIndex:'completed_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD') : '-' },
               { title:'分配人员', dataIndex:'assignee_id', width: 140 },
               { title:'操作', fixed: 'right' as const, width: 280, render: (_:any, r:RepairOrder) => (
                 <Space>
@@ -561,7 +561,7 @@ export default function MaintenanceRecordsUnified() {
                   <InfoCircleOutlined style={{ color:'#1677ff' }} />
                   <Typography.Text type="secondary">提交时间</Typography.Text>
                 </Space>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{viewRow?.submitted_at ? dayjs(viewRow?.submitted_at).format('YYYY-MM-DD HH:mm') : '-'}</div>
+                <div style={{ color:'#0b1738', marginTop:6 }}>{viewRow?.submitted_at ? dayjs(viewRow?.submitted_at).format('YYYY-MM-DD') : '-'}</div>
               </div>
             </div>
           </div>
@@ -891,7 +891,7 @@ export default function MaintenanceRecordsUnified() {
                   <Input />
                 </Form.Item>
                 <Form.Item name="completed_at" label="完成时间">
-                  <DatePicker showTime style={{ width: '100%' }} />
+                  <DatePicker style={{ width: '100%' }} />
                 </Form.Item>
               </>
             ) : null}

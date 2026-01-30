@@ -121,6 +121,16 @@ function verifyMaintenanceShareJwt(token: string): { ok: boolean; iat?: number; 
   return { ok: false }
 }
 
+function verifyMaintenanceProgressJwt(token: string): { ok: boolean; iat?: number } {
+  try {
+    const decoded: any = jwt.verify(token, SECRET)
+    if (decoded && decoded.scope === 'maintenance_progress') {
+      return { ok: true, iat: Number(decoded.iat || 0) }
+    }
+  } catch {}
+  return { ok: false }
+}
+
 async function ensureMaintenanceShareLinksTable() {
   if (!pgPool) return
   await pgPool.query(`CREATE TABLE IF NOT EXISTS maintenance_share_links (
@@ -387,7 +397,16 @@ router.get('/maintenance-share/:token', async (req, res) => {
     const rows = await pgSelect('property_maintenance', '*', { id: maintenanceId }) as any[]
     const row = rows && rows[0]
     if (!row) return res.status(404).json({ message: 'not found' })
-    return res.json(row)
+    let propCode = ''
+    try {
+      const pid = String(row?.property_id || '').trim()
+      if (pid) {
+        const pr = await pgPool.query('SELECT code FROM properties WHERE id=$1 LIMIT 1', [pid])
+        propCode = String(pr.rows?.[0]?.code || '').trim()
+      }
+    } catch {}
+    const code = propCode || String(row?.property_code || '').trim()
+    return res.json({ ...row, property_code: code || row?.property_code, code: code || row?.code })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'get failed' })
   }
@@ -417,10 +436,147 @@ router.post('/maintenance-share/login', async (req, res) => {
     const rows = await pgSelect('property_maintenance', '*', { id: maintenanceId }) as any[]
     const row = rows && rows[0]
     if (!row) return res.status(404).json({ message: 'not found' })
+    let propCode = ''
+    try {
+      const pid = String(row?.property_id || '').trim()
+      if (pid) {
+        const pr = await pgPool.query('SELECT code FROM properties WHERE id=$1 LIMIT 1', [pid])
+        propCode = String(pr.rows?.[0]?.code || '').trim()
+      }
+    } catch {}
+    const code = propCode || String(row?.property_code || '').trim()
     const shareToken = jwt.sign({ scope: 'maintenance_share', maintenance_id: maintenanceId, token_hash: tokenHash }, SECRET, { expiresIn: '6h' })
-    return res.json({ token: shareToken, maintenance: row })
+    const maintenance = { ...row, property_code: code || row?.property_code, code: code || row?.code }
+    return res.json({ token: shareToken, maintenance })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'login failed' })
+  }
+})
+
+router.post('/maintenance-progress/login', async (req, res) => {
+  const { password } = req.body || {}
+  const pwd = String(password || '').trim()
+  if (!pwd) return res.status(400).json({ message: 'missing password' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitMaintenanceShareAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const ok = await bcrypt.compare(pwd, access.password_hash)
+    if (!ok) return res.status(401).json({ message: 'invalid password' })
+    const token = jwt.sign({ scope: 'maintenance_progress' }, SECRET, { expiresIn: '12h' })
+    return res.json({ token })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'login failed' })
+  }
+})
+
+router.post('/maintenance-progress/upload', upload.single('file'), async (req, res) => {
+  const h = String(req.headers.authorization || '')
+  const token = h.startsWith('Bearer ') ? h.slice(7) : ''
+  const v = verifyMaintenanceProgressJwt(token)
+  if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  if (!req.file) return res.status(400).json({ message: 'missing file' })
+  try {
+    const access = await getOrInitMaintenanceShareAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const iatSec = Number(v.iat || 0) * 1000
+    const pwdAt = new Date(access.password_updated_at).getTime()
+    if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
+    if (!hasR2 || !(req.file as any).buffer) {
+      return res.status(500).json({ message: 'R2 not configured' })
+    }
+    const ext = path.extname(req.file.originalname) || ''
+    const key = `maintenance-progress/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    return res.status(201).json({ url })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'upload failed' })
+  }
+})
+
+router.post('/maintenance-progress/submit', async (req, res) => {
+  const h = String(req.headers.authorization || '')
+  const token = h.startsWith('Bearer ') ? h.slice(7) : ''
+  const v = verifyMaintenanceProgressJwt(token)
+  if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  const body = req.body || {}
+  const property_id = String(body.property_id || '').trim()
+  const occurred_at = String(body.occurred_at || '').trim() || new Date().toISOString().slice(0, 10)
+  const worker_name = String(body.worker_name || '').trim()
+  const notes = String(body.notes || '').trim()
+  const detailsArr = Array.isArray(body.details) ? body.details : []
+  if (!property_id) return res.status(400).json({ message: 'missing property_id' })
+  if (!worker_name) return res.status(400).json({ message: 'missing worker_name' })
+  if (!detailsArr.length) return res.status(400).json({ message: 'missing details' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitMaintenanceShareAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const iatSec = Number(v.iat || 0) * 1000
+    const pwdAt = new Date(access.password_updated_at).getTime()
+    if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
+    await ensurePropertyMaintenanceShareColumns()
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS notes text;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS worker_name text;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS occurred_at date;`)
+    const nowIso = new Date().toISOString()
+    const sql = `INSERT INTO property_maintenance (
+      id, property_id, occurred_at, worker_name, details, notes, created_by,
+      photo_urls, repair_photo_urls, property_code, work_no, category, status, urgency,
+      submitted_at, submitter_name, completed_at, maintenance_amount, has_parts, parts_amount, pay_method, pay_other_note
+    )
+    VALUES (
+      $1,$2,$3,$4,$5::text,$6,$7,
+      $8::jsonb,$9::jsonb,$10,$11,$12,$13,$14,
+      $15,$16,$17,$18,$19,$20,$21,$22
+    ) RETURNING id`
+    let created = 0
+    for (const d of detailsArr) {
+      const category = String(d?.category || d?.content || '').trim()
+      const item = String(d?.item || '').trim()
+      if (!category) continue
+      const id = uuidv4()
+      const workNo = await generateWorkNo()
+      const detailText = item ? JSON.stringify([{ content: item }]) : JSON.stringify([])
+      const prePhotos = Array.isArray(d?.pre_photo_urls) ? d.pre_photo_urls : (d?.pre_photo_urls ? [d.pre_photo_urls] : [])
+      const postPhotos = Array.isArray(d?.post_photo_urls) ? d.post_photo_urls : (d?.post_photo_urls ? [d.post_photo_urls] : [])
+      const maintenance_amount = d?.maintenance_amount !== undefined ? Number(d.maintenance_amount || 0) : null
+      const has_parts = d?.has_parts !== undefined ? (d.has_parts === true) : null
+      const parts_amount = d?.parts_amount !== undefined ? Number(d.parts_amount || 0) : null
+      const pay_method = d?.pay_method ? String(d.pay_method) : null
+      const pay_other_note = d?.pay_other_note ? String(d.pay_other_note) : null
+      const values = [
+        id,
+        property_id || null,
+        occurred_at || new Date().toISOString().slice(0, 10),
+        worker_name || '',
+        detailText,
+        notes || '',
+        null,
+        JSON.stringify(prePhotos || []),
+        JSON.stringify(postPhotos || []),
+        null,
+        workNo,
+        category || null,
+        'completed',
+        null,
+        nowIso,
+        worker_name,
+        nowIso,
+        maintenance_amount,
+        has_parts,
+        parts_amount,
+        pay_method,
+        pay_other_note
+      ]
+      const r = await pgPool.query(sql, values)
+      if (r.rowCount) created += 1
+      addAudit('property_maintenance', id, 'create', null, { id })
+    }
+    return res.status(201).json({ ok: true, created })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'submit failed' })
   }
 })
 
@@ -482,6 +638,9 @@ router.patch('/maintenance-share/:token', async (req, res) => {
     const payload: any = {}
     for (const k of allowed) {
       if (body[k] !== undefined) payload[k] = body[k]
+    }
+    if (payload.repair_photo_urls !== undefined && typeof payload.repair_photo_urls !== 'string') {
+      try { payload.repair_photo_urls = JSON.stringify(payload.repair_photo_urls) } catch {}
     }
     const beforeRows = await pgSelect('property_maintenance', '*', { id: maintenanceId }) as any[]
     const before = beforeRows && beforeRows[0]

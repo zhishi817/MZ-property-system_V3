@@ -208,7 +208,7 @@ export default function PublicMaintenanceSharePage({ params }: { params: { token
               </Form.Item>
               {String(statusWatch || '') === 'completed' ? (
                 <Form.Item name="completed_at" label="完成时间" style={{ minWidth: 220, marginBottom: 0 }}>
-                  <DatePicker showTime style={{ width: '100%' }} />
+                  <DatePicker style={{ width: '100%' }} />
                 </Form.Item>
               ) : null}
             </Space>
@@ -230,20 +230,45 @@ export default function PublicMaintenanceSharePage({ params }: { params: { token
                   setFiles(fl => fl.filter(x => x.uid !== f.uid))
                   if (f.url) setUrls(u => u.filter(x => x !== f.url))
                 }}
-                customRequest={async ({ file, onSuccess, onError }: any) => {
+                customRequest={async ({ file, onProgress, onSuccess, onError }: any) => {
                   if (!shareJwt) { onError && onError(new Error('unauthorized')); return }
-                  const fd = new FormData()
-                  fd.append('file', file)
                   try {
-                    const r = await fetch(`${API_BASE}/public/maintenance-share/upload`, { method: 'POST', headers: { Authorization: `Bearer ${shareJwt}` }, body: fd })
-                    const j = await r.json().catch(() => null)
-                    if (r.ok && j?.url) {
-                      setUrls(u => [...u, j.url])
-                      setFiles(fl => [...fl, { uid: Math.random().toString(36).slice(2), name: file.name, status: 'done', url: j.url } as UploadFile])
-                      onSuccess && onSuccess(j, file)
-                    } else {
-                      onError && onError(j || new Error('upload failed'))
+                    const fd = new FormData()
+                    fd.append('file', file)
+                    const xhr = new XMLHttpRequest()
+                    xhr.open('POST', `${API_BASE}/public/maintenance-share/upload`)
+                    xhr.setRequestHeader('Authorization', `Bearer ${shareJwt}`)
+                    const uid = Math.random().toString(36).slice(2)
+                    setFiles(fl => [...fl, { uid, name: (file as any)?.name || 'image', status: 'uploading', percent: 0 } as UploadFile])
+                    xhr.upload.onprogress = (evt) => {
+                      if (evt.lengthComputable && onProgress) {
+                        const pct = Number((((evt.loaded || 0) / (evt.total || 1)) * 100).toFixed(0))
+                        onProgress({ percent: pct })
+                        setFiles(fl => fl.map(x => x.uid === uid ? { ...x, percent: pct, status: 'uploading' } as UploadFile : x))
+                      }
                     }
+                    xhr.onreadystatechange = () => {
+                      if (xhr.readyState !== 4) return
+                      try {
+                        const j = JSON.parse(xhr.responseText || '{}')
+                        if (xhr.status >= 200 && xhr.status < 300 && j?.url) {
+                          setUrls(u => [...u, j.url])
+                          setFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'done', percent: 100, url: j.url } as UploadFile : x))
+                          onSuccess && onSuccess(j, file)
+                        } else {
+                          setFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
+                          onError && onError(j || new Error('upload failed'))
+                        }
+                      } catch (e) {
+                        setFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
+                        onError && onError(e)
+                      }
+                    }
+                    xhr.onerror = (e) => {
+                      setFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
+                      onError && onError(e)
+                    }
+                    xhr.send(fd)
                   } catch (e) {
                     onError && onError(e)
                   }

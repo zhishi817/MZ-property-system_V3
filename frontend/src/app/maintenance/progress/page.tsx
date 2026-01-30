@@ -1,11 +1,11 @@
  "use client"
- import { Card, Form, Input, Select, DatePicker, Button, Space, App, Upload, Typography, InputNumber, Switch } from 'antd'
+ import { Card, Form, Input, Select, DatePicker, Button, Space, App, Upload, Typography, InputNumber, Switch, Modal } from 'antd'
  import type { UploadFile } from 'antd/es/upload/interface'
  import { useEffect, useMemo, useState } from 'react'
  import dayjs from 'dayjs'
  import { apiCreate, getJSON, API_BASE, authHeaders } from '../../../lib/api'
  import { sortProperties } from '../../../lib/properties'
- import { DeleteOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
+ import { DeleteOutlined, PlusOutlined, UploadOutlined, ShareAltOutlined, LockOutlined } from '@ant-design/icons'
  
  type Property = { id: string; code?: string; address?: string }
  
@@ -13,6 +13,8 @@
    const [props, setProps] = useState<Property[]>([])
    const [form] = Form.useForm()
    const { message } = App.useApp()
+  const [sharePwdOpen, setSharePwdOpen] = useState(false)
+  const [shareForm] = Form.useForm()
   const [preFiles, setPreFiles] = useState<Record<number, UploadFile[]>>({})
   const [preUrls, setPreUrls] = useState<Record<number, string[]>>({})
   const [postFiles, setPostFiles] = useState<Record<number, UploadFile[]>>({})
@@ -76,6 +78,17 @@
  
    return (
      <div style={{ maxWidth: 900, margin: '0 auto' }}>
+      <Space style={{ marginTop: 24, marginBottom: 12 }}>
+        <Button icon={<ShareAltOutlined />} onClick={() => {
+          try {
+            const origin = typeof window !== 'undefined' ? window.location.origin : ''
+            const link = `${origin}/public/maintenance-progress`
+            navigator.clipboard?.writeText(link)
+            message.success('已复制外部分享链接')
+          } catch {}
+        }}>分享链接</Button>
+        <Button icon={<LockOutlined />} onClick={() => setSharePwdOpen(true)}>设置维修分享密码</Button>
+      </Space>
        <Card title="房源维修进度表" style={{ marginTop: 24 }}>
          <Form form={form} layout="vertical" initialValues={{ occurred_at: dayjs(), details: [{ content:'', item:'' }] }}>
           <div style={{ borderBottom: '1px solid #e6f4ff', paddingBottom: 8, marginBottom: 16, display:'flex', alignItems:'center', gap:8 }}>
@@ -300,6 +313,34 @@
            </div>
          </Form>
        </Card>
+      <Modal open={sharePwdOpen} onCancel={() => setSharePwdOpen(false)} onOk={async ()=>{
+        const v = await shareForm.validateFields()
+        const pass = String(v.new_password || '')
+        try {
+          const res = await fetch(`${API_BASE}/public/maintenance-share/reset-password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({ new_password: pass })
+          })
+          if (res.ok) { message.success('已更新维修分享密码'); setSharePwdOpen(false); shareForm.resetFields() } else {
+            const j = await res.json().catch(()=>null); message.error(j?.message || '更新失败')
+          }
+        } catch (e: any) { message.error('更新失败') }
+      }} title="设置维修记录分享密码" okText="保存">
+        <Form form={shareForm} layout="vertical">
+          <Form.Item name="new_password" label="新密码（4-6位数字）" rules={[
+            { required: true, message: '请输入密码' },
+            { validator: (_, val) => {
+              const s = String(val || '')
+              if (s.length < 4 || s.length > 6) return Promise.reject(new Error('长度需为4-6位'))
+              if (!/^\d+$/.test(s)) return Promise.reject(new Error('仅允许数字'))
+              return Promise.resolve()
+            } }
+          ]}>
+            <Input placeholder="例如 1234" maxLength={6} />
+          </Form.Item>
+        </Form>
+      </Modal>
      </div>
    )
  }

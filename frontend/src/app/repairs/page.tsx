@@ -208,7 +208,7 @@ export default function RepairsPage() {
             { title:'问题区域', dataIndex:'category', width: 120 },
             { title:'问题摘要', dataIndex:'details', ellipsis: true, width: 280, render:(d:string)=> summaryFromDetails(d) },
             { title:'提交人', dataIndex:'submitter_name', width: 120 },
-            { title:'提交时间', dataIndex:'submitted_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD HH:mm') : '-' },
+            { title:'提交时间', dataIndex:'submitted_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD') : '-' },
             { title:'紧急程度', dataIndex:'urgency', width: 120, render:(u:string)=> urgencyTag(u) },
             { title:'当前状态', dataIndex:'status', width: 120 },
             { title:'分配人员', dataIndex:'assignee_id', width: 140 },
@@ -240,7 +240,7 @@ export default function RepairsPage() {
           <div>问题区域：{viewRow?.category}</div>
           <div>紧急程度：{urgencyLabel(viewRow?.urgency)}</div>
           <div>提交人：{viewRow?.submitter_name}</div>
-          <div>提交时间：{viewRow?.submitted_at ? dayjs(viewRow?.submitted_at).format('YYYY-MM-DD HH:mm') : '-'}</div>
+          <div>提交时间：{viewRow?.submitted_at ? dayjs(viewRow?.submitted_at).format('YYYY-MM-DD') : '-'}</div>
           <div>问题详情：</div>
           <div style={{ whiteSpace:'pre-wrap', border:'1px solid #eee', padding:8, borderRadius:6 }}>{summaryFromDetails(viewRow?.details) || viewRow?.detail || ''}</div>
           <div>附件：</div>
@@ -285,7 +285,7 @@ export default function RepairsPage() {
       </Modal>
       <Modal open={createOpen} onCancel={()=>{ setCreateOpen(false); createForm.resetFields(); setCreateFiles([]); setCreatePhotos([]) }} onOk={async ()=>{
         const v = await createForm.validateFields()
-        const workNo = `R-${dayjs().format('YYYYMMDD')}-${Math.random().toString(36).slice(2,4)}${Math.random().toString(36).slice(2,2)}`
+        const workNo = `R-${dayjs().format('YYYYMMDD')}-${Math.random().toString(36).slice(2,8)}`
         const payload: any = {
           property_id: v.property_id,
           category: v.category,
@@ -316,12 +316,44 @@ export default function RepairsPage() {
           </Form.Item>
           <Form.Item label="附件照片">
             <Upload listType="picture" multiple fileList={createFiles} onRemove={(f)=>{ setCreateFiles(fl=>fl.filter(x=>x.uid!==f.uid)); if (f.url) setCreatePhotos(u=>u.filter(x=>x!==f.url)) }}
-              customRequest={async ({ file, onSuccess, onError }: any) => {
-                const fd = new FormData(); fd.append('file', file)
+              customRequest={async ({ file, onProgress, onSuccess, onError }: any) => {
                 try {
-                  const r = await fetch(`${API_BASE}/maintenance/upload`, { method: 'POST', headers: { ...authHeaders() }, body: fd })
-                  const j = await r.json()
-                  if (r.ok && j?.url) { setCreatePhotos(u=>[...u, j.url]); setCreateFiles(fl=>[...fl, { uid: Math.random().toString(36).slice(2), name: file.name, status: 'done', url: j.url } as UploadFile]); onSuccess && onSuccess(j, file) } else { onError && onError(j) }
+                  const fd = new FormData(); fd.append('file', file)
+                  const xhr = new XMLHttpRequest()
+                  xhr.open('POST', `${API_BASE}/maintenance/upload`)
+                  const headers = authHeaders() as any
+                  Object.keys(headers || {}).forEach(k => xhr.setRequestHeader(k, headers[k]))
+                  const uid = Math.random().toString(36).slice(2)
+                  setCreateFiles(fl => [...fl, { uid, name: (file as any)?.name || 'image', status: 'uploading', percent: 0 } as UploadFile])
+                  xhr.upload.onprogress = (evt) => {
+                    if (evt.lengthComputable && onProgress) {
+                      const pct = Number((((evt.loaded || 0) / (evt.total || 1)) * 100).toFixed(0))
+                      onProgress({ percent: pct })
+                      setCreateFiles(fl => fl.map(x => x.uid === uid ? { ...x, percent: pct, status: 'uploading' } as UploadFile : x))
+                    }
+                  }
+                  xhr.onreadystatechange = () => {
+                    if (xhr.readyState !== 4) return
+                    try {
+                      const j = JSON.parse(xhr.responseText || '{}')
+                      if (xhr.status >= 200 && xhr.status < 300 && j?.url) {
+                        setCreatePhotos(u => [...u, j.url])
+                        setCreateFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'done', percent: 100, url: j.url } as UploadFile : x))
+                        onSuccess && onSuccess(j, file)
+                      } else {
+                        setCreateFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
+                        onError && onError(j)
+                      }
+                    } catch (e) {
+                      setCreateFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
+                      onError && onError(e)
+                    }
+                  }
+                  xhr.onerror = (e) => {
+                    setCreateFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
+                    onError && onError(e)
+                  }
+                  xhr.send(fd)
                 } catch (e) { onError && onError(e) }
               }}>
               <Button>上传照片</Button>
@@ -345,12 +377,44 @@ export default function RepairsPage() {
           <Form.Item name="repair_notes" label="维修记录描述"><Input.TextArea rows={3} /></Form.Item>
           <Form.Item label="维修照片">
             <Upload listType="picture" multiple fileList={files} onRemove={(f)=>{ setFiles(fl=>fl.filter(x=>x.uid!==f.uid)); if (f.url) setRepairPhotos(u=>u.filter(x=>x!==f.url)) }}
-              customRequest={async ({ file, onSuccess, onError }: any) => {
-                const fd = new FormData(); fd.append('file', file)
+              customRequest={async ({ file, onProgress, onSuccess, onError }: any) => {
                 try {
-                  const r = await fetch(`${API_BASE}/maintenance/upload`, { method: 'POST', headers: { ...authHeaders() }, body: fd })
-                  const j = await r.json()
-                  if (r.ok && j?.url) { setRepairPhotos(u=>[...u, j.url]); setFiles(fl=>[...fl, { uid: Math.random().toString(36).slice(2), name: file.name, status: 'done', url: j.url } as UploadFile]); onSuccess && onSuccess(j, file) } else { onError && onError(j) }
+                  const fd = new FormData(); fd.append('file', file)
+                  const xhr = new XMLHttpRequest()
+                  xhr.open('POST', `${API_BASE}/maintenance/upload`)
+                  const headers = authHeaders() as any
+                  Object.keys(headers || {}).forEach(k => xhr.setRequestHeader(k, headers[k]))
+                  const uid = Math.random().toString(36).slice(2)
+                  setFiles(fl => [...fl, { uid, name: (file as any)?.name || 'image', status: 'uploading', percent: 0 } as UploadFile])
+                  xhr.upload.onprogress = (evt) => {
+                    if (evt.lengthComputable && onProgress) {
+                      const pct = Number((((evt.loaded || 0) / (evt.total || 1)) * 100).toFixed(0))
+                      onProgress({ percent: pct })
+                      setFiles(fl => fl.map(x => x.uid === uid ? { ...x, percent: pct, status: 'uploading' } as UploadFile : x))
+                    }
+                  }
+                  xhr.onreadystatechange = () => {
+                    if (xhr.readyState !== 4) return
+                    try {
+                      const j = JSON.parse(xhr.responseText || '{}')
+                      if (xhr.status >= 200 && xhr.status < 300 && j?.url) {
+                        setRepairPhotos(u => [...u, j.url])
+                        setFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'done', percent: 100, url: j.url } as UploadFile : x))
+                        onSuccess && onSuccess(j, file)
+                      } else {
+                        setFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
+                        onError && onError(j)
+                      }
+                    } catch (e) {
+                      setFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
+                      onError && onError(e)
+                    }
+                  }
+                  xhr.onerror = (e) => {
+                    setFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
+                    onError && onError(e)
+                  }
+                  xhr.send(fd)
                 } catch (e) { onError && onError(e) }
               }}>
               <Button>上传照片</Button>
