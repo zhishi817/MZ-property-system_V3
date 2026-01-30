@@ -98,6 +98,7 @@ async function run() {
     `CREATE INDEX IF NOT EXISTS idx_orders_property ON orders(property_id);`,
     `CREATE INDEX IF NOT EXISTS idx_orders_checkout ON orders(checkout);`,
     `ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text;`,
+    `ALTER TABLE orders ADD COLUMN IF NOT EXISTS note text;`,
     `DO $$ BEGIN BEGIN ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_idempotency_key_key; EXCEPTION WHEN others THEN NULL; END; BEGIN DROP INDEX IF EXISTS idx_orders_idempotency_key_unique; EXCEPTION WHEN others THEN NULL; END; END $$;`,
     `DO $$ BEGIN
       IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_orders_confirmation_code_unique') THEN

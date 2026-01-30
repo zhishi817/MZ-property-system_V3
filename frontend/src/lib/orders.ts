@@ -74,6 +74,36 @@ export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string }
   return segments
 }
 
+export function calcOrderMonthAmounts(o: OrderLike, monthStart: any) {
+  const rawCi = (o as any).__src_checkin || o.checkin
+  const rawCo = (o as any).__src_checkout || o.checkout
+  const ci = parseDateOnly(toDayStr(rawCi))
+  const co = parseDateOnly(toDayStr(rawCo))
+  const ms = dayjs(monthStart).startOf('month')
+  const meNext = ms.add(1, 'month').startOf('month')
+  const a = ci.isAfter(ms) ? ci : ms
+  const b = co.isBefore(meNext) ? co : meNext
+  const nightsMonth = Math.max(0, b.diff(a, 'day'))
+  const totalNightsAll = Number((o as any).__src_nights ?? Math.max(0, co.diff(ci, 'day')))
+  const totalPrice = Number((o as any).__src_price ?? o.price ?? 0)
+  const totalCleaning = Number((o as any).__src_cleaning_fee ?? o.cleaning_fee ?? 0)
+  const netTotal = Math.max(0, Number((totalPrice - totalCleaning).toFixed(2)))
+  const dailyNet = totalNightsAll ? netTotal / totalNightsAll : 0
+  const netMonth = Number((dailyNet * nightsMonth).toFixed(2))
+  const lastNight = totalNightsAll > 0 ? co.subtract(1, 'day') : co
+  const isDeductionMonth = totalNightsAll > 0 && lastNight.isSame(ms, 'month')
+  const cleanMonth = isDeductionMonth ? totalCleaning : 0
+  const deductionTotal = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0)
+  const deductionMonth = isDeductionMonth ? deductionTotal : 0
+  const priceMonth = Number((netMonth + cleanMonth).toFixed(2))
+  const avgMonth = nightsMonth ? Number((netMonth / nightsMonth).toFixed(2)) : 0
+  const statusRaw = String((o as any).status || '').toLowerCase()
+  const isCanceled = statusRaw.includes('cancel')
+  const include = (!isCanceled) || !!((o as any).count_in_income)
+  const visibleNetMonth = include ? Number((netMonth - deductionMonth).toFixed(2)) : 0
+  return { nightsMonth, netMonth, cleanMonth, priceMonth, avgMonth, deductionMonth, visibleNetMonth }
+}
+
 export function monthSegments(orders: OrderLike[], monthStart: any): (OrderLike & { __rid: string })[] {
   const ms = dayjs(monthStart).startOf('month')
   const meNext = ms.add(1, 'month').startOf('month')
@@ -96,7 +126,7 @@ export function monthStats(orders: OrderLike[], monthStart: any) {
   const meNext = ms.add(1, 'month').startOf('month')
   const segs = monthSegments(orders, ms)
   const nights = segs.reduce((sum, o) => sum + Number(o.nights || 0), 0)
-  const incomeNet = segs.reduce((sum, o) => sum + Number((o as any).net_income || 0), 0)
+  const incomeNet = segs.reduce((sum, o) => sum + Number(((o as any).visible_net_income ?? (o as any).net_income) || 0), 0)
   const cleaningFee = segs.reduce((sum, o) => sum + Number(o.cleaning_fee || 0), 0)
   const daysInMonth = meNext.diff(ms, 'day')
   return { nights, incomeNet: Math.round(incomeNet * 100) / 100, cleaningFee: Math.round(cleaningFee * 100) / 100, daysInMonth }

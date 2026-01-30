@@ -312,7 +312,12 @@ export default forwardRef<HTMLDivElement, {
                             {String(o.guest_name || '')}
                           </span>
                           <span className="bar-right" style={{ fontWeight:600 }}>
-                            ${fmt(Number(o.price || 0))}
+                            {(() => {
+                              const total = Number(o.price || 0)
+                              const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0)
+                              const visibleTotal = Math.max(0, Number((total - ded).toFixed(2)))
+                              return `$${fmt(visibleTotal)}`
+                            })()}
                           </span>
                         </div>
                       </div>

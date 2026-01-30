@@ -100,6 +100,7 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS net_income numeric;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS avg_nightly_price numeric;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS nights integer;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS note text;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS raw_checkin_text text;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS raw_checkout_text text;
 

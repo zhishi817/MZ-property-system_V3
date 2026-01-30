@@ -10,12 +10,12 @@ import dayGridPlugin from '@fullcalendar/daygrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { sortOrders } from '../../lib/orderSort'
-import { monthSegments, getMonthSegmentsForProperty } from '../../lib/orders'
+import { monthSegments, getMonthSegmentsForProperty, calcOrderMonthAmounts } from '../../lib/orders'
 import { sortProperties } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 import { buildSegments, placeIntoLanes } from '../../lib/calendarTimeline'
 
-type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number; email_header_at?: string }
+type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; note?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number; email_header_at?: string }
 // guest_phone 在后端已支持，这里表单也支持录入
 type CleaningTask = { id: string; status: 'pending'|'scheduled'|'done' }
 const debugOnce = (..._args: any[]) => {}
@@ -67,6 +67,8 @@ export default function OrdersPage() {
   const [detailDedDesc, setDetailDedDesc] = useState<string>('')
   const [detailDedNote, setDetailDedNote] = useState<string>('')
   const [detailEditing, setDetailEditing] = useState<any | null>(null)
+  const [editDeductions, setEditDeductions] = useState<any[]>([])
+  const [editDeductionEditing, setEditDeductionEditing] = useState<any | null>(null)
   const [detailLoading, setDetailLoading] = useState<boolean>(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -697,6 +699,8 @@ export default function OrdersPage() {
     setCurrent(o)
     // 先展示弹窗并填充当前行数据，提升交互稳定性
     setEditOpen(true)
+    setEditDeductions([])
+    setEditDeductionEditing(null)
     const pid0 = o.property_id
     const p0 = (Array.isArray(properties) ? properties : []).find(x => x.id === pid0)
     editForm.setFieldsValue({
@@ -714,7 +718,10 @@ export default function OrdersPage() {
     })
     // 再异步拉取完整数据并二次填充（失败时保持现有值）
     try {
-      const full = await getJSON<Order>(`/orders/${o.id}`)
+      const [full, ds] = await Promise.all([
+        getJSON<Order>(`/orders/${o.id}`),
+        fetch(`${API_BASE}/orders/${o.id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json()).catch(() => [])
+      ])
       const pid = full.property_id
       const p = (Array.isArray(properties) ? properties : []).find(x => x.id === pid)
       editForm.setFieldsValue({
@@ -730,9 +737,14 @@ export default function OrdersPage() {
         payment_currency: (full as any).payment_currency || 'AUD',
         guest_phone: (full as any).guest_phone || ''
       })
+      setEditDeductions(Array.isArray(ds) ? ds : [])
       setDeductAmountEdit(0); setDeductDescEdit(''); setDeductNoteEdit('')
     } catch {
       message.warning('加载订单详情失败，使用列表数据进行编辑')
+      try {
+        const ds = await fetch(`${API_BASE}/orders/${o.id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json()).catch(() => [])
+        setEditDeductions(Array.isArray(ds) ? ds : [])
+      } catch {}
     }
   }
 
@@ -859,30 +871,6 @@ export default function OrdersPage() {
   }
 
   function money(v?: number) { const n = Number(v || 0); if (!isFinite(n)) return ''; return Number(n.toFixed(2)).toFixed(2) }
-  function calcMonthAmounts(o: Order) {
-    const rawCi = (o as any).__src_checkin || o.checkin
-    const rawCo = (o as any).__src_checkout || o.checkout
-    const ci = dayjs(toDayStr(rawCi)).startOf('day')
-    const co = dayjs(toDayStr(rawCo)).startOf('day')
-    const ms = (monthFilter || dayjs()).startOf('month')
-    const meNext = ms.add(1, 'month').startOf('month')
-    const a = ci.isAfter(ms) ? ci : ms
-    const b = co.isBefore(meNext) ? co : meNext
-    const nightsMonth = Math.max(0, b.diff(a, 'day'))
-    const totalNightsAll = Number((o as any).__src_nights ?? Math.max(0, co.diff(ci, 'day')))
-    const totalPrice = Number((o as any).__src_price ?? o.price ?? 0)
-    const totalCleaning = Number((o as any).__src_cleaning_fee ?? o.cleaning_fee ?? 0)
-    const netTotal = Math.max(0, Number((totalPrice - totalCleaning).toFixed(2)))
-    const dailyNet = totalNightsAll ? netTotal / totalNightsAll : 0
-    const netMonth = Number((dailyNet * nightsMonth).toFixed(2))
-    const isLastMonth = co.isSame(ms, 'month')
-    const checkoutIsFirstDay = co.date() === 1
-    const prevMonthOfCheckout = co.subtract(1,'month')
-    const cleanMonth = (isLastMonth || (checkoutIsFirstDay && prevMonthOfCheckout.isSame(ms, 'month'))) ? totalCleaning : 0
-    const priceMonth = Number((netMonth + cleanMonth).toFixed(2))
-    const avgMonth = nightsMonth ? Number((netMonth / nightsMonth).toFixed(2)) : 0
-    return { nightsMonth, netMonth, cleanMonth, priceMonth, avgMonth }
-  }
   const columns = [
     { title: '房号', dataIndex: 'property_code', render: (_: any, r: Order) => {
       const label = getPropertyCodeLabel(r)
@@ -901,24 +889,26 @@ export default function OrdersPage() {
       sortDirections: ['ascend','descend'], sortOrder: sortKey==='email_header_at' ? sortOrder : undefined },
     { title: '天数', dataIndex: 'nights', render: (_: any, r: Order) => {
       if (!monthFilter) return Number(((r as any).__src_nights ?? r.nights ?? 0))
-      const rawCi = (r as any).__src_checkin || r.checkin
-      const rawCo = (r as any).__src_checkout || r.checkout
-      const ci = dayjs(toDayStr(rawCi)).startOf('day')
-      const co = dayjs(toDayStr(rawCo)).startOf('day')
-      const ms = (monthFilter || dayjs()).startOf('month')
-      const meNext = ms.add(1, 'month').startOf('month')
-      const a = ci.isAfter(ms) ? ci : ms
-      const b = co.isBefore(meNext) ? co : meNext
-      return Math.max(0, b.diff(a, 'day'))
+      return calcOrderMonthAmounts(r as any, monthFilter).nightsMonth
     } },
-    { title: '当月租金(AUD)', dataIndex: 'price', render: (_:any, r:Order)=> monthFilter ? money(((r as any).visible_net_income ?? calcMonthAmounts(r).netMonth)) : money((r as any).__src_price ?? r.price) },
+    { title: '当月租金(AUD)', dataIndex: 'price', render: (_:any, r:Order)=> monthFilter ? money(((r as any).visible_net_income ?? calcOrderMonthAmounts(r as any, monthFilter).visibleNetMonth)) : money((r as any).__src_price ?? r.price) },
     { title: '订单总租金', dataIndex: '__src_price', render: (_:any, r:Order)=> {
       const total = ((r as any).__src_price ?? r.price ?? (((r as any).net_income || 0) + ((r as any).cleaning_fee || 0)))
-      return money(total)
+      const ded = Number((r as any).internal_deduction_total ?? (r as any).internal_deduction ?? 0)
+      const visibleTotal = Math.max(0, Number((Number(total || 0) - ded).toFixed(2)))
+      return money(visibleTotal)
     } },
-    { title: '清洁费', dataIndex: 'cleaning_fee', render: (_:any, r:Order)=> monthFilter ? money(calcMonthAmounts(r).cleanMonth) : money(r.cleaning_fee) },
-    { title: '总收入', dataIndex: 'net_income', render: (_:any, r:Order)=> monthFilter ? money(((r as any).visible_net_income ?? calcMonthAmounts(r).netMonth)) : money((r as any).net_income ?? r.net_income) },
-    { title: '晚均价', dataIndex: 'avg_nightly_price', render: (_:any, r:Order)=> monthFilter ? money(calcMonthAmounts(r).avgMonth) : money((r as any).avg_nightly_price ?? r.avg_nightly_price) },
+    { title: '清洁费', dataIndex: 'cleaning_fee', render: (_:any, r:Order)=> monthFilter ? money(calcOrderMonthAmounts(r as any, monthFilter).cleanMonth) : money(r.cleaning_fee) },
+    { title: '总收入', dataIndex: 'net_income', render: (_:any, r:Order)=> {
+      if (monthFilter) return money(((r as any).visible_net_income ?? calcOrderMonthAmounts(r as any, monthFilter).visibleNetMonth))
+      const st = String((r as any).status || '').toLowerCase()
+      const isCanceled = st.includes('cancel')
+      const include = (!isCanceled) || !!((r as any).count_in_income)
+      const net = Number((r as any).net_income ?? r.net_income ?? 0)
+      const ded = Number((r as any).internal_deduction_total ?? (r as any).internal_deduction ?? 0)
+      return money(include ? Number((net - ded).toFixed(2)) : 0)
+    } },
+    { title: '晚均价', dataIndex: 'avg_nightly_price', render: (_:any, r:Order)=> monthFilter ? money(calcOrderMonthAmounts(r as any, monthFilter).avgMonth) : money((r as any).avg_nightly_price ?? r.avg_nightly_price) },
     { title: '状态', dataIndex: 'status', render: (v:any)=> {
       const s = String(v||'').toLowerCase()
       const isConfirmed = s === 'confirmed'
@@ -937,6 +927,22 @@ export default function OrdersPage() {
             setData(prev => prev.map(x => x.id === r.id ? ({ ...x, payment_received: true } as any) : x))
           } else { const j = await res.json().catch(()=>({})); message.error(j?.message || '操作失败') }
         }}>确认到账</Button> : null}
+        {hasPerm('order.confirm_payment') && ((r as any).payment_received) ? <Button danger onClick={() => {
+          Modal.confirm({
+            title: '取消到账确认',
+            content: '确定要取消“已到账”状态吗？（用于误点回退）',
+            okText: '取消到账',
+            okType: 'danger',
+            cancelText: '返回',
+            onOk: async () => {
+              const res = await fetch(`${API_BASE}/orders/${r.id}/unconfirm-payment`, { method: 'POST', headers: { ...authHeaders() } })
+              if (res.ok) {
+                message.success('已取消到账')
+                setData(prev => prev.map(x => x.id === r.id ? ({ ...x, payment_received: false } as any) : x))
+              } else { const j = await res.json().catch(()=>({})); message.error(j?.message || '操作失败') }
+            }
+          })
+        }}>取消到账</Button> : null}
         {hasPerm('order.write') ? <Button onClick={() => openEdit(r)}>编辑</Button> : null}
         {hasPerm('order.write') ? <Button danger onClick={() => {
           Modal.confirm({
@@ -994,9 +1000,12 @@ export default function OrdersPage() {
     return orders.map(o => {
       const stKey = String((o as any).status || '').toLowerCase()
       const styleToken = statusStyle[stKey] || (sourceStyle[o.source || 'other'] || { bg: '#F3F4F6', border: '#9CA3AF', text: '#111827' })
+      const total = Number((o as any).__src_price ?? o.price ?? 0)
+      const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0)
+      const visibleTotal = Math.max(0, Number((total - ded).toFixed(2)))
       return {
         id: String(o.id),
-        title: `${o.guest_name || ''}   $${money((o as any).__src_price ?? o.price)}`,
+        title: `${o.guest_name || ''}   $${money(visibleTotal)}`,
         start: String(o.checkin || '').slice(0,10),
         end: String(o.checkout || '').slice(0,10),
         allDay: true,
@@ -1368,7 +1377,35 @@ export default function OrdersPage() {
               const right = document.createElement('span')
               right.className = 'bar-right'
               right.style.fontWeight = '600'
-              right.textContent = `$${money(((arg.event.extendedProps as any)?.order as any)?.__src_price ?? ((arg.event.extendedProps as any)?.order as any)?.price)}`
+              const order = ((arg.event.extendedProps as any)?.order as any) || {}
+              const total = Number(order.__src_price ?? order.price ?? 0)
+              const ded = Number(order.internal_deduction_total ?? order.internal_deduction ?? 0)
+              const visibleTotal = Math.max(0, Number((total - ded).toFixed(2)))
+              right.textContent = `$${money(visibleTotal)}`
+              try {
+                const ci = String(order.checkin || '').slice(0, 10)
+                const co = String(order.checkout || '').slice(0, 10)
+                const nights = (ci && co) ? Math.max(0, dayjs(co).diff(dayjs(ci), 'day')) : Number(order.nights || 0)
+                const cleaning = Number(order.cleaning_fee ?? 0)
+                const net = Number(order.net_income ?? Math.max(0, Number((total - cleaning).toFixed(2))))
+                const visibleNet = Math.max(0, Number((net - ded).toFixed(2)))
+                const status = String(order.status || '')
+                const lines = [
+                  `客人：${String(order.guest_name || '')}`,
+                  `房号：${String(order.property_code || '')}`,
+                  `入住：${ci || '-'}`,
+                  `退房：${co || '-'}`,
+                  `晚数：${isFinite(nights) ? String(nights) : '-'}`,
+                  `订单总租金：$${money(visibleTotal)}`,
+                  `清洁费：$${money(cleaning)}`,
+                  `内部扣减：$${money(ded)}`,
+                  `可见净额：$${money(visibleNet)}`,
+                  `状态：${status || '-'}`,
+                  `确认码：${String(order.confirmation_code || '')}`,
+                  `来源：${String(order.source || '')}`,
+                ].filter(x => x.trim() !== '' && !x.endsWith('：'))
+                wrapper.title = lines.join('\n')
+              } catch {}
               wrapper.appendChild(left)
               wrapper.appendChild(right)
               return { domNodes: [wrapper] }
@@ -1424,6 +1461,9 @@ export default function OrdersPage() {
         <Form.Item name="guest_phone" label="客人电话">
           <Input placeholder="用于生成旧/新密码（后四位）" />
         </Form.Item>
+        <Form.Item name="note" label="备注">
+          <Input.TextArea rows={3} />
+        </Form.Item>
         <Form.Item name="checkin" label="入住" rules={[{ required: true }, { validator: async (_: any, v: any) => { const c = form.getFieldValue('checkout'); if (v && c && !v.isBefore(c, 'day')) throw new Error('入住日期必须早于退房日期') } }]}> 
           <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const c = form.getFieldValue('checkout'); return c ? d.isSame(c, 'day') || d.isAfter(c, 'day') : false }} />
         </Form.Item>
@@ -1451,7 +1491,7 @@ export default function OrdersPage() {
             const st = form.getFieldValue('status')
             if (st === 'canceled') {
               return (
-                <Form.Item name="cancel_fee" label="取消费(AUD)">
+                <Form.Item name="cancel_fee" label="取消费(AUD)" rules={[{ required: true, message: '取消金额必填' }]}>
                   <InputNumber min={0} step={1} style={{ width: '100%' }} />
                 </Form.Item>
               )
@@ -1737,6 +1777,9 @@ export default function OrdersPage() {
           <Form.Item name="property_code" hidden><Input /></Form.Item>
           <Form.Item name="guest_name" label="客人姓名"><Input /></Form.Item>
           <Form.Item name="guest_phone" label="客人电话"><Input placeholder="用于生成旧/新密码（后四位）" /></Form.Item>
+          <Form.Item name="note" label="备注">
+            <Input.TextArea rows={3} />
+          </Form.Item>
           <Form.Item name="checkin" label="入住" rules={[{ required: true }, { validator: async (_: any, v: any) => { const c = editForm.getFieldValue('checkout'); if (v && c && !v.isBefore(c, 'day')) throw new Error('入住日期必须早于退房日期') } }]}><DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const c = editForm.getFieldValue('checkout'); return c ? d.isSame(c, 'day') || d.isAfter(c, 'day') : false }} /></Form.Item>
           <Form.Item name="checkout" label="退房" rules={[{ required: true }, { validator: async (_: any, v: any) => { const ci = editForm.getFieldValue('checkin'); if (v && ci && !ci.isBefore(v, 'day')) throw new Error('退房日期必须晚于入住日期') } }]}><DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const ci = editForm.getFieldValue('checkin'); return ci ? d.isSame(ci, 'day') || d.isBefore(ci, 'day') : false }} /></Form.Item>
           <Form.Item name="price" label="总租金(AUD)"><InputNumber min={0} step={1} style={{ width: '100%' }} /></Form.Item>
@@ -1756,7 +1799,7 @@ export default function OrdersPage() {
               const st = editForm.getFieldValue('status')
               if (st === 'canceled') {
                 return (
-                  <Form.Item name="cancel_fee" label="取消费(AUD)">
+                  <Form.Item name="cancel_fee" label="取消费(AUD)" rules={[{ required: true, message: '取消金额必填' }]}>
                     <InputNumber min={0} step={1} style={{ width: '100%' }} />
                   </Form.Item>
                 )
@@ -1790,16 +1833,40 @@ export default function OrdersPage() {
             }}
           </Form.Item>
           <Card size="small" style={{ marginTop: 8 }} title="内部扣减">
+            <Table size="small" pagination={false} dataSource={editDeductions} rowKey="id" columns={[
+              { title: '金额', dataIndex: 'amount', align: 'right' },
+              { title: '币种', dataIndex: 'currency' },
+              { title: '事项描述', dataIndex: 'item_desc' },
+              { title: '备注', dataIndex: 'note' },
+              { title: '状态', dataIndex: 'is_active', render: (v: any) => v ? 'active' : 'void' },
+              { title: '操作', render: (_: any, r: any) => hasPerm('order.deduction.manage') ? (
+                <Button size="small" onClick={() => { setEditDeductionEditing(r); setDeductAmountEdit(Number(r.amount||0)); setDeductDescEdit(r.item_desc || ''); setDeductNoteEdit(r.note || '') }}>编辑</Button>
+              ) : null }
+            ]} />
             <Space direction="vertical" style={{ width: '100%' }}>
               <InputNumber style={{ width: '100%' }} value={deductAmountEdit} onChange={(v)=> setDeductAmountEdit(Number(v||0))} min={0} disabled={!hasPerm('order.deduction.manage')} />
               <Input value={deductDescEdit} onChange={(e)=> setDeductDescEdit(e.target.value)} placeholder="减扣事项描述" disabled={!hasPerm('order.deduction.manage')} />
               <Input value={deductNoteEdit} onChange={(e)=> setDeductNoteEdit(e.target.value)} placeholder="备注" disabled={!hasPerm('order.deduction.manage')} />
-              <Button type="primary" disabled={!hasPerm('order.deduction.manage')} onClick={async () => {
+              <Space>
+                <Button type="primary" disabled={!hasPerm('order.deduction.manage')} onClick={async () => {
                 if (!current) return
                 const payload = { amount: deductAmountEdit, item_desc: deductDescEdit, note: deductNoteEdit }
-                const resp = await fetch(`${API_BASE}/orders/${current.id}/internal-deductions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
-                if (resp.ok) { message.success('扣减已保存'); setDeductAmountEdit(0); setDeductNoteEdit(''); load() } else { const j = await resp.json().catch(()=>({})); message.error(j?.message || '保存失败') }
-              }}>保存扣减</Button>
+                const url = `${API_BASE}/orders/${current.id}/internal-deductions${editDeductionEditing ? `/${editDeductionEditing.id}` : ''}`
+                const method = editDeductionEditing ? 'PATCH' : 'POST'
+                const resp = await fetch(url, { method, headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+                if (resp.ok) {
+                  message.success('扣减已保存')
+                  setDeductAmountEdit(0); setDeductDescEdit(''); setDeductNoteEdit('')
+                  setEditDeductionEditing(null)
+                  try {
+                    const ds = await fetch(`${API_BASE}/orders/${current.id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json()).catch(() => [])
+                    setEditDeductions(Array.isArray(ds) ? ds : [])
+                  } catch {}
+                  load()
+                } else { const j = await resp.json().catch(()=>({})); message.error(j?.message || '保存失败') }
+              }}>{editDeductionEditing ? '保存修改' : '新增扣减'}</Button>
+                {editDeductionEditing ? <Button onClick={() => { setEditDeductionEditing(null); setDeductAmountEdit(0); setDeductDescEdit(''); setDeductNoteEdit('') }}>取消编辑</Button> : null}
+              </Space>
             </Space>
           </Card>
         </Form>
@@ -1811,6 +1878,7 @@ export default function OrdersPage() {
           <Descriptions.Item label="来源">{detail.source}</Descriptions.Item>
           <Descriptions.Item label="入住">{detail.checkin ? dayjs(detail.checkin).format('DD/MM/YYYY') : ''}</Descriptions.Item>
           <Descriptions.Item label="退房">{detail.checkout ? dayjs(detail.checkout).format('DD/MM/YYYY') : ''}</Descriptions.Item>
+          <Descriptions.Item label="备注">{(detail as any).note || ''}</Descriptions.Item>
           <Descriptions.Item label="状态">{detail.status}</Descriptions.Item>
           <Descriptions.Item label="付款币种">{(detail as any).payment_currency || 'AUD'}</Descriptions.Item>
           <Descriptions.Item label="到账状态">{(detail as any).payment_received ? '已到账' : '未到账'}</Descriptions.Item>
@@ -1819,28 +1887,14 @@ export default function OrdersPage() {
           <Descriptions.Item label="可见净额">{(detail as any).visible_net_income ?? (((detail as any).net_income ?? 0))}</Descriptions.Item>
         </Descriptions>
       )}
-      <Card style={{ marginTop: 12 }} title="内部扣减" extra={hasPerm('order.deduction.manage') ? (<Button onClick={() => { setDetailEditing(null); setDetailDedAmount(0); setDetailDedDesc(''); setDetailDedNote(''); }}>新增</Button>) : null}>
+      <Card style={{ marginTop: 12 }} title="内部扣减">
         <Table size="small" pagination={false} dataSource={detailDeductions} rowKey="id" columns={[
           { title: '金额', dataIndex: 'amount', align: 'right' },
           { title: '币种', dataIndex: 'currency' },
           { title: '事项描述', dataIndex: 'item_desc' },
           { title: '备注', dataIndex: 'note' },
-          { title: '状态', dataIndex: 'is_active', render: (v: any) => v ? 'active' : 'void' },
-          { title: '操作', render: (_: any, r: any) => hasPerm('order.deduction.manage') ? (
-            <Space>
-              <Button size="small" onClick={() => { setDetailEditing(r); setDetailDedAmount(Number(r.amount||0)); setDetailDedDesc(r.item_desc || ''); setDetailDedNote(r.note || ''); }}>编辑</Button>
-              <Button size="small" danger onClick={() => deleteDetailDeduction(r)}>删除</Button>
-            </Space>
-          ) : null }
+          { title: '状态', dataIndex: 'is_active', render: (v: any) => v ? 'active' : 'void' }
         ]} />
-        {hasPerm('order.deduction.manage') ? (
-          <Space direction="vertical" style={{ width: '100%', marginTop: 12 }}>
-            <InputNumber value={detailDedAmount} onChange={(v) => setDetailDedAmount(Number(v||0))} min={0} style={{ width: '100%' }} />
-            <Input value={detailDedDesc} onChange={(e) => setDetailDedDesc(e.target.value)} placeholder="减扣事项描述" />
-            <Input value={detailDedNote} onChange={(e) => setDetailDedNote(e.target.value)} placeholder="备注" />
-            <Button type="primary" onClick={saveDetailDeduction}>保存扣减</Button>
-          </Space>
-        ) : null}
       </Card>
     </Drawer>
     <Modal open={importOpen} onCancel={() => { setImportOpen(false); setImportPercent(0); setImportProcessed(0); setImportTotal(null) }} footer={null} title="批量导入订单" width={960} styles={{ body: { maxHeight: 520, overflow: 'auto' } }}>

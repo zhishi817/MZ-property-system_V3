@@ -240,6 +240,7 @@ const createOrderSchema = z.object({
   confirmation_code: z.coerce.string().optional(),
   guest_name: z.string().optional(),
   guest_phone: z.string().optional(),
+  note: z.coerce.string().optional(),
   checkin: z.coerce.string().optional(),
   checkout: z.coerce.string().optional(),
   price: z.coerce.number().optional(),
@@ -309,6 +310,7 @@ async function ensureOrdersColumns() {
     if (!hasPg) return
     const { pgPool } = require('../dbAdapter')
     await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
+    await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS note text')
     await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric')
     await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text')
   } catch {}
@@ -419,7 +421,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
       if (Array.isArray(dup) && dup[0]) {
         if (force) {
           try {
-            const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code','payment_currency','payment_received']
+            const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code','payment_currency','payment_received']
             const payload: any = {}
             for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
             const row = await pgUpdate('orders', String(dup[0].id), payload)
@@ -569,7 +571,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
 
   if (hasPg) {
     try {
-      const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+      const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
       const allowExtra = ['payment_currency','payment_received']
       const allowAll = [...allow, ...allowExtra]
       const payload: any = {}
@@ -617,7 +619,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
           await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
           await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = \"idx_orders_confirmation_code_unique\") THEN BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
           await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_confirmation_code_unique ON orders(source, confirmation_code) WHERE confirmation_code IS NOT NULL')
-          const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+          const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
           const allowExtra2 = ['payment_currency','payment_received']
           const payload2: any = {}
           for (const k of [...allow, ...allowExtra2]) { if ((updated as any)[k] !== undefined) payload2[k] = (updated as any)[k] }
@@ -1028,7 +1030,7 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
               const cc = (newOrder as any).confirmation_code
               const dup: any[] = (await pgSelect('orders', 'id', { confirmation_code: cc })) || []
               if (Array.isArray(dup) && dup[0]) {
-                const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+                const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
                 const payload: any = {}
                 for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
                 await pgUpdate('orders', String(dup[0].id), payload)
@@ -1152,7 +1154,7 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
         const dup: any[] = (await pgSelect('orders', 'id', { confirmation_code: (newOrder as any).confirmation_code })) || []
         if (Array.isArray(dup) && dup[0]) {
           try {
-            const allow = ['source','external_id','property_id','guest_name','guest_phone','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+            const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
             const payload: any = {}
             for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
             const row = await pgUpdate('orders', String(dup[0].id), payload)
@@ -1830,6 +1832,19 @@ router.post('/:id/confirm-payment', requirePerm('order.confirm_payment'), async 
   addAudit('Order', id, 'confirm_payment', before, base)
   if (hasPg) {
     try { const row = await pgUpdate('orders', id, { payment_received: true } as any); return res.json(row || base) } catch {}
+  }
+  return res.json(base)
+})
+router.post('/:id/unconfirm-payment', requirePerm('order.confirm_payment'), async (req, res) => {
+  const { id } = req.params
+  let base: any = db.orders.find(o => o.id === id)
+  if (!base && hasPg) { try { const rows: any[] = await pgSelect('orders', '*', { id }) as any[] || []; base = rows[0] } catch {} }
+  if (!base) return res.status(404).json({ message: 'order not found' })
+  const before = { ...base }
+  base.payment_received = false
+  addAudit('Order', id, 'unconfirm_payment', before, base)
+  if (hasPg) {
+    try { const row = await pgUpdate('orders', id, { payment_received: false } as any); return res.json(row || base) } catch {}
   }
   return res.json(base)
 })

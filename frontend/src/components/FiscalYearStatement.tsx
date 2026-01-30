@@ -31,7 +31,7 @@ export default forwardRef<HTMLDivElement, {
 
   const monthValues = monthRanges.map(r => {
     const overlapping = monthSegments(orders.filter(o => o.property_id===propertyId), r.start)
-    const rentIncome = overlapping.reduce((s, x) => s + Number((x as any).net_income || 0), 0)
+    const rentIncome = overlapping.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income) || 0), 0)
     const otherIncome = txs.filter(t => t.kind==='income' && t.property_id===propertyId && dayjs(t.occurred_at).isAfter(r.start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(r.end.add(1,'day'))).reduce((s, x) => s + Number(x.amount || 0), 0)
     const mgmt = landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON) * 100) / 100 : 0
     const sumCat = (c: string) => txs.filter(t => t.kind==='expense' && t.property_id===propertyId && t.category===c && dayjs(t.occurred_at).isAfter(r.start.subtract(1,'day')) && dayjs(t.occurred_at).isBefore(r.end.add(1,'day'))).reduce((s, x) => s + Number(x.amount || 0), 0)

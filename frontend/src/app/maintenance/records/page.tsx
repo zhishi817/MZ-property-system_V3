@@ -1,6 +1,6 @@
 "use client"
 import { Card, Table, Space, Button, Input, Select, DatePicker, Modal, Form, App, Upload, Grid, Drawer, Image, InputNumber, Switch, Typography, Tag } from 'antd'
-import { EnvironmentOutlined, InfoCircleOutlined, DollarCircleOutlined, PictureOutlined, CheckCircleOutlined } from '@ant-design/icons'
+import { EnvironmentOutlined, InfoCircleOutlined, DollarCircleOutlined, PictureOutlined, CheckCircleOutlined, ShareAltOutlined } from '@ant-design/icons'
 import html2canvas from 'html2canvas'
 import { useSearchParams } from 'next/navigation'
 import type { UploadFile } from 'antd/es/upload/interface'
@@ -300,6 +300,19 @@ export default function MaintenanceRecordsUnified() {
     return s
   }
   function openView(r: RepairOrder) { setViewRow(r); setViewOpen(true) }
+  async function shareLink(r: RepairOrder) {
+    try {
+      const res = await fetch(`${API_BASE}/maintenance/share-link/${r.id}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() } })
+      const j = await res.json().catch(()=>null)
+      if (!res.ok) { message.error(j?.message || '生成分享链接失败'); return }
+      const origin = typeof window !== 'undefined' ? window.location.origin : ''
+      const link = `${origin}/public/maintenance-share/${String(j?.token || '')}`
+      try { await navigator.clipboard?.writeText(link) } catch {}
+      message.success('已复制分享链接')
+    } catch (e: any) {
+      message.error('生成分享链接失败')
+    }
+  }
   async function remove(id: string) {
     try {
       await apiDelete('property_maintenance', id)
@@ -456,6 +469,7 @@ export default function MaintenanceRecordsUnified() {
                         </div>
                         <Space style={{ width:'100%' }}>
                           <Button size="large" style={{ flex:1 }} onClick={()=>openView(r)}>查看</Button>
+                          <Button size="large" style={{ flex:1 }} onClick={()=>shareLink(r)} icon={<ShareAltOutlined />}>分享</Button>
                           <Button size="large" style={{ flex:1 }} onClick={()=>openEdit(r)} disabled={!hasPerm('property_maintenance.write')}>编辑</Button>
                           <Button size="large" style={{ flex:1 }} danger onClick={()=>remove(r.id)} disabled={!hasPerm('property_maintenance.delete')}>删除</Button>
                         </Space>
@@ -484,9 +498,10 @@ export default function MaintenanceRecordsUnified() {
               { title:'状态', dataIndex:'status', width: 120, render:(s:string)=> statusTag(s) },
               { title:'完成时间', dataIndex:'completed_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD HH:mm') : '-' },
               { title:'分配人员', dataIndex:'assignee_id', width: 140 },
-              { title:'操作', fixed: 'right' as const, width: 220, render: (_:any, r:RepairOrder) => (
+              { title:'操作', fixed: 'right' as const, width: 280, render: (_:any, r:RepairOrder) => (
                 <Space>
                   <Button size="small" onClick={()=>openView(r)}>查看</Button>
+                  <Button size="small" icon={<ShareAltOutlined />} onClick={()=>shareLink(r)}>分享</Button>
                   <Button size="small" onClick={()=>openEdit(r)} disabled={!hasPerm('property_maintenance.write')}>编辑</Button>
                   <Button size="small" danger onClick={()=>remove(r.id)} disabled={!hasPerm('property_maintenance.delete')}>删除</Button>
                 </Space>
