@@ -265,6 +265,26 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
             for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)]
             return s
           }
+          function asIsoOrEmpty(v: any): string {
+            if (!v) return ''
+            if (typeof v === 'string') return v
+            try {
+              const d = new Date(v)
+              if (!isNaN(d.getTime())) return d.toISOString()
+            } catch {}
+            return ''
+          }
+          function guessCategoryFromDetails(details: any): string {
+            const known = new Set(['入户走廊','客厅','厨房','卧室','阳台','浴室','其他'])
+            try {
+              const arr = Array.isArray(details) ? details : (typeof details === 'string' ? JSON.parse(details) : [])
+              const first = Array.isArray(arr) ? arr[0] : null
+              const content = String((first as any)?.content || '').trim()
+              const item = String((first as any)?.item || '').trim()
+              if (item && known.has(content)) return content
+            } catch {}
+            return ''
+          }
           async function backfillWorkNo(row: any) {
             const current = String(row?.work_no || '').trim()
             if (current) return current
@@ -284,6 +304,18 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
             } catch {}
             return candidate
           }
+          const userIds = Array.from(new Set(rows.map(r => String((r as any)?.created_by || '').trim()).filter(Boolean)))
+          const userMap: Record<string, string> = {}
+          if (userIds.length) {
+            try {
+              const r = await pgPool.query('SELECT id, username FROM users WHERE id = ANY($1::text[])', [userIds])
+              for (const u of (r.rows || [])) {
+                const id = String((u as any)?.id || '').trim()
+                const name = String((u as any)?.username || '').trim()
+                if (id && name) userMap[id] = name
+              }
+            } catch {}
+          }
           let props: any[] = []
           try { const propsRaw = await pgSelect('properties', 'id,code,address'); props = Array.isArray(propsRaw) ? propsRaw : [] } catch {}
           const byId: Record<string, any> = Object.fromEntries(props.map(p => [String(p.id), p]))
@@ -292,13 +324,44 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
             const pid = String(r.property_id || '')
             const p = byId[pid] || byCode[pid]
             const code = p?.code || r.property_code || pid || ''
-            const submitter = r.submitter_name || r.worker_name || r.created_by || ''
-            const category = r.category || (r as any).category_detail || ''
-            return { ...r, code, property_code: code, submitter_name: submitter, category }
+            const submitter = String(r.submitter_name || '').trim()
+              || String(r.worker_name || '').trim()
+              || String(userMap[String(r.created_by || '')] || '').trim()
+              || String(r.created_by || '').trim()
+            const submittedAt = asIsoOrEmpty(r.submitted_at)
+              || asIsoOrEmpty((r as any).created_at)
+              || (String(r.occurred_at || '').trim() ? `${String(r.occurred_at).slice(0,10)}T00:00:00.000Z` : '')
+            const category = String(r.category || '').trim()
+              || String((r as any).category_detail || '').trim()
+              || guessCategoryFromDetails((r as any).details)
+            return { ...r, code, property_code: code, submitter_name: submitter, submitted_at: submittedAt || (r as any).submitted_at, category }
           })
-          const toFix = enriched.filter(r => !String((r as any)?.work_no || '').trim()).slice(0, 50)
-          if (toFix.length) {
-            await Promise.all(toFix.map(async (r) => { (r as any).work_no = await backfillWorkNo(r) }))
+          const toFixWorkNo = enriched.filter(r => !String((r as any)?.work_no || '').trim()).slice(0, 50)
+          if (toFixWorkNo.length) {
+            await Promise.all(toFixWorkNo.map(async (r) => { (r as any).work_no = await backfillWorkNo(r) }))
+          }
+          const toFixMeta = enriched.filter(r => {
+            const needSubmitter = !String((r as any)?.submitter_name || '').trim()
+            const needSubmittedAt = !String((r as any)?.submitted_at || '').trim()
+            const needCategory = !String((r as any)?.category || '').trim()
+            return needSubmitter || needSubmittedAt || needCategory
+          }).slice(0, 50)
+          if (toFixMeta.length) {
+            await Promise.all(toFixMeta.map(async (r: any) => {
+              try {
+                const sets: string[] = []
+                const vals: any[] = []
+                const submitterName = String(r.submitter_name || '').trim()
+                const submittedAt = String(r.submitted_at || '').trim()
+                const category = String(r.category || '').trim()
+                if (submitterName) { vals.push(submitterName); sets.push(`submitter_name = $${vals.length}`) }
+                if (submittedAt) { vals.push(submittedAt); sets.push(`submitted_at = $${vals.length}`) }
+                if (category) { vals.push(category); sets.push(`category = $${vals.length}`) }
+                if (!sets.length) return
+                vals.push(String(r.id || ''))
+                await pgPool.query(`UPDATE property_maintenance SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals)
+              } catch {}
+            }))
           }
           return res.json(enriched)
         }
