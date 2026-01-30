@@ -277,11 +277,24 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
           function guessCategoryFromDetails(details: any): string {
             const known = new Set(['入户走廊','客厅','厨房','卧室','阳台','浴室','其他'])
             try {
-              const arr = Array.isArray(details) ? details : (typeof details === 'string' ? JSON.parse(details) : [])
-              const first = Array.isArray(arr) ? arr[0] : null
-              const content = String((first as any)?.content || '').trim()
-              const item = String((first as any)?.item || '').trim()
-              if (item && known.has(content)) return content
+              const arr: any[] = Array.isArray(details) ? details : (typeof details === 'string' ? JSON.parse(details) : [])
+              if (!Array.isArray(arr) || !arr.length) return ''
+              const norm = (v: any) => String(v || '').trim()
+              const pickItem = (x: any) => norm(x?.item ?? x?.label ?? x?.key ?? x?.name)
+              const pickContent = (x: any) => norm(x?.content ?? x?.value ?? x?.text)
+              for (const x of arr) {
+                const item = pickItem(x)
+                const content = pickContent(x)
+                if (!content) continue
+                const itemLower = item.toLowerCase()
+                if (known.has(content) && (item.includes('区域') || item.includes('位置') || itemLower.includes('category') || itemLower.includes('area'))) {
+                  return content
+                }
+              }
+              for (const x of arr) {
+                const content = pickContent(x)
+                if (known.has(content)) return content
+              }
             } catch {}
             return ''
           }

@@ -28,7 +28,18 @@ export default function MonthlyStatementPage() {
   const end = start ? start.endOf('month') : null
   const ordersInMonth = useMemo(() => {
     if (!start || !end) return [] as Order[]
-    return monthSegments(orders.filter(o => (!propertyId || o.property_id === propertyId)), start as any) as any
+    const segs = monthSegments(orders.filter(o => (!propertyId || o.property_id === propertyId)), start as any) as any[]
+    return [...segs].sort((a: any, b: any) => {
+      const aci = a?.checkin ? dayjs(a.checkin).startOf('day').valueOf() : 0
+      const bci = b?.checkin ? dayjs(b.checkin).startOf('day').valueOf() : 0
+      if (aci !== bci) return aci - bci
+      const aco = a?.checkout ? dayjs(a.checkout).startOf('day').valueOf() : 0
+      const bco = b?.checkout ? dayjs(b.checkout).startOf('day').valueOf() : 0
+      if (aco !== bco) return aco - bco
+      const aid = String(a?.__rid || a?.id || '')
+      const bid = String(b?.__rid || b?.id || '')
+      return aid.localeCompare(bid)
+    }) as any
   }, [orders, propertyId, start, end])
   const expensesInMonth = useMemo(() => {
     if (!start || !end) return [] as Tx[]

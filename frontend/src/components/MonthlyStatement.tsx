@@ -38,6 +38,17 @@ export default forwardRef<HTMLDivElement, {
     const isCanceled = st.includes('cancel')
     return (!isCanceled) || !!(r as any).count_in_income
   })
+  const relatedOrdersSorted = [...relatedOrders].sort((a: any, b: any) => {
+    const aci = a?.checkin ? dayjs(toDayStr(a.checkin)).valueOf() : 0
+    const bci = b?.checkin ? dayjs(toDayStr(b.checkin)).valueOf() : 0
+    if (aci !== bci) return aci - bci
+    const aco = a?.checkout ? dayjs(toDayStr(a.checkout)).valueOf() : 0
+    const bco = b?.checkout ? dayjs(toDayStr(b.checkout)).valueOf() : 0
+    if (aco !== bco) return aco - bco
+    const aid = String(a?.__rid || a?.id || '')
+    const bid = String(b?.__rid || b?.id || '')
+    return aid.localeCompare(bid)
+  })
   const simpleMode = false
   const expensesInMonth = txs.filter(t => t.kind === 'expense' && (!propertyId || t.property_id === propertyId) && dayjs(toDayStr(t.occurred_at)).isSame(start, 'month'))
   const [invoiceMap, setInvoiceMap] = useState<Record<string, ExpenseInvoice[]>>({})
@@ -239,7 +250,7 @@ export default forwardRef<HTMLDivElement, {
           </tr>
         </thead>
         <tbody>
-          {relatedOrders.map(r => (
+          {relatedOrdersSorted.map(r => (
             <tr key={(r as any).__rid || r.id}>
               <td style={{ padding:6 }}>{r.checkin ? dayjs(toDayStr(r.checkin)).format('DD/MM/YYYY') : ''}</td>
               <td style={{ padding:6 }}>{r.checkout ? dayjs(toDayStr(r.checkout)).format('DD/MM/YYYY') : ''}</td>
