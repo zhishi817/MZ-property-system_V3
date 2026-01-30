@@ -457,7 +457,7 @@ export default function MaintenanceRecordsUnified() {
                           <div>紧急：{urgencyTag(r.urgency)}</div>
                           <div>问题区域：{String((r as any)?.category || (r as any)?.category_detail || '-')}</div>
                           <div>提交人：{String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '-')}</div>
-                          <div style={{ gridColumn:'1 / span 2' }}>提交时间：{r.submitted_at ? dayjs(r.submitted_at).format('YYYY-MM-DD') : '-'}</div>
+                          <div style={{ gridColumn:'1 / span 2' }}>提交时间：{(r.submitted_at || (r as any).occurred_at || (r as any).created_at) ? dayjs(r.submitted_at || (r as any).occurred_at || (r as any).created_at).format('YYYY-MM-DD') : '-'}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>问题摘要：{summaryFromDetails(r.details)}</div>
                           <div>维修金额：{fmtAmount((r as any).maintenance_amount)}</div>
                           <div>是否有配件费：{(r as any).has_parts === true ? '是' : (r as any).has_parts === false ? '否' : '-'}</div>
@@ -489,7 +489,10 @@ export default function MaintenanceRecordsUnified() {
               { title:'问题区域', dataIndex:'category', width: 120, render: (_: any, r: any) => String((r as any)?.category || (r as any)?.category_detail || '') },
               { title:'问题摘要', dataIndex:'details', ellipsis: true, width: 280, render:(d:string)=> summaryFromDetails(d) },
               { title:'提交人', dataIndex:'submitter_name', width: 120, render: (_: any, r: any) => String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '') },
-              { title:'提交时间', dataIndex:'submitted_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD') : '-' },
+              { title:'提交时间', dataIndex:'submitted_at', width: 180, render: (_: any, r: any) => {
+                const v = (r as any)?.submitted_at || (r as any)?.occurred_at || (r as any)?.created_at
+                return v ? dayjs(v).format('YYYY-MM-DD') : '-'
+              } },
               { title:'维修金额', dataIndex:'maintenance_amount', width: 140, render:(a:any)=> fmtAmount(a) },
               { title:'是否有配件费', dataIndex:'has_parts', width: 120, render:(b:boolean)=> b === true ? '是' : b === false ? '否' : '-' },
               { title:'配件费金额', dataIndex:'parts_amount', width: 140, render:(a:any)=> fmtAmount(a) },
@@ -561,7 +564,7 @@ export default function MaintenanceRecordsUnified() {
                   <InfoCircleOutlined style={{ color:'#1677ff' }} />
                   <Typography.Text type="secondary">提交时间</Typography.Text>
                 </Space>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{viewRow?.submitted_at ? dayjs(viewRow?.submitted_at).format('YYYY-MM-DD') : '-'}</div>
+                <div style={{ color:'#0b1738', marginTop:6 }}>{((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at) ? dayjs((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at).format('YYYY-MM-DD') : '-'}</div>
               </div>
             </div>
           </div>

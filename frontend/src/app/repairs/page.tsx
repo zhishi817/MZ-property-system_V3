@@ -208,7 +208,10 @@ export default function RepairsPage() {
             { title:'问题区域', dataIndex:'category', width: 120, render: (_: any, r: any) => String((r as any)?.category || (r as any)?.category_detail || '') },
             { title:'问题摘要', dataIndex:'details', ellipsis: true, width: 280, render:(d:string)=> summaryFromDetails(d) },
             { title:'提交人', dataIndex:'submitter_name', width: 120, render: (_: any, r: any) => String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '') },
-            { title:'提交时间', dataIndex:'submitted_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD') : '-' },
+            { title:'提交时间', dataIndex:'submitted_at', width: 180, render: (_: any, r: any) => {
+              const v = (r as any)?.submitted_at || (r as any)?.occurred_at || (r as any)?.created_at
+              return v ? dayjs(v).format('YYYY-MM-DD') : '-'
+            } },
             { title:'紧急程度', dataIndex:'urgency', width: 120, render:(u:string)=> urgencyTag(u) },
             { title:'当前状态', dataIndex:'status', width: 120 },
             { title:'分配人员', dataIndex:'assignee_id', width: 140 },
@@ -240,7 +243,7 @@ export default function RepairsPage() {
           <div>问题区域：{(viewRow as any)?.category || (viewRow as any)?.category_detail}</div>
           <div>紧急程度：{urgencyLabel(viewRow?.urgency)}</div>
           <div>提交人：{(viewRow as any)?.submitter_name || (viewRow as any)?.worker_name || (viewRow as any)?.created_by}</div>
-          <div>提交时间：{viewRow?.submitted_at ? dayjs(viewRow?.submitted_at).format('YYYY-MM-DD') : '-'}</div>
+          <div>提交时间：{((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at) ? dayjs((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at).format('YYYY-MM-DD') : '-'}</div>
           <div>问题详情：</div>
           <div style={{ whiteSpace:'pre-wrap', border:'1px solid #eee', padding:8, borderRadius:6 }}>{summaryFromDetails(viewRow?.details) || viewRow?.detail || ''}</div>
           <div>附件：</div>

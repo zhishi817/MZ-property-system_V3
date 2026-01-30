@@ -323,14 +323,15 @@ router.post('/repair/report', async (req, res) => {
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS eta date;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
+      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS item_type text;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS label_photo_urls jsonb;`)
       const id = uuidv4()
       const workNo = await generateWorkNo()
-      const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, label_photo_urls, item_type, property_code, work_no, category, status, urgency, assignee_id, eta, submitted_at)
-        VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`
+      const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, label_photo_urls, item_type, property_code, work_no, category, status, urgency, assignee_id, eta, submitted_at, submitter_name)
+        VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`
       const values = [
         id,
         property_id || null,
@@ -349,7 +350,8 @@ router.post('/repair/report', async (req, res) => {
         (urgency || null),
         null,
         null,
-        new Date().toISOString()
+        new Date().toISOString(),
+        submitter_name || null
       ]
       const r = await pgPool!.query(sql, values)
       const row = r.rows && r.rows[0]
@@ -369,6 +371,7 @@ router.post('/repair/report', async (req, res) => {
       item_type,
       created_by: submitter_id || null,
       submitted_at: new Date().toISOString(),
+      submitter_name: submitter_name || null,
       work_no: `R-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${randomSuffix(4)}`
     }
     ;(require('../store').db as any).propertyMaintenance = ((require('../store').db as any).propertyMaintenance || [])
