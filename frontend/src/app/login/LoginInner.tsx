@@ -43,7 +43,10 @@ export default function LoginInner() {
         if (p) { const norm = p.replace(/-/g, '+').replace(/_/g, '/'); const pad = norm + '==='.slice((norm.length + 3) % 4); const j = JSON.parse(atob(pad)); const r = j?.role || (v.username === 'admin' ? 'admin' : null); if (r) { try { localStorage.setItem('role', r) } catch {} } }
         else if (v.username === 'admin') { try { localStorage.setItem('role', 'admin') } catch {} }
       } catch {}
-      msg.success('登录成功'); try { await new Promise(r => setTimeout(r, 100)) } catch {}; router.push('/dashboard')
+      msg.success('登录成功'); try { await new Promise(r => setTimeout(r, 100)) } catch {}
+      const r0 = (() => { try { return localStorage.getItem('role') || '' } catch { return '' } })()
+      const target = r0 === 'maintenance_staff' ? '/maintenance/overview' : '/dashboard'
+      router.push(target)
     } else { try { const err = await res.json(); msg.error(err?.message || `登录失败 (${res.status})`) } catch { msg.error(`登录失败 (${res.status})`) } }
     setLoading(false)
   }

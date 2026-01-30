@@ -70,6 +70,10 @@ router.post('/maintenance-share/reset-password', requirePerm('rbac.manage'), asy
   const { new_password } = req.body || {}
   if (!new_password) return res.status(400).json({ message: 'missing new_password' })
   try {
+    const user = (req as any).user
+    if (user && String(user.role || '') === 'maintenance_staff') return res.status(403).json({ message: 'forbidden' })
+  } catch {}
+  try {
     if (hasPg) {
       await ensurePublicAccessTable()
       const hash = await bcrypt.hash(String(new_password), 10)

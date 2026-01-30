@@ -136,21 +136,42 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
 }
 
 export function requirePerm(code: string) {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     const user = (req as any).user
     if (!user) return res.status(401).json({ message: 'unauthorized' })
-    const role = user.role as string
-    if (!roleHasPermission(role, code)) return res.status(403).json({ message: 'forbidden' })
+    const roleName = String(user.role || '')
+    let ok = false
+    try {
+      const { hasPg, pgPool } = require('./dbAdapter')
+      if (hasPg && pgPool) {
+        const role = db.roles.find(r => r.name === roleName)
+        const roleIds = Array.from(new Set([role?.id, role?.name, roleName].filter(Boolean)))
+        const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = $2 LIMIT 1', [roleIds, code])
+        ok = !!r?.rowCount
+      }
+    } catch {}
+    if (!ok) ok = roleHasPermission(roleName, code)
+    if (!ok) return res.status(403).json({ message: 'forbidden' })
     next()
   }
 }
 
 export function requireAnyPerm(codes: string[]) {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     const user = (req as any).user
     if (!user) return res.status(401).json({ message: 'unauthorized' })
-    const role = user.role as string
-    const ok = codes.some((c) => roleHasPermission(role, c))
+    const roleName = String(user.role || '')
+    let ok = false
+    try {
+      const { hasPg, pgPool } = require('./dbAdapter')
+      if (hasPg && pgPool) {
+        const role = db.roles.find(r => r.name === roleName)
+        const roleIds = Array.from(new Set([role?.id, role?.name, roleName].filter(Boolean)))
+        const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = ANY($2::text[]) LIMIT 1', [roleIds, codes])
+        ok = !!r?.rowCount
+      }
+    } catch {}
+    if (!ok) ok = codes.some((c) => roleHasPermission(roleName, c))
     if (!ok) return res.status(403).json({ message: 'forbidden' })
     next()
   }
