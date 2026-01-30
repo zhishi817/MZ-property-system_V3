@@ -160,23 +160,48 @@ async function auth(req, res, next) {
     next();
 }
 function requirePerm(code) {
-    return (req, res, next) => {
+    return async (req, res, next) => {
         const user = req.user;
         if (!user)
             return res.status(401).json({ message: 'unauthorized' });
-        const role = user.role;
-        if (!(0, store_1.roleHasPermission)(role, code))
+        const roleName = String(user.role || '');
+        let ok = false;
+        try {
+            const { hasPg, pgPool } = require('./dbAdapter');
+            if (hasPg && pgPool) {
+                const role = store_1.db.roles.find(r => r.name === roleName);
+                const roleIds = Array.from(new Set([role === null || role === void 0 ? void 0 : role.id, role === null || role === void 0 ? void 0 : role.name, roleName].filter(Boolean)));
+                const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = $2 LIMIT 1', [roleIds, code]);
+                ok = !!(r === null || r === void 0 ? void 0 : r.rowCount);
+            }
+        }
+        catch (_a) { }
+        if (!ok)
+            ok = (0, store_1.roleHasPermission)(roleName, code);
+        if (!ok)
             return res.status(403).json({ message: 'forbidden' });
         next();
     };
 }
 function requireAnyPerm(codes) {
-    return (req, res, next) => {
+    return async (req, res, next) => {
         const user = req.user;
         if (!user)
             return res.status(401).json({ message: 'unauthorized' });
-        const role = user.role;
-        const ok = codes.some((c) => (0, store_1.roleHasPermission)(role, c));
+        const roleName = String(user.role || '');
+        let ok = false;
+        try {
+            const { hasPg, pgPool } = require('./dbAdapter');
+            if (hasPg && pgPool) {
+                const role = store_1.db.roles.find(r => r.name === roleName);
+                const roleIds = Array.from(new Set([role === null || role === void 0 ? void 0 : role.id, role === null || role === void 0 ? void 0 : role.name, roleName].filter(Boolean)));
+                const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = ANY($2::text[]) LIMIT 1', [roleIds, codes]);
+                ok = !!(r === null || r === void 0 ? void 0 : r.rowCount);
+            }
+        }
+        catch (_a) { }
+        if (!ok)
+            ok = codes.some((c) => (0, store_1.roleHasPermission)(roleName, c));
         if (!ok)
             return res.status(403).json({ message: 'forbidden' });
         next();
