@@ -369,9 +369,9 @@ export default function MaintenanceRecordsUnified() {
           String((r as any).work_no || ''),
           statusLabel((r as any).status),
           urgencyLabel((r as any).urgency),
-          String((r as any).category || ''),
+          String((r as any).category || (r as any).category_detail || ''),
           String(summary || ''),
-          String((r as any).submitter_name || ''),
+          String((r as any).submitter_name || (r as any).worker_name || (r as any).created_by || ''),
           (r as any).submitted_at ? dayjs((r as any).submitted_at).format('YYYY-MM-DD') : '',
           String((r as any).maintenance_amount ?? ''),
           (r as any).has_parts === true ? '是' : (r as any).has_parts === false ? '否' : '',
@@ -455,8 +455,8 @@ export default function MaintenanceRecordsUnified() {
                           <div>工单号：{String((r as any).work_no || '') || '-'}</div>
                           <div>状态：{statusTag(r.status)}</div>
                           <div>紧急：{urgencyTag(r.urgency)}</div>
-                          <div>问题区域：{String(r.category || '-')}</div>
-                          <div>提交人：{String(r.submitter_name || '-')}</div>
+                          <div>问题区域：{String((r as any)?.category || (r as any)?.category_detail || '-')}</div>
+                          <div>提交人：{String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '-')}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>提交时间：{r.submitted_at ? dayjs(r.submitted_at).format('YYYY-MM-DD') : '-'}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>问题摘要：{summaryFromDetails(r.details)}</div>
                           <div>维修金额：{fmtAmount((r as any).maintenance_amount)}</div>
@@ -484,11 +484,11 @@ export default function MaintenanceRecordsUnified() {
             }
             const columns = [
               { title:'房号', dataIndex:'code', width: 120 },
-              { title:'工单号', dataIndex:'work_no', width: 160 },
+              { title:'工单号', dataIndex:'work_no', width: 160, render: (_: any, r: any) => String((r as any)?.work_no || (r as any)?.id || '') },
               { title:'紧急程度', dataIndex:'urgency', width: 120, render:(u:string)=> urgencyTag(u) },
-              { title:'问题区域', dataIndex:'category', width: 120 },
+              { title:'问题区域', dataIndex:'category', width: 120, render: (_: any, r: any) => String((r as any)?.category || (r as any)?.category_detail || '') },
               { title:'问题摘要', dataIndex:'details', ellipsis: true, width: 280, render:(d:string)=> summaryFromDetails(d) },
-              { title:'提交人', dataIndex:'submitter_name', width: 120 },
+              { title:'提交人', dataIndex:'submitter_name', width: 120, render: (_: any, r: any) => String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '') },
               { title:'提交时间', dataIndex:'submitted_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD') : '-' },
               { title:'维修金额', dataIndex:'maintenance_amount', width: 140, render:(a:any)=> fmtAmount(a) },
               { title:'是否有配件费', dataIndex:'has_parts', width: 120, render:(b:boolean)=> b === true ? '是' : b === false ? '否' : '-' },
@@ -550,11 +550,11 @@ export default function MaintenanceRecordsUnified() {
               </div>
               <div>
                 <Typography.Text type="secondary">问题区域</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{String(viewRow?.category || '-')}</div>
+                <div style={{ color:'#0b1738', marginTop:6 }}>{String((viewRow as any)?.category || (viewRow as any)?.category_detail || '-')}</div>
               </div>
               <div>
                 <Typography.Text type="secondary">提交人</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{String(viewRow?.submitter_name || '-')}</div>
+                <div style={{ color:'#0b1738', marginTop:6 }}>{String((viewRow as any)?.submitter_name || (viewRow as any)?.worker_name || (viewRow as any)?.created_by || '-')}</div>
               </div>
               <div style={{ gridColumn:'1 / span 2' }}>
                 <Space>

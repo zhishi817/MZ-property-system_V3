@@ -102,6 +102,28 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         }
         if (pgPool) {
           try {
+            if (resource === 'property_maintenance') {
+              try {
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS urgency text;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS assignee_id text;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS eta date;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount numeric;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_parts boolean;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS parts_amount numeric;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;`)
+              } catch {}
+            }
             const w2 = (() => {
               if (resource !== 'property_maintenance' || !q) return w
               const like = `%${q.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`
@@ -236,6 +258,49 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
             return { ...r, property_code: label }
           })
           return res.json(labeled)
+        } else if (resource === 'property_maintenance') {
+          function randomSuffix(len: number): string {
+            const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+            let s = ''
+            for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)]
+            return s
+          }
+          async function backfillWorkNo(row: any) {
+            const current = String(row?.work_no || '').trim()
+            if (current) return current
+            const baseDateRaw = String(row?.occurred_at || row?.submitted_at || '').slice(0, 10)
+            const date = (baseDateRaw && /^\d{4}-\d{2}-\d{2}$/.test(baseDateRaw))
+              ? baseDateRaw.replace(/-/g, '')
+              : new Date().toISOString().slice(0, 10).replace(/-/g, '')
+            const prefix = `R-${date}-`
+            let candidate = `${prefix}${String(row?.id || '').slice(0, 4) || randomSuffix(4)}`
+            try {
+              for (let i = 0; i < 8; i++) {
+                const chk = await pgPool.query('SELECT 1 FROM property_maintenance WHERE work_no=$1 LIMIT 1', [candidate])
+                if (!chk.rowCount) break
+                candidate = `${prefix}${randomSuffix(4 + i)}`
+              }
+              await pgPool.query(`UPDATE property_maintenance SET work_no=$1 WHERE id=$2 AND (work_no IS NULL OR work_no='')`, [candidate, String(row?.id || '')])
+            } catch {}
+            return candidate
+          }
+          let props: any[] = []
+          try { const propsRaw = await pgSelect('properties', 'id,code,address'); props = Array.isArray(propsRaw) ? propsRaw : [] } catch {}
+          const byId: Record<string, any> = Object.fromEntries(props.map(p => [String(p.id), p]))
+          const byCode: Record<string, any> = Object.fromEntries(props.map(p => [String(p.code || ''), p]))
+          const enriched = rows.map(r => {
+            const pid = String(r.property_id || '')
+            const p = byId[pid] || byCode[pid]
+            const code = p?.code || r.property_code || pid || ''
+            const submitter = r.submitter_name || r.worker_name || r.created_by || ''
+            const category = r.category || (r as any).category_detail || ''
+            return { ...r, code, property_code: code, submitter_name: submitter, category }
+          })
+          const toFix = enriched.filter(r => !String((r as any)?.work_no || '').trim()).slice(0, 50)
+          if (toFix.length) {
+            await Promise.all(toFix.map(async (r) => { (r as any).work_no = await backfillWorkNo(r) }))
+          }
+          return res.json(enriched)
         }
         return res.json(rows)
       } catch {}
