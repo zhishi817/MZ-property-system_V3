@@ -336,7 +336,18 @@ export default function PropertyRevenuePage() {
           columnWidth: 40,
           expandedRowRender: (r: any) => {
             const mStart = dayjs(r.month, 'MM/YYYY').startOf('month')
-            const segs: any[] = monthSegments(orders.filter(o => o.property_id===r.pid), mStart)
+            const segsRaw: any[] = monthSegments(orders.filter(o => o.property_id===r.pid), mStart)
+            const segs = [...segsRaw].sort((a: any, b: any) => {
+              const aci = a?.checkin ? dayjs(toDayStr(a.checkin)).valueOf() : 0
+              const bci = b?.checkin ? dayjs(toDayStr(b.checkin)).valueOf() : 0
+              if (aci !== bci) return aci - bci
+              const aco = a?.checkout ? dayjs(toDayStr(a.checkout)).valueOf() : 0
+              const bco = b?.checkout ? dayjs(toDayStr(b.checkout)).valueOf() : 0
+              if (aco !== bco) return aco - bco
+              const aid = String(a?.__rid || a?.id || '')
+              const bid = String(b?.__rid || b?.id || '')
+              return aid.localeCompare(bid)
+            })
             const fmt2 = (n: number) => (n||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })
             const sumNet = segs.reduce((s,x)=> s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
             const childColumns = [

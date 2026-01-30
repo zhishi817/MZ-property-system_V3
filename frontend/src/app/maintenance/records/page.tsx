@@ -290,6 +290,31 @@ export default function MaintenanceRecordsUnified() {
     if (s === 'other_pay') return '其他人支付'
     return s
   }
+  function issueAreaLabel(r?: any): string {
+    const direct = String(r?.category || r?.category_detail || '').trim()
+    if (direct) return direct
+    const known = new Set(['入户走廊','客厅','厨房','卧室','阳台','浴室','其他'])
+    const s = String(r?.details || '')
+    if (!s) return ''
+    try {
+      const arr = JSON.parse(s)
+      if (!Array.isArray(arr) || !arr.length) return ''
+      const norm = (v: any) => String(v || '').trim()
+      const pickItem = (x: any) => norm(x?.item ?? x?.label ?? x?.key ?? x?.name)
+      const pickContent = (x: any) => norm(x?.content ?? x?.value ?? x?.text)
+      for (const x of arr) {
+        const item = pickItem(x)
+        const content = pickContent(x)
+        const itemLower = item.toLowerCase()
+        if (known.has(content) && (item.includes('区域') || item.includes('位置') || itemLower.includes('category') || itemLower.includes('area'))) return content
+      }
+      for (const x of arr) {
+        const content = pickContent(x)
+        if (known.has(content)) return content
+      }
+    } catch {}
+    return ''
+  }
   function summaryFromDetails(details?: string) {
     const s = String(details || '')
     if (!s) return ''
@@ -369,7 +394,7 @@ export default function MaintenanceRecordsUnified() {
           String((r as any).work_no || ''),
           statusLabel((r as any).status),
           urgencyLabel((r as any).urgency),
-          String((r as any).category || (r as any).category_detail || ''),
+          issueAreaLabel(r),
           String(summary || ''),
           String((r as any).submitter_name || (r as any).worker_name || (r as any).created_by || ''),
           (r as any).submitted_at ? dayjs((r as any).submitted_at).format('YYYY-MM-DD') : '',
@@ -455,7 +480,7 @@ export default function MaintenanceRecordsUnified() {
                           <div>工单号：{String((r as any).work_no || '') || '-'}</div>
                           <div>状态：{statusTag(r.status)}</div>
                           <div>紧急：{urgencyTag(r.urgency)}</div>
-                          <div>问题区域：{String((r as any)?.category || (r as any)?.category_detail || '-')}</div>
+                          <div>问题区域：{issueAreaLabel(r) || '-'}</div>
                           <div>提交人：{String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '-')}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>提交时间：{(r.submitted_at || (r as any).occurred_at || (r as any).created_at) ? dayjs(r.submitted_at || (r as any).occurred_at || (r as any).created_at).format('YYYY-MM-DD') : '-'}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>问题摘要：{summaryFromDetails(r.details)}</div>
@@ -486,7 +511,7 @@ export default function MaintenanceRecordsUnified() {
               { title:'房号', dataIndex:'code', width: 120 },
               { title:'工单号', dataIndex:'work_no', width: 160, render: (_: any, r: any) => String((r as any)?.work_no || (r as any)?.id || '') },
               { title:'紧急程度', dataIndex:'urgency', width: 120, render:(u:string)=> urgencyTag(u) },
-              { title:'问题区域', dataIndex:'category', width: 120, render: (_: any, r: any) => String((r as any)?.category || (r as any)?.category_detail || '') },
+              { title:'问题区域', dataIndex:'category', width: 120, render: (_: any, r: any) => issueAreaLabel(r) },
               { title:'问题摘要', dataIndex:'details', ellipsis: true, width: 280, render:(d:string)=> summaryFromDetails(d) },
               { title:'提交人', dataIndex:'submitter_name', width: 120, render: (_: any, r: any) => String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '') },
               { title:'提交时间', dataIndex:'submitted_at', width: 180, render: (_: any, r: any) => {
@@ -553,7 +578,7 @@ export default function MaintenanceRecordsUnified() {
               </div>
               <div>
                 <Typography.Text type="secondary">问题区域</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{String((viewRow as any)?.category || (viewRow as any)?.category_detail || '-')}</div>
+                <div style={{ color:'#0b1738', marginTop:6 }}>{issueAreaLabel(viewRow) || '-'}</div>
               </div>
               <div>
                 <Typography.Text type="secondary">提交人</Typography.Text>
