@@ -396,6 +396,29 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
     if (!payload.created_by) payload.created_by = user.sub || user.username || 'unknown'
   }
   if (resource === 'property_maintenance') {
+    if (!hasPg) {
+      const current = String((payload as any).work_no || '').trim()
+      if (!current) {
+        const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+        const prefix = `R-${date}-`
+        const existing = new Set<string>()
+        try {
+          const arr = (db as any)[camelToArrayKey(resource)] || []
+          for (const r of Array.isArray(arr) ? arr : []) {
+            const w = String((r as any)?.work_no || '').trim()
+            if (w) existing.add(w)
+          }
+        } catch {}
+        let tries = 0
+        for (;;) {
+          const suffix = Math.random().toString(36).slice(2, 8)
+          const candidate = `${prefix}${suffix}`
+          if (!existing.has(candidate)) { ;(payload as any).work_no = candidate; break }
+          tries += 1
+          if (tries >= 20) { ;(payload as any).work_no = candidate; break }
+        }
+      }
+    }
     try {
       detailsRaw = Array.isArray(payload.details)
         ? payload.details
