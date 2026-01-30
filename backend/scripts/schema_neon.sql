@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS orders (
   property_id text REFERENCES properties(id) ON DELETE SET NULL,
   guest_name text,
   guest_phone text,
+  note text,
   checkin date,
   checkout date,
   price numeric,

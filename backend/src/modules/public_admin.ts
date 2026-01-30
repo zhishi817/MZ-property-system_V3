@@ -29,6 +29,20 @@ router.get('/cleaning-guide/password-info', requirePerm('rbac.manage'), async (_
   }
 })
 
+router.get('/maintenance-share/password-info', requirePerm('rbac.manage'), async (_req, res) => {
+  try {
+    if (hasPg) {
+      await ensurePublicAccessTable()
+      const rows = await pgSelect('public_access', '*', { area: 'maintenance_share' }) as any[]
+      const r = rows && rows[0]
+      return res.json({ configured: !!r, password_updated_at: r?.password_updated_at || null })
+    }
+    return res.json({ configured: false, password_updated_at: null })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
 router.post('/cleaning-guide/reset-password', requirePerm('rbac.manage'), async (req, res) => {
   const { new_password } = req.body || {}
   if (!new_password) return res.status(400).json({ message: 'missing new_password' })
@@ -43,6 +57,29 @@ router.post('/cleaning-guide/reset-password', requirePerm('rbac.manage'), async 
         await pgPool!.query('UPDATE public_access SET password_hash=$1, password_updated_at=$2 WHERE area=$3', [hash, now, 'cleaning'])
       } else {
         await pgInsert('public_access', { area: 'cleaning', password_hash: hash, password_updated_at: now })
+      }
+      return res.json({ ok: true })
+    }
+    return res.status(500).json({ message: 'no database configured' })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'reset failed' })
+  }
+})
+
+router.post('/maintenance-share/reset-password', requirePerm('rbac.manage'), async (req, res) => {
+  const { new_password } = req.body || {}
+  if (!new_password) return res.status(400).json({ message: 'missing new_password' })
+  try {
+    if (hasPg) {
+      await ensurePublicAccessTable()
+      const hash = await bcrypt.hash(String(new_password), 10)
+      const rows = await pgSelect('public_access', '*', { area: 'maintenance_share' }) as any[]
+      const existing = rows && rows[0]
+      const now = new Date().toISOString()
+      if (existing) {
+        await pgPool!.query('UPDATE public_access SET password_hash=$1, password_updated_at=$2 WHERE area=$3', [hash, now, 'maintenance_share'])
+      } else {
+        await pgInsert('public_access', { area: 'maintenance_share', password_hash: hash, password_updated_at: now })
       }
       return res.json({ ok: true })
     }

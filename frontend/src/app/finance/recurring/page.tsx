@@ -278,11 +278,7 @@ export default function RecurringPage() {
         const dueDay = Number(t.due_day_of_month || 1)
         const dim = m.endOf('month').date()
         const dueISO = m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
-        const occISO = m.startOf('month').format('YYYY-MM-DD')
-        const isRentDeduct = (t.payment_type === 'rent_deduction')
-        const body = isRentDeduct
-          ? { occurred_at: occISO, amount: Number(t.amount||0), currency: 'AUD', category: t.category || 'other', note: 'Rent deduction snapshot', fixed_expense_id: t.id, month_key: monthKey, paid_date: occISO, status: 'paid', property_id: t.property_id }
-          : { occurred_at: dueISO, amount: Number(t.amount||0), currency: 'AUD', category: t.category || 'other', note: 'Fixed payment snapshot', fixed_expense_id: t.id, month_key: monthKey, due_date: dueISO, status: 'unpaid', property_id: t.property_id }
+        const body = { occurred_at: dueISO, amount: Number(t.amount||0), currency: 'AUD', category: t.category || 'other', note: 'Fixed payment snapshot', fixed_expense_id: t.id, month_key: monthKey, due_date: dueISO, status: 'unpaid', property_id: t.property_id }
         try {
           const qs = new URLSearchParams({ fixed_expense_id: String(t.id), month_key: monthKey })
           const existingRes = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
@@ -351,29 +347,6 @@ export default function RecurringPage() {
             if (!respCur.ok && respCur.status !== 409) {
               const errMsg = await respCur.text().catch(()=> '')
               console.error('POST fixed expense failed', m.format('YYYY-MM'), respCur.status, errMsg)
-            }
-          }
-          if ((v.payment_type === 'rent_deduction') && (v.scope === 'property')) {
-            const startOfYear = m.startOf('year')
-            const monthsCount = m.diff(startOfYear, 'month')
-            for (let i = 1; i <= monthsCount; i++) {
-              const mm = m.subtract(i, 'month')
-              const mk = mm.format('YYYY-MM')
-              const occISO = mm.startOf('month').format('YYYY-MM-DD')
-              const bodyPast = { occurred_at: occISO, amount: Number(v.amount||0), currency: 'AUD', category: v.category || 'other', note: 'Rent deduction snapshot', fixed_expense_id: newId, month_key: mk, paid_date: occISO, status: 'paid', property_id: v.property_id }
-              try {
-                const qsP = new URLSearchParams({ property_id: String(v.property_id||''), month_key: mk, category: String(v.category||'other'), amount: String(Number(v.amount||0)) })
-                const rP = await fetch(`${API_BASE}/crud/${resType}?${qsP.toString()}`, { headers: authHeaders() })
-                const aP = rP.ok ? await rP.json().catch(()=>[]) : []
-                const existsP = Array.isArray(aP) && aP.length > 0
-                if (!existsP) {
-                  const respP = await fetch(`${API_BASE}/crud/${resType}`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(bodyPast) })
-                  if (!respP.ok && respP.status !== 409) {
-                    const errMsg = await respP.text().catch(()=> '')
-                    console.error('POST past consumables failed', mk, respP.status, errMsg)
-                  }
-                }
-              } catch {}
             }
           }
         }

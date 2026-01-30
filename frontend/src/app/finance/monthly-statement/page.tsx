@@ -48,7 +48,7 @@ export default function MonthlyStatementPage() {
       } catch { setInvoiceMap({}) }
     })()
   }, [propertyId, start, end])
-  const totalIncome = useMemo(() => ordersInMonth.reduce((s: number, x: any) => s + Number((x as any).net_income || 0), 0), [ordersInMonth])
+  const totalIncome = useMemo(() => ordersInMonth.reduce((s: number, x: any) => s + Number(((x as any).visible_net_income ?? (x as any).net_income) || 0), 0), [ordersInMonth])
   const occupiedNights = useMemo(() => ordersInMonth.reduce((s: number, x: any) => s + Number(x.nights || 0), 0), [ordersInMonth])
   const daysInMonth = end && start ? end.diff(start, 'day') + 1 : 30
   const occupancyRate = daysInMonth ? Math.round(((occupiedNights / daysInMonth) * 100 + Number.EPSILON) * 100) / 100 : 0
@@ -133,7 +133,7 @@ export default function MonthlyStatementPage() {
         </div>
 
         <div style={{ pageBreakBefore: 'always', marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>Rent Records</div>
-        <Table size="small" pagination={false} dataSource={ordersInMonth} rowKey={r => (r as any).__rid || r.id} columns={[{ title:'入住', dataIndex:'checkin', render: (v: string) => v ? dayjs(v).format('DD/MM/YYYY') : '' }, { title:'退房', dataIndex:'checkout', render: (v: string) => v ? dayjs(v).format('DD/MM/YYYY') : '' }, { title:'晚数', render: (_: any, r: Order) => r.nights ?? Math.max(dayjs(r.checkout!).diff(dayjs(r.checkin!), 'day'), 0) }, { title:'金额', render: (_: any, r: Order) => `$${fmt(Number((r as any).net_income||0))}` }]} />
+        <Table size="small" pagination={false} dataSource={ordersInMonth} rowKey={r => (r as any).__rid || r.id} columns={[{ title:'入住', dataIndex:'checkin', render: (v: string) => v ? dayjs(v).format('DD/MM/YYYY') : '' }, { title:'退房', dataIndex:'checkout', render: (v: string) => v ? dayjs(v).format('DD/MM/YYYY') : '' }, { title:'晚数', render: (_: any, r: Order) => r.nights ?? Math.max(dayjs(r.checkout!).diff(dayjs(r.checkin!), 'day'), 0) }, { title:'金额', render: (_: any, r: Order) => `$${fmt(Number(((r as any).visible_net_income ?? (r as any).net_income)||0))}` }]} />
 
         <div style={{ pageBreakBefore: 'always', marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>Expense Invoices 支出发票</div>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap: 12 }}>
