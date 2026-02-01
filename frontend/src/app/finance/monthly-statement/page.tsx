@@ -3,7 +3,6 @@ import { Card, DatePicker, Button, Select, Table } from 'antd'
 import dayjs from 'dayjs'
 import { monthSegments } from '../../../lib/orders'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'next/navigation'
 import { getJSON, API_BASE } from '../../../lib/api'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
@@ -12,15 +11,29 @@ type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?:
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 
 export default function MonthlyStatementPage() {
-  const sp = useSearchParams()
-  const [month, setMonth] = useState<any>(sp.get('month') ? dayjs(sp.get('month') as string) : dayjs())
-  const [propertyId, setPropertyId] = useState<string | undefined>(sp.get('pid') || undefined)
+  const [month, setMonth] = useState<any>(dayjs())
+  const [propertyId, setPropertyId] = useState<string | undefined>(undefined)
   const [orders, setOrders] = useState<Order[]>([])
   const [txs, setTxs] = useState<Tx[]>([])
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
   const ref = useRef<HTMLDivElement>(null)
   const printed = useRef<boolean>(false)
+  const inited = useRef<boolean>(false)
+  const autoPrint = useRef<boolean>(false)
+  useEffect(() => {
+    if (inited.current) return
+    inited.current = true
+    try {
+      const qs = typeof window !== 'undefined' ? window.location.search : ''
+      const sp = new URLSearchParams(qs || '')
+      const m = sp.get('month') || ''
+      const pid = sp.get('pid') || ''
+      autoPrint.current = sp.get('autoprint') === '1'
+      if (m) setMonth(dayjs(m))
+      if (pid) setPropertyId(pid)
+    } catch {}
+  }, [])
   useEffect(() => { getJSON<any>('/properties').then(j => setProperties(j || [])).catch(() => setProperties([])) }, [])
   useEffect(() => { getJSON<Order[]>('/orders').then(setOrders).catch(() => setOrders([])); getJSON<Tx[]>('/finance').then(setTxs).catch(() => setTxs([])); getJSON<Landlord[]>('/landlords').then(setLandlords).catch(() => setLandlords([])) }, [])
   const ym = month ? { y: month.year(), m: month.month()+1 } : null
@@ -84,11 +97,11 @@ export default function MonthlyStatementPage() {
   function downloadPdf() { if (ref.current) window.print() }
 
   useEffect(() => {
-    if (!printed.current && sp.get('autoprint') === '1' && ref.current) {
+    if (!printed.current && autoPrint.current && ref.current) {
       printed.current = true
       try { window.print() } catch {}
     }
-  }, [orders, txs, properties, landlords, sp])
+  }, [orders, txs, properties, landlords])
 
   return (
     <Card title="月度收入报表">

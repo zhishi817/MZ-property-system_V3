@@ -248,6 +248,8 @@ const createOrderSchema = z.object({
   net_income: z.coerce.number().optional(),
   avg_nightly_price: z.coerce.number().optional(),
   nights: z.coerce.number().optional(),
+  total_payment_raw: z.coerce.number().optional(),
+  processed_status: z.string().optional(),
   currency: z.string().optional(),
   payment_currency: z.string().optional(),
   payment_received: z.boolean().optional(),
@@ -397,10 +399,22 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
     } catch { nights = 0 }
   }
   const cleaning = round2(o.cleaning_fee || 0) || 0
-  const price = round2(o.price || 0) || 0
+  const sourceKey = String(o.source || '').toLowerCase()
+  const isBooking = sourceKey.includes('book')
+  const totalRaw = o.total_payment_raw != null ? (round2(o.total_payment_raw) ?? 0) : null
+  let price = round2(o.price || 0) || 0
+  let processedStatus: string | undefined = (o as any).processed_status || undefined
+  let totalPaymentRaw: number | undefined = (o as any).total_payment_raw || undefined
+  if (isBooking && totalRaw !== null) {
+    totalPaymentRaw = totalRaw
+    price = round2(totalRaw * 0.83) || 0
+    processedStatus = 'computed_0_83'
+  }
   const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0))
   const avg = o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0)
   const newOrder: Order = { id: uuid(), ...o, property_id: propertyId, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key, status: 'confirmed' }
+  ;(newOrder as any).total_payment_raw = totalPaymentRaw
+  ;(newOrder as any).processed_status = processedStatus
   ;(newOrder as any).payment_currency = o.payment_currency || 'AUD'
   ;(newOrder as any).payment_received = o.payment_received ?? false
   try {
@@ -421,7 +435,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
       if (Array.isArray(dup) && dup[0]) {
         if (force) {
           try {
-            const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code','payment_currency','payment_received']
+              const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code','payment_currency','payment_received','total_payment_raw','processed_status']
             const payload: any = {}
             for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
             const row = await pgUpdate('orders', String(dup[0].id), payload)
@@ -451,6 +465,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
       }
       const insertOrder: any = { ...newOrder }
       delete insertOrder.property_code
+      await ensureOrdersColumns()
       await ensureOrdersIndexes()
       const row = await pgInsert('orders', insertOrder)
       try { broadcastOrdersUpdated({ action: 'create', id: row?.id }) } catch {}

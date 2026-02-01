@@ -1,5 +1,5 @@
 "use client"
-import { Card, Form, Input, InputNumber, DatePicker, Select, Upload, Button, Table, Space, App, Modal, Alert, Radio } from 'antd'
+import { Card, Form, Input, InputNumber, DatePicker, Select, Upload, Button, Table, Space, App, Modal, Alert, Radio, Drawer } from 'antd'
 import { UploadOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import dayjs from 'dayjs'
@@ -205,7 +205,14 @@ export default function ExpensesPage() {
           return kindOk && scopeOk && codeOk && catOk && inRange
         })} pagination={{ pageSize, showSizeChanger: true, pageSizeOptions: [10,20,50,100], onChange: (_p, ps) => setPageSize(ps), onShowSizeChange: (_p, ps) => setPageSize(ps) }} scroll={{ x: 'max-content' }} />
       )}
-      <Modal open={open} onCancel={() => setOpen(false)} onOk={submit} confirmLoading={saving} title="记录支出">
+      <Drawer open={open} onClose={() => setOpen(false)} title={editing? '编辑支出':'记录支出'} width={720} footer={
+        <div style={{ textAlign: 'right' }}>
+          <Space>
+            <Button onClick={() => setOpen(false)}>取消</Button>
+            <Button type="primary" onClick={submit} loading={saving}>保存</Button>
+          </Space>
+        </div>
+      }>
         <Form form={form} layout="vertical">
           <Form.Item name="paid_date" label="付款日期" rules={[{ required: true }]}> 
             <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" />
@@ -280,7 +287,7 @@ export default function ExpensesPage() {
           </Form.Item>
           
         </Form>
-      </Modal>
+      </Drawer>
       <Modal open={dupOpen} onCancel={() => setDupOpen(false)} footer={null} title="疑似重复支出" width={860}>
         {dupResult ? (
           <>

@@ -24,6 +24,7 @@ export const users: Record<string, User & { password: string }> = {
 export async function login(req: Request, res: Response) {
   const { username, password } = req.body || {}
   if (!username || !password) return res.status(400).json({ message: 'missing credentials' })
+  const isDev = String(process.env.APP_ENV || '').toLowerCase() === 'dev' && String(process.env.NODE_ENV || '').toLowerCase() !== 'production'
   // DB first（Postgres；容错）
   let row: any = null
   // Supabase branch removed
@@ -38,7 +39,29 @@ export async function login(req: Request, res: Response) {
     } catch {}
   }
   if (row) {
-    const ok = await bcrypt.compare(password, row.password_hash)
+    let ok = false
+    try {
+      const hash = typeof row.password_hash === 'string' ? row.password_hash : ''
+      if (hash) ok = await bcrypt.compare(password, hash)
+    } catch {}
+    if (!ok && isDev) {
+      const alias: Record<string, string> = { ops: 'cs', field: 'cleaner' }
+      const k = alias[String(username)] || String(username)
+      const u = (users as any)[k]
+      if (u && u.password === String(password)) {
+        ok = true
+        try {
+          if (hasPg) {
+            const { pgPool } = require('./dbAdapter')
+            if (pgPool) {
+              const newHash = await bcrypt.hash(String(password), 10)
+              await pgPool.query('UPDATE users SET password_hash=$1 WHERE id=$2', [newHash, row.id])
+              row.password_hash = newHash
+            }
+          }
+        } catch {}
+      }
+    }
     if (!ok) return res.status(401).json({ message: 'invalid credentials' })
     let sid: string | null = null
     if (hasPg) {

@@ -1,11 +1,10 @@
 "use client"
-import { Card, Table, Space, Button, Input, Select, DatePicker, Modal, Form, App, Upload, Grid, Drawer, Image, InputNumber, Switch, Typography, Tag } from 'antd'
+import { Card, Table, Space, Button, Input, Select, DatePicker, Modal, Form, App, Upload, Grid, Drawer, Image, InputNumber, Switch, Typography, Tag, Row, Col, Divider } from 'antd'
 import { EnvironmentOutlined, InfoCircleOutlined, DollarCircleOutlined, PictureOutlined, CheckCircleOutlined, ShareAltOutlined } from '@ant-design/icons'
 import html2canvas from 'html2canvas'
-import { useSearchParams } from 'next/navigation'
 import type { UploadFile } from 'antd/es/upload/interface'
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { apiUpdate, apiDelete, apiCreate, getJSON, API_BASE, authHeaders } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
 import { sortProperties } from '../../../lib/properties'
@@ -73,8 +72,21 @@ export default function MaintenanceRecordsUnified() {
 
   const screens = Grid.useBreakpoint()
   const isMobile = !screens.md
-  const searchParams = useSearchParams()
-  const captureEnabled = String(searchParams.get('capture') || '') === '1'
+  const [captureEnabled, setCaptureEnabled] = useState(false)
+  const maintenanceAbortRef = useRef<AbortController | null>(null)
+  const skipInitialFilterEffectRef = useRef(true)
+  const propsLoadingRef = useRef<Promise<void> | null>(null)
+  const usersLoadingRef = useRef<Promise<void> | null>(null)
+
+  useEffect(() => {
+    try {
+      const qs = typeof window !== 'undefined' ? window.location.search : ''
+      const sp = new URLSearchParams(qs || '')
+      setCaptureEnabled(String(sp.get('capture') || '') === '1')
+    } catch {
+      setCaptureEnabled(false)
+    }
+  }, [])
 
   async function loadProperties() {
     try {
@@ -82,9 +94,89 @@ export default function MaintenanceRecordsUnified() {
       setProps(Array.isArray(ps) ? ps : [])
     } catch { setProps([]) }
   }
-  async function loadMaintenance(reset?: boolean) {
-    setLoading(true)
+  async function ensurePropsLoaded() {
+    if (props && props.length) return
+    if (propsLoadingRef.current) return propsLoadingRef.current
+    const p = (async () => {
+      if (typeof window !== 'undefined') {
+        try {
+          const raw = localStorage.getItem('mz_cache_properties_v1')
+          if (raw) {
+            const j = JSON.parse(raw || '{}')
+            const ts = Number(j?.ts || 0)
+            const data = Array.isArray(j?.data) ? j.data : null
+            if (data && data.length > 0 && Number.isFinite(ts) && Date.now() - ts < 12 * 60 * 60 * 1000) {
+              setProps(data)
+              return
+            }
+          }
+        } catch {}
+      }
+      try {
+        const ps = await getJSON<any[]>('/properties').catch(()=>[])
+        const data = Array.isArray(ps) ? ps : []
+        setProps(data)
+        if (typeof window !== 'undefined') {
+          try { localStorage.setItem('mz_cache_properties_v1', JSON.stringify({ ts: Date.now(), data })) } catch {}
+        }
+      } catch { setProps([]) }
+    })().finally(() => { propsLoadingRef.current = null })
+    propsLoadingRef.current = p
+    return p
+  }
+  async function ensureUserOptionsLoaded() {
+    if (userOptions && userOptions.length) return
+    if (usersLoadingRef.current) return usersLoadingRef.current
+    const p = (async () => {
+      if (typeof window !== 'undefined') {
+        try {
+          const raw = localStorage.getItem('mz_cache_rbac_users_v1')
+          if (raw) {
+            const j = JSON.parse(raw || '{}')
+            const ts = Number(j?.ts || 0)
+            const data = Array.isArray(j?.data) ? j.data : null
+            if (data && Number.isFinite(ts) && Date.now() - ts < 60 * 60 * 1000) {
+              setUserOptions(data)
+              return
+            }
+          }
+        } catch {}
+      }
+      try {
+        const users = await getJSON<any[]>('/rbac/users').catch(()=>[])
+        const opts = (Array.isArray(users) ? users : []).map(u => ({ value: String(u?.id || ''), label: String(u?.username || u?.name || u?.id || '') })).filter(x => x.value && x.label)
+        setUserOptions(opts)
+        if (typeof window !== 'undefined') {
+          try { localStorage.setItem('mz_cache_rbac_users_v1', JSON.stringify({ ts: Date.now(), data: opts })) } catch {}
+        }
+      } catch { setUserOptions([]) }
+    })().finally(() => { usersLoadingRef.current = null })
+    usersLoadingRef.current = p
+    return p
+  }
+  function maintenanceQueryKey() {
+    const dr0 = dateRange?.[0] ? dayjs(dateRange[0]).format('YYYY-MM-DD') : ''
+    const dr1 = dateRange?.[1] ? dayjs(dateRange[1]).format('YYYY-MM-DD') : ''
+    return JSON.stringify({
+      filterCode: String(filterCode || ''),
+      filterPropertyId: String(filterPropertyId || ''),
+      filterWorkNo: String(filterWorkNo || ''),
+      filterSubmitter: String(filterSubmitter || ''),
+      filterKeyword: String(filterKeyword || ''),
+      filterStatus: String(filterStatus || ''),
+      filterCat: String(filterCat || ''),
+      dateRange: [dr0, dr1],
+      pageSize: Number(pageSize || 10),
+      page: 1,
+    })
+  }
+  async function loadMaintenance(reset?: boolean, opts?: { silent?: boolean }) {
+    const showLoading = !opts?.silent || !list?.length
+    if (showLoading) setLoading(true)
     try {
+      try { maintenanceAbortRef.current?.abort() } catch {}
+      const controller = new AbortController()
+      maintenanceAbortRef.current = controller
       const params: Record<string, any> = {
         withTotal: '1',
         limit: String(pageSize),
@@ -98,7 +190,7 @@ export default function MaintenanceRecordsUnified() {
       const q = [filterKeyword, filterWorkNo, filterSubmitter, filterCode].map(s => String(s || '').trim()).filter(Boolean).join(' ')
       if (q) params.q = q
       const qs = new URLSearchParams(params as any).toString()
-      const res = await fetch(`${API_BASE}/crud/property_maintenance?${qs}`, { cache: 'no-store', headers: authHeaders() })
+      const res = await fetch(`${API_BASE}/crud/property_maintenance?${qs}`, { cache: 'no-store', headers: authHeaders(), signal: controller.signal })
       if (res.status === 401) { window.location.href = '/login'; return }
       const data = await res.json().catch(()=>[])
       const items = Array.isArray(data) ? data : []
@@ -119,24 +211,41 @@ export default function MaintenanceRecordsUnified() {
       } else {
         setList(items)
       }
+      if (typeof window !== 'undefined' && (reset || page === 1)) {
+        try {
+          sessionStorage.setItem('mz_cache_maintenance_records_v1', JSON.stringify({ ts: Date.now(), key: maintenanceQueryKey(), list: items, total: tot }))
+        } catch {}
+      }
     } catch {
       if (reset || page === 1 || !isMobile) setList([])
       setTotal(0)
     } finally {
-      setLoading(false)
+      if (showLoading) setLoading(false)
     }
   }
-  useEffect(() => { loadProperties() }, [])
   useEffect(() => {
-    ;(async () => {
+    if (typeof window !== 'undefined') {
       try {
-        const users = await getJSON<any[]>('/rbac/users').catch(()=>[])
-        const opts = (Array.isArray(users) ? users : []).map(u => ({ value: String(u?.id || ''), label: String(u?.username || u?.name || u?.id || '') })).filter(x => x.value && x.label)
-        setUserOptions(opts)
-      } catch { setUserOptions([]) }
-    })()
+        const raw = sessionStorage.getItem('mz_cache_maintenance_records_v1')
+        if (raw) {
+          const j = JSON.parse(raw || '{}')
+          const ts = Number(j?.ts || 0)
+          const key = String(j?.key || '')
+          const cachedList = Array.isArray(j?.list) ? j.list : null
+          const cachedTotal = Number(j?.total || 0)
+          if (cachedList && Number.isFinite(ts) && Date.now() - ts < 5 * 60 * 1000 && key === maintenanceQueryKey()) {
+            setList(cachedList)
+            if (Number.isFinite(cachedTotal) && cachedTotal >= 0) setTotal(cachedTotal)
+          }
+        }
+      } catch {}
+    }
+    loadMaintenance(true, { silent: true })
+    const t = setTimeout(() => { ensurePropsLoaded().catch(()=>{}) }, 1200)
+    return () => { clearTimeout(t); try { maintenanceAbortRef.current?.abort() } catch {} }
   }, [])
   useEffect(() => {
+    if (skipInitialFilterEffectRef.current) { skipInitialFilterEffectRef.current = false; return }
     const t = setTimeout(() => { setPage(1); loadMaintenance(true) }, 250)
     return () => clearTimeout(t)
   }, [filterCode, filterPropertyId, filterWorkNo, filterSubmitter, filterKeyword, filterStatus, filterCat, dateRange, pageSize])
@@ -146,7 +255,7 @@ export default function MaintenanceRecordsUnified() {
     const byId: Record<string, any> = Object.fromEntries(props.map(p => [String(p.id), p]))
     return (list || []).map(r => {
       const p = byId[String(r.property_id || '')]
-      const code = p?.code || r.property_id || ''
+      const code = p?.code || (r as any)?.code || (r as any)?.property_code || r.property_id || ''
       return { ...r, code }
     })
   }, [list, props])
@@ -156,6 +265,7 @@ export default function MaintenanceRecordsUnified() {
   const propOptions = useMemo(() => sortProperties(props).map(p => ({ value: p.id, label: p.code || p.id })), [props])
 
   function openEdit(row: RepairOrder) {
+    ensureUserOptionsLoaded().catch(()=>{})
     setEditing(row)
     form.setFieldsValue({
       status: row.status || 'pending',
@@ -420,26 +530,24 @@ export default function MaintenanceRecordsUnified() {
 
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
-      <Card title="维修记录">
+      <Card title={
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>维修记录</span>
+          <Button type="primary" onClick={() => setCreateOpen(true)} style={{ width: isMobile ? '100%' : undefined }}>新增维修记录</Button>
+        </div>
+      }>
         <Space style={{ marginBottom: 12, width: '100%' }} wrap>
-          <Select placeholder="房号（精确）" allowClear options={propOptions} value={filterPropertyId} onChange={v=>setFilterPropertyId(v)} style={{ width: isMobile ? '100%' : 180 }} />
-          <Input placeholder="按房号模糊搜索" value={filterCode} onChange={e=>setFilterCode(e.target.value)} style={{ width: isMobile ? '100%' : 180 }} />
+          <Select placeholder="房号搜索" allowClear options={propOptions} value={filterPropertyId} onChange={v=>setFilterPropertyId(v)} style={{ width: isMobile ? '100%' : 220 }} showSearch optionFilterProp="label" filterOption={(input, option) => String(option?.label || '').toLowerCase().includes(input.toLowerCase())} />
           <Input placeholder="按工单号搜索" value={filterWorkNo} onChange={e=>setFilterWorkNo(e.target.value)} style={{ width: isMobile ? '100%' : 180 }} />
           <Input placeholder="按提交人搜索" value={filterSubmitter} onChange={e=>setFilterSubmitter(e.target.value)} style={{ width: isMobile ? '100%' : 180 }} />
           <Input placeholder="关键词搜索（区域/摘要/人员等）" value={filterKeyword} onChange={e=>setFilterKeyword(e.target.value)} style={{ width: isMobile ? '100%' : 240 }} />
-          <Select placeholder="按分类" allowClear options={catOptions} value={filterCat} onChange={v=>setFilterCat(v)} style={{ width: isMobile ? '100%' : 160 }} />
           <Select placeholder="按状态" allowClear options={statusOptions} value={filterStatus} onChange={v=>setFilterStatus(v)} style={{ width: isMobile ? '100%' : 160 }} />
-          <DatePicker.RangePicker
-            value={dateRange as any}
-            onChange={v=>setDateRange(v as any)}
+          <DatePicker
+            placeholder="选择日期"
+            value={dateRange?.[0] ? dayjs(dateRange[0]) : null}
+            onChange={v => setDateRange(v ? [v, v] : null)}
             style={{ width: isMobile ? '100%' : undefined }}
-            allowClear
-            presets={[
-              { label: '近7天', value: [dayjs().add(-6, 'day'), dayjs()] as any },
-              { label: '近30天', value: [dayjs().add(-29, 'day'), dayjs()] as any },
-            ] as any}
           />
-          <Button onClick={()=>{ setPage(1); loadMaintenance(true) }} loading={loading}>搜索</Button>
           <Button onClick={()=>{
             setFilterPropertyId(undefined)
             setFilterCode('')
@@ -453,7 +561,6 @@ export default function MaintenanceRecordsUnified() {
             loadMaintenance(true)
           }}>重置</Button>
           <Button onClick={exportExcel}>导出Excel</Button>
-          <Button type="primary" onClick={() => setCreateOpen(true)} style={{ marginLeft: isMobile ? 0 : 'auto', width: isMobile ? '100%' : undefined }}>新增维修记录</Button>
           {captureEnabled ? (
             <Button onClick={async ()=>{
               const el = document.querySelector('[data-page-root="maintenance-records"]') as HTMLElement
@@ -492,11 +599,11 @@ export default function MaintenanceRecordsUnified() {
                             <div style={{ gridColumn:'1 / span 2' }}>其他人备注：{String((r as any).pay_other_note || '-')}</div>
                           ) : null}
                         </div>
-                        <Space style={{ width:'100%' }}>
-                          <Button size="large" style={{ flex:1 }} onClick={()=>openView(r)}>查看</Button>
-                          <Button size="large" style={{ flex:1 }} onClick={()=>shareLink(r)} icon={<ShareAltOutlined />}>分享</Button>
-                          <Button size="large" style={{ flex:1 }} onClick={()=>openEdit(r)} disabled={!hasPerm('property_maintenance.write')}>编辑</Button>
-                          <Button size="large" style={{ flex:1 }} danger onClick={()=>remove(r.id)} disabled={!hasPerm('property_maintenance.delete')}>删除</Button>
+                        <Space>
+                          <Button onClick={()=>openView(r)}>详情</Button>
+                          <Button onClick={()=>shareLink(r)}>分享</Button>
+                          <Button onClick={()=>openEdit(r)} disabled={!hasPerm('property_maintenance.write')}>编辑</Button>
+                          <Button danger onClick={()=>remove(r.id)} disabled={!hasPerm('property_maintenance.delete')}>删除</Button>
                         </Space>
                       </Space>
                     </Card>
@@ -508,7 +615,7 @@ export default function MaintenanceRecordsUnified() {
               )
             }
             const columns = [
-              { title:'房号', dataIndex:'code', width: 120 },
+              { title:'房号', dataIndex:'code', width: 120, ellipsis: true },
               { title:'工单号', dataIndex:'work_no', width: 160, render: (_: any, r: any) => String((r as any)?.work_no || (r as any)?.id || '') },
               { title:'紧急程度', dataIndex:'urgency', width: 120, render:(u:string)=> urgencyTag(u) },
               { title:'问题区域', dataIndex:'category', width: 120, render: (_: any, r: any) => issueAreaLabel(r) },
@@ -526,12 +633,12 @@ export default function MaintenanceRecordsUnified() {
               { title:'状态', dataIndex:'status', width: 120, render:(s:string)=> statusTag(s) },
               { title:'完成时间', dataIndex:'completed_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD') : '-' },
               { title:'分配人员', dataIndex:'assignee_id', width: 140 },
-              { title:'操作', fixed: 'right' as const, width: 280, render: (_:any, r:RepairOrder) => (
-                <Space>
-                  <Button size="small" onClick={()=>openView(r)}>查看</Button>
-                  <Button size="small" icon={<ShareAltOutlined />} onClick={()=>shareLink(r)}>分享</Button>
-                  <Button size="small" onClick={()=>openEdit(r)} disabled={!hasPerm('property_maintenance.write')}>编辑</Button>
-                  <Button size="small" danger onClick={()=>remove(r.id)} disabled={!hasPerm('property_maintenance.delete')}>删除</Button>
+              { title:'操作', width: 320, render: (_:any, r:RepairOrder) => (
+                <Space wrap>
+                  <Button onClick={()=>openView(r)}>详情</Button>
+                  <Button onClick={()=>shareLink(r)}>分享</Button>
+                  <Button onClick={()=>openEdit(r)} disabled={!hasPerm('property_maintenance.write')}>编辑</Button>
+                  <Button danger onClick={()=>remove(r.id)} disabled={!hasPerm('property_maintenance.delete')}>删除</Button>
                 </Space>
               ) },
             ]
@@ -550,7 +657,7 @@ export default function MaintenanceRecordsUnified() {
                       if (ps !== pageSize) { setPageSize(ps); setPage(1) } else { setPage(p) }
                     }
                   }}
-                  scroll={{ x: 2200 }}
+                  scroll={{ x: 1800 }}
                   columns={columns as any}
                 />
               </div>
@@ -779,15 +886,30 @@ export default function MaintenanceRecordsUnified() {
           </Form.Item>
         </Form>
       </Modal>
-      <Modal open={open} onCancel={()=>setOpen(false)} onOk={save} title="更新维修记录状态" okText="保存">
+      <Drawer
+        title="更新维修记录"
+        width={720}
+        onClose={() => setOpen(false)}
+        open={open}
+        footer={
+          <div style={{ textAlign: 'right' }}>
+            <Space>
+              <Button onClick={() => setOpen(false)}>取消</Button>
+              <Button type="primary" onClick={save}>保存</Button>
+            </Space>
+          </div>
+        }
+      >
         <Form form={form} layout="vertical">
-          <Form.Item name="status" label="状态" rules={[{ required: true }]}>
-            <Select options={statusOptions} />
-          </Form.Item>
-          <Form.Item name="details" label="问题摘要"><Input.TextArea rows={3} /></Form.Item>
-          <Space direction="vertical" style={{ width: '100%' }}>
-            {(String(statusWatch || '') === 'pending' || String(statusWatch || '') === 'assigned' || String(statusWatch || '') === 'in_progress') ? (
-              <>
+          <Divider orientation="left">基础信息</Divider>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="status" label="状态" rules={[{ required: true }]}>
+                <Select options={statusOptions} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              {(String(statusWatch || '') === 'pending' || String(statusWatch || '') === 'assigned' || String(statusWatch || '') === 'in_progress') ? (
                 <Form.Item name="urgency" label="紧急程度">
                   <Select options={[
                     { value:'urgent', label:'紧急' },
@@ -795,6 +917,10 @@ export default function MaintenanceRecordsUnified() {
                     { value:'not_urgent', label:'不紧急' },
                   ]} />
                 </Form.Item>
+              ) : null}
+            </Col>
+            <Col span={12}>
+              {(String(statusWatch || '') === 'pending' || String(statusWatch || '') === 'assigned' || String(statusWatch || '') === 'in_progress') ? (
                 <Form.Item name="assignee_id" label="分配维修人员">
                   <Select
                     allowClear
@@ -804,129 +930,168 @@ export default function MaintenanceRecordsUnified() {
                     placeholder="请选择维修人员"
                   />
                 </Form.Item>
+              ) : null}
+            </Col>
+            <Col span={12}>
+              {(String(statusWatch || '') === 'pending' || String(statusWatch || '') === 'assigned' || String(statusWatch || '') === 'in_progress') ? (
                 <Form.Item name="eta" label="预计完成时间"><DatePicker style={{ width: '100%' }} /></Form.Item>
-              </>
-            ) : null}
-            <Form.Item label="维修前照片">
-              <Upload listType="picture" multiple fileList={preFiles} onRemove={(f)=>{ setPreFiles(fl=>fl.filter(x=>x.uid!==f.uid)); if ((f as any).url) setPrePhotos(u=>u.filter(x=>x!==(f as any).url)) }}
-                customRequest={async ({ file, onProgress, onSuccess, onError }: any) => {
-                  const fd = new FormData(); fd.append('file', file)
-                  try {
-                    const xhr = new XMLHttpRequest()
-                    xhr.open('POST', `${API_BASE}/maintenance/upload`)
-                    const headers = authHeaders() as any
-                    Object.keys(headers || {}).forEach(k => xhr.setRequestHeader(k, headers[k]))
-                    const uid = Math.random().toString(36).slice(2)
-                    setPreFiles(fl => [...fl, { uid, name: (file as any)?.name || 'image', status: 'uploading', percent: 0 } as UploadFile])
-                    xhr.upload.onprogress = (evt) => {
-                      if (evt.lengthComputable && onProgress) {
-                        const pct = Number((((evt.loaded || 0) / (evt.total || 1)) * 100).toFixed(0))
-                        onProgress({ percent: pct })
-                        setPreFiles(fl => fl.map(x => x.uid === uid ? { ...x, percent: pct, status: 'uploading' } as UploadFile : x))
+              ) : null}
+            </Col>
+            <Col span={24}>
+              <Form.Item name="details" label="问题摘要"><Input.TextArea rows={3} /></Form.Item>
+            </Col>
+            <Col span={24}>
+              <Form.Item label="维修前照片">
+                <Upload listType="picture-card" multiple fileList={preFiles} onRemove={(f)=>{ setPreFiles(fl=>fl.filter(x=>x.uid!==f.uid)); if ((f as any).url) setPrePhotos(u=>u.filter(x=>x!==(f as any).url)) }}
+                  customRequest={async ({ file, onProgress, onSuccess, onError }: any) => {
+                    const fd = new FormData(); fd.append('file', file)
+                    try {
+                      const xhr = new XMLHttpRequest()
+                      xhr.open('POST', `${API_BASE}/maintenance/upload`)
+                      const headers = authHeaders() as any
+                      Object.keys(headers || {}).forEach(k => xhr.setRequestHeader(k, headers[k]))
+                      const uid = Math.random().toString(36).slice(2)
+                      setPreFiles(fl => [...fl, { uid, name: (file as any)?.name || 'image', status: 'uploading', percent: 0 } as UploadFile])
+                      xhr.upload.onprogress = (evt) => {
+                        if (evt.lengthComputable && onProgress) {
+                          const pct = Number((((evt.loaded || 0) / (evt.total || 1)) * 100).toFixed(0))
+                          onProgress({ percent: pct })
+                          setPreFiles(fl => fl.map(x => x.uid === uid ? { ...x, percent: pct, status: 'uploading' } as UploadFile : x))
+                        }
                       }
-                    }
-                    xhr.onreadystatechange = () => {
-                      if (xhr.readyState === 4) {
+                      xhr.onreadystatechange = () => {
+                        if (xhr.readyState === 4) {
+                          try {
+                            const j = JSON.parse(xhr.responseText || '{}')
+                            if (xhr.status >= 200 && xhr.status < 300 && j?.url) {
+                              setPrePhotos(u=>[...u, j.url])
+                              setPreFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'done', url: j.url, percent: 100 } as UploadFile : x))
+                              onSuccess && onSuccess(j, file)
+                            } else {
+                              setPreFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
+                              onError && onError(j)
+                            }
+                          } catch (e) { onError && onError(e) }
+                        }
+                      }
+                      xhr.onerror = (e) => { onError && onError(e) }
+                      xhr.send(fd)
+                    } catch (e) { onError && onError(e) }
+                  }}>
+                  <div>
+                    <PictureOutlined />
+                    <div style={{ marginTop: 8 }}>上传</div>
+                  </div>
+                </Upload>
+              </Form.Item>
+            </Col>
+          </Row>
+
+          {(String(statusWatch || '') === 'in_progress' || String(statusWatch || '') === 'completed') ? (
+            <>
+              <Divider orientation="left">维修反馈</Divider>
+              <Row gutter={16}>
+                <Col span={24}>
+                  <Form.Item name="repair_notes" label="维修记录描述"><Input.TextArea rows={3} /></Form.Item>
+                </Col>
+                <Col span={24}>
+                  <Form.Item label="维修后照片">
+                    <Upload listType="picture-card" multiple fileList={files} onRemove={(f)=>{ setFiles(fl=>fl.filter(x=>x.uid!==f.uid)); if (f.url) setRepairPhotos(u=>u.filter(x=>x!==f.url)) }}
+                      customRequest={async ({ file, onProgress, onSuccess, onError }: any) => {
+                        const fd = new FormData(); fd.append('file', file)
                         try {
-                          const j = JSON.parse(xhr.responseText || '{}')
-                          if (xhr.status >= 200 && xhr.status < 300 && j?.url) {
-                            setPrePhotos(u=>[...u, j.url])
-                            setPreFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'done', url: j.url, percent: 100 } as UploadFile : x))
-                            onSuccess && onSuccess(j, file)
-                          } else {
-                            setPreFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
-                            onError && onError(j)
+                          const xhr = new XMLHttpRequest()
+                          xhr.open('POST', `${API_BASE}/maintenance/upload`)
+                          const headers = authHeaders() as any
+                          Object.keys(headers || {}).forEach(k => xhr.setRequestHeader(k, headers[k]))
+                          const uid = Math.random().toString(36).slice(2)
+                          setFiles(fl => [...fl, { uid, name: (file as any)?.name || 'image', status: 'uploading', percent: 0 } as UploadFile])
+                          xhr.upload.onprogress = (evt) => {
+                            if (evt.lengthComputable && onProgress) {
+                              const pct = Number((((evt.loaded || 0) / (evt.total || 1)) * 100).toFixed(0))
+                              onProgress({ percent: pct })
+                              setFiles(fl => fl.map(x => x.uid === uid ? { ...x, percent: pct, status: 'uploading' } as UploadFile : x))
+                            }
                           }
+                          xhr.onreadystatechange = () => {
+                            if (xhr.readyState === 4) {
+                              try {
+                                const j = JSON.parse(xhr.responseText || '{}')
+                                if (xhr.status >= 200 && xhr.status < 300 && j?.url) {
+                                  setRepairPhotos(u=>[...u, j.url])
+                                  setFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'done', url: j.url, percent: 100 } as UploadFile : x))
+                                  onSuccess && onSuccess(j, file)
+                                } else {
+                                  setFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
+                                  onError && onError(j)
+                                }
+                              } catch (e) { onError && onError(e) }
+                            }
+                          }
+                          xhr.onerror = (e) => { onError && onError(e) }
+                          xhr.send(fd)
                         } catch (e) { onError && onError(e) }
-                      }
-                    }
-                    xhr.onerror = (e) => { onError && onError(e) }
-                    xhr.send(fd)
-                  } catch (e) { onError && onError(e) }
-                }}>
-                <Button>上传照片</Button>
-              </Upload>
-            </Form.Item>
-            {(String(statusWatch || '') === 'in_progress' || String(statusWatch || '') === 'completed') ? (
-              <>
-                <Form.Item name="repair_notes" label="维修记录描述"><Input.TextArea rows={3} /></Form.Item>
-                <Form.Item label="维修后照片">
-                  <Upload listType="picture" multiple fileList={files} onRemove={(f)=>{ setFiles(fl=>fl.filter(x=>x.uid!==f.uid)); if (f.url) setRepairPhotos(u=>u.filter(x=>x!==f.url)) }}
-                    customRequest={async ({ file, onProgress, onSuccess, onError }: any) => {
-                      const fd = new FormData(); fd.append('file', file)
-                      try {
-                        const xhr = new XMLHttpRequest()
-                        xhr.open('POST', `${API_BASE}/maintenance/upload`)
-                        const headers = authHeaders() as any
-                        Object.keys(headers || {}).forEach(k => xhr.setRequestHeader(k, headers[k]))
-                        const uid = Math.random().toString(36).slice(2)
-                        setFiles(fl => [...fl, { uid, name: (file as any)?.name || 'image', status: 'uploading', percent: 0 } as UploadFile])
-                        xhr.upload.onprogress = (evt) => {
-                          if (evt.lengthComputable && onProgress) {
-                            const pct = Number((((evt.loaded || 0) / (evt.total || 1)) * 100).toFixed(0))
-                            onProgress({ percent: pct })
-                            setFiles(fl => fl.map(x => x.uid === uid ? { ...x, percent: pct, status: 'uploading' } as UploadFile : x))
-                          }
-                        }
-                        xhr.onreadystatechange = () => {
-                          if (xhr.readyState === 4) {
-                            try {
-                              const j = JSON.parse(xhr.responseText || '{}')
-                              if (xhr.status >= 200 && xhr.status < 300 && j?.url) {
-                                setRepairPhotos(u=>[...u, j.url])
-                                setFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'done', url: j.url, percent: 100 } as UploadFile : x))
-                                onSuccess && onSuccess(j, file)
-                              } else {
-                                setFiles(fl => fl.map(x => x.uid === uid ? { ...x, status: 'error' } as UploadFile : x))
-                                onError && onError(j)
-                              }
-                            } catch (e) { onError && onError(e) }
-                          }
-                        }
-                        xhr.onerror = (e) => { onError && onError(e) }
-                        xhr.send(fd)
-                      } catch (e) { onError && onError(e) }
-                    }}>
-                    <Button>上传照片</Button>
-                  </Upload>
-                </Form.Item>
-              </>
-            ) : null}
-            {String(statusWatch || '') === 'completed' ? (
-              <>
-                <Typography.Text>费用信息</Typography.Text>
-                <Form.Item name="maintenance_amount" label="维修金额（AUD）">
-                  <InputNumber min={0} step={1} style={{ width:'100%' }} />
-                </Form.Item>
-                <Form.Item name="has_parts" label="是否包含配件费" valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-                <Form.Item name="parts_amount" label="配件费金额（AUD）" style={{ display: hasPartsWatch ? 'block' : 'none' }}>
-                  <InputNumber min={0} step={1} style={{ width:'100%' }} />
-                </Form.Item>
-                <Form.Item name="pay_method" label="扣款方式">
-                  <Select
-                    options={[
-                      { value:'rent_deduction', label:'租金扣除' },
-                      { value:'tenant_pay', label:'房客支付' },
-                      { value:'company_pay', label:'公司承担' },
-                      { value:'landlord_pay', label:'房东支付' },
-                      { value:'other_pay', label:'其他人支付' },
-                    ]}
-                  />
-                </Form.Item>
-                <Form.Item name="pay_other_note" label="其他人备注" style={{ display: String(payMethodWatch || '') === 'other_pay' ? 'block' : 'none' }}>
-                  <Input />
-                </Form.Item>
-                <Form.Item name="completed_at" label="完成时间">
-                  <DatePicker style={{ width: '100%' }} />
-                </Form.Item>
-              </>
-            ) : null}
-          </Space>
-          <Form.Item name="notes" label="维修备注"><Input.TextArea rows={3} /></Form.Item>
+                      }}>
+                      <div>
+                        <PictureOutlined />
+                        <div style={{ marginTop: 8 }}>上传</div>
+                      </div>
+                    </Upload>
+                  </Form.Item>
+                </Col>
+              </Row>
+            </>
+          ) : null}
+
+          {String(statusWatch || '') === 'completed' ? (
+            <>
+              <Divider orientation="left">费用结算</Divider>
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Form.Item name="maintenance_amount" label="维修金额（AUD）">
+                    <InputNumber min={0} step={1} style={{ width:'100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item name="completed_at" label="完成时间">
+                    <DatePicker style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item name="has_parts" label="是否包含配件费" valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                </Col>
+                <Col span={16}>
+                  <Form.Item name="parts_amount" label="配件费金额（AUD）" style={{ display: hasPartsWatch ? 'block' : 'none' }}>
+                    <InputNumber min={0} step={1} style={{ width:'100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item name="pay_method" label="扣款方式">
+                    <Select
+                      options={[
+                        { value:'rent_deduction', label:'租金扣除' },
+                        { value:'tenant_pay', label:'房客支付' },
+                        { value:'company_pay', label:'公司承担' },
+                        { value:'landlord_pay', label:'房东支付' },
+                        { value:'other_pay', label:'其他人支付' },
+                      ]}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item name="pay_other_note" label="其他人备注" style={{ display: String(payMethodWatch || '') === 'other_pay' ? 'block' : 'none' }}>
+                    <Input />
+                  </Form.Item>
+                </Col>
+              </Row>
+            </>
+          ) : null}
+          <Divider orientation="left">其他</Divider>
+          <Form.Item name="notes" label="内部备注"><Input.TextArea rows={2} /></Form.Item>
         </Form>
-      </Modal>
+      </Drawer>
     </Space>
   )
 }

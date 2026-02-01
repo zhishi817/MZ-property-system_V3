@@ -1,9 +1,9 @@
 import './globals.css'
 import 'antd/dist/reset.css'
 import type { Metadata } from 'next'
-import dynamic from 'next/dynamic'
-const ClientAdminLayout = dynamic(() => import('../components/AdminLayout').then(m => m.AdminLayout), { ssr: false })
+import { AntdRegistry } from '../components/AntdRegistry'
 import { ClientThemeProvider } from '../components/ClientThemeProvider'
+import { AdminLayout } from '../components/AdminLayout'
 
 export const metadata: Metadata = {
   title: 'MZ Property System',
@@ -14,9 +14,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="zh-CN">
       <body>
-        <ClientThemeProvider>
-          <ClientAdminLayout>{children}</ClientAdminLayout>
-        </ClientThemeProvider>
+        <AntdRegistry>
+          <ClientThemeProvider>
+            <AdminLayout>{children}</AdminLayout>
+          </ClientThemeProvider>
+        </AntdRegistry>
       </body>
     </html>
   )

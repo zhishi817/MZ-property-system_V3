@@ -45,6 +45,7 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
   const submenuToResources: Record<string, string[]> = {
     'menu.properties.list.visible': ['properties'],
     'menu.properties.maintenance.visible': ['property_maintenance'],
+    'menu.properties.deep_cleaning.visible': ['property_deep_cleaning'],
     'menu.properties.keys.visible': [], // 动作型留在“其他功能”
     'menu.landlords.visible': ['landlords'],
     'menu.cleaning.visible': ['cleaning_tasks'],

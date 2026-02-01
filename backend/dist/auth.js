@@ -33,6 +33,7 @@ async function login(req, res) {
     const { username, password } = req.body || {};
     if (!username || !password)
         return res.status(400).json({ message: 'missing credentials' });
+    const isDev = String(process.env.APP_ENV || '').toLowerCase() === 'dev' && String(process.env.NODE_ENV || '').toLowerCase() !== 'production';
     // DB first（Postgres；容错）
     let row = null;
     // Supabase branch removed
@@ -48,7 +49,32 @@ async function login(req, res) {
         catch (_a) { }
     }
     if (row) {
-        const ok = await bcryptjs_1.default.compare(password, row.password_hash);
+        let ok = false;
+        try {
+            const hash = typeof row.password_hash === 'string' ? row.password_hash : '';
+            if (hash)
+                ok = await bcryptjs_1.default.compare(password, hash);
+        }
+        catch (_b) { }
+        if (!ok && isDev) {
+            const alias = { ops: 'cs', field: 'cleaner' };
+            const k = alias[String(username)] || String(username);
+            const u = exports.users[k];
+            if (u && u.password === String(password)) {
+                ok = true;
+                try {
+                    if (dbAdapter_1.hasPg) {
+                        const { pgPool } = require('./dbAdapter');
+                        if (pgPool) {
+                            const newHash = await bcryptjs_1.default.hash(String(password), 10);
+                            await pgPool.query('UPDATE users SET password_hash=$1 WHERE id=$2', [newHash, row.id]);
+                            row.password_hash = newHash;
+                        }
+                    }
+                }
+                catch (_c) { }
+            }
+        }
         if (!ok)
             return res.status(401).json({ message: 'invalid credentials' });
         let sid = null;
@@ -67,7 +93,7 @@ async function login(req, res) {
                 });
                 sid = String(sidNew);
             }
-            catch (_b) { }
+            catch (_d) { }
         }
         const payload = { sub: row.id, role: row.role, username: row.username };
         if (sid)
@@ -99,7 +125,7 @@ async function login(req, res) {
                     });
                     sid = String(sidNew);
                 }
-                catch (_c) { }
+                catch (_e) { }
             }
             const payload = { sub: found.id, role: found.role, username: found.username || found.email };
             if (sid)

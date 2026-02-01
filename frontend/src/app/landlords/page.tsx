@@ -1,5 +1,5 @@
 "use client"
-import { Table, Card, Button, Modal, Form, Input, InputNumber, Space, message, Select, Tag, Switch } from 'antd'
+import { Table, Card, Button, Modal, Form, Input, InputNumber, Space, message, Select, Tag, Switch, Drawer, Descriptions, Divider, Row, Col } from 'antd'
 import { useEffect, useState } from 'react'
 import { API_BASE, getJSON } from '../../lib/api'
 import { sortProperties, cmpPropertyCode } from '../../lib/properties'
@@ -135,10 +135,10 @@ export default function LandlordsPage() {
       </Space>
     ), responsive: ['lg','xl'] },
     { title: '操作', fixed: 'right', render: (_: any, r: Landlord) => (
-      <Space wrap>
-        <Button size="small" onClick={() => openDetail(r.id)}>详情</Button>
-        {hasPerm('landlord.manage') && <Button size="small" onClick={() => { setCurrent(r); setEditOpen(true); editForm.setFieldsValue(r) }}>编辑</Button>}
-        {hasPerm('landlord.manage') && <Button size="small" danger onClick={() => confirmDelete(r)}>归档</Button>}
+      <Space>
+        <Button onClick={() => openDetail(r.id)}>详情</Button>
+        {hasPerm('landlord.manage') && <Button onClick={() => openEdit(r)}>编辑</Button>}
+        {hasPerm('landlord.manage') && <Button danger onClick={() => confirmDelete(r)}>归档</Button>}
       </Space>
     ), responsive: ['xs','sm','md','lg','xl'] },
   ]
@@ -174,19 +174,26 @@ export default function LandlordsPage() {
         size="small"
         scroll={{ x: 'max-content' }}
       />
-      <Modal open={open} onCancel={() => setOpen(false)} onOk={submitCreate} title="新增房东">
+      <Modal open={open} onCancel={() => setOpen(false)} onOk={submitCreate} title="新增房东" width={600}>
         <Form form={form} layout="vertical">
-          <Form.Item name="name" label="房东姓名" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="phone" label="联系方式"><Input /></Form.Item>
-          <Form.Item name="emails" label="邮箱" rules={[{ validator: (_, v) => (Array.isArray(v) ? v : []).every((x: any) => !x || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(x))) ? Promise.resolve() : Promise.reject('邮箱格式不正确') }]}>
-            <Select mode="tags" tokenSeparators={[',',';',' ']} open={false} placeholder="输入后按回车，可添加多个邮箱" />
-          </Form.Item>
-          <Form.Item name="management_fee_rate" label="管理费">
-            <InputNumber min={0} max={1} step={0.001} precision={3} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="payout_bsb" label="BSB"><Input /></Form.Item>
-          <Form.Item name="payout_account" label="银行账户"><Input /></Form.Item>
-          <Form.Item name="property_ids" label="被管理的房源">
+          <Divider orientation="left">基础信息</Divider>
+          <Row gutter={16}>
+            <Col span={12}><Form.Item name="name" label="房东姓名" rules={[{ required: true }]}><Input /></Form.Item></Col>
+            <Col span={12}><Form.Item name="phone" label="联系方式"><Input /></Form.Item></Col>
+            <Col span={24}><Form.Item name="emails" label="邮箱" rules={[{ validator: (_, v) => (Array.isArray(v) ? v : []).every((x: any) => !x || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(x))) ? Promise.resolve() : Promise.reject('邮箱格式不正确') }]}>
+              <Select mode="tags" tokenSeparators={[',',';',' ']} open={false} placeholder="输入后按回车，可添加多个邮箱" />
+            </Form.Item></Col>
+          </Row>
+          <Divider orientation="left">财务信息</Divider>
+          <Row gutter={16}>
+            <Col span={8}><Form.Item name="management_fee_rate" label="管理费率">
+              <InputNumber<number> min={0} max={1} step={0.001} precision={3} style={{ width: '100%' }} formatter={value => `${(Number(value) * 100).toFixed(1)}%`} parser={value => Number(value?.replace('%', '')) / 100} />
+            </Form.Item></Col>
+            <Col span={8}><Form.Item name="payout_bsb" label="BSB"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name="payout_account" label="银行账户"><Input /></Form.Item></Col>
+          </Row>
+          <Divider orientation="left">管理房源</Divider>
+          <Form.Item name="property_ids" label="关联房源">
             <Select
               mode="multiple"
               placeholder="选择房源"
@@ -198,19 +205,39 @@ export default function LandlordsPage() {
           </Form.Item>
         </Form>
       </Modal>
-      <Modal open={editOpen} onCancel={() => setEditOpen(false)} onOk={submitEdit} title="编辑房东">
+      <Drawer
+        title="编辑房东"
+        width={600}
+        onClose={() => setEditOpen(false)}
+        open={editOpen}
+        footer={
+          <div style={{ textAlign: 'right' }}>
+            <Space>
+              <Button onClick={() => setEditOpen(false)}>取消</Button>
+              <Button type="primary" onClick={submitEdit}>保存</Button>
+            </Space>
+          </div>
+        }
+      >
         <Form form={editForm} layout="vertical">
-          <Form.Item name="name" label="房东姓名" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="phone" label="联系方式"><Input /></Form.Item>
-          <Form.Item name="emails" label="邮箱" rules={[{ validator: (_, v) => (Array.isArray(v) ? v : []).every((x: any) => !x || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(x))) ? Promise.resolve() : Promise.reject('邮箱格式不正确') }]}>
-            <Select mode="tags" tokenSeparators={[',',';',' ']} open={false} placeholder="输入后按回车，可添加多个邮箱" />
-          </Form.Item>
-          <Form.Item name="management_fee_rate" label="管理费">
-            <InputNumber min={0} max={1} step={0.001} precision={3} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="payout_bsb" label="BSB"><Input /></Form.Item>
-          <Form.Item name="payout_account" label="银行账户"><Input /></Form.Item>
-          <Form.Item name="property_ids" label="被管理的房源">
+          <Divider orientation="left">基础信息</Divider>
+          <Row gutter={16}>
+            <Col span={12}><Form.Item name="name" label="房东姓名" rules={[{ required: true }]}><Input /></Form.Item></Col>
+            <Col span={12}><Form.Item name="phone" label="联系方式"><Input /></Form.Item></Col>
+            <Col span={24}><Form.Item name="emails" label="邮箱" rules={[{ validator: (_, v) => (Array.isArray(v) ? v : []).every((x: any) => !x || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(x))) ? Promise.resolve() : Promise.reject('邮箱格式不正确') }]}>
+              <Select mode="tags" tokenSeparators={[',',';',' ']} open={false} placeholder="输入后按回车，可添加多个邮箱" />
+            </Form.Item></Col>
+          </Row>
+          <Divider orientation="left">财务信息</Divider>
+          <Row gutter={16}>
+            <Col span={8}><Form.Item name="management_fee_rate" label="管理费率">
+              <InputNumber<number> min={0} max={1} step={0.001} precision={3} style={{ width: '100%' }} formatter={value => `${(Number(value) * 100).toFixed(1)}%`} parser={value => Number(value?.replace('%', '')) / 100} />
+            </Form.Item></Col>
+            <Col span={8}><Form.Item name="payout_bsb" label="BSB"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name="payout_account" label="银行账户"><Input /></Form.Item></Col>
+          </Row>
+          <Divider orientation="left">管理房源</Divider>
+          <Form.Item name="property_ids" label="关联房源">
             <Select
               mode="multiple"
               placeholder="选择房源"
@@ -221,18 +248,28 @@ export default function LandlordsPage() {
             />
           </Form.Item>
         </Form>
-      </Modal>
-      <Modal open={detailOpen} onCancel={() => setDetailOpen(false)} footer={null} title="房东详情">
-        <Form layout="vertical" initialValues={detail || {}}>
-          <Form.Item label="房东姓名"><Input value={detail?.name} readOnly /></Form.Item>
-          <Form.Item label="联系方式"><Input value={detail?.phone} readOnly /></Form.Item>
-          <Form.Item label="邮箱"><Input value={(Array.isArray(detail?.emails) ? detail?.emails?.join(', ') : (detail?.email || ''))} readOnly /></Form.Item>
-          <Form.Item label="管理费"><Input value={detail?.management_fee_rate != null ? `${(detail.management_fee_rate * 100).toFixed(1)}%` : ''} readOnly /></Form.Item>
-          <Form.Item label="BSB"><Input value={detail?.payout_bsb} readOnly /></Form.Item>
-          <Form.Item label="银行账户"><Input value={detail?.payout_account} readOnly /></Form.Item>
-          <Form.Item label="房源">
+      </Drawer>
+      <Drawer title="房东详情" width={600} onClose={() => setDetailOpen(false)} open={detailOpen}>
+        {detail && (
+          <>
+            <Descriptions title="基础信息" bordered column={1} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="姓名">{detail.name}</Descriptions.Item>
+              <Descriptions.Item label="联系方式">{detail.phone || '-'}</Descriptions.Item>
+              <Descriptions.Item label="邮箱">
+                {(Array.isArray(detail.emails) ? detail.emails : (detail.email ? [detail.email] : [])).join(', ') || '-'}
+              </Descriptions.Item>
+            </Descriptions>
+            
+            <Divider orientation="left">财务信息</Divider>
+            <Descriptions bordered column={1} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="管理费率">{detail.management_fee_rate != null ? `${(detail.management_fee_rate * 100).toFixed(1)}%` : '-'}</Descriptions.Item>
+              <Descriptions.Item label="BSB">{detail.payout_bsb || '-'}</Descriptions.Item>
+              <Descriptions.Item label="银行账户">{detail.payout_account || '-'}</Descriptions.Item>
+            </Descriptions>
+
+            <Divider orientation="left">管理房源</Divider>
             <Space wrap>
-              {((detail?.property_ids || []).slice().sort((a,b)=> {
+              {((detail.property_ids || []).slice().sort((a,b)=> {
                 const pa = properties.find(x=> x.id===a)
                 const pb = properties.find(x=> x.id===b)
                 return cmpPropertyCode(pa?.code, pb?.code)
@@ -241,10 +278,11 @@ export default function LandlordsPage() {
                 const label = p ? (p.code || p.address || id) : id
                 return <Tag key={id}>{label}</Tag>
               })}
+              {(!detail.property_ids || detail.property_ids.length === 0) && <span>暂无管理房源</span>}
             </Space>
-          </Form.Item>
-        </Form>
-      </Modal>
+          </>
+        )}
+      </Drawer>
       
       
     </Card>

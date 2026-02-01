@@ -257,14 +257,28 @@ router.patch('/:id', requirePerm('property.write'), async (req, res) => {
   }
 })
 
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
   const { id } = req.params
   // Supabase branch removed
   if (hasPg) {
-    pgSelect('properties', '*', { id })
-      .then((rows) => { if (!rows || !rows[0]) return res.status(404).json({ message: 'not found' }); res.json(rows[0]) })
-      .catch((err) => res.status(500).json({ message: err.message }))
-    return
+    try {
+      const rows = await pgSelect('properties', '*', { id })
+      if (!rows || !rows[0]) return res.status(404).json({ message: 'not found' })
+      const p = rows[0]
+      if (p.updated_by) {
+        try {
+          const us = await pgSelect('users', 'username, email', { id: p.updated_by })
+          if (us && us[0]) {
+            p.updated_by_name = us[0].username || us[0].email
+          } else {
+            p.updated_by_name = p.updated_by
+          }
+        } catch {}
+      }
+      return res.json(p)
+    } catch (err: any) {
+      return res.status(500).json({ message: err.message })
+    }
   }
   const p = db.properties.find((x) => x.id === id)
   if (!p) return res.status(404).json({ message: 'not found' })

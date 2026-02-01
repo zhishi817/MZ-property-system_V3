@@ -93,6 +93,12 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     ...(hasPerm('menu.properties.public_repair.visible') ? [{ key: 'public-repair', label: <Link href="/maintenance/public-repair" prefetch={false}>房源报修表</Link> }] : []),
     { key: 'maintenance-progress', label: <Link href="/maintenance/progress" prefetch={false}>维修进度表</Link> },
   ] })
+  if (hasPerm('menu.properties.deep_cleaning.visible')) items.push({ key: 'deep-cleaning', icon: <ProfileOutlined />, label: '深度清洁', children: [
+    { key: 'deep-cleaning-overview', label: <Link href="/deep-cleaning/overview" prefetch={false}>清洁总览</Link> },
+    { key: 'deep-cleaning-records', label: <Link href="/deep-cleaning/records" prefetch={false}>清洁记录</Link> },
+    { key: 'deep-cleaning-upload', label: <Link href="/deep-cleaning/upload" prefetch={false}>清洁上传表</Link> },
+    { key: 'deep-cleaning-share-password', label: <Link href="/deep-cleaning/share-password" prefetch={false}>外链密码</Link> },
+  ] })
   if (hasPerm('menu.onboarding')) items.push({ key: 'onboarding', icon: <ProfileOutlined />, label: '房源上新', children: [
     { key: 'onboarding-list', label: <Link href="/onboarding" prefetch={false}>上新管理</Link> },
     { key: 'onboarding-prices', label: <Link href="/onboarding/prices" prefetch={false}>日用品价格表</Link> },

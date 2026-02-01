@@ -287,6 +287,8 @@ const createOrderSchema = zod_1.z.object({
     net_income: zod_1.z.coerce.number().optional(),
     avg_nightly_price: zod_1.z.coerce.number().optional(),
     nights: zod_1.z.coerce.number().optional(),
+    total_payment_raw: zod_1.z.coerce.number().optional(),
+    processed_status: zod_1.z.string().optional(),
     currency: zod_1.z.string().optional(),
     payment_currency: zod_1.z.string().optional(),
     payment_received: zod_1.z.boolean().optional(),
@@ -429,7 +431,7 @@ async function hasOrderOverlap(propertyId, checkin, checkout, excludeId) {
     return false;
 }
 exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.manage']), async (req, res) => {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f;
     const parsed = createOrderSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -441,7 +443,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
         if (ci && co && !(ci < co))
             return res.status(400).json({ message: '入住日期必须早于退房日期' });
     }
-    catch (_f) { }
+    catch (_g) { }
     let propertyId = o.property_id || (o.property_code ? ((_c = store_1.db.properties.find(p => (p.code || '') === o.property_code)) === null || _c === void 0 ? void 0 : _c.id) : undefined);
     // 如果传入的 property_id 不存在于 PG，则尝试用房号 code 在 PG 中查找并替换
     if (dbAdapter_1.hasPg) {
@@ -454,7 +456,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                     propertyId = byCode[0].id;
             }
         }
-        catch (_g) { }
+        catch (_h) { }
     }
     const key = o.idempotency_key || `${propertyId || ''}-${o.checkin || ''}-${o.checkout || ''}`;
     const exists = store_1.db.orders.find((x) => x.idempotency_key === key);
@@ -470,17 +472,29 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
             const ms = co.getTime() - ci.getTime();
             nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
         }
-        catch (_h) {
+        catch (_j) {
             nights = 0;
         }
     }
     const cleaning = round2(o.cleaning_fee || 0) || 0;
-    const price = round2(o.price || 0) || 0;
+    const sourceKey = String(o.source || '').toLowerCase();
+    const isBooking = sourceKey.includes('book');
+    const totalRaw = o.total_payment_raw != null ? ((_e = round2(o.total_payment_raw)) !== null && _e !== void 0 ? _e : 0) : null;
+    let price = round2(o.price || 0) || 0;
+    let processedStatus = o.processed_status || undefined;
+    let totalPaymentRaw = o.total_payment_raw || undefined;
+    if (isBooking && totalRaw !== null) {
+        totalPaymentRaw = totalRaw;
+        price = round2(totalRaw * 0.83) || 0;
+        processedStatus = 'computed_0_83';
+    }
     const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0));
     const avg = o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0);
     const newOrder = { id: uuid(), ...o, property_id: propertyId, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key, status: 'confirmed' };
+    newOrder.total_payment_raw = totalPaymentRaw;
+    newOrder.processed_status = processedStatus;
     newOrder.payment_currency = o.payment_currency || 'AUD';
-    newOrder.payment_received = (_e = o.payment_received) !== null && _e !== void 0 ? _e : false;
+    newOrder.payment_received = (_f = o.payment_received) !== null && _f !== void 0 ? _f : false;
     try {
         const dup = await findSimilarOrders({ ...newOrder });
         if (dup.reasons.length) {
@@ -489,7 +503,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                 return res.status(409).json({ message: '疑似重复订单', reasons: dup.reasons, similar_orders: dup.similar });
         }
     }
-    catch (_j) { }
+    catch (_k) { }
     // overlap guard
     const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout);
     if (conflict)
@@ -502,7 +516,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
             if (Array.isArray(dup) && dup[0]) {
                 if (force) {
                     try {
-                        const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code', 'payment_currency', 'payment_received'];
+                        const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code', 'payment_currency', 'payment_received', 'total_payment_raw', 'processed_status'];
                         const payload = {};
                         for (const k of allow) {
                             if (newOrder[k] !== undefined)
@@ -512,16 +526,16 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                         try {
                             (0, events_1.broadcastOrdersUpdated)({ action: 'update', id: String(dup[0].id) });
                         }
-                        catch (_k) { }
+                        catch (_l) { }
                         return res.status(200).json(row || dup[0]);
                     }
-                    catch (_l) { }
+                    catch (_m) { }
                 }
                 return res.status(409).json({ message: '确认码已存在', existing_order_id: String(dup[0].id) });
             }
         }
     }
-    catch (_m) { }
+    catch (_o) { }
     if (dbAdapter_1.hasPg) {
         try {
             if (newOrder.property_id) {
@@ -539,16 +553,17 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                         await (0, dbAdapter_1.pgInsert)('properties', payload);
                     }
                 }
-                catch (_o) { }
+                catch (_p) { }
             }
             const insertOrder = { ...newOrder };
             delete insertOrder.property_code;
+            await ensureOrdersColumns();
             await ensureOrdersIndexes();
             const row = await (0, dbAdapter_1.pgInsert)('orders', insertOrder);
             try {
                 (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: row === null || row === void 0 ? void 0 : row.id });
             }
-            catch (_p) { }
+            catch (_q) { }
             return res.status(201).json(row);
         }
         catch (e) {
@@ -580,7 +595,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
     try {
         (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: newOrder.id });
     }
-    catch (_q) { }
+    catch (_r) { }
     return res.status(201).json(newOrder);
 });
 exports.router.post('/validate-duplicate', (0, auth_1.requireAnyPerm)(['order.create', 'order.manage']), async (req, res) => {

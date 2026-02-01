@@ -15,6 +15,7 @@ exports.db = {
     cleaningTasks: [],
     cleaners: [],
     properties: [],
+    propertyDeepCleaning: [],
     orderImportStaging: [],
     inventoryItems: [],
     stockMovements: [],
@@ -147,8 +148,10 @@ if (exports.db.roles.length === 0) {
         { code: 'menu.properties.list.visible' },
         { code: 'menu.properties.keys.visible' },
         { code: 'menu.properties.maintenance.visible' },
+        { code: 'menu.properties.deep_cleaning.visible' },
         { code: 'menu.properties.repairs.visible' },
         { code: 'menu.properties.public_repair.visible' },
+        { code: 'property_deep_cleaning.audit' },
         { code: 'menu.finance.expenses.visible' },
         { code: 'menu.finance.recurring.visible' },
         { code: 'menu.finance.orders.visible' },
@@ -217,7 +220,7 @@ if (adminRole) {
 }
 // granular CRUD resource permissions
 const resources = [
-    'properties', 'landlords', 'orders', 'cleaning_tasks', 'finance_transactions', 'company_expenses', 'property_expenses', 'fixed_expenses', 'company_incomes', 'property_incomes', 'recurring_payments', 'cms_pages', 'payouts', 'company_payouts', 'users', 'property_maintenance', 'order_import_staging', 'repair_orders'
+    'properties', 'landlords', 'orders', 'cleaning_tasks', 'finance_transactions', 'company_expenses', 'property_expenses', 'fixed_expenses', 'company_incomes', 'property_incomes', 'recurring_payments', 'cms_pages', 'payouts', 'company_payouts', 'users', 'property_maintenance', 'property_deep_cleaning', 'order_import_staging', 'repair_orders'
 ];
 resources.forEach(r => {
     const viewCode = `${r}.view`;

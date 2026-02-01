@@ -5,7 +5,6 @@ import { useEffect, useMemo, useState } from 'react'
 import dayjs from 'dayjs'
 import { API_BASE } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
-import { useSearchParams } from 'next/navigation'
 
 type Property = { id: string; code?: string; address?: string }
 
@@ -20,19 +19,22 @@ export default function RepairReportPage() {
   const [token, setToken] = useState<string | null>(null)
   const [pwd, setPwd] = useState('')
   const [loggingIn, setLoggingIn] = useState(false)
-  const search = useSearchParams()
 
   useEffect(() => {
     fetch(`${API_BASE}/public/properties`).then(r => r.json()).then(setProps).catch(() => setProps([]))
     try { const t = localStorage.getItem('public_cleaning_token'); if (t) setToken(t) } catch {}
   }, [])
   useEffect(() => {
-    const code = search?.get('property_code') || ''
-    if (code && Array.isArray(props) && props.length) {
+    if (!Array.isArray(props) || !props.length) return
+    try {
+      const qs = typeof window !== 'undefined' ? window.location.search : ''
+      const sp = new URLSearchParams(qs || '')
+      const code = sp.get('property_code') || ''
+      if (!code) return
       const m = props.find(p => String(p.code || '').toUpperCase() === String(code).toUpperCase())
       if (m) { form.setFieldsValue({ property_id: m.id }) }
-    }
-  }, [search, props, form])
+    } catch {}
+  }, [props, form])
 
   const options = useMemo(() => sortProperties(props).map(p => ({ value: p.id, label: p.code || p.address || p.id })), [props])
   const categories = [

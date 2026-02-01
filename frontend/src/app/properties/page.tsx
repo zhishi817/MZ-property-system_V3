@@ -1,5 +1,5 @@
 "use client"
-import { Table, Card, Button, Modal, Form, Input, InputNumber, Select, message, Space, Row, Col, Tag, Divider, Switch, AutoComplete } from 'antd'
+import { Table, Card, Button, Modal, Form, Input, InputNumber, Select, message, Space, Row, Col, Tag, Divider, Switch, AutoComplete, Drawer, Descriptions } from 'antd'
 import React, { useEffect, useState } from 'react'
 import { API_BASE } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
@@ -344,56 +344,71 @@ export default function PropertiesPage() {
           </Row>
         </Form>
       </Modal>
-      <Modal open={detailOpen} onCancel={() => setDetailOpen(false)} footer={null} title="房源详情" width={900}>
-        <Form layout="vertical" initialValues={detail || {}}>
-          <Divider orientation="left">房源基础信息</Divider>
-          <Row gutter={[16,16]}>
-            <Col span={8}><Form.Item label="房号"><Input value={detail?.code} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="房东"><Input value={(landlords.find(l => l.id === detail?.landlord_id)?.name) || ''} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="区域"><Input value={detail?.region} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="房源分类"><Input value={detail?.biz_category === 'leased' ? '包租房源' : (detail?.biz_category === 'management_fee' ? '管理费房源' : '')} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="卧室空调"><Input value={detail?.bedroom_ac === 'none' ? '无' : (detail?.bedroom_ac === 'master_only' ? '主卧有' : (detail?.bedroom_ac === 'both' ? '两个卧室都有' : ''))} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="Airbnb Listing 名称"><Input.TextArea value={detail?.airbnb_listing_name || ''} readOnly autoSize={{ minRows: 1, maxRows: 3 }} style={{ wordBreak: 'break-word' }} /></Form.Item></Col>
-            <Col span={8}><Form.Item label="Booking.com Listing 名称"><Input.TextArea value={detail?.booking_listing_name || ''} readOnly autoSize={{ minRows: 1, maxRows: 3 }} style={{ wordBreak: 'break-word' }} /></Form.Item></Col>
-            <Col span={8}><Form.Item label="其他平台 Listing 名称"><Input.TextArea value={detail?.listing_names?.other || ''} readOnly autoSize={{ minRows: 1, maxRows: 3 }} style={{ wordBreak: 'break-word' }} /></Form.Item></Col>
-            <Col span={24}><Form.Item label="地址"><Input.TextArea value={detail?.address} readOnly autoSize={{ minRows: 1, maxRows: 3 }} style={{ wordBreak: 'break-word' }} /></Form.Item></Col>
-            <Col span={8}><Form.Item label="房型"><Input value={detail?.type} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="可住人数"><Input value={detail?.capacity?.toString()} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="面积(㎡)"><Input value={detail?.area_sqm?.toString()} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="入住指南链接"><Input.TextArea value={detail?.access_guide_link} readOnly autoSize={{ minRows: 1, maxRows: 3 }} style={{ wordBreak: 'break-all' }} /></Form.Item></Col>
-            <Col span={8}><Form.Item label="车库指南链接"><Input.TextArea value={detail?.garage_guide_link} readOnly autoSize={{ minRows: 1, maxRows: 3 }} style={{ wordBreak: 'break-all' }} /></Form.Item></Col>
-            <Col span={8}><Form.Item label="床型配置"><Input.TextArea value={detail?.bed_config} readOnly autoSize={{ minRows: 1, maxRows: 4 }} style={{ wordBreak: 'break-word' }} /></Form.Item></Col>
-          </Row>
-          <Divider orientation="left">房源大楼信息</Divider>
-          <Row gutter={[16,16]}>
-            <Col span={12}><Form.Item label="大楼名称"><Input value={detail?.building_name} readOnly /></Form.Item></Col>
-            <Col span={12}><Form.Item label="大楼设施">
-              <Space wrap>
-                {(detail?.building_facilities || []).map((f: string) => (<Tag key={f}>{f}</Tag>))}
-              </Space>
-            </Form.Item></Col>
-            <Col span={8}><Form.Item label="经理电话"><Input value={detail?.building_contact_phone} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="经理邮箱"><Input value={detail?.building_contact_email} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="设施楼层"><Input value={detail?.building_facility_floor} readOnly /></Form.Item></Col>
-            <Col span={24}><Form.Item label="大楼备注"><Input.TextArea value={detail?.building_notes || ''} readOnly rows={2} /></Form.Item></Col>
-          </Row>
-          <Divider orientation="left">房源其他信息</Divider>
-          <Row gutter={[16,16]}>
-            <Col span={8}><Form.Item label="电视型号"><Input value={detail?.tv_model} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="空调型号"><Input value={detail?.aircon_model} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="卧室空调"><Input value={detail?.bedroom_ac === 'none' ? '无' : (detail?.bedroom_ac === 'master_only' ? '主卧有' : (detail?.bedroom_ac === 'both' ? '两个卧室都有' : ''))} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="朝向"><Input value={detail?.orientation || ''} readOnly /></Form.Item></Col>
-            <Col span={8}><Form.Item label="可看烟花"><Input value={detail?.fireworks_view ? '是' : '否'} readOnly /></Form.Item></Col>
-            <Col span={24}><Form.Item label="其他备注"><Input.TextArea value={detail?.notes || ''} readOnly rows={3} /></Form.Item></Col>
-          </Row>
-          <Space>
-            <Tag>创建时间: {detail?.created_at || ''}</Tag>
-            <Tag>最后修改: {detail?.updated_at || ''}</Tag>
-            {detail?.updated_by || detail?.updated_by_name ? <Tag>修改人: {detail?.updated_by_name || detail?.updated_by}</Tag> : null}
-          </Space>
-        </Form>
-      </Modal>
-      <Modal open={editOpen} onCancel={() => setEditOpen(false)} onOk={submitEdit} title="编辑房源" width={900}>
+      <Drawer title="房源详情" width={800} onClose={() => setDetailOpen(false)} open={detailOpen}>
+        {detail && (
+          <>
+            <Descriptions title="房源基础信息" bordered column={2} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="房号">{detail.code}</Descriptions.Item>
+              <Descriptions.Item label="房东">{landlords.find(l => l.id === detail.landlord_id)?.name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="区域">{detail.region}</Descriptions.Item>
+              <Descriptions.Item label="房源分类">{detail.biz_category === 'leased' ? '包租房源' : (detail.biz_category === 'management_fee' ? '管理费房源' : '-')}</Descriptions.Item>
+              <Descriptions.Item label="地址" span={2}>{detail.address}</Descriptions.Item>
+              <Descriptions.Item label="房型">{detail.type}</Descriptions.Item>
+              <Descriptions.Item label="可住人数">{detail.capacity} 人</Descriptions.Item>
+              <Descriptions.Item label="面积">{detail.area_sqm ? `${detail.area_sqm} ㎡` : '-'}</Descriptions.Item>
+              <Descriptions.Item label="卧室空调">{detail.bedroom_ac === 'none' ? '无' : (detail.bedroom_ac === 'master_only' ? '主卧有' : (detail.bedroom_ac === 'both' ? '两个卧室都有' : '-'))}</Descriptions.Item>
+              <Descriptions.Item label="Airbnb Listing" span={2}>{detail.airbnb_listing_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="Booking Listing" span={2}>{detail.booking_listing_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="其他 Listing" span={2}>{detail.listing_names?.other || '-'}</Descriptions.Item>
+              <Descriptions.Item label="入住指南" span={2}>{detail.access_guide_link ? <a href={detail.access_guide_link} target="_blank" rel="noreferrer">{detail.access_guide_link}</a> : '-'}</Descriptions.Item>
+              <Descriptions.Item label="车库指南" span={2}>{detail.garage_guide_link ? <a href={detail.garage_guide_link} target="_blank" rel="noreferrer">{detail.garage_guide_link}</a> : '-'}</Descriptions.Item>
+              <Descriptions.Item label="床型配置" span={2}>{detail.bed_config || '-'}</Descriptions.Item>
+            </Descriptions>
+
+            <Divider orientation="left">大楼信息</Divider>
+            <Descriptions bordered column={2} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="大楼名称">{detail.building_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="设施楼层">{detail.building_facility_floor || '-'}</Descriptions.Item>
+              <Descriptions.Item label="大楼设施" span={2}>
+                {(detail.building_facilities || []).length > 0 ? (
+                  <Space wrap>
+                    {(detail.building_facilities || []).map((f: string) => (<Tag key={f}>{f}</Tag>))}
+                  </Space>
+                ) : '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="经理电话">{detail.building_contact_phone || '-'}</Descriptions.Item>
+              <Descriptions.Item label="经理邮箱">{detail.building_contact_email || '-'}</Descriptions.Item>
+              <Descriptions.Item label="大楼备注" span={2} style={{ whiteSpace: 'pre-wrap' }}>{detail.building_notes || '-'}</Descriptions.Item>
+            </Descriptions>
+
+            <Divider orientation="left">其他信息</Divider>
+            <Descriptions bordered column={2} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="电视型号">{detail.tv_model || '-'}</Descriptions.Item>
+              <Descriptions.Item label="空调型号">{detail.aircon_model || '-'}</Descriptions.Item>
+              <Descriptions.Item label="朝向">{detail.orientation || '-'}</Descriptions.Item>
+              <Descriptions.Item label="看烟花">{detail.fireworks_view ? '是' : '否'}</Descriptions.Item>
+              <Descriptions.Item label="其他备注" span={2} style={{ whiteSpace: 'pre-wrap' }}>{detail.notes || '-'}</Descriptions.Item>
+              <Descriptions.Item label="创建时间">{detail.created_at || '-'}</Descriptions.Item>
+              <Descriptions.Item label="最后修改">{detail.updated_at || '-'}</Descriptions.Item>
+              <Descriptions.Item label="修改人">{detail.updated_by_name || detail.updated_by || '-'}</Descriptions.Item>
+            </Descriptions>
+          </>
+        )}
+      </Drawer>
+      <Drawer
+        title="编辑房源"
+        width={800}
+        onClose={() => setEditOpen(false)}
+        open={editOpen}
+        footer={
+          <div style={{ textAlign: 'right' }}>
+            <Space>
+              <Button onClick={() => setEditOpen(false)}>取消</Button>
+              <Button type="primary" onClick={submitEdit}>保存</Button>
+            </Space>
+          </div>
+        }
+      >
         <Form form={editForm} layout="vertical">
           <Divider orientation="left">房源基础信息</Divider>
           <Row gutter={[16,16]}>
@@ -458,7 +473,7 @@ export default function PropertiesPage() {
             <Col span={24}><Form.Item name="notes" label="其他备注"><Input.TextArea rows={3} /></Form.Item></Col>
           </Row>
         </Form>
-      </Modal>
+      </Drawer>
       <Modal open={batchOpen} onCancel={() => setBatchOpen(false)} onOk={submitBatch} title="批量编辑房源" width={800}>
         <Form form={batchForm} layout="vertical">
           <Divider orientation="left">批量修改字段（不填则不修改）</Divider>
