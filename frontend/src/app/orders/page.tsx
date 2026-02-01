@@ -1,5 +1,5 @@
 "use client"
-import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, Select, Tag, InputNumber, Checkbox, Upload, Radio, App, Drawer, Descriptions, Tabs, Tooltip } from 'antd'
+import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, Select, Tag, InputNumber, Checkbox, Upload, Radio, App, Drawer, Descriptions, Tabs, Tooltip, Row, Col, Divider } from 'antd'
 import { useRouter } from 'next/navigation'
 import type { UploadProps } from 'antd'
 import { useEffect, useState, useRef, useMemo } from 'react'
@@ -15,10 +15,11 @@ import { sortProperties } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 import { buildSegments, placeIntoLanes } from '../../lib/calendarTimeline'
 
-type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; note?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number; email_header_at?: string }
+type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; note?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number; email_header_at?: string; total_payment_raw?: number; processed_status?: string }
 // guest_phone 在后端已支持，这里表单也支持录入
 type CleaningTask = { id: string; status: 'pending'|'scheduled'|'done' }
 const debugOnce = (..._args: any[]) => {}
+const BOOKING_NET_RATE = 0.83
 
 export default function OrdersPage() {
   const { message } = App.useApp()
@@ -756,7 +757,9 @@ export default function OrdersPage() {
   async function submitCreate() {
     const v = await form.validateFields()
     const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
-    const price = Number(v.price || 0)
+    const isBooking = String(v.source || '').toLowerCase().includes('book')
+    const totalPaymentRaw = isBooking ? Number(v.total_payment_raw ?? 0) : null
+    const price = isBooking ? Number((Number(totalPaymentRaw || 0) * BOOKING_NET_RATE).toFixed(2)) : Number(v.price || 0)
     const cleaning = Number(v.cleaning_fee || 0)
     const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
     const cancelFee = Number(v.cancel_fee || 0)
@@ -774,6 +777,7 @@ export default function OrdersPage() {
       checkin: v.checkin.format('YYYY-MM-DD') + 'T12:00:00',
       checkout: v.checkout.format('YYYY-MM-DD') + 'T11:59:59',
       price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price,
+      total_payment_raw: isBooking ? (Number(totalPaymentRaw).toFixed(2) ? Number(Number(totalPaymentRaw).toFixed(2)) : totalPaymentRaw) : undefined,
       cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning,
       net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net,
       avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg,
@@ -814,10 +818,47 @@ export default function OrdersPage() {
     }
   }
 
+  async function submitEdit() {
+    const v = await editForm.validateFields()
+    const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
+    const price = Number(v.price || 0)
+    const cleaning = Number(v.cleaning_fee || 0)
+    const net = Math.max(0, price - cleaning)
+    const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+    const selectedEdit = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
+    const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net, avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg, price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price, cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning, payment_currency: (v.payment_currency || 'AUD'), count_in_income: v.count_in_income != null ? !!v.count_in_income : ((v.status || '') === 'canceled' ? false : true) }
+    let res: Response | null = null
+    try {
+      res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ ...payload, force: true }) })
+    } catch (e: any) {
+      message.error('网络错误，更新失败')
+      return
+    }
+    if (res!.ok) {
+      async function writeIncome(amount: number, cat: string, note: string) {
+        if (!amount || amount <= 0) return
+        const tx = { kind: 'income', amount: Number(amount), currency: 'AUD', occurred_at: dayjs(v.checkout).format('YYYY-MM-DD'), note, category: cat, property_id: v.property_id, ref_type: 'order', ref_id: current?.id }
+        await fetch(`${API_BASE}/finance`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(tx) }).catch(() => {})
+      }
+      const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+      const cancelFee = Number(v.cancel_fee || 0)
+      await writeIncome(lateFee, 'late_checkout', 'Late checkout income')
+      if ((v.status || '') === 'canceled') await writeIncome(cancelFee, 'cancel_fee', 'Cancelation fee')
+      message.success('订单已更新'); setEditOpen(false); load()
+    }
+    else {
+      let msg = '更新失败'
+      try { const j = await res!.json(); if (j?.message) msg = j.message } catch { try { msg = await res!.text() } catch {} }
+      message.error(msg)
+    }
+  }
+
   async function proceedCreateForce() {
     const v = form.getFieldsValue()
     const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
-    const price = Number(v.price || 0)
+    const isBooking = String(v.source || '').toLowerCase().includes('book')
+    const totalPaymentRaw = isBooking ? Number(v.total_payment_raw ?? 0) : null
+    const price = isBooking ? Number((Number(totalPaymentRaw || 0) * BOOKING_NET_RATE).toFixed(2)) : Number(v.price || 0)
     const cleaning = Number(v.cleaning_fee || 0)
     const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
     const cancelFee = Number(v.cancel_fee || 0)
@@ -835,6 +876,7 @@ export default function OrdersPage() {
       checkin: v.checkin.format('YYYY-MM-DD') + 'T12:00:00',
       checkout: v.checkout.format('YYYY-MM-DD') + 'T11:59:59',
       price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price,
+      total_payment_raw: isBooking ? (Number(totalPaymentRaw).toFixed(2) ? Number(Number(totalPaymentRaw).toFixed(2)) : totalPaymentRaw) : undefined,
       cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning,
       net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net,
       avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg,
@@ -893,7 +935,7 @@ export default function OrdersPage() {
     } },
     { title: '当月租金(AUD)', dataIndex: 'price', render: (_:any, r:Order)=> monthFilter ? money(((r as any).visible_net_income ?? calcOrderMonthAmounts(r as any, monthFilter).visibleNetMonth)) : money((r as any).__src_price ?? r.price) },
     { title: '订单总租金', dataIndex: '__src_price', render: (_:any, r:Order)=> {
-      const total = ((r as any).__src_price ?? r.price ?? (((r as any).net_income || 0) + ((r as any).cleaning_fee || 0)))
+      const total = ((r as any).total_payment_raw ?? (r as any).__src_price ?? r.price ?? (((r as any).net_income || 0) + ((r as any).cleaning_fee || 0)))
       const ded = Number((r as any).internal_deduction_total ?? (r as any).internal_deduction ?? 0)
       const visibleTotal = Math.max(0, Number((Number(total || 0) - ded).toFixed(2)))
       return money(visibleTotal)
@@ -1470,8 +1512,29 @@ export default function OrdersPage() {
         <Form.Item name="checkout" label="退房" rules={[{ required: true }, { validator: async (_: any, v: any) => { const ci = form.getFieldValue('checkin'); if (v && ci && !ci.isBefore(v, 'day')) throw new Error('退房日期必须晚于入住日期') } }]}> 
           <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const ci = form.getFieldValue('checkin'); return ci ? d.isSame(ci, 'day') || d.isBefore(ci, 'day') : false }} />
         </Form.Item>
-        <Form.Item name="price" label="总租金(AUD)" rules={[{ required: true }]}> 
-          <InputNumber min={0} step={1} style={{ width: '100%' }} />
+        <Form.Item noStyle shouldUpdate={(p, c) => p.source !== c.source || p.total_payment_raw !== c.total_payment_raw || p.price !== c.price}>
+          {() => {
+            const isBooking = String(form.getFieldValue('source') || '').toLowerCase().includes('book')
+            if (isBooking) {
+              const raw = Number(form.getFieldValue('total_payment_raw') || 0)
+              const computed = Number((raw * BOOKING_NET_RATE).toFixed(2))
+              return (
+                <>
+                  <Form.Item name="total_payment_raw" label="总租金(AUD)" rules={[{ required: true }]}>
+                    <InputNumber min={0} step={1} style={{ width: '100%' }} />
+                  </Form.Item>
+                  <Form.Item label={`价格(AUD，*${BOOKING_NET_RATE} 后)`}>
+                    <InputNumber value={computed} disabled style={{ width: '100%' }} />
+                  </Form.Item>
+                </>
+              )
+            }
+            return (
+              <Form.Item name="price" label="总租金(AUD)" rules={[{ required: true }]}>
+                <InputNumber min={0} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+            )
+          }}
         </Form.Item>
         <Form.Item name="cleaning_fee" label="清洁费" rules={[{ required: true }]}> 
           <InputNumber min={0} step={1} style={{ width: '100%' }} />
@@ -1503,7 +1566,9 @@ export default function OrdersPage() {
           {() => {
             const v = form.getFieldsValue()
             const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
-            const price = Number(v.price || 0)
+            const isBooking = String(v.source || '').toLowerCase().includes('book')
+            const raw = isBooking ? Number(v.total_payment_raw || 0) : null
+            const price = isBooking ? Number((Number(raw || 0) * BOOKING_NET_RATE).toFixed(2)) : Number(v.price || 0)
             const cleaning = Number(v.cleaning_fee || 0)
             const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
             const cancelFee = Number(v.cancel_fee || 0)
@@ -1513,6 +1578,8 @@ export default function OrdersPage() {
               <Card size="small" style={{ marginTop: 8 }}>
                 <Space wrap>
                   <Tag color="blue">入住天数: {nights}</Tag>
+                  {isBooking ? <Tag color="default">原始总租金: {Number(raw || 0).toFixed(2)}</Tag> : null}
+                  {isBooking ? <Tag color="blue">价格(*{BOOKING_NET_RATE}): {Number(price || 0).toFixed(2)}</Tag> : null}
                   <Tag color="green">总收入: {Number(net).toFixed(2)}</Tag>
                   {v.late_checkout || v.late_checkout_fee ? <Tag color="purple">晚退收入: {lateFee}</Tag> : null}
                   {v.cancel_fee ? <Tag color="orange">取消费: {cancelFee}</Tag> : null}
@@ -1706,147 +1773,167 @@ export default function OrdersPage() {
         <pre style={{ whiteSpace:'pre-wrap' }}>{JSON.stringify(selfCheckData?.failed_details || [], null, 2)}</pre>
       </Card>
     </Modal>
-    <Modal open={editOpen} onCancel={() => setEditOpen(false)} onOk={async () => {
-        const v = await editForm.validateFields()
-        const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
-        const price = Number(v.price || 0)
-        const cleaning = Number(v.cleaning_fee || 0)
-        const net = Math.max(0, price - cleaning)
-        const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
-        const selectedEdit = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
-        const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net, avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg, price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price, cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning, payment_currency: (v.payment_currency || 'AUD'), count_in_income: v.count_in_income != null ? !!v.count_in_income : ((v.status || '') === 'canceled' ? false : true) }
-        let res: Response | null = null
-        try {
-          res = await fetch(`${API_BASE}/orders/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ ...payload, force: true }) })
-        } catch (e: any) {
-          message.error('网络错误，更新失败')
-          return
-        }
-        if (res!.ok) {
-          async function writeIncome(amount: number, cat: string, note: string) {
-            if (!amount || amount <= 0) return
-            const tx = { kind: 'income', amount: Number(amount), currency: 'AUD', occurred_at: dayjs(v.checkout).format('YYYY-MM-DD'), note, category: cat, property_id: v.property_id, ref_type: 'order', ref_id: current?.id }
-            await fetch(`${API_BASE}/finance`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(tx) }).catch(() => {})
-          }
-          const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
-          const cancelFee = Number(v.cancel_fee || 0)
-          await writeIncome(lateFee, 'late_checkout', 'Late checkout income')
-          if ((v.status || '') === 'canceled') await writeIncome(cancelFee, 'cancel_fee', 'Cancelation fee')
-          message.success('订单已更新'); setEditOpen(false); load()
-        }
-        else {
-          let msg = '更新失败'
-          try { const j = await res!.json(); if (j?.message) msg = j.message } catch { try { msg = await res!.text() } catch {} }
-          message.error(msg)
-        }
-      }} title="编辑订单">
+    <Drawer open={editOpen} onClose={() => setEditOpen(false)} title="编辑订单" width={900} footer={
+      <div style={{ textAlign: 'right' }}>
+        <Space>
+          <Button onClick={() => setEditOpen(false)}>取消</Button>
+          <Button type="primary" onClick={submitEdit}>保存</Button>
+        </Space>
+      </div>
+    }>
         <Form form={editForm} layout="vertical">
-          <Form.Item name="confirmation_code" label="确认码" rules={[{ required: true, message: '确认码必填' }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="source" label="来源" rules={[{ required: true }]}> 
-            <Select options={[{ value: 'airbnb', label: 'airbnb' }, { value: 'booking', label: 'booking.com' }, { value: 'offline', label: '线下' }, { value: 'other', label: '其他' }]} />
-          </Form.Item>
-          <Form.Item name="status" label="状态" initialValue="confirmed"> 
-            <Select options={[{ value: 'confirmed', label: '已确认' }, { value: 'canceled', label: '已取消' }]} />
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate>
-            {() => {
-              const st = editForm.getFieldValue('status')
-              if (st === 'canceled') {
-                return (
-                  <Form.Item name="count_in_income" label="算入房源营收" initialValue={false} valuePropName="checked">
-                    <Checkbox />
+          <Divider orientation="left">订单基本信息</Divider>
+          <Row gutter={[16, 16]}>
+            <Col span={8}>
+              <Form.Item name="confirmation_code" label="确认码" rules={[{ required: true, message: '确认码必填' }]}>
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="source" label="来源" rules={[{ required: true }]}> 
+                <Select options={[{ value: 'airbnb', label: 'airbnb' }, { value: 'booking', label: 'booking.com' }, { value: 'offline', label: '线下' }, { value: 'other', label: '其他' }]} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="status" label="状态" initialValue="confirmed"> 
+                <Select options={[{ value: 'confirmed', label: '已确认' }, { value: 'canceled', label: '已取消' }]} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="property_id" label="房号" rules={[{ required: true }]}> 
+                <Select
+                  showSearch
+                  optionFilterProp="label"
+                  options={sortProperties(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.code || p.address || p.id }))}
+                  onChange={(val, opt) => {
+                    const label = (opt as any)?.label || ''
+                    editForm.setFieldsValue({ property_code: label })
+                  }}
+                />
+              </Form.Item>
+              <Form.Item name="property_code" hidden><Input /></Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="guest_name" label="客人姓名"><Input /></Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="guest_phone" label="客人电话"><Input placeholder="用于生成旧/新密码（后四位）" /></Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="payment_currency" label="付款币种" initialValue="AUD">
+                <Select options={[{ value: 'AUD', label: 'AUD' }, { value: 'RMB', label: 'RMB' }, { value: 'USD', label: 'USD' }, { value: 'EUR', label: 'EUR' }, { value: 'OTHER', label: 'Other' }]} />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Divider orientation="left">入住与财务</Divider>
+          <Row gutter={[16, 16]}>
+            <Col span={8}>
+              <Form.Item name="checkin" label="入住" rules={[{ required: true }, { validator: async (_: any, v: any) => { const c = editForm.getFieldValue('checkout'); if (v && c && !v.isBefore(c, 'day')) throw new Error('入住日期必须早于退房日期') } }]}>
+                <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const c = editForm.getFieldValue('checkout'); return c ? d.isSame(c, 'day') || d.isAfter(c, 'day') : false }} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="checkout" label="退房" rules={[{ required: true }, { validator: async (_: any, v: any) => { const ci = editForm.getFieldValue('checkin'); if (v && ci && !ci.isBefore(v, 'day')) throw new Error('退房日期必须晚于入住日期') } }]}>
+                <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const ci = editForm.getFieldValue('checkin'); return ci ? d.isSame(ci, 'day') || d.isBefore(ci, 'day') : false }} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="price" label="总租金(AUD)"><InputNumber min={0} step={1} style={{ width: '100%' }} /></Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="cleaning_fee" label="清洁费"><InputNumber min={0} step={1} style={{ width: '100%' }} /></Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item label="晚退收入">
+                <Space>
+                  <Form.Item name="late_checkout" valuePropName="checked" noStyle>
+                    <Checkbox>晚退(+20)</Checkbox>
                   </Form.Item>
-                )
-              }
-              return null
-            }}
-          </Form.Item>
-          <Form.Item name="property_id" label="房号" rules={[{ required: true }]}> 
-            <Select
-              showSearch
-              optionFilterProp="label"
-              options={sortProperties(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.code || p.address || p.id }))}
-              onChange={(val, opt) => {
-                const label = (opt as any)?.label || ''
-                editForm.setFieldsValue({ property_code: label })
+                  <Form.Item name="late_checkout_fee" noStyle>
+                    <InputNumber min={0} step={1} placeholder="自定义金额(可选)" />
+                  </Form.Item>
+                </Space>
+              </Form.Item>
+            </Col>
+            <Form.Item noStyle shouldUpdate>
+              {() => {
+                const st = editForm.getFieldValue('status')
+                if (st === 'canceled') {
+                  return (
+                    <>
+                      <Col span={8}>
+                        <Form.Item name="cancel_fee" label="取消费(AUD)" rules={[{ required: true, message: '取消金额必填' }]}>
+                          <InputNumber min={0} step={1} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col span={8}>
+                        <Form.Item name="count_in_income" label="算入房源营收" initialValue={false} valuePropName="checked">
+                          <Checkbox />
+                        </Form.Item>
+                      </Col>
+                    </>
+                  )
+                }
+                return null
               }}
-            />
-          </Form.Item>
-          <Form.Item name="property_code" hidden><Input /></Form.Item>
-          <Form.Item name="guest_name" label="客人姓名"><Input /></Form.Item>
-          <Form.Item name="guest_phone" label="客人电话"><Input placeholder="用于生成旧/新密码（后四位）" /></Form.Item>
-          <Form.Item name="note" label="备注">
-            <Input.TextArea rows={3} />
-          </Form.Item>
-          <Form.Item name="checkin" label="入住" rules={[{ required: true }, { validator: async (_: any, v: any) => { const c = editForm.getFieldValue('checkout'); if (v && c && !v.isBefore(c, 'day')) throw new Error('入住日期必须早于退房日期') } }]}><DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const c = editForm.getFieldValue('checkout'); return c ? d.isSame(c, 'day') || d.isAfter(c, 'day') : false }} /></Form.Item>
-          <Form.Item name="checkout" label="退房" rules={[{ required: true }, { validator: async (_: any, v: any) => { const ci = editForm.getFieldValue('checkin'); if (v && ci && !ci.isBefore(v, 'day')) throw new Error('退房日期必须晚于入住日期') } }]}><DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" disabledDate={(d) => { const ci = editForm.getFieldValue('checkin'); return ci ? d.isSame(ci, 'day') || d.isBefore(ci, 'day') : false }} /></Form.Item>
-          <Form.Item name="price" label="总租金(AUD)"><InputNumber min={0} step={1} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="cleaning_fee" label="清洁费"><InputNumber min={0} step={1} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item label="晚退收入">
-            <Space>
-              <Form.Item name="late_checkout" valuePropName="checked" noStyle>
-                <Checkbox>晚退(+20)</Checkbox>
+            </Form.Item>
+          </Row>
+
+          <Divider orientation="left">备注与统计</Divider>
+          <Row gutter={[16, 16]}>
+            <Col span={24}>
+              <Form.Item name="note" label="备注">
+                <Input.TextArea rows={3} />
               </Form.Item>
-              <Form.Item name="late_checkout_fee" noStyle>
-                <InputNumber min={0} step={1} placeholder="自定义金额(可选)" />
+            </Col>
+            <Col span={24}>
+              <Form.Item shouldUpdate noStyle>
+                {() => {
+                  const v = editForm.getFieldsValue()
+                  const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
+                  const price = Number(v.price || 0)
+                  const cleaning = Number(v.cleaning_fee || 0)
+                  const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+                  const cancelFee = Number(v.cancel_fee || 0)
+                  const net = Math.max(0, price + lateFee + cancelFee - cleaning)
+                  const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+                  const visible = Math.max(0, net - Number(deductAmountEdit || 0))
+                  return (
+                    <Card size="small" style={{ background: '#f5f5f5' }}>
+                      <Space wrap>
+                        <Tag color="blue">入住天数: {nights}</Tag>
+                        <Tag color="green">总收入: {Number(net).toFixed(2)}</Tag>
+                        {v.late_checkout || v.late_checkout_fee ? <Tag color="purple">晚退收入: {lateFee}</Tag> : null}
+                        {v.cancel_fee ? <Tag color="orange">取消费: {cancelFee}</Tag> : null}
+                        <Tag color="purple">晚均价: {Number(avg).toFixed(2)}</Tag>
+                        <Tag color="red">可见净额: {Number(visible).toFixed(2)}</Tag>
+                      </Space>
+                    </Card>
+                  )
+                }}
               </Form.Item>
-            </Space>
-          </Form.Item>
-          <Form.Item shouldUpdate>
-            {() => {
-              const st = editForm.getFieldValue('status')
-              if (st === 'canceled') {
-                return (
-                  <Form.Item name="cancel_fee" label="取消费(AUD)" rules={[{ required: true, message: '取消金额必填' }]}>
-                    <InputNumber min={0} step={1} style={{ width: '100%' }} />
-                  </Form.Item>
-                )
-              }
-              return null
-            }}
-          </Form.Item>
-          <Form.Item shouldUpdate noStyle>
-            {() => {
-              const v = editForm.getFieldsValue()
-              const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
-              const price = Number(v.price || 0)
-              const cleaning = Number(v.cleaning_fee || 0)
-              const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
-              const cancelFee = Number(v.cancel_fee || 0)
-              const net = Math.max(0, price + lateFee + cancelFee - cleaning)
-              const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
-              const visible = Math.max(0, net - Number(deductAmountEdit || 0))
-              return (
-                <Card size="small" style={{ marginTop: 8 }}>
-                  <Space wrap>
-                    <Tag color="blue">入住天数: {nights}</Tag>
-                    <Tag color="green">总收入: {Number(net).toFixed(2)}</Tag>
-                    {v.late_checkout || v.late_checkout_fee ? <Tag color="purple">晚退收入: {lateFee}</Tag> : null}
-                    {v.cancel_fee ? <Tag color="orange">取消费: {cancelFee}</Tag> : null}
-                    <Tag color="purple">晚均价: {Number(avg).toFixed(2)}</Tag>
-                    <Tag color="red">可见净额: {Number(visible).toFixed(2)}</Tag>
-                  </Space>
-                </Card>
-              )
-            }}
-          </Form.Item>
-          <Card size="small" style={{ marginTop: 8 }} title="内部扣减">
-            <Table size="small" pagination={false} dataSource={editDeductions} rowKey="id" columns={[
-              { title: '金额', dataIndex: 'amount', align: 'right' },
-              { title: '币种', dataIndex: 'currency' },
-              { title: '事项描述', dataIndex: 'item_desc' },
-              { title: '备注', dataIndex: 'note' },
-              { title: '状态', dataIndex: 'is_active', render: (v: any) => v ? 'active' : 'void' },
-              { title: '操作', render: (_: any, r: any) => hasPerm('order.deduction.manage') ? (
-                <Button size="small" onClick={() => { setEditDeductionEditing(r); setDeductAmountEdit(Number(r.amount||0)); setDeductDescEdit(r.item_desc || ''); setDeductNoteEdit(r.note || '') }}>编辑</Button>
-              ) : null }
-            ]} />
+            </Col>
+          </Row>
+
+          <Divider orientation="left">内部扣减</Divider>
+          <Table size="small" pagination={false} dataSource={editDeductions} rowKey="id" columns={[
+            { title: '金额', dataIndex: 'amount', align: 'right' },
+            { title: '币种', dataIndex: 'currency' },
+            { title: '事项描述', dataIndex: 'item_desc' },
+            { title: '备注', dataIndex: 'note' },
+            { title: '状态', dataIndex: 'is_active', render: (v: any) => v ? 'active' : 'void' },
+            { title: '操作', render: (_: any, r: any) => hasPerm('order.deduction.manage') ? (
+              <Button size="small" onClick={() => { setEditDeductionEditing(r); setDeductAmountEdit(Number(r.amount||0)); setDeductDescEdit(r.item_desc || ''); setDeductNoteEdit(r.note || '') }}>编辑</Button>
+            ) : null }
+          ]} />
+          <div style={{ marginTop: 12, padding: 12, border: '1px dashed #d9d9d9', borderRadius: 8 }}>
             <Space direction="vertical" style={{ width: '100%' }}>
-              <InputNumber style={{ width: '100%' }} value={deductAmountEdit} onChange={(v)=> setDeductAmountEdit(Number(v||0))} min={0} disabled={!hasPerm('order.deduction.manage')} />
-              <Input value={deductDescEdit} onChange={(e)=> setDeductDescEdit(e.target.value)} placeholder="减扣事项描述" disabled={!hasPerm('order.deduction.manage')} />
-              <Input value={deductNoteEdit} onChange={(e)=> setDeductNoteEdit(e.target.value)} placeholder="备注" disabled={!hasPerm('order.deduction.manage')} />
+              <Row gutter={8}>
+                <Col span={6}><InputNumber style={{ width: '100%' }} placeholder="金额" value={deductAmountEdit} onChange={(v)=> setDeductAmountEdit(Number(v||0))} min={0} disabled={!hasPerm('order.deduction.manage')} /></Col>
+                <Col span={9}><Input value={deductDescEdit} onChange={(e)=> setDeductDescEdit(e.target.value)} placeholder="减扣事项描述" disabled={!hasPerm('order.deduction.manage')} /></Col>
+                <Col span={9}><Input value={deductNoteEdit} onChange={(e)=> setDeductNoteEdit(e.target.value)} placeholder="备注" disabled={!hasPerm('order.deduction.manage')} /></Col>
+              </Row>
               <Space>
                 <Button type="primary" disabled={!hasPerm('order.deduction.manage')} onClick={async () => {
                 if (!current) return
@@ -1868,9 +1955,9 @@ export default function OrdersPage() {
                 {editDeductionEditing ? <Button onClick={() => { setEditDeductionEditing(null); setDeductAmountEdit(0); setDeductDescEdit(''); setDeductNoteEdit('') }}>取消编辑</Button> : null}
               </Space>
             </Space>
-          </Card>
+          </div>
         </Form>
-    </Modal>
+    </Drawer>
     <Drawer open={view==='list' && detailOpen} onClose={() => setDetailOpen(false)} title="订单详情" width={520}>
       {detailLoading ? <div style={{ padding: 8 }}><span>加载中...</span></div> : null}
       {detail && (

@@ -5,6 +5,7 @@
  import dayjs from 'dayjs'
  import { apiCreate, getJSON, API_BASE, authHeaders } from '../../../lib/api'
  import { sortProperties } from '../../../lib/properties'
+import { getRole, hasPerm } from '../../../lib/auth'
  import { DeleteOutlined, PlusOutlined, UploadOutlined, ShareAltOutlined, LockOutlined } from '@ant-design/icons'
  
  type Property = { id: string; code?: string; address?: string }
@@ -15,7 +16,7 @@
    const { message } = App.useApp()
   const [sharePwdOpen, setSharePwdOpen] = useState(false)
   const [shareForm] = Form.useForm()
-  const [canSetSharePwd, setCanSetSharePwd] = useState(false)
+  const [sharePwdInfo, setSharePwdInfo] = useState<{ configured: boolean; password_updated_at: string | null } | null>(null)
   const [preFiles, setPreFiles] = useState<Record<number, UploadFile[]>>({})
   const [preUrls, setPreUrls] = useState<Record<number, string[]>>({})
   const [postFiles, setPostFiles] = useState<Record<number, UploadFile[]>>({})
@@ -28,19 +29,21 @@
          setProps(Array.isArray(ps) ? ps : [])
        } catch { setProps([]) }
      })()
+   }, [])
+
+  const canSetSharePwd = hasPerm('rbac.manage') && String(getRole() || '') !== 'maintenance_staff'
+
+  useEffect(() => {
+    if (!sharePwdOpen || !canSetSharePwd) return
     ;(async () => {
       try {
-        const role = localStorage.getItem('role') || ''
-        if (role === 'maintenance_staff') { setCanSetSharePwd(false); return }
-      } catch {}
-      try {
-        const perms = await getJSON<string[]>('/rbac/my-permissions').catch(() => ([] as string[]))
-        setCanSetSharePwd(Array.isArray(perms) && perms.includes('rbac.manage'))
+        const info = await getJSON<{ configured: boolean; password_updated_at: string | null }>('/public/maintenance-progress/password-info')
+        setSharePwdInfo(info || null)
       } catch {
-        setCanSetSharePwd(false)
+        setSharePwdInfo(null)
       }
     })()
-   }, [])
+  }, [sharePwdOpen, canSetSharePwd])
  
    const options = useMemo(() => sortProperties(props).map(p => ({ value: p.id, label: p.code || p.address || p.id })), [props])
  
@@ -100,7 +103,7 @@
             message.success('已复制外部分享链接')
           } catch {}
         }}>分享链接</Button>
-        {canSetSharePwd ? <Button icon={<LockOutlined />} onClick={() => setSharePwdOpen(true)}>设置维修分享密码</Button> : null}
+        {canSetSharePwd ? <Button icon={<LockOutlined />} onClick={() => setSharePwdOpen(true)}>设置维修进度密码</Button> : null}
       </Space>
        <Card title="房源维修进度表" style={{ marginTop: 24 }}>
          <Form form={form} layout="vertical" initialValues={{ occurred_at: dayjs(), details: [{ content:'', item:'' }] }}>
@@ -330,17 +333,22 @@
         const v = await shareForm.validateFields()
         const pass = String(v.new_password || '')
         try {
-          const res = await fetch(`${API_BASE}/public/maintenance-share/reset-password`, {
+          const res = await fetch(`${API_BASE}/public/maintenance-progress/reset-password`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify({ new_password: pass })
           })
-          if (res.ok) { message.success('已更新维修分享密码'); setSharePwdOpen(false); shareForm.resetFields() } else {
+          if (res.ok) { message.success('已更新维修进度密码'); setSharePwdOpen(false); shareForm.resetFields(); setSharePwdInfo(null) } else {
             const j = await res.json().catch(()=>null); message.error(j?.message || '更新失败')
           }
         } catch (e: any) { message.error('更新失败') }
-      }} title="设置维修记录分享密码" okText="保存">
+      }} title="设置维修进度表密码" okText="保存">
         <Form form={shareForm} layout="vertical">
+          <div style={{ marginBottom: 12 }}>
+            <Typography.Text type="secondary">
+              {sharePwdInfo?.configured ? `当前已设置，更新时间：${sharePwdInfo?.password_updated_at || '-'}` : '当前未设置（外部页将无法登录）'}
+            </Typography.Text>
+          </div>
           <Form.Item name="new_password" label="新密码（4-6位数字）" rules={[
             { required: true, message: '请输入密码' },
             { validator: (_, val) => {

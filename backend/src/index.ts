@@ -23,6 +23,7 @@ import { router as statsRouter } from './modules/stats'
 import { router as eventsRouter } from './modules/events'
 import notificationsRouter from './modules/notifications'
 import maintenanceRouter from './modules/maintenance'
+import deepCleaningRouter from './modules/deep_cleaning'
 import { router as propertyOnboardingRouter } from './modules/propertyOnboarding'
 import { router as jobsRouter, runEmailSyncJob } from './modules/jobs'
 import cron from 'node-cron'
@@ -222,6 +223,7 @@ app.use('/stats', statsRouter)
 app.use('/events', eventsRouter)
 app.use('/notifications', notificationsRouter)
 app.use('/maintenance', maintenanceRouter)
+app.use('/deep-cleaning', deepCleaningRouter)
 app.use('/jobs', jobsRouter)
 app.use('/public', publicAdminRouter)
 app.use('/onboarding', propertyOnboardingRouter)

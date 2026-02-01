@@ -1,5 +1,5 @@
 "use client"
-import { Card, Space, Button, Table, Tag, Modal, Form, Input, InputNumber, Select, DatePicker, Statistic, App, Descriptions, Popconfirm, message as AntMessage } from 'antd'
+import { Card, Space, Button, Table, Tag, Drawer, Form, Input, InputNumber, Select, DatePicker, Statistic, App, Descriptions, Popconfirm, message as AntMessage, Row, Col, Divider } from 'antd'
 import dayjs from 'dayjs'
 import customParseFormat from 'dayjs/plugin/customParseFormat'
 import utc from 'dayjs/plugin/utc'
@@ -390,33 +390,52 @@ export default function RecurringPage() {
         {allRows.filter(r=>!r.is_paid).length === 0 ? <div style={{ margin:'8px 0', color:'#888' }}>本月无未支付固定支出</div> : null}
       </Card>
       
-      <Modal open={open} onCancel={()=>setOpen(false)} onOk={submit} confirmLoading={saving} title={editing? '编辑固定支出':'新增固定支出'}>
+      <Drawer open={open} onClose={()=>setOpen(false)} title={editing? '编辑固定支出':'新增固定支出'} width={720} footer={
+        <div style={{ textAlign: 'right' }}>
+          <Space>
+            <Button onClick={()=>setOpen(false)}>取消</Button>
+            <Button type="primary" onClick={submit} loading={saving}>保存</Button>
+          </Space>
+        </div>
+      }>
         <Form form={form} layout="vertical">
-          <Form.Item name="scope" label="对象" initialValue="company"><Select options={[{value:'company',label:'公司'},{value:'property',label:'房源'}]} /></Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.scope!==cur.scope}>
-            {()=> (form.getFieldValue('scope')==='property' ? (
-              <Form.Item name="property_id" label="房号">
-                <Select
-                  allowClear
-                  showSearch
-                  optionFilterProp="label"
-                  filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())}
-                  options={sortProperties(properties||[]).map(p=>({ value:p.id, label:p.code||p.address||p.id }))}
-                />
+          <Divider orientation="left">基本信息</Divider>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="scope" label="对象" initialValue="company"><Select options={[{value:'company',label:'公司'},{value:'property',label:'房源'}]} /></Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.scope!==cur.scope}>
+                {()=> (form.getFieldValue('scope')==='property' ? (
+                  <Form.Item name="property_id" label="房号">
+                    <Select
+                      allowClear
+                      showSearch
+                      optionFilterProp="label"
+                      filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())}
+                      options={sortProperties(properties||[]).map(p=>({ value:p.id, label:p.code||p.address||p.id }))}
+                    />
+                  </Form.Item>
+                ) : <div style={{ height: 62 }} />)}
               </Form.Item>
-            ) : null)}
-          </Form.Item>
-          <Form.Item name="vendor" label="支出事项" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="category" label="支出类别" rules={[{ required: true }]}><Select options={[
-            {value:'房源租金',label:'房源租金'},
-            {value:'公司仓库租金',label:'公司仓库租金'},
-            {value:'公司办公室租金',label:'公司办公室租金'},
-            {value:'车位租金',label:'车位租金'},
-            {value:'密码盒',label:'密码盒'},
-            {value:'消耗品费',label:'消耗品费'},
-            {value:'车贷',label:'车贷'},
-            {value:'other',label:'其他'}
-          ]} /></Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="vendor" label="支出事项" rules={[{ required: true }]}><Input /></Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="category" label="支出类别" rules={[{ required: true }]}><Select options={[
+                {value:'房源租金',label:'房源租金'},
+                {value:'公司仓库租金',label:'公司仓库租金'},
+                {value:'公司办公室租金',label:'公司办公室租金'},
+                {value:'车位租金',label:'车位租金'},
+                {value:'密码盒',label:'密码盒'},
+                {value:'消耗品费',label:'消耗品费'},
+                {value:'车贷',label:'车贷'},
+                {value:'other',label:'其他'}
+              ]} /></Form.Item>
+            </Col>
+          </Row>
+          
           <Form.Item noStyle shouldUpdate={(prev,cur)=> prev.category!==cur.category || prev.scope!==cur.scope}>
             {()=> {
               const cat = form.getFieldValue('category')
@@ -427,76 +446,114 @@ export default function RecurringPage() {
               return null
             }}
           </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.scope!==cur.scope || prev.category!==cur.category}>
-            {()=> (form.getFieldValue('scope')==='property' ? (
-              <Form.Item name="report_category" label="营收报表归类" rules={[{ required: true }]} initialValue={defaultReportCategoryByName(form.getFieldValue('category'))}>
-                <Select options={[
-                  { value: 'parking_fee', label: '车位费' },
-                  { value: 'electricity', label: '电费' },
-                  { value: 'water', label: '水费' },
-                  { value: 'gas', label: '气费' },
-                  { value: 'internet', label: '网费' },
-                  { value: 'consumables', label: '消耗品费' },
-                  { value: 'body_corp', label: '物业费' },
-                  { value: 'council', label: '市政费' },
-                  { value: 'other', label: '其他支出' },
-                ]} />
+
+          <Row gutter={16}>
+            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.scope!==cur.scope || prev.category!==cur.category}>
+              {()=> (form.getFieldValue('scope')==='property' ? (
+                <Col span={12}>
+                  <Form.Item name="report_category" label="营收报表归类" rules={[{ required: true }]} initialValue={defaultReportCategoryByName(form.getFieldValue('category'))}>
+                    <Select options={[
+                      { value: 'parking_fee', label: '车位费' },
+                      { value: 'electricity', label: '电费' },
+                      { value: 'water', label: '水费' },
+                      { value: 'gas', label: '气费' },
+                      { value: 'internet', label: '网费' },
+                      { value: 'consumables', label: '消耗品费' },
+                      { value: 'body_corp', label: '物业费' },
+                      { value: 'council', label: '市政费' },
+                      { value: 'other', label: '其他支出' },
+                    ]} />
+                  </Form.Item>
+                </Col>
+              ) : null)}
+            </Form.Item>
+            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.category!==cur.category}>
+              {()=> (form.getFieldValue('category')==='other' ? (
+                <Col span={12}>
+                  <Form.Item name="category_detail" label="类别描述" rules={[{ required: true }]}> 
+                    <Input />
+                  </Form.Item>
+                </Col>
+              ) : null)}
+            </Form.Item>
+          </Row>
+
+          <Divider orientation="left">支付与周期</Divider>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="amount" label="金额"><InputNumber min={0} step={1} style={{ width:'100%' }} /></Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="status" label="状态" initialValue="active"><Select options={[{value:'active',label:'active'},{value:'paused',label:'paused'}]} /></Form.Item>
+            </Col>
+            <Form.Item noStyle shouldUpdate={(prev,cur)=> prev.payment_type!==cur.payment_type}>
+              {()=> (form.getFieldValue('payment_type')==='rent_deduction' ? null : (
+                <Col span={12}>
+                  <Form.Item name="due_day_of_month" label="每月几号到期" rules={[{ required: true }]}><InputNumber min={1} max={31} style={{ width:'100%' }} /></Form.Item>
+                </Col>
+              ))}
+            </Form.Item>
+            <Col span={12}>
+              <Form.Item name="frequency_months" label="支付频率" initialValue={1}><Select options={[
+                { value: 1, label: '每月一付' },
+                { value: 3, label: '每三月一付' },
+              ]} /></Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item label="提前提醒天数"><InputNumber value={3} disabled style={{ width:'100%' }} /></Form.Item>
+            </Col>
+            {editing ? null : (
+              <Col span={12}>
+                <Form.Item name="initial_mark" label="新增后状态" initialValue="unpaid"><Select options={[{value:'unpaid',label:'待支付'},{value:'paid',label:'已支付'}]} /></Form.Item>
+              </Col>
+            )}
+          </Row>
+
+          <Divider orientation="left">付款详情</Divider>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="payment_type" label="付款类型" initialValue="bank_account">
+                <Select options={[{value:'bank_account',label:'Bank account'},{value:'bpay',label:'Bpay'},{value:'payid',label:'PayID'},{value:'cash',label:'现金'},{value:'rent_deduction',label:'租金扣除'}]} />
               </Form.Item>
-            ) : null)}
+            </Col>
+            <Col span={12}>
+              <Form.Item name="pay_account_name" label="收款方"><Input /></Form.Item>
+            </Col>
+          </Row>
+          
+          <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.payment_type!==cur.payment_type}>
+            {()=> {
+              const pt = form.getFieldValue('payment_type')
+              if (pt === 'bank_account') {
+                return (
+                  <Row gutter={16}>
+                    <Col span={8}><Form.Item name="pay_bsb" label="BSB"><Input /></Form.Item></Col>
+                    <Col span={10}><Form.Item name="pay_account_number" label="账户"><Input /></Form.Item></Col>
+                    <Col span={6}><Form.Item name="pay_ref" label="Reference"><Input /></Form.Item></Col>
+                  </Row>
+                )
+              }
+              if (pt === 'bpay') {
+                return (
+                  <Row gutter={16}>
+                    <Col span={12}><Form.Item name="bpay_code" label="Bpay code"><Input /></Form.Item></Col>
+                    <Col span={12}><Form.Item name="pay_ref" label="Ref"><Input /></Form.Item></Col>
+                  </Row>
+                )
+              }
+              if (pt === 'payid') {
+                return (
+                  <Row gutter={16}>
+                    <Col span={12}><Form.Item name="pay_mobile_number" label="Mobile number"><Input /></Form.Item></Col>
+                  </Row>
+                )
+              }
+              return null
+            }}
           </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.category!==cur.category}>
-            {()=> (form.getFieldValue('category')==='other' ? (
-              <Form.Item name="category_detail" label="类别描述" rules={[{ required: true }]}> 
-                <Input />
-              </Form.Item>
-            ) : null)}
-          </Form.Item>
-          <Form.Item name="amount" label="金额"><InputNumber min={0} step={1} style={{ width:'100%' }} /></Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev,cur)=> prev.payment_type!==cur.payment_type}>
-            {()=> (form.getFieldValue('payment_type')==='rent_deduction' ? null : (
-              <Form.Item name="due_day_of_month" label="每月几号到期" rules={[{ required: true }]}><InputNumber min={1} max={31} style={{ width:'100%' }} /></Form.Item>
-            ))}
-          </Form.Item>
-          <Form.Item name="frequency_months" label="支付频率" initialValue={1}><Select options={[
-            { value: 1, label: '每月一付' },
-            { value: 3, label: '每三月一付' },
-          ]} /></Form.Item>
-          <Form.Item label="提前提醒天数"><InputNumber value={3} disabled style={{ width:'100%' }} /></Form.Item>
-          <Form.Item name="status" label="状态" initialValue="active"><Select options={[{value:'active',label:'active'},{value:'paused',label:'paused'}]} /></Form.Item>
-          {editing ? null : (
-            <Form.Item name="initial_mark" label="新增后状态" initialValue="unpaid"><Select options={[{value:'unpaid',label:'待支付'},{value:'paid',label:'已支付'}]} /></Form.Item>
-          )}
-          <Space direction="vertical" style={{ width:'100%' }}>
-            <Form.Item name="payment_type" label="付款类型" initialValue="bank_account">
-              <Select options={[{value:'bank_account',label:'Bank account'},{value:'bpay',label:'Bpay'},{value:'payid',label:'PayID'},{value:'cash',label:'现金'},{value:'rent_deduction',label:'租金扣除'}]} />
-            </Form.Item>
-            <Form.Item name="pay_account_name" label="收款方"><Input /></Form.Item>
-            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.payment_type!==cur.payment_type}>
-              {()=> (form.getFieldValue('payment_type')==='bank_account' ? (
-                <>
-                  <Form.Item name="pay_bsb" label="BSB"><Input /></Form.Item>
-                  <Form.Item name="pay_account_number" label="账户"><Input /></Form.Item>
-                  <Form.Item name="pay_ref" label="Reference"><Input /></Form.Item>
-                </>
-              ) : null)}
-            </Form.Item>
-            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.payment_type!==cur.payment_type}>
-              {()=> (form.getFieldValue('payment_type')==='bpay' ? (
-                <>
-                  <Form.Item name="bpay_code" label="Bpay code"><Input /></Form.Item>
-                  <Form.Item name="pay_ref" label="Ref"><Input /></Form.Item>
-                </>
-              ) : null)}
-            </Form.Item>
-            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.payment_type!==cur.payment_type}>
-              {()=> (form.getFieldValue('payment_type')==='payid' ? (
-                <Form.Item name="pay_mobile_number" label="Mobile number"><Input /></Form.Item>
-              ) : null)}
-            </Form.Item>
-          </Space>
         </Form>
-      </Modal>
-      <Modal open={viewOpen} onCancel={()=>{ setViewOpen(false); setViewing(null) }} footer={null} title="查看固定支出">
+      </Drawer>
+      <Drawer open={viewOpen} onClose={()=>{ setViewOpen(false); setViewing(null) }} title="查看固定支出" width={640}>
         {viewing ? (
           <Descriptions bordered size="small" column={1} style={{ marginTop: 8 }}>
             <Descriptions.Item label="对象">{(viewing.scope==='company' || !viewing.property_id) ? '公司' : getLabel(viewing.property_id)}</Descriptions.Item>
@@ -518,7 +575,7 @@ export default function RecurringPage() {
             <Descriptions.Item label="Mobile">{viewing.pay_mobile_number || '-'}</Descriptions.Item>
           </Descriptions>
         ) : null}
-      </Modal>
+      </Drawer>
       <style jsx>{`
         .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 12px; }
         .row-due-today { background: #fffbe6; }

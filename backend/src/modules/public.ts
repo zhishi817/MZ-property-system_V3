@@ -12,6 +12,8 @@ import crypto from 'crypto'
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
 const DEFAULT_PUBLIC_CLEANING_PASSWORD = process.env.PUBLIC_CLEANING_PASSWORD || 'mz-cleaning'
 const DEFAULT_PUBLIC_MAINTENANCE_SHARE_PASSWORD = process.env.MAINTENANCE_SHARE_PASSWORD || 'mz-maintenance'
+const DEFAULT_PUBLIC_DEEP_CLEANING_SHARE_PASSWORD = process.env.DEEP_CLEANING_SHARE_PASSWORD || 'mz-deep-cleaning'
+const DEFAULT_PUBLIC_DEEP_CLEANING_UPLOAD_PASSWORD = process.env.DEEP_CLEANING_UPLOAD_PASSWORD || 'mz-deep-cleaning-upload'
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
@@ -32,6 +34,28 @@ async function generateWorkNo(): Promise<string> {
     try {
       if (hasPg && pool) {
         const r = await pool.query('SELECT 1 FROM property_maintenance WHERE work_no = $1 LIMIT 1', [candidate])
+        if (!r.rowCount) return candidate
+      } else {
+        return candidate
+      }
+    } catch {
+      return candidate
+    }
+    len += 1
+    if (len > 10) return candidate
+  }
+}
+
+async function generateDeepCleaningWorkNo(): Promise<string> {
+  const date = new Date().toISOString().slice(0,10).replace(/-/g,'')
+  const prefix = `DC-${date}-`
+  const pool = pgPool
+  let len = 4
+  for (;;) {
+    const candidate = prefix + randomSuffix(len)
+    try {
+      if (hasPg && pool) {
+        const r = await pool.query('SELECT 1 FROM property_deep_cleaning WHERE work_no = $1 LIMIT 1', [candidate])
         if (!r.rowCount) return candidate
       } else {
         return candidate
@@ -97,6 +121,36 @@ async function getOrInitMaintenanceShareAccess(): Promise<{ area: string; passwo
   return null
 }
 
+async function getOrInitDeepCleaningShareAccess(): Promise<{ area: string; password_hash: string; password_updated_at: string } | null> {
+  try {
+    if (hasPg) {
+      await ensurePublicAccessTable()
+      const rows = await pgSelect('public_access', '*', { area: 'deep_cleaning_share' }) as any[]
+      const existing = rows && rows[0]
+      if (existing) return existing
+      const hash = await bcrypt.hash(DEFAULT_PUBLIC_DEEP_CLEANING_SHARE_PASSWORD, 10)
+      const row = await pgInsert('public_access', { area: 'deep_cleaning_share', password_hash: hash })
+      return row as any
+    }
+  } catch {}
+  return null
+}
+
+async function getOrInitDeepCleaningUploadAccess(): Promise<{ area: string; password_hash: string; password_updated_at: string } | null> {
+  try {
+    if (hasPg) {
+      await ensurePublicAccessTable()
+      const rows = await pgSelect('public_access', '*', { area: 'deep_cleaning_upload' }) as any[]
+      const existing = rows && rows[0]
+      if (existing) return existing
+      const hash = await bcrypt.hash(DEFAULT_PUBLIC_DEEP_CLEANING_UPLOAD_PASSWORD, 10)
+      const row = await pgInsert('public_access', { area: 'deep_cleaning_upload', password_hash: hash })
+      return row as any
+    }
+  } catch {}
+  return null
+}
+
 function verifyPublicToken(token: string): { ok: boolean; iat?: number } {
   try {
     const decoded: any = jwt.verify(token, SECRET)
@@ -121,6 +175,26 @@ function verifyMaintenanceShareJwt(token: string): { ok: boolean; iat?: number; 
   return { ok: false }
 }
 
+function verifyDeepCleaningShareJwt(token: string): { ok: boolean; iat?: number; deep_cleaning_id?: string; token_hash?: string } {
+  try {
+    const decoded: any = jwt.verify(token, SECRET)
+    if (decoded && decoded.scope === 'deep_cleaning_share' && decoded.deep_cleaning_id && decoded.token_hash) {
+      return { ok: true, iat: Number(decoded.iat || 0), deep_cleaning_id: String(decoded.deep_cleaning_id), token_hash: String(decoded.token_hash) }
+    }
+  } catch {}
+  return { ok: false }
+}
+
+function verifyDeepCleaningUploadJwt(token: string): { ok: boolean; iat?: number } {
+  try {
+    const decoded: any = jwt.verify(token, SECRET)
+    if (decoded && decoded.scope === 'deep_cleaning_upload') {
+      return { ok: true, iat: Number(decoded.iat || 0) }
+    }
+  } catch {}
+  return { ok: false }
+}
+
 function verifyMaintenanceProgressJwt(token: string): { ok: boolean; iat?: number } {
   try {
     const decoded: any = jwt.verify(token, SECRET)
@@ -129,6 +203,15 @@ function verifyMaintenanceProgressJwt(token: string): { ok: boolean; iat?: numbe
     }
   } catch {}
   return { ok: false }
+}
+
+function safeDateToIso(v: any): string | null {
+  try {
+    if (!v) return null
+    const d = new Date(String(v))
+    if (Number.isNaN(d.getTime())) return null
+    return d.toISOString()
+  } catch { return null }
 }
 
 async function ensureMaintenanceShareLinksTable() {
@@ -142,6 +225,19 @@ async function ensureMaintenanceShareLinksTable() {
   );`)
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_maintenance_share_mid ON maintenance_share_links(maintenance_id);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_maintenance_share_expires ON maintenance_share_links(expires_at);')
+}
+
+async function ensureDeepCleaningShareLinksTable() {
+  if (!pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS deep_cleaning_share_links (
+    token_hash text PRIMARY KEY,
+    deep_cleaning_id text NOT NULL REFERENCES property_deep_cleaning(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL,
+    revoked_at timestamptz
+  );`)
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_deep_cleaning_share_mid ON deep_cleaning_share_links(deep_cleaning_id);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_deep_cleaning_share_expires ON deep_cleaning_share_links(expires_at);')
 }
 
 async function ensurePropertyMaintenanceShareColumns() {
@@ -161,6 +257,60 @@ async function ensurePropertyMaintenanceShareColumns() {
   await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS parts_amount numeric;`)
   await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
   await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
+}
+
+async function ensurePropertyDeepCleaningShareColumns() {
+  if (!pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_deep_cleaning (
+    id text PRIMARY KEY,
+    property_id text REFERENCES properties(id) ON DELETE SET NULL,
+    occurred_at date NOT NULL,
+    worker_name text,
+    project_desc text,
+    started_at timestamptz,
+    ended_at timestamptz,
+    duration_minutes integer,
+    details text,
+    notes text,
+    created_by text,
+    photo_urls jsonb,
+    property_code text,
+    work_no text,
+    category text,
+    status text,
+    urgency text,
+    submitted_at timestamptz,
+    submitter_name text,
+    assignee_id text,
+    eta date,
+    completed_at timestamptz,
+    repair_notes text,
+    repair_photo_urls jsonb,
+    attachment_urls jsonb,
+    checklist jsonb,
+    consumables jsonb,
+    labor_minutes integer,
+    labor_cost numeric,
+    review_status text,
+    reviewed_by text,
+    reviewed_at timestamptz,
+    review_notes text,
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz
+  );`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_desc text;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS started_at timestamptz;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS ended_at timestamptz;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS duration_minutes integer;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS photo_urls jsonb;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS checklist jsonb;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS consumables jsonb;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS review_status text;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_by text;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS review_notes text;`)
 }
 
 async function ensureRepairOrdersTable() {
@@ -583,6 +733,140 @@ router.post('/maintenance-progress/submit', async (req, res) => {
   }
 })
 
+router.post('/deep-cleaning-upload/login', async (req, res) => {
+  const { password } = req.body || {}
+  const pwd = String(password || '').trim()
+  if (!pwd) return res.status(400).json({ message: 'missing password' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitDeepCleaningUploadAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const ok = await bcrypt.compare(pwd, access.password_hash)
+    if (!ok) return res.status(401).json({ message: 'invalid password' })
+    const token = jwt.sign({ scope: 'deep_cleaning_upload' }, SECRET, { expiresIn: '12h' })
+    return res.json({ token })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'login failed' })
+  }
+})
+
+router.post('/deep-cleaning-upload/upload', upload.single('file'), async (req, res) => {
+  const h = String(req.headers.authorization || '')
+  const token = h.startsWith('Bearer ') ? h.slice(7) : ''
+  const v = verifyDeepCleaningUploadJwt(token)
+  if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  if (!req.file) return res.status(400).json({ message: 'missing file' })
+  try {
+    const access = await getOrInitDeepCleaningUploadAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const iatSec = Number(v.iat || 0) * 1000
+    const pwdAt = new Date(access.password_updated_at).getTime()
+    if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
+    if (!hasR2 || !(req.file as any).buffer) {
+      return res.status(500).json({ message: 'R2 not configured' })
+    }
+    const ext = path.extname(req.file.originalname) || ''
+    const key = `deep-cleaning-upload/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    return res.status(201).json({ url })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'upload failed' })
+  }
+})
+
+router.post('/deep-cleaning-upload/submit', async (req, res) => {
+  const h = String(req.headers.authorization || '')
+  const token = h.startsWith('Bearer ') ? h.slice(7) : ''
+  const v = verifyDeepCleaningUploadJwt(token)
+  if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  const body = req.body || {}
+  const property_id = String(body.property_id || '').trim()
+  const occurred_at = String(body.occurred_at || '').trim() || new Date().toISOString().slice(0, 10)
+  const worker_name = String(body.worker_name || '').trim()
+  const notes = String(body.notes || '').trim()
+  const detailsArr = Array.isArray(body.details) ? body.details : []
+  if (!property_id) return res.status(400).json({ message: 'missing property_id' })
+  if (!worker_name) return res.status(400).json({ message: 'missing worker_name' })
+  if (!detailsArr.length) return res.status(400).json({ message: 'missing details' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitDeepCleaningUploadAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const iatSec = Number(v.iat || 0) * 1000
+    const pwdAt = new Date(access.password_updated_at).getTime()
+    if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
+    await ensurePropertyDeepCleaningShareColumns()
+    const sql = `INSERT INTO property_deep_cleaning (
+      id, property_id, occurred_at, worker_name, project_desc, started_at, ended_at, duration_minutes,
+      details, notes, created_by, photo_urls, repair_photo_urls, property_code, work_no, category, status, urgency,
+      submitted_at, submitter_name, completed_at, review_status, checklist, consumables
+    ) VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,
+      $9::text,$10,$11,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18,
+      $19,$20,$21,$22,$23::jsonb,$24::jsonb
+    )`
+    const nowIso = new Date().toISOString()
+    let created = 0
+    const ids: string[] = []
+    for (const d of detailsArr) {
+      const project_desc = String(d?.project_desc || d?.desc || d?.item || '').trim()
+      const started_at = safeDateToIso(d?.started_at)
+      const ended_at = safeDateToIso(d?.ended_at)
+      const itemNote = String(d?.notes || d?.note || '').trim()
+      if (!project_desc) continue
+      if (!started_at || !ended_at) continue
+      const before = Array.isArray(d?.pre_photo_urls) ? d.pre_photo_urls : (d?.pre_photo_urls ? [d.pre_photo_urls] : [])
+      const after = Array.isArray(d?.post_photo_urls) ? d.post_photo_urls : (d?.post_photo_urls ? [d.post_photo_urls] : [])
+      let durationMinutes: number | null = null
+      try {
+        const ms = new Date(ended_at).getTime() - new Date(started_at).getTime()
+        const m = Math.round(ms / 60000)
+        if (Number.isFinite(m) && m >= 0) durationMinutes = m
+      } catch {}
+      const mergedNotes = (() => {
+        if (notes && itemNote) return `${notes}\n${itemNote}`
+        return notes || itemNote || ''
+      })()
+      const detailsText = JSON.stringify([{ content: project_desc }])
+      const id = uuidv4()
+      const workNo = await generateDeepCleaningWorkNo()
+      await pgPool.query(sql, [
+        id,
+        property_id || null,
+        occurred_at || new Date().toISOString().slice(0, 10),
+        worker_name || '',
+        project_desc || '',
+        started_at,
+        ended_at,
+        durationMinutes,
+        detailsText,
+        mergedNotes,
+        null,
+        JSON.stringify(before || []),
+        JSON.stringify(after || []),
+        null,
+        workNo,
+        null,
+        'completed',
+        null,
+        nowIso,
+        worker_name,
+        ended_at || nowIso,
+        'pending',
+        JSON.stringify([]),
+        JSON.stringify([]),
+      ])
+      addAudit('property_deep_cleaning', id, 'create', null, { id })
+      created += 1
+      ids.push(id)
+    }
+    if (!created) return res.status(400).json({ message: 'missing project fields' })
+    return res.status(201).json({ ok: true, created, ids })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'submit failed' })
+  }
+})
+
 router.post('/maintenance-share/upload', upload.single('file'), async (req, res) => {
   const h = String(req.headers.authorization || '')
   const token = h.startsWith('Bearer ') ? h.slice(7) : ''
@@ -649,6 +933,148 @@ router.patch('/maintenance-share/:token', async (req, res) => {
     const before = beforeRows && beforeRows[0]
     const updated = await pgUpdate('property_maintenance', maintenanceId, payload)
     addAudit('property_maintenance', maintenanceId, 'update', before, updated)
+    return res.json(updated || { ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'update failed' })
+  }
+})
+
+router.get('/deep-cleaning-share/:token', async (req, res) => {
+  const token = String((req.params as any)?.token || '').trim()
+  if (!token) return res.status(400).json({ message: 'missing token' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensureDeepCleaningShareLinksTable()
+    const tokenHash = sha256Hex(token)
+    const r = await pgPool.query(
+      'SELECT deep_cleaning_id FROM deep_cleaning_share_links WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at > now() LIMIT 1',
+      [tokenHash]
+    )
+    const deepCleaningId = String(r.rows?.[0]?.deep_cleaning_id || '')
+    if (!deepCleaningId) return res.status(404).json({ message: 'not found' })
+    await ensurePropertyDeepCleaningShareColumns()
+    const rows = await pgSelect('property_deep_cleaning', '*', { id: deepCleaningId }) as any[]
+    const row = rows && rows[0]
+    if (!row) return res.status(404).json({ message: 'not found' })
+    let propCode = ''
+    try {
+      const pid = String(row?.property_id || '').trim()
+      if (pid) {
+        const pr = await pgPool.query('SELECT code FROM properties WHERE id=$1 LIMIT 1', [pid])
+        propCode = String(pr.rows?.[0]?.code || '').trim()
+      }
+    } catch {}
+    const code = propCode || String(row?.property_code || '').trim()
+    return res.json({ ...row, property_code: code || row?.property_code, code: code || row?.code })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'get failed' })
+  }
+})
+
+router.post('/deep-cleaning-share/login', async (req, res) => {
+  const body = req.body || {}
+  const tk = String(body.token || '').trim()
+  const pwd = String(body.password || '').trim()
+  if (!tk) return res.status(400).json({ message: 'missing token' })
+  if (!pwd) return res.status(400).json({ message: 'missing password' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitDeepCleaningShareAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const ok = await bcrypt.compare(pwd, access.password_hash)
+    if (!ok) return res.status(401).json({ message: 'invalid password' })
+    await ensureDeepCleaningShareLinksTable()
+    const tokenHash = sha256Hex(tk)
+    const r = await pgPool.query(
+      'SELECT deep_cleaning_id FROM deep_cleaning_share_links WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at > now() LIMIT 1',
+      [tokenHash]
+    )
+    const deepCleaningId = String(r.rows?.[0]?.deep_cleaning_id || '')
+    if (!deepCleaningId) return res.status(404).json({ message: 'not found' })
+    await ensurePropertyDeepCleaningShareColumns()
+    const rows = await pgSelect('property_deep_cleaning', '*', { id: deepCleaningId }) as any[]
+    const row = rows && rows[0]
+    if (!row) return res.status(404).json({ message: 'not found' })
+    let propCode = ''
+    try {
+      const pid = String(row?.property_id || '').trim()
+      if (pid) {
+        const pr = await pgPool.query('SELECT code FROM properties WHERE id=$1 LIMIT 1', [pid])
+        propCode = String(pr.rows?.[0]?.code || '').trim()
+      }
+    } catch {}
+    const code = propCode || String(row?.property_code || '').trim()
+    const shareToken = jwt.sign({ scope: 'deep_cleaning_share', deep_cleaning_id: deepCleaningId, token_hash: tokenHash }, SECRET, { expiresIn: '12h' })
+    const deep_cleaning = { ...row, property_code: code || row?.property_code, code: code || row?.code }
+    return res.json({ token: shareToken, deep_cleaning })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'login failed' })
+  }
+})
+
+router.post('/deep-cleaning-share/upload', upload.single('file'), async (req, res) => {
+  const h = String(req.headers.authorization || '')
+  const token = h.startsWith('Bearer ') ? h.slice(7) : ''
+  const v = verifyDeepCleaningShareJwt(token)
+  if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  if (!req.file) return res.status(400).json({ message: 'missing file' })
+  try {
+    const access = await getOrInitDeepCleaningShareAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const iatSec = Number(v.iat || 0) * 1000
+    const pwdAt = new Date(access.password_updated_at).getTime()
+    if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
+    if (!hasR2 || !(req.file as any).buffer) {
+      return res.status(500).json({ message: 'R2 not configured' })
+    }
+    const ext = path.extname(req.file.originalname) || ''
+    const key = `deep-cleaning-share/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    return res.status(201).json({ url })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'upload failed' })
+  }
+})
+
+router.patch('/deep-cleaning-share/:token', async (req, res) => {
+  const tk = String((req.params as any)?.token || '').trim()
+  if (!tk) return res.status(400).json({ message: 'missing token' })
+  const h = String(req.headers.authorization || '')
+  const bearer = h.startsWith('Bearer ') ? h.slice(7) : ''
+  const v = verifyDeepCleaningShareJwt(bearer)
+  if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitDeepCleaningShareAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const iatSec = Number(v.iat || 0) * 1000
+    const pwdAt = new Date(access.password_updated_at).getTime()
+    if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
+    const tokenHash = sha256Hex(tk)
+    if (String(v.token_hash || '') !== tokenHash) return res.status(401).json({ message: 'unauthorized' })
+    await ensureDeepCleaningShareLinksTable()
+    const r = await pgPool.query(
+      'SELECT deep_cleaning_id FROM deep_cleaning_share_links WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at > now() LIMIT 1',
+      [tokenHash]
+    )
+    const deepCleaningId = String(r.rows?.[0]?.deep_cleaning_id || '')
+    if (!deepCleaningId) return res.status(404).json({ message: 'not found' })
+    if (String(v.deep_cleaning_id || '') !== deepCleaningId) return res.status(401).json({ message: 'unauthorized' })
+    await ensurePropertyDeepCleaningShareColumns()
+    const body = req.body || {}
+    const allowed = [
+      'status','urgency','assignee_id','eta','completed_at',
+      'details','notes','repair_notes','photo_urls','repair_photo_urls','attachment_urls',
+      'checklist','consumables','labor_minutes','labor_cost',
+    ]
+    const payload: any = {}
+    for (const k of allowed) {
+      if (body[k] !== undefined) payload[k] = body[k]
+    }
+    const beforeRows = await pgSelect('property_deep_cleaning', '*', { id: deepCleaningId }) as any[]
+    const before = beforeRows && beforeRows[0]
+    const updated = await pgUpdate('property_deep_cleaning', deepCleaningId, payload)
+    addAudit('property_deep_cleaning', deepCleaningId, 'update', before, updated)
     return res.json(updated || { ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update failed' })

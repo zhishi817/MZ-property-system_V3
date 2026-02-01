@@ -20,8 +20,25 @@ export default function LoginInner() {
       if (remembered) form.setFieldsValue({ username: remembered, remember: true })
     } catch {}
   }, [])
-  async function submit() {
-    const v = await form.validateFields()
+  function buildAuthUrlCandidates(endpoint: 'login' | 'forgot') {
+    const base = String(API_BASE || '').trim().replace(/\/+$/g, '')
+    if (!base) return []
+    const raw = base
+    const stripAuth = raw.replace(/\/auth\/?$/g, '')
+    const stripApi = stripAuth.replace(/\/api\/?$/g, '')
+    const paths = endpoint === 'login' ? ['auth/login', 'login'] : ['auth/forgot', 'forgot']
+    const candidates = [
+      ...paths.map(p => `${raw}/${p}`),
+      ...paths.map(p => `${stripAuth}/${p}`),
+      ...paths.map(p => `${stripApi}/${p}`),
+    ].map(u => u.replace(/([^:]\/)\/+/g, '$1'))
+    return Array.from(new Set(candidates)).filter(Boolean)
+  }
+  async function submit(values?: any) {
+    let v: any = values
+    if (!v) {
+      try { v = await form.validateFields() } catch { return }
+    }
     v.username = (v.username || '').trim()
     v.password = (v.password || '').trim()
     const alias: Record<string, string> = { ops: 'cs', field: 'cleaner' }
@@ -31,7 +48,16 @@ export default function LoginInner() {
       setLoading(true)
       const controller = new AbortController()
       const timer = setTimeout(() => { try { controller.abort() } catch {} }, 15000)
-      try { res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(v), signal: controller.signal }) } finally { try { clearTimeout(timer) } catch {} }
+      try {
+        const urls = buildAuthUrlCandidates('login')
+        if (!urls.length) { msg.error('后端地址未配置（NEXT_PUBLIC_API_BASE_URL）'); setLoading(false); return }
+        let last: Response | null = null
+        for (const url of urls) {
+          last = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(v), signal: controller.signal })
+          if (last.status !== 404) break
+        }
+        res = last as Response
+      } finally { try { clearTimeout(timer) } catch {} }
     } catch (e: any) { msg.error('无法连接服务，请稍后重试'); setLoading(false); return }
     if (res.ok) {
       const data = await res.json()
@@ -51,7 +77,20 @@ export default function LoginInner() {
     setLoading(false)
   }
   return (
-    <div className="login-wrapper">
+    <div
+      className="login-wrapper"
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'linear-gradient(135deg,#f5f7fa 0%,#e4ebf5 100%)',
+        padding: 24,
+        position: 'relative',
+        overflow: 'hidden',
+      }}
+    >
       {contextHolder}
       <div className="decor-layer">
         <div className="bubble b1"></div>
@@ -61,13 +100,13 @@ export default function LoginInner() {
         <div className="geom-rect"></div>
         <div className="geom-circle"></div>
       </div>
-      <Card className="login-card">
-        <div className="login-logo-wrap" style={{ display: 'flex', justifyContent: 'center' }}>
+      <Card className="login-card" style={{ width: '100%', maxWidth: 420, borderRadius: 16, border: '1px solid #e6e9f2', boxShadow: '0 12px 28px rgba(30,136,229,0.12)' }}>
+        <div className="login-logo-wrap" style={{ display: 'flex', justifyContent: 'center', marginBottom: 24 }}>
           <div style={{ position: 'relative', width: '240px', height: '64px' }}>
             <Image src="/mz-logo.png" alt="MZ Property" fill sizes="240px" style={{ objectFit: 'contain', objectPosition: 'center' }} priority />
           </div>
         </div>
-        <Form form={form} layout="vertical" initialValues={{ remember: true }} requiredMark={false}>
+        <Form form={form} layout="vertical" initialValues={{ remember: true }} requiredMark={false} onFinish={submit}>
           <Form.Item name="username" label="邮箱地址/用户名" rules={[{ required: true }]}> 
             <Input size="large" placeholder="admin / cs / cleaner" prefix={<MailOutlined />} />
           </Form.Item>
@@ -80,12 +119,25 @@ export default function LoginInner() {
             </Form.Item>
             <a className="forgot-link" onClick={() => setForgotOpen(true)}>忘记密码？</a>
           </div>
-          <Button type="primary" block size="large" style={{ marginTop: 12 }} onClick={submit} loading={loading} disabled={loading}>登录</Button>
+          <Button type="primary" block size="large" style={{ marginTop: 12 }} htmlType="submit" loading={loading} disabled={loading}>登录</Button>
         </Form>
       </Card>
       <Modal open={forgotOpen} onCancel={() => setForgotOpen(false)} onOk={async () => {
         const v = await forgotForm.validateFields()
-        try { const r = await fetch(`${API_BASE}/auth/forgot`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: v.email }) }); if (!r.ok) throw new Error('fallback') } catch {}
+        try {
+          const controller = new AbortController()
+          const timer = setTimeout(() => { try { controller.abort() } catch {} }, 15000)
+          try {
+            const urls = buildAuthUrlCandidates('forgot')
+            if (!urls.length) throw new Error('missing_api_base')
+            let last: Response | null = null
+            for (const url of urls) {
+              last = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: v.email }), signal: controller.signal })
+              if (last.status !== 404) break
+            }
+            if (!last?.ok) throw new Error('fallback')
+          } finally { try { clearTimeout(timer) } catch {} }
+        } catch {}
         msg.success('已发送重置密码指南到邮箱')
         setForgotOpen(false); forgotForm.resetFields()
       }} title="找回密码">

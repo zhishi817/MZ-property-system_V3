@@ -1,6 +1,14 @@
-const API_BASE_ENV = process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_DEV || process.env.NEXT_PUBLIC_API_BASE
-if (!API_BASE_ENV) throw new Error('Missing NEXT_PUBLIC_API_BASE_URL')
+const API_BASE_ENV =
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  process.env.NEXT_PUBLIC_API_BASE_DEV ||
+  process.env.NEXT_PUBLIC_API_BASE ||
+  ''
+
 export const API_BASE = API_BASE_ENV
+
+function assertApiBase() {
+  if (!API_BASE) throw new Error('Missing NEXT_PUBLIC_API_BASE_URL')
+}
 
 function getToken() {
   if (typeof window === 'undefined') return null
@@ -20,6 +28,7 @@ export function authHeaders(): Record<string, string> {
 }
 
 export async function getJSON<T>(path: string): Promise<T> {
+  assertApiBase()
   const res = await fetch(`${API_BASE}${path}`, { cache: 'no-store', headers: authHeaders() })
   if (res.status === 401) {
     if (typeof window !== 'undefined') window.location.href = '/login'
@@ -30,13 +39,23 @@ export async function getJSON<T>(path: string): Promise<T> {
 }
 
 export async function postJSON<T>(path: string, body: any): Promise<T> {
+  assertApiBase()
   const res = await fetch(`${API_BASE}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+  if (res.status === 401) {
+    if (typeof window !== 'undefined') window.location.href = '/login'
+    throw new Error('HTTP 401')
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json() as Promise<T>
 }
 
 export async function patchJSON<T>(path: string, body: any): Promise<T> {
+  assertApiBase()
   const res = await fetch(`${API_BASE}${path}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+  if (res.status === 401) {
+    if (typeof window !== 'undefined') window.location.href = '/login'
+    throw new Error('HTTP 401')
+  }
   if (!res.ok) {
     try {
       const ct = res.headers.get('content-type') || ''
@@ -57,7 +76,12 @@ export async function patchJSON<T>(path: string, body: any): Promise<T> {
 }
 
 export async function deleteJSON<T>(path: string): Promise<T> {
+  assertApiBase()
   const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE', headers: { ...authHeaders() } })
+  if (res.status === 401) {
+    if (typeof window !== 'undefined') window.location.href = '/login'
+    throw new Error('HTTP 401')
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json() as Promise<T>
 }
