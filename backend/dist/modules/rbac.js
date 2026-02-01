@@ -11,12 +11,110 @@ const zod_1 = require("zod");
 const auth_1 = require("../auth");
 const dbAdapter_1 = require("../dbAdapter");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const permissionsCatalog_1 = require("../permissionsCatalog");
 exports.router = (0, express_1.Router)();
-exports.router.get('/roles', (req, res) => {
-    res.json(store_1.db.roles);
+function expandPermissionSynonyms(codes) {
+    const acts = ['view', 'write', 'delete', 'archive'];
+    const s = new Set((codes || []).map((c) => String(c || '')).filter(Boolean));
+    acts.forEach((a) => {
+        if (s.has(`orders.${a}`) && !s.has(`order.${a}`))
+            s.add(`order.${a}`);
+        if (s.has(`order.${a}`) && !s.has(`orders.${a}`))
+            s.add(`orders.${a}`);
+        if (s.has(`properties.${a}`) && !s.has(`property.${a}`))
+            s.add(`property.${a}`);
+        if (s.has(`property.${a}`) && !s.has(`properties.${a}`))
+            s.add(`properties.${a}`);
+    });
+    return Array.from(s);
+}
+async function ensureRolesTable() {
+    if (!dbAdapter_1.hasPg)
+        return;
+    try {
+        const { pgPool } = require('../dbAdapter');
+        if (!pgPool)
+            return;
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS roles (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      description text,
+      created_at timestamptz DEFAULT now()
+    );`);
+        await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_roles_name ON roles(name);');
+    }
+    catch (_a) { }
+}
+exports.router.get('/roles', async (_req, res) => {
+    try {
+        if (dbAdapter_1.hasPg) {
+            await ensureRolesTable();
+            let rows = await (0, dbAdapter_1.pgSelect)('roles', '*') || [];
+            if (!rows || rows.length === 0) {
+                try {
+                    const { pgPool } = require('../dbAdapter');
+                    if (pgPool) {
+                        for (const r of store_1.db.roles) {
+                            await pgPool.query('INSERT INTO roles(id, name, description) VALUES($1,$2,$3) ON CONFLICT (id) DO NOTHING', [r.id, r.name, r.description || null]);
+                        }
+                    }
+                }
+                catch (_a) { }
+                rows = await (0, dbAdapter_1.pgSelect)('roles', '*') || [];
+            }
+            return res.json(rows);
+        }
+    }
+    catch (_b) { }
+    return res.json(store_1.db.roles);
+});
+const roleCreateSchema = zod_1.z.object({
+    name: zod_1.z.string().min(1).max(64).transform((s) => s.trim()),
+    description: zod_1.z.string().max(200).optional().transform((s) => (typeof s === 'string' ? s.trim() : s)),
+});
+exports.router.post('/roles', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+    const parsed = roleCreateSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json(parsed.error.format());
+    const name = parsed.data.name;
+    if (!/^[a-z][a-z0-9_]*$/i.test(name))
+        return res.status(400).json({ message: '角色名仅支持字母/数字/下划线，且需以字母开头' });
+    const role = { id: `role.${name}`, name, description: parsed.data.description || undefined };
+    try {
+        if (dbAdapter_1.hasPg) {
+            await ensureRolesTable();
+            try {
+                const created = await (0, dbAdapter_1.pgInsert)('roles', role);
+                return res.status(201).json(created || role);
+            }
+            catch (e) {
+                const code = String((e && e.code) || '');
+                const msg = String((e && e.message) || '');
+                if (code === '23505' || /duplicate key value|unique constraint/i.test(msg)) {
+                    return res.status(409).json({ message: '角色名已存在' });
+                }
+                return res.status(500).json({ message: msg || '创建失败' });
+            }
+        }
+        if (store_1.db.roles.find((r) => r.name === name || r.id === role.id))
+            return res.status(409).json({ message: '角色名已存在' });
+        store_1.db.roles.push(role);
+        try {
+            (0, persistence_1.saveRoles)(store_1.db.roles);
+        }
+        catch (_a) { }
+        return res.status(201).json(role);
+    }
+    catch (e) {
+        return res.status(500).json({ message: e.message });
+    }
 });
 exports.router.get('/permissions', (req, res) => {
-    res.json(store_1.db.permissions);
+    res.json(store_1.db.permissions.map((p) => {
+        const code = String(p.code || '');
+        const meta = (0, permissionsCatalog_1.getPermissionMeta)(code);
+        return { ...p, name: (p === null || p === void 0 ? void 0 : p.name) || meta.displayName, meta };
+    }));
 });
 exports.router.get('/role-permissions', async (req, res) => {
     const { role_id } = req.query;
@@ -29,6 +127,10 @@ exports.router.get('/role-permissions', async (req, res) => {
                 if (altRows && altRows.length)
                     rows = altRows;
             }
+            if (role_id) {
+                const codes = expandPermissionSynonyms(rows.map((r) => String((r === null || r === void 0 ? void 0 : r.permission_code) || '')));
+                return res.json(codes.map((permission_code) => ({ role_id, permission_code })));
+            }
             return res.json(rows);
         }
     }
@@ -39,8 +141,11 @@ exports.router.get('/role-permissions', async (req, res) => {
         catch (_a) { }
         return res.status(500).json({ message: e.message });
     }
-    const list = role_id ? store_1.db.rolePermissions.filter(rp => rp.role_id === role_id) : store_1.db.rolePermissions;
-    res.json(list);
+    if (role_id) {
+        const codes = expandPermissionSynonyms(store_1.db.rolePermissions.filter(rp => rp.role_id === role_id).map(rp => rp.permission_code));
+        return res.json(codes.map((permission_code) => ({ role_id, permission_code })));
+    }
+    res.json(store_1.db.rolePermissions);
 });
 const setSchema = zod_1.z.object({ role_id: zod_1.z.string(), permissions: zod_1.z.array(zod_1.z.string().min(1)) });
 exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
@@ -48,7 +153,7 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
     const { role_id, permissions } = parsed.data;
-    const set = new Set(permissions);
+    const set = new Set(expandPermissionSynonyms(permissions));
     const submenuToResources = {
         'menu.properties.list.visible': ['properties'],
         'menu.properties.maintenance.visible': ['property_maintenance'],
@@ -95,6 +200,7 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
             set.delete(`${base}.archive`);
         }
     });
+    const finalCodes = expandPermissionSynonyms(Array.from(set));
     try {
         if (dbAdapter_1.hasPg) {
             try {
@@ -139,7 +245,7 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
                 const normalizedId = role_id.startsWith('role.') ? role_id : `role.${role_id}`;
                 const altId = role_id.startsWith('role.') ? role_id.replace(/^role\./, '') : role_id;
                 await client.query('DELETE FROM role_permissions WHERE role_id = $1 OR role_id = $2', [normalizedId, altId]);
-                for (const code of Array.from(set)) {
+                for (const code of finalCodes) {
                     const id = uuid();
                     const sql = 'INSERT INTO role_permissions (id, role_id, permission_code) VALUES ($1,$2,$3) ON CONFLICT (role_id, permission_code) DO NOTHING RETURNING id';
                     const r = await client.query(sql, [id, normalizedId, code]);
@@ -167,7 +273,7 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
         return res.status(500).json({ message: e.message });
     }
     store_1.db.rolePermissions = store_1.db.rolePermissions.filter(rp => rp.role_id !== role_id);
-    Array.from(set).forEach(code => store_1.db.rolePermissions.push({ role_id, permission_code: code }));
+    finalCodes.forEach(code => store_1.db.rolePermissions.push({ role_id, permission_code: code }));
     try {
         if (!dbAdapter_1.hasPg)
             (0, persistence_1.saveRolePermissions)(store_1.db.rolePermissions);
@@ -177,22 +283,43 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
 });
 // current user's permissions
 exports.router.get('/my-permissions', auth_1.auth, async (req, res) => {
+    var _a;
     const user = req.user;
     if (!user)
         return res.status(401).json({ message: 'unauthorized' });
     const roleName = String(user.role || '');
-    const role = store_1.db.roles.find(r => r.name === roleName);
-    if (!role)
-        return res.json([]);
+    let roleId = (_a = store_1.db.roles.find(r => r.name === roleName)) === null || _a === void 0 ? void 0 : _a.id;
     try {
         if (dbAdapter_1.hasPg) {
-            let rows = await (0, dbAdapter_1.pgSelect)('role_permissions', 'permission_code', { role_id: role.id }) || [];
-            if (!rows || rows.length === 0) {
-                const altRows = await (0, dbAdapter_1.pgSelect)('role_permissions', 'permission_code', { role_id: role.name }) || [];
-                if (altRows && altRows.length)
-                    rows = altRows;
+            try {
+                await ensureRolesTable();
+                const rr = await (0, dbAdapter_1.pgSelect)('roles', 'id,name', { name: roleName }) || [];
+                if (rr && rr[0] && rr[0].id)
+                    roleId = String(rr[0].id);
             }
-            const list = rows.map((r) => r.permission_code);
+            catch (_b) { }
+            const roleIds = Array.from(new Set([roleId, roleName].filter(Boolean)));
+            if (!roleIds.length)
+                return res.json([]);
+            let rows = [];
+            for (const rid of roleIds) {
+                const r0 = await (0, dbAdapter_1.pgSelect)('role_permissions', 'permission_code', { role_id: rid }) || [];
+                if (r0 && r0.length) {
+                    rows = r0;
+                    break;
+                }
+            }
+            if (!rows || rows.length === 0) {
+                const altCandidates = roleIds.flatMap((rid) => (String(rid).startsWith('role.') ? [String(rid).replace(/^role\./, '')] : [`role.${rid}`]));
+                for (const rid of altCandidates) {
+                    const r0 = await (0, dbAdapter_1.pgSelect)('role_permissions', 'permission_code', { role_id: rid }) || [];
+                    if (r0 && r0.length) {
+                        rows = r0;
+                        break;
+                    }
+                }
+            }
+            const list = expandPermissionSynonyms(rows.map((r) => r.permission_code));
             const normalized = new Set(list);
             ['view', 'write', 'delete', 'archive'].forEach(act => {
                 const plural = `orders.${act}`;
@@ -206,7 +333,9 @@ exports.router.get('/my-permissions', auth_1.auth, async (req, res) => {
     catch (e) {
         return res.status(500).json({ message: e.message });
     }
-    const list = store_1.db.rolePermissions.filter(rp => rp.role_id === role.id).map(rp => rp.permission_code);
+    if (!roleId)
+        return res.json([]);
+    const list = expandPermissionSynonyms(store_1.db.rolePermissions.filter(rp => rp.role_id === roleId).map(rp => rp.permission_code));
     const normalized = new Set(list);
     ['view', 'write', 'delete', 'archive'].forEach(act => {
         const plural = `orders.${act}`;
@@ -290,6 +419,7 @@ exports.router.patch('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async
     const parsed = userUpdateSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
+    const didResetPassword = !!parsed.data.password;
     const payload = { ...parsed.data };
     if (payload.password) {
         payload.password_hash = await bcryptjs_1.default.hash(payload.password, 10);
@@ -299,6 +429,29 @@ exports.router.patch('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async
     try {
         if (dbAdapter_1.hasPg) {
             const updated = await (0, dbAdapter_1.pgUpdate)('users', id, payload);
+            if (didResetPassword) {
+                try {
+                    const { pgPool } = require('../dbAdapter');
+                    if (pgPool) {
+                        await pgPool.query(`CREATE TABLE IF NOT EXISTS sessions (
+              id text PRIMARY KEY,
+              user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              created_at timestamptz DEFAULT now(),
+              last_seen_at timestamptz DEFAULT now(),
+              expires_at timestamptz NOT NULL,
+              revoked boolean NOT NULL DEFAULT false,
+              ip text,
+              user_agent text,
+              device text
+            );`);
+                        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);');
+                        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);');
+                        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(user_id) WHERE revoked = false;');
+                        await pgPool.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [id]);
+                    }
+                }
+                catch (_a) { }
+            }
             return res.json(updated || { id, ...payload });
         }
         // Supabase branch removed

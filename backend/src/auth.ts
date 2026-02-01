@@ -167,8 +167,12 @@ export function requirePerm(code: string) {
     try {
       const { hasPg, pgPool } = require('./dbAdapter')
       if (hasPg && pgPool) {
-        const role = db.roles.find(r => r.name === roleName)
-        const roleIds = Array.from(new Set([role?.id, role?.name, roleName].filter(Boolean)))
+        let roleId = db.roles.find(r => r.name === roleName)?.id
+        try {
+          const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName])
+          if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id) roleId = String(r0.rows[0].id)
+        } catch {}
+        const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)))
         const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = $2 LIMIT 1', [roleIds, code])
         ok = !!r?.rowCount
       }
@@ -188,8 +192,12 @@ export function requireAnyPerm(codes: string[]) {
     try {
       const { hasPg, pgPool } = require('./dbAdapter')
       if (hasPg && pgPool) {
-        const role = db.roles.find(r => r.name === roleName)
-        const roleIds = Array.from(new Set([role?.id, role?.name, roleName].filter(Boolean)))
+        let roleId = db.roles.find(r => r.name === roleName)?.id
+        try {
+          const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName])
+          if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id) roleId = String(r0.rows[0].id)
+        } catch {}
+        const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)))
         const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = ANY($2::text[]) LIMIT 1', [roleIds, codes])
         ok = !!r?.rowCount
       }
@@ -257,21 +265,43 @@ export function requireResourcePerm(kind: 'view' | 'write' | 'delete') {
       property_expenses: ['finance.tx.write'],
       company_expenses: ['finance.tx.write'],
     }
+    const pluralSingular: Record<string, string> = { orders: 'order', order: 'orders', properties: 'property', property: 'properties' }
+    const legacyByResource: Record<string, Partial<Record<'view' | 'write' | 'delete', string[]>>> = {
+      landlords: { view: ['landlord.manage'], write: ['landlord.manage'], delete: ['landlord.manage'] },
+      finance_transactions: { view: ['finance.tx.write'], write: ['finance.tx.write'] },
+      recurring_payments: { view: ['finance.tx.write'], write: ['finance.tx.write'] },
+      fixed_expenses: { view: ['finance.tx.write'], write: ['finance.tx.write'] },
+      property_expenses: { view: ['finance.tx.write'], write: ['finance.tx.write'] },
+      company_expenses: { view: ['finance.tx.write'], write: ['finance.tx.write'] },
+      properties: { view: ['property.view'], write: ['property.write'] },
+      orders: { view: ['order.view'], write: ['order.write'] },
+    }
+    const candidates = (() => {
+      const s = new Set<string>()
+      s.add(code)
+      const alt = pluralSingular[resource]
+      if (alt) s.add(`${alt}.${kind}`)
+      ;(legacyByResource[resource]?.[kind] || []).forEach((c) => s.add(c))
+      return Array.from(s)
+    })()
     try {
-      const { hasPg, pgSelect } = require('./dbAdapter')
-      if (hasPg) {
-        const role = db.roles.find(r => r.name === roleName)
-        const rid = role?.id || roleName
-        let rows = await pgSelect('role_permissions', 'permission_code', { role_id: rid, permission_code: code }) as any[] || []
-        if ((!rows || !rows.length) && role?.name) {
-          const altRows = await pgSelect('role_permissions', 'permission_code', { role_id: role.name, permission_code: code }) as any[] || []
-          rows = altRows && altRows.length ? altRows : rows
-        }
-        ok = Array.isArray(rows) && rows.length > 0
+      const { hasPg, pgPool } = require('./dbAdapter')
+      if (hasPg && pgPool) {
+        let roleId = db.roles.find(r => r.name === roleName)?.id
+        try {
+          const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName])
+          if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id) roleId = String(r0.rows[0].id)
+        } catch {}
+        const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)))
+        const r = await pgPool.query(
+          'SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = ANY($2::text[]) LIMIT 1',
+          [roleIds, candidates]
+        )
+        ok = !!r?.rowCount
       }
     } catch {}
     if (!ok) {
-      ok = roleHasPermission(roleName, code)
+      ok = candidates.some((c) => roleHasPermission(roleName, c))
       if (!ok && kind === 'write') {
         const alts = altWritePerms[resource] || []
         for (const c of alts) { if (roleHasPermission(roleName, c)) { ok = true; break } }

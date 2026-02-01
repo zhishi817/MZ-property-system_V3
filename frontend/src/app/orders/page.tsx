@@ -1,5 +1,5 @@
 "use client"
-import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, Select, Tag, InputNumber, Checkbox, Upload, Radio, App, Drawer, Descriptions, Tabs, Tooltip, Row, Col, Divider } from 'antd'
+import { Table, Card, Space, Button, Modal, Form, Input, DatePicker, Select, Tag, InputNumber, Checkbox, Upload, Radio, App, Drawer, Descriptions, Tabs, Tooltip, Row, Col, Divider, Popconfirm } from 'antd'
 import { useRouter } from 'next/navigation'
 import type { UploadProps } from 'antd'
 import { useEffect, useState, useRef, useMemo } from 'react'
@@ -1924,7 +1924,37 @@ export default function OrdersPage() {
             { title: '备注', dataIndex: 'note' },
             { title: '状态', dataIndex: 'is_active', render: (v: any) => v ? 'active' : 'void' },
             { title: '操作', render: (_: any, r: any) => hasPerm('order.deduction.manage') ? (
-              <Button size="small" onClick={() => { setEditDeductionEditing(r); setDeductAmountEdit(Number(r.amount||0)); setDeductDescEdit(r.item_desc || ''); setDeductNoteEdit(r.note || '') }}>编辑</Button>
+              <Space size="small">
+                <Button size="small" onClick={() => { setEditDeductionEditing(r); setDeductAmountEdit(Number(r.amount || 0)); setDeductDescEdit(r.item_desc || ''); setDeductNoteEdit(r.note || '') }}>编辑</Button>
+                <Popconfirm
+                  title="确认删除这条内部扣减？"
+                  okText="删除"
+                  cancelText="取消"
+                  onConfirm={async () => {
+                    if (!current) return
+                    try {
+                      const resp = await fetch(`${API_BASE}/orders/${current.id}/internal-deductions/${r.id}`, { method: 'DELETE', headers: { ...authHeaders() } })
+                      if (resp.ok) {
+                        message.success('已删除')
+                        if (editDeductionEditing?.id === r.id) {
+                          setEditDeductionEditing(null)
+                          setDeductAmountEdit(0); setDeductDescEdit(''); setDeductNoteEdit('')
+                        }
+                        const ds = await fetch(`${API_BASE}/orders/${current.id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(rr => rr.json()).catch(() => [])
+                        setEditDeductions(Array.isArray(ds) ? ds : [])
+                        load()
+                      } else {
+                        const j = await resp.json().catch(() => ({}))
+                        message.error((j as any)?.message || '删除失败')
+                      }
+                    } catch {
+                      message.error('删除失败')
+                    }
+                  }}
+                >
+                  <Button danger size="small">删除</Button>
+                </Popconfirm>
+              </Space>
             ) : null }
           ]} />
           <div style={{ marginTop: 12, padding: 12, border: '1px dashed #d9d9d9', borderRadius: 8 }}>
@@ -1980,7 +2010,12 @@ export default function OrdersPage() {
           { title: '币种', dataIndex: 'currency' },
           { title: '事项描述', dataIndex: 'item_desc' },
           { title: '备注', dataIndex: 'note' },
-          { title: '状态', dataIndex: 'is_active', render: (v: any) => v ? 'active' : 'void' }
+          { title: '状态', dataIndex: 'is_active', render: (v: any) => v ? 'active' : 'void' },
+          { title: '操作', render: (_: any, r: any) => hasPerm('order.deduction.manage') ? (
+            <Popconfirm title="确认删除这条内部扣减？" okText="删除" cancelText="取消" onConfirm={() => deleteDetailDeduction(r)}>
+              <Button danger size="small">删除</Button>
+            </Popconfirm>
+          ) : null }
         ]} />
       </Card>
     </Drawer>
