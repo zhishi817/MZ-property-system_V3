@@ -337,10 +337,9 @@ export default forwardRef<HTMLDivElement, {
                           </span>
                           <span className="bar-right" style={{ fontWeight:600 }}>
                             {(() => {
-                              const total = Number(o.price || 0)
-                              const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0)
-                              const visibleTotal = Math.max(0, Number((total - ded).toFixed(2)))
-                              return `$${fmt(visibleTotal)}`
+                              const v = Number((o as any).visible_net_income ?? (o as any).net_income ?? 0)
+                              const visibleNet = Math.max(0, Number(v.toFixed(2)))
+                              return `$${fmt(visibleNet)}`
                             })()}
                           </span>
                         </div>

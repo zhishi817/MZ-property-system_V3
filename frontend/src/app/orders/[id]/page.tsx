@@ -51,6 +51,8 @@ export default function OrderDetail({ params }: { params: { id: string } }) {
       {order && (
         <Descriptions bordered size="small" column={1}>
           <Descriptions.Item label="来源">{order.source}</Descriptions.Item>
+          <Descriptions.Item label="房号">{(order as any).property_code || ''}</Descriptions.Item>
+          <Descriptions.Item label="确认码">{(order as any).confirmation_code || ''}</Descriptions.Item>
           <Descriptions.Item label="入住">{order.checkin ? dayjs(toDayStr(order.checkin)).format('DD/MM/YYYY') : ''}</Descriptions.Item>
           <Descriptions.Item label="退房">{order.checkout ? dayjs(toDayStr(order.checkout)).format('DD/MM/YYYY') : ''}</Descriptions.Item>
           <Descriptions.Item label="状态">{order.status}</Descriptions.Item>
