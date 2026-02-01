@@ -933,7 +933,7 @@ export default function OrdersPage() {
       if (!monthFilter) return Number(((r as any).__src_nights ?? r.nights ?? 0))
       return calcOrderMonthAmounts(r as any, monthFilter).nightsMonth
     } },
-    { title: '当月租金(AUD)', dataIndex: 'price', render: (_:any, r:Order)=> monthFilter ? money(((r as any).visible_net_income ?? calcOrderMonthAmounts(r as any, monthFilter).visibleNetMonth)) : money((r as any).__src_price ?? r.price) },
+    { title: '当月租金(AUD)', dataIndex: 'price', render: (_:any, r:Order)=> monthFilter ? money(calcOrderMonthAmounts(r as any, monthFilter).visibleNetMonth) : money((r as any).__src_price ?? r.price) },
     { title: '订单总租金', dataIndex: '__src_price', render: (_:any, r:Order)=> {
       const total = ((r as any).total_payment_raw ?? (r as any).__src_price ?? r.price ?? (((r as any).net_income || 0) + ((r as any).cleaning_fee || 0)))
       const ded = Number((r as any).internal_deduction_total ?? (r as any).internal_deduction ?? 0)
@@ -942,7 +942,7 @@ export default function OrdersPage() {
     } },
     { title: '清洁费', dataIndex: 'cleaning_fee', render: (_:any, r:Order)=> monthFilter ? money(calcOrderMonthAmounts(r as any, monthFilter).cleanMonth) : money(r.cleaning_fee) },
     { title: '总收入', dataIndex: 'net_income', render: (_:any, r:Order)=> {
-      if (monthFilter) return money(((r as any).visible_net_income ?? calcOrderMonthAmounts(r as any, monthFilter).visibleNetMonth))
+      if (monthFilter) return money(calcOrderMonthAmounts(r as any, monthFilter).visibleNetMonth)
       const st = String((r as any).status || '').toLowerCase()
       const isCanceled = st.includes('cancel')
       const include = (!isCanceled) || !!((r as any).count_in_income)
@@ -1044,10 +1044,12 @@ export default function OrdersPage() {
       const styleToken = statusStyle[stKey] || (sourceStyle[o.source || 'other'] || { bg: '#F3F4F6', border: '#9CA3AF', text: '#111827' })
       const total = Number((o as any).__src_price ?? o.price ?? 0)
       const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0)
-      const visibleTotal = Math.max(0, Number((total - ded).toFixed(2)))
+      const cleaning = Number((o as any).__src_cleaning_fee ?? (o as any).cleaning_fee ?? 0)
+      const net = Number((o as any).net_income ?? Math.max(0, Number((total - cleaning).toFixed(2))))
+      const visibleNet = Number((o as any).visible_net_income ?? Math.max(0, Number((net - ded).toFixed(2))))
       return {
         id: String(o.id),
-        title: `${o.guest_name || ''}   $${money(visibleTotal)}`,
+        title: `${o.guest_name || ''}   $${money(visibleNet)}`,
         start: String(o.checkin || '').slice(0,10),
         end: String(o.checkout || '').slice(0,10),
         allDay: true,
@@ -1422,15 +1424,15 @@ export default function OrdersPage() {
               const order = ((arg.event.extendedProps as any)?.order as any) || {}
               const total = Number(order.__src_price ?? order.price ?? 0)
               const ded = Number(order.internal_deduction_total ?? order.internal_deduction ?? 0)
-              const visibleTotal = Math.max(0, Number((total - ded).toFixed(2)))
-              right.textContent = `$${money(visibleTotal)}`
+              const cleaning = Number(order.__src_cleaning_fee ?? order.cleaning_fee ?? 0)
+              const net = Number(order.net_income ?? Math.max(0, Number((total - cleaning).toFixed(2))))
+              const visibleNet = Number(order.visible_net_income ?? Math.max(0, Number((net - ded).toFixed(2))))
+              right.textContent = `$${money(visibleNet)}`
               try {
                 const ci = String(order.checkin || '').slice(0, 10)
                 const co = String(order.checkout || '').slice(0, 10)
                 const nights = (ci && co) ? Math.max(0, dayjs(co).diff(dayjs(ci), 'day')) : Number(order.nights || 0)
-                const cleaning = Number(order.cleaning_fee ?? 0)
-                const net = Number(order.net_income ?? Math.max(0, Number((total - cleaning).toFixed(2))))
-                const visibleNet = Math.max(0, Number((net - ded).toFixed(2)))
+                const visibleTotal = Math.max(0, Number((total - ded).toFixed(2)))
                 const status = String(order.status || '')
                 const lines = [
                   `客人：${String(order.guest_name || '')}`,
@@ -1993,6 +1995,8 @@ export default function OrdersPage() {
       {detail && (
         <Descriptions bordered size="small" column={1}>
           <Descriptions.Item label="来源">{detail.source}</Descriptions.Item>
+          <Descriptions.Item label="房号">{(detail as any).property_code || ''}</Descriptions.Item>
+          <Descriptions.Item label="确认码">{(detail as any).confirmation_code || ''}</Descriptions.Item>
           <Descriptions.Item label="入住">{detail.checkin ? dayjs(detail.checkin).format('DD/MM/YYYY') : ''}</Descriptions.Item>
           <Descriptions.Item label="退房">{detail.checkout ? dayjs(detail.checkout).format('DD/MM/YYYY') : ''}</Descriptions.Item>
           <Descriptions.Item label="备注">{(detail as any).note || ''}</Descriptions.Item>

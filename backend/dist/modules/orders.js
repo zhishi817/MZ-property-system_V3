@@ -239,8 +239,19 @@ exports.router.get('/:id', async (req, res) => {
     var _a, _b;
     const { id } = req.params;
     const local = store_1.db.orders.find((o) => o.id === id);
-    if (local)
-        return res.json(local);
+    if (local) {
+        const prop = store_1.db.properties.find((p) => String(p.id) === String(local.property_id)) || store_1.db.properties.find((p) => String(p.code || '') === String(local.property_id || '')) || store_1.db.properties.find((p) => { const ln = (p === null || p === void 0 ? void 0 : p.listing_names) || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String(local.listing_name || '').toLowerCase()); });
+        const property_name = (prop === null || prop === void 0 ? void 0 : prop.address) || undefined;
+        const label = (local.property_code || (prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || local.property_id || '');
+        const st = String(local.status || '').toLowerCase();
+        const isCanceled = st.includes('cancel');
+        const include = (!isCanceled) || !!(local.count_in_income);
+        const total = store_1.db.orderInternalDeductions.filter((d) => d.order_id === id && d.is_active).reduce((s, x) => s + Number(x.amount || 0), 0);
+        const vn = Number(local.net_income || 0) - Number(total || 0);
+        const base = { ...local, checkin: dayOnly(local.checkin), checkout: dayOnly(local.checkout) };
+        const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
+        return res.json({ ...row, internal_deduction_total: Number(Number(total || 0).toFixed(2)), visible_net_income: include ? Number(vn.toFixed(2)) : 0 });
+    }
     try {
         if (dbAdapter_1.hasPg) {
             const remote = await (0, dbAdapter_1.pgSelect)('orders', '*', { id });
@@ -254,22 +265,31 @@ exports.router.get('/:id', async (req, res) => {
                 }
                 catch (_c) { }
                 const vn = Number(row.net_income || 0) - total;
-                return res.json({ ...row, checkin: dayOnly(row.checkin), checkout: dayOnly(row.checkout), internal_deduction_total: Number(total.toFixed(2)), visible_net_income: Number(vn.toFixed(2)) });
+                let property_name = undefined;
+                let label = String(row.property_code || '');
+                try {
+                    const ps = await (0, dbAdapter_1.pgSelect)('properties', 'id,code,address', { id: row.property_id }) || [];
+                    const prop = ps[0];
+                    property_name = (prop === null || prop === void 0 ? void 0 : prop.address) || undefined;
+                    if (!label)
+                        label = String((prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || row.property_id || '');
+                }
+                catch (_d) {
+                    if (!label)
+                        label = String(row.property_id || '');
+                }
+                const st = String(row.status || '').toLowerCase();
+                const isCanceled = st.includes('cancel');
+                const include = (!isCanceled) || !!row.count_in_income;
+                const base = { ...row, checkin: dayOnly(row.checkin), checkout: dayOnly(row.checkout) };
+                const withProp = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
+                return res.json({ ...withProp, internal_deduction_total: Number(total.toFixed(2)), visible_net_income: include ? Number(vn.toFixed(2)) : 0 });
             }
         }
         // Supabase branch removed
     }
-    catch (_d) { }
+    catch (_e) { }
     return res.status(404).json({ message: 'order not found' });
-});
-exports.router.get('/:id', (req, res) => {
-    const { id } = req.params;
-    const order = store_1.db.orders.find((o) => o.id === id);
-    if (!order)
-        return res.status(404).json({ message: 'order not found' });
-    const t = 0;
-    const vn = Number(order.net_income || 0) - t;
-    return res.json({ ...order, checkin: dayOnly(order.checkin), checkout: dayOnly(order.checkout), internal_deduction_total: 0, visible_net_income: Number(vn.toFixed(2)) });
 });
 const createOrderSchema = zod_1.z.object({
     source: zod_1.z.string(),
