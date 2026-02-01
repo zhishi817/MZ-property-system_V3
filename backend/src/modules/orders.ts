@@ -1690,28 +1690,8 @@ router.post('/:id/internal-deductions', requirePerm('order.deduction.manage'), a
   let order: any = db.orders.find(o => o.id === id)
   if (!order && hasPg) { try { const rows: any[] = await pgSelect('orders', '*', { id }) as any[] || []; order = rows[0] } catch {} }
   if (!order) return res.status(404).json({ message: 'order not found' })
-  const role = String(((req as any).user?.role) || '')
-  const singleLimit = 100
-  const totalLimit = 150
+  const role = String(((req as any).user?.role) || '').trim().toLowerCase()
   const amount = Number(parsed.data.amount)
-  if (role !== 'admin' && role !== 'finance_staff') {
-    if (amount > singleLimit) return res.status(403).json({ message: 'amount exceeds single limit' })
-  }
-  let existingTotal = 0
-  try {
-    if (hasPg) {
-      const { pgPool } = require('../dbAdapter')
-      const rs = await pgPool?.query('SELECT COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id=$1', [id])
-      existingTotal = Number((rs?.rows?.[0]?.total) || 0)
-    } else {
-      existingTotal = (db as any).orderInternalDeductions.filter((d: any) => d.order_id === id && d.is_active).reduce((s: number, x: any) => s + Number(x.amount || 0), 0)
-    }
-  } catch {}
-  if (role !== 'admin' && role !== 'finance_staff') {
-    if (existingTotal + amount > totalLimit) return res.status(403).json({ message: 'amount exceeds order total limit' })
-  }
-  const net = Number(order.net_income || 0)
-  if (existingTotal + amount > net && role !== 'admin' && role !== 'finance_staff') return res.status(403).json({ message: 'amount exceeds order net income' })
   const locked = await isOrderMonthLocked(order)
   if (locked && role === 'customer_service') return res.status(403).json({ message: 'payout locked, customer_service cannot change amount' })
   const now = new Date().toISOString()
@@ -1760,7 +1740,7 @@ router.patch('/:id/internal-deductions/:did', requirePerm('order.deduction.manag
   let order: any = db.orders.find(o => o.id === id)
   if (!order && hasPg) { try { const rows: any[] = await pgSelect('orders', '*', { id }) as any[] || []; order = rows[0] } catch {} }
   if (!order) return res.status(404).json({ message: 'order not found' })
-  const role = String(((req as any).user?.role) || '')
+  const role = String(((req as any).user?.role) || '').trim().toLowerCase()
   const locked = await isOrderMonthLocked(order)
   if (locked && role === 'customer_service' && parsed.data.amount != null) return res.status(403).json({ message: 'payout locked, customer_service cannot change amount' })
   let prev: any = null
@@ -1770,27 +1750,6 @@ router.patch('/:id/internal-deductions/:did', requirePerm('order.deduction.manag
     prev = (db as any).orderInternalDeductions.find((d: any) => d.id === did)
   }
   if (!prev) return res.status(404).json({ message: 'deduction not found' })
-  const amountNew = parsed.data.amount != null ? Number(parsed.data.amount) : undefined
-  const singleLimit = 100
-  const totalLimit = 150
-  if (amountNew != null && role !== 'admin' && role !== 'finance_staff') {
-    if (amountNew > singleLimit) return res.status(403).json({ message: 'amount exceeds single limit' })
-  }
-  let existingTotal = 0
-  try {
-    if (hasPg) {
-      const { pgPool } = require('../dbAdapter')
-      const rs = await pgPool?.query('SELECT COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id=$1 AND id<>$2', [id, did])
-      existingTotal = Number((rs?.rows?.[0]?.total) || 0)
-    } else {
-      existingTotal = (db as any).orderInternalDeductions.filter((d: any) => d.order_id === id && d.is_active && d.id !== did).reduce((s: number, x: any) => s + Number(x.amount || 0), 0)
-    }
-  } catch {}
-  if (amountNew != null && role !== 'admin' && role !== 'finance_staff') {
-    if (existingTotal + amountNew > totalLimit) return res.status(403).json({ message: 'amount exceeds order total limit' })
-  }
-  const net = Number(order.net_income || 0)
-  if (amountNew != null && existingTotal + amountNew > net && role !== 'admin' && role !== 'finance_staff') return res.status(403).json({ message: 'amount exceeds order net income' })
   const updated: any = { ...prev, ...parsed.data }
   addAudit('OrderInternalDeduction', did, 'update', prev, updated, (req as any).user?.sub)
   if (hasPg) {
@@ -1821,7 +1780,7 @@ router.delete('/:id/internal-deductions/:did', requirePerm('order.deduction.mana
   let order: any = db.orders.find(o => o.id === id)
   if (!order && hasPg) { try { const rows: any[] = await pgSelect('orders', '*', { id }) as any[] || []; order = rows[0] } catch {} }
   if (!order) return res.status(404).json({ message: 'order not found' })
-  const role = String(((req as any).user?.role) || '')
+  const role = String(((req as any).user?.role) || '').trim().toLowerCase()
   const locked = await isOrderMonthLocked(order)
   if (locked && role === 'customer_service') return res.status(403).json({ message: 'payout locked, customer_service cannot delete physically' })
   let prev: any = null

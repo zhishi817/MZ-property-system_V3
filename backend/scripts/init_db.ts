@@ -333,6 +333,14 @@ async function run() {
     ,
     `ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;`
     ,
+    `CREATE TABLE IF NOT EXISTS roles (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      description text,
+      created_at timestamptz DEFAULT now()
+    );`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_roles_name ON roles(name);`
+    ,
     `CREATE TABLE IF NOT EXISTS role_permissions (
       id text PRIMARY KEY,
       role_id text NOT NULL,

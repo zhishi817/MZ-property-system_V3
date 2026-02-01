@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid'
-import { loadRolePermissions } from './persistence'
+import { loadRolePermissions, loadRoles } from './persistence'
 import { hasPg, pgSelect } from './dbAdapter'
 
 export type KeySet = {
@@ -215,7 +215,7 @@ export const db = {
   expenseInvoices: [] as ExpenseInvoice[],
   orderInternalDeductions: [] as OrderInternalDeduction[],
   users: [] as { id: string; email: string; username?: string; role: string; password_hash?: string }[],
-  roles: [] as { id: string; name: string }[],
+  roles: [] as { id: string; name: string; description?: string }[],
   permissions: [] as { code: string; name?: string }[],
   rolePermissions: [] as { role_id: string; permission_code: string }[],
   repairOrders: [] as RepairOrder[],
@@ -329,13 +329,13 @@ if (db.roles.length === 0) {
   const inventoryId = 'role.inventory_manager'
   const maintenanceId = 'role.maintenance_staff'
   db.roles.push(
-    { id: adminId, name: 'admin' },
-    { id: csId, name: 'customer_service' },
-    { id: cleanMgrId, name: 'cleaning_manager' },
-    { id: cleanerId, name: 'cleaner_inspector' },
-    { id: financeId, name: 'finance_staff' },
-    { id: inventoryId, name: 'inventory_manager' },
-    { id: maintenanceId, name: 'maintenance_staff' },
+    { id: adminId, name: 'admin', description: '系统管理员（全权限）' },
+    { id: csId, name: 'customer_service', description: '客服' },
+    { id: cleanMgrId, name: 'cleaning_manager', description: '清洁/检查管理员' },
+    { id: cleanerId, name: 'cleaner_inspector', description: '清洁/检查人员' },
+    { id: financeId, name: 'finance_staff', description: '财务人员' },
+    { id: inventoryId, name: 'inventory_manager', description: '仓库管理员' },
+    { id: maintenanceId, name: 'maintenance_staff', description: '维修人员' },
   )
   db.permissions = [
     { code: 'property.write' },
@@ -357,6 +357,7 @@ if (db.roles.length === 0) {
     { code: 'inventory.move' },
     { code: 'landlord.manage' },
     { code: 'rbac.manage' },
+    { code: 'users.password.reset' },
     { code: 'order.deduction.manage' },
     { code: 'onboarding.read' },
     { code: 'onboarding.manage' },
@@ -425,9 +426,23 @@ const defaultPerms = [
   'order.deduction.manage',
   'inventory.move','landlord.manage',
   'rbac.manage',
+  'users.password.reset',
   'menu.dashboard','menu.landlords','menu.properties','menu.keys','menu.inventory','menu.finance','menu.cleaning','menu.rbac','menu.cms'
 ]
 defaultPerms.forEach((code) => { if (!db.permissions.find(p => p.code === code)) db.permissions.push({ code }) })
+
+try {
+  if (!hasPg) {
+    const loaded = loadRoles()
+    if (Array.isArray(loaded) && loaded.length) {
+      loaded.forEach((r) => {
+        const existing = db.roles.find((x) => x.id === r.id || x.name === r.name)
+        if (!existing) db.roles.push(r)
+        else if (r.description && !existing.description) existing.description = r.description
+      })
+    }
+  }
+} catch {}
 try {
   if (!hasPg) {
     const loadedRPs = loadRolePermissions()
@@ -451,13 +466,16 @@ resources.forEach(r => {
   const viewCode = `${r}.view`
   const writeCode = `${r}.write`
   const delCode = `${r}.delete`
+  const archiveCode = `${r}.archive`
   if (!db.permissions.find(p => p.code === viewCode)) db.permissions.push({ code: viewCode })
   if (!db.permissions.find(p => p.code === writeCode)) db.permissions.push({ code: writeCode })
   if (!db.permissions.find(p => p.code === delCode)) db.permissions.push({ code: delCode })
+  if (!db.permissions.find(p => p.code === archiveCode)) db.permissions.push({ code: archiveCode })
   if (adminRole) {
     if (!db.rolePermissions.find(rp => rp.role_id === adminRole.id && rp.permission_code === viewCode)) db.rolePermissions.push({ role_id: adminRole.id, permission_code: viewCode })
     if (!db.rolePermissions.find(rp => rp.role_id === adminRole.id && rp.permission_code === writeCode)) db.rolePermissions.push({ role_id: adminRole.id, permission_code: writeCode })
     if (!db.rolePermissions.find(rp => rp.role_id === adminRole.id && rp.permission_code === delCode)) db.rolePermissions.push({ role_id: adminRole.id, permission_code: delCode })
+    if (!db.rolePermissions.find(rp => rp.role_id === adminRole.id && rp.permission_code === archiveCode)) db.rolePermissions.push({ role_id: adminRole.id, permission_code: archiveCode })
   }
 })
 

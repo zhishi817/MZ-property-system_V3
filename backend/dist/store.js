@@ -109,7 +109,7 @@ if (exports.db.roles.length === 0) {
     const financeId = 'role.finance_staff';
     const inventoryId = 'role.inventory_manager';
     const maintenanceId = 'role.maintenance_staff';
-    exports.db.roles.push({ id: adminId, name: 'admin' }, { id: csId, name: 'customer_service' }, { id: cleanMgrId, name: 'cleaning_manager' }, { id: cleanerId, name: 'cleaner_inspector' }, { id: financeId, name: 'finance_staff' }, { id: inventoryId, name: 'inventory_manager' }, { id: maintenanceId, name: 'maintenance_staff' });
+    exports.db.roles.push({ id: adminId, name: 'admin', description: '系统管理员（全权限）' }, { id: csId, name: 'customer_service', description: '客服' }, { id: cleanMgrId, name: 'cleaning_manager', description: '清洁/检查管理员' }, { id: cleanerId, name: 'cleaner_inspector', description: '清洁/检查人员' }, { id: financeId, name: 'finance_staff', description: '财务人员' }, { id: inventoryId, name: 'inventory_manager', description: '仓库管理员' }, { id: maintenanceId, name: 'maintenance_staff', description: '维修人员' });
     exports.db.permissions = [
         { code: 'property.write' },
         { code: 'order.view' },
@@ -130,6 +130,7 @@ if (exports.db.roles.length === 0) {
         { code: 'inventory.move' },
         { code: 'landlord.manage' },
         { code: 'rbac.manage' },
+        { code: 'users.password.reset' },
         { code: 'order.deduction.manage' },
         { code: 'onboarding.read' },
         { code: 'onboarding.manage' },
@@ -197,10 +198,26 @@ const defaultPerms = [
     'order.deduction.manage',
     'inventory.move', 'landlord.manage',
     'rbac.manage',
+    'users.password.reset',
     'menu.dashboard', 'menu.landlords', 'menu.properties', 'menu.keys', 'menu.inventory', 'menu.finance', 'menu.cleaning', 'menu.rbac', 'menu.cms'
 ];
 defaultPerms.forEach((code) => { if (!exports.db.permissions.find(p => p.code === code))
     exports.db.permissions.push({ code }); });
+try {
+    if (!dbAdapter_1.hasPg) {
+        const loaded = (0, persistence_1.loadRoles)();
+        if (Array.isArray(loaded) && loaded.length) {
+            loaded.forEach((r) => {
+                const existing = exports.db.roles.find((x) => x.id === r.id || x.name === r.name);
+                if (!existing)
+                    exports.db.roles.push(r);
+                else if (r.description && !existing.description)
+                    existing.description = r.description;
+            });
+        }
+    }
+}
+catch (_c) { }
 try {
     if (!dbAdapter_1.hasPg) {
         const loadedRPs = (0, persistence_1.loadRolePermissions)();
@@ -209,7 +226,7 @@ try {
         }
     }
 }
-catch (_c) { }
+catch (_d) { }
 const adminRole = exports.db.roles.find(r => r.name === 'admin');
 if (adminRole) {
     defaultPerms.forEach((code) => {
@@ -226,12 +243,15 @@ resources.forEach(r => {
     const viewCode = `${r}.view`;
     const writeCode = `${r}.write`;
     const delCode = `${r}.delete`;
+    const archiveCode = `${r}.archive`;
     if (!exports.db.permissions.find(p => p.code === viewCode))
         exports.db.permissions.push({ code: viewCode });
     if (!exports.db.permissions.find(p => p.code === writeCode))
         exports.db.permissions.push({ code: writeCode });
     if (!exports.db.permissions.find(p => p.code === delCode))
         exports.db.permissions.push({ code: delCode });
+    if (!exports.db.permissions.find(p => p.code === archiveCode))
+        exports.db.permissions.push({ code: archiveCode });
     if (adminRole) {
         if (!exports.db.rolePermissions.find(rp => rp.role_id === adminRole.id && rp.permission_code === viewCode))
             exports.db.rolePermissions.push({ role_id: adminRole.id, permission_code: viewCode });
@@ -239,6 +259,8 @@ resources.forEach(r => {
             exports.db.rolePermissions.push({ role_id: adminRole.id, permission_code: writeCode });
         if (!exports.db.rolePermissions.find(rp => rp.role_id === adminRole.id && rp.permission_code === delCode))
             exports.db.rolePermissions.push({ role_id: adminRole.id, permission_code: delCode });
+        if (!exports.db.rolePermissions.find(rp => rp.role_id === adminRole.id && rp.permission_code === archiveCode))
+            exports.db.rolePermissions.push({ role_id: adminRole.id, permission_code: archiveCode });
     }
 });
 function getRoleIdByName(name) {

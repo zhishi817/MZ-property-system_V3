@@ -2091,7 +2091,7 @@ exports.router.get('/:id/internal-deductions', (0, auth_1.requireAnyPerm)(['orde
     }
 });
 exports.router.post('/:id/internal-deductions', (0, auth_1.requirePerm)('order.deduction.manage'), async (req, res) => {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c;
     const { id } = req.params;
     const parsed = deductionSchema.safeParse(req.body);
     if (!parsed.success)
@@ -2103,43 +2103,18 @@ exports.router.post('/:id/internal-deductions', (0, auth_1.requirePerm)('order.d
             const rows = await (0, dbAdapter_1.pgSelect)('orders', '*', { id }) || [];
             order = rows[0];
         }
-        catch (_f) { }
+        catch (_d) { }
     }
     if (!order)
         return res.status(404).json({ message: 'order not found' });
-    const role = String(((_a = req.user) === null || _a === void 0 ? void 0 : _a.role) || '');
-    const singleLimit = 100;
-    const totalLimit = 150;
+    const role = String(((_a = req.user) === null || _a === void 0 ? void 0 : _a.role) || '').trim().toLowerCase();
     const amount = Number(parsed.data.amount);
-    if (role !== 'admin' && role !== 'finance_staff') {
-        if (amount > singleLimit)
-            return res.status(403).json({ message: 'amount exceeds single limit' });
-    }
-    let existingTotal = 0;
-    try {
-        if (dbAdapter_1.hasPg) {
-            const { pgPool } = require('../dbAdapter');
-            const rs = await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('SELECT COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id=$1', [id]));
-            existingTotal = Number(((_c = (_b = rs === null || rs === void 0 ? void 0 : rs.rows) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.total) || 0);
-        }
-        else {
-            existingTotal = store_1.db.orderInternalDeductions.filter((d) => d.order_id === id && d.is_active).reduce((s, x) => s + Number(x.amount || 0), 0);
-        }
-    }
-    catch (_g) { }
-    if (role !== 'admin' && role !== 'finance_staff') {
-        if (existingTotal + amount > totalLimit)
-            return res.status(403).json({ message: 'amount exceeds order total limit' });
-    }
-    const net = Number(order.net_income || 0);
-    if (existingTotal + amount > net && role !== 'admin' && role !== 'finance_staff')
-        return res.status(403).json({ message: 'amount exceeds order net income' });
     const locked = await isOrderMonthLocked(order);
     if (locked && role === 'customer_service')
         return res.status(403).json({ message: 'payout locked, customer_service cannot change amount' });
     const now = new Date().toISOString();
-    const row = { id: uuid(), order_id: id, amount, currency: parsed.data.currency || 'AUD', item_desc: parsed.data.item_desc, note: parsed.data.note, created_by: (_d = req.user) === null || _d === void 0 ? void 0 : _d.sub, created_at: now, is_active: true };
-    (0, store_1.addAudit)('OrderInternalDeduction', row.id, 'create', null, row, (_e = req.user) === null || _e === void 0 ? void 0 : _e.sub);
+    const row = { id: uuid(), order_id: id, amount, currency: parsed.data.currency || 'AUD', item_desc: parsed.data.item_desc, note: parsed.data.note, created_by: (_b = req.user) === null || _b === void 0 ? void 0 : _b.sub, created_at: now, is_active: true };
+    (0, store_1.addAudit)('OrderInternalDeduction', row.id, 'create', null, row, (_c = req.user) === null || _c === void 0 ? void 0 : _c.sub);
     if (dbAdapter_1.hasPg) {
         try {
             const inserted = await (0, dbAdapter_1.pgInsert)('order_internal_deductions', row);
@@ -2182,7 +2157,7 @@ exports.router.post('/:id/internal-deductions', (0, auth_1.requirePerm)('order.d
     return res.status(201).json(row);
 });
 exports.router.patch('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('order.deduction.manage'), async (req, res) => {
-    var _a, _b, _c, _d;
+    var _a, _b;
     const { id, did } = req.params;
     const parsed = deductionSchema.partial().extend({ is_active: zod_1.z.boolean().optional() }).safeParse(req.body);
     if (!parsed.success)
@@ -2193,11 +2168,11 @@ exports.router.patch('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('o
             const rows = await (0, dbAdapter_1.pgSelect)('orders', '*', { id }) || [];
             order = rows[0];
         }
-        catch (_e) { }
+        catch (_c) { }
     }
     if (!order)
         return res.status(404).json({ message: 'order not found' });
-    const role = String(((_a = req.user) === null || _a === void 0 ? void 0 : _a.role) || '');
+    const role = String(((_a = req.user) === null || _a === void 0 ? void 0 : _a.role) || '').trim().toLowerCase();
     const locked = await isOrderMonthLocked(order);
     if (locked && role === 'customer_service' && parsed.data.amount != null)
         return res.status(403).json({ message: 'payout locked, customer_service cannot change amount' });
@@ -2207,41 +2182,15 @@ exports.router.patch('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('o
             const rows = await (0, dbAdapter_1.pgSelect)('order_internal_deductions', '*', { id: did }) || [];
             prev = rows[0];
         }
-        catch (_f) { }
+        catch (_d) { }
     }
     else {
         prev = store_1.db.orderInternalDeductions.find((d) => d.id === did);
     }
     if (!prev)
         return res.status(404).json({ message: 'deduction not found' });
-    const amountNew = parsed.data.amount != null ? Number(parsed.data.amount) : undefined;
-    const singleLimit = 100;
-    const totalLimit = 150;
-    if (amountNew != null && role !== 'admin' && role !== 'finance_staff') {
-        if (amountNew > singleLimit)
-            return res.status(403).json({ message: 'amount exceeds single limit' });
-    }
-    let existingTotal = 0;
-    try {
-        if (dbAdapter_1.hasPg) {
-            const { pgPool } = require('../dbAdapter');
-            const rs = await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('SELECT COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id=$1 AND id<>$2', [id, did]));
-            existingTotal = Number(((_c = (_b = rs === null || rs === void 0 ? void 0 : rs.rows) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.total) || 0);
-        }
-        else {
-            existingTotal = store_1.db.orderInternalDeductions.filter((d) => d.order_id === id && d.is_active && d.id !== did).reduce((s, x) => s + Number(x.amount || 0), 0);
-        }
-    }
-    catch (_g) { }
-    if (amountNew != null && role !== 'admin' && role !== 'finance_staff') {
-        if (existingTotal + amountNew > totalLimit)
-            return res.status(403).json({ message: 'amount exceeds order total limit' });
-    }
-    const net = Number(order.net_income || 0);
-    if (amountNew != null && existingTotal + amountNew > net && role !== 'admin' && role !== 'finance_staff')
-        return res.status(403).json({ message: 'amount exceeds order net income' });
     const updated = { ...prev, ...parsed.data };
-    (0, store_1.addAudit)('OrderInternalDeduction', did, 'update', prev, updated, (_d = req.user) === null || _d === void 0 ? void 0 : _d.sub);
+    (0, store_1.addAudit)('OrderInternalDeduction', did, 'update', prev, updated, (_b = req.user) === null || _b === void 0 ? void 0 : _b.sub);
     if (dbAdapter_1.hasPg) {
         try {
             const row = await (0, dbAdapter_1.pgUpdate)('order_internal_deductions', did, updated);
@@ -2289,7 +2238,7 @@ exports.router.delete('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('
     }
     if (!order)
         return res.status(404).json({ message: 'order not found' });
-    const role = String(((_a = req.user) === null || _a === void 0 ? void 0 : _a.role) || '');
+    const role = String(((_a = req.user) === null || _a === void 0 ? void 0 : _a.role) || '').trim().toLowerCase();
     const locked = await isOrderMonthLocked(order);
     if (locked && role === 'customer_service')
         return res.status(403).json({ message: 'payout locked, customer_service cannot delete physically' });

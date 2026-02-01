@@ -187,6 +187,7 @@ async function auth(req, res, next) {
 }
 function requirePerm(code) {
     return async (req, res, next) => {
+        var _a;
         const user = req.user;
         if (!user)
             return res.status(401).json({ message: 'unauthorized' });
@@ -195,13 +196,19 @@ function requirePerm(code) {
         try {
             const { hasPg, pgPool } = require('./dbAdapter');
             if (hasPg && pgPool) {
-                const role = store_1.db.roles.find(r => r.name === roleName);
-                const roleIds = Array.from(new Set([role === null || role === void 0 ? void 0 : role.id, role === null || role === void 0 ? void 0 : role.name, roleName].filter(Boolean)));
+                let roleId = (_a = store_1.db.roles.find(r => r.name === roleName)) === null || _a === void 0 ? void 0 : _a.id;
+                try {
+                    const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName]);
+                    if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id)
+                        roleId = String(r0.rows[0].id);
+                }
+                catch (_b) { }
+                const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)));
                 const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = $2 LIMIT 1', [roleIds, code]);
                 ok = !!(r === null || r === void 0 ? void 0 : r.rowCount);
             }
         }
-        catch (_a) { }
+        catch (_c) { }
         if (!ok)
             ok = (0, store_1.roleHasPermission)(roleName, code);
         if (!ok)
@@ -211,6 +218,7 @@ function requirePerm(code) {
 }
 function requireAnyPerm(codes) {
     return async (req, res, next) => {
+        var _a;
         const user = req.user;
         if (!user)
             return res.status(401).json({ message: 'unauthorized' });
@@ -219,13 +227,19 @@ function requireAnyPerm(codes) {
         try {
             const { hasPg, pgPool } = require('./dbAdapter');
             if (hasPg && pgPool) {
-                const role = store_1.db.roles.find(r => r.name === roleName);
-                const roleIds = Array.from(new Set([role === null || role === void 0 ? void 0 : role.id, role === null || role === void 0 ? void 0 : role.name, roleName].filter(Boolean)));
+                let roleId = (_a = store_1.db.roles.find(r => r.name === roleName)) === null || _a === void 0 ? void 0 : _a.id;
+                try {
+                    const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName]);
+                    if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id)
+                        roleId = String(r0.rows[0].id);
+                }
+                catch (_b) { }
+                const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)));
                 const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = ANY($2::text[]) LIMIT 1', [roleIds, codes]);
                 ok = !!(r === null || r === void 0 ? void 0 : r.rowCount);
             }
         }
-        catch (_a) { }
+        catch (_c) { }
         if (!ok)
             ok = codes.some((c) => (0, store_1.roleHasPermission)(roleName, c));
         if (!ok)
@@ -283,7 +297,7 @@ async function setDeletePassword(req, res) {
 }
 function requireResourcePerm(kind) {
     return async (req, res, next) => {
-        var _a;
+        var _a, _b;
         const user = req.user;
         if (!user)
             return res.status(401).json({ message: 'unauthorized' });
@@ -299,22 +313,45 @@ function requireResourcePerm(kind) {
             property_expenses: ['finance.tx.write'],
             company_expenses: ['finance.tx.write'],
         };
+        const pluralSingular = { orders: 'order', order: 'orders', properties: 'property', property: 'properties' };
+        const legacyByResource = {
+            landlords: { view: ['landlord.manage'], write: ['landlord.manage'], delete: ['landlord.manage'] },
+            finance_transactions: { view: ['finance.tx.write'], write: ['finance.tx.write'] },
+            recurring_payments: { view: ['finance.tx.write'], write: ['finance.tx.write'] },
+            fixed_expenses: { view: ['finance.tx.write'], write: ['finance.tx.write'] },
+            property_expenses: { view: ['finance.tx.write'], write: ['finance.tx.write'] },
+            company_expenses: { view: ['finance.tx.write'], write: ['finance.tx.write'] },
+            properties: { view: ['property.view'], write: ['property.write'] },
+            orders: { view: ['order.view'], write: ['order.write'] },
+        };
+        const candidates = (() => {
+            var _a;
+            const s = new Set();
+            s.add(code);
+            const alt = pluralSingular[resource];
+            if (alt)
+                s.add(`${alt}.${kind}`);
+            (((_a = legacyByResource[resource]) === null || _a === void 0 ? void 0 : _a[kind]) || []).forEach((c) => s.add(c));
+            return Array.from(s);
+        })();
         try {
-            const { hasPg, pgSelect } = require('./dbAdapter');
-            if (hasPg) {
-                const role = store_1.db.roles.find(r => r.name === roleName);
-                const rid = (role === null || role === void 0 ? void 0 : role.id) || roleName;
-                let rows = await pgSelect('role_permissions', 'permission_code', { role_id: rid, permission_code: code }) || [];
-                if ((!rows || !rows.length) && (role === null || role === void 0 ? void 0 : role.name)) {
-                    const altRows = await pgSelect('role_permissions', 'permission_code', { role_id: role.name, permission_code: code }) || [];
-                    rows = altRows && altRows.length ? altRows : rows;
+            const { hasPg, pgPool } = require('./dbAdapter');
+            if (hasPg && pgPool) {
+                let roleId = (_b = store_1.db.roles.find(r => r.name === roleName)) === null || _b === void 0 ? void 0 : _b.id;
+                try {
+                    const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName]);
+                    if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id)
+                        roleId = String(r0.rows[0].id);
                 }
-                ok = Array.isArray(rows) && rows.length > 0;
+                catch (_c) { }
+                const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)));
+                const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = ANY($2::text[]) LIMIT 1', [roleIds, candidates]);
+                ok = !!(r === null || r === void 0 ? void 0 : r.rowCount);
             }
         }
-        catch (_b) { }
+        catch (_d) { }
         if (!ok) {
-            ok = (0, store_1.roleHasPermission)(roleName, code);
+            ok = candidates.some((c) => (0, store_1.roleHasPermission)(roleName, c));
             if (!ok && kind === 'write') {
                 const alts = altWritePerms[resource] || [];
                 for (const c of alts) {
