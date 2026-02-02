@@ -41,5 +41,12 @@ describe('formatStatementDesc', () => {
     expect(out.text).toMatch(/…$/)
     expect(out.full.length).toBeGreaterThan(out.text.length)
   })
-})
 
+  it('does not truncate when maxChars is not provided', () => {
+    const items = ['A', 'B', 'C']
+    const out = formatStatementDesc({ items, lang: 'en' })
+    expect(out.truncated).toBe(false)
+    expect(out.text).toBe(out.full)
+    expect(out.text).toBe('A, B, C')
+  })
+})
