@@ -3,6 +3,7 @@ import dayjs from 'dayjs'
 import { monthSegments, toDayStr, parseDateOnly } from '../lib/orders'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../lib/financeTx'
 import { computeMonthlyStatementBalance, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../lib/statementBalances'
+import { formatStatementDesc } from '../lib/statementDesc'
 import { Table } from 'antd'
 import { forwardRef, useEffect, useState } from 'react'
 import { authHeaders } from '../lib/api'
@@ -118,7 +119,11 @@ export default forwardRef<HTMLDivElement, {
     if (v === 'cancel_fee') return showChinese ? '取消费' : 'Cancellation fee'
     return v || '-'
   }
-  const otherIncomeDesc = Array.from(new Set(otherIncomeTx.map(t => mapIncomeCatLabel(t.category)))).filter(Boolean).join('、') || '-'
+  const otherIncomeDescFmt = formatStatementDesc({
+    items: Array.from(new Set(otherIncomeTx.map(t => mapIncomeCatLabel(t.category)))).filter(Boolean) as any,
+    lang: showChinese ? 'zh' : 'en',
+    maxChars: showChinese ? 120 : 180,
+  })
   const totalIncome = rentIncome + otherIncome
   const occupiedNights = relatedOrders.reduce((s, x) => s + Number(x.nights || 0), 0)
   const daysInMonth = endNext.diff(start, 'day')
@@ -156,7 +161,11 @@ export default forwardRef<HTMLDivElement, {
     .filter(e => catKey(e) === 'other')
     .map(e => cleanOtherDesc((e as any).category_detail || (e as any).note || ''))
     .filter(Boolean)
-  const otherExpenseDesc = Array.from(new Set(otherItems)).join('、') || '-'
+  const otherExpenseDescFmt = formatStatementDesc({
+    items: otherItems,
+    lang: showChinese ? 'zh' : 'en',
+    maxChars: showChinese ? 120 : 180,
+  })
   const totalExpense = (managementFee + catElectricity + catWater + catGas + catInternet + catConsumable + catCarpark + catOwnerCorp + catCouncil + catOther)
   const balance = (propertyId ? computeMonthlyStatementBalance({
     month,
@@ -256,7 +265,17 @@ export default forwardRef<HTMLDivElement, {
         <tbody>
           <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Rent Income 租金收入' : 'Rent Income'}</td><td style={{ textAlign:'right', padding:6 }}>${fmt(rentIncome)}</td></tr>
           {!simpleMode && (<tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Other Income 其他收入' : 'Other Income'}</td><td style={{ textAlign:'right', padding:6 }}>${fmt(otherIncome)}</td></tr>)}
-          {!simpleMode && (<tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Other Income Desc 其他收入描述' : 'Other Income Desc'}</td><td style={{ textAlign:'right', padding:6 }}>{otherIncomeDesc}</td></tr>)}
+          {!simpleMode && (
+            <tr>
+              <td style={{ padding:6, textIndent:'4ch', whiteSpace:'nowrap' }}>{showChinese ? 'Other Income Desc 其他收入描述' : 'Other Income Desc'}</td>
+              <td
+                style={{ padding:6, textAlign:'left', whiteSpace:'normal', wordBreak:'break-word', overflowWrap:'anywhere' }}
+                title={otherIncomeDescFmt.full || undefined}
+              >
+                {otherIncomeDescFmt.text}
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
 
@@ -277,7 +296,15 @@ export default forwardRef<HTMLDivElement, {
               <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? `Owner's Corporation 物业费` : `Owner's Corporation`}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOwnerCorp)}</td></tr>
               <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Council Rate 市政费' : 'Council Rate'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catCouncil)}</td></tr>
               <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Other Expense 其他支出' : 'Other Expense'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOther)}</td></tr>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Other Expense Desc 其他支出描述' : 'Other Expense Desc'}</td><td style={{ textAlign:'right', padding:6 }}>{otherExpenseDesc}</td></tr>
+              <tr>
+                <td style={{ padding:6, textIndent:'4ch', whiteSpace:'nowrap' }}>{showChinese ? 'Other Expense Desc 其他支出描述' : 'Other Expense Desc'}</td>
+                <td
+                  style={{ padding:6, textAlign:'left', whiteSpace:'normal', wordBreak:'break-word', overflowWrap:'anywhere' }}
+                  title={otherExpenseDescFmt.full || undefined}
+                >
+                  {otherExpenseDescFmt.text}
+                </td>
+              </tr>
             </tbody>
           </table>
         </>
