@@ -295,7 +295,7 @@ export default function PropertyRevenuePage() {
           .filter(xx => normalizeReportCategory((xx as any).report_category || (xx as any).category) === 'other')
           .map(xx => cleanOtherDesc((xx as any).category_detail || (xx as any).note || ''))
           .filter(Boolean)
-        const otherExpenseDescFmt = formatStatementDesc({ items: otherItems, lang: 'en', maxChars: 90 })
+        const otherExpenseDescFmt = formatStatementDesc({ items: otherItems, lang: 'en' })
         const totalExp = mgmt + electricity + water + gas + internet + consumable + carpark + ownercorp + council + other
         const net = Math.round(((totalIncome - totalExp) + Number.EPSILON)*100)/100
         out.push({ key: `${p.id}-${rm.label}`, pid: p.id, month: rm.label, code: p.code || p.id, address: p.address, occRate, avg, totalIncome, rentIncome, otherIncome, otherIncomeDesc, mgmt, electricity, water, gas, internet, consumable, carpark, ownercorp, council, other, otherExpenseDesc: otherExpenseDescFmt.text, otherExpenseDescFull: otherExpenseDescFmt.full, totalExp, net })
@@ -335,7 +335,7 @@ export default function PropertyRevenuePage() {
     { title:'物业费', dataIndex:'ownercorp', align:'right', render:(v: number)=> `-$${fmt(v)}` },
     { title:'市政费', dataIndex:'council', align:'right', render:(v: number)=> `-$${fmt(v)}` },
     { title:'其他支出', dataIndex:'other', align:'right', render:(v: number)=> `-$${fmt(v)}` },
-    { title:'其他支出描述', dataIndex:'otherExpenseDesc', ellipsis: true, render: (_: any, r: any) => <span title={r.otherExpenseDescFull || r.otherExpenseDesc}>{r.otherExpenseDesc}</span> },
+    { title:'其他支出描述', dataIndex:'otherExpenseDesc', render: (_: any, r: any) => <div style={{ whiteSpace:'normal', wordBreak:'break-word', overflowWrap:'anywhere', textAlign:'right' }} title={r.otherExpenseDescFull || r.otherExpenseDesc}>{r.otherExpenseDesc}</div> },
     { title:'总支出', dataIndex:'totalExp', align:'right', render:(v: number)=> `-$${fmt(v)}` },
     { title:'净收入', dataIndex:'net', align:'right', render:(v: number)=> `$${fmt(v)}` },
     { title:'操作', render: (_: any, r: any) => (

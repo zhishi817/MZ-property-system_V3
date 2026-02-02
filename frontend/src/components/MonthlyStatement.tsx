@@ -122,7 +122,6 @@ export default forwardRef<HTMLDivElement, {
   const otherIncomeDescFmt = formatStatementDesc({
     items: Array.from(new Set(otherIncomeTx.map(t => mapIncomeCatLabel(t.category)))).filter(Boolean) as any,
     lang: showChinese ? 'zh' : 'en',
-    maxChars: showChinese ? 120 : 180,
   })
   const totalIncome = rentIncome + otherIncome
   const occupiedNights = relatedOrders.reduce((s, x) => s + Number(x.nights || 0), 0)
@@ -164,7 +163,6 @@ export default forwardRef<HTMLDivElement, {
   const otherExpenseDescFmt = formatStatementDesc({
     items: otherItems,
     lang: showChinese ? 'zh' : 'en',
-    maxChars: showChinese ? 120 : 180,
   })
   const totalExpense = (managementFee + catElectricity + catWater + catGas + catInternet + catConsumable + catCarpark + catOwnerCorp + catCouncil + catOther)
   const balance = (propertyId ? computeMonthlyStatementBalance({
@@ -269,7 +267,7 @@ export default forwardRef<HTMLDivElement, {
             <tr>
               <td style={{ padding:6, textIndent:'4ch', whiteSpace:'nowrap' }}>{showChinese ? 'Other Income Desc 其他收入描述' : 'Other Income Desc'}</td>
               <td
-                style={{ padding:6, textAlign:'left', whiteSpace:'normal', wordBreak:'break-word', overflowWrap:'anywhere' }}
+                style={{ padding:6, textAlign:'right', whiteSpace:'normal', wordBreak:'break-word', overflowWrap:'anywhere' }}
                 title={otherIncomeDescFmt.full || undefined}
               >
                 {otherIncomeDescFmt.text}
@@ -299,7 +297,7 @@ export default forwardRef<HTMLDivElement, {
               <tr>
                 <td style={{ padding:6, textIndent:'4ch', whiteSpace:'nowrap' }}>{showChinese ? 'Other Expense Desc 其他支出描述' : 'Other Expense Desc'}</td>
                 <td
-                  style={{ padding:6, textAlign:'left', whiteSpace:'normal', wordBreak:'break-word', overflowWrap:'anywhere' }}
+                  style={{ padding:6, textAlign:'right', whiteSpace:'normal', wordBreak:'break-word', overflowWrap:'anywhere' }}
                   title={otherExpenseDescFmt.full || undefined}
                 >
                   {otherExpenseDescFmt.text}

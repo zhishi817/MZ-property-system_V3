@@ -33,13 +33,16 @@ export function truncateWithEllipsis(input: string, maxChars: number): { text: s
 export function formatStatementDesc(input: {
   items: string[]
   lang: StatementLang
-  maxChars: number
+  maxChars?: number
 }): { text: string; full: string; truncated: boolean } {
   const uniq = Array.from(new Set((input.items || []).map(x => String(x || '').trim()).filter(Boolean)))
   const joiner = input.lang === 'en' ? ', ' : '、'
   const fullRaw = uniq.join(joiner)
   const full = normalizeStatementPunctuation(fullRaw, input.lang)
   if (!full) return { text: '-', full: '', truncated: false }
+  if (typeof input.maxChars !== 'number' || !Number.isFinite(input.maxChars)) {
+    return { text: full, full, truncated: false }
+  }
   const { text: truncatedText, truncated } = truncateWithEllipsis(full, input.maxChars)
   const finalText = truncatedText
     .replace(/\s*,\s*…$/, '…')
