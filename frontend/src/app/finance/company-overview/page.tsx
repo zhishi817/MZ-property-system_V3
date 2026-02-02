@@ -11,6 +11,7 @@ import MonthlyStatementView from '../../../components/MonthlyStatement'
 import { monthSegments, toDayStr, getMonthSegmentsForProperty, parseDateOnly } from '../../../lib/orders'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../../../lib/financeTx'
 import { isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
+import { formatStatementDesc } from '../../../lib/statementDesc'
 const debugOnce = (..._args: any[]) => {}
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
 
@@ -294,10 +295,10 @@ export default function PropertyRevenuePage() {
           .filter(xx => normalizeReportCategory((xx as any).report_category || (xx as any).category) === 'other')
           .map(xx => cleanOtherDesc((xx as any).category_detail || (xx as any).note || ''))
           .filter(Boolean)
-        const otherExpenseDescStr = Array.from(new Set(otherItems)).join('、') || '-'
+        const otherExpenseDescFmt = formatStatementDesc({ items: otherItems, lang: 'en', maxChars: 90 })
         const totalExp = mgmt + electricity + water + gas + internet + consumable + carpark + ownercorp + council + other
         const net = Math.round(((totalIncome - totalExp) + Number.EPSILON)*100)/100
-        out.push({ key: `${p.id}-${rm.label}`, pid: p.id, month: rm.label, code: p.code || p.id, address: p.address, occRate, avg, totalIncome, rentIncome, otherIncome, otherIncomeDesc, mgmt, electricity, water, gas, internet, consumable, carpark, ownercorp, council, other, otherExpenseDesc: otherExpenseDescStr, totalExp, net })
+        out.push({ key: `${p.id}-${rm.label}`, pid: p.id, month: rm.label, code: p.code || p.id, address: p.address, occRate, avg, totalIncome, rentIncome, otherIncome, otherIncomeDesc, mgmt, electricity, water, gas, internet, consumable, carpark, ownercorp, council, other, otherExpenseDesc: otherExpenseDescFmt.text, otherExpenseDescFull: otherExpenseDescFmt.full, totalExp, net })
       }
     }
     return out
@@ -334,7 +335,7 @@ export default function PropertyRevenuePage() {
     { title:'物业费', dataIndex:'ownercorp', align:'right', render:(v: number)=> `-$${fmt(v)}` },
     { title:'市政费', dataIndex:'council', align:'right', render:(v: number)=> `-$${fmt(v)}` },
     { title:'其他支出', dataIndex:'other', align:'right', render:(v: number)=> `-$${fmt(v)}` },
-    { title:'其他支出描述', dataIndex:'otherExpenseDesc' },
+    { title:'其他支出描述', dataIndex:'otherExpenseDesc', ellipsis: true, render: (_: any, r: any) => <span title={r.otherExpenseDescFull || r.otherExpenseDesc}>{r.otherExpenseDesc}</span> },
     { title:'总支出', dataIndex:'totalExp', align:'right', render:(v: number)=> `-$${fmt(v)}` },
     { title:'净收入', dataIndex:'net', align:'right', render:(v: number)=> `$${fmt(v)}` },
     { title:'操作', render: (_: any, r: any) => (
