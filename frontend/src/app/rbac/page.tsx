@@ -246,6 +246,7 @@ export default function RBACPage() {
     { key:'finance.expenses', label:'房源支出', menu:'menu.finance.expenses.visible', resources:['property_expenses'] },
     { key:'finance.recurring', label:'固定支出', menu:'menu.finance.recurring.visible', resources:['recurring_payments'] },
     { key:'finance.orders', label:'订单管理', menu:'menu.finance.orders.visible', resources:['order'] },
+    { key:'finance.invoices', label:'发票中心', menu:'menu.finance.invoices.visible', resources:[] },
     { key:'finance.company_overview', label:'财务总览', menu:'menu.finance.company_overview.visible', resources:['finance_transactions','order','properties','property_expenses'] },
     { key:'finance.company_revenue', label:'公司营收', menu:'menu.finance.company_revenue.visible', resources:['company_incomes','company_expenses'] },
     { key:'landlords', label:'房东管理', menu:'menu.landlords.visible', resources:['landlords'] },

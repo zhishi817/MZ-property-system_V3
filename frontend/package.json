@@ -5,7 +5,7 @@
   "scripts": {
     "clean:next": "node scripts/clean-next-cache.mjs",
     "clean:next:full": "node scripts/clean-next-cache.mjs --full",
-    "predev": "npm run clean:next",
+    "predev": "npm run clean:next:full",
     "prebuild": "npm run clean:next",
     "dev": "next dev",
     "build": "next build",

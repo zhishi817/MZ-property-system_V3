@@ -2,6 +2,7 @@
 import dayjs from 'dayjs'
 import { monthSegments, toDayStr, parseDateOnly } from '../lib/orders'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../lib/financeTx'
+import { computeMonthlyStatementBalance, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../lib/statementBalances'
 import { Table } from 'antd'
 import { forwardRef, useEffect, useState } from 'react'
 import { authHeaders } from '../lib/api'
@@ -52,13 +53,14 @@ export default forwardRef<HTMLDivElement, {
   })
   const simpleMode = false
   const property = properties.find(pp => pp.id === (propertyId || ''))
-  const expensesInMonth = txs.filter(t => {
+  const expensesInMonthAll = txs.filter(t => {
     if (t.kind !== 'expense') return false
     if (propertyId) {
       if (!txMatchesProperty(t, { id: propertyId, code: property?.code })) return false
     }
     return txInMonth(t as any, start)
   })
+  const expensesInMonthForReport = expensesInMonthAll.filter(t => !isFurnitureRecoverableCharge(t as any))
   const [invoiceMap, setInvoiceMap] = useState<Record<string, ExpenseInvoice[]>>({})
   useEffect(() => {
     (async () => {
@@ -70,7 +72,7 @@ export default forwardRef<HTMLDivElement, {
         const rows: ExpenseInvoice[] = res.ok ? (await res.json()) : []
         const map: Record<string, ExpenseInvoice[]> = {}
         rows.forEach((r: any) => { const k = String(r.expense_id); (map[k] = map[k] || []).push(r) })
-        const missingIds = expensesInMonth.map(e => String(e.id)).filter(id => !(id in map))
+        const missingIds = expensesInMonthAll.map(e => String(e.id)).filter(id => !(id in map))
         if (missingIds.length) {
           const extraLists = await Promise.all(missingIds.map(async (eid) => {
             try {
@@ -84,7 +86,7 @@ export default forwardRef<HTMLDivElement, {
           })
         }
         // 进一步回补：若某支出在交易记录中自带 invoice_url，也作为发票处理
-        expensesInMonth.forEach((e) => {
+        expensesInMonthAll.forEach((e) => {
           const eid = String((e as any).id)
           const tx = (txs || []).find(t => t.kind === 'expense' && String(t.id) === eid && !!(t as any).invoice_url)
           const urlRaw = (tx as any)?.invoice_url || ''
@@ -97,7 +99,7 @@ export default forwardRef<HTMLDivElement, {
         setInvoiceMap(map)
       } catch { setInvoiceMap({}) }
     })()
-  }, [propertyId, month, expensesInMonth.length])
+  }, [propertyId, month, expensesInMonthAll.length])
   const orderIncomeShare = relatedOrders.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
   const rentIncome = orderIncomeShare
   const orderById = new Map((orders || []).map(o => [String(o.id), o]))
@@ -105,6 +107,8 @@ export default forwardRef<HTMLDivElement, {
     if (t.kind !== 'income') return false
     if (propertyId && t.property_id !== propertyId) return false
     if (!dayjs(toDayStr(t.occurred_at)).isSame(start, 'month')) return false
+    if (isFurnitureOwnerPayment(t as any)) return false
+    if (String(t.category || '').toLowerCase() === 'late_checkout') return false
     return shouldIncludeIncomeTxInPropertyOtherIncome(t, orderById)
   })
   const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount || 0), 0)
@@ -129,7 +133,7 @@ export default forwardRef<HTMLDivElement, {
     if (raw === 'consumables') return 'consumable'
     return raw
   }
-  const sumByCat = (cat: string) => expensesInMonth.filter(e => catKey(e) === cat).reduce((s, x) => s + Number(x.amount || 0), 0)
+  const sumByCat = (cat: string) => expensesInMonthForReport.filter(e => catKey(e) === cat).reduce((s, x) => s + Number(x.amount || 0), 0)
   const catElectricity = sumByCat('electricity')
   const catWater = sumByCat('water')
   const catGas = sumByCat('gas')
@@ -139,11 +143,42 @@ export default forwardRef<HTMLDivElement, {
   const catOwnerCorp = sumByCat('property_fee')
   const catCouncil = sumByCat('council')
   const catOther = sumByCat('other')
-  const otherCats = expensesInMonth.filter(e => catKey(e) === 'other').map(e => String((e as any).category || '')).map(s => s.trim()).filter(Boolean)
-  const otherDetailFromCat = expensesInMonth.filter(e => catKey(e) === 'other' && (e as any).category_detail).map(e => String((e as any).category_detail || '').trim()).filter(Boolean)
-  const otherExpenseDesc = Array.from(new Set([...otherCats, ...otherDetailFromCat])).join('、') || '-'
+  function cleanOtherDesc(raw?: any): string {
+    let s = String(raw || '').trim()
+    if (!s) return ''
+    s = s.replace(/^other\s*,\s*/i, '')
+    s = s.replace(/^其他\s*[，,]\s*/i, '')
+    if (/^(other|其他)$/i.test(s)) return ''
+    if (/^fixed\s*payment$/i.test(s)) return ''
+    return s
+  }
+  const otherItems = expensesInMonthForReport
+    .filter(e => catKey(e) === 'other')
+    .map(e => cleanOtherDesc((e as any).category_detail || (e as any).note || ''))
+    .filter(Boolean)
+  const otherExpenseDesc = Array.from(new Set(otherItems)).join('、') || '-'
   const totalExpense = (managementFee + catElectricity + catWater + catGas + catInternet + catConsumable + catCarpark + catOwnerCorp + catCouncil + catOther)
-  const netIncome = Math.round(((totalIncome - totalExpense) + Number.EPSILON) * 100) / 100
+  const balance = (propertyId ? computeMonthlyStatementBalance({
+    month,
+    propertyId,
+    propertyCode: property?.code,
+    orders,
+    txs: txs as any,
+    managementFeeRate: landlord?.management_fee_rate,
+  }) : null)
+  const netIncome = balance ? balance.operating_net_income : Math.round(((totalIncome - totalExpense) + Number.EPSILON) * 100) / 100
+  const hasCarry = !!balance && ([
+    balance.opening_carry_net,
+    balance.closing_carry_net,
+  ].some(v => Math.abs(Number(v || 0)) > 0.005))
+  const hasFurniture = !!balance && ([
+    balance.furniture_opening_outstanding,
+    balance.furniture_charge,
+    balance.furniture_owner_paid,
+    balance.furniture_offset_from_rent,
+    balance.furniture_closing_outstanding,
+  ].some(v => Math.abs(Number(v || 0)) > 0.005))
+  const showBalance = !!balance && (hasCarry || hasFurniture)
   const isImg = (u?: string) => !!u && /\.(png|jpg|jpeg|gif)$/i.test(u)
   const isPdf = (u?: string) => !!u && /\.pdf$/i.test(u)
   const resolveUrl = (u?: string) => (u && /^https?:\/\//.test(u)) ? u : (u ? `${API_BASE}${u}` : '')
@@ -252,6 +287,65 @@ export default forwardRef<HTMLDivElement, {
         <span>{showChinese ? 'Net Income 净收入' : 'Net Income'}</span><span>${fmt(netIncome)}</span>
       </div>
 
+      {showBalance && balance && (
+        <>
+          <div style={{ fontWeight: 600, marginTop: 16, background:'#eef3fb', padding:'6px 8px' }}>
+            {hasFurniture ? (showChinese ? 'Furniture cost & carry-over 家具费用与结转' : 'Furniture cost & carry-over') : (showChinese ? 'Carry-over 结转' : 'Carry-over')}
+          </div>
+          <table style={{ width:'100%' }}>
+            <tbody>
+              {hasCarry ? (
+                <tr>
+                  <td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Carry-over from last month 上月结转金额' : 'Carry-over from last month'}</td>
+                  <td style={{ textAlign:'right', padding:6 }}>${fmt(balance.opening_carry_net)}</td>
+                </tr>
+              ) : null}
+
+              {hasFurniture ? (
+                <tr>
+                  <td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Furniture balance to offset (start) 家具费用待抵扣（期初）' : 'Furniture balance to offset (start)'}</td>
+                  <td style={{ textAlign:'right', padding:6 }}>${fmt(balance.furniture_opening_outstanding)}</td>
+                </tr>
+              ) : null}
+              {hasFurniture ? (
+                <tr>
+                  <td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'New furniture cost this month 本月新增家具费用' : 'New furniture cost this month'}</td>
+                  <td style={{ textAlign:'right', padding:6 }}>${fmt(balance.furniture_charge)}</td>
+                </tr>
+              ) : null}
+              {hasFurniture ? (
+                <tr>
+                  <td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Owner paid furniture cost 房东本月已支付家具费用' : 'Owner paid furniture cost'}</td>
+                  <td style={{ textAlign:'right', padding:6 }}>${fmt(balance.furniture_owner_paid)}</td>
+                </tr>
+              ) : null}
+              {hasFurniture ? (
+                <tr>
+                  <td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Offset from rent this month 本月从租金中抵扣家具费用' : 'Offset from rent this month'}</td>
+                  <td style={{ textAlign:'right', padding:6 }}>-${fmt(balance.furniture_offset_from_rent)}</td>
+                </tr>
+              ) : null}
+              {hasFurniture ? (
+                <tr>
+                  <td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Furniture balance to offset (end) 家具费用待抵扣（期末）' : 'Furniture balance to offset (end)'}</td>
+                  <td style={{ textAlign:'right', padding:6 }}>${fmt(balance.furniture_closing_outstanding)}</td>
+                </tr>
+              ) : null}
+
+              {hasCarry ? (
+                <tr>
+                  <td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Carry-over to next month 下月结转金额' : 'Carry-over to next month'}</td>
+                  <td style={{ textAlign:'right', padding:6 }}>${fmt(balance.closing_carry_net)}</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+          <div style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px', marginTop: 8 }}>
+            <span>{showChinese ? 'Amount payable to owner 本月应付房东' : 'Amount payable to owner'}</span><span>${fmt(balance.payable_to_owner)}</span>
+          </div>
+        </>
+      )}
+
       <div data-keep-with-next="true" style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rent Records' : 'Rent Records'}</div>
       <table style={{ width:'100%', borderCollapse:'collapse' }}>
         <thead>
@@ -357,7 +451,7 @@ export default forwardRef<HTMLDivElement, {
       <>
       <div style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Expense Invoices 支出发票' : 'Expense Invoices'}</div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap: 12 }}>
-        {expensesInMonth.map(e => {
+        {expensesInMonthAll.map(e => {
           const eid = String((e as any).id)
           const invs = (invoiceMap[eid] || []).slice()
           if (!invs.length) {

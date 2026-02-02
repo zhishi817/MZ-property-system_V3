@@ -109,6 +109,8 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   if (hasPerm('menu.finance.orders.visible')) financeChildren.push({ key: 'orders', label: <Link href="/orders" prefetch={false}>订单管理</Link> })
   if (hasPerm('menu.finance.expenses.visible')) financeChildren.push({ key: 'expenses', label: <Link href="/finance/expenses" prefetch={false}>房源支出</Link> })
   if (hasPerm('menu.finance.recurring.visible')) financeChildren.push({ key: 'finance-recurring', label: <Link href="/finance/recurring" prefetch={false}>固定支出</Link> })
+  if (hasPerm('menu.finance.invoices.visible')) financeChildren.push({ key: 'finance-invoices', label: <Link href="/finance/invoices" prefetch={false}>发票中心</Link> })
+  if (hasPerm('menu.finance.company_overview.visible') || hasPerm('finance.tx.write') || hasPerm('finance_transactions.view')) financeChildren.push({ key: 'finance-transactions', label: <Link href="/finance/transactions" prefetch={false}>交易流水</Link> })
   if (hasPerm('menu.finance.company_overview.visible')) financeChildren.push({ key: 'finance-performance', label: '房源表现', children: [
     { key: 'finance-performance-overview', label: <Link href="/finance/performance/overview" prefetch={false}>经营分析</Link> },
     { key: 'finance-performance-revenue', label: <Link href="/finance/performance/revenue" prefetch={false}>房源营收</Link> },

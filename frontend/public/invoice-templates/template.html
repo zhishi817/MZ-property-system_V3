@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Invoice Template</title>
+    <link rel="stylesheet" href="/invoice-templates/invoice-template.css" />
+  </head>
+  <body>
+    <div id="invoice-root"></div>
+    <script>
+      window.__INVOICE_TEMPLATE__ = window.__INVOICE_TEMPLATE__ || "classic";
+      window.__INVOICE_DATA__ = window.__INVOICE_DATA__ || { invoice: { line_items: [] }, company: {} };
+    </script>
+    <script src="/invoice-templates/invoice-template.js"></script>
+  </body>
+</html>
+

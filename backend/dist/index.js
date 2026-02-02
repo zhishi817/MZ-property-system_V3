@@ -34,6 +34,7 @@ const jobs_1 = require("./modules/jobs");
 const node_cron_1 = __importDefault(require("node-cron"));
 const crud_1 = __importDefault(require("./modules/crud"));
 const recurring_1 = __importDefault(require("./modules/recurring"));
+const invoices_1 = require("./modules/invoices");
 const auth_2 = require("./auth");
 const public_1 = __importDefault(require("./modules/public"));
 const public_admin_1 = __importDefault(require("./modules/public_admin"));
@@ -230,6 +231,11 @@ app.use(auth_2.auth);
 const uploadDir = path_1.default.join(process.cwd(), 'uploads');
 if (!fs_1.default.existsSync(uploadDir))
     fs_1.default.mkdirSync(uploadDir);
+app.use('/uploads', (_req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+});
 app.use('/uploads', express_1.default.static(uploadDir));
 app.use('/landlords', landlords_1.router);
 app.use('/properties', properties_1.router);
@@ -254,6 +260,7 @@ app.use('/deep-cleaning', deep_cleaning_1.default);
 app.use('/jobs', jobs_1.router);
 app.use('/public', public_admin_1.default);
 app.use('/onboarding', propertyOnboarding_1.router);
+app.use('/invoices', invoices_1.router);
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001);
 app.listen(port, () => {
     console.log(`Server listening on port ${port}`);

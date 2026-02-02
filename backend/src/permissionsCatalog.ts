@@ -224,6 +224,109 @@ const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
       '涉及金额、供应商信息、发票等敏感数据，需控制范围',
     ],
   },
+  'invoice.view': {
+    displayName: '发票中心：查看（低）',
+    riskLevel: 'low',
+    purpose: '允许查看 Tax Invoice 列表、详情、PDF 与发送/付款状态。',
+    scenarios: [
+      '运营/财务查看开票记录与对账',
+      '查询单号、下载 PDF、追踪发送与收款',
+    ],
+    denyImpact: [
+      '无法进入发票中心或查看发票详情',
+    ],
+    privacyRisk: [
+      '可能包含客户姓名/地址/邮箱与金额信息，需按岗位控制',
+    ],
+  },
+  'invoice.draft.create': {
+    displayName: '发票中心：创建草稿（中）',
+    riskLevel: 'medium',
+    purpose: '允许从业务来源生成或手工创建 draft 发票，用于后续审核与开票。',
+    scenarios: [
+      'Ops 从工单/深清/费用来源批量生成草稿',
+      '补录发票草稿，等待财务确认',
+    ],
+    denyImpact: [
+      '无法创建草稿发票，需由财务或管理员代办',
+    ],
+    privacyRisk: [
+      '错误录入可能导致后续开票金额或对象错误',
+    ],
+  },
+  'invoice.issue': {
+    displayName: '发票中心：开票/出号（高危）',
+    riskLevel: 'high',
+    purpose: '允许将发票从 draft 变更为 issued 并分配编号，影响财务口径与对外凭证。',
+    scenarios: [
+      '财务审核通过后正式开票并生成编号',
+    ],
+    denyImpact: [
+      '无法出号与正式开票，流程无法闭环',
+    ],
+    privacyRisk: [
+      '误开票会造成合规与对账风险，需严格授权与审计',
+    ],
+  },
+  'invoice.send': {
+    displayName: '发票中心：发送（中高）',
+    riskLevel: 'high',
+    purpose: '允许标记或执行发票发送动作，影响客户通知与收款节奏。',
+    scenarios: [
+      '发送发票 PDF 给客户/房东',
+      '补记发送状态与收件人',
+    ],
+    denyImpact: [
+      '无法发送或记录发送状态，追踪困难',
+    ],
+    privacyRisk: [
+      '涉及对外通信与客户信息，需控制范围并留痕',
+    ],
+  },
+  'invoice.void': {
+    displayName: '发票中心：作废（高危）',
+    riskLevel: 'high',
+    purpose: '允许作废已开票的发票，影响财务口径与对外凭证有效性。',
+    scenarios: [
+      '开票对象/金额错误需要作废并重新开票（需原因）',
+    ],
+    denyImpact: [
+      '无法作废错误发票，可能导致对账与合规问题',
+    ],
+    privacyRisk: [
+      '误作废会造成财务混乱与纠纷，需严格控制与审计',
+    ],
+  },
+  'invoice.payment.record': {
+    displayName: '发票中心：记录收款（高危）',
+    riskLevel: 'high',
+    purpose: '允许记录发票收款金额与状态，影响应收与对账结果。',
+    scenarios: [
+      '对账完成后录入收款',
+      '记录部分付款与结清',
+    ],
+    denyImpact: [
+      '无法维护收款状态，应收与报表不准确',
+    ],
+    privacyRisk: [
+      '误录入会造成应收口径偏差，需配合审计',
+    ],
+  },
+  'invoice.company.manage': {
+    displayName: '发票中心：开票主体管理（高危）',
+    riskLevel: 'high',
+    purpose: '允许维护开票主体的 ABN/地址/Logo/银行信息，直接影响对外发票内容。',
+    scenarios: [
+      '新增/停用开票主体（不同 ABN）',
+      '更新公司地址、Logo 或收款账号信息',
+    ],
+    denyImpact: [
+      '无法维护开票主体信息，可能导致发票信息过期',
+    ],
+    privacyRisk: [
+      '包含银行账户等敏感信息，需最小授权',
+    ],
+  },
   'landlord.manage': {
     displayName: '房东：资料管理（中）',
     riskLevel: 'medium',
