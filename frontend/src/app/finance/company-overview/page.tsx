@@ -10,7 +10,7 @@ import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/pro
 import MonthlyStatementView from '../../../components/MonthlyStatement'
 import { monthSegments, toDayStr, getMonthSegmentsForProperty, parseDateOnly } from '../../../lib/orders'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../../../lib/financeTx'
-import { isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
+import { computeMonthlyStatementBalance, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
 import { formatStatementDesc } from '../../../lib/statementDesc'
 const debugOnce = (..._args: any[]) => {}
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
@@ -298,7 +298,30 @@ export default function PropertyRevenuePage() {
         const otherExpenseDescFmt = formatStatementDesc({ items: otherItems, lang: 'en' })
         const totalExp = mgmt + electricity + water + gas + internet + consumable + carpark + ownercorp + council + other
         const net = Math.round(((totalIncome - totalExp) + Number.EPSILON)*100)/100
-        out.push({ key: `${p.id}-${rm.label}`, pid: p.id, month: rm.label, code: p.code || p.id, address: p.address, occRate, avg, totalIncome, rentIncome, otherIncome, otherIncomeDesc, mgmt, electricity, water, gas, internet, consumable, carpark, ownercorp, council, other, otherExpenseDesc: otherExpenseDescFmt.text, otherExpenseDescFull: otherExpenseDescFmt.full, totalExp, net })
+        const monthKey = rm.start.format('YYYY-MM')
+        const landlord = landlords.find(l => (l.property_ids || []).includes(p.id))
+        let payableToOwner = 0
+        let netFromBalance: number | null = null
+        try {
+          const b = computeMonthlyStatementBalance({
+            month: monthKey,
+            propertyId: p.id,
+            propertyCode: p.code || undefined,
+            orders: orders as any,
+            txs: txs as any,
+            managementFeeRate: landlord?.management_fee_rate,
+          })
+          netFromBalance = Number(b.operating_net_income || 0)
+          payableToOwner = Math.max(0, Number(b.payable_to_owner || 0))
+          if (!Number.isFinite(payableToOwner)) payableToOwner = 0
+        } catch {
+          payableToOwner = Math.max(0, Number(net || 0))
+        }
+        if (process.env.NODE_ENV === 'development' && netFromBalance != null) {
+          const diff = Math.abs(Number(netFromBalance) - Number(net || 0))
+          if (diff > 0.02) console.warn('payableToOwner: net mismatch', { property: p.code || p.id, month: monthKey, net, netFromBalance })
+        }
+        out.push({ key: `${p.id}-${rm.label}`, pid: p.id, month: rm.label, code: p.code || p.id, address: p.address, occRate, avg, totalIncome, rentIncome, otherIncome, otherIncomeDesc, mgmt, electricity, water, gas, internet, consumable, carpark, ownercorp, council, other, otherExpenseDesc: otherExpenseDescFmt.text, otherExpenseDescFull: otherExpenseDescFmt.full, totalExp, net, payableToOwner })
       }
     }
     return out
@@ -338,6 +361,7 @@ export default function PropertyRevenuePage() {
     { title:'其他支出描述', dataIndex:'otherExpenseDesc', render: (_: any, r: any) => <div style={{ whiteSpace:'normal', wordBreak:'break-word', overflowWrap:'anywhere', textAlign:'right' }} title={r.otherExpenseDescFull || r.otherExpenseDesc}>{r.otherExpenseDesc}</div> },
     { title:'总支出', dataIndex:'totalExp', align:'right', render:(v: number)=> `-$${fmt(v)}` },
     { title:'净收入', dataIndex:'net', align:'right', render:(v: number)=> `$${fmt(v)}` },
+    { title:'本月应支付房东费用', dataIndex:'payableToOwner', align:'right', render:(v: number)=> `$${fmt(Math.max(0, Number(v || 0)))}` },
     { title:'操作', render: (_: any, r: any) => (
       <Button onClick={() => { setPreviewPid(r.pid); setPreviewOpen(true) }}>预览/导出</Button>
     ) },
