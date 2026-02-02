@@ -2,6 +2,7 @@
 import dayjs from 'dayjs'
 import { monthSegments } from '../lib/orders'
 import { shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../lib/financeTx'
+import { isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../lib/statementBalances'
 import { forwardRef } from 'react'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; status?: string; count_in_income?: boolean }
@@ -38,10 +39,12 @@ export default forwardRef<HTMLDivElement, {
       if (t.kind !== 'income') return false
       if (!txMatchesProperty(t, { id: propertyId, code: property?.code })) return false
       if (!txInMonth(t as any, r.start)) return false
+      if (isFurnitureOwnerPayment(t as any)) return false
+      if (String((t as any).category || '').toLowerCase() === 'late_checkout') return false
       return shouldIncludeIncomeTxInPropertyOtherIncome(t, orderById)
     }).reduce((s, x) => s + Number(x.amount || 0), 0)
     const mgmt = landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON) * 100) / 100 : 0
-    const sumCat = (c: string) => txs.filter(t => t.kind === 'expense' && t.category === c && txMatchesProperty(t, { id: propertyId, code: property?.code }) && txInMonth(t as any, r.start)).reduce((s, x) => s + Number(x.amount || 0), 0)
+    const sumCat = (c: string) => txs.filter(t => t.kind === 'expense' && t.category === c && txMatchesProperty(t, { id: propertyId, code: property?.code }) && txInMonth(t as any, r.start) && !isFurnitureRecoverableCharge(t as any)).reduce((s, x) => s + Number(x.amount || 0), 0)
     const consumable = sumCat('consumable')
     const electricity = sumCat('electricity')
     const gas = sumCat('gas')

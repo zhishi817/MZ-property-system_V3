@@ -10,6 +10,7 @@ import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/pro
 import MonthlyStatementView from '../../../components/MonthlyStatement'
 import { monthSegments, toDayStr, getMonthSegmentsForProperty, parseDateOnly } from '../../../lib/orders'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../../../lib/financeTx'
+import { isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
 const debugOnce = (..._args: any[]) => {}
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
 
@@ -47,6 +48,7 @@ export default function PropertyRevenuePage() {
           return v
         }
         const mapReport: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.report_category||'')]))
+        const mapVendor: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.vendor||'')]))
         const toReportCat = (raw?: string) => {
           const v = String(raw||'').toLowerCase()
           if (v.includes('management_fee') || v.includes('管理费')) return 'management_fee'
@@ -65,6 +67,10 @@ export default function PropertyRevenuePage() {
           const pidRaw = r.property_id || undefined
           const match = properties.find(pp => (pp.code || '') === code)
           const pidNorm = (pidRaw && properties.some(pp => pp.id === pidRaw)) ? pidRaw : (match ? match.id : pidRaw)
+          const fid = String(r.fixed_expense_id || '')
+          const vendor = fid ? String(mapVendor[fid] || '') : ''
+          const baseDetail = String(r.category_detail || '').trim()
+          const injectedDetail = (!baseDetail && vendor) ? vendor : baseDetail
           return ({
             id: r.id,
             kind: 'expense',
@@ -75,7 +81,8 @@ export default function PropertyRevenuePage() {
             category: mapCat(r.category),
             // 其他支出描述
             ...(r.property_code ? { property_code: r.property_code } : {}),
-            ...(r.category_detail ? { category_detail: r.category_detail } : {}),
+            ...(injectedDetail ? { category_detail: injectedDetail } : {}),
+            ...(r.note ? { note: r.note } : {}),
             ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
             ...(r.month_key ? { month_key: r.month_key } : {}),
             ...(r.due_date ? { due_date: r.due_date } : {}),
@@ -120,6 +127,7 @@ export default function PropertyRevenuePage() {
           return v
         }
         const mapReport: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.report_category||'')]))
+        const mapVendor: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.vendor||'')]))
         const toReportCat = (raw?: string) => {
           const v = String(raw||'').toLowerCase()
           if (v.includes('management_fee') || v.includes('管理费')) return 'management_fee'
@@ -138,6 +146,10 @@ export default function PropertyRevenuePage() {
           const pidRaw = r.property_id || undefined
           const match = properties.find(pp => (pp.code || '') === code)
           const pidNorm = (pidRaw && properties.some(pp => pp.id === pidRaw)) ? pidRaw : (match ? match.id : pidRaw)
+          const fid = String(r.fixed_expense_id || '')
+          const vendor = fid ? String(mapVendor[fid] || '') : ''
+          const baseDetail = String(r.category_detail || '').trim()
+          const injectedDetail = (!baseDetail && vendor) ? vendor : baseDetail
           return ({
             id: r.id,
             kind: 'expense',
@@ -147,7 +159,8 @@ export default function PropertyRevenuePage() {
             occurred_at: r.occurred_at,
             category: mapCat(r.category),
             ...(r.property_code ? { property_code: r.property_code } : {}),
-            ...(r.category_detail ? { category_detail: r.category_detail } : {}),
+            ...(injectedDetail ? { category_detail: injectedDetail } : {}),
+            ...(r.note ? { note: r.note } : {}),
             ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
             ...(r.month_key ? { month_key: r.month_key } : {}),
             ...(r.due_date ? { due_date: r.due_date } : {}),
@@ -223,7 +236,7 @@ export default function PropertyRevenuePage() {
           if (x.kind !== 'expense') return false
           if (!txMatchesProperty(x, p as any)) return false
           return txInMonth(x as any, rm.start)
-        })
+        }).filter(x => !isFurnitureRecoverableCharge(x as any))
         function overlap(s: any) {
           const ci = parseDateOnly(toDayStr(s.checkin))
           const co = parseDateOnly(toDayStr(s.checkout))
@@ -236,6 +249,8 @@ export default function PropertyRevenuePage() {
           if (x.kind !== 'income') return false
           if (x.property_id !== p.id) return false
           if (!dayjs(toDayStr(x.occurred_at)).isSame(rm.start, 'month')) return false
+          if (isFurnitureOwnerPayment(x as any)) return false
+          if (String(x.category || '').toLowerCase() === 'late_checkout') return false
           return shouldIncludeIncomeTxInPropertyOtherIncome(x, orderById)
         })
         const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount||0), 0)
@@ -266,9 +281,20 @@ export default function PropertyRevenuePage() {
         const ownercorp = byReport('body_corp')
         const council = byReport('council')
         const other = byReport('other')
-        const otherCats = e.filter(xx=> String((xx as any).report_category||'')==='other').map(xx => String((xx as any).category || '')).map(s=> s.trim()).filter(Boolean)
-        const otherDetailFromCat = e.filter(xx=> String((xx as any).report_category||'')==='other' && (xx as any).category_detail).map(xx => String((xx as any).category_detail || '').trim()).filter(Boolean)
-        const otherExpenseDescStr = Array.from(new Set([...otherCats, ...otherDetailFromCat])).join('、') || '-'
+        function cleanOtherDesc(raw?: any): string {
+          let s = String(raw || '').trim()
+          if (!s) return ''
+          s = s.replace(/^other\s*,\s*/i, '')
+          s = s.replace(/^其他\s*[，,]\s*/i, '')
+          if (/^(other|其他)$/i.test(s)) return ''
+          if (/^fixed\s*payment$/i.test(s)) return ''
+          return s
+        }
+        const otherItems = e
+          .filter(xx => normalizeReportCategory((xx as any).report_category || (xx as any).category) === 'other')
+          .map(xx => cleanOtherDesc((xx as any).category_detail || (xx as any).note || ''))
+          .filter(Boolean)
+        const otherExpenseDescStr = Array.from(new Set(otherItems)).join('、') || '-'
         const totalExp = mgmt + electricity + water + gas + internet + consumable + carpark + ownercorp + council + other
         const net = Math.round(((totalIncome - totalExp) + Number.EPSILON)*100)/100
         out.push({ key: `${p.id}-${rm.label}`, pid: p.id, month: rm.label, code: p.code || p.id, address: p.address, occRate, avg, totalIncome, rentIncome, otherIncome, otherIncomeDesc, mgmt, electricity, water, gas, internet, consumable, carpark, ownercorp, council, other, otherExpenseDesc: otherExpenseDescStr, totalExp, net })

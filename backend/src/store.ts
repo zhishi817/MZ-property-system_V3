@@ -294,8 +294,41 @@ if (db.inventoryItems.length === 0) {
   )
 }
 
-export function addAudit(entity: string, entity_id: string, action: string, before: any, after: any, actor_id?: string) {
-  db.audits.push({ id: uuid(), actor_id, action, entity, entity_id, before, after, timestamp: new Date().toISOString() })
+let auditLogEnsured = false
+export function addAudit(entity: string, entity_id: string, action: string, before: any, after: any, actor_id?: string, meta?: { ip?: string; user_agent?: string }) {
+  const row: any = { id: uuid(), actor_id, action, entity, entity_id, before, after, timestamp: new Date().toISOString() }
+  db.audits.push(row)
+  try {
+    const { hasPg, pgPool } = require('./dbAdapter')
+    if (!hasPg || !pgPool) return
+    void (async () => {
+      try {
+        if (!auditLogEnsured) {
+          auditLogEnsured = true
+          await pgPool.query(`CREATE TABLE IF NOT EXISTS audit_logs (
+            id text PRIMARY KEY,
+            entity text NOT NULL,
+            entity_id text NOT NULL,
+            action text NOT NULL,
+            actor_id text,
+            ip text,
+            user_agent text,
+            before_json jsonb,
+            after_json jsonb,
+            created_at timestamptz DEFAULT now()
+          );`)
+          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity, entity_id);')
+          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);')
+        }
+        await pgPool.query(
+          'INSERT INTO audit_logs (id, entity, entity_id, action, actor_id, ip, user_agent, before_json, after_json, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())',
+          [row.id, entity, entity_id, action, actor_id || null, meta?.ip || null, meta?.user_agent || null, before ?? null, after ?? null]
+        )
+      } catch {
+      }
+    })()
+  } catch {
+  }
 }
 
 if (db.landlords.length === 0) {
@@ -383,6 +416,7 @@ if (db.roles.length === 0) {
     { code: 'menu.finance.expenses.visible' },
     { code: 'menu.finance.recurring.visible' },
     { code: 'menu.finance.orders.visible' },
+    { code: 'menu.finance.invoices.visible' },
     { code: 'menu.finance.company_overview.visible' },
     { code: 'menu.finance.company_revenue.visible' },
     { code: 'cleaning_app.tasks.view.self' },
@@ -396,7 +430,14 @@ if (db.roles.length === 0) {
     { code: 'cleaning_app.calendar.view.all' },
     { code: 'cleaning_app.assign' },
     { code: 'cleaning_app.sse.subscribe' },
-    { code: 'cleaning_app.push.subscribe' }
+    { code: 'cleaning_app.push.subscribe' },
+    { code: 'invoice.view' },
+    { code: 'invoice.draft.create' },
+    { code: 'invoice.issue' },
+    { code: 'invoice.send' },
+    { code: 'invoice.void' },
+    { code: 'invoice.payment.record' },
+    { code: 'invoice.company.manage' }
   ]
   function grant(roleId: string, codes: string[]) {
     codes.forEach(c => db.rolePermissions.push({ role_id: roleId, permission_code: c }))
@@ -404,17 +445,17 @@ if (db.roles.length === 0) {
   // 管理员：所有权限
   grant(adminId, db.permissions.map(p => p.code))
   // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
-  grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','order.cancel','cleaning.view','finance.tx.write','onboarding.manage','onboarding.read','menu.dashboard','menu.properties','menu.finance','menu.cleaning','menu.cms','menu.onboarding','cleaning_app.sse.subscribe'])
+  grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','order.cancel','cleaning.view','finance.tx.write','invoice.view','invoice.draft.create','onboarding.manage','onboarding.read','menu.dashboard','menu.properties','menu.finance','menu.finance.invoices.visible','menu.cleaning','menu.cms','menu.onboarding','cleaning_app.sse.subscribe'])
   // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
   grant(cleanMgrId, ['cleaning.schedule.manage','cleaning.task.assign','menu.cleaning','menu.dashboard','cleaning_app.calendar.view.all','cleaning_app.assign','cleaning_app.sse.subscribe'])
   // 清洁/检查人员：无写权限，仅查看（后端接口默认允许 GET）
   grant(cleanerId, ['menu.cleaning','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 财务人员：财务结算与交易录入、房东/房源管理
-  grant(financeId, ['finance.payout','finance.tx.write','order.deduction.manage','order.cancel','landlord.manage','property.write','onboarding.manage','onboarding.read','menu.finance','menu.landlords','menu.properties','menu.onboarding','menu.dashboard'])
+  grant(financeId, ['finance.payout','finance.tx.write','invoice.view','invoice.draft.create','invoice.issue','invoice.send','invoice.void','invoice.payment.record','invoice.company.manage','order.deduction.manage','order.cancel','landlord.manage','property.write','onboarding.manage','onboarding.read','menu.finance','menu.finance.invoices.visible','menu.landlords','menu.properties','menu.onboarding','menu.dashboard'])
   // 仓库管理员：仓库与钥匙管理
   grant(inventoryId, ['inventory.move','keyset.manage','key.flow','menu.inventory','menu.keys','menu.dashboard'])
   // 维修人员：暂无写接口，预留
-  grant(maintenanceId, ['menu.dashboard'])
+  grant(maintenanceId, ['invoice.view','invoice.draft.create','menu.dashboard'])
 }
 
 const defaultPerms = [

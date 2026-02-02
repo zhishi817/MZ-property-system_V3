@@ -29,6 +29,7 @@ import { router as jobsRouter, runEmailSyncJob } from './modules/jobs'
 import cron from 'node-cron'
 import crudRouter from './modules/crud'
 import recurringRouter from './modules/recurring'
+import { router as invoicesRouter } from './modules/invoices'
 import { auth } from './auth'
 import publicRouter from './modules/public'
 import publicAdminRouter from './modules/public_admin'
@@ -201,6 +202,11 @@ app.use('/public', publicRouter)
 app.use(auth)
 const uploadDir = path.join(process.cwd(), 'uploads')
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir)
+app.use('/uploads', (_req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+  next()
+})
 app.use('/uploads', express.static(uploadDir))
 
 
@@ -227,6 +233,7 @@ app.use('/deep-cleaning', deepCleaningRouter)
 app.use('/jobs', jobsRouter)
 app.use('/public', publicAdminRouter)
 app.use('/onboarding', propertyOnboardingRouter)
+app.use('/invoices', invoicesRouter)
 
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001)
 app.listen(port, () => {

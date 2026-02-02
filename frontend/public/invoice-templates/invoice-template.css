@@ -1,0 +1,314 @@
+/* A4 Invoice Template System (Screen + Print) */
+@font-face {
+  font-family: "InvoiceSans";
+  src: local("Noto Sans"), local("Noto Sans SC"), local("PingFang SC"), local("Microsoft YaHei"), local("Helvetica Neue"), local("Arial");
+  font-weight: 400;
+  font-style: normal;
+}
+
+:root{
+  --inv-primary:#0052D9;
+  --inv-bg:#F5F7FA;
+  --inv-text:#111827;
+  --inv-muted:rgba(17,24,39,0.65);
+  --inv-border:rgba(0,0,0,0.08);
+  --inv-soft:rgba(0,0,0,0.03);
+  --inv-a4-w:210mm;
+  --inv-a4-h:297mm;
+  --inv-margin:20mm;
+  --inv-font-body:12px;
+  --inv-font-small:11px;
+  --inv-font-strong:14px;
+  --inv-font-title:20px;
+  --inv-font-amount:22px;
+}
+
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{
+  margin:0;
+  font-family:"InvoiceSans", system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  color:var(--inv-text);
+  background:var(--inv-bg);
+  font-size:var(--inv-font-body);
+  font-weight:400;
+  line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+
+.inv-preview-wrap{
+  width:100%;
+  padding:16px;
+  display:flex;
+  justify-content:center;
+}
+
+.inv-sheet{
+  width:var(--inv-a4-w);
+  min-height:var(--inv-a4-h);
+  background:#fff;
+  border:1px solid var(--inv-border);
+  border-radius:10px;
+  overflow:hidden;
+  box-shadow:0 10px 30px rgba(0,0,0,0.08);
+}
+
+.inv-page{
+  width:100%;
+  min-height:var(--inv-a4-h);
+  padding:var(--inv-margin);
+}
+
+.inv-grid{
+  display:grid;
+  grid-template-columns: 1.25fr 0.75fr;
+  gap:18px;
+}
+
+.inv-header{
+  display:grid;
+  grid-template-columns: 1fr 1fr;
+  gap:16px;
+  align-items:start;
+  padding-bottom:14px;
+  border-bottom:1px solid var(--inv-border);
+}
+
+.inv-logo{
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+.inv-logo img{
+  width:140px;
+  height:auto;
+  object-fit:contain;
+}
+.inv-title{
+  text-align:right;
+}
+.inv-title h1{
+  margin:0;
+  font-size:var(--inv-font-title);
+  font-weight:700;
+  letter-spacing:0.06em;
+}
+.inv-title .company{
+  margin-top:8px;
+  font-size:var(--inv-font-body);
+  color:var(--inv-muted);
+  white-space:pre-wrap;
+}
+
+.inv-band{
+  margin-top:14px;
+  background:var(--inv-soft);
+  border-radius:10px;
+  padding:14px 16px;
+  display:grid;
+  grid-template-columns: 1fr 1fr;
+  gap:12px;
+}
+.inv-band h3{
+  margin:0 0 6px 0;
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:0.04em;
+}
+.inv-band .meta{
+  display:grid;
+  grid-template-columns: 1fr auto;
+  gap:6px 10px;
+  font-size:12px;
+  line-height:1.55;
+}
+.inv-band .meta .k{color:var(--inv-muted);}
+.inv-band .meta .v{
+  text-align:right;
+  font-size:var(--inv-font-strong);
+  font-weight:600;
+  letter-spacing:0.01em;
+}
+
+.inv-table{
+  margin-top:16px;
+  width:100%;
+  border-collapse:collapse;
+  font-size:var(--inv-font-body);
+  table-layout:fixed;
+}
+.inv-table th{
+  text-align:left;
+  color:var(--inv-muted);
+  font-weight:600;
+  padding:10px 10px;
+  border-bottom:1px solid var(--inv-border);
+  vertical-align:middle;
+  font-size:12px;
+}
+.inv-table td{
+  padding:12px 10px;
+  border-bottom:1px solid rgba(0,0,0,0.06);
+  vertical-align:middle;
+  font-weight:400;
+}
+.inv-table .num{
+  text-align:right;
+  white-space:nowrap;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  font-weight:500;
+}
+.inv-table .nowrap{white-space:nowrap;}
+.inv-table .desc{
+  word-break:break-word;
+  overflow-wrap:anywhere;
+  font-weight:400;
+}
+
+.inv-footer-grid{
+  margin-top:18px;
+  display:grid;
+  grid-template-columns: 1fr 0.9fr;
+  gap:18px;
+  align-items:start;
+}
+
+.inv-placeholder{
+  min-height: 1px;
+}
+
+.inv-payment-bottom{
+  margin-top: 18px;
+}
+
+.inv-card{
+  border:1px solid var(--inv-border);
+  border-radius:10px;
+  padding:12px 14px;
+}
+.inv-card h3{
+  margin:0 0 10px 0;
+  font-size:12px;
+  font-weight:700;
+  color:var(--inv-text);
+}
+.inv-card .text{
+  font-size:var(--inv-font-body);
+  line-height:1.6;
+  color:var(--inv-muted);
+  white-space:pre-wrap;
+  word-break:break-word;
+}
+
+.inv-summary{
+  width:100%;
+  border-collapse:collapse;
+  font-size:12px;
+}
+.inv-summary td{
+  padding:8px 0;
+  border-bottom:1px solid rgba(0,0,0,0.06);
+  vertical-align:middle;
+}
+.inv-summary td:last-child{
+  text-align:right;
+  white-space:nowrap;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  font-weight:600;
+  font-size:var(--inv-font-strong);
+}
+.inv-summary .strong{font-weight:700; color:var(--inv-text);}
+
+.inv-amount-due{
+  margin-top:14px;
+  background:var(--inv-soft);
+  border-radius:10px;
+  padding:12px 14px;
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-end;
+}
+.inv-amount-due .label{
+  font-size:12px;
+  font-weight:600;
+  color:var(--inv-muted);
+}
+.inv-amount-due .value{
+  font-size:var(--inv-font-amount);
+  font-weight:800;
+  letter-spacing:0.02em;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+.inv-amount-due .value .cur{
+  font-size:12px;
+  font-weight:700;
+  color:var(--inv-muted);
+  margin-left:6px;
+}
+
+.inv-watermark{
+  position:absolute;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  pointer-events:none;
+  opacity:0.08;
+  font-size:84px;
+  font-weight:800;
+  transform:rotate(-20deg);
+  letter-spacing:0.1em;
+  color:var(--inv-primary);
+}
+.inv-page-wrap{
+  position:relative;
+}
+
+.inv-badge{
+  display:inline-flex;
+  align-items:center;
+  padding:2px 8px;
+  border-radius:999px;
+  font-size:12px;
+  border:1px solid var(--inv-border);
+  color:var(--inv-muted);
+}
+.inv-badge.is-paid{
+  border-color:rgba(0,82,217,0.25);
+  color:var(--inv-primary);
+  background:rgba(0,82,217,0.06);
+}
+
+@media (max-width: 768px){
+  .inv-preview-wrap{padding:12px;}
+  .inv-sheet{border-radius:8px;}
+  .inv-page{padding:16px;}
+  .inv-header{grid-template-columns:1fr; gap:10px;}
+  .inv-title{text-align:left;}
+  .inv-band{grid-template-columns:1fr;}
+  .inv-footer-grid{grid-template-columns:1fr;}
+}
+
+@media print{
+  @page{ size:A4; margin:0; }
+  body{ background:#fff; }
+  .inv-preview-wrap{ padding:0; }
+  .inv-sheet{
+    width:var(--inv-a4-w);
+    min-height:var(--inv-a4-h);
+    border:none;
+    border-radius:0;
+    box-shadow:none;
+  }
+  .inv-page{
+    padding:var(--inv-margin);
+  }
+  *{
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
