@@ -1,6 +1,6 @@
 {
   "name": "mz-property-backend",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",

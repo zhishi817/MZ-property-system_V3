@@ -14,6 +14,8 @@ import { pgInsertOnConflictDoNothing, pgPool } from '../dbAdapter'
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
 const memUpload = multer({ storage: multer.memoryStorage() })
+const mergeMaxMb = Math.max(5, Math.min(200, Number(process.env.MERGE_PDF_MAX_MB || 50)))
+const mergeUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: mergeMaxMb * 1024 * 1024 } })
 
 function toReportCat(raw?: string, detail?: string): string {
   const v = String(raw||'').toLowerCase()
@@ -325,28 +327,98 @@ router.get('/expense-invoices/search', requireAnyPerm(['property_expenses.view',
 })
 
 // Merge monthly statement PDF with multiple invoice PDFs and return a single PDF
-router.post('/merge-pdf', requirePerm('finance.payout'), async (req, res) => {
+router.post(
+  '/merge-pdf',
+  requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']),
+  mergeUpload.single('statement'),
+  async (req: any, res: any) => {
   try {
     const { statement_pdf_base64, statement_pdf_url, invoice_urls } = req.body || {}
-    if (!statement_pdf_base64 && !statement_pdf_url) return res.status(400).json({ message: 'missing statement pdf' })
-    const urls: string[] = Array.isArray(invoice_urls) ? invoice_urls.filter((u: any) => typeof u === 'string') : []
+    const statementFile = (req as any).file as any
+    if (!statementFile?.buffer && !statement_pdf_base64 && !statement_pdf_url) return res.status(400).json({ message: 'missing statement pdf' })
+    let urls: string[] = []
+    if (Array.isArray(invoice_urls)) {
+      urls = invoice_urls.filter((u: any) => typeof u === 'string')
+    } else if (typeof invoice_urls === 'string') {
+      try {
+        const parsed = JSON.parse(invoice_urls)
+        if (Array.isArray(parsed)) urls = parsed.filter((u: any) => typeof u === 'string')
+        else if (typeof parsed === 'string') urls = [parsed]
+      } catch {
+        urls = invoice_urls.split(',').map(s => s.trim()).filter(Boolean)
+      }
+    }
+    const allowedHosts = (() => {
+      const hosts = new Set<string>()
+      const addHost = (h: string) => { if (h) hosts.add(h.toLowerCase()) }
+      try {
+        const apiBase = String(process.env.API_BASE || '')
+        if (apiBase) addHost(new URL(apiBase).host)
+      } catch {}
+      try {
+        const r2Base = String(process.env.R2_PUBLIC_BASE_URL || process.env.R2_PUBLIC_BASE || '')
+        if (r2Base) addHost(new URL(r2Base).host)
+      } catch {}
+      const reqHost = String(req.headers.host || '')
+      if (reqHost) addHost(reqHost)
+      return hosts
+    })()
+    function normalizeFetchUrl(input: string): string {
+      const raw = String(input || '').trim()
+      if (!raw) throw new Error('invalid url')
+      if (raw.startsWith('/')) {
+        const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http')
+        const host = String(req.headers.host || '')
+        if (!host) throw new Error('invalid host')
+        return `${proto}://${host}${raw}`
+      }
+      return raw
+    }
+    function assertAllowed(urlStr: string) {
+      const u = new URL(urlStr)
+      const proto = u.protocol.toLowerCase()
+      if (proto !== 'http:' && proto !== 'https:') throw new Error('invalid protocol')
+      const host = u.host.toLowerCase()
+      if (!allowedHosts.has(host)) throw new Error('disallowed host')
+    }
     async function fetchBytes(u: string): Promise<Uint8Array> {
-      const r = await fetch(u)
+      const url = normalizeFetchUrl(u)
+      assertAllowed(url)
+      const r = await fetch(url)
       if (!r.ok) throw new Error(`fetch failed: ${r.status}`)
       const ab = await r.arrayBuffer()
       return new Uint8Array(ab)
     }
     let merged = await PDFDocument.create()
     // append statement
-    if (statement_pdf_base64 && typeof statement_pdf_base64 === 'string') {
+    if (statementFile?.buffer && Buffer.isBuffer(statementFile.buffer)) {
+      let src: any
+      try {
+        src = await PDFDocument.load(new Uint8Array(statementFile.buffer))
+      } catch (e: any) {
+        return res.status(400).json({ message: `invalid statement pdf: ${String(e?.message || 'load failed')}` })
+      }
+      const copied = await merged.copyPages(src, src.getPageIndices())
+      copied.forEach(p => merged.addPage(p))
+    } else if (statement_pdf_base64 && typeof statement_pdf_base64 === 'string') {
       const b64 = statement_pdf_base64.replace(/^data:application\/pdf;base64,/, '')
       const bytes = Uint8Array.from(Buffer.from(b64, 'base64'))
-      const src = await PDFDocument.load(bytes)
+      let src: any
+      try {
+        src = await PDFDocument.load(bytes)
+      } catch (e: any) {
+        return res.status(400).json({ message: `invalid statement pdf: ${String(e?.message || 'load failed')}` })
+      }
       const copied = await merged.copyPages(src, src.getPageIndices())
       copied.forEach(p => merged.addPage(p))
     } else if (statement_pdf_url && typeof statement_pdf_url === 'string') {
       const bytes = await fetchBytes(statement_pdf_url)
-      const src = await PDFDocument.load(bytes)
+      let src: any
+      try {
+        src = await PDFDocument.load(bytes)
+      } catch (e: any) {
+        return res.status(400).json({ message: `invalid statement pdf: ${String(e?.message || 'load failed')}` })
+      }
       const copied = await merged.copyPages(src, src.getPageIndices())
       copied.forEach(p => merged.addPage(p))
     }
@@ -379,7 +451,16 @@ router.post('/merge-pdf', requirePerm('finance.payout'), async (req, res) => {
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'merge failed' })
   }
-})
+  },
+  (err: any, _req: any, res: any, _next: any) => {
+    const code = String(err?.code || '')
+    if (code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ message: `报表PDF过大（最大 ${mergeMaxMb}MB）` })
+    }
+    if (code) return res.status(400).json({ message: err?.message || `upload failed (${code})` })
+    return res.status(500).json({ message: err?.message || 'merge failed' })
+  }
+)
 
 router.post('/send-monthly', requirePerm('finance.payout'), (req, res) => {
   const { landlord_id, month } = req.body || {}

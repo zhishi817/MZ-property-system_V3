@@ -79,7 +79,9 @@ const corsOpts: cors.CorsOptions = {
 }
 app.use(cors(corsOpts))
 app.options('*', cors(corsOpts))
-app.use(express.json())
+const jsonLimit = String(process.env.JSON_BODY_LIMIT || '25mb')
+app.use(express.json({ limit: jsonLimit }))
+app.use(express.urlencoded({ extended: true, limit: jsonLimit }))
 app.use(morgan('dev'))
 // Health endpoints should NOT require auth
 app.get('/health', (req, res) => { res.json({ status: 'ok' }) })
