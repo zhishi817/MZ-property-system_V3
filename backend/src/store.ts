@@ -125,6 +125,16 @@ export type CompanyPayout = {
   status: 'pending' | 'paid'
 }
 
+export type PropertyRevenueStatus = {
+  id: string
+  property_id: string
+  month_key: string
+  scheduled_email_set: boolean
+  transferred: boolean
+  updated_at?: string
+  updated_by?: string
+}
+
 export type OrderInternalDeduction = {
   id: string
   order_id: string
@@ -212,6 +222,7 @@ export const db = {
   financeTransactions: [] as FinanceTransaction[],
   payouts: [] as Payout[],
   companyPayouts: [] as CompanyPayout[],
+  propertyRevenueStatuses: [] as PropertyRevenueStatus[],
   expenseInvoices: [] as ExpenseInvoice[],
   orderInternalDeductions: [] as OrderInternalDeduction[],
   users: [] as { id: string; email: string; username?: string; role: string; password_hash?: string }[],

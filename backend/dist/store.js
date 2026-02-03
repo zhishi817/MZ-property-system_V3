@@ -24,6 +24,7 @@ exports.db = {
     financeTransactions: [],
     payouts: [],
     companyPayouts: [],
+    propertyRevenueStatuses: [],
     expenseInvoices: [],
     orderInternalDeductions: [],
     users: [],

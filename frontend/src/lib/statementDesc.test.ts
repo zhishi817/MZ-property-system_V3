@@ -6,6 +6,10 @@ describe('normalizeStatementPunctuation', () => {
     expect(normalizeStatementPunctuation('维修、清洁 、 更换', 'zh')).toBe('维修、清洁、更换')
   })
 
+  it('converts Chinese list punctuation to slash when preferred joiner is slash', () => {
+    expect(normalizeStatementPunctuation('维修、清洁 、 更换', 'zh', '/')).toBe('维修/清洁/更换')
+  })
+
   it('converts Chinese list punctuation to English comma in en mode', () => {
     expect(normalizeStatementPunctuation('Lockbox storage fee、Cleaning of filter，Replacement', 'en')).toBe('Lockbox storage fee, Cleaning of filter, Replacement')
   })
@@ -26,6 +30,12 @@ describe('formatStatementDesc', () => {
     expect(out.full.includes('、')).toBe(true)
     expect(out.text.endsWith('…')).toBe(true)
     expect(out.text.length).toBeGreaterThan(0)
+  })
+
+  it('formats Chinese text with slash joiner when provided', () => {
+    const items = ['事项A', '事项B', '事项C']
+    const out = formatStatementDesc({ items, lang: 'zh', joiner: '/' })
+    expect(out.full).toBe('事项A/事项B/事项C')
   })
 
   it('converts 、 to English punctuation in en mode', () => {

@@ -50,3 +50,102 @@
 .tableOuter :global(.ant-table-tbody > tr > td) {
   padding: 6px 8px;
 }
+
+.opBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+}
+
+.statusGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 220px;
+}
+
+.statusItem {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.actionGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.toggleBtn {
+  border-radius: 10px;
+  height: 32px;
+  padding: 0 12px;
+  font-weight: 500;
+  transition: background-color 180ms ease, border-color 180ms ease, transform 120ms ease, box-shadow 180ms ease;
+  will-change: transform;
+}
+
+.toggleBtn:active {
+  transform: scale(0.99);
+}
+
+.toggleBtnOff {
+  background: #fff;
+  border-color: #91caff;
+  color: #1677ff;
+}
+
+.toggleBtnOn {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(22, 163, 74, 0.22);
+}
+
+.toggleBtnNeutral {
+  background: #fff;
+  border-color: #d9d9d9;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+:global(.ant-btn).toggleBtn {
+  border-radius: 10px !important;
+  height: 32px !important;
+  padding: 0 12px !important;
+  border-width: 1px !important;
+}
+
+:global(.ant-btn).toggleBtnOff {
+  background: #fff !important;
+  border-color: #91caff !important;
+  color: #1677ff !important;
+}
+
+:global(.ant-btn).toggleBtnOn {
+  background: #16a34a !important;
+  border-color: #16a34a !important;
+  color: #fff !important;
+  box-shadow: 0 6px 18px rgba(22, 163, 74, 0.22) !important;
+}
+
+:global(.ant-btn).toggleBtnNeutral {
+  background: #fff !important;
+  border-color: #d9d9d9 !important;
+  color: rgba(0, 0, 0, 0.88) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toggleBtn { transition: none; }
+}
+
+@media (max-width: 768px) {
+  .statusGroup { flex-basis: 100%; min-width: 0; }
+  .actionGroup { flex-basis: 100%; }
+}

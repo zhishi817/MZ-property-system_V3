@@ -255,6 +255,20 @@ CREATE TABLE IF NOT EXISTS payouts (
 );
 CREATE INDEX IF NOT EXISTS idx_payouts_landlord ON payouts(landlord_id);
 
+CREATE TABLE IF NOT EXISTS property_revenue_statuses (
+  id text PRIMARY KEY,
+  property_id text REFERENCES properties(id) ON DELETE CASCADE,
+  month_key text NOT NULL,
+  scheduled_email_set boolean DEFAULT false,
+  transferred boolean DEFAULT false,
+  updated_at timestamptz DEFAULT now(),
+  updated_by text,
+  created_at timestamptz DEFAULT now(),
+  UNIQUE(property_id, month_key)
+);
+CREATE INDEX IF NOT EXISTS idx_property_revenue_statuses_month ON property_revenue_statuses(month_key);
+CREATE INDEX IF NOT EXISTS idx_property_revenue_statuses_property ON property_revenue_statuses(property_id);
+
 -- Email sync run metrics
 CREATE TABLE IF NOT EXISTS email_sync_runs (
   id bigserial PRIMARY KEY,

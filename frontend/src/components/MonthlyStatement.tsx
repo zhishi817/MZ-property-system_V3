@@ -163,6 +163,7 @@ export default forwardRef<HTMLDivElement, {
   const otherExpenseDescFmt = formatStatementDesc({
     items: otherItems,
     lang: showChinese ? 'zh' : 'en',
+    ...(showChinese ? { joiner: '/' } : {}),
   })
   const totalExpense = (managementFee + catElectricity + catWater + catGas + catInternet + catConsumable + catCarpark + catOwnerCorp + catCouncil + catOther)
   const balance = (propertyId ? computeMonthlyStatementBalance({

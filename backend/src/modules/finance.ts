@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { db, FinanceTransaction, Payout, CompanyPayout, addAudit } from '../store'
+import { db, FinanceTransaction, Payout, CompanyPayout, PropertyRevenueStatus, addAudit } from '../store'
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
@@ -391,6 +391,122 @@ router.post('/send-annual', requirePerm('finance.payout'), (req, res) => {
   const { landlord_id, year } = req.body || {}
   if (!landlord_id || !year) return res.status(400).json({ message: 'missing landlord_id or year' })
   res.json({ ok: true })
+})
+
+const revenueStatusGetMonthRe = /^\d{4}-\d{2}$/
+router.get('/property-revenue-status', async (req, res) => {
+  try {
+    const from = String((req.query as any)?.from || '')
+    const to = String((req.query as any)?.to || '')
+    const property_id = String((req.query as any)?.property_id || '')
+    const hasRange = !!(from && to)
+    if (hasRange && (!revenueStatusGetMonthRe.test(from) || !revenueStatusGetMonthRe.test(to))) {
+      return res.status(400).json({ message: 'invalid month range' })
+    }
+    if (hasPg) {
+      const wh: string[] = []
+      const vals: any[] = []
+      if (hasRange) {
+        wh.push(`month_key >= $${vals.length + 1} AND month_key <= $${vals.length + 2}`)
+        vals.push(from, to)
+      }
+      if (property_id) {
+        wh.push(`property_id = $${vals.length + 1}`)
+        vals.push(property_id)
+      }
+      const where = wh.length ? `WHERE ${wh.join(' AND ')}` : ''
+      const sql = `SELECT * FROM property_revenue_statuses ${where} ORDER BY month_key ASC`
+      const rs = await pgPool!.query(sql, vals)
+      return res.json(rs.rows || [])
+    }
+    const list = db.propertyRevenueStatuses || []
+    const filtered = list.filter((r) => {
+      if (property_id && String(r.property_id) !== property_id) return false
+      if (hasRange && (String(r.month_key) < from || String(r.month_key) > to)) return false
+      return true
+    })
+    filtered.sort((a, b) => String(a.month_key).localeCompare(String(b.month_key)))
+    return res.json(filtered)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'get status failed' })
+  }
+})
+
+const revenueStatusPatchSchema = z.object({
+  property_id: z.string().min(1),
+  month_key: z.string().regex(revenueStatusGetMonthRe),
+  scheduled_email_set: z.boolean().optional(),
+  transferred: z.boolean().optional(),
+})
+router.patch('/property-revenue-status', requirePerm('finance.payout'), async (req, res) => {
+  const parsed = revenueStatusPatchSchema.safeParse(req.body || {})
+  if (!parsed.success) {
+    const msg = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ')
+    return res.status(400).json({ message: msg || 'invalid payload' })
+  }
+  const actor = String((req as any)?.user?.sub || '')
+  try {
+    const nowIso = new Date().toISOString()
+    const { property_id, month_key, scheduled_email_set, transferred } = parsed.data
+    if (hasPg) {
+      const exists = await pgSelect('property_revenue_statuses', '*', { property_id, month_key })
+      const before = Array.isArray(exists) ? exists[0] : null
+      if (before?.id) {
+        const updated: any = {
+          scheduled_email_set: scheduled_email_set ?? before.scheduled_email_set ?? false,
+          transferred: transferred ?? before.transferred ?? false,
+          updated_at: nowIso,
+          updated_by: actor || null,
+        }
+        const row = await pgUpdate('property_revenue_statuses', String(before.id), updated)
+        try { addAudit('PropertyRevenueStatus', String(before.id), 'update', before, row || { ...before, ...updated }, actor || undefined) } catch {}
+        return res.json(row || { ...before, ...updated })
+      }
+      const id = require('uuid').v4()
+      const created: PropertyRevenueStatus = {
+        id,
+        property_id,
+        month_key,
+        scheduled_email_set: scheduled_email_set ?? false,
+        transferred: transferred ?? false,
+        updated_at: nowIso,
+        updated_by: actor || undefined,
+      }
+      const row = await pgInsert('property_revenue_statuses', created as any)
+      try { addAudit('PropertyRevenueStatus', id, 'create', null, row || created, actor || undefined) } catch {}
+      return res.status(201).json(row || created)
+    }
+    const list = db.propertyRevenueStatuses || (db.propertyRevenueStatuses = [])
+    const idx = list.findIndex(r => String(r.property_id) === property_id && String(r.month_key) === month_key)
+    if (idx >= 0) {
+      const before = list[idx]
+      const after: PropertyRevenueStatus = {
+        ...before,
+        scheduled_email_set: scheduled_email_set ?? before.scheduled_email_set ?? false,
+        transferred: transferred ?? before.transferred ?? false,
+        updated_at: nowIso,
+        updated_by: actor || undefined,
+      }
+      list[idx] = after
+      try { addAudit('PropertyRevenueStatus', String(after.id), 'update', before, after, actor || undefined) } catch {}
+      return res.json(after)
+    }
+    const id = require('uuid').v4()
+    const created: PropertyRevenueStatus = {
+      id,
+      property_id,
+      month_key,
+      scheduled_email_set: scheduled_email_set ?? false,
+      transferred: transferred ?? false,
+      updated_at: nowIso,
+      updated_by: actor || undefined,
+    }
+    list.push(created)
+    try { addAudit('PropertyRevenueStatus', id, 'create', null, created, actor || undefined) } catch {}
+    return res.status(201).json(created)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'update status failed' })
+  }
 })
 
 // Property revenue aggregated by fixed expenses report_category and order income
