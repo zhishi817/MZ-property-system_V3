@@ -109,6 +109,194 @@ exports.router.post('/roles', (0, auth_1.requirePerm)('rbac.manage'), async (req
         return res.status(500).json({ message: e.message });
     }
 });
+const roleUpdateSchema = zod_1.z.object({
+    name: zod_1.z.string().min(1).max(64).optional().transform((s) => (typeof s === 'string' ? s.trim() : s)),
+    description: zod_1.z.string().max(200).optional().transform((s) => (typeof s === 'string' ? s.trim() : s)),
+});
+exports.router.patch('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+    var _a, _b;
+    const parsed = roleUpdateSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json(parsed.error.format());
+    const reqId = String(req.params.id || '').trim();
+    if (!reqId)
+        return res.status(400).json({ message: 'id required' });
+    const normalizedId = reqId.startsWith('role.') ? reqId : `role.${reqId}`;
+    const altId = reqId.startsWith('role.') ? reqId.replace(/^role\./, '') : reqId;
+    const nextName = parsed.data.name;
+    if (nextName && !/^[a-z][a-z0-9_]*$/i.test(nextName)) {
+        return res.status(400).json({ message: '角色名仅支持字母/数字/下划线，且需以字母开头' });
+    }
+    try {
+        if (dbAdapter_1.hasPg) {
+            await ensureRolesTable();
+            const { pgPool } = require('../dbAdapter');
+            if (!pgPool)
+                return res.status(500).json({ message: 'database not available' });
+            const found = await pgPool.query('SELECT * FROM roles WHERE id = $1 OR id = $2 LIMIT 1', [normalizedId, altId]);
+            const old = (_a = found === null || found === void 0 ? void 0 : found.rows) === null || _a === void 0 ? void 0 : _a[0];
+            if (!old)
+                return res.status(404).json({ message: '角色不存在' });
+            const oldId = String(old.id);
+            const oldName = String(old.name);
+            const newName = nextName ? String(nextName) : oldName;
+            const newId = nextName ? `role.${newName}` : oldId;
+            const payload = {};
+            if (parsed.data.description !== undefined)
+                payload.description = parsed.data.description;
+            if (nextName)
+                payload.name = newName;
+            if (!Object.keys(payload).length && newId === oldId)
+                return res.json(old);
+            const client = await pgPool.connect();
+            try {
+                await client.query('BEGIN');
+                if (newId !== oldId) {
+                    await client.query('UPDATE roles SET id=$1, name=$2, description=$3 WHERE id=$4', [
+                        newId,
+                        newName,
+                        parsed.data.description !== undefined ? parsed.data.description : old.description,
+                        oldId,
+                    ]);
+                    try {
+                        await client.query('UPDATE users SET role=$1 WHERE role=$2', [newName, oldName]);
+                    }
+                    catch (_c) { }
+                    try {
+                        await client.query('UPDATE role_permissions SET role_id=$1 WHERE role_id=$2 OR role_id=$3 OR role_id=$4', [newId, oldId, oldId.replace(/^role\./, ''), oldName]);
+                    }
+                    catch (_d) { }
+                }
+                else {
+                    const nextDesc = parsed.data.description !== undefined ? parsed.data.description : old.description;
+                    await client.query('UPDATE roles SET name=$1, description=$2 WHERE id=$3', [newName, nextDesc, oldId]);
+                }
+                const after = await client.query('SELECT * FROM roles WHERE id = $1 LIMIT 1', [newId]);
+                await client.query('COMMIT');
+                return res.json(((_b = after === null || after === void 0 ? void 0 : after.rows) === null || _b === void 0 ? void 0 : _b[0]) || { ...old, ...payload, id: newId, name: newName });
+            }
+            catch (e) {
+                try {
+                    await client.query('ROLLBACK');
+                }
+                catch (_e) { }
+                const code = String((e === null || e === void 0 ? void 0 : e.code) || '');
+                const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+                if (code === '23505' || /duplicate key value|unique constraint/i.test(msg))
+                    return res.status(409).json({ message: '角色名已存在' });
+                return res.status(500).json({ message: msg || '更新失败' });
+            }
+            finally {
+                client.release();
+            }
+        }
+    }
+    catch (e) {
+        return res.status(500).json({ message: e.message });
+    }
+    const idx = store_1.db.roles.findIndex((r) => r.id === normalizedId || r.id === altId || r.name === altId);
+    if (idx < 0)
+        return res.status(404).json({ message: '角色不存在' });
+    const old = store_1.db.roles[idx];
+    const oldId = old.id;
+    const oldName = old.name;
+    const newName = nextName ? String(nextName) : oldName;
+    const newId = nextName ? `role.${newName}` : oldId;
+    if (newId !== oldId && store_1.db.roles.some((r, i) => i !== idx && (r.id === newId || r.name === newName)))
+        return res.status(409).json({ message: '角色名已存在' });
+    store_1.db.roles[idx] = { ...old, id: newId, name: newName, description: parsed.data.description !== undefined ? parsed.data.description : old.description };
+    if (newId !== oldId) {
+        store_1.db.rolePermissions = store_1.db.rolePermissions.map((rp) => ((rp.role_id === oldId || rp.role_id === oldId.replace(/^role\./, '') || rp.role_id === oldName) ? { ...rp, role_id: newId } : rp));
+        try {
+            (0, persistence_1.saveRolePermissions)(store_1.db.rolePermissions);
+        }
+        catch (_f) { }
+    }
+    try {
+        (0, persistence_1.saveRoles)(store_1.db.roles);
+    }
+    catch (_g) { }
+    return res.json(store_1.db.roles[idx]);
+});
+exports.router.delete('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+    var _a, _b, _c;
+    const reqId = String(req.params.id || '').trim();
+    if (!reqId)
+        return res.status(400).json({ message: 'id required' });
+    const normalizedId = reqId.startsWith('role.') ? reqId : `role.${reqId}`;
+    const altId = reqId.startsWith('role.') ? reqId.replace(/^role\./, '') : reqId;
+    try {
+        if (dbAdapter_1.hasPg) {
+            await ensureRolesTable();
+            const { pgPool } = require('../dbAdapter');
+            if (!pgPool)
+                return res.status(500).json({ message: 'database not available' });
+            const found = await pgPool.query('SELECT * FROM roles WHERE id = $1 OR id = $2 LIMIT 1', [normalizedId, altId]);
+            const role = (_a = found === null || found === void 0 ? void 0 : found.rows) === null || _a === void 0 ? void 0 : _a[0];
+            if (!role)
+                return res.status(404).json({ message: '角色不存在' });
+            const roleId = String(role.id || '');
+            const roleName = String(role.name || '');
+            if (roleId === 'role.admin' || roleName === 'admin')
+                return res.status(400).json({ message: 'admin 角色不可删除' });
+            try {
+                const cntRes = await pgPool.query('SELECT COUNT(*)::int AS cnt FROM users WHERE role = $1', [roleName]);
+                const cnt = Number(((_c = (_b = cntRes === null || cntRes === void 0 ? void 0 : cntRes.rows) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.cnt) || 0);
+                if (cnt > 0)
+                    return res.status(409).json({ message: `该角色仍被 ${cnt} 个用户使用，无法删除` });
+            }
+            catch (_d) { }
+            const variants = Array.from(new Set([roleId, roleId.replace(/^role\./, ''), roleName, normalizedId, altId].filter(Boolean)));
+            const client = await pgPool.connect();
+            try {
+                await client.query('BEGIN');
+                try {
+                    await client.query('DELETE FROM role_permissions WHERE role_id = ANY($1)', [variants]);
+                }
+                catch (_e) { }
+                await client.query('DELETE FROM roles WHERE id = $1', [roleId]);
+                await client.query('COMMIT');
+                return res.json({ ok: true });
+            }
+            catch (e) {
+                try {
+                    await client.query('ROLLBACK');
+                }
+                catch (_f) { }
+                return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'delete failed' });
+            }
+            finally {
+                client.release();
+            }
+        }
+    }
+    catch (e) {
+        return res.status(500).json({ message: e.message });
+    }
+    const idx = store_1.db.roles.findIndex((r) => r.id === normalizedId || r.id === altId || r.name === altId);
+    if (idx < 0)
+        return res.status(404).json({ message: '角色不存在' });
+    const role = store_1.db.roles[idx];
+    const roleId = String(role.id || '');
+    const roleName = String(role.name || '');
+    if (roleId === 'role.admin' || roleName === 'admin')
+        return res.status(400).json({ message: 'admin 角色不可删除' });
+    const cnt = (store_1.db.users || []).filter((u) => String((u === null || u === void 0 ? void 0 : u.role) || '') === roleName).length;
+    if (cnt > 0)
+        return res.status(409).json({ message: `该角色仍被 ${cnt} 个用户使用，无法删除` });
+    const variants = new Set([roleId, roleId.replace(/^role\./, ''), roleName, normalizedId, altId].filter(Boolean));
+    store_1.db.rolePermissions = store_1.db.rolePermissions.filter((rp) => !variants.has(String(rp.role_id || '')));
+    store_1.db.roles.splice(idx, 1);
+    try {
+        (0, persistence_1.saveRolePermissions)(store_1.db.rolePermissions);
+    }
+    catch (_g) { }
+    try {
+        (0, persistence_1.saveRoles)(store_1.db.roles);
+    }
+    catch (_h) { }
+    return res.json({ ok: true });
+});
 exports.router.get('/permissions', (req, res) => {
     res.json(store_1.db.permissions.map((p) => {
         const code = String(p.code || '');
@@ -280,6 +468,43 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
     }
     catch (_d) { }
     res.json({ ok: true });
+});
+exports.router.delete('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+    var _a;
+    const role_id = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.role_id) || '').trim();
+    if (!role_id)
+        return res.status(400).json({ message: 'role_id required' });
+    const normalizedId = role_id.startsWith('role.') ? role_id : `role.${role_id}`;
+    const altId = role_id.startsWith('role.') ? role_id.replace(/^role\./, '') : role_id;
+    try {
+        if (dbAdapter_1.hasPg) {
+            const { pgPool } = require('../dbAdapter');
+            if (!pgPool)
+                return res.status(500).json({ message: 'database not available' });
+            try {
+                await pgPool.query(`CREATE TABLE IF NOT EXISTS role_permissions (
+          id text PRIMARY KEY,
+          role_id text NOT NULL,
+          permission_code text NOT NULL,
+          created_at timestamptz DEFAULT now()
+        );`);
+                await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_role_perm ON role_permissions(role_id, permission_code);');
+            }
+            catch (_b) { }
+            await pgPool.query('DELETE FROM role_permissions WHERE role_id = $1 OR role_id = $2', [normalizedId, altId]);
+            return res.json({ ok: true });
+        }
+    }
+    catch (e) {
+        return res.status(500).json({ message: e.message });
+    }
+    store_1.db.rolePermissions = store_1.db.rolePermissions.filter((rp) => rp.role_id !== normalizedId && rp.role_id !== altId);
+    try {
+        if (!dbAdapter_1.hasPg)
+            (0, persistence_1.saveRolePermissions)(store_1.db.rolePermissions);
+    }
+    catch (_c) { }
+    return res.json({ ok: true });
 });
 // current user's permissions
 exports.router.get('/my-permissions', auth_1.auth, async (req, res) => {

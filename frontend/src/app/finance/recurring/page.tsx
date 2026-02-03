@@ -7,8 +7,9 @@ import timezone from 'dayjs/plugin/timezone'
 import { useEffect, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
+import { shouldAutoMarkPaidForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
 
-type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; is_paid?: boolean; created_at?: string }
+type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; is_paid?: boolean; created_at?: string }
 type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
 type Property = { id: string; code?: string; address?: string; region?: string }
 
@@ -123,7 +124,7 @@ export default function RecurringPage() {
     { title:'操作', key:'ops', render:(_:any,r:Recurring)=> (
       <Space>
         <Button onClick={()=>{ setViewing(r); setViewOpen(true) }}>查看</Button>
-        <Button onClick={()=>{ setEditing(r); setOpen(true); form.setFieldsValue({ ...r, frequency_months: r.frequency_months ?? 1 }) }}>编辑</Button>
+        <Button onClick={()=>{ const sm = (r as any).start_month_key ? dayjs.tz(`${String((r as any).start_month_key)}-01`, 'YYYY-MM-DD', 'Australia/Melbourne') : nowAU().startOf('month'); setEditing(r); setOpen(true); form.setFieldsValue({ ...r, start_month: sm, frequency_months: r.frequency_months ?? 1 }) }}>编辑</Button>
         {(r.payment_type === 'rent_deduction') ? null : (r.is_paid ? (
           <Button onClick={async ()=>{
             try {
@@ -194,6 +195,7 @@ export default function RecurringPage() {
   ]
 
   const m = month || nowAU()
+  const currentMonthKey = nowAU().format('YYYY-MM')
   function computeNextDue(r: Recurring): string | undefined {
     if (r.payment_type === 'rent_deduction') return undefined
     if (r.next_due_date) return r.next_due_date
@@ -228,7 +230,8 @@ export default function RecurringPage() {
   const templatesForMonth = enhanced.filter(t => {
     const inMonth = inSelectedMonth(dueForSelectedMonth(t))
     const include = (t as any).payment_type === 'rent_deduction' ? true : inMonth
-    return include
+    const startKey = String((t as any).start_month_key || '')
+    return include && shouldIncludeForMonth(startKey || undefined, monthKey)
   })
   const allRowsBase = templatesForMonth
     .map(t => {
@@ -273,12 +276,25 @@ export default function RecurringPage() {
       if (snapKey === monthKey) return
       const tasks = templatesForMonth.map(async (t)=>{
         const e = expByFixed[String(t.id)]
-        if (e) return
+        const startKey = String((t as any).start_month_key || '')
+        if (e) {
+          if (shouldAutoMarkPaidForMonth(startKey || undefined, monthKey, currentMonthKey) && String(e.status || '') !== 'paid') {
+            const resType = (t.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
+            const dueDay = Number(t.due_day_of_month || 1)
+            const dim = m.endOf('month').date()
+            const dueISO = m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
+            try {
+              await fetch(`${API_BASE}/crud/${resType}/${e.id}`, { method:'PATCH', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ status:'paid', paid_date: dueISO, due_date: dueISO }) })
+            } catch {}
+          }
+          return
+        }
         const resType = (t.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
         const dueDay = Number(t.due_day_of_month || 1)
         const dim = m.endOf('month').date()
         const dueISO = m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
-        const body = { occurred_at: dueISO, amount: Number(t.amount||0), currency: 'AUD', category: t.category || 'other', note: 'Fixed payment snapshot', fixed_expense_id: t.id, month_key: monthKey, due_date: dueISO, status: 'unpaid', property_id: t.property_id }
+        const autoPaid = shouldAutoMarkPaidForMonth(startKey || undefined, monthKey, currentMonthKey)
+        const body = { occurred_at: dueISO, amount: Number(t.amount||0), currency: 'AUD', category: t.category || 'other', note: 'Fixed payment snapshot', fixed_expense_id: t.id, month_key: monthKey, due_date: dueISO, status: autoPaid ? 'paid' : 'unpaid', paid_date: autoPaid ? dueISO : null, property_id: t.property_id }
         try {
           const qs = new URLSearchParams({ fixed_expense_id: String(t.id), month_key: monthKey })
           const existingRes = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
@@ -302,7 +318,9 @@ export default function RecurringPage() {
     if (saving) return
     setSaving(true)
     const v = await form.validateFields()
-    const payload = { ...v, report_category: (v.scope==='property' ? (v.report_category || defaultReportCategoryByName(v.category)) : undefined), amount: v.amount!=null?Number(v.amount):undefined, frequency_months: v.frequency_months!=null?Number(v.frequency_months):undefined }
+    const startMonthKey = v.start_month ? dayjs(v.start_month).format('YYYY-MM') : undefined
+    const payload = { ...v, start_month_key: startMonthKey, report_category: (v.scope==='property' ? (v.report_category || defaultReportCategoryByName(v.category)) : undefined), amount: v.amount!=null?Number(v.amount):undefined, frequency_months: v.frequency_months!=null?Number(v.frequency_months):undefined }
+    delete (payload as any).start_month
     try {
       if (editing) {
         const url = `${API_BASE}/recurring/payments/${editing.id}`
@@ -314,42 +332,11 @@ export default function RecurringPage() {
         setOpen(false); setEditing(null); form.resetFields(); await load(); await refreshMonth()
       } else {
         const newId = crypto.randomUUID()
-        const body = { id: newId, ...payload }
-        const res = await fetch(`${API_BASE}/crud/recurring_payments`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(body) })
+        const startKey = String(startMonthKey || '')
+        const initMark = (startKey && startKey > currentMonthKey) ? 'unpaid' : String(v.initial_mark || 'unpaid')
+        const body = { id: newId, ...payload, initial_mark: initMark }
+        const res = await fetch(`${API_BASE}/recurring/payments`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(body) })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        if (v.initial_mark === 'paid') {
-          const todayISO = nowAU().format('YYYY-MM-DD')
-          const dueDay = Number(v.due_day_of_month || 1)
-          const dim = m.endOf('month').date()
-          const dueISO = m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
-          const baseBody = { occurred_at: todayISO, amount: Number(v.amount||0), currency: 'AUD', category: v.category || 'other', note: 'Monthly fixed payment', fixed_expense_id: newId, month_key: m.format('YYYY-MM'), due_date: dueISO, paid_date: todayISO, status: 'paid', property_id: v.property_id }
-          const resType = (v.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
-          let exists = false
-          if (resType === 'property_expenses') {
-            const qs1 = new URLSearchParams({ property_id: String(v.property_id||''), month_key: m.format('YYYY-MM'), category: String(v.category||'other'), amount: String(Number(v.amount||0)) })
-            const r1 = await fetch(`${API_BASE}/crud/${resType}?${qs1.toString()}`, { headers: authHeaders() })
-            const a1 = r1.ok ? await r1.json().catch(()=>[]) : []
-            exists = Array.isArray(a1) && a1.length > 0
-            if (!exists) {
-              const qs2 = new URLSearchParams({ property_id: String(v.property_id||''), occurred_at: todayISO, category: String(v.category||'other'), amount: String(Number(v.amount||0)), note: String(baseBody.note||'') })
-              const r2 = await fetch(`${API_BASE}/crud/${resType}?${qs2.toString()}`, { headers: authHeaders() })
-              const a2 = r2.ok ? await r2.json().catch(()=>[]) : []
-              exists = Array.isArray(a2) && a2.length > 0
-            }
-          } else {
-            const qs3 = new URLSearchParams({ occurred_at: todayISO, category: String(v.category||'other'), amount: String(Number(v.amount||0)), note: String(baseBody.note||'') })
-            const r3 = await fetch(`${API_BASE}/crud/${resType}?${qs3.toString()}`, { headers: authHeaders() })
-            const a3 = r3.ok ? await r3.json().catch(()=>[]) : []
-            exists = Array.isArray(a3) && a3.length > 0
-          }
-          if (!exists) {
-            const respCur = await fetch(`${API_BASE}/crud/${resType}`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(baseBody) })
-            if (!respCur.ok && respCur.status !== 409) {
-              const errMsg = await respCur.text().catch(()=> '')
-              console.error('POST fixed expense failed', m.format('YYYY-MM'), respCur.status, errMsg)
-            }
-          }
-        }
         setOpen(false); setEditing(null); form.resetFields(); await load(); await refreshMonth()
       }
     } catch (e:any) {
@@ -361,7 +348,7 @@ export default function RecurringPage() {
   // removed normalization side-effect; display uses selected-month computation
 
   return (
-    <Card title="固定支出" extra={<Space><DatePicker picker="month" value={month} onChange={(v)=> setMonth(v || dayjs())} /><Input allowClear placeholder="按房号搜索" value={searchText} onChange={(e)=> setSearchText(e.target.value)} style={{ width: 220 }} /><Button type="primary" onClick={()=>{ setEditing(null); form.resetFields(); setOpen(true) }}>新增固定支出</Button></Space>}>
+    <Card title="固定支出" extra={<Space><DatePicker picker="month" value={month} onChange={(v)=> setMonth(v || dayjs())} /><Input allowClear placeholder="按房号搜索" value={searchText} onChange={(e)=> setSearchText(e.target.value)} style={{ width: 220 }} /><Button type="primary" onClick={()=>{ setEditing(null); form.resetFields(); form.setFieldsValue({ start_month: nowAU().startOf('month'), initial_mark: 'unpaid', frequency_months: 1, status: 'active', payment_type: 'bank_account' }); setOpen(true) }}>新增固定支出</Button></Space>}>
       <div className="stats-grid">
         <Card><Statistic title="本月未付总额" value={unpaidAmount} prefix="$" precision={2} /></Card>
         <Card><Statistic title="本月已付总额" value={paidAmount} prefix="$" precision={2} /></Card>
@@ -481,6 +468,29 @@ export default function RecurringPage() {
           <Divider orientation="left">支付与周期</Divider>
           <Row gutter={16}>
             <Col span={12}>
+              <Form.Item
+                name="start_month"
+                label="起始月份"
+                rules={[{ required: true, message: '请选择起始月份' }]}
+              >
+                <DatePicker picker="month" style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Form.Item noStyle shouldUpdate={(prev, cur) => prev.start_month !== cur.start_month}>
+              {() => {
+                const sm = form.getFieldValue('start_month')
+                const mk = sm ? dayjs(sm).format('YYYY-MM') : ''
+                const isFuture = !!mk && mk > currentMonthKey
+                return (
+                  <Col span={12}>
+                    <div style={{ height: 62, display: 'flex', alignItems: 'flex-end', paddingBottom: 4, color: isFuture ? '#fa8c16' : '#888' }}>
+                      {isFuture ? '起始月份为未来月：不会自动标记历史月份，新增后状态固定为待支付' : '起始月份之前不生成记录；若起始月份在过去，历史月份将自动标记为已支付'}
+                    </div>
+                  </Col>
+                )
+              }}
+            </Form.Item>
+            <Col span={12}>
               <Form.Item name="amount" label="金额"><InputNumber min={0} step={1} style={{ width:'100%' }} /></Form.Item>
             </Col>
             <Col span={12}>
@@ -504,7 +514,19 @@ export default function RecurringPage() {
             </Col>
             {editing ? null : (
               <Col span={12}>
-                <Form.Item name="initial_mark" label="新增后状态" initialValue="unpaid"><Select options={[{value:'unpaid',label:'待支付'},{value:'paid',label:'已支付'}]} /></Form.Item>
+                <Form.Item noStyle shouldUpdate={(prev, cur) => prev.start_month !== cur.start_month}>
+                  {() => {
+                    const sm = form.getFieldValue('start_month')
+                    const mk = sm ? dayjs(sm).format('YYYY-MM') : ''
+                    const isFuture = !!mk && mk > currentMonthKey
+                    if (isFuture) form.setFieldsValue({ initial_mark: 'unpaid' })
+                    return (
+                      <Form.Item name="initial_mark" label="新增后状态" initialValue="unpaid">
+                        <Select disabled={isFuture} options={[{ value: 'unpaid', label: '待支付' }, { value: 'paid', label: '已支付' }]} />
+                      </Form.Item>
+                    )
+                  }}
+                </Form.Item>
               </Col>
             )}
           </Row>
