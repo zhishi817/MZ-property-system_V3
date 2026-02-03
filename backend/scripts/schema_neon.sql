@@ -414,6 +414,9 @@ CREATE INDEX IF NOT EXISTS idx_company_incomes_date ON company_incomes(occurred_
 CREATE INDEX IF NOT EXISTS idx_company_incomes_cat ON company_incomes(category);
 ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_company_incomes_property ON company_incomes(property_id);
+ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_type text;
+ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_id text;
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_incomes_ref ON company_incomes(category, ref_type, ref_id);
 
 CREATE TABLE IF NOT EXISTS property_incomes (
   id text PRIMARY KEY,

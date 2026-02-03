@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { db, FinanceTransaction, Payout, CompanyPayout, PropertyRevenueStatus, addAudit } from '../store'
-import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
+import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
 import { hasR2, r2Upload } from '../r2'
@@ -60,54 +60,73 @@ router.post('/', requirePerm('finance.tx.write'), async (req, res) => {
   addAudit('FinanceTransaction', tx.id, 'create', null, tx)
   if (hasPg) {
     try {
-      const cat0 = String((tx as any).category || '').toLowerCase()
-      if (String(tx.kind) === 'income' && cat0 === 'cancel_fee' && String((tx as any).ref_type || '') === 'order' && String((tx as any).ref_id || '')) {
-        const dup = await pgSelect('finance_transactions', '*', { ref_type: 'order', ref_id: String((tx as any).ref_id), category: 'cancel_fee' })
-        if (Array.isArray(dup) && dup[0]) {
-          return res.status(200).json(dup[0])
+      const result = await pgRunInTransaction(async (client) => {
+        function normalizeStatus(raw: any): string { return String(raw || '').trim().toLowerCase() }
+        function isCanceledStatus(raw: any): boolean {
+          const s = normalizeStatus(raw)
+          return s === 'canceled' || s === 'cancelled'
         }
-      }
-      const row = await pgInsert('finance_transactions', tx as any)
-      try {
-        const cat = String((tx as any).category || '').toLowerCase()
-        if (String(tx.kind) === 'income' && (cat === 'cancel_fee' || cat === 'late_checkout' || cat === 'other' || cat === 'cleaning_fee' || cat === 'mgmt_fee')) {
-          const occurred = String(tx.occurred_at || '').slice(0, 10)
-          const rec = { id: uuid(), occurred_at: occurred || new Date().toISOString().slice(0,10), amount: Number(tx.amount || 0), currency: String(tx.currency || 'AUD'), category: cat || 'other', note: String(tx.note || ''), property_id: (tx as any).property_id || null }
-          try {
-            const dup2 = await pgSelect('company_incomes', '*', { occurred_at: rec.occurred_at, category: rec.category, amount: rec.amount, note: rec.note, property_id: rec.property_id })
-            if (!(Array.isArray(dup2) && dup2[0])) {
-              await pgInsert('company_incomes', rec as any)
+        try {
+          await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;')
+          await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_type text;')
+          await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_id text;')
+          await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_incomes_ref ON company_incomes(category, ref_type, ref_id);`)
+        } catch {}
+
+        const cat0 = String((tx as any).category || '').toLowerCase()
+        if (String(tx.kind) === 'income' && cat0 === 'cancel_fee' && String((tx as any).ref_type || '') === 'order' && String((tx as any).ref_id || '')) {
+          const dup = await pgSelect('finance_transactions', '*', { ref_type: 'order', ref_id: String((tx as any).ref_id), category: 'cancel_fee' }, client)
+          if (Array.isArray(dup) && dup[0]) {
+            return { txRow: dup[0], duplicated: true }
+          }
+        }
+
+        const txRow = await pgInsert('finance_transactions', tx as any, client)
+        try {
+          const cat = String((tx as any).category || '').toLowerCase()
+          const isIncome = String(tx.kind) === 'income'
+          if (isIncome && (cat === 'cancel_fee' || cat === 'late_checkout' || cat === 'other' || cat === 'cleaning_fee' || cat === 'mgmt_fee')) {
+            const occurred = String(tx.occurred_at || '').slice(0, 10) || new Date().toISOString().slice(0,10)
+            const rec: any = {
+              id: uuid(),
+              occurred_at: occurred,
+              amount: Number(tx.amount || 0),
+              currency: String(tx.currency || 'AUD'),
+              category: cat || 'other',
+              note: String(tx.note || ''),
+              property_id: (tx as any).property_id || null,
+              ref_type: (tx as any).ref_type || null,
+              ref_id: (tx as any).ref_id || null,
             }
-          } catch (e: any) {
-            const msg = String(e?.message || '')
-            try {
-              if (/relation\s+"?company_incomes"?\s+does\s+not\s+exist/i.test(msg)) {
-                await pgPool?.query(`CREATE TABLE IF NOT EXISTS company_incomes (
-                  id text PRIMARY KEY,
-                  occurred_at date NOT NULL,
-                  amount numeric NOT NULL,
-                  currency text NOT NULL,
-                  category text,
-                  note text,
-                  created_at timestamptz DEFAULT now()
-                );`)
-                await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_company_incomes_date ON company_incomes(occurred_at);')
-                await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_company_incomes_cat ON company_incomes(category);')
+
+            if (cat === 'cancel_fee' && String((tx as any).ref_type || '') === 'order' && String((tx as any).ref_id || '')) {
+              const oid = String((tx as any).ref_id)
+              const ordRows = await pgSelect('orders', 'id,status,count_in_income', { id: oid }, client)
+              const ord = Array.isArray(ordRows) ? ordRows[0] : null
+              const canceled = isCanceledStatus(ord?.status)
+              const countInIncome = !!(ord as any)?.count_in_income
+              if (canceled && countInIncome) {
+                return { txRow: txRow || tx, duplicated: false, skippedCompanyIncome: true }
               }
-              if (/column\s+"?property_id"?\s+of\s+relation\s+"?company_incomes"?\s+does\s+not\s+exist/i.test(msg)) {
-                await pgPool?.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;')
-                await pgPool?.query('CREATE INDEX IF NOT EXISTS idx_company_incomes_property ON company_incomes(property_id);')
+            }
+
+            if (rec.ref_type && rec.ref_id) {
+              const ins = await pgInsertOnConflictDoNothing('company_incomes', rec, ['category', 'ref_type', 'ref_id'], client)
+              if (ins) addAudit('CompanyIncome', String((ins as any).id || rec.id), 'create', null, ins as any)
+            } else {
+              const dup2 = await pgSelect('company_incomes', '*', { occurred_at: rec.occurred_at, category: rec.category, amount: rec.amount, note: rec.note, property_id: rec.property_id }, client)
+              if (!(Array.isArray(dup2) && dup2[0])) {
+                const ins = await pgInsert('company_incomes', rec as any, client)
+                if (ins) addAudit('CompanyIncome', String((ins as any).id || rec.id), 'create', null, ins as any)
               }
-            } catch {}
-            const dup3 = await pgSelect('company_incomes', '*', { occurred_at: rec.occurred_at, category: rec.category, amount: rec.amount, note: rec.note, property_id: rec.property_id })
-            if (!(Array.isArray(dup3) && dup3[0])) {
-              await pgInsert('company_incomes', rec as any)
             }
           }
-          addAudit('CompanyIncome', rec.id, 'create', null, rec as any)
-        }
-      } catch {}
-      return res.status(201).json(row || tx)
+        } catch {}
+        return { txRow: txRow || tx, duplicated: false }
+      })
+      const row = (result as any)?.txRow
+      const status = (result as any)?.duplicated ? 200 : 201
+      return res.status(status).json(row || tx)
     } catch (e: any) {
       return res.status(500).json({ message: e?.message || 'pg insert failed' })
     }
@@ -120,29 +139,169 @@ router.post('/company-incomes/backfill', requireAnyPerm(['finance.tx.write','com
   try {
     if (!hasPg) return res.status(400).json({ message: 'pg required' })
     const month = String(((req.body || {}).month) || ((req.query || {}).month) || '')
+    const dryRun = String(((req.body || {}).dry_run) ?? ((req.query || {}) as any).dry_run ?? '').toLowerCase() === 'true' || String(((req.body || {}).dry_run) ?? ((req.query || {}) as any).dry_run ?? '') === '1'
     if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ message: 'invalid month format' })
-    const y = Number(month.slice(0,4)), m = Number(month.slice(5,7))
-    const start = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0,10)
-    const end = new Date(Date.UTC(y, m, 0)).toISOString().slice(0,10)
-    const cats = ['cancel_fee']
-    const rs = await pgPool!.query(
-      `SELECT id, occurred_at, amount, currency, category, note, property_id
-       FROM finance_transactions
-       WHERE kind='income' AND category = ANY($1) AND occurred_at BETWEEN to_date($2,'YYYY-MM-DD') AND to_date($3,'YYYY-MM-DD')`,
-      [cats, start, end]
-    )
-    const rows: any[] = rs.rows || []
-    let inserted = 0, skipped = 0
-    for (const t of rows) {
-      const occ = String(t.occurred_at || '').slice(0,10)
-      const chk = await pgSelect('company_incomes', '*', { occurred_at: occ, category: t.category, amount: Number(t.amount || 0), note: String(t.note || '') })
-      if (Array.isArray(chk) && chk[0]) { skipped++; continue }
-      const rec: any = { id: require('uuid').v4(), occurred_at: occ, amount: Number(t.amount || 0), currency: String(t.currency || 'AUD'), category: String(t.category || 'other'), note: String(t.note || ''), property_id: String(t.property_id || '') || null }
-      await pgInsert('company_incomes', rec as any)
-      addAudit('CompanyIncome', rec.id, 'create', null, rec)
-      inserted++
+    const lockKey = 91000000 + Number(month.replace('-', ''))
+    const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey])
+    const ok = !!(lock?.rows?.[0]?.ok)
+    if (!ok) return res.status(409).json({ message: 'backfill already running', reason: 'locked', month })
+    try {
+      const y = Number(month.slice(0,4)), m = Number(month.slice(5,7))
+      const start = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0,10)
+      const endExclusive = new Date(Date.UTC(y, m, 1)).toISOString().slice(0,10)
+      function normalizeStatus(raw: any): string { return String(raw || '').trim().toLowerCase() }
+      function isCanceledStatus(raw: any): boolean {
+        const s = normalizeStatus(raw)
+        return s === 'canceled' || s === 'cancelled'
+      }
+
+      const result = await pgRunInTransaction(async (client) => {
+        try {
+          await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;')
+          await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_type text;')
+          await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_id text;')
+          await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_incomes_ref ON company_incomes(category, ref_type, ref_id);`)
+        } catch {}
+
+        const rs = await client.query(
+          `SELECT
+             t.id AS tx_id,
+             (t.occurred_at)::date AS occurred_at,
+             t.amount,
+             t.currency,
+             t.note,
+             t.property_id,
+             t.ref_id AS order_id,
+             o.status AS order_status,
+             o.count_in_income AS order_count_in_income
+           FROM finance_transactions t
+           LEFT JOIN orders o ON o.id = t.ref_id
+           WHERE t.kind='income'
+             AND t.category='cancel_fee'
+             AND t.ref_type='order'
+             AND t.ref_id IS NOT NULL
+             AND (t.occurred_at)::date >= to_date($1,'YYYY-MM-DD')
+             AND (t.occurred_at)::date < to_date($2,'YYYY-MM-DD')`,
+          [start, endExclusive]
+        )
+        const rows: any[] = rs.rows || []
+        let scanned = rows.length
+        let updated_ref = 0
+        let inserted = 0
+        let deleted = 0
+        let deleted_tx = 0
+        let ambiguous = 0
+        let skipped_missing_order = 0
+
+        const sample_ambiguous: any[] = []
+        const sample_missing_order: any[] = []
+
+        for (const t of rows) {
+          const orderId = String(t.order_id || '')
+          if (!orderId) continue
+          const occ = String(t.occurred_at || '').slice(0,10)
+          const amt = Number(t.amount || 0)
+          const propId = String(t.property_id || '') || null
+          const statusKnown = !!t.order_status
+          const canceled = isCanceledStatus(t.order_status)
+          const countInIncome = !!t.order_count_in_income
+
+          if (!t.order_status) {
+            skipped_missing_order++
+            if (sample_missing_order.length < 10) sample_missing_order.push({ order_id: orderId, tx_id: String(t.tx_id || ''), occurred_at: occ, amount: amt })
+          }
+
+          const existingByRef = await pgSelect('company_incomes', 'id', { category: 'cancel_fee', ref_type: 'order', ref_id: orderId }, client)
+          const hasByRef = Array.isArray(existingByRef) && existingByRef[0]
+          if (!hasByRef) {
+            const cand = await client.query(
+              `SELECT id FROM company_incomes
+               WHERE category='cancel_fee'
+                 AND (ref_type IS NULL OR ref_type = '')
+                 AND (ref_id IS NULL OR ref_id = '')
+                 AND occurred_at = to_date($1,'YYYY-MM-DD')
+                 AND amount = $2
+                 AND (property_id IS NOT DISTINCT FROM $3)`,
+              [occ, amt, propId]
+            )
+            const ids: string[] = (cand.rows || []).map((r: any) => String(r.id))
+            if (ids.length === 1) {
+              if (!dryRun) {
+                await client.query(`UPDATE company_incomes SET ref_type='order', ref_id=$1 WHERE id=$2`, [orderId, ids[0]])
+              }
+              updated_ref++
+            } else if (ids.length > 1) {
+              ambiguous++
+              if (sample_ambiguous.length < 10) sample_ambiguous.push({ order_id: orderId, occurred_at: occ, amount: amt, candidate_ids: ids })
+            }
+          }
+
+          if (statusKnown && !canceled) {
+            if (!dryRun) {
+              const del = await client.query(`DELETE FROM company_incomes WHERE category='cancel_fee' AND ref_type='order' AND ref_id=$1 RETURNING id`, [orderId])
+              deleted += Number(del.rowCount || 0)
+              const delTx = await client.query(`DELETE FROM finance_transactions WHERE id=$1 RETURNING id`, [String(t.tx_id || '')])
+              deleted_tx += Number(delTx.rowCount || 0)
+            } else {
+              deleted += hasByRef ? 1 : 0
+              deleted_tx += 1
+            }
+            continue
+          }
+
+          if (!statusKnown) continue
+          const shouldCompany = canceled && !countInIncome
+          if (!shouldCompany) {
+            if (!dryRun) {
+              const del = await client.query(`DELETE FROM company_incomes WHERE category='cancel_fee' AND ref_type='order' AND ref_id=$1 RETURNING id`, [orderId])
+              deleted += Number(del.rowCount || 0)
+            } else {
+              deleted += hasByRef ? 1 : 0
+            }
+            continue
+          }
+
+          const rec: any = {
+            id: require('uuid').v4(),
+            occurred_at: occ,
+            amount: amt,
+            currency: String(t.currency || 'AUD'),
+            category: 'cancel_fee',
+            note: String(t.note || ''),
+            property_id: propId,
+            ref_type: 'order',
+            ref_id: orderId,
+          }
+          if (!dryRun) {
+            const ins = await pgInsertOnConflictDoNothing('company_incomes', rec, ['category', 'ref_type', 'ref_id'], client)
+            if (ins) {
+              inserted++
+              try { addAudit('CompanyIncome', String((ins as any).id || rec.id), 'create', null, ins as any) } catch {}
+            }
+          } else {
+            if (!hasByRef) inserted++
+          }
+        }
+
+        return {
+          month,
+          dry_run: dryRun,
+          scanned,
+          updated_ref,
+          inserted,
+          deleted,
+          deleted_tx,
+          ambiguous,
+          skipped_missing_order,
+          sample_ambiguous,
+          sample_missing_order,
+        }
+      })
+
+      return res.status(201).json(result)
+    } finally {
+      try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [lockKey]) } catch {}
     }
-    return res.status(201).json({ month, scanned: rows.length, inserted, skipped })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'backfill_failed' })
   }
@@ -595,6 +754,7 @@ router.get('/property-revenue', async (req, res) => {
   try {
     const { property_id, property_code, month } = (req.query || {}) as any
     if (!month || (!(property_id) && !(property_code))) return res.status(400).json({ message: 'missing month or property' })
+    const excludeOrphanFixedSnapshots = String(((req.query as any)?.exclude_orphan_fixed_snapshots ?? '')).toLowerCase() === 'true' || String(((req.query as any)?.exclude_orphan_fixed_snapshots ?? '')) === '1'
     const ym = String(month)
     const y = Number(ym.slice(0,4))
     const m = Number(ym.slice(5,7))
@@ -621,6 +781,8 @@ router.get('/property-revenue', async (req, res) => {
     const cols = { parking_fee: 0, electricity: 0, water: 0, gas: 0, internet: 0, consumables: 0, body_corp: 0, council: 0, other: 0, management_fee: 0 }
     let rentIncome = 0
     let warnings: string[] = []
+    const orphanFixedSnapshots: Array<{ expense_id: string; fixed_expense_id: string; month_key?: string; amount: number; category?: string }> = []
+    let orphanFixedSnapshotsTotal = 0
     try {
       if (hasPg) {
         const orders = await pgSelect('orders', '*', { property_id: pid })
@@ -689,12 +851,31 @@ router.get('/property-revenue', async (req, res) => {
         for (const e of peRows) {
           const fid = String((e as any).fixed_expense_id || '')
           const amt = Number((e as any).amount || 0)
+          if (fid && !map[fid]) {
+            const genFrom = String((e as any).generated_from || '')
+            const note = String((e as any).note || '')
+            const isSnapshot = genFrom === 'recurring_payments' || /^fixed payment/i.test(note)
+            if (isSnapshot) {
+              orphanFixedSnapshotsTotal += amt
+              if (orphanFixedSnapshots.length < 20) {
+                orphanFixedSnapshots.push({
+                  expense_id: String((e as any).id || ''),
+                  fixed_expense_id: fid,
+                  month_key: String((e as any).month_key || '') || undefined,
+                  amount: amt,
+                  category: String((e as any).category || '') || undefined,
+                })
+              }
+              if (excludeOrphanFixedSnapshots) continue
+            }
+          }
           const cat = fid ? (map[fid] || 'other') : toReportCat(String((e as any).category || ''), String((e as any).category_detail || ''))
           if (cat in cols) (cols as any)[cat] += amt
           else cols.other += amt
         }
         const missingMonthKey = peRows.filter((e: any) => !e.month_key).length
         if (missingMonthKey > 0) warnings.push(`expenses_without_month_key=${missingMonthKey}`)
+        if (orphanFixedSnapshots.length > 0) warnings.push(`orphan_fixed_expense_snapshots=${orphanFixedSnapshots.length}`)
         // Auto compute management fee from landlord config
         try {
           const props = await pgSelect('properties', 'id,landlord_id', { id: pid })
@@ -728,6 +909,11 @@ router.get('/property-revenue', async (req, res) => {
       management_fee: -Number(cols.management_fee || 0),
       total_expense: -Number(totalExpense || 0),
       net_income: Number(rentIncome || 0) - Number(totalExpense || 0)
+    }
+    if (orphanFixedSnapshots.length) {
+      payload.orphan_fixed_expense_snapshots_total = -Number(orphanFixedSnapshotsTotal || 0)
+      payload.orphan_fixed_expense_snapshots_sample = orphanFixedSnapshots
+      payload.exclude_orphan_fixed_snapshots = excludeOrphanFixedSnapshots
     }
     if (warnings.length) payload.warnings = warnings
     return res.json(payload)
