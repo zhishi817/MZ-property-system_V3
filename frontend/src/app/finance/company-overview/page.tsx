@@ -5,19 +5,23 @@ import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { getJSON, apiList, API_BASE, authHeaders } from '../../../lib/api'
+import { getJSON, apiList, API_BASE, authHeaders, patchJSON } from '../../../lib/api'
 import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/properties'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
 import { monthSegments, toDayStr, getMonthSegmentsForProperty, parseDateOnly } from '../../../lib/orders'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../../../lib/financeTx'
-import { isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
+import { computeMonthlyStatementBalance, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
 import { formatStatementDesc } from '../../../lib/statementDesc'
 const debugOnce = (..._args: any[]) => {}
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
+import { MailOutlined, CreditCardOutlined, CheckOutlined } from '@ant-design/icons'
+import { nextToggleValue } from '../../../lib/toggleStatus'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; ref_type?: string; ref_id?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
+type RevenueStatus = { scheduled_email_set: boolean; transferred: boolean }
+type PendingOps = Record<string, { scheduled?: boolean; transfer?: boolean }>
 
 export default function PropertyRevenuePage() {
   const [month, setMonth] = useState<any>(dayjs())
@@ -32,6 +36,10 @@ export default function PropertyRevenuePage() {
   const [period, setPeriod] = useState<'month'|'year'|'half-year'|'fiscal-year'>('month')
   const [startMonth, setStartMonth] = useState<any>(dayjs())
   const [showChinese, setShowChinese] = useState<boolean>(true)
+  const [revenueStatusByKey, setRevenueStatusByKey] = useState<Record<string, RevenueStatus>>({})
+  const [baselineStatusByKey, setBaselineStatusByKey] = useState<Record<string, Partial<RevenueStatus>>>({})
+  const [pendingOps, setPendingOps] = useState<PendingOps>({})
+  const statusKeyOf = (pid: string, monthKey: string) => `${String(pid)}__${String(monthKey)}`
   useEffect(() => {
     getJSON<Order[]>('/orders').then(setOrders).catch(()=>setOrders([]))
     ;(async () => {
@@ -207,6 +215,26 @@ export default function PropertyRevenuePage() {
     return base.endOf('month')
   }, [month, period, startMonth])
 
+  const statusRange = useMemo(() => {
+    if (!start || !end) return null
+    return { from: start.format('YYYY-MM'), to: end.format('YYYY-MM') }
+  }, [start, end])
+
+  useEffect(() => {
+    if (!statusRange?.from || !statusRange?.to) return
+    const qs = new URLSearchParams({ from: statusRange.from, to: statusRange.to, ...(selectedPid ? { property_id: selectedPid } : {}) }).toString()
+    getJSON<any[]>(`/finance/property-revenue-status?${qs}`)
+      .then((list) => {
+        const map: Record<string, RevenueStatus> = {}
+        for (const r of (Array.isArray(list) ? list : [])) {
+          const k = statusKeyOf(String((r as any).property_id || ''), String((r as any).month_key || ''))
+          map[k] = { scheduled_email_set: !!(r as any).scheduled_email_set, transferred: !!(r as any).transferred }
+        }
+        setRevenueStatusByKey(map)
+      })
+      .catch(() => setRevenueStatusByKey({}))
+  }, [statusRange?.from, statusRange?.to, selectedPid])
+
   const rows = useMemo(() => {
     if (!start || !end) return [] as any[]
     const list = selectedPid ? properties.filter(pp => pp.id === selectedPid) : sortPropertiesByRegionThenCode(properties as any)
@@ -298,7 +326,30 @@ export default function PropertyRevenuePage() {
         const otherExpenseDescFmt = formatStatementDesc({ items: otherItems, lang: 'en' })
         const totalExp = mgmt + electricity + water + gas + internet + consumable + carpark + ownercorp + council + other
         const net = Math.round(((totalIncome - totalExp) + Number.EPSILON)*100)/100
-        out.push({ key: `${p.id}-${rm.label}`, pid: p.id, month: rm.label, code: p.code || p.id, address: p.address, occRate, avg, totalIncome, rentIncome, otherIncome, otherIncomeDesc, mgmt, electricity, water, gas, internet, consumable, carpark, ownercorp, council, other, otherExpenseDesc: otherExpenseDescFmt.text, otherExpenseDescFull: otherExpenseDescFmt.full, totalExp, net })
+        const monthKey = rm.start.format('YYYY-MM')
+        const landlord = landlords.find(l => (l.property_ids || []).includes(p.id))
+        let payableToOwner = 0
+        let netFromBalance: number | null = null
+        try {
+          const b = computeMonthlyStatementBalance({
+            month: monthKey,
+            propertyId: p.id,
+            propertyCode: p.code || undefined,
+            orders: orders as any,
+            txs: txs as any,
+            managementFeeRate: landlord?.management_fee_rate,
+          })
+          netFromBalance = Number(b.operating_net_income || 0)
+          payableToOwner = Math.max(0, Number(b.payable_to_owner || 0))
+          if (!Number.isFinite(payableToOwner)) payableToOwner = 0
+        } catch {
+          payableToOwner = Math.max(0, Number(net || 0))
+        }
+        if (process.env.NODE_ENV === 'development' && netFromBalance != null) {
+          const diff = Math.abs(Number(netFromBalance) - Number(net || 0))
+          if (diff > 0.02) console.warn('payableToOwner: net mismatch', { property: p.code || p.id, month: monthKey, net, netFromBalance })
+        }
+        out.push({ key: `${p.id}-${rm.label}`, pid: p.id, month: rm.label, monthKey, code: p.code || p.id, address: p.address, occRate, avg, totalIncome, rentIncome, otherIncome, otherIncomeDesc, mgmt, electricity, water, gas, internet, consumable, carpark, ownercorp, council, other, otherExpenseDesc: otherExpenseDescFmt.text, otherExpenseDescFull: otherExpenseDescFmt.full, totalExp, net, payableToOwner })
       }
     }
     return out
@@ -315,9 +366,106 @@ export default function PropertyRevenuePage() {
 
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const formatMoney = (n?: number) => `$${fmt(Number(n || 0))}`
+
+  const normalizeStatus = (raw?: Partial<RevenueStatus> | null): RevenueStatus => ({
+    scheduled_email_set: !!raw?.scheduled_email_set,
+    transferred: !!raw?.transferred,
+  })
+
+  const upsertRevenueStatus = async (pid: string, monthKey: string, patch: Partial<RevenueStatus>) => {
+    return patchJSON<any>('/finance/property-revenue-status', {
+      property_id: pid,
+      month_key: monthKey,
+      scheduled_email_set: patch.scheduled_email_set,
+      transferred: patch.transferred,
+    })
+  }
+
+  const setPending = (statusKey: string, op: 'scheduled' | 'transfer', on: boolean) => {
+    setPendingOps((m) => {
+      const prev = m[statusKey] || {}
+      const next = { ...prev, [op]: on ? true : undefined }
+      const keep = Object.entries(next).some(([, v]) => !!v)
+      if (!keep) {
+        const { [statusKey]: _drop, ...rest } = m
+        return rest
+      }
+      return { ...m, [statusKey]: next }
+    })
+  }
+
+  const ensureBaseline = (statusKey: string, field: keyof RevenueStatus, current: RevenueStatus) => {
+    const existing = (baselineStatusByKey[statusKey] || {}) as any
+    if (existing[field] !== undefined) return existing[field] as boolean
+    const baseline = current[field]
+    setBaselineStatusByKey((m) => ({ ...m, [statusKey]: { ...(m[statusKey] || {}), [field]: baseline } }))
+    return baseline
+  }
+
+  const toggleStatus = async (r: any, field: keyof RevenueStatus, op: 'scheduled' | 'transfer') => {
+    const pid = String(r?.pid || '')
+    const monthKey = String(r?.monthKey || '')
+    if (!pid || !monthKey) return
+    const sk = statusKeyOf(pid, monthKey)
+    if (op === 'scheduled' && pendingOps[sk]?.scheduled) return
+    if (op === 'transfer' && pendingOps[sk]?.transfer) return
+    const current = normalizeStatus(revenueStatusByKey[sk])
+    const baseline = ensureBaseline(sk, field, current)
+    const nextVal = nextToggleValue(baseline, current[field])
+    const next = { ...current, [field]: nextVal }
+    setPending(sk, op, true)
+    setRevenueStatusByKey((m) => ({ ...m, [sk]: next }))
+    try {
+      await upsertRevenueStatus(pid, monthKey, { [field]: nextVal } as any)
+      message.success(field === 'scheduled_email_set' ? (nextVal ? '已确认发送邮件' : '已恢复邮件原始状态') : (nextVal ? '已标记转账' : '已恢复转账原始状态'))
+    } catch (e: any) {
+      setRevenueStatusByKey((m) => ({ ...m, [sk]: current }))
+      message.error(`操作失败：${String(e?.message || '未知错误')}`)
+    } finally {
+      setPending(sk, op, false)
+    }
+  }
+
+  const RevenueStatusBar = (props: {
+    status: RevenueStatus
+    isPendingScheduled: boolean
+    isPendingTransfer: boolean
+    onToggleScheduled: () => void
+    onToggleTransfer: () => void
+    onPreview: () => void
+  }) => {
+    const { status, isPendingScheduled, isPendingTransfer, onToggleScheduled, onToggleTransfer, onPreview } = props
+    return (
+      <div className={styles.opBar}>
+        <div className={styles.statusGroup}>
+          <Button
+            size="small"
+            icon={status.scheduled_email_set ? <CheckOutlined /> : <MailOutlined />}
+            loading={isPendingScheduled}
+            className={`${styles.toggleBtn} ${status.scheduled_email_set ? styles.toggleBtnOn : styles.toggleBtnOff}`}
+            onClick={onToggleScheduled}
+          >
+            {status.scheduled_email_set ? '已设置邮件' : '设置邮件'}
+          </Button>
+          <Button
+            size="small"
+            icon={status.transferred ? <CheckOutlined /> : <CreditCardOutlined />}
+            loading={isPendingTransfer}
+            className={`${styles.toggleBtn} ${status.transferred ? styles.toggleBtnOn : styles.toggleBtnOff}`}
+            onClick={onToggleTransfer}
+          >
+            {status.transferred ? '已转账' : '标记转账'}
+          </Button>
+        </div>
+        <div className={styles.actionGroup}>
+          <Button size="small" className={`${styles.toggleBtn} ${styles.toggleBtnNeutral}`} onClick={onPreview}>预览/导出</Button>
+        </div>
+      </div>
+    )
+  }
   const columns = [
-    { title:'月份', dataIndex:'month' },
-    { title:'房号', dataIndex:'code' },
+    { title:'月份', dataIndex:'month', width: 96, fixed: 'left' as const },
+    { title:'房号', dataIndex:'code', width: 96, fixed: 'left' as const },
     { title:'地址', dataIndex:'address' },
     { title:'入住率', dataIndex:'occRate', align:'right', render:(v: number)=> `${fmt(v)}%` },
     { title:'日均租金', dataIndex:'avg', align:'right', render:(v: number)=> `$${fmt(v)}` },
@@ -338,9 +486,25 @@ export default function PropertyRevenuePage() {
     { title:'其他支出描述', dataIndex:'otherExpenseDesc', render: (_: any, r: any) => <div style={{ whiteSpace:'normal', wordBreak:'break-word', overflowWrap:'anywhere', textAlign:'right' }} title={r.otherExpenseDescFull || r.otherExpenseDesc}>{r.otherExpenseDesc}</div> },
     { title:'总支出', dataIndex:'totalExp', align:'right', render:(v: number)=> `-$${fmt(v)}` },
     { title:'净收入', dataIndex:'net', align:'right', render:(v: number)=> `$${fmt(v)}` },
-    { title:'操作', render: (_: any, r: any) => (
-      <Button onClick={() => { setPreviewPid(r.pid); setPreviewOpen(true) }}>预览/导出</Button>
-    ) },
+    { title:'本月应支付房东费用', dataIndex:'payableToOwner', align:'right', render:(v: number)=> `$${fmt(Math.max(0, Number(v || 0)))}` },
+    { title:'操作', render: (_: any, r: any) => {
+      const pid = String(r?.pid || '')
+      const monthKey = String(r?.monthKey || '')
+      const sk = statusKeyOf(pid, monthKey)
+      const st = normalizeStatus(revenueStatusByKey[sk])
+      const isPendingScheduled = !!pendingOps[sk]?.scheduled
+      const isPendingTransfer = !!pendingOps[sk]?.transfer
+      return (
+        <RevenueStatusBar
+          status={st}
+          isPendingScheduled={isPendingScheduled}
+          isPendingTransfer={isPendingTransfer}
+          onToggleScheduled={() => toggleStatus(r, 'scheduled_email_set', 'scheduled')}
+          onToggleTransfer={() => toggleStatus(r, 'transferred', 'transfer')}
+          onPreview={() => { setPreviewPid(r.pid); setPreviewOpen(true) }}
+        />
+      )
+    } },
   ]
 
   return (
@@ -372,6 +536,7 @@ export default function PropertyRevenuePage() {
         expandable={{
           expandRowByClick: true,
           expandIconColumnIndex: 0,
+          fixed: 'left' as const,
           rowExpandable: () => true,
           columnWidth: 40,
           expandedRowRender: (r: any) => {

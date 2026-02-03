@@ -427,6 +427,138 @@ exports.router.post('/send-annual', (0, auth_1.requirePerm)('finance.payout'), (
         return res.status(400).json({ message: 'missing landlord_id or year' });
     res.json({ ok: true });
 });
+const revenueStatusGetMonthRe = /^\d{4}-\d{2}$/;
+exports.router.get('/property-revenue-status', async (req, res) => {
+    var _a, _b, _c;
+    try {
+        const from = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.from) || '');
+        const to = String(((_b = req.query) === null || _b === void 0 ? void 0 : _b.to) || '');
+        const property_id = String(((_c = req.query) === null || _c === void 0 ? void 0 : _c.property_id) || '');
+        const hasRange = !!(from && to);
+        if (hasRange && (!revenueStatusGetMonthRe.test(from) || !revenueStatusGetMonthRe.test(to))) {
+            return res.status(400).json({ message: 'invalid month range' });
+        }
+        if (dbAdapter_1.hasPg) {
+            const wh = [];
+            const vals = [];
+            if (hasRange) {
+                wh.push(`month_key >= $${vals.length + 1} AND month_key <= $${vals.length + 2}`);
+                vals.push(from, to);
+            }
+            if (property_id) {
+                wh.push(`property_id = $${vals.length + 1}`);
+                vals.push(property_id);
+            }
+            const where = wh.length ? `WHERE ${wh.join(' AND ')}` : '';
+            const sql = `SELECT * FROM property_revenue_statuses ${where} ORDER BY month_key ASC`;
+            const rs = await dbAdapter_2.pgPool.query(sql, vals);
+            return res.json(rs.rows || []);
+        }
+        const list = store_1.db.propertyRevenueStatuses || [];
+        const filtered = list.filter((r) => {
+            if (property_id && String(r.property_id) !== property_id)
+                return false;
+            if (hasRange && (String(r.month_key) < from || String(r.month_key) > to))
+                return false;
+            return true;
+        });
+        filtered.sort((a, b) => String(a.month_key).localeCompare(String(b.month_key)));
+        return res.json(filtered);
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'get status failed' });
+    }
+});
+const revenueStatusPatchSchema = zod_1.z.object({
+    property_id: zod_1.z.string().min(1),
+    month_key: zod_1.z.string().regex(revenueStatusGetMonthRe),
+    scheduled_email_set: zod_1.z.boolean().optional(),
+    transferred: zod_1.z.boolean().optional(),
+});
+exports.router.patch('/property-revenue-status', (0, auth_1.requirePerm)('finance.payout'), async (req, res) => {
+    var _a, _b, _c, _d, _e;
+    const parsed = revenueStatusPatchSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+        const msg = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ');
+        return res.status(400).json({ message: msg || 'invalid payload' });
+    }
+    const actor = String(((_a = req === null || req === void 0 ? void 0 : req.user) === null || _a === void 0 ? void 0 : _a.sub) || '');
+    try {
+        const nowIso = new Date().toISOString();
+        const { property_id, month_key, scheduled_email_set, transferred } = parsed.data;
+        if (dbAdapter_1.hasPg) {
+            const exists = await (0, dbAdapter_1.pgSelect)('property_revenue_statuses', '*', { property_id, month_key });
+            const before = Array.isArray(exists) ? exists[0] : null;
+            if (before === null || before === void 0 ? void 0 : before.id) {
+                const updated = {
+                    scheduled_email_set: (_b = scheduled_email_set !== null && scheduled_email_set !== void 0 ? scheduled_email_set : before.scheduled_email_set) !== null && _b !== void 0 ? _b : false,
+                    transferred: (_c = transferred !== null && transferred !== void 0 ? transferred : before.transferred) !== null && _c !== void 0 ? _c : false,
+                    updated_at: nowIso,
+                    updated_by: actor || null,
+                };
+                const row = await (0, dbAdapter_1.pgUpdate)('property_revenue_statuses', String(before.id), updated);
+                try {
+                    (0, store_1.addAudit)('PropertyRevenueStatus', String(before.id), 'update', before, row || { ...before, ...updated }, actor || undefined);
+                }
+                catch (_f) { }
+                return res.json(row || { ...before, ...updated });
+            }
+            const id = require('uuid').v4();
+            const created = {
+                id,
+                property_id,
+                month_key,
+                scheduled_email_set: scheduled_email_set !== null && scheduled_email_set !== void 0 ? scheduled_email_set : false,
+                transferred: transferred !== null && transferred !== void 0 ? transferred : false,
+                updated_at: nowIso,
+                updated_by: actor || undefined,
+            };
+            const row = await (0, dbAdapter_1.pgInsert)('property_revenue_statuses', created);
+            try {
+                (0, store_1.addAudit)('PropertyRevenueStatus', id, 'create', null, row || created, actor || undefined);
+            }
+            catch (_g) { }
+            return res.status(201).json(row || created);
+        }
+        const list = store_1.db.propertyRevenueStatuses || (store_1.db.propertyRevenueStatuses = []);
+        const idx = list.findIndex(r => String(r.property_id) === property_id && String(r.month_key) === month_key);
+        if (idx >= 0) {
+            const before = list[idx];
+            const after = {
+                ...before,
+                scheduled_email_set: (_d = scheduled_email_set !== null && scheduled_email_set !== void 0 ? scheduled_email_set : before.scheduled_email_set) !== null && _d !== void 0 ? _d : false,
+                transferred: (_e = transferred !== null && transferred !== void 0 ? transferred : before.transferred) !== null && _e !== void 0 ? _e : false,
+                updated_at: nowIso,
+                updated_by: actor || undefined,
+            };
+            list[idx] = after;
+            try {
+                (0, store_1.addAudit)('PropertyRevenueStatus', String(after.id), 'update', before, after, actor || undefined);
+            }
+            catch (_h) { }
+            return res.json(after);
+        }
+        const id = require('uuid').v4();
+        const created = {
+            id,
+            property_id,
+            month_key,
+            scheduled_email_set: scheduled_email_set !== null && scheduled_email_set !== void 0 ? scheduled_email_set : false,
+            transferred: transferred !== null && transferred !== void 0 ? transferred : false,
+            updated_at: nowIso,
+            updated_by: actor || undefined,
+        };
+        list.push(created);
+        try {
+            (0, store_1.addAudit)('PropertyRevenueStatus', id, 'create', null, created, actor || undefined);
+        }
+        catch (_j) { }
+        return res.status(201).json(created);
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'update status failed' });
+    }
+});
 // Property revenue aggregated by fixed expenses report_category and order income
 exports.router.get('/property-revenue', async (req, res) => {
     var _a, _b;
