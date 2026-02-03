@@ -19,6 +19,8 @@ const dbAdapter_2 = require("../dbAdapter");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
+const mergeMaxMb = Math.max(5, Math.min(200, Number(process.env.MERGE_PDF_MAX_MB || 50)));
+const mergeUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: mergeMaxMb * 1024 * 1024 } });
 function toReportCat(raw, detail) {
     const v = String(raw || '').toLowerCase();
     const d = String(detail || '').toLowerCase();
@@ -354,14 +356,75 @@ exports.router.get('/expense-invoices/search', (0, auth_1.requireAnyPerm)(['prop
     }
 });
 // Merge monthly statement PDF with multiple invoice PDFs and return a single PDF
-exports.router.post('/merge-pdf', (0, auth_1.requirePerm)('finance.payout'), async (req, res) => {
+exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), mergeUpload.single('statement'), async (req, res) => {
     try {
         const { statement_pdf_base64, statement_pdf_url, invoice_urls } = req.body || {};
-        if (!statement_pdf_base64 && !statement_pdf_url)
+        const statementFile = req.file;
+        if (!(statementFile === null || statementFile === void 0 ? void 0 : statementFile.buffer) && !statement_pdf_base64 && !statement_pdf_url)
             return res.status(400).json({ message: 'missing statement pdf' });
-        const urls = Array.isArray(invoice_urls) ? invoice_urls.filter((u) => typeof u === 'string') : [];
+        let urls = [];
+        if (Array.isArray(invoice_urls)) {
+            urls = invoice_urls.filter((u) => typeof u === 'string');
+        }
+        else if (typeof invoice_urls === 'string') {
+            try {
+                const parsed = JSON.parse(invoice_urls);
+                if (Array.isArray(parsed))
+                    urls = parsed.filter((u) => typeof u === 'string');
+                else if (typeof parsed === 'string')
+                    urls = [parsed];
+            }
+            catch (_a) {
+                urls = invoice_urls.split(',').map(s => s.trim()).filter(Boolean);
+            }
+        }
+        const allowedHosts = (() => {
+            const hosts = new Set();
+            const addHost = (h) => { if (h)
+                hosts.add(h.toLowerCase()); };
+            try {
+                const apiBase = String(process.env.API_BASE || '');
+                if (apiBase)
+                    addHost(new URL(apiBase).host);
+            }
+            catch (_a) { }
+            try {
+                const r2Base = String(process.env.R2_PUBLIC_BASE_URL || process.env.R2_PUBLIC_BASE || '');
+                if (r2Base)
+                    addHost(new URL(r2Base).host);
+            }
+            catch (_b) { }
+            const reqHost = String(req.headers.host || '');
+            if (reqHost)
+                addHost(reqHost);
+            return hosts;
+        })();
+        function normalizeFetchUrl(input) {
+            const raw = String(input || '').trim();
+            if (!raw)
+                throw new Error('invalid url');
+            if (raw.startsWith('/')) {
+                const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http');
+                const host = String(req.headers.host || '');
+                if (!host)
+                    throw new Error('invalid host');
+                return `${proto}://${host}${raw}`;
+            }
+            return raw;
+        }
+        function assertAllowed(urlStr) {
+            const u = new URL(urlStr);
+            const proto = u.protocol.toLowerCase();
+            if (proto !== 'http:' && proto !== 'https:')
+                throw new Error('invalid protocol');
+            const host = u.host.toLowerCase();
+            if (!allowedHosts.has(host))
+                throw new Error('disallowed host');
+        }
         async function fetchBytes(u) {
-            const r = await fetch(u);
+            const url = normalizeFetchUrl(u);
+            assertAllowed(url);
+            const r = await fetch(url);
             if (!r.ok)
                 throw new Error(`fetch failed: ${r.status}`);
             const ab = await r.arrayBuffer();
@@ -369,16 +432,39 @@ exports.router.post('/merge-pdf', (0, auth_1.requirePerm)('finance.payout'), asy
         }
         let merged = await pdf_lib_1.PDFDocument.create();
         // append statement
-        if (statement_pdf_base64 && typeof statement_pdf_base64 === 'string') {
+        if ((statementFile === null || statementFile === void 0 ? void 0 : statementFile.buffer) && Buffer.isBuffer(statementFile.buffer)) {
+            let src;
+            try {
+                src = await pdf_lib_1.PDFDocument.load(new Uint8Array(statementFile.buffer));
+            }
+            catch (e) {
+                return res.status(400).json({ message: `invalid statement pdf: ${String((e === null || e === void 0 ? void 0 : e.message) || 'load failed')}` });
+            }
+            const copied = await merged.copyPages(src, src.getPageIndices());
+            copied.forEach(p => merged.addPage(p));
+        }
+        else if (statement_pdf_base64 && typeof statement_pdf_base64 === 'string') {
             const b64 = statement_pdf_base64.replace(/^data:application\/pdf;base64,/, '');
             const bytes = Uint8Array.from(Buffer.from(b64, 'base64'));
-            const src = await pdf_lib_1.PDFDocument.load(bytes);
+            let src;
+            try {
+                src = await pdf_lib_1.PDFDocument.load(bytes);
+            }
+            catch (e) {
+                return res.status(400).json({ message: `invalid statement pdf: ${String((e === null || e === void 0 ? void 0 : e.message) || 'load failed')}` });
+            }
             const copied = await merged.copyPages(src, src.getPageIndices());
             copied.forEach(p => merged.addPage(p));
         }
         else if (statement_pdf_url && typeof statement_pdf_url === 'string') {
             const bytes = await fetchBytes(statement_pdf_url);
-            const src = await pdf_lib_1.PDFDocument.load(bytes);
+            let src;
+            try {
+                src = await pdf_lib_1.PDFDocument.load(bytes);
+            }
+            catch (e) {
+                return res.status(400).json({ message: `invalid statement pdf: ${String((e === null || e === void 0 ? void 0 : e.message) || 'load failed')}` });
+            }
             const copied = await merged.copyPages(src, src.getPageIndices());
             copied.forEach(p => merged.addPage(p));
         }
@@ -404,7 +490,7 @@ exports.router.post('/merge-pdf', (0, auth_1.requirePerm)('finance.payout'), asy
                     page.drawImage(img, { x, y, width: w, height: h });
                 }
             }
-            catch (_a) { }
+            catch (_b) { }
         }
         const out = await merged.save();
         res.setHeader('Content-Type', 'application/pdf');
@@ -414,6 +500,14 @@ exports.router.post('/merge-pdf', (0, auth_1.requirePerm)('finance.payout'), asy
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'merge failed' });
     }
+}, (err, _req, res, _next) => {
+    const code = String((err === null || err === void 0 ? void 0 : err.code) || '');
+    if (code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ message: `报表PDF过大（最大 ${mergeMaxMb}MB）` });
+    }
+    if (code)
+        return res.status(400).json({ message: (err === null || err === void 0 ? void 0 : err.message) || `upload failed (${code})` });
+    return res.status(500).json({ message: (err === null || err === void 0 ? void 0 : err.message) || 'merge failed' });
 });
 exports.router.post('/send-monthly', (0, auth_1.requirePerm)('finance.payout'), (req, res) => {
     const { landlord_id, month } = req.body || {};

@@ -1,5 +1,5 @@
 "use client"
-import { Card, DatePicker, Table, Select, Button, Modal, message, Switch } from 'antd'
+import { Card, DatePicker, Table, Select, Button, Modal, message, Switch, Progress } from 'antd'
 import styles from './ExpandedRow.module.css'
 import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
@@ -22,6 +22,7 @@ type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: stri
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 type RevenueStatus = { scheduled_email_set: boolean; transferred: boolean }
 type PendingOps = Record<string, { scheduled?: boolean; transfer?: boolean }>
+type MergeUiStatus = 'active' | 'exception' | 'success'
 
 export default function PropertyRevenuePage() {
   const [month, setMonth] = useState<any>(dayjs())
@@ -32,6 +33,7 @@ export default function PropertyRevenuePage() {
   const [selectedPid, setSelectedPid] = useState<string | undefined>(undefined)
   const [previewPid, setPreviewPid] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [mergeUi, setMergeUi] = useState<{ open: boolean; percent: number; status: MergeUiStatus; stage: string; detail?: string }>({ open: false, percent: 0, status: 'active', stage: '', detail: '' })
   const printRef = useRef<HTMLDivElement>(null)
   const [period, setPeriod] = useState<'month'|'year'|'half-year'|'fiscal-year'>('month')
   const [startMonth, setStartMonth] = useState<any>(dayjs())
@@ -40,6 +42,7 @@ export default function PropertyRevenuePage() {
   const [baselineStatusByKey, setBaselineStatusByKey] = useState<Record<string, Partial<RevenueStatus>>>({})
   const [pendingOps, setPendingOps] = useState<PendingOps>({})
   const statusKeyOf = (pid: string, monthKey: string) => `${String(pid)}__${String(monthKey)}`
+  const isMerging = mergeUi.open && mergeUi.status === 'active'
   useEffect(() => {
     getJSON<Order[]>('/orders').then(setOrders).catch(()=>setOrders([]))
     ;(async () => {
@@ -627,178 +630,173 @@ export default function PropertyRevenuePage() {
         }}>导出PDF</Button>
         <Button type="primary" onClick={async () => {
           if (!printRef.current || !previewPid) return
-          const nodeOrig = printRef.current as HTMLElement
-          const node = nodeOrig.cloneNode(true) as HTMLElement
-          const mmWidth = period==='fiscal-year' ? '277mm' : '190mm'
-          const styleEl = document.createElement('style')
-          styleEl.innerHTML = `
-            html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; background:#ffffff; }
-            body { margin: 0; }
-            .__pdf_root__ { width: ${mmWidth}; margin: 0 auto; }
-            table { width: 100%; border-collapse: collapse; }
-            th, td { border-bottom: 1px solid #ddd; }
-            .landlord-calendar .mz-booking { border-radius: 0; }
-            .landlord-calendar .fc-event-start .mz-booking { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
-            .landlord-calendar .fc-event-end .mz-booking { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
-            .landlord-calendar .mz-evt--airbnb .mz-booking { background-color: #FFE4E6 !important; border-color: #FB7185 !important; color: #881337 !important; }
-            .landlord-calendar .mz-evt--booking .mz-booking { background-color: #DBEAFE !important; border-color: #60A5FA !important; color: #1E3A8A !important; }
-            .landlord-calendar .mz-evt--other .mz-booking { background-color: #F3F4F6 !important; border-color: #9CA3AF !important; color: #111827 !important; }
-          `
-          const sandbox = document.createElement('div')
-          sandbox.style.position = 'fixed'
-          sandbox.style.left = '-9999px'
-          sandbox.style.top = '0'
-          sandbox.style.width = '0'
-          sandbox.style.height = '0'
-          document.body.appendChild(sandbox)
-          sandbox.appendChild(styleEl)
-          node.className = `${node.className} __pdf_root__`.trim()
-          sandbox.appendChild(node)
-          const scaleFactor = 3
-          const canvas = await html2canvas(node, { scale: scaleFactor, useCORS: true, allowTaint: true, backgroundColor: '#ffffff' })
-          try { document.body.removeChild(sandbox) } catch {}
-          const imgData = canvas.toDataURL('image/png')
-          const pdf = new jsPDF('p', 'mm', 'a4')
-          const pageWidth = pdf.internal.pageSize.getWidth()
-          const pageHeight = pdf.internal.pageSize.getHeight()
-          const margin = 10
-          const contentWidthMm = pageWidth - margin * 2
-          const contentHeightMm = pageHeight - margin * 2
-          const pxPerMm = canvas.width / contentWidthMm
-          const pageContentHeightPx = contentHeightMm * pxPerMm
-          const anchors = Array.from(node.querySelectorAll('[data-keep-with-next="true"]')) as HTMLElement[]
-          const anchorYs = anchors.map(a => a.offsetTop * scaleFactor).sort((a,b)=>a-b)
-          const reserve = 60 * scaleFactor
-          let y = 0
-          while (y < canvas.height) {
-            let sliceHeightPx = Math.min(pageContentHeightPx, canvas.height - y)
-            const endCandidate = y + sliceHeightPx
-            const near = anchorYs.find(pos => pos > y && pos <= endCandidate && (endCandidate - pos) < reserve)
-            if (near) sliceHeightPx = Math.max(10, near - y)
-            const sliceCanvas = document.createElement('canvas')
-            sliceCanvas.width = canvas.width
-            sliceCanvas.height = sliceHeightPx
-            const ctx = sliceCanvas.getContext('2d')!
-            ctx.drawImage(canvas, 0, y, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx)
-            const sliceImg = sliceCanvas.toDataURL('image/png')
-            const sliceHeightMm = sliceHeightPx / pxPerMm
-            if (y === 0) {
-              pdf.addImage(sliceImg, 'PNG', margin, margin, contentWidthMm, sliceHeightMm)
-            } else {
-              pdf.addPage()
-              pdf.addImage(sliceImg, 'PNG', margin, margin, contentWidthMm, sliceHeightMm)
-            }
-            y += sliceHeightPx
+          if (isMerging) return
+          const updateMerge = (percent: number, stage: string, detail?: string) => {
+            setMergeUi((prev) => ({ ...prev, open: true, percent: Math.max(0, Math.min(100, Math.round(percent))), status: 'active', stage, detail }))
           }
-          const statementBlob = pdf.output('blob') as Blob
-          // Upload the generated statement PDF first
-          const fd = new FormData()
-          {
+          const mergeFail = (reason: string, fallback: boolean) => {
+            const text = String(reason || '合并下载失败')
+            setMergeUi((prev) => ({ ...prev, open: true, percent: 100, status: 'exception', stage: fallback ? '合并失败，已回退下载原报表' : '合并失败', detail: text }))
+            message.error(text)
+          }
+          const mergeSuccess = (detail?: string) => {
+            setMergeUi((prev) => ({ ...prev, open: true, percent: 100, status: 'success', stage: '合并完成，开始下载', detail: detail || prev.detail }))
+            setTimeout(() => setMergeUi((prev) => ({ ...prev, open: false })), 1200)
+          }
+          updateMerge(5, '正在生成报表PDF...')
+          try {
+            const nodeOrig = printRef.current as HTMLElement
+            const node = nodeOrig.cloneNode(true) as HTMLElement
+            const mmWidth = period==='fiscal-year' ? '277mm' : '190mm'
+            const styleEl = document.createElement('style')
+            styleEl.innerHTML = `
+              html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; background:#ffffff; }
+              body { margin: 0; }
+              .__pdf_root__ { width: ${mmWidth}; margin: 0 auto; }
+              table { width: 100%; border-collapse: collapse; }
+              th, td { border-bottom: 1px solid #ddd; }
+              .landlord-calendar .mz-booking { border-radius: 0; }
+              .landlord-calendar .fc-event-start .mz-booking { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
+              .landlord-calendar .fc-event-end .mz-booking { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
+              .landlord-calendar .mz-evt--airbnb .mz-booking { background-color: #FFE4E6 !important; border-color: #FB7185 !important; color: #881337 !important; }
+              .landlord-calendar .mz-evt--booking .mz-booking { background-color: #DBEAFE !important; border-color: #60A5FA !important; color: #1E3A8A !important; }
+              .landlord-calendar .mz-evt--other .mz-booking { background-color: #F3F4F6 !important; border-color: #9CA3AF !important; color: #111827 !important; }
+            `
+            const sandbox = document.createElement('div')
+            sandbox.style.position = 'fixed'
+            sandbox.style.left = '-9999px'
+            sandbox.style.top = '0'
+            sandbox.style.width = '0'
+            sandbox.style.height = '0'
+            document.body.appendChild(sandbox)
+            sandbox.appendChild(styleEl)
+            node.className = `${node.className} __pdf_root__`.trim()
+            sandbox.appendChild(node)
+            const scaleFactor = 2
+            updateMerge(20, '正在渲染页面...')
+            const canvas = await html2canvas(node, { scale: scaleFactor, useCORS: true, allowTaint: true, backgroundColor: '#ffffff' })
+            try { document.body.removeChild(sandbox) } catch {}
+            updateMerge(40, '正在生成PDF分页...')
+            const pdf = new jsPDF('p', 'mm', 'a4')
+            const pageWidth = pdf.internal.pageSize.getWidth()
+            const pageHeight = pdf.internal.pageSize.getHeight()
+            const margin = 10
+            const contentWidthMm = pageWidth - margin * 2
+            const contentHeightMm = pageHeight - margin * 2
+            const pxPerMm = canvas.width / contentWidthMm
+            const pageContentHeightPx = contentHeightMm * pxPerMm
+            const anchors = Array.from(node.querySelectorAll('[data-keep-with-next="true"]')) as HTMLElement[]
+            const anchorYs = anchors.map(a => a.offsetTop * scaleFactor).sort((a,b)=>a-b)
+            const reserve = 60 * scaleFactor
+            let y = 0
+            while (y < canvas.height) {
+              let sliceHeightPx = Math.min(pageContentHeightPx, canvas.height - y)
+              const endCandidate = y + sliceHeightPx
+              const near = anchorYs.find(pos => pos > y && pos <= endCandidate && (endCandidate - pos) < reserve)
+              if (near) sliceHeightPx = Math.max(10, near - y)
+              const sliceCanvas = document.createElement('canvas')
+              sliceCanvas.width = canvas.width
+              sliceCanvas.height = sliceHeightPx
+              const ctx = sliceCanvas.getContext('2d')!
+              ctx.drawImage(canvas, 0, y, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx)
+              const sliceImg = sliceCanvas.toDataURL('image/jpeg', 0.82)
+              const sliceHeightMm = sliceHeightPx / pxPerMm
+              if (y === 0) {
+                pdf.addImage(sliceImg, 'JPEG', margin, margin, contentWidthMm, sliceHeightMm)
+              } else {
+                pdf.addPage()
+                pdf.addImage(sliceImg, 'JPEG', margin, margin, contentWidthMm, sliceHeightMm)
+              }
+              y += sliceHeightPx
+            }
+            updateMerge(55, '正在准备合并附件...')
+            const statementBlob = pdf.output('blob') as Blob
             const prop = properties.find(p => String(p.id) === String(previewPid || ''))
             const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
-            const fname = `Monthly Statement - ${month.format('YYYY-MM')}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
-            fd.append('file', statementBlob, fname)
-          }
-          const upRes = await fetch(`${API_BASE}/finance/invoices`, { method: 'POST', headers: { ...authHeaders() }, body: fd })
-          if (!upRes.ok) {
-            let errMsg = `上传报表失败（HTTP ${upRes.status}）`
-            try { const j = await upRes.json(); if (j?.message) errMsg = j.message } catch { try { errMsg = await upRes.text() } catch {} }
-            message.error(errMsg || '上传报表失败')
-            return
-          }
-          const upJson = await upRes.json()
-          const statementUrlRaw = upJson?.url || ''
-          const statementUrl = /^https?:\/\//.test(statementUrlRaw) ? statementUrlRaw : (statementUrlRaw ? `${API_BASE}${statementUrlRaw}` : '')
-          const from = start!.format('YYYY-MM-DD')
-          const to = end!.format('YYYY-MM-DD')
-          const invList = await getJSON<any[]>(`/finance/expense-invoices/search?property_id=${encodeURIComponent(previewPid!)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
-          let invUrls = (Array.isArray(invList) ? invList : [])
-            .map((r: any) => (r.url && /^https?:\/\//.test(r.url)) ? r.url : (r.url ? `${API_BASE}${r.url}` : ''))
-            .filter((u: any) => !!u)
-          if (!invUrls.length) {
+            const filename = `Monthly Statement - ${month.format('YYYY-MM')}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
+            const downloadBlob = (blob: Blob) => {
+              try {
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = filename
+                document.body.appendChild(a)
+                a.click()
+                document.body.removeChild(a)
+                URL.revokeObjectURL(url)
+              } catch {}
+            }
+            let invUrls: string[] = []
             try {
-              const prop = properties.find(p => String(p.id) === String(previewPid || ''))
-              const codeLabel = (prop?.code || '').toString().trim()
-              const expCandidates = (txs || []).filter((x: any) => {
-                if (x.kind !== 'expense') return false
-                const pidOk = (x.property_id === previewPid) || (!!codeLabel && String((x as any).property_code || '') === codeLabel)
-                const baseDateRaw: any = (x as any).paid_date || x.occurred_at || (x as any).created_at
-                const inMonth = baseDateRaw ? dayjs(toDayStr(baseDateRaw)).isSame(start, 'month') : false
-                return pidOk && inMonth
-              })
-              const extra = await Promise.all(expCandidates.map(async (e: any) => {
-                try {
-                  const r = await fetch(`${API_BASE}/finance/expense-invoices/${encodeURIComponent(String(e.id))}`, { headers: authHeaders() })
-                  const arr: any[] = r.ok ? (await r.json()) : []
-                  return arr
-                } catch { return [] }
-              }))
-              const flat = ([] as any[]).concat(...extra)
-              const urls2 = flat.map((r: any) => (r.url && /^https?:\/\//.test(r.url)) ? r.url : (r.url ? `${API_BASE}${r.url}` : '')).filter(Boolean)
-              invUrls = urls2.length ? urls2 : invUrls
+              updateMerge(60, '正在收集发票附件...')
+              const from = start!.format('YYYY-MM-DD')
+              const to = end!.format('YYYY-MM-DD')
+              const invList = await getJSON<any[]>(`/finance/expense-invoices/search?property_id=${encodeURIComponent(previewPid!)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+              invUrls = (Array.isArray(invList) ? invList : [])
+                .map((r: any) => (r.url && /^https?:\/\//.test(r.url)) ? r.url : (r.url ? `${API_BASE}${r.url}` : ''))
+                .filter((u: any) => !!u)
             } catch {}
-          }
-          // 若仍为空，最终从交易记录中的 invoice_url 补齐
-          if (!invUrls.length) {
-            const txUrls = (txs || [])
-              .filter((x: any) => x.kind === 'expense' && (!!x.invoice_url) && ((x.property_id === previewPid) || String((x as any).property_code || '') === String((properties.find(p => p.id===previewPid)?.code || ''))))
-              .filter((x: any) => {
-                const baseDateRaw: any = (x as any).paid_date || x.occurred_at || (x as any).created_at
-                return baseDateRaw ? dayjs(toDayStr(baseDateRaw)).isSame(start, 'month') : false
-              })
-              .map((x: any) => (/^https?:\/\//.test(String(x.invoice_url || '')) ? String(x.invoice_url) : `${API_BASE}${String(x.invoice_url || '')}`))
-              .filter(Boolean)
-            if (txUrls.length) invUrls = txUrls
-          }
-          try {
-            const resp = await fetch(`${API_BASE}/finance/merge-pdf`, { method:'POST', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ statement_pdf_url: statementUrl, invoice_urls: invUrls }) })
-            if (!resp.ok) {
-              let reason = `合并失败（HTTP ${resp.status}）`
-              try { const j = await resp.json(); if (j?.message) reason = j.message } catch { try { reason = await resp.text() } catch {} }
-              message.error(reason || '合并下载失败')
-              const url = URL.createObjectURL(statementBlob)
-              const a = document.createElement('a')
-              a.href = url
-              {
-                const prop = properties.find(p => String(p.id) === String(previewPid || ''))
-                const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
-                a.download = `Monthly Statement - ${month.format('YYYY-MM')}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
+            if (!invUrls.length) {
+              try {
+                updateMerge(62, '正在从交易/支出中补齐附件...')
+                const codeLabel2 = (prop?.code || '').toString().trim()
+                const expCandidates = (txs || []).filter((x: any) => {
+                  if (x.kind !== 'expense') return false
+                  const pidOk = (x.property_id === previewPid) || (!!codeLabel2 && String((x as any).property_code || '') === codeLabel2)
+                  const baseDateRaw: any = (x as any).paid_date || x.occurred_at || (x as any).created_at
+                  const inMonth = baseDateRaw ? dayjs(toDayStr(baseDateRaw)).isSame(start, 'month') : false
+                  return pidOk && inMonth
+                })
+                const extra = await Promise.all(expCandidates.map(async (e: any) => {
+                  try {
+                    const r = await fetch(`${API_BASE}/finance/expense-invoices/${encodeURIComponent(String(e.id))}`, { headers: authHeaders() })
+                    const arr: any[] = r.ok ? (await r.json()) : []
+                    return arr
+                  } catch { return [] }
+                }))
+                const flat = ([] as any[]).concat(...extra)
+                const urls2 = flat.map((r: any) => (r.url && /^https?:\/\//.test(r.url)) ? r.url : (r.url ? `${API_BASE}${r.url}` : '')).filter(Boolean)
+                invUrls = urls2.length ? urls2 : invUrls
+              } catch {}
+            }
+            if (!invUrls.length) {
+              const txUrls = (txs || [])
+                .filter((x: any) => x.kind === 'expense' && (!!x.invoice_url) && ((x.property_id === previewPid) || String((x as any).property_code || '') === String((properties.find(p => p.id===previewPid)?.code || ''))))
+                .filter((x: any) => {
+                  const baseDateRaw: any = (x as any).paid_date || x.occurred_at || (x as any).created_at
+                  return baseDateRaw ? dayjs(toDayStr(baseDateRaw)).isSame(start, 'month') : false
+                })
+                .map((x: any) => (/^https?:\/\//.test(String(x.invoice_url || '')) ? String(x.invoice_url) : `${API_BASE}${String(x.invoice_url || '')}`))
+                .filter(Boolean)
+              if (txUrls.length) invUrls = txUrls
+            }
+            try {
+              updateMerge(70, '正在合并PDF...', `附件数：${invUrls.length}`)
+              updateMerge(78, '正在上传报表PDF...')
+              const fd = new FormData()
+              fd.append('statement', statementBlob, filename)
+              fd.append('invoice_urls', JSON.stringify(invUrls))
+              updateMerge(85, '正在请求后端合并...')
+              const resp = await fetch(`${API_BASE}/finance/merge-pdf`, { method:'POST', headers: { ...authHeaders() }, body: fd })
+              if (!resp.ok) {
+                let reason = resp.status === 413 ? `上传内容过大（HTTP 413）` : `合并失败（HTTP ${resp.status}）`
+                try { const j = await resp.json(); if (j?.message) reason = j.message } catch { try { const t = await resp.text(); if (t) reason = t } catch {} }
+                mergeFail(reason || '合并下载失败', true)
+                downloadBlob(statementBlob)
+                return
               }
-              document.body.appendChild(a)
-              a.click()
-              document.body.removeChild(a)
-              URL.revokeObjectURL(url)
-              return
+              updateMerge(95, '正在下载合并后的PDF...')
+              const blob = await resp.blob()
+              downloadBlob(blob)
+              mergeSuccess(`附件数：${invUrls.length}`)
+            } catch (e: any) {
+              mergeFail(e?.message || '合并下载失败', true)
+              downloadBlob(statementBlob)
             }
-            const blob = await resp.blob()
-            const url = URL.createObjectURL(blob)
-            const a = document.createElement('a')
-            a.href = url
-            {
-              const prop = properties.find(p => String(p.id) === String(previewPid || ''))
-              const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
-              a.download = `Monthly Statement - ${month.format('YYYY-MM')}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
-            }
-            document.body.appendChild(a)
-            a.click()
-            document.body.removeChild(a)
-            URL.revokeObjectURL(url)
           } catch (e: any) {
-            message.error(e?.message || '合并下载失败')
-            const url = URL.createObjectURL(statementBlob)
-            const a = document.createElement('a')
-            a.href = url
-            {
-              const prop = properties.find(p => String(p.id) === String(previewPid || ''))
-              const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
-              a.download = `Monthly Statement - ${month.format('YYYY-MM')}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
-            }
-            document.body.appendChild(a)
-            a.click()
-            document.body.removeChild(a)
-            URL.revokeObjectURL(url)
+            mergeFail(e?.message || '合并下载失败', false)
           }
-        }}>合并PDF下载</Button>
+        }} loading={isMerging} disabled={isMerging}>合并PDF下载</Button>
       </>} width={900}>
         {previewPid ? (
           period==='month' ? (
@@ -859,6 +857,14 @@ export default function PropertyRevenuePage() {
             </div>
           )
         ) : null}
+      </Modal>
+      <Modal title="合并PDF下载" open={mergeUi.open} onCancel={() => setMergeUi((prev) => ({ ...prev, open: false }))} footer={<>
+        <Button onClick={() => setMergeUi((prev) => ({ ...prev, open: false }))}>{mergeUi.status === 'active' ? '隐藏' : '关闭'}</Button>
+      </>} width={520} maskClosable={mergeUi.status !== 'active'} keyboard={mergeUi.status !== 'active'} closable={mergeUi.status !== 'active'}>
+        <div style={{ marginBottom: 8, fontWeight: 600 }}>{mergeUi.stage || '处理中...'}</div>
+        <Progress percent={mergeUi.percent || 0} status={mergeUi.status === 'active' ? 'active' : (mergeUi.status === 'success' ? 'success' : 'exception')} />
+        {mergeUi.detail ? <div style={{ marginTop: 8, color: mergeUi.status === 'exception' ? '#cf1322' : 'rgba(0,0,0,0.65)' }}>{mergeUi.detail}</div> : null}
+        {mergeUi.status === 'active' ? <div style={{ marginTop: 8, color: 'rgba(0,0,0,0.45)' }}>请勿关闭页面，合并完成后会自动触发下载。</div> : null}
       </Modal>
     </Card>
   )
