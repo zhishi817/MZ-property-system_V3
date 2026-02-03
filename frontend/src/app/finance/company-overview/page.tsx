@@ -28,6 +28,7 @@ export default function PropertyRevenuePage() {
   const [month, setMonth] = useState<any>(dayjs())
   const [orders, setOrders] = useState<Order[]>([])
   const [txs, setTxs] = useState<Tx[]>([])
+  const [excludeOrphanFixedSnapshots, setExcludeOrphanFixedSnapshots] = useState<boolean>(true)
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
   const [selectedPid, setSelectedPid] = useState<string | undefined>(undefined)
@@ -59,8 +60,10 @@ export default function PropertyRevenuePage() {
           if (v.toLowerCase() === 'nbn' || v.toLowerCase() === 'internet' || v.includes('网')) return 'internet'
           return v
         }
-        const mapReport: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.report_category||'')]))
-        const mapVendor: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.vendor||'')]))
+        const recurringArr = Array.isArray(recurs) ? recurs : []
+        const recurringIdSet = new Set(recurringArr.map((r: any) => String(r.id)))
+        const mapReport: Record<string, string> = Object.fromEntries(recurringArr.map((r:any)=>[String(r.id), String(r.report_category||'')]))
+        const mapVendor: Record<string, string> = Object.fromEntries(recurringArr.map((r:any)=>[String(r.id), String(r.vendor||'')]))
         const toReportCat = (raw?: string) => {
           const v = String(raw||'').toLowerCase()
           if (v.includes('management_fee') || v.includes('管理费')) return 'management_fee'
@@ -74,16 +77,27 @@ export default function PropertyRevenuePage() {
           if (v.includes('council') || v.includes('市政')) return 'council'
           return 'other'
         }
-        const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).map((r: any) => {
+        let orphanCount = 0
+        let orphanTotal = 0
+        const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).flatMap((r: any) => {
           const code = String(r.property_code || '').trim()
           const pidRaw = r.property_id || undefined
           const match = properties.find(pp => (pp.code || '') === code)
           const pidNorm = (pidRaw && properties.some(pp => pp.id === pidRaw)) ? pidRaw : (match ? match.id : pidRaw)
           const fid = String(r.fixed_expense_id || '')
+          const genFrom = String(r.generated_from || '')
+          const note = String(r.note || '')
+          const isSnapshot = genFrom === 'recurring_payments' || /^fixed payment/i.test(note)
+          const isOrphanSnapshot = !!(fid && isSnapshot && !recurringIdSet.has(fid))
+          if (isOrphanSnapshot) {
+            orphanCount += 1
+            orphanTotal += Number(r.amount || 0)
+            if (excludeOrphanFixedSnapshots) return []
+          }
           const vendor = fid ? String(mapVendor[fid] || '') : ''
           const baseDetail = String(r.category_detail || '').trim()
           const injectedDetail = (!baseDetail && vendor) ? vendor : baseDetail
-          return ({
+          return [{
             id: r.id,
             kind: 'expense',
             amount: Number(r.amount || 0),
@@ -100,7 +114,7 @@ export default function PropertyRevenuePage() {
             ...(r.due_date ? { due_date: r.due_date } : {}),
             ...(r.status ? { status: r.status } : {}),
             report_category: normalizeReportCategory((r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail))
-          })
+          }]
         })
         const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
           id: t.id,
@@ -116,12 +130,18 @@ export default function PropertyRevenuePage() {
           ...(t.ref_id ? { ref_id: t.ref_id } : {}),
           ...(t.invoice_url ? { invoice_url: t.invoice_url } : {})
         }))
+        if (orphanCount > 0) {
+          const amt = (orphanTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          message.warning({ key: 'orphanFixedExpenseSnapshots', content: `检测到 ${orphanCount} 条孤儿固定支出快照（合计 $${amt}）。当前${excludeOrphanFixedSnapshots ? '已排除' : '仍计入'}房源营收统计。`, duration: 6 })
+        } else {
+          message.destroy('orphanFixedExpenseSnapshots')
+        }
         setTxs([...finMapped, ...peMapped])
       } catch { setTxs([]) }
     })()
     getJSON<any>('/properties').then((j)=>setProperties(j||[])).catch(()=>setProperties([]))
     getJSON<Landlord[]>('/landlords').then(setLandlords).catch(()=>setLandlords([]))
-  }, [])
+  }, [excludeOrphanFixedSnapshots])
 
   useEffect(() => {
     ;(async () => {
@@ -138,8 +158,10 @@ export default function PropertyRevenuePage() {
           if (v.toLowerCase() === 'nbn' || v.toLowerCase() === 'internet' || v.includes('网')) return 'internet'
           return v
         }
-        const mapReport: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.report_category||'')]))
-        const mapVendor: Record<string, string> = Object.fromEntries((Array.isArray(recurs)?recurs:[]).map((r:any)=>[String(r.id), String(r.vendor||'')]))
+        const recurringArr = Array.isArray(recurs) ? recurs : []
+        const recurringIdSet = new Set(recurringArr.map((r: any) => String(r.id)))
+        const mapReport: Record<string, string> = Object.fromEntries(recurringArr.map((r:any)=>[String(r.id), String(r.report_category||'')]))
+        const mapVendor: Record<string, string> = Object.fromEntries(recurringArr.map((r:any)=>[String(r.id), String(r.vendor||'')]))
         const toReportCat = (raw?: string) => {
           const v = String(raw||'').toLowerCase()
           if (v.includes('management_fee') || v.includes('管理费')) return 'management_fee'
@@ -153,16 +175,27 @@ export default function PropertyRevenuePage() {
           if (v.includes('council') || v.includes('市政')) return 'council'
           return 'other'
         }
-        const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).map((r: any) => {
+        let orphanCount = 0
+        let orphanTotal = 0
+        const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).flatMap((r: any) => {
           const code = String(r.property_code || '').trim()
           const pidRaw = r.property_id || undefined
           const match = properties.find(pp => (pp.code || '') === code)
           const pidNorm = (pidRaw && properties.some(pp => pp.id === pidRaw)) ? pidRaw : (match ? match.id : pidRaw)
           const fid = String(r.fixed_expense_id || '')
+          const genFrom = String(r.generated_from || '')
+          const note = String(r.note || '')
+          const isSnapshot = genFrom === 'recurring_payments' || /^fixed payment/i.test(note)
+          const isOrphanSnapshot = !!(fid && isSnapshot && !recurringIdSet.has(fid))
+          if (isOrphanSnapshot) {
+            orphanCount += 1
+            orphanTotal += Number(r.amount || 0)
+            if (excludeOrphanFixedSnapshots) return []
+          }
           const vendor = fid ? String(mapVendor[fid] || '') : ''
           const baseDetail = String(r.category_detail || '').trim()
           const injectedDetail = (!baseDetail && vendor) ? vendor : baseDetail
-          return ({
+          return [{
             id: r.id,
             kind: 'expense',
             amount: Number(r.amount || 0),
@@ -178,7 +211,7 @@ export default function PropertyRevenuePage() {
             ...(r.due_date ? { due_date: r.due_date } : {}),
             ...(r.status ? { status: r.status } : {}),
             report_category: normalizeReportCategory((r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail))
-          })
+          }]
         })
         const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
           id: t.id,
@@ -193,10 +226,16 @@ export default function PropertyRevenuePage() {
           ...(t.ref_type ? { ref_type: t.ref_type } : {}),
           ...(t.ref_id ? { ref_id: t.ref_id } : {})
         }))
+        if (orphanCount > 0) {
+          const amt = (orphanTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          message.warning({ key: 'orphanFixedExpenseSnapshots', content: `检测到 ${orphanCount} 条孤儿固定支出快照（合计 $${amt}）。当前${excludeOrphanFixedSnapshots ? '已排除' : '仍计入'}房源营收统计。`, duration: 6 })
+        } else {
+          message.destroy('orphanFixedExpenseSnapshots')
+        }
         setTxs([...finMapped, ...peMapped])
       } catch {}
     })()
-  }, [month])
+  }, [month, excludeOrphanFixedSnapshots])
   const start = useMemo(() => {
     const base = month || dayjs()
     if (period === 'fiscal-year') {
@@ -525,6 +564,8 @@ export default function PropertyRevenuePage() {
         {period==='half-year' ? <DatePicker picker="month" value={startMonth} onChange={setStartMonth as any} /> : null}
         <Select allowClear showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="按房号筛选" style={{ width: 240 }} options={sortProperties(properties).map(p=>({ value:p.id, label:p.code || p.address || p.id }))} value={selectedPid} onChange={setSelectedPid} />
         <Button type="primary" onClick={() => { if (!selectedPid) { message.warning('请先选择房号'); return } setPreviewPid(selectedPid); setPreviewOpen(true) }}>生成报表</Button>
+        <span style={{ marginLeft: 8 }}>排除孤儿快照</span>
+        <Switch checked={excludeOrphanFixedSnapshots} onChange={setExcludeOrphanFixedSnapshots as any} />
       </div>
       {/* totals summary removed per request */}
       <div className={styles.tableOuter}>

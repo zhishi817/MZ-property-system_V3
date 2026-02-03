@@ -572,15 +572,20 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0))
   const avg = o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0)
   const updated: Order = { ...base, ...o, id, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg }
-  const prevStatus = String(prev?.status || '')
-  const nextStatus = String((updated as any)?.status || '')
-  if (nextStatus === 'cancelled' && (updated as any).count_in_income == null) {
+  function normalizeStatus(raw: any): string { return String(raw || '').trim().toLowerCase() }
+  function isCanceledStatus(raw: any): boolean {
+    const s = normalizeStatus(raw)
+    return s === 'canceled' || s === 'cancelled'
+  }
+  const prevStatus = normalizeStatus(prev?.status)
+  const nextStatus = normalizeStatus((updated as any)?.status)
+  if (isCanceledStatus(nextStatus) && (updated as any).count_in_income == null) {
     (updated as any).count_in_income = false
   }
-  if (nextStatus !== 'cancelled' && (updated as any).count_in_income == null) {
+  if (!isCanceledStatus(nextStatus) && (updated as any).count_in_income == null) {
     (updated as any).count_in_income = true
   }
-  if (prevStatus !== 'cancelled' && nextStatus === 'cancelled') {
+  if (!isCanceledStatus(prevStatus) && isCanceledStatus(nextStatus)) {
     const role = String(((req as any).user?.role) || '')
     const locked = await isOrderMonthLocked(prev)
     if (!locked) {
@@ -614,26 +619,26 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
         const r1 = await pgUpdate('orders', id, payload, client)
         // revert cancel -> confirmed: clean up cancel_fee records atomically
         const prevSt = prevStatus
-        const nextSt = String((updated as any)?.status || '')
-        if (prevSt === 'cancelled' && nextSt !== 'cancelled') {
+        const nextSt = normalizeStatus((updated as any)?.status)
+        if (!isCanceledStatus(nextSt)) {
           const q1 = await client.query(`SELECT id, occurred_at, amount, currency, note, property_id FROM finance_transactions WHERE ref_type='order' AND ref_id=$1 AND category='cancel_fee'`, [id])
           const txRows: any[] = q1.rows || []
-          for (const t of txRows) {
-            try {
-              const q2 = await client.query(
-                `DELETE FROM company_incomes
-                 WHERE category='cancel_fee'
-                   AND occurred_at=$1
-                   AND amount=$2
-                   AND (property_id IS NOT DISTINCT FROM $3)
-                   AND coalesce(note,'') = coalesce($4,'')
-                 RETURNING *`,
-                [String(t.occurred_at).slice(0,10), Number(t.amount||0), t.property_id || null, String(t.note||'')]
-              )
-              const delIncomes: any[] = q2.rows || []
-              for (const ci of delIncomes) { try { addAudit('CompanyIncome', ci.id, 'delete', ci, null) } catch {} }
-            } catch {}
-          }
+          try {
+            await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_type text;')
+            await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_id text;')
+          } catch {}
+          try {
+            const q2 = await client.query(
+              `DELETE FROM company_incomes
+               WHERE category='cancel_fee'
+                 AND ref_type='order'
+                 AND ref_id=$1
+               RETURNING *`,
+              [id]
+            )
+            const delIncomes: any[] = q2.rows || []
+            for (const ci of delIncomes) { try { addAudit('CompanyIncome', ci.id, 'delete', ci, null) } catch {} }
+          } catch {}
           if (txRows.length) {
             const q3 = await client.query(`DELETE FROM finance_transactions WHERE ref_type='order' AND ref_id=$1 AND category='cancel_fee' RETURNING *`, [id])
             const delTxs: any[] = q3.rows || []

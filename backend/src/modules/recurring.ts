@@ -57,12 +57,14 @@ async function ensureExpensesSchema(client: any) {
   try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;') } catch {}
   try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;') } catch {}
   try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
+  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
 
   try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;') } catch {}
   try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;') } catch {}
   try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;') } catch {}
   try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;') } catch {}
   try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
+  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
 }
 
 const paymentTypeEnum = z.enum(['bank_account', 'bpay', 'payid', 'rent_deduction', 'cash'])
@@ -155,6 +157,7 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
             category: payment.category || 'other',
             category_detail: payment.category_detail || null,
             note: 'Fixed payment snapshot',
+            generated_from: 'recurring_payments',
             fixed_expense_id: payment.id,
             month_key: mk,
             due_date: dueISO,
@@ -163,11 +166,11 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
           }
           if (scope === 'property') payload.property_id = payment.property_id || null
           await client.query(
-            `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12${scope === 'property' ? ',$13' : ''})`,
+            `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})`,
             scope === 'property'
-              ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
-              : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
+              ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
+              : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
           )
           inserted++
         } else if (String((row as any).status || '') !== 'paid') {
@@ -193,6 +196,7 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
             category: payment.category || 'other',
             category_detail: payment.category_detail || null,
             note: 'Fixed payment snapshot',
+            generated_from: 'recurring_payments',
             fixed_expense_id: payment.id,
             month_key: mk,
             due_date: dueISO,
@@ -201,11 +205,11 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
           }
           if (scope === 'property') payload.property_id = payment.property_id || null
           await client.query(
-            `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12${scope === 'property' ? ',$13' : ''})`,
+            `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})`,
             scope === 'property'
-              ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
-              : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
+              ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
+              : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
           )
           inserted++
         }

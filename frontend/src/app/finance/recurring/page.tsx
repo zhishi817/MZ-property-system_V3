@@ -162,7 +162,7 @@ export default function RecurringPage() {
                   rows = Array.isArray(arr) ? arr : []
                 }
                 if (rows.length === 0) {
-                  const bodyi = { occurred_at: todayISO, amount: Number(r.amount||0), currency: 'AUD', category: r.category || 'other', note: 'Fixed payment', fixed_expense_id: r.id, month_key: monthKeyi, due_date: dueISOi, paid_date: todayISO, status: 'paid', property_id: r.property_id }
+                  const bodyi = { occurred_at: todayISO, amount: Number(r.amount||0), currency: 'AUD', category: r.category || 'other', note: 'Fixed payment', generated_from: 'recurring_payments', fixed_expense_id: r.id, month_key: monthKeyi, due_date: dueISOi, paid_date: todayISO, status: 'paid', property_id: r.property_id }
                   const resp = await fetch(`${API_BASE}/crud/${resType}`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(bodyi) })
                   if (!resp.ok && resp.status !== 409) {
                     const errMsg = await resp.text().catch(()=> '')
@@ -294,7 +294,7 @@ export default function RecurringPage() {
         const dim = m.endOf('month').date()
         const dueISO = m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
         const autoPaid = shouldAutoMarkPaidForMonth(startKey || undefined, monthKey, currentMonthKey)
-        const body = { occurred_at: dueISO, amount: Number(t.amount||0), currency: 'AUD', category: t.category || 'other', note: 'Fixed payment snapshot', fixed_expense_id: t.id, month_key: monthKey, due_date: dueISO, status: autoPaid ? 'paid' : 'unpaid', paid_date: autoPaid ? dueISO : null, property_id: t.property_id }
+        const body = { occurred_at: dueISO, amount: Number(t.amount||0), currency: 'AUD', category: t.category || 'other', note: 'Fixed payment snapshot', generated_from: 'recurring_payments', fixed_expense_id: t.id, month_key: monthKey, due_date: dueISO, status: autoPaid ? 'paid' : 'unpaid', paid_date: autoPaid ? dueISO : null, property_id: t.property_id }
         try {
           const qs = new URLSearchParams({ fixed_expense_id: String(t.id), month_key: monthKey })
           const existingRes = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })

@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { requireAnyPerm, requireResourcePerm } from '../auth'
-import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
+import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
 import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } from '../fingerprint'
 import { db, addAudit } from '../store'
 
@@ -1037,7 +1037,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
 
           let toInsert: any = payload
           if (resource === 'property_expenses') {
-            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status']
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status','generated_from']
             const cleaned: any = { id: payload.id }
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -1054,7 +1054,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             } catch {}
             toInsert = cleaned
           } else if (resource === 'company_expenses') {
-            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status']
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status','generated_from']
             const cleaned: any = { id: payload.id }
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -1143,7 +1143,27 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;')
               await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;')
               await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;')
-              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status']
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status','generated_from']
+              const cleaned: any = { id: payload.id }
+              for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+              if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+              if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+              if (cleaned.due_date) cleaned.due_date = String(cleaned.due_date).slice(0,10)
+              if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
+              const row2 = await pgInsert(resource, cleaned)
+              addAudit(resource, String((row2 as any)?.id || ''), 'create', null, row2, (req as any).user?.sub)
+              return res.status(201).json(row2)
+            }
+          } catch (e3) {
+            return res.status(500).json({ message: (e3 as any)?.message || 'create failed (column add)' })
+          }
+        } else if (resource === 'property_expenses' && /column\s+"?generated_from"?\s+of\s+relation\s+"?property_expenses"?\s+does\s+not\s+exist/i.test(msg)) {
+          try {
+            const { pgPool } = require('../dbAdapter')
+            if (pgPool) {
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status','generated_from']
               const cleaned: any = { id: payload.id }
               for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
               if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -1166,7 +1186,27 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;')
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;')
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;')
-              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status']
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status','generated_from']
+              const cleaned: any = { id: payload.id }
+              for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
+              if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
+              if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
+              if (cleaned.due_date) cleaned.due_date = String(cleaned.due_date).slice(0,10)
+              if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
+              const row2 = await pgInsert(resource, cleaned)
+              addAudit(resource, String((row2 as any)?.id || ''), 'create', null, row2, (req as any).user?.sub)
+              return res.status(201).json(row2)
+            }
+          } catch (e4) {
+            return res.status(500).json({ message: (e4 as any)?.message || 'create failed (column add)' })
+          }
+        } else if (resource === 'company_expenses' && /column\s+"?generated_from"?\s+of\s+relation\s+"?company_expenses"?\s+does\s+not\s+exist/i.test(msg)) {
+          try {
+            const { pgPool } = require('../dbAdapter')
+            if (pgPool) {
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status','generated_from']
               const cleaned: any = { id: payload.id }
               for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
               if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -1772,6 +1812,29 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
   try {
     if (hasPg) {
+      if (resource === 'recurring_payments') {
+        const result = await pgRunInTransaction(async (client) => {
+          try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
+          try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
+          const guard = `(generated_from = 'recurring_payments' OR (coalesce(generated_from,'') = '' AND coalesce(note,'') ILIKE 'Fixed payment%'))`
+          const c1 = await client.query(`SELECT count(*)::int AS n FROM company_expenses WHERE fixed_expense_id = $1 AND ${guard}`, [id])
+          const c2 = await client.query(`SELECT count(*)::int AS n FROM property_expenses WHERE fixed_expense_id = $1 AND ${guard}`, [id])
+          const willDeleteCompany = Number(c1.rows?.[0]?.n || 0)
+          const willDeleteProperty = Number(c2.rows?.[0]?.n || 0)
+          const d1 = await client.query(`DELETE FROM company_expenses WHERE fixed_expense_id = $1 AND ${guard} RETURNING id`, [id])
+          const d2 = await client.query(`DELETE FROM property_expenses WHERE fixed_expense_id = $1 AND ${guard} RETURNING id`, [id])
+          const dt = await client.query(`DELETE FROM recurring_payments WHERE id = $1 RETURNING id`, [id])
+          return {
+            will_delete_company_expenses: willDeleteCompany,
+            will_delete_property_expenses: willDeleteProperty,
+            deleted_company_expenses: Number(d1.rowCount || 0),
+            deleted_property_expenses: Number(d2.rowCount || 0),
+            deleted_template: Number(dt.rowCount || 0),
+          }
+        })
+        addAudit(resource, id, 'delete', null, null, (req as any).user?.sub)
+        return res.json({ ok: true, ...result })
+      }
       await pgDelete(resource, id)
       addAudit(resource, id, 'delete', null, null, (req as any).user?.sub)
       return res.json({ ok: true })
