@@ -481,6 +481,7 @@ ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS payment_type text;
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bpay_code text;
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS pay_mobile_number text;
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS report_category text;
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS start_month_key text;
 
 CREATE TABLE IF NOT EXISTS fixed_expenses (
   id text PRIMARY KEY,

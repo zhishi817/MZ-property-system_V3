@@ -28,8 +28,14 @@ export default function RBACPage() {
   const [users, setUsers] = useState<User[]>([])
   const [userOpen, setUserOpen] = useState(false)
   const [userForm] = Form.useForm()
+  const [editUserOpen, setEditUserOpen] = useState(false)
+  const [editUser, setEditUser] = useState<User | null>(null)
+  const [editUserForm] = Form.useForm()
   const [roleOpen, setRoleOpen] = useState(false)
   const [roleForm] = Form.useForm()
+  const [editRoleOpen, setEditRoleOpen] = useState(false)
+  const [editRole, setEditRole] = useState<Role | null>(null)
+  const [editRoleForm] = Form.useForm()
   const [pwOpen, setPwOpen] = useState(false)
   const [pwUser, setPwUser] = useState<User | null>(null)
   const [pwForm] = Form.useForm()
@@ -180,10 +186,72 @@ export default function RBACPage() {
     if (res.ok) { message.success('已创建用户'); setUserOpen(false); userForm.resetFields(); load() } else { message.error('创建失败') }
   }
 
+  function openEditUser(u: User) {
+    setEditUser(u)
+    setEditUserOpen(true)
+    editUserForm.setFieldsValue({ username: u.username, email: u.email || '', role: u.role })
+  }
+
+  async function submitEditUser() {
+    const v = await editUserForm.validateFields()
+    const id = editUser?.id
+    if (!id) return
+    const payload: any = { ...v }
+    if (!payload.email) delete payload.email
+    const res = await fetch(`${API_BASE}/rbac/users/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+    if (res.ok) {
+      message.success('已更新用户')
+      setEditUserOpen(false)
+      setEditUser(null)
+      editUserForm.resetFields()
+      load()
+    } else {
+      let msg = '更新失败'
+      try {
+        const j = await res.json()
+        if (j?.message) msg = String(j.message)
+      } catch {}
+      message.error(msg)
+    }
+  }
+
   async function submitRole() {
     const v = await roleForm.validateFields()
     const res = await fetch(`${API_BASE}/rbac/roles`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(v) })
     if (res.ok) { message.success('已创建角色'); setRoleOpen(false); roleForm.resetFields(); load() } else { message.error('创建失败') }
+  }
+
+  function openEditRole(r: Role) {
+    setEditRole(r)
+    setEditRoleOpen(true)
+    editRoleForm.setFieldsValue({ name: r.name, description: r.description || '' })
+  }
+
+  async function submitEditRole() {
+    const v = await editRoleForm.validateFields()
+    const id = editRole?.id
+    if (!id) return
+    const res = await fetch(`${API_BASE}/rbac/roles/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(v) })
+    if (res.ok) {
+      const updated = await res.json()
+      message.success('已更新角色')
+      setEditRoleOpen(false)
+      setEditRole(null)
+      editRoleForm.resetFields()
+      if (open && current?.id === id) setOpen(false)
+      await load()
+      try { await preloadRolePerms() } catch {}
+      if (open && current?.id === id && updated?.id) {
+        try { window.localStorage.removeItem(`rbac:rolePermDraft:${id}`) } catch {}
+      }
+    } else {
+      let msg = '更新失败'
+      try {
+        const j = await res.json()
+        if (j?.message) msg = String(j.message)
+      } catch {}
+      message.error(msg)
+    }
   }
 
   function openResetPassword(u: User) {
@@ -207,10 +275,45 @@ export default function RBACPage() {
     } })
   }
 
+  async function removeRole(role: Role) {
+    Modal.confirm({
+      title: '确认删除角色',
+      content: `角色：${role.name}`,
+      okType: 'danger',
+      onOk: async () => {
+        const res = await fetch(`${API_BASE}/rbac/roles/${encodeURIComponent(role.id)}`, { method: 'DELETE', headers: authHeaders() })
+        if (res.ok) {
+          try { window.localStorage.removeItem(`rbac:rolePermDraft:${role.id}`) } catch {}
+          if (open && current?.id === role.id) setOpen(false)
+          if (editRoleOpen && editRole?.id === role.id) { setEditRoleOpen(false); setEditRole(null) }
+          message.success('已删除角色')
+          await load()
+          try { await preloadRolePerms() } catch {}
+          return
+        }
+        let msg = '删除失败'
+        try {
+          const j = await res.json()
+          if (j?.message) msg = String(j.message)
+        } catch {}
+        message.error(msg)
+      },
+    })
+  }
+
   const columns = [
     { title: '角色', dataIndex: 'name' },
     { title: '描述', dataIndex: 'description' },
-    { title: '操作', render: (_: any, r: Role) => (<Space>{hasPerm('rbac.manage') && <Button onClick={() => edit(r)}>配置权限</Button>}</Space>) },
+    {
+      title: '操作',
+      render: (_: any, r: Role) => (
+        <Space>
+          {hasPerm('rbac.manage') && <Button onClick={() => edit(r)}>配置权限</Button>}
+          {hasPerm('rbac.manage') && <Button onClick={() => openEditRole(r)}>编辑</Button>}
+          {hasPerm('rbac.manage') && <Button danger disabled={r.name === 'admin'} onClick={() => removeRole(r)}>删除</Button>}
+        </Space>
+      ),
+    },
   ]
 
   const userCols = [
@@ -219,6 +322,7 @@ export default function RBACPage() {
     { title: '角色', dataIndex: 'role' },
     { title: '操作', render: (_: any, r: User) => (
       <Space>
+        {hasPerm('rbac.manage') && <Button onClick={() => openEditUser(r)}>编辑</Button>}
         {hasPerm('rbac.manage') && <Button onClick={() => openResetPassword(r)}>设置新密码</Button>}
         {hasPerm('rbac.manage') && <Button danger onClick={() => removeUser(r.id)}>删除</Button>}
       </Space>
@@ -467,8 +571,31 @@ export default function RBACPage() {
           <Form.Item name="password" label="密码" rules={[{ required: true, min: 6 }]}><Input.Password /></Form.Item>
         </Form>
       </Modal>
+      <Modal
+        open={editUserOpen}
+        onCancel={() => { setEditUserOpen(false); setEditUser(null) }}
+        onOk={submitEditUser}
+        title={`编辑用户：${editUser?.username || ''}`}
+      >
+        <Form form={editUserForm} layout="vertical">
+          <Form.Item name="username" label="用户名" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="email" label="邮箱" rules={[{ type: 'email' }]}><Input placeholder="留空则不修改" /></Form.Item>
+          <Form.Item name="role" label="角色" rules={[{ required: true }]}><Select options={roles.map(r => ({ value: r.name, label: r.name }))} /></Form.Item>
+        </Form>
+      </Modal>
       <Modal open={roleOpen} onCancel={() => setRoleOpen(false)} onOk={submitRole} title="新建角色">
         <Form form={roleForm} layout="vertical">
+          <Form.Item name="name" label="角色名" rules={[{ required: true }]}><Input placeholder="例如：ops_manager" /></Form.Item>
+          <Form.Item name="description" label="描述"><Input.TextArea rows={3} /></Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        open={editRoleOpen}
+        onCancel={() => { setEditRoleOpen(false); setEditRole(null) }}
+        onOk={submitEditRole}
+        title={`编辑角色：${editRole?.name || ''}`}
+      >
+        <Form form={editRoleForm} layout="vertical">
           <Form.Item name="name" label="角色名" rules={[{ required: true }]}><Input placeholder="例如：ops_manager" /></Form.Item>
           <Form.Item name="description" label="描述"><Input.TextArea rows={3} /></Form.Item>
         </Form>

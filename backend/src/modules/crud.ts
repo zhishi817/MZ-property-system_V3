@@ -275,6 +275,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
                 status text,
                 last_paid_date date,
                 next_due_date date,
+                start_month_key text,
                 pay_account_name text,
                 pay_bsb text,
                 pay_account_number text,
@@ -1357,6 +1358,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 status text,
                 last_paid_date date,
                 next_due_date date,
+                start_month_key text,
                 pay_account_name text,
                 pay_bsb text,
                 pay_account_number text,
@@ -1366,6 +1368,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 payment_type text,
                 bpay_code text,
                 pay_mobile_number text,
+                report_category text,
                 created_at timestamptz DEFAULT now(),
                 updated_at timestamptz
               );`)
