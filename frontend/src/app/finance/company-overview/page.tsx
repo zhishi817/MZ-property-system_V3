@@ -29,6 +29,8 @@ export default function PropertyRevenuePage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [txs, setTxs] = useState<Tx[]>([])
   const [excludeOrphanFixedSnapshots, setExcludeOrphanFixedSnapshots] = useState<boolean>(true)
+  const [orphanFixedSnapshots, setOrphanFixedSnapshots] = useState<any[]>([])
+  const [orphanOpen, setOrphanOpen] = useState(false)
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
   const [selectedPid, setSelectedPid] = useState<string | undefined>(undefined)
@@ -79,6 +81,7 @@ export default function PropertyRevenuePage() {
         }
         let orphanCount = 0
         let orphanTotal = 0
+        const orphanRows: any[] = []
         const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).flatMap((r: any) => {
           const code = String(r.property_code || '').trim()
           const pidRaw = r.property_id || undefined
@@ -92,6 +95,7 @@ export default function PropertyRevenuePage() {
           if (isOrphanSnapshot) {
             orphanCount += 1
             orphanTotal += Number(r.amount || 0)
+            if (orphanRows.length < 50) orphanRows.push(r)
             if (excludeOrphanFixedSnapshots) return []
           }
           const vendor = fid ? String(mapVendor[fid] || '') : ''
@@ -130,9 +134,19 @@ export default function PropertyRevenuePage() {
           ...(t.ref_id ? { ref_id: t.ref_id } : {}),
           ...(t.invoice_url ? { invoice_url: t.invoice_url } : {})
         }))
+        setOrphanFixedSnapshots(orphanRows)
         if (orphanCount > 0) {
           const amt = (orphanTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-          message.warning({ key: 'orphanFixedExpenseSnapshots', content: `检测到 ${orphanCount} 条孤儿固定支出快照（合计 $${amt}）。当前${excludeOrphanFixedSnapshots ? '已排除' : '仍计入'}房源营收统计。`, duration: 6 })
+          message.warning({
+            key: 'orphanFixedExpenseSnapshots',
+            content: (
+              <span>
+                检测到 {orphanCount} 条孤儿固定支出快照（合计 ${amt}）。当前{excludeOrphanFixedSnapshots ? '已排除' : '仍计入'}房源营收统计。
+                <Button type="link" style={{ padding: 0, marginLeft: 8 }} onClick={() => setOrphanOpen(true)}>查看明细</Button>
+              </span>
+            ),
+            duration: 8
+          })
         } else {
           message.destroy('orphanFixedExpenseSnapshots')
         }
@@ -177,6 +191,7 @@ export default function PropertyRevenuePage() {
         }
         let orphanCount = 0
         let orphanTotal = 0
+        const orphanRows: any[] = []
         const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).flatMap((r: any) => {
           const code = String(r.property_code || '').trim()
           const pidRaw = r.property_id || undefined
@@ -190,6 +205,7 @@ export default function PropertyRevenuePage() {
           if (isOrphanSnapshot) {
             orphanCount += 1
             orphanTotal += Number(r.amount || 0)
+            if (orphanRows.length < 50) orphanRows.push(r)
             if (excludeOrphanFixedSnapshots) return []
           }
           const vendor = fid ? String(mapVendor[fid] || '') : ''
@@ -226,9 +242,19 @@ export default function PropertyRevenuePage() {
           ...(t.ref_type ? { ref_type: t.ref_type } : {}),
           ...(t.ref_id ? { ref_id: t.ref_id } : {})
         }))
+        setOrphanFixedSnapshots(orphanRows)
         if (orphanCount > 0) {
           const amt = (orphanTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-          message.warning({ key: 'orphanFixedExpenseSnapshots', content: `检测到 ${orphanCount} 条孤儿固定支出快照（合计 $${amt}）。当前${excludeOrphanFixedSnapshots ? '已排除' : '仍计入'}房源营收统计。`, duration: 6 })
+          message.warning({
+            key: 'orphanFixedExpenseSnapshots',
+            content: (
+              <span>
+                检测到 {orphanCount} 条孤儿固定支出快照（合计 ${amt}）。当前{excludeOrphanFixedSnapshots ? '已排除' : '仍计入'}房源营收统计。
+                <Button type="link" style={{ padding: 0, marginLeft: 8 }} onClick={() => setOrphanOpen(true)}>查看明细</Button>
+              </span>
+            ),
+            duration: 8
+          })
         } else {
           message.destroy('orphanFixedExpenseSnapshots')
         }
@@ -567,6 +593,33 @@ export default function PropertyRevenuePage() {
         <span style={{ marginLeft: 8 }}>排除孤儿快照</span>
         <Switch checked={excludeOrphanFixedSnapshots} onChange={setExcludeOrphanFixedSnapshots as any} />
       </div>
+      <Modal
+        open={orphanOpen}
+        onCancel={() => setOrphanOpen(false)}
+        onOk={() => setOrphanOpen(false)}
+        okText="关闭"
+        cancelButtonProps={{ style: { display: 'none' } }}
+        title="孤儿固定支出快照明细"
+        width={980}
+      >
+        <Table
+          rowKey={(r: any) => String(r.id)}
+          size="small"
+          pagination={{ pageSize: 20 }}
+          dataSource={orphanFixedSnapshots || []}
+          columns={[
+            { title: 'expense_id', dataIndex: 'id', width: 220, render: (v: any) => <span style={{ fontFamily: 'monospace' }}>{String(v || '')}</span> },
+            { title: 'month', dataIndex: 'month_key', width: 90 },
+            { title: 'occurred_at', dataIndex: 'occurred_at', width: 110 },
+            { title: 'amount', dataIndex: 'amount', width: 110, align: 'right', render: (v: any) => `$${(Number(v || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+            { title: 'category', dataIndex: 'category', width: 140 },
+            { title: 'note', dataIndex: 'note', width: 220, render: (v: any) => <span style={{ whiteSpace: 'normal' }}>{String(v || '')}</span> },
+            { title: 'fixed_expense_id', dataIndex: 'fixed_expense_id', width: 220, render: (v: any) => <span style={{ fontFamily: 'monospace' }}>{String(v || '')}</span> },
+            { title: 'generated_from', dataIndex: 'generated_from', width: 160 },
+            { title: 'property_id', dataIndex: 'property_id', width: 220, render: (v: any) => <span style={{ fontFamily: 'monospace' }}>{String(v || '')}</span> },
+          ]}
+        />
+      </Modal>
       {/* totals summary removed per request */}
       <div className={styles.tableOuter}>
       <Table
