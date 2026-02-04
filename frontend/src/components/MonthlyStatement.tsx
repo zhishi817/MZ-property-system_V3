@@ -408,7 +408,7 @@ export default forwardRef<HTMLDivElement, {
               const hasMonthDay = daysRow.some(d => d.isSame(start, 'month'))
               if (!hasMonthDay && segs.length === 0) return null
               return (
-                <div key={idx} style={{ position:'relative', minHeight: Math.max(120, laneCount * 36 + 48), margin:'6px 0' }}>
+                <div key={idx} data-pdf-break-before="true" style={{ position:'relative', minHeight: Math.max(120, laneCount * 36 + 48), margin:'6px 0' }}>
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:0, padding:'2px 0', fontSize:11 }}>
                     {daysRow.map((d, i) => {
                       const inMonth = d.isSame(start, 'month')
