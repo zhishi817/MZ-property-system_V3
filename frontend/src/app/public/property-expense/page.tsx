@@ -6,17 +6,17 @@ import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { API_BASE } from '../../../lib/api'
 
-function storageKeyPassword() { return 'public_company_expense_password' }
-function storageKeyToken() { return 'public_company_expense_token' }
+function storageKeyPassword() { return 'public_property_expense_password' }
+function storageKeyToken() { return 'public_property_expense_token' }
 
-export default function PublicCompanyExpensePage() {
+export default function PublicPropertyExpensePage() {
   const { message } = App.useApp()
   const [form] = Form.useForm()
   const [pwd, setPwd] = useState('')
   const [token, setToken] = useState<string>('')
   const [loggingIn, setLoggingIn] = useState(false)
   const [invoiceFiles, setInvoiceFiles] = useState<UploadFile[]>([])
-  const [invoiceUrl, setInvoiceUrl] = useState<string>('')
+  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
 
   useEffect(() => {
     try {
@@ -28,18 +28,14 @@ export default function PublicCompanyExpensePage() {
   }, [])
 
   const categoryOptions = useMemo(() => ([
-    { value: 'office', label: '办公' },
-    { value: 'bedding_fee', label: '床品费' },
-    { value: 'office_rent', label: '办公室租金' },
-    { value: 'car_loan', label: '车贷' },
     { value: 'electricity', label: '电费' },
-    { value: 'internet', label: '网费' },
     { value: 'water', label: '水费' },
-    { value: 'fuel', label: '油费' },
-    { value: 'parking_fee', label: '车位费' },
-    { value: 'maintenance_materials', label: '维修材料费' },
-    { value: 'tax', label: '税费' },
-    { value: 'service', label: '服务采购' },
+    { value: 'gas_hot_water', label: '煤气/热水费' },
+    { value: 'internet', label: '网费' },
+    { value: 'consumables', label: '消耗品费' },
+    { value: 'carpark', label: '车位费' },
+    { value: 'owners_corp', label: '物业费' },
+    { value: 'council_rate', label: '市政费' },
     { value: 'other', label: '其他' },
   ]), [])
 
@@ -49,7 +45,7 @@ export default function PublicCompanyExpensePage() {
     if (token) return token
     setLoggingIn(true)
     try {
-      const res = await fetch(`${API_BASE}/public/company-expense/login`, {
+      const res = await fetch(`${API_BASE}/public/property-expense/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: pass })
@@ -75,13 +71,29 @@ export default function PublicCompanyExpensePage() {
     }
   }
 
-  function xhrUpload(file: any, tk: string, onProgress?: (pct: number) => void): Promise<string> {
+  async function loadProperties(tk: string) {
+    try {
+      const res = await fetch(`${API_BASE}/public/property-expense/properties`, { headers: { Authorization: `Bearer ${tk}` } })
+      const j = await res.json().catch(() => null)
+      if (!res.ok) throw new Error(String(j?.message || `HTTP ${res.status}`))
+      setProperties(Array.isArray(j) ? j : [])
+    } catch {
+      setProperties([])
+    }
+  }
+
+  useEffect(() => {
+    if (!token) return
+    loadProperties(token)
+  }, [token])
+
+  function xhrUpload(file: any, tk: string, expenseId: string, onProgress?: (pct: number) => void): Promise<string> {
     return new Promise((resolve, reject) => {
       try {
         const fd = new FormData()
         fd.append('file', file)
         const xhr = new XMLHttpRequest()
-        xhr.open('POST', `${API_BASE}/public/company-expense/upload`)
+        xhr.open('POST', `${API_BASE}/public/property-expense/${expenseId}/upload`)
         xhr.setRequestHeader('Authorization', `Bearer ${tk}`)
         xhr.upload.onprogress = (evt) => {
           if (evt.lengthComputable && onProgress) {
@@ -93,7 +105,7 @@ export default function PublicCompanyExpensePage() {
           if (xhr.readyState !== 4) return
           try {
             const j = JSON.parse(xhr.responseText || '{}')
-            if (xhr.status >= 200 && xhr.status < 300 && j?.url) resolve(String(j.url))
+            if (xhr.status >= 200 && xhr.status < 300 && (j?.url || j?.id)) resolve(String(j?.url || 'ok'))
             else reject(new Error(String(j?.message || 'upload failed')))
           } catch (e) {
             reject(e)
@@ -112,34 +124,48 @@ export default function PublicCompanyExpensePage() {
     const tk = await ensureToken()
     if (!tk) return
     const payload = {
+      property_id: String(v.property_id || '').trim(),
       occurred_at: v.occurred_at ? dayjs(v.occurred_at).format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD'),
       amount: Number(v.amount || 0),
       currency: 'AUD',
       category: v.category,
       category_detail: v.category === 'other' ? String(v.category_detail || '').trim() : undefined,
       note: String(v.note || '').trim(),
-      invoice_url: invoiceUrl || undefined,
     }
     try {
-      const res = await fetch(`${API_BASE}/public/company-expense/submit`, {
+      const res = await fetch(`${API_BASE}/public/property-expense/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk}` },
         body: JSON.stringify(payload)
       })
       const j = await res.json().catch(() => null)
       if (!res.ok) { message.error(j?.message || '提交失败'); return }
+      const id = String(j?.id || j?.row?.id || '')
+      const file = invoiceFiles?.[0]?.originFileObj as any
+      if (id && file) {
+        try {
+          await xhrUpload(file, tk, id)
+        } catch (e: any) {
+          message.error(`发票上传失败：${e?.message || ''}`)
+        }
+      }
       message.success('支出已提交')
       form.resetFields()
       setInvoiceFiles([])
-      setInvoiceUrl('')
     } catch {
       message.error('提交失败')
     }
   }
 
+  const propertyOptions = useMemo(() => {
+    const arr = Array.isArray(properties) ? properties : []
+    const sorted = [...arr].sort((a, b) => String(a.code || a.address || a.id).localeCompare(String(b.code || b.address || b.id)))
+    return sorted.map((p) => ({ value: p.id, label: p.code || p.address || p.id }))
+  }, [properties])
+
   return (
     <div style={{ maxWidth: 720, margin: '0 auto', padding: 16 }}>
-      <Card title="公司支出登记（外部）" style={{ borderRadius: 12 }} extra={<Typography.Text type="secondary">提交后会写入公司支出</Typography.Text>}>
+      <Card title="房源支出登记（外部）" style={{ borderRadius: 12 }} extra={<Typography.Text type="secondary">提交后会写入房源支出</Typography.Text>}>
         <Form
           form={form}
           layout="vertical"
@@ -161,6 +187,21 @@ export default function PublicCompanyExpensePage() {
             <div style={{ width: 4, height: 18, background:'#1677ff', borderRadius: 2 }} />
             <Typography.Text style={{ color:'#1d39c4', fontWeight: 600 }}>支出信息</Typography.Text>
           </div>
+
+          <Form.Item name="property_id" label="房号" rules={[{ required: true }]}>
+            <Select
+              showSearch
+              optionFilterProp="label"
+              placeholder={token ? '请选择房号' : '请先输入密码并提交一次以获取房号列表'}
+              options={propertyOptions}
+              filterOption={(input, option) => String((option as any)?.label || '').toLowerCase().includes(String(input || '').toLowerCase())}
+              onDropdownVisibleChange={async (open) => {
+                if (!open) return
+                const tk = await ensureToken()
+                if (tk) loadProperties(tk)
+              }}
+            />
+          </Form.Item>
 
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
             <Form.Item name="occurred_at" label="日期" rules={[{ required: true }]}>
@@ -197,33 +238,15 @@ export default function PublicCompanyExpensePage() {
             <Upload
               fileList={invoiceFiles}
               maxCount={1}
-              onRemove={() => { setInvoiceFiles([]); setInvoiceUrl(''); return true }}
-              customRequest={async ({ file, onProgress, onSuccess, onError }: any) => {
-                const tk = await ensureToken()
-                if (!tk) { onError && onError(new Error('unauthorized')); return }
-                const uid = Math.random().toString(36).slice(2)
-                setInvoiceFiles([{ uid, name: (file as any)?.name || 'invoice', status: 'uploading', percent: 0 } as UploadFile])
-                try {
-                  const url = await xhrUpload(file, tk, (pct) => {
-                    onProgress && onProgress({ percent: pct })
-                    setInvoiceFiles([{ uid, name: (file as any)?.name || 'invoice', status: 'uploading', percent: pct } as UploadFile])
-                  })
-                  setInvoiceUrl(url)
-                  setInvoiceFiles([{ uid, name: (file as any)?.name || 'invoice', status: 'done', percent: 100, url } as UploadFile])
-                  onSuccess && onSuccess({ url }, file)
-                } catch (e) {
-                  setInvoiceFiles([{ uid, name: (file as any)?.name || 'invoice', status: 'error' } as UploadFile])
-                  onError && onError(e)
-                }
-              }}
+              beforeUpload={() => false}
+              onChange={(info) => setInvoiceFiles(info.fileList)}
             >
-              <Button>上传发票</Button>
+              <Button>选择发票文件</Button>
             </Upload>
           </Form.Item>
 
           <Space>
             <Button type="primary" onClick={submit} loading={loggingIn}>提交</Button>
-            <Button onClick={() => { form.resetFields(); setInvoiceFiles([]); setInvoiceUrl('') }}>重置</Button>
           </Space>
         </Form>
       </Card>

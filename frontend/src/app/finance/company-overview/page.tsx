@@ -692,7 +692,7 @@ export default function PropertyRevenuePage() {
             <style>
               html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
               @page { margin: 12mm; size: A4 ${period==='fiscal-year' ? 'landscape' : 'portrait'}; }
-              body { width: ${period==='fiscal-year' ? '277mm' : '190mm'}; margin: 0 auto; }
+              body { width: ${period==='fiscal-year' ? '277mm' : '190mm'}; margin: 0 auto; box-sizing: border-box; padding: 0 2mm; }
               table { width: 100%; border-collapse: collapse; }
               th, td { border-bottom: 1px solid #ddd; }
               .landlord-calendar .mz-booking { border-radius: 0; }
@@ -746,7 +746,7 @@ export default function PropertyRevenuePage() {
             styleEl.innerHTML = `
               html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; background:#ffffff; }
               body { margin: 0; }
-              .__pdf_root__ { width: ${mmWidth}; margin: 0 auto; }
+              .__pdf_root__ { width: ${mmWidth}; margin: 0 auto; box-sizing: border-box; padding: 0 2mm; }
               table { width: 100%; border-collapse: collapse; }
               th, td { border-bottom: 1px solid #ddd; }
               .landlord-calendar .mz-booking { border-radius: 0; }
@@ -768,6 +768,22 @@ export default function PropertyRevenuePage() {
             sandbox.appendChild(node)
             const scaleFactor = 2
             updateMerge(20, '正在渲染页面...')
+            const rootRect = node.getBoundingClientRect()
+            const anchors = Array.from(node.querySelectorAll('[data-keep-with-next="true"]')) as HTMLElement[]
+            const anchorYs = anchors
+              .map(a => ((a.getBoundingClientRect().top - rootRect.top) * scaleFactor))
+              .filter((n) => Number.isFinite(n))
+              .sort((a,b)=>a-b)
+            const avoidRows = Array.from(node.querySelectorAll('tr')) as HTMLElement[]
+            const avoidRanges = avoidRows
+              .map((el) => {
+                const r = el.getBoundingClientRect()
+                const top = (r.top - rootRect.top) * scaleFactor
+                const bottom = (r.bottom - rootRect.top) * scaleFactor
+                return { top, bottom }
+              })
+              .filter((r) => Number.isFinite(r.top) && Number.isFinite(r.bottom) && r.bottom > r.top)
+              .sort((a,b)=>a.top-b.top)
             const canvas = await html2canvas(node, { scale: scaleFactor, useCORS: true, allowTaint: true, backgroundColor: '#ffffff' })
             try { document.body.removeChild(sandbox) } catch {}
             updateMerge(40, '正在生成PDF分页...')
@@ -779,15 +795,20 @@ export default function PropertyRevenuePage() {
             const contentHeightMm = pageHeight - margin * 2
             const pxPerMm = canvas.width / contentWidthMm
             const pageContentHeightPx = contentHeightMm * pxPerMm
-            const anchors = Array.from(node.querySelectorAll('[data-keep-with-next="true"]')) as HTMLElement[]
-            const anchorYs = anchors.map(a => a.offsetTop * scaleFactor).sort((a,b)=>a-b)
             const reserve = 60 * scaleFactor
+            const minSlice = 80 * scaleFactor
             let y = 0
             while (y < canvas.height) {
               let sliceHeightPx = Math.min(pageContentHeightPx, canvas.height - y)
               const endCandidate = y + sliceHeightPx
               const near = anchorYs.find(pos => pos > y && pos <= endCandidate && (endCandidate - pos) < reserve)
               if (near) sliceHeightPx = Math.max(10, near - y)
+              const end2 = y + sliceHeightPx
+              const cut = avoidRanges.find(r => end2 > r.top && end2 < r.bottom)
+              if (cut) {
+                const adjusted = cut.top - y
+                if (adjusted >= minSlice) sliceHeightPx = adjusted
+              }
               const sliceCanvas = document.createElement('canvas')
               sliceCanvas.width = canvas.width
               sliceCanvas.height = sliceHeightPx
