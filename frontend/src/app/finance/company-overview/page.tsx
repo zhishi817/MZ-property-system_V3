@@ -774,6 +774,11 @@ export default function PropertyRevenuePage() {
               .map(a => ((a.getBoundingClientRect().top - rootRect.top) * scaleFactor))
               .filter((n) => Number.isFinite(n))
               .sort((a,b)=>a-b)
+            const breakEls = Array.from(node.querySelectorAll('[data-pdf-break-before="true"]')) as HTMLElement[]
+            const breakYs = breakEls
+              .map(a => ((a.getBoundingClientRect().top - rootRect.top) * scaleFactor))
+              .filter((n) => Number.isFinite(n))
+              .sort((a,b)=>a-b)
             const avoidRows = Array.from(node.querySelectorAll('tr')) as HTMLElement[]
             const avoidRanges = avoidRows
               .map((el) => {
@@ -797,6 +802,26 @@ export default function PropertyRevenuePage() {
             const pageContentHeightPx = contentHeightMm * pxPerMm
             const reserve = 60 * scaleFactor
             const minSlice = 80 * scaleFactor
+            const tailGap = 16 * scaleFactor
+            const isBlankSlice = (c: HTMLCanvasElement) => {
+              try {
+                const ctx = c.getContext('2d', { willReadFrequently: true } as any) as any
+                if (!ctx) return false
+                const w = c.width, h = c.height
+                const samples = 64
+                for (let i = 0; i < samples; i++) {
+                  const x = Math.floor(((i % 8) + 0.5) * (w / 8))
+                  const y0 = Math.floor((Math.floor(i / 8) + 0.5) * (h / 8))
+                  const d = ctx.getImageData(Math.min(w - 1, x), Math.min(h - 1, y0), 1, 1).data
+                  const a = d[3]
+                  const r = d[0], g = d[1], b = d[2]
+                  if (a > 10 && (r < 245 || g < 245 || b < 245)) return false
+                }
+                return true
+              } catch {
+                return false
+              }
+            }
             let y = 0
             while (y < canvas.height) {
               let sliceHeightPx = Math.min(pageContentHeightPx, canvas.height - y)
@@ -809,11 +834,25 @@ export default function PropertyRevenuePage() {
                 const adjusted = cut.top - y
                 if (adjusted >= minSlice) sliceHeightPx = adjusted
               }
+              const end3 = y + sliceHeightPx
+              const bp = (() => {
+                for (let i = breakYs.length - 1; i >= 0; i--) {
+                  const v = breakYs[i]
+                  if (v > y + minSlice && v < end3 - tailGap) return v
+                }
+                return null
+              })()
+              if (bp) {
+                const adjusted = bp - y
+                if (adjusted >= minSlice) sliceHeightPx = adjusted
+              }
               const sliceCanvas = document.createElement('canvas')
               sliceCanvas.width = canvas.width
               sliceCanvas.height = sliceHeightPx
               const ctx = sliceCanvas.getContext('2d')!
               ctx.drawImage(canvas, 0, y, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx)
+              if (sliceHeightPx < minSlice && (canvas.height - (y + sliceHeightPx)) > minSlice) { y += sliceHeightPx; continue }
+              if (isBlankSlice(sliceCanvas)) { y += sliceHeightPx; continue }
               const sliceImg = sliceCanvas.toDataURL('image/jpeg', 0.82)
               const sliceHeightMm = sliceHeightPx / pxPerMm
               if (y === 0) {

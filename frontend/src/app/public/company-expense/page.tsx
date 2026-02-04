@@ -47,6 +47,12 @@ export default function PublicCompanyExpensePage() {
     const pass = String(pwd || '').trim()
     if (!pass) { message.error('请输入访问密码'); return null }
     if (token) return token
+    return await loginAndStore(pass)
+  }
+
+  async function loginAndStore(passRaw?: string): Promise<string | null> {
+    const pass = String(passRaw ?? pwd ?? '').trim()
+    if (!pass) { message.error('请输入访问密码'); return null }
     setLoggingIn(true)
     try {
       const res = await fetch(`${API_BASE}/public/company-expense/login`, {
@@ -58,21 +64,28 @@ export default function PublicCompanyExpensePage() {
       if (res.ok && j?.token) {
         const tk = String(j.token)
         setToken(tk)
+        try { localStorage.setItem(storageKeyPassword(), pass) } catch {}
         try { localStorage.setItem(storageKeyToken(), tk) } catch {}
+        message.success('密码认证成功')
         return tk
       }
       try { localStorage.removeItem(storageKeyToken()) } catch {}
       setToken('')
       message.error(j?.message || '认证失败')
       return null
-    } catch {
+    } catch (e: any) {
       try { localStorage.removeItem(storageKeyToken()) } catch {}
       setToken('')
-      message.error('认证失败')
+      message.error(e?.message || '认证失败')
       return null
     } finally {
       setLoggingIn(false)
     }
+  }
+
+  function clearAuth() {
+    setToken('')
+    try { localStorage.removeItem(storageKeyToken()) } catch {}
   }
 
   function xhrUpload(file: any, tk: string, onProgress?: (pct: number) => void): Promise<string> {
@@ -108,9 +121,8 @@ export default function PublicCompanyExpensePage() {
   }
 
   async function submit() {
+    if (!token) { message.error('请先验证访问密码'); return }
     const v = await form.validateFields()
-    const tk = await ensureToken()
-    if (!tk) return
     const payload = {
       occurred_at: v.occurred_at ? dayjs(v.occurred_at).format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD'),
       amount: Number(v.amount || 0),
@@ -123,10 +135,15 @@ export default function PublicCompanyExpensePage() {
     try {
       const res = await fetch(`${API_BASE}/public/company-expense/submit`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(payload)
       })
       const j = await res.json().catch(() => null)
+      if (res.status === 401) {
+        clearAuth()
+        message.error('认证已失效，请重新验证密码')
+        return
+      }
       if (!res.ok) { message.error(j?.message || '提交失败'); return }
       message.success('支出已提交')
       form.resetFields()
@@ -140,23 +157,27 @@ export default function PublicCompanyExpensePage() {
   return (
     <div style={{ maxWidth: 720, margin: '0 auto', padding: 16 }}>
       <Card title="公司支出登记（外部）" style={{ borderRadius: 12 }} extra={<Typography.Text type="secondary">提交后会写入公司支出</Typography.Text>}>
+        <div style={{ borderBottom: '1px solid #e6f4ff', paddingBottom: 8, marginBottom: 16, display:'flex', alignItems:'center', gap:8 }}>
+          <LockOutlined style={{ color:'#1677ff' }} />
+          <Typography.Text style={{ color:'#1d39c4', fontWeight: 600 }}>访问密码</Typography.Text>
+        </div>
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Space wrap>
+            <Input.Password placeholder="请输入访问密码" value={pwd} onChange={(e)=>setPwd(e.target.value)} style={{ width: 260 }} />
+            <Button type="primary" onClick={() => loginAndStore()} loading={loggingIn}>验证并保存</Button>
+            {token ? <Typography.Text type="success">已认证</Typography.Text> : <Typography.Text type="secondary">未认证</Typography.Text>}
+            {token ? <Button onClick={clearAuth}>退出</Button> : null}
+          </Space>
+        </Space>
+
+        <div style={{ height: 16 }} />
+
         <Form
           form={form}
           layout="vertical"
           initialValues={{ occurred_at: dayjs() }}
+          disabled={!token}
         >
-          <div style={{ borderBottom: '1px solid #e6f4ff', paddingBottom: 8, marginBottom: 16, display:'flex', alignItems:'center', gap:8 }}>
-            <LockOutlined style={{ color:'#1677ff' }} />
-            <Typography.Text style={{ color:'#1d39c4', fontWeight: 600 }}>访问密码</Typography.Text>
-          </div>
-          <Form.Item name="password" label="访问密码" rules={[{ required: true, message: '必填' }, { validator: async (_: any, val: any) => {
-            const s = String(val || '').trim()
-            if (!s) return Promise.reject(new Error('必填'))
-            setPwd(s)
-            try { localStorage.setItem(storageKeyPassword(), s) } catch {}
-            return Promise.resolve()
-          } }]}><Input.Password placeholder="请输入访问密码" /></Form.Item>
-
           <div style={{ borderBottom: '1px solid #e6f4ff', paddingBottom: 8, marginBottom: 16, display:'flex', alignItems:'center', gap:8 }}>
             <div style={{ width: 4, height: 18, background:'#1677ff', borderRadius: 2 }} />
             <Typography.Text style={{ color:'#1d39c4', fontWeight: 600 }}>支出信息</Typography.Text>
@@ -199,12 +220,11 @@ export default function PublicCompanyExpensePage() {
               maxCount={1}
               onRemove={() => { setInvoiceFiles([]); setInvoiceUrl(''); return true }}
               customRequest={async ({ file, onProgress, onSuccess, onError }: any) => {
-                const tk = await ensureToken()
-                if (!tk) { onError && onError(new Error('unauthorized')); return }
+                if (!token) { onError && onError(new Error('unauthorized')); message.error('请先验证访问密码'); return }
                 const uid = Math.random().toString(36).slice(2)
                 setInvoiceFiles([{ uid, name: (file as any)?.name || 'invoice', status: 'uploading', percent: 0 } as UploadFile])
                 try {
-                  const url = await xhrUpload(file, tk, (pct) => {
+                  const url = await xhrUpload(file, token, (pct) => {
                     onProgress && onProgress({ percent: pct })
                     setInvoiceFiles([{ uid, name: (file as any)?.name || 'invoice', status: 'uploading', percent: pct } as UploadFile])
                   })

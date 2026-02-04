@@ -409,8 +409,8 @@ export default function ExpensesPage() {
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
             当前密码最后更新时间：{sharePwdLoading ? '加载中...' : (sharePwdUpdatedAt ? new Date(sharePwdUpdatedAt).toLocaleString() : '未知')}
           </Typography.Paragraph>
-          <Space>
-            <Input.Password placeholder="新密码" value={sharePwdValue} onChange={(e)=>setSharePwdValue(e.target.value)} style={{ width: 320 }} />
+          <Space wrap style={{ width: '100%' }}>
+            <Input.Password placeholder="新密码" value={sharePwdValue} onChange={(e)=>setSharePwdValue(e.target.value)} style={{ width: 320, maxWidth: '100%' }} />
             <Button type="primary" loading={sharePwdSaving} onClick={resetSharePassword}>重置密码</Button>
             <Button loading={sharePwdLoading} onClick={loadSharePasswordInfo}>刷新</Button>
           </Space>
