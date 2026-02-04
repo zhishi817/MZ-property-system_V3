@@ -1,11 +1,12 @@
 "use client"
-import { Card, Form, Input, InputNumber, DatePicker, Select, Upload, Button, Table, Space, App, Modal, Alert, Radio, Drawer } from 'antd'
+import { Card, Form, Input, InputNumber, DatePicker, Select, Upload, Button, Table, Space, App, Modal, Alert, Radio, Drawer, AutoComplete } from 'antd'
 import { UploadOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders, apiList, apiCreate, apiUpdate, apiDelete } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
 import { hasPerm } from '../../../lib/auth'
+import { getExpenseDateForDisplay } from '../../../lib/expenseDate'
 
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; fixed_expense_id?: string; occurred_at: string; due_date?: string; paid_date?: string; created_at?: string; note?: string }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
@@ -13,6 +14,7 @@ type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?:
 export default function ExpensesPage() {
   const [form] = Form.useForm()
   const { message, modal } = App.useApp()
+  const now = dayjs()
   const [list, setList] = useState<Tx[]>([])
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [open, setOpen] = useState(false)
@@ -38,9 +40,11 @@ export default function ExpensesPage() {
       const rows: any[] = await apiList<any[]>(resource)
       const mapped: Tx[] = (rows || []).map((r: any) => ({ id: r.id, kind: 'expense', amount: Number(r.amount || 0), currency: r.currency || 'AUD', category: r.category, category_detail: r.category_detail, property_id: r.property_id || undefined, property_code: r.property_code || undefined, fixed_expense_id: r.fixed_expense_id || undefined, occurred_at: r.occurred_at, due_date: r.due_date, paid_date: r.paid_date, created_at: r.created_at, note: r.note }))
       const sorted = mapped.sort((a, b) => {
-        const ad = a.fixed_expense_id ? (a.created_at ? new Date(a.created_at).getTime() : 0) : (a.occurred_at ? new Date(a.occurred_at).getTime() : 0)
-        const bd = b.fixed_expense_id ? (b.created_at ? new Date(b.created_at).getTime() : 0) : (b.occurred_at ? new Date(b.occurred_at).getTime() : 0)
-        return bd - ad
+        const ad = getExpenseDateForDisplay(a, now)
+        const bd = getExpenseDateForDisplay(b, now)
+        const at = ad ? new Date(ad).getTime() : 0
+        const bt = bd ? new Date(bd).getTime() : 0
+        return bt - at
       })
       setList(sorted)
     } else {
@@ -135,6 +139,22 @@ export default function ExpensesPage() {
     { value: 'other', label: '其他' }
   ]
   const catLabel = (v?: string) => (CATS.find(c => c.value === v)?.label || v || '-')
+  function catKey(v?: string): string | undefined {
+    const s = String(v || '').trim()
+    if (!s) return undefined
+    const low = s.toLowerCase()
+    if (s.includes('车位') || low.includes('carpark') || low.includes('parking')) return 'parking_fee'
+    if (s === 'carpark') return 'parking_fee'
+    return s
+  }
+  function catFilterLabel(k?: string): string {
+    if (!k) return '-'
+    if (k === 'parking_fee') return '车位费'
+    return catLabel(k)
+  }
+  const catOptions = Array.from(new Set(list.map(x => catKey(x.category)).filter(Boolean) as string[]))
+    .sort((a, b) => catFilterLabel(a).localeCompare(catFilterLabel(b)))
+    .map((k) => ({ value: k, label: catFilterLabel(k) }))
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   function melDay(s: any): string {
     try {
@@ -149,7 +169,7 @@ export default function ExpensesPage() {
   }
   const columns = [
     { title: '日期', dataIndex: 'occurred_at', render: (_: any, r: Tx) => {
-      const d = r.fixed_expense_id ? r.created_at : r.occurred_at
+      const d = getExpenseDateForDisplay(r, now)
       return melDay(d)
     } },
     { title: '房号', dataIndex: 'property_code', render: (v: string, r: any) => (v || (()=>{ const p = properties.find(x => x.id === r.property_id); return p?.code || r.property_id || '-' })()) },
@@ -185,8 +205,25 @@ export default function ExpensesPage() {
       <Space style={{ marginBottom: 12 }} wrap>
         {canViewList ? (
           <>
-            <Input placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} style={{ width: 200 }} />
-            <Select allowClear placeholder="按类别筛选" value={catFilter} onChange={setCatFilter} style={{ width: 240 }} options={CATS.map(c => ({ value: c.value, label: c.label }))} />
+            <AutoComplete
+              value={codeQuery}
+              onChange={(v) => setCodeQuery(String(v || ''))}
+              style={{ width: 260 }}
+              options={sortProperties(properties).map((p) => {
+                const code = String(p.code || p.id || '').trim()
+                return { value: code }
+              })}
+              filterOption={(inputValue, option) => {
+                const q = String(inputValue || '').trim().toLowerCase()
+                if (!q) return true
+                const v = String((option as any)?.value || '').toLowerCase()
+                return v.includes(q)
+              }}
+              placeholder="按房号搜索"
+            >
+              <Input allowClear />
+            </AutoComplete>
+            <Select allowClear placeholder="按类别筛选" value={catFilter} onChange={setCatFilter} style={{ width: 240 }} options={catOptions} />
             <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} format="DD/MM/YYYY" />
           </>
         ) : (
@@ -197,13 +234,21 @@ export default function ExpensesPage() {
         <Table rowKey={r => r.id} columns={columns as any} dataSource={list.filter(x => {
           const label = String((x as any).property_code || (()=>{ const p = properties.find(pp => pp.id === x.property_id); return p?.code || '' })() || '')
           const codeOk = (!codeQuery || label.toLowerCase().includes(codeQuery.trim().toLowerCase()))
-          const catOk = !catFilter || x.category === catFilter
-          const baseDate = x.fixed_expense_id ? x.created_at : x.occurred_at
-          const inRange = !dateRange || (!dateRange[0] || dayjs(baseDate).diff(dateRange[0], 'day') >= 0) && (!dateRange[1] || dayjs(baseDate).diff(dateRange[1], 'day') <= 0)
+          const catOk = !catFilter || catKey(x.category) === catFilter
+          const baseDate = getExpenseDateForDisplay(x, now)
+          const inRange = !dateRange || (!!baseDate && (!dateRange[0] || dayjs(baseDate).diff(dateRange[0], 'day') >= 0) && (!dateRange[1] || dayjs(baseDate).diff(dateRange[1], 'day') <= 0))
           const kindOk = x.kind === 'expense'
           const scopeOk = !!x.property_id
           return kindOk && scopeOk && codeOk && catOk && inRange
         })} pagination={{ pageSize, showSizeChanger: true, pageSizeOptions: [10,20,50,100], onChange: (_p, ps) => setPageSize(ps), onShowSizeChange: (_p, ps) => setPageSize(ps) }} scroll={{ x: 'max-content' }} />
+      )}
+      {canViewList && (
+        <Alert
+          type="info"
+          showIcon
+          message="提示：固定支出在历史月份按到期日展示，方便对应已支付的历史账期；当月及未来月份仍按创建时间展示。"
+          style={{ marginTop: 12 }}
+        />
       )}
       <Drawer open={open} onClose={() => setOpen(false)} title={editing? '编辑支出':'记录支出'} width={720} footer={
         <div style={{ textAlign: 'right' }}>

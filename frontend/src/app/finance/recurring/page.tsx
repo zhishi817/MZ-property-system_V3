@@ -187,8 +187,8 @@ export default function RecurringPage() {
             }
           }}>已付</Button>
         ))}
-        <Popconfirm title="确认删除该固定支出？" okText="删除" cancelText="取消" onConfirm={async()=>{ try { const resp = await fetch(`${API_BASE}/crud/recurring_payments/${r.id}`, { method:'DELETE', headers: authHeaders() }); if (!resp.ok) throw new Error(`HTTP ${resp.status}`); message.success('已删除'); await load(); await refreshMonth() } catch (e:any) { message.error(e?.message || '删除失败') } }}>
-          <Button danger>删除</Button>
+        <Popconfirm title="确认停用该固定支出？停用后不再生成新记录，历史支出保留不受影响。" okText="停用" cancelText="取消" onConfirm={async()=>{ try { const resp = await fetch(`${API_BASE}/crud/recurring_payments/${r.id}`, { method:'DELETE', headers: authHeaders() }); if (!resp.ok) throw new Error(`HTTP ${resp.status}`); message.success('已停用'); await load(); await refreshMonth() } catch (e:any) { message.error(e?.message || '停用失败') } }}>
+          <Button danger>停用</Button>
         </Popconfirm>
       </Space>
     ) }

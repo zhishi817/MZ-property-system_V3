@@ -1044,6 +1044,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
             if (cleaned.due_date) cleaned.due_date = String(cleaned.due_date).slice(0,10)
             if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
+            if (cleaned.occurred_at && !cleaned.due_date) cleaned.due_date = cleaned.occurred_at
             try {
               const d = cleaned.paid_date || cleaned.occurred_at
               if (d && !cleaned.month_key) {
@@ -1691,6 +1692,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         if (cleaned.occurred_at) cleaned.occurred_at = String(cleaned.occurred_at).slice(0,10)
         if (cleaned.due_date) cleaned.due_date = String(cleaned.due_date).slice(0,10)
         if (cleaned.paid_date) cleaned.paid_date = String(cleaned.paid_date).slice(0,10)
+        if (cleaned.occurred_at && !cleaned.due_date) cleaned.due_date = cleaned.occurred_at
         try {
           const d = cleaned.paid_date || cleaned.occurred_at
           if (d && !cleaned.month_key) {
@@ -1813,6 +1815,20 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
   try {
     if (hasPg) {
       if (resource === 'recurring_payments') {
+        const purge = String((req.query as any)?.purge || '') === '1'
+        if (!purge) {
+          const result = await pgRunInTransaction(async (client) => {
+            const beforeRes = await client.query(`SELECT * FROM recurring_payments WHERE id = $1`, [id])
+            const before = beforeRes.rows?.[0] || null
+            if (!before) return { before: null, after: null }
+            const afterRes = await client.query(`UPDATE recurring_payments SET status='paused' WHERE id = $1 RETURNING *`, [id])
+            const after = afterRes.rows?.[0] || null
+            return { before, after }
+          })
+          if (!result?.before) return res.status(404).json({ message: 'not found' })
+          addAudit(resource, id, 'pause', (result as any).before, (result as any).after, (req as any).user?.sub)
+          return res.json({ ok: true, paused: true })
+        }
         const result = await pgRunInTransaction(async (client) => {
           try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
           try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
