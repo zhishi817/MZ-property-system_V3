@@ -22,6 +22,16 @@ function computeDueISO(monthKey: string, dueDay: number): string {
   return `${String(y)}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`
 }
 
+function toISODate(v: any): string | null {
+  if (!v) return null
+  if (v instanceof Date && !isNaN(v.getTime())) return v.toISOString().slice(0, 10)
+  const s = String(v)
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
+  const d = new Date(s)
+  if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10)
+  return null
+}
+
 function monthKeyToIndex(monthKey: string): number {
   const [ys, ms] = String(monthKey).split('-')
   const y = Number(ys)
@@ -174,8 +184,8 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
           )
           inserted++
         } else if (String((row as any).status || '') !== 'paid') {
-          const nextPaid = (row as any).paid_date ? String((row as any).paid_date).slice(0, 10) : ((row as any).due_date ? String((row as any).due_date).slice(0, 10) : dueISO)
-          const nextDue = (row as any).due_date ? String((row as any).due_date).slice(0, 10) : dueISO
+          const nextPaid = toISODate((row as any).paid_date) || toISODate((row as any).due_date) || dueISO
+          const nextDue = toISODate((row as any).due_date) || dueISO
           await client.query(`UPDATE ${table} SET status='paid', paid_date=$1, due_date=$2 WHERE id=$3`, [nextPaid, nextDue, String((row as any).id)])
           updated++
         }
@@ -287,15 +297,74 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
               const mk = String((r as any).month_key || '')
               if (mk) byMonth[mk] = r
             }
+            const { v4: uuid } = require('uuid')
             for (const mk of pastMonths) {
               const row = byMonth[mk]
-              if (!row) continue
-              if (String((row as any).status || '') === 'paid') continue
               const dueISO = updated.payment_type === 'rent_deduction' ? `${mk}-01` : computeDueISO(mk, dueDay)
-              const nextPaid = (row as any).paid_date ? String((row as any).paid_date).slice(0, 10) : ((row as any).due_date ? String((row as any).due_date).slice(0, 10) : dueISO)
-              const nextDue = (row as any).due_date ? String((row as any).due_date).slice(0, 10) : dueISO
+              if (!row) {
+                const payload2: any = {
+                  id: uuid(),
+                  occurred_at: dueISO,
+                  amount: Number(updated.amount || 0),
+                  currency: 'AUD',
+                  category: updated.category || 'other',
+                  category_detail: (updated as any).category_detail || null,
+                  note: 'Fixed payment snapshot',
+                  generated_from: 'recurring_payments',
+                  fixed_expense_id: id,
+                  month_key: mk,
+                  due_date: dueISO,
+                  paid_date: dueISO,
+                  status: 'paid',
+                }
+                if (scope === 'property') payload2.property_id = updated.property_id || before.property_id || null
+                const cols = ['id','occurred_at','amount','currency','category','category_detail','note','generated_from','fixed_expense_id','month_key','due_date','paid_date','status']
+                const placeholders = cols.map((_, i) => `$${i + 1}`).join(',')
+                const extraCols = scope === 'property' ? ', property_id' : ''
+                const extraPlaceholder = scope === 'property' ? `,$${cols.length + 1}` : ''
+                const values = cols.map((k) => (payload2 as any)[k]).concat(scope === 'property' ? [payload2.property_id] : [])
+                await client.query(
+                  `INSERT INTO ${table} (${cols.join(',')}${extraCols}) VALUES (${placeholders}${extraPlaceholder}) ON CONFLICT DO NOTHING`,
+                  values
+                )
+                autoMarked++
+                continue
+              }
+              if (String((row as any).status || '') === 'paid') continue
+              const nextPaid = toISODate((row as any).paid_date) || toISODate((row as any).due_date) || dueISO
+              const nextDue = toISODate((row as any).due_date) || dueISO
               await client.query(`UPDATE ${table} SET status='paid', paid_date=$1, due_date=$2 WHERE id=$3`, [nextPaid, nextDue, String((row as any).id)])
               autoMarked++
+            }
+
+            if (startIdx <= curIdx && !byMonth[currentMonth]) {
+              const mk = currentMonth
+              const dueISO = updated.payment_type === 'rent_deduction' ? `${mk}-01` : computeDueISO(mk, dueDay)
+              const payload3: any = {
+                id: uuid(),
+                occurred_at: dueISO,
+                amount: Number(updated.amount || 0),
+                currency: 'AUD',
+                category: updated.category || 'other',
+                category_detail: (updated as any).category_detail || null,
+                note: 'Fixed payment snapshot',
+                generated_from: 'recurring_payments',
+                fixed_expense_id: id,
+                month_key: mk,
+                due_date: dueISO,
+                paid_date: null,
+                status: 'unpaid',
+              }
+              if (scope === 'property') payload3.property_id = updated.property_id || before.property_id || null
+              const cols = ['id','occurred_at','amount','currency','category','category_detail','note','generated_from','fixed_expense_id','month_key','due_date','paid_date','status']
+              const placeholders = cols.map((_, i) => `$${i + 1}`).join(',')
+              const extraCols = scope === 'property' ? ', property_id' : ''
+              const extraPlaceholder = scope === 'property' ? `,$${cols.length + 1}` : ''
+              const values = cols.map((k) => (payload3 as any)[k]).concat(scope === 'property' ? [payload3.property_id] : [])
+              await client.query(
+                `INSERT INTO ${table} (${cols.join(',')}${extraCols}) VALUES (${placeholders}${extraPlaceholder}) ON CONFLICT DO NOTHING`,
+                values
+              )
             }
           }
         }

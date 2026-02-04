@@ -686,15 +686,20 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
     const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0));
     const avg = o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0);
     const updated = { ...base, ...o, id, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg };
-    const prevStatus = String((prev === null || prev === void 0 ? void 0 : prev.status) || '');
-    const nextStatus = String((updated === null || updated === void 0 ? void 0 : updated.status) || '');
-    if (nextStatus === 'cancelled' && updated.count_in_income == null) {
+    function normalizeStatus(raw) { return String(raw || '').trim().toLowerCase(); }
+    function isCanceledStatus(raw) {
+        const s = normalizeStatus(raw);
+        return s === 'canceled' || s === 'cancelled';
+    }
+    const prevStatus = normalizeStatus(prev === null || prev === void 0 ? void 0 : prev.status);
+    const nextStatus = normalizeStatus(updated === null || updated === void 0 ? void 0 : updated.status);
+    if (isCanceledStatus(nextStatus) && updated.count_in_income == null) {
         updated.count_in_income = false;
     }
-    if (nextStatus !== 'cancelled' && updated.count_in_income == null) {
+    if (!isCanceledStatus(nextStatus) && updated.count_in_income == null) {
         updated.count_in_income = true;
     }
-    if (prevStatus !== 'cancelled' && nextStatus === 'cancelled') {
+    if (!isCanceledStatus(prevStatus) && isCanceledStatus(nextStatus)) {
         const role = String(((_c = req.user) === null || _c === void 0 ? void 0 : _c.role) || '');
         const locked = await isOrderMonthLocked(prev);
         if (!locked) {
@@ -730,29 +735,30 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
                 const r1 = await (0, dbAdapter_1.pgUpdate)('orders', id, payload, client);
                 // revert cancel -> confirmed: clean up cancel_fee records atomically
                 const prevSt = prevStatus;
-                const nextSt = String((updated === null || updated === void 0 ? void 0 : updated.status) || '');
-                if (prevSt === 'cancelled' && nextSt !== 'cancelled') {
+                const nextSt = normalizeStatus(updated === null || updated === void 0 ? void 0 : updated.status);
+                if (!isCanceledStatus(nextSt)) {
                     const q1 = await client.query(`SELECT id, occurred_at, amount, currency, note, property_id FROM finance_transactions WHERE ref_type='order' AND ref_id=$1 AND category='cancel_fee'`, [id]);
                     const txRows = q1.rows || [];
-                    for (const t of txRows) {
-                        try {
-                            const q2 = await client.query(`DELETE FROM company_incomes
-                 WHERE category='cancel_fee'
-                   AND occurred_at=$1
-                   AND amount=$2
-                   AND (property_id IS NOT DISTINCT FROM $3)
-                   AND coalesce(note,'') = coalesce($4,'')
-                 RETURNING *`, [String(t.occurred_at).slice(0, 10), Number(t.amount || 0), t.property_id || null, String(t.note || '')]);
-                            const delIncomes = q2.rows || [];
-                            for (const ci of delIncomes) {
-                                try {
-                                    (0, store_1.addAudit)('CompanyIncome', ci.id, 'delete', ci, null);
-                                }
-                                catch (_a) { }
-                            }
-                        }
-                        catch (_b) { }
+                    try {
+                        await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_type text;');
+                        await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_id text;');
                     }
+                    catch (_a) { }
+                    try {
+                        const q2 = await client.query(`DELETE FROM company_incomes
+               WHERE category='cancel_fee'
+                 AND ref_type='order'
+                 AND ref_id=$1
+               RETURNING *`, [id]);
+                        const delIncomes = q2.rows || [];
+                        for (const ci of delIncomes) {
+                            try {
+                                (0, store_1.addAudit)('CompanyIncome', ci.id, 'delete', ci, null);
+                            }
+                            catch (_b) { }
+                        }
+                    }
+                    catch (_c) { }
                     if (txRows.length) {
                         const q3 = await client.query(`DELETE FROM finance_transactions WHERE ref_type='order' AND ref_id=$1 AND category='cancel_fee' RETURNING *`, [id]);
                         const delTxs = q3.rows || [];
@@ -760,7 +766,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
                             try {
                                 (0, store_1.addAudit)('FinanceTransaction', tx.id, 'delete', tx, null);
                             }
-                            catch (_c) { }
+                            catch (_d) { }
                         }
                     }
                 }

@@ -71,57 +71,74 @@ exports.router.post('/', (0, auth_1.requirePerm)('finance.tx.write'), async (req
     (0, store_1.addAudit)('FinanceTransaction', tx.id, 'create', null, tx);
     if (dbAdapter_1.hasPg) {
         try {
-            const cat0 = String(tx.category || '').toLowerCase();
-            if (String(tx.kind) === 'income' && cat0 === 'cancel_fee' && String(tx.ref_type || '') === 'order' && String(tx.ref_id || '')) {
-                const dup = await (0, dbAdapter_1.pgSelect)('finance_transactions', '*', { ref_type: 'order', ref_id: String(tx.ref_id), category: 'cancel_fee' });
-                if (Array.isArray(dup) && dup[0]) {
-                    return res.status(200).json(dup[0]);
+            const result = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                function normalizeStatus(raw) { return String(raw || '').trim().toLowerCase(); }
+                function isCanceledStatus(raw) {
+                    const s = normalizeStatus(raw);
+                    return s === 'canceled' || s === 'cancelled';
                 }
-            }
-            const row = await (0, dbAdapter_1.pgInsert)('finance_transactions', tx);
-            try {
-                const cat = String(tx.category || '').toLowerCase();
-                if (String(tx.kind) === 'income' && (cat === 'cancel_fee' || cat === 'late_checkout' || cat === 'other' || cat === 'cleaning_fee' || cat === 'mgmt_fee')) {
-                    const occurred = String(tx.occurred_at || '').slice(0, 10);
-                    const rec = { id: uuid(), occurred_at: occurred || new Date().toISOString().slice(0, 10), amount: Number(tx.amount || 0), currency: String(tx.currency || 'AUD'), category: cat || 'other', note: String(tx.note || ''), property_id: tx.property_id || null };
-                    try {
-                        const dup2 = await (0, dbAdapter_1.pgSelect)('company_incomes', '*', { occurred_at: rec.occurred_at, category: rec.category, amount: rec.amount, note: rec.note, property_id: rec.property_id });
-                        if (!(Array.isArray(dup2) && dup2[0])) {
-                            await (0, dbAdapter_1.pgInsert)('company_incomes', rec);
+                try {
+                    await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;');
+                    await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_type text;');
+                    await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_id text;');
+                    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_incomes_ref ON company_incomes(category, ref_type, ref_id);`);
+                }
+                catch (_a) { }
+                const cat0 = String(tx.category || '').toLowerCase();
+                if (String(tx.kind) === 'income' && cat0 === 'cancel_fee' && String(tx.ref_type || '') === 'order' && String(tx.ref_id || '')) {
+                    const dup = await (0, dbAdapter_1.pgSelect)('finance_transactions', '*', { ref_type: 'order', ref_id: String(tx.ref_id), category: 'cancel_fee' }, client);
+                    if (Array.isArray(dup) && dup[0]) {
+                        return { txRow: dup[0], duplicated: true };
+                    }
+                }
+                const txRow = await (0, dbAdapter_1.pgInsert)('finance_transactions', tx, client);
+                try {
+                    const cat = String(tx.category || '').toLowerCase();
+                    const isIncome = String(tx.kind) === 'income';
+                    if (isIncome && (cat === 'cancel_fee' || cat === 'late_checkout' || cat === 'other' || cat === 'cleaning_fee' || cat === 'mgmt_fee')) {
+                        const occurred = String(tx.occurred_at || '').slice(0, 10) || new Date().toISOString().slice(0, 10);
+                        const rec = {
+                            id: uuid(),
+                            occurred_at: occurred,
+                            amount: Number(tx.amount || 0),
+                            currency: String(tx.currency || 'AUD'),
+                            category: cat || 'other',
+                            note: String(tx.note || ''),
+                            property_id: tx.property_id || null,
+                            ref_type: tx.ref_type || null,
+                            ref_id: tx.ref_id || null,
+                        };
+                        if (cat === 'cancel_fee' && String(tx.ref_type || '') === 'order' && String(tx.ref_id || '')) {
+                            const oid = String(tx.ref_id);
+                            const ordRows = await (0, dbAdapter_1.pgSelect)('orders', 'id,status,count_in_income', { id: oid }, client);
+                            const ord = Array.isArray(ordRows) ? ordRows[0] : null;
+                            const canceled = isCanceledStatus(ord === null || ord === void 0 ? void 0 : ord.status);
+                            const countInIncome = !!(ord === null || ord === void 0 ? void 0 : ord.count_in_income);
+                            if (canceled && countInIncome) {
+                                return { txRow: txRow || tx, duplicated: false, skippedCompanyIncome: true };
+                            }
+                        }
+                        if (rec.ref_type && rec.ref_id) {
+                            const ins = await (0, dbAdapter_2.pgInsertOnConflictDoNothing)('company_incomes', rec, ['category', 'ref_type', 'ref_id'], client);
+                            if (ins)
+                                (0, store_1.addAudit)('CompanyIncome', String(ins.id || rec.id), 'create', null, ins);
+                        }
+                        else {
+                            const dup2 = await (0, dbAdapter_1.pgSelect)('company_incomes', '*', { occurred_at: rec.occurred_at, category: rec.category, amount: rec.amount, note: rec.note, property_id: rec.property_id }, client);
+                            if (!(Array.isArray(dup2) && dup2[0])) {
+                                const ins = await (0, dbAdapter_1.pgInsert)('company_incomes', rec, client);
+                                if (ins)
+                                    (0, store_1.addAudit)('CompanyIncome', String(ins.id || rec.id), 'create', null, ins);
+                            }
                         }
                     }
-                    catch (e) {
-                        const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
-                        try {
-                            if (/relation\s+"?company_incomes"?\s+does\s+not\s+exist/i.test(msg)) {
-                                await (dbAdapter_2.pgPool === null || dbAdapter_2.pgPool === void 0 ? void 0 : dbAdapter_2.pgPool.query(`CREATE TABLE IF NOT EXISTS company_incomes (
-                  id text PRIMARY KEY,
-                  occurred_at date NOT NULL,
-                  amount numeric NOT NULL,
-                  currency text NOT NULL,
-                  category text,
-                  note text,
-                  created_at timestamptz DEFAULT now()
-                );`));
-                                await (dbAdapter_2.pgPool === null || dbAdapter_2.pgPool === void 0 ? void 0 : dbAdapter_2.pgPool.query('CREATE INDEX IF NOT EXISTS idx_company_incomes_date ON company_incomes(occurred_at);'));
-                                await (dbAdapter_2.pgPool === null || dbAdapter_2.pgPool === void 0 ? void 0 : dbAdapter_2.pgPool.query('CREATE INDEX IF NOT EXISTS idx_company_incomes_cat ON company_incomes(category);'));
-                            }
-                            if (/column\s+"?property_id"?\s+of\s+relation\s+"?company_incomes"?\s+does\s+not\s+exist/i.test(msg)) {
-                                await (dbAdapter_2.pgPool === null || dbAdapter_2.pgPool === void 0 ? void 0 : dbAdapter_2.pgPool.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;'));
-                                await (dbAdapter_2.pgPool === null || dbAdapter_2.pgPool === void 0 ? void 0 : dbAdapter_2.pgPool.query('CREATE INDEX IF NOT EXISTS idx_company_incomes_property ON company_incomes(property_id);'));
-                            }
-                        }
-                        catch (_a) { }
-                        const dup3 = await (0, dbAdapter_1.pgSelect)('company_incomes', '*', { occurred_at: rec.occurred_at, category: rec.category, amount: rec.amount, note: rec.note, property_id: rec.property_id });
-                        if (!(Array.isArray(dup3) && dup3[0])) {
-                            await (0, dbAdapter_1.pgInsert)('company_incomes', rec);
-                        }
-                    }
-                    (0, store_1.addAudit)('CompanyIncome', rec.id, 'create', null, rec);
                 }
-            }
-            catch (_b) { }
-            return res.status(201).json(row || tx);
+                catch (_b) { }
+                return { txRow: txRow || tx, duplicated: false };
+            });
+            const row = result === null || result === void 0 ? void 0 : result.txRow;
+            const status = (result === null || result === void 0 ? void 0 : result.duplicated) ? 200 : 201;
+            return res.status(status).json(row || tx);
         }
         catch (e) {
             return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'pg insert failed' });
@@ -131,34 +148,176 @@ exports.router.post('/', (0, auth_1.requirePerm)('finance.tx.write'), async (req
 });
 // Backfill company_incomes from finance_transactions for a given month
 exports.router.post('/company-incomes/backfill', (0, auth_1.requireAnyPerm)(['finance.tx.write', 'company_incomes.write']), async (req, res) => {
+    var _a, _b, _c, _d, _e, _f;
     try {
         if (!dbAdapter_1.hasPg)
             return res.status(400).json({ message: 'pg required' });
         const month = String(((req.body || {}).month) || ((req.query || {}).month) || '');
+        const dryRun = String((_b = (_a = ((req.body || {}).dry_run)) !== null && _a !== void 0 ? _a : (req.query || {}).dry_run) !== null && _b !== void 0 ? _b : '').toLowerCase() === 'true' || String((_d = (_c = ((req.body || {}).dry_run)) !== null && _c !== void 0 ? _c : (req.query || {}).dry_run) !== null && _d !== void 0 ? _d : '') === '1';
         if (!/^\d{4}-\d{2}$/.test(month))
             return res.status(400).json({ message: 'invalid month format' });
-        const y = Number(month.slice(0, 4)), m = Number(month.slice(5, 7));
-        const start = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 10);
-        const end = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
-        const cats = ['cancel_fee'];
-        const rs = await dbAdapter_2.pgPool.query(`SELECT id, occurred_at, amount, currency, category, note, property_id
-       FROM finance_transactions
-       WHERE kind='income' AND category = ANY($1) AND occurred_at BETWEEN to_date($2,'YYYY-MM-DD') AND to_date($3,'YYYY-MM-DD')`, [cats, start, end]);
-        const rows = rs.rows || [];
-        let inserted = 0, skipped = 0;
-        for (const t of rows) {
-            const occ = String(t.occurred_at || '').slice(0, 10);
-            const chk = await (0, dbAdapter_1.pgSelect)('company_incomes', '*', { occurred_at: occ, category: t.category, amount: Number(t.amount || 0), note: String(t.note || '') });
-            if (Array.isArray(chk) && chk[0]) {
-                skipped++;
-                continue;
+        const lockKey = 91000000 + Number(month.replace('-', ''));
+        const lock = await dbAdapter_2.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey]);
+        const ok = !!((_f = (_e = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _e === void 0 ? void 0 : _e[0]) === null || _f === void 0 ? void 0 : _f.ok);
+        if (!ok)
+            return res.status(409).json({ message: 'backfill already running', reason: 'locked', month });
+        try {
+            const y = Number(month.slice(0, 4)), m = Number(month.slice(5, 7));
+            const start = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 10);
+            const endExclusive = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10);
+            function normalizeStatus(raw) { return String(raw || '').trim().toLowerCase(); }
+            function isCanceledStatus(raw) {
+                const s = normalizeStatus(raw);
+                return s === 'canceled' || s === 'cancelled';
             }
-            const rec = { id: require('uuid').v4(), occurred_at: occ, amount: Number(t.amount || 0), currency: String(t.currency || 'AUD'), category: String(t.category || 'other'), note: String(t.note || ''), property_id: String(t.property_id || '') || null };
-            await (0, dbAdapter_1.pgInsert)('company_incomes', rec);
-            (0, store_1.addAudit)('CompanyIncome', rec.id, 'create', null, rec);
-            inserted++;
+            const result = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                try {
+                    await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;');
+                    await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_type text;');
+                    await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS ref_id text;');
+                    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_incomes_ref ON company_incomes(category, ref_type, ref_id);`);
+                }
+                catch (_a) { }
+                const rs = await client.query(`SELECT
+             t.id AS tx_id,
+             (t.occurred_at)::date AS occurred_at,
+             t.amount,
+             t.currency,
+             t.note,
+             t.property_id,
+             t.ref_id AS order_id,
+             o.status AS order_status,
+             o.count_in_income AS order_count_in_income
+           FROM finance_transactions t
+           LEFT JOIN orders o ON o.id = t.ref_id
+           WHERE t.kind='income'
+             AND t.category='cancel_fee'
+             AND t.ref_type='order'
+             AND t.ref_id IS NOT NULL
+             AND (t.occurred_at)::date >= to_date($1,'YYYY-MM-DD')
+             AND (t.occurred_at)::date < to_date($2,'YYYY-MM-DD')`, [start, endExclusive]);
+                const rows = rs.rows || [];
+                let scanned = rows.length;
+                let updated_ref = 0;
+                let inserted = 0;
+                let deleted = 0;
+                let deleted_tx = 0;
+                let ambiguous = 0;
+                let skipped_missing_order = 0;
+                const sample_ambiguous = [];
+                const sample_missing_order = [];
+                for (const t of rows) {
+                    const orderId = String(t.order_id || '');
+                    if (!orderId)
+                        continue;
+                    const occ = String(t.occurred_at || '').slice(0, 10);
+                    const amt = Number(t.amount || 0);
+                    const propId = String(t.property_id || '') || null;
+                    const statusKnown = !!t.order_status;
+                    const canceled = isCanceledStatus(t.order_status);
+                    const countInIncome = !!t.order_count_in_income;
+                    if (!t.order_status) {
+                        skipped_missing_order++;
+                        if (sample_missing_order.length < 10)
+                            sample_missing_order.push({ order_id: orderId, tx_id: String(t.tx_id || ''), occurred_at: occ, amount: amt });
+                    }
+                    const existingByRef = await (0, dbAdapter_1.pgSelect)('company_incomes', 'id', { category: 'cancel_fee', ref_type: 'order', ref_id: orderId }, client);
+                    const hasByRef = Array.isArray(existingByRef) && existingByRef[0];
+                    if (!hasByRef) {
+                        const cand = await client.query(`SELECT id FROM company_incomes
+               WHERE category='cancel_fee'
+                 AND (ref_type IS NULL OR ref_type = '')
+                 AND (ref_id IS NULL OR ref_id = '')
+                 AND occurred_at = to_date($1,'YYYY-MM-DD')
+                 AND amount = $2
+                 AND (property_id IS NOT DISTINCT FROM $3)`, [occ, amt, propId]);
+                        const ids = (cand.rows || []).map((r) => String(r.id));
+                        if (ids.length === 1) {
+                            if (!dryRun) {
+                                await client.query(`UPDATE company_incomes SET ref_type='order', ref_id=$1 WHERE id=$2`, [orderId, ids[0]]);
+                            }
+                            updated_ref++;
+                        }
+                        else if (ids.length > 1) {
+                            ambiguous++;
+                            if (sample_ambiguous.length < 10)
+                                sample_ambiguous.push({ order_id: orderId, occurred_at: occ, amount: amt, candidate_ids: ids });
+                        }
+                    }
+                    if (statusKnown && !canceled) {
+                        if (!dryRun) {
+                            const del = await client.query(`DELETE FROM company_incomes WHERE category='cancel_fee' AND ref_type='order' AND ref_id=$1 RETURNING id`, [orderId]);
+                            deleted += Number(del.rowCount || 0);
+                            const delTx = await client.query(`DELETE FROM finance_transactions WHERE id=$1 RETURNING id`, [String(t.tx_id || '')]);
+                            deleted_tx += Number(delTx.rowCount || 0);
+                        }
+                        else {
+                            deleted += hasByRef ? 1 : 0;
+                            deleted_tx += 1;
+                        }
+                        continue;
+                    }
+                    if (!statusKnown)
+                        continue;
+                    const shouldCompany = canceled && !countInIncome;
+                    if (!shouldCompany) {
+                        if (!dryRun) {
+                            const del = await client.query(`DELETE FROM company_incomes WHERE category='cancel_fee' AND ref_type='order' AND ref_id=$1 RETURNING id`, [orderId]);
+                            deleted += Number(del.rowCount || 0);
+                        }
+                        else {
+                            deleted += hasByRef ? 1 : 0;
+                        }
+                        continue;
+                    }
+                    const rec = {
+                        id: require('uuid').v4(),
+                        occurred_at: occ,
+                        amount: amt,
+                        currency: String(t.currency || 'AUD'),
+                        category: 'cancel_fee',
+                        note: String(t.note || ''),
+                        property_id: propId,
+                        ref_type: 'order',
+                        ref_id: orderId,
+                    };
+                    if (!dryRun) {
+                        const ins = await (0, dbAdapter_2.pgInsertOnConflictDoNothing)('company_incomes', rec, ['category', 'ref_type', 'ref_id'], client);
+                        if (ins) {
+                            inserted++;
+                            try {
+                                (0, store_1.addAudit)('CompanyIncome', String(ins.id || rec.id), 'create', null, ins);
+                            }
+                            catch (_b) { }
+                        }
+                    }
+                    else {
+                        if (!hasByRef)
+                            inserted++;
+                    }
+                }
+                return {
+                    month,
+                    dry_run: dryRun,
+                    scanned,
+                    updated_ref,
+                    inserted,
+                    deleted,
+                    deleted_tx,
+                    ambiguous,
+                    skipped_missing_order,
+                    sample_ambiguous,
+                    sample_missing_order,
+                };
+            });
+            return res.status(201).json(result);
         }
-        return res.status(201).json({ month, scanned: rows.length, inserted, skipped });
+        finally {
+            try {
+                await dbAdapter_2.pgPool.query('SELECT pg_advisory_unlock($1)', [lockKey]);
+            }
+            catch (_g) { }
+        }
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'backfill_failed' });
@@ -655,11 +814,12 @@ exports.router.patch('/property-revenue-status', (0, auth_1.requirePerm)('financ
 });
 // Property revenue aggregated by fixed expenses report_category and order income
 exports.router.get('/property-revenue', async (req, res) => {
-    var _a, _b;
+    var _a, _b, _c, _d, _e, _f;
     try {
         const { property_id, property_code, month } = (req.query || {});
         if (!month || (!(property_id) && !(property_code)))
             return res.status(400).json({ message: 'missing month or property' });
+        const excludeOrphanFixedSnapshots = String(((_b = (_a = req.query) === null || _a === void 0 ? void 0 : _a.exclude_orphan_fixed_snapshots) !== null && _b !== void 0 ? _b : '')).toLowerCase() === 'true' || String(((_d = (_c = req.query) === null || _c === void 0 ? void 0 : _c.exclude_orphan_fixed_snapshots) !== null && _d !== void 0 ? _d : '')) === '1';
         const ym = String(month);
         const y = Number(ym.slice(0, 4));
         const m = Number(ym.slice(5, 7));
@@ -686,11 +846,13 @@ exports.router.get('/property-revenue', async (req, res) => {
                     }
                 }
             }
-            catch (_c) { }
+            catch (_g) { }
         }
         const cols = { parking_fee: 0, electricity: 0, water: 0, gas: 0, internet: 0, consumables: 0, body_corp: 0, council: 0, other: 0, management_fee: 0 };
         let rentIncome = 0;
         let warnings = [];
+        const orphanFixedSnapshots = [];
+        let orphanFixedSnapshotsTotal = 0;
         try {
             if (dbAdapter_1.hasPg) {
                 const orders = await (0, dbAdapter_1.pgSelect)('orders', '*', { property_id: pid });
@@ -714,7 +876,7 @@ exports.router.get('/property-revenue', async (req, res) => {
                 for (const o of ords) {
                     const ov = overlapNights(o.checkin, o.checkout);
                     const nights = Number(o.nights || 0) || 0;
-                    const visNet = Number((_b = (_a = o.visible_net_income) !== null && _a !== void 0 ? _a : o.net_income) !== null && _b !== void 0 ? _b : 0);
+                    const visNet = Number((_f = (_e = o.visible_net_income) !== null && _e !== void 0 ? _e : o.net_income) !== null && _f !== void 0 ? _f : 0);
                     const status = String(o.status || '').toLowerCase();
                     const isCanceled = status.includes('cancel');
                     const include = (!isCanceled) || !!o.count_in_income;
@@ -735,7 +897,7 @@ exports.router.get('/property-revenue', async (req, res) => {
                         peRows = rs.rows || [];
                     }
                 }
-                catch (_d) { }
+                catch (_h) { }
                 const rp = await (0, dbAdapter_1.pgSelect)('recurring_payments', '*');
                 const rpRows = Array.isArray(rp) ? rp : [];
                 const map = Object.fromEntries(rpRows.map(r => [String(r.id), String(r.report_category || 'other')]));
@@ -784,6 +946,25 @@ exports.router.get('/property-revenue', async (req, res) => {
                 for (const e of peRows) {
                     const fid = String(e.fixed_expense_id || '');
                     const amt = Number(e.amount || 0);
+                    if (fid && !map[fid]) {
+                        const genFrom = String(e.generated_from || '');
+                        const note = String(e.note || '');
+                        const isSnapshot = genFrom === 'recurring_payments' || /^fixed payment/i.test(note);
+                        if (isSnapshot) {
+                            orphanFixedSnapshotsTotal += amt;
+                            if (orphanFixedSnapshots.length < 20) {
+                                orphanFixedSnapshots.push({
+                                    expense_id: String(e.id || ''),
+                                    fixed_expense_id: fid,
+                                    month_key: String(e.month_key || '') || undefined,
+                                    amount: amt,
+                                    category: String(e.category || '') || undefined,
+                                });
+                            }
+                            if (excludeOrphanFixedSnapshots)
+                                continue;
+                        }
+                    }
                     const cat = fid ? (map[fid] || 'other') : toReportCat(String(e.category || ''), String(e.category_detail || ''));
                     if (cat in cols)
                         cols[cat] += amt;
@@ -793,6 +974,8 @@ exports.router.get('/property-revenue', async (req, res) => {
                 const missingMonthKey = peRows.filter((e) => !e.month_key).length;
                 if (missingMonthKey > 0)
                     warnings.push(`expenses_without_month_key=${missingMonthKey}`);
+                if (orphanFixedSnapshots.length > 0)
+                    warnings.push(`orphan_fixed_expense_snapshots=${orphanFixedSnapshots.length}`);
                 // Auto compute management fee from landlord config
                 try {
                     const props = await (0, dbAdapter_1.pgSelect)('properties', 'id,landlord_id', { id: pid });
@@ -808,10 +991,10 @@ exports.router.get('/property-revenue', async (req, res) => {
                         cols.management_fee += fee;
                     }
                 }
-                catch (_e) { }
+                catch (_j) { }
             }
         }
-        catch (_f) { }
+        catch (_k) { }
         const totalExpense = Object.entries(cols).reduce((s, [k, v]) => s + (k === 'management_fee' ? Number(v || 0) : Number(v || 0)), 0);
         const payload = {
             property_code: label || pcode || pid,
@@ -829,6 +1012,11 @@ exports.router.get('/property-revenue', async (req, res) => {
             total_expense: -Number(totalExpense || 0),
             net_income: Number(rentIncome || 0) - Number(totalExpense || 0)
         };
+        if (orphanFixedSnapshots.length) {
+            payload.orphan_fixed_expense_snapshots_total = -Number(orphanFixedSnapshotsTotal || 0);
+            payload.orphan_fixed_expense_snapshots_sample = orphanFixedSnapshots;
+            payload.exclude_orphan_fixed_snapshots = excludeOrphanFixedSnapshots;
+        }
         if (warnings.length)
             payload.warnings = warnings;
         return res.json(payload);
