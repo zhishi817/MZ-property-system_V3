@@ -913,6 +913,16 @@ export default function OrdersPage() {
   }
 
   function money(v?: number) { const n = Number(v || 0); if (!isFinite(n)) return ''; return Number(n.toFixed(2)).toFixed(2) }
+  function sourceLabel(source?: any): string {
+    const raw = String(source || '').trim()
+    const s = raw.toLowerCase()
+    if (!s) return ''
+    if (s === 'offline') return 'Direct reservation'
+    if (s === 'other') return 'Other source'
+    if (s === 'booking' || s.includes('book')) return 'booking.com'
+    if (s === 'airbnb' || s.includes('airbnb')) return 'airbnb'
+    return raw
+  }
   const columns = [
     { title: '房号', dataIndex: 'property_code', render: (_: any, r: Order) => {
       const label = getPropertyCodeLabel(r)
@@ -920,7 +930,7 @@ export default function OrdersPage() {
       return hasDed ? (<Space><span>{label}</span><Tag color="red">扣减</Tag></Space>) : label
     } },
     { title: '确认码', dataIndex: 'confirmation_code' },
-    { title: '来源', dataIndex: 'source' },
+    { title: '来源', dataIndex: 'source', render: (v: any) => sourceLabel(v) },
     { title: '付款币种', dataIndex: 'payment_currency', render: (v:any)=> (v || 'AUD') },
     { title: '客人', dataIndex: 'guest_name' },
     // 可按需求增加显示客人电话
@@ -1446,7 +1456,7 @@ export default function OrdersPage() {
                   `可见净额：$${money(visibleNet)}`,
                   `状态：${status || '-'}`,
                   `确认码：${String(order.confirmation_code || '')}`,
-                  `来源：${String(order.source || '')}`,
+                  `来源：${sourceLabel(order.source)}`,
                 ].filter(x => x.trim() !== '' && !x.endsWith('：'))
                 wrapper.title = lines.join('\n')
               } catch {}
@@ -1469,7 +1479,7 @@ export default function OrdersPage() {
           <Input placeholder="平台订单确认码或唯一编号" />
         </Form.Item>
         <Form.Item name="source" label="来源" rules={[{ required: true }]}> 
-          <Select options={[{ value: 'airbnb', label: 'airbnb' }, { value: 'booking', label: 'booking.com' }, { value: 'offline', label: '线下' }, { value: 'other', label: '其他' }]} />
+          <Select options={[{ value: 'airbnb', label: 'airbnb' }, { value: 'booking', label: 'booking.com' }, { value: 'offline', label: 'Direct reservation' }, { value: 'other', label: 'Other source' }]} />
         </Form.Item>
         <Form.Item name="status" label="状态" initialValue="confirmed"> 
           <Select options={[{ value: 'confirmed', label: '已确认' }, { value: 'canceled', label: '已取消' }]} />
@@ -1793,7 +1803,7 @@ export default function OrdersPage() {
             </Col>
             <Col span={8}>
               <Form.Item name="source" label="来源" rules={[{ required: true }]}> 
-                <Select options={[{ value: 'airbnb', label: 'airbnb' }, { value: 'booking', label: 'booking.com' }, { value: 'offline', label: '线下' }, { value: 'other', label: '其他' }]} />
+                <Select options={[{ value: 'airbnb', label: 'airbnb' }, { value: 'booking', label: 'booking.com' }, { value: 'offline', label: 'Direct reservation' }, { value: 'other', label: 'Other source' }]} />
               </Form.Item>
             </Col>
             <Col span={8}>
@@ -1994,7 +2004,7 @@ export default function OrdersPage() {
       {detailLoading ? <div style={{ padding: 8 }}><span>加载中...</span></div> : null}
       {detail && (
         <Descriptions bordered size="small" column={1}>
-          <Descriptions.Item label="来源">{detail.source}</Descriptions.Item>
+          <Descriptions.Item label="来源">{sourceLabel(detail.source)}</Descriptions.Item>
           <Descriptions.Item label="房号">{(detail as any).property_code || ''}</Descriptions.Item>
           <Descriptions.Item label="确认码">{(detail as any).confirmation_code || ''}</Descriptions.Item>
           <Descriptions.Item label="入住">{detail.checkin ? dayjs(detail.checkin).format('DD/MM/YYYY') : ''}</Descriptions.Item>
@@ -2067,7 +2077,7 @@ export default function OrdersPage() {
               columns={[
                 { title: '结果', dataIndex: 'ok', render: (v:any)=> v ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag> },
                 { title: '错误', dataIndex: 'error', render: (v:any)=> v ? <span style={{ wordBreak:'break-all' }}>{String(v)}</span> : '' },
-                { title: '来源', dataIndex: 'source' },
+                { title: '来源', dataIndex: 'source', render: (v:any)=> sourceLabel(v) },
                 { title: '确认码', dataIndex: 'confirmation_code', render: (v:any)=> <span style={{ wordBreak:'break-all' }}>{v||''}</span> },
                 { title: 'Listing 名称', dataIndex: 'listing_name', render: (v:any)=> <span style={{ wordBreak:'break-all' }}>{v||''}</span> },
                 { title: '房号', dataIndex: 'property_code' },

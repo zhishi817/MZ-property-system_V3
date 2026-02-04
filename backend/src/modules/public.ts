@@ -14,6 +14,7 @@ const DEFAULT_PUBLIC_CLEANING_PASSWORD = process.env.PUBLIC_CLEANING_PASSWORD ||
 const DEFAULT_PUBLIC_MAINTENANCE_SHARE_PASSWORD = process.env.MAINTENANCE_SHARE_PASSWORD || 'mz-maintenance'
 const DEFAULT_PUBLIC_DEEP_CLEANING_SHARE_PASSWORD = process.env.DEEP_CLEANING_SHARE_PASSWORD || 'mz-deep-cleaning'
 const DEFAULT_PUBLIC_DEEP_CLEANING_UPLOAD_PASSWORD = process.env.DEEP_CLEANING_UPLOAD_PASSWORD || 'mz-deep-cleaning-upload'
+const DEFAULT_PUBLIC_COMPANY_EXPENSE_PASSWORD = process.env.COMPANY_EXPENSE_PUBLIC_PASSWORD || '1234'
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
@@ -151,6 +152,21 @@ async function getOrInitDeepCleaningUploadAccess(): Promise<{ area: string; pass
   return null
 }
 
+async function getOrInitCompanyExpenseAccess(): Promise<{ area: string; password_hash: string; password_updated_at: string } | null> {
+  try {
+    if (hasPg) {
+      await ensurePublicAccessTable()
+      const rows = await pgSelect('public_access', '*', { area: 'company_expense' }) as any[]
+      const existing = rows && rows[0]
+      if (existing) return existing
+      const hash = await bcrypt.hash(DEFAULT_PUBLIC_COMPANY_EXPENSE_PASSWORD, 10)
+      const row = await pgInsert('public_access', { area: 'company_expense', password_hash: hash })
+      return row as any
+    }
+  } catch {}
+  return null
+}
+
 function verifyPublicToken(token: string): { ok: boolean; iat?: number } {
   try {
     const decoded: any = jwt.verify(token, SECRET)
@@ -199,6 +215,16 @@ function verifyMaintenanceProgressJwt(token: string): { ok: boolean; iat?: numbe
   try {
     const decoded: any = jwt.verify(token, SECRET)
     if (decoded && decoded.scope === 'maintenance_progress') {
+      return { ok: true, iat: Number(decoded.iat || 0) }
+    }
+  } catch {}
+  return { ok: false }
+}
+
+function verifyCompanyExpenseJwt(token: string): { ok: boolean; iat?: number } {
+  try {
+    const decoded: any = jwt.verify(token, SECRET)
+    if (decoded && decoded.scope === 'company_expense') {
       return { ok: true, iat: Number(decoded.iat || 0) }
     }
   } catch {}
@@ -728,6 +754,97 @@ router.post('/maintenance-progress/submit', async (req, res) => {
       addAudit('property_maintenance', id, 'create', null, { id })
     }
     return res.status(201).json({ ok: true, created })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'submit failed' })
+  }
+})
+
+router.post('/company-expense/login', async (req, res) => {
+  const { password } = req.body || {}
+  const pwd = String(password || '').trim()
+  if (!pwd) return res.status(400).json({ message: 'missing password' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitCompanyExpenseAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const ok = await bcrypt.compare(pwd, access.password_hash)
+    if (!ok) return res.status(401).json({ message: 'invalid password' })
+    const token = jwt.sign({ scope: 'company_expense' }, SECRET, { expiresIn: '12h' })
+    return res.json({ token })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'login failed' })
+  }
+})
+
+router.post('/company-expense/upload', upload.single('file'), async (req, res) => {
+  const h = String(req.headers.authorization || '')
+  const token = h.startsWith('Bearer ') ? h.slice(7) : ''
+  const v = verifyCompanyExpenseJwt(token)
+  if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  if (!req.file) return res.status(400).json({ message: 'missing file' })
+  try {
+    const access = await getOrInitCompanyExpenseAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const iatSec = Number(v.iat || 0) * 1000
+    const pwdAt = new Date(access.password_updated_at).getTime()
+    if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
+    if (!hasR2 || !(req.file as any).buffer) {
+      return res.status(500).json({ message: 'R2 not configured' })
+    }
+    const ext = path.extname(req.file.originalname) || ''
+    const key = `company-expenses/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    return res.status(201).json({ url })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'upload failed' })
+  }
+})
+
+router.post('/company-expense/submit', async (req, res) => {
+  const h = String(req.headers.authorization || '')
+  const token = h.startsWith('Bearer ') ? h.slice(7) : ''
+  const v = verifyCompanyExpenseJwt(token)
+  if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  const body = req.body || {}
+  const occurred_at = String(body.occurred_at || '').trim() || new Date().toISOString().slice(0, 10)
+  const category = String(body.category || '').trim()
+  const category_detail = String(body.category_detail || '').trim()
+  const note = String(body.note || '').trim()
+  const invoice_url = body.invoice_url ? String(body.invoice_url).trim() : ''
+  const amount = Number(body.amount || 0)
+  const currency = String(body.currency || 'AUD').trim() || 'AUD'
+  if (!category) return res.status(400).json({ message: 'missing category' })
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: 'invalid amount' })
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(occurred_at)) return res.status(400).json({ message: 'invalid occurred_at' })
+  const allowedCats = new Set(['office', 'tax', 'service', 'other'])
+  if (!allowedCats.has(category)) return res.status(400).json({ message: 'invalid category' })
+  if (category === 'other' && !category_detail) return res.status(400).json({ message: 'missing category_detail' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitCompanyExpenseAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const iatSec = Number(v.iat || 0) * 1000
+    const pwdAt = new Date(access.password_updated_at).getTime()
+    if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
+    try {
+      await pgPool.query(`ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS invoice_url text;`)
+      await pgPool.query(`ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS created_by text;`)
+      await pgPool.query(`ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;`)
+    } catch {}
+    const id = uuidv4()
+    const row = await pgInsert('company_expenses', {
+      id,
+      occurred_at,
+      amount: Number(amount.toFixed(2)),
+      currency,
+      category,
+      category_detail: category === 'other' ? category_detail : (category_detail || null),
+      note: note || null,
+      invoice_url: invoice_url || null,
+      created_by: 'public_company_expense',
+    } as any)
+    try { addAudit('company_expenses', id, 'create', null, row || { id }) } catch {}
+    return res.status(201).json({ ok: true, id, row: row || { id } })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'submit failed' })
   }

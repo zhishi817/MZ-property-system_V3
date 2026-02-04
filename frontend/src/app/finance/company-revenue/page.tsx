@@ -1,5 +1,5 @@
 "use client"
-import { Card, DatePicker, Table, Space, Button, Modal, Form, InputNumber, Select, DatePicker as DP, Input, message, Segmented } from 'antd'
+import { Card, DatePicker, Table, Space, Button, Modal, Form, InputNumber, Select, DatePicker as DP, Input, message, Segmented, Upload, Typography } from 'antd'
 import { LeftOutlined, RightOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
@@ -26,6 +26,13 @@ export default function CompanyRevenuePage() {
   const [savingExpense, setSavingExpense] = useState(false)
   const [editingIncome, setEditingIncome] = useState<Tx | null>(null)
   const [editingExpense, setEditingExpense] = useState<any | null>(null)
+  const [expenseInvoiceFiles, setExpenseInvoiceFiles] = useState<any[]>([])
+  const [shareOpen, setShareOpen] = useState(false)
+  const [shareUrl, setShareUrl] = useState('')
+  const [sharePwdUpdatedAt, setSharePwdUpdatedAt] = useState<string | null>(null)
+  const [sharePwdValue, setSharePwdValue] = useState('')
+  const [sharePwdLoading, setSharePwdLoading] = useState(false)
+  const [sharePwdSaving, setSharePwdSaving] = useState(false)
   async function loadAll() {
     getJSON<Order[]>('/orders').then(setOrders).catch(()=>setOrders([]))
     apiList<any[]>('company_incomes').then((rows)=> setCompanyIncomes(Array.isArray(rows)?rows:[]) ).catch(()=>setCompanyIncomes([]))
@@ -83,6 +90,63 @@ export default function CompanyRevenuePage() {
   const expenseAgg = useMemo(() => catAgg(expenseDetails.map(d => ({ category: d.category, amount: d.amount }))), [expenseDetails])
   const COL = { date: 120, category: 160, amount: 120, currency: 80, property: 160, other: 200, note: 240, ops: 140 }
 
+  function absUrl(u?: string): string {
+    const s = String(u || '').trim()
+    if (!s) return ''
+    if (/^https?:\/\//i.test(s)) return s
+    return `${API_BASE}${s.startsWith('/') ? s : `/${s}`}`
+  }
+  async function uploadInvoice(file: File): Promise<string> {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch(`${API_BASE}/finance/invoices`, { method: 'POST', headers: { ...authHeaders() }, body: fd })
+    const j = await res.json().catch(() => ({} as any))
+    if (!res.ok) throw new Error(String((j as any)?.message || '上传失败'))
+    const url = String((j as any)?.url || '')
+    if (!url) throw new Error('上传失败')
+    return url
+  }
+
+  async function loadSharePasswordInfo() {
+    setSharePwdLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/public/company-expense/password-info`, { headers: authHeaders() })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const j = await res.json().catch(() => ({} as any))
+      setSharePwdUpdatedAt(j?.password_updated_at || null)
+    } catch (e: any) {
+      setSharePwdUpdatedAt(null)
+      message.error(`加载密码状态失败：${e?.message || ''}`)
+    } finally {
+      setSharePwdLoading(false)
+    }
+  }
+
+  async function resetSharePassword() {
+    if (sharePwdSaving) return
+    const newPwd = String(sharePwdValue || '').trim()
+    if (!newPwd) { message.error('请输入新密码'); return }
+    setSharePwdSaving(true)
+    try {
+      const res = await fetch(`${API_BASE}/public/company-expense/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ new_password: newPwd })
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(()=>null)
+        throw new Error(j?.message || `HTTP ${res.status}`)
+      }
+      message.success('密码已重置，旧 Token 已失效')
+      setSharePwdValue('')
+      loadSharePasswordInfo()
+    } catch (e: any) {
+      message.error(`重置失败：${e?.message || ''}`)
+    } finally {
+      setSharePwdSaving(false)
+    }
+  }
+
   async function submitIncome() {
     if (savingIncome) return
     setSavingIncome(true)
@@ -101,11 +165,11 @@ export default function CompanyRevenuePage() {
     if (savingExpense) return
     setSavingExpense(true)
     const v = await expenseForm.validateFields()
-    const payload = { amount: Number(v.amount || 0), currency: 'AUD', occurred_at: dayjs(v.date).format('YYYY-MM-DD'), category: v.category, category_detail: v.category === 'other' ? (v.other_detail || '') : undefined, note: v.category === 'other' ? (v.note || '') : v.note }
+    const payload = { amount: Number(v.amount || 0), currency: 'AUD', occurred_at: dayjs(v.date).format('YYYY-MM-DD'), category: v.category, category_detail: v.category === 'other' ? (v.other_detail || '') : undefined, note: v.category === 'other' ? (v.note || '') : v.note, invoice_url: v.invoice_url || undefined }
     try {
       if (editingExpense) await apiUpdate('company_expenses', editingExpense.id, payload); else await apiCreate('company_expenses', payload)
       message.success(editingExpense ? '支出已更新' : '支出已记录')
-      setExpenseOpen(false); expenseForm.resetFields(); setEditingExpense(null)
+      setExpenseOpen(false); expenseForm.resetFields(); setEditingExpense(null); setExpenseInvoiceFiles([])
       apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(Array.isArray(rows)?rows:[])).catch(()=>{})
     } catch (e: any) { message.error(e?.message || '记录失败') } finally { setSavingExpense(false) }
   }
@@ -119,7 +183,24 @@ export default function CompanyRevenuePage() {
   ]
 
   return (
-    <Card title="公司营收" extra={<Space><Segmented options={[{label:'统计',value:'stats'},{label:'明细',value:'details'}]} value={view} onChange={setView as any} /><Button type="primary" onClick={() => { setEditingIncome(null); setIncomeOpen(true) }}>记录收入</Button><Button type="primary" danger onClick={() => { setEditingExpense(null); setExpenseOpen(true) }}>记录支出</Button></Space>}>
+    <Card
+      title="公司营收"
+      extra={
+        <Space>
+          <Segmented options={[{label:'统计',value:'stats'},{label:'明细',value:'details'}]} value={view} onChange={setView as any} />
+          <Button onClick={() => {
+            try {
+              const origin = typeof window !== 'undefined' ? window.location.origin : ''
+              setShareUrl(origin ? `${origin}/public/company-expense` : '/public/company-expense')
+            } catch { setShareUrl('/public/company-expense') }
+            loadSharePasswordInfo()
+            setShareOpen(true)
+          }}>公司支出记录分享链接</Button>
+          <Button type="primary" onClick={() => { setEditingIncome(null); setIncomeOpen(true) }}>记录收入</Button>
+          <Button type="primary" danger onClick={() => { setEditingExpense(null); setExpenseOpen(true) }}>记录支出</Button>
+        </Space>
+      }
+    >
       <div style={{ marginBottom: 12 }}>
         <Space>
           <Button icon={<LeftOutlined />} onClick={() => setMonth((m:any)=> dayjs(m).subtract(1,'month'))} />
@@ -150,7 +231,7 @@ export default function CompanyRevenuePage() {
         <>
           <Table rowKey={(r)=>r.id} title={()=>'收入明细'} pagination={{ pageSize: 10 }} dataSource={incomeDetails} columns={[{ title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') }, { title:'类别', dataIndex:'category', width: COL.category }, { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` }, { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' }, { title:'房号', dataIndex:'property_code', width: COL.property }, { title:'备注', dataIndex:'note', width: COL.note }, { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (<Space><Button onClick={() => { setEditingIncome(r); setIncomeOpen(true); incomeForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, note: r.note, property_id: r.property_id }) }}>编辑</Button><Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_incomes', r.id); apiList<any[]>('company_incomes').then((rows)=>setCompanyIncomes(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button></Space>) }]} />
           <div style={{ height: 12 }} />
-          <Table rowKey={(r)=>r.id} title={()=>'支出明细'} pagination={{ pageSize: 10 }} dataSource={expenseDetails} columns={[{ title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') }, { title:'类别', dataIndex:'category', width: COL.category }, { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` }, { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' }, { title:'其他支出描述', dataIndex:'category_detail', width: COL.other, render: (v:any, r:any) => (r.category === 'other' ? (v || '-') : '-') }, { title:'备注', dataIndex:'note', width: COL.note }, { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (<Space><Button onClick={() => { setEditingExpense(r); setExpenseOpen(true); expenseForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, other_detail: r.category === 'other' ? r.category_detail : undefined, note: r.note }) }}>编辑</Button><Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_expenses', r.id); apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button></Space>) }]} />
+          <Table rowKey={(r)=>r.id} title={()=>'支出明细'} pagination={{ pageSize: 10 }} dataSource={expenseDetails} columns={[{ title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') }, { title:'类别', dataIndex:'category', width: COL.category }, { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` }, { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' }, { title:'发票', dataIndex:'invoice_url', width: 90, align:'center', render: (v:any) => v ? <Button size="small" onClick={() => { const u = absUrl(String(v||'')); if (u) window.open(u, '_blank', 'noopener,noreferrer') }}>查看</Button> : '-' }, { title:'其他支出描述', dataIndex:'category_detail', width: COL.other, render: (v:any, r:any) => (r.category === 'other' ? (v || '-') : '-') }, { title:'备注', dataIndex:'note', width: COL.note }, { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (<Space><Button onClick={() => { setEditingExpense(r); setExpenseOpen(true); const inv = String(r.invoice_url || ''); expenseForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, other_detail: r.category === 'other' ? r.category_detail : undefined, note: r.note, invoice_url: inv || undefined }); setExpenseInvoiceFiles(inv ? [{ uid: 'invoice', name: inv.split('/').pop() || 'invoice', status: 'done', url: absUrl(inv) }] : []) }}>编辑</Button><Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_expenses', r.id); apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button></Space>) }]} />
         </>
       )}
 
@@ -166,7 +247,7 @@ export default function CompanyRevenuePage() {
         </Form>
       </Modal>
 
-      <Modal title={editingExpense ? '编辑支出' : '记录支出'} open={expenseOpen} onCancel={() => { setExpenseOpen(false); setEditingExpense(null) }} onOk={submitExpense} confirmLoading={savingExpense}>
+      <Modal title={editingExpense ? '编辑支出' : '记录支出'} open={expenseOpen} onCancel={() => { setExpenseOpen(false); setEditingExpense(null); setExpenseInvoiceFiles([]) }} onOk={submitExpense} confirmLoading={savingExpense}>
           <Form form={expenseForm} layout="vertical">
             <Form.Item name="date" label="日期" rules={[{ required: true }]}><DP style={{ width:'100%' }} /></Form.Item>
             <Form.Item name="amount" label="金额" rules={[{ required: true }]}><InputNumber min={0} step={1} style={{ width:'100%' }} /></Form.Item>
@@ -188,7 +269,59 @@ export default function CompanyRevenuePage() {
             </Form.Item>
             <Form.Item name="property_id" label="房号(可选)"><Select allowClear showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))} /></Form.Item>
             <Form.Item name="note" label="备注"><Input /></Form.Item>
+            <Form.Item name="invoice_url" label="发票(可选)">
+              <Upload
+                fileList={expenseInvoiceFiles}
+                maxCount={1}
+                onRemove={() => { expenseForm.setFieldsValue({ invoice_url: undefined }); setExpenseInvoiceFiles([]); return true }}
+                customRequest={async (opt: any) => {
+                  const file = opt?.file as File
+                  try {
+                    const url = await uploadInvoice(file)
+                    expenseForm.setFieldsValue({ invoice_url: url })
+                    setExpenseInvoiceFiles([{ uid: String((file as any)?.uid || Date.now()), name: String((file as any)?.name || 'invoice'), status: 'done', url: absUrl(url) }])
+                    opt?.onSuccess?.({ url })
+                  } catch (e: any) {
+                    const msg = String(e?.message || '上传失败')
+                    setExpenseInvoiceFiles([{ uid: String((file as any)?.uid || Date.now()), name: String((file as any)?.name || 'invoice'), status: 'error' }])
+                    message.error(msg)
+                    opt?.onError?.(e)
+                  }
+                }}
+              >
+                <Button>上传发票</Button>
+              </Upload>
+            </Form.Item>
           </Form>
+      </Modal>
+      <Modal open={shareOpen} onCancel={() => setShareOpen(false)} footer={null} title="公司支出记录分享链接">
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            复制链接发给外部人员填写公司支出记录；可在此处设置/重置访问密码（重置后旧 Token 会失效）。
+          </Typography.Paragraph>
+          <Input value={shareUrl} readOnly />
+          <Space>
+            <Button type="primary" onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(shareUrl)
+                message.success('已复制链接')
+              } catch {
+                message.error('复制失败，请手动复制')
+              }
+            }}>复制链接</Button>
+            <Button onClick={() => setShareOpen(false)}>关闭</Button>
+          </Space>
+          <div style={{ height: 8 }} />
+          <Typography.Text strong>访问密码设置</Typography.Text>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            当前密码最后更新时间：{sharePwdLoading ? '加载中...' : (sharePwdUpdatedAt ? new Date(sharePwdUpdatedAt).toLocaleString() : '未知')}
+          </Typography.Paragraph>
+          <Space>
+            <Input.Password placeholder="新密码" value={sharePwdValue} onChange={(e)=>setSharePwdValue(e.target.value)} style={{ width: 320 }} />
+            <Button type="primary" loading={sharePwdSaving} onClick={resetSharePassword}>重置密码</Button>
+            <Button loading={sharePwdLoading} onClick={loadSharePasswordInfo}>刷新</Button>
+          </Space>
+        </Space>
       </Modal>
     </Card>
   )
