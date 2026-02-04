@@ -89,6 +89,29 @@ export default function CompanyRevenuePage() {
   const incomeAgg = useMemo(() => catAgg(incomeDetails.map(d => ({ category: d.category, amount: d.amount }))), [incomeDetails])
   const expenseAgg = useMemo(() => catAgg(expenseDetails.map(d => ({ category: d.category, amount: d.amount }))), [expenseDetails])
   const COL = { date: 120, category: 160, amount: 120, currency: 80, property: 160, other: 200, note: 240, ops: 140 }
+  const expenseCategoryOptions = useMemo(() => ([
+    { value: 'office', label: '办公' },
+    { value: 'bedding_fee', label: '床品费' },
+    { value: 'office_rent', label: '办公室租金' },
+    { value: 'car_loan', label: '车贷' },
+    { value: 'electricity', label: '电费' },
+    { value: 'internet', label: '网费' },
+    { value: 'water', label: '水费' },
+    { value: 'fuel', label: '油费' },
+    { value: 'parking_fee', label: '车位费' },
+    { value: 'maintenance_materials', label: '维修材料费' },
+    { value: 'tax', label: '税费' },
+    { value: 'service', label: '服务采购' },
+    { value: 'other', label: '其他' },
+  ]), [])
+  const expenseCategoryLabel = useMemo(() => {
+    const m = new Map<string, string>()
+    expenseCategoryOptions.forEach(o => m.set(String(o.value), String(o.label)))
+    return (v: any) => {
+      const s = String(v || '')
+      return m.get(s) || s || '-'
+    }
+  }, [expenseCategoryOptions])
 
   function absUrl(u?: string): string {
     const s = String(u || '').trim()
@@ -224,14 +247,14 @@ export default function CompanyRevenuePage() {
             <Table size="small" rowKey={(r)=>r.category} pagination={false} title={()=>'收入类别统计'} dataSource={incomeAgg} columns={[{title:'类别',dataIndex:'category'},{title:'金额',dataIndex:'total',render:(v:number)=>`$${fmt(v)}`}]} />
           </div>
           <div style={{ marginTop: 12 }}>
-            <Table size="small" rowKey={(r)=>r.category} pagination={false} title={()=>'支出类别统计'} dataSource={expenseAgg} columns={[{title:'类别',dataIndex:'category'},{title:'金额',dataIndex:'total',render:(v:number)=>`$${fmt(v)}`}]} />
+            <Table size="small" rowKey={(r)=>r.category} pagination={false} title={()=>'支出类别统计'} dataSource={expenseAgg} columns={[{title:'类别',dataIndex:'category',render:(v:any)=>expenseCategoryLabel(v)},{title:'金额',dataIndex:'total',render:(v:number)=>`$${fmt(v)}`}]} />
           </div>
         </>
       ) : (
         <>
           <Table rowKey={(r)=>r.id} title={()=>'收入明细'} pagination={{ pageSize: 10 }} dataSource={incomeDetails} columns={[{ title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') }, { title:'类别', dataIndex:'category', width: COL.category }, { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` }, { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' }, { title:'房号', dataIndex:'property_code', width: COL.property }, { title:'备注', dataIndex:'note', width: COL.note }, { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (<Space><Button onClick={() => { setEditingIncome(r); setIncomeOpen(true); incomeForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, note: r.note, property_id: r.property_id }) }}>编辑</Button><Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_incomes', r.id); apiList<any[]>('company_incomes').then((rows)=>setCompanyIncomes(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button></Space>) }]} />
           <div style={{ height: 12 }} />
-          <Table rowKey={(r)=>r.id} title={()=>'支出明细'} pagination={{ pageSize: 10 }} dataSource={expenseDetails} columns={[{ title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') }, { title:'类别', dataIndex:'category', width: COL.category }, { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` }, { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' }, { title:'发票', dataIndex:'invoice_url', width: 90, align:'center', render: (v:any) => v ? <Button size="small" onClick={() => { const u = absUrl(String(v||'')); if (u) window.open(u, '_blank', 'noopener,noreferrer') }}>查看</Button> : '-' }, { title:'其他支出描述', dataIndex:'category_detail', width: COL.other, render: (v:any, r:any) => (r.category === 'other' ? (v || '-') : '-') }, { title:'备注', dataIndex:'note', width: COL.note }, { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (<Space><Button onClick={() => { setEditingExpense(r); setExpenseOpen(true); const inv = String(r.invoice_url || ''); expenseForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, other_detail: r.category === 'other' ? r.category_detail : undefined, note: r.note, invoice_url: inv || undefined }); setExpenseInvoiceFiles(inv ? [{ uid: 'invoice', name: inv.split('/').pop() || 'invoice', status: 'done', url: absUrl(inv) }] : []) }}>编辑</Button><Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_expenses', r.id); apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button></Space>) }]} />
+          <Table rowKey={(r)=>r.id} title={()=>'支出明细'} pagination={{ pageSize: 10 }} dataSource={expenseDetails} columns={[{ title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') }, { title:'类别', dataIndex:'category', width: COL.category, render:(v:any)=>expenseCategoryLabel(v) }, { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` }, { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' }, { title:'发票', dataIndex:'invoice_url', width: 90, align:'center', render: (v:any) => v ? <Button size="small" onClick={() => { const u = absUrl(String(v||'')); if (u) window.open(u, '_blank', 'noopener,noreferrer') }}>查看</Button> : '-' }, { title:'其他支出描述', dataIndex:'category_detail', width: COL.other, render: (v:any, r:any) => (r.category === 'other' ? (v || '-') : '-') }, { title:'备注', dataIndex:'note', width: COL.note }, { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (<Space><Button onClick={() => { setEditingExpense(r); setExpenseOpen(true); const inv = String(r.invoice_url || ''); expenseForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, other_detail: r.category === 'other' ? r.category_detail : undefined, note: r.note, invoice_url: inv || undefined }); setExpenseInvoiceFiles(inv ? [{ uid: 'invoice', name: inv.split('/').pop() || 'invoice', status: 'done', url: absUrl(inv) }] : []) }}>编辑</Button><Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_expenses', r.id); apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button></Space>) }]} />
         </>
       )}
 
@@ -252,7 +275,7 @@ export default function CompanyRevenuePage() {
             <Form.Item name="date" label="日期" rules={[{ required: true }]}><DP style={{ width:'100%' }} /></Form.Item>
             <Form.Item name="amount" label="金额" rules={[{ required: true }]}><InputNumber min={0} step={1} style={{ width:'100%' }} /></Form.Item>
             <Form.Item name="category" label="类别" rules={[{ required: true }]}> 
-              <Select options={[{value:'office',label:'办公'},{value:'tax',label:'税费'},{value:'service',label:'服务采购'},{value:'other',label:'其他支出'}]} />
+              <Select options={expenseCategoryOptions} />
             </Form.Item>
             <Form.Item noStyle shouldUpdate>
               {() => {

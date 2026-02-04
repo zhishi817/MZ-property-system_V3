@@ -1,5 +1,5 @@
 "use client"
-import { Card, Form, Input, InputNumber, DatePicker, Select, Upload, Button, Table, Space, App, Modal, Alert, Radio, Drawer, AutoComplete } from 'antd'
+import { Card, Form, Input, InputNumber, DatePicker, Select, Upload, Button, Table, Space, App, Modal, Alert, Radio, Drawer, AutoComplete, Typography } from 'antd'
 import { UploadOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import dayjs from 'dayjs'
@@ -32,8 +32,52 @@ export default function ExpensesPage() {
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [mode] = useState<'property'>('property')
   const [pageSize, setPageSize] = useState<number>(10)
+  const [shareOpen, setShareOpen] = useState(false)
+  const [shareUrl, setShareUrl] = useState('')
+  const [sharePwdUpdatedAt, setSharePwdUpdatedAt] = useState<string | null>(null)
+  const [sharePwdValue, setSharePwdValue] = useState('')
+  const [sharePwdLoading, setSharePwdLoading] = useState(false)
+  const [sharePwdSaving, setSharePwdSaving] = useState(false)
   const role = (typeof window !== 'undefined') ? (localStorage.getItem('role') || sessionStorage.getItem('role')) : null
   const canViewList = (role === 'admin') || hasPerm('menu.finance') || hasPerm('property_expenses.view') || role === 'customer_service' || hasPerm('finance.tx.write')
+  async function loadSharePasswordInfo() {
+    setSharePwdLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/public/property-expense/password-info`, { headers: authHeaders() })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const j = await res.json().catch(() => ({} as any))
+      setSharePwdUpdatedAt(j?.password_updated_at || null)
+    } catch (e: any) {
+      setSharePwdUpdatedAt(null)
+      message.error(`加载密码状态失败：${e?.message || ''}`)
+    } finally {
+      setSharePwdLoading(false)
+    }
+  }
+  async function resetSharePassword() {
+    if (sharePwdSaving) return
+    const newPwd = String(sharePwdValue || '').trim()
+    if (!newPwd) { message.error('请输入新密码'); return }
+    setSharePwdSaving(true)
+    try {
+      const res = await fetch(`${API_BASE}/public/property-expense/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ new_password: newPwd })
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => null)
+        throw new Error(j?.message || `HTTP ${res.status}`)
+      }
+      message.success('密码已重置，旧 Token 已失效')
+      setSharePwdValue('')
+      loadSharePasswordInfo()
+    } catch (e: any) {
+      message.error(`重置失败：${e?.message || ''}`)
+    } finally {
+      setSharePwdSaving(false)
+    }
+  }
   async function load() {
     const resource = 'property_expenses'
     if (canViewList) {
@@ -201,7 +245,17 @@ export default function ExpensesPage() {
     ) : null },
   ]
   return (
-    <Card title="房源支出" extra={<Space>{(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) ? <Button type="primary" onClick={() => { setEditing(null); form.resetFields(); setOpen(true) }}>记录支出</Button> : null}</Space>}>
+    <Card title="房源支出" extra={<Space>
+      <Button onClick={() => {
+        try {
+          const origin = typeof window !== 'undefined' ? window.location.origin : ''
+          setShareUrl(origin ? `${origin}/public/property-expense` : '/public/property-expense')
+        } catch { setShareUrl('/public/property-expense') }
+        loadSharePasswordInfo()
+        setShareOpen(true)
+      }}>房源支出外部登记链接</Button>
+      {(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) ? <Button type="primary" onClick={() => { setEditing(null); form.resetFields(); setOpen(true) }}>记录支出</Button> : null}
+    </Space>}>
       <Space style={{ marginBottom: 12 }} wrap>
         {canViewList ? (
           <>
@@ -333,6 +387,35 @@ export default function ExpensesPage() {
           
         </Form>
       </Drawer>
+      <Modal open={shareOpen} onCancel={() => setShareOpen(false)} footer={null} title="房源支出外部登记链接">
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            复制链接发给外部人员填写房源支出；可在此处设置/重置访问密码（重置后旧 Token 会失效）。
+          </Typography.Paragraph>
+          <Input value={shareUrl} readOnly />
+          <Space>
+            <Button type="primary" onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(shareUrl)
+                message.success('已复制链接')
+              } catch {
+                message.error('复制失败，请手动复制')
+              }
+            }}>复制链接</Button>
+            <Button onClick={() => setShareOpen(false)}>关闭</Button>
+          </Space>
+          <div style={{ height: 8 }} />
+          <Typography.Text strong>访问密码设置</Typography.Text>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            当前密码最后更新时间：{sharePwdLoading ? '加载中...' : (sharePwdUpdatedAt ? new Date(sharePwdUpdatedAt).toLocaleString() : '未知')}
+          </Typography.Paragraph>
+          <Space>
+            <Input.Password placeholder="新密码" value={sharePwdValue} onChange={(e)=>setSharePwdValue(e.target.value)} style={{ width: 320 }} />
+            <Button type="primary" loading={sharePwdSaving} onClick={resetSharePassword}>重置密码</Button>
+            <Button loading={sharePwdLoading} onClick={loadSharePasswordInfo}>刷新</Button>
+          </Space>
+        </Space>
+      </Modal>
       <Modal open={dupOpen} onCancel={() => setDupOpen(false)} footer={null} title="疑似重复支出" width={860}>
         {dupResult ? (
           <>

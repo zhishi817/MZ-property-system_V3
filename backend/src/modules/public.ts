@@ -15,6 +15,7 @@ const DEFAULT_PUBLIC_MAINTENANCE_SHARE_PASSWORD = process.env.MAINTENANCE_SHARE_
 const DEFAULT_PUBLIC_DEEP_CLEANING_SHARE_PASSWORD = process.env.DEEP_CLEANING_SHARE_PASSWORD || 'mz-deep-cleaning'
 const DEFAULT_PUBLIC_DEEP_CLEANING_UPLOAD_PASSWORD = process.env.DEEP_CLEANING_UPLOAD_PASSWORD || 'mz-deep-cleaning-upload'
 const DEFAULT_PUBLIC_COMPANY_EXPENSE_PASSWORD = process.env.COMPANY_EXPENSE_PUBLIC_PASSWORD || '1234'
+const DEFAULT_PUBLIC_PROPERTY_EXPENSE_PASSWORD = process.env.PROPERTY_EXPENSE_PUBLIC_PASSWORD || '1234'
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
@@ -167,6 +168,21 @@ async function getOrInitCompanyExpenseAccess(): Promise<{ area: string; password
   return null
 }
 
+async function getOrInitPropertyExpenseAccess(): Promise<{ area: string; password_hash: string; password_updated_at: string } | null> {
+  try {
+    if (hasPg) {
+      await ensurePublicAccessTable()
+      const rows = await pgSelect('public_access', '*', { area: 'property_expense' }) as any[]
+      const existing = rows && rows[0]
+      if (existing) return existing
+      const hash = await bcrypt.hash(DEFAULT_PUBLIC_PROPERTY_EXPENSE_PASSWORD, 10)
+      const row = await pgInsert('public_access', { area: 'property_expense', password_hash: hash })
+      return row as any
+    }
+  } catch {}
+  return null
+}
+
 function verifyPublicToken(token: string): { ok: boolean; iat?: number } {
   try {
     const decoded: any = jwt.verify(token, SECRET)
@@ -229,6 +245,31 @@ function verifyCompanyExpenseJwt(token: string): { ok: boolean; iat?: number } {
     }
   } catch {}
   return { ok: false }
+}
+
+function verifyPropertyExpenseJwt(token: string): { ok: boolean; iat?: number } {
+  try {
+    const decoded: any = jwt.verify(token, SECRET)
+    if (decoded && decoded.scope === 'property_expense') {
+      return { ok: true, iat: Number(decoded.iat || 0) }
+    }
+  } catch {}
+  return { ok: false }
+}
+
+async function ensureExpenseInvoicesTable() {
+  if (!pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS expense_invoices (
+    id text PRIMARY KEY,
+    expense_id text REFERENCES property_expenses(id) ON DELETE CASCADE,
+    url text NOT NULL,
+    file_name text,
+    mime_type text,
+    file_size integer,
+    created_at timestamptz DEFAULT now(),
+    created_by text
+  );`)
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_expense_invoices_expense ON expense_invoices(expense_id);')
 }
 
 function safeDateToIso(v: any): string | null {
@@ -816,7 +857,21 @@ router.post('/company-expense/submit', async (req, res) => {
   if (!category) return res.status(400).json({ message: 'missing category' })
   if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: 'invalid amount' })
   if (!/^\d{4}-\d{2}-\d{2}$/.test(occurred_at)) return res.status(400).json({ message: 'invalid occurred_at' })
-  const allowedCats = new Set(['office', 'tax', 'service', 'other'])
+  const allowedCats = new Set([
+    'office',
+    'bedding_fee',
+    'office_rent',
+    'car_loan',
+    'electricity',
+    'internet',
+    'water',
+    'fuel',
+    'parking_fee',
+    'maintenance_materials',
+    'tax',
+    'service',
+    'other'
+  ])
   if (!allowedCats.has(category)) return res.status(400).json({ message: 'invalid category' })
   if (category === 'other' && !category_detail) return res.status(400).json({ message: 'missing category_detail' })
   try {
@@ -847,6 +902,155 @@ router.post('/company-expense/submit', async (req, res) => {
     return res.status(201).json({ ok: true, id, row: row || { id } })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'submit failed' })
+  }
+})
+
+router.post('/property-expense/login', async (req, res) => {
+  const { password } = req.body || {}
+  const pwd = String(password || '').trim()
+  if (!pwd) return res.status(400).json({ message: 'missing password' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitPropertyExpenseAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const ok = await bcrypt.compare(pwd, access.password_hash)
+    if (!ok) return res.status(401).json({ message: 'invalid password' })
+    const token = jwt.sign({ scope: 'property_expense' }, SECRET, { expiresIn: '12h' })
+    return res.json({ token })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'login failed' })
+  }
+})
+
+router.get('/property-expense/properties', async (req, res) => {
+  const h = String(req.headers.authorization || '')
+  const token = h.startsWith('Bearer ') ? h.slice(7) : ''
+  const v = verifyPropertyExpenseJwt(token)
+  if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitPropertyExpenseAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const iatSec = Number(v.iat || 0) * 1000
+    const pwdAt = new Date(access.password_updated_at).getTime()
+    if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
+    const r = await pgPool.query('SELECT id, code, address FROM properties ORDER BY COALESCE(code, address, id)')
+    return res.json(Array.isArray(r.rows) ? r.rows : [])
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'list failed' })
+  }
+})
+
+router.post('/property-expense/submit', async (req, res) => {
+  const h = String(req.headers.authorization || '')
+  const token = h.startsWith('Bearer ') ? h.slice(7) : ''
+  const v = verifyPropertyExpenseJwt(token)
+  if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  const body = req.body || {}
+  const property_id = String(body.property_id || '').trim()
+  const occurred_at = String(body.occurred_at || '').trim() || new Date().toISOString().slice(0, 10)
+  const category = String(body.category || '').trim()
+  const category_detail = String(body.category_detail || '').trim()
+  const note = String(body.note || '').trim()
+  const amount = Number(body.amount || 0)
+  const currency = String(body.currency || 'AUD').trim() || 'AUD'
+  if (!property_id) return res.status(400).json({ message: 'missing property_id' })
+  if (!category) return res.status(400).json({ message: 'missing category' })
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ message: 'invalid amount' })
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(occurred_at)) return res.status(400).json({ message: 'invalid occurred_at' })
+  const allowedCats = new Set(['electricity', 'water', 'gas_hot_water', 'internet', 'consumables', 'carpark', 'owners_corp', 'council_rate', 'parking_fee', 'other'])
+  if (!allowedCats.has(category)) return res.status(400).json({ message: 'invalid category' })
+  if (category === 'other' && !category_detail) return res.status(400).json({ message: 'missing category_detail' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitPropertyExpenseAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const iatSec = Number(v.iat || 0) * 1000
+    const pwdAt = new Date(access.password_updated_at).getTime()
+    if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
+    try {
+      await pgPool.query(`ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS created_by text;`)
+      await pgPool.query(`ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;`)
+      await pgPool.query(`ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;`)
+      await pgPool.query(`ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;`)
+      await pgPool.query(`ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;`)
+      await pgPool.query(`ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;`)
+    } catch {}
+    const id = uuidv4()
+    const month_key = occurred_at.slice(0, 7)
+    const row = await pgInsert('property_expenses', {
+      id,
+      property_id,
+      occurred_at,
+      paid_date: occurred_at,
+      due_date: occurred_at,
+      month_key,
+      amount: Number(amount.toFixed(2)),
+      currency,
+      category,
+      category_detail: category === 'other' ? category_detail : (category_detail || null),
+      note: note || null,
+      created_by: 'public_property_expense',
+    } as any)
+    try { addAudit('property_expenses', id, 'create', null, row || { id }) } catch {}
+    return res.status(201).json({ ok: true, id, row: row || { id } })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'submit failed' })
+  }
+})
+
+router.post('/property-expense/:expenseId/upload', upload.single('file'), async (req, res) => {
+  const { expenseId } = req.params
+  const h = String(req.headers.authorization || '')
+  const token = h.startsWith('Bearer ') ? h.slice(7) : ''
+  const v = verifyPropertyExpenseJwt(token)
+  if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
+  if (!req.file) return res.status(400).json({ message: 'missing file' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitPropertyExpenseAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const iatSec = Number(v.iat || 0) * 1000
+    const pwdAt = new Date(access.password_updated_at).getTime()
+    if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
+    const ex = await pgPool.query('SELECT 1 FROM property_expenses WHERE id = $1 LIMIT 1', [expenseId])
+    if (!ex.rowCount) return res.status(404).json({ message: 'expense not found' })
+    if (!hasR2 || !(req.file as any).buffer) {
+      return res.status(500).json({ message: 'R2 not configured' })
+    }
+    const ext = path.extname(req.file.originalname) || ''
+    const key = `expenses/${expenseId}/${uuidv4()}${ext}`
+    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    try {
+      const row = await pgInsert('expense_invoices', {
+        id: uuidv4(),
+        expense_id: expenseId,
+        url,
+        file_name: req.file.originalname,
+        mime_type: req.file.mimetype,
+        file_size: req.file.size,
+        created_by: 'public_property_expense'
+      } as any)
+      return res.status(201).json(row || { url })
+    } catch (e: any) {
+      const msg = String(e?.message || '')
+      if (/relation\s+"?expense_invoices"?\s+does\s+not\s+exist/i.test(msg)) {
+        await ensureExpenseInvoicesTable()
+        const row2 = await pgInsert('expense_invoices', {
+          id: uuidv4(),
+          expense_id: expenseId,
+          url,
+          file_name: req.file.originalname,
+          mime_type: req.file.mimetype,
+          file_size: req.file.size,
+          created_by: 'public_property_expense'
+        } as any)
+        return res.status(201).json(row2 || { url })
+      }
+      throw e
+    }
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'upload failed' })
   }
 })
 

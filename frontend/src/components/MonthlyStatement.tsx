@@ -247,7 +247,7 @@ export default forwardRef<HTMLDivElement, {
         </div>
       </div>
       <div style={{ borderTop: '2px solid transparent', margin: '8px 0' }}></div>
-      <div style={{ fontWeight: 600, marginTop: 8, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Monthly Overview Data' : 'Monthly Overview Data'}</div>
+      <div data-keep-with-next="true" style={{ fontWeight: 600, marginTop: 8, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Monthly Overview Data' : 'Monthly Overview Data'}</div>
       <table style={{ width: '100%', borderCollapse:'collapse' }}>
         <tbody>
           <tr><td style={{ padding:6 }}>{showChinese ? 'Total rent income 总租金' : 'Total rent income'}</td><td style={{ textAlign:'right', padding:6 }}>${fmt(totalIncome)}</td></tr>
@@ -256,7 +256,7 @@ export default forwardRef<HTMLDivElement, {
         </tbody>
       </table>
 
-      <div style={{ fontWeight: 600, marginTop: 16, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rental Details' : 'Rental Details'}</div>
+      <div data-keep-with-next="true" style={{ fontWeight: 600, marginTop: 16, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rental Details' : 'Rental Details'}</div>
       <div style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px' }}>
         <span>{showChinese ? 'Total Income 总收入' : 'Total Income'}</span><span>${fmt(totalIncome)}</span>
       </div>
@@ -315,7 +315,7 @@ export default forwardRef<HTMLDivElement, {
 
       {showBalance && balance && (
         <>
-          <div style={{ fontWeight: 600, marginTop: 16, background:'#eef3fb', padding:'6px 8px' }}>
+          <div data-keep-with-next="true" style={{ fontWeight: 600, marginTop: 16, background:'#eef3fb', padding:'6px 8px' }}>
             {hasFurniture ? (showChinese ? 'Furniture cost & carry-over 家具费用与结转' : 'Furniture cost & carry-over') : (showChinese ? 'Carry-over 结转' : 'Carry-over')}
           </div>
           <table style={{ width:'100%' }}>
@@ -395,7 +395,7 @@ export default forwardRef<HTMLDivElement, {
       </table>
 
 
-      <div style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Order Calendar' : 'Order Calendar'}</div>
+      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Order Calendar' : 'Order Calendar'}</div>
       {(() => {
         const weeks: Array<{ ws: any; we: any }> = []
         let cur = weekStart.clone()
@@ -475,7 +475,7 @@ export default forwardRef<HTMLDivElement, {
 
       {showInvoices && (
       <>
-      <div style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Expense Invoices 支出发票' : 'Expense Invoices'}</div>
+      <div data-keep-with-next="true" style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Expense Invoices 支出发票' : 'Expense Invoices'}</div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap: 12 }}>
         {expensesInMonthAll.map(e => {
           const eid = String((e as any).id)
