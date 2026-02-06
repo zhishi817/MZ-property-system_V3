@@ -72,6 +72,10 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
       try { router.replace('/login') } catch {}
     }
   }, [mounted, isLogin, isPublic, authed, router])
+
+  useEffect(() => {
+    void permTick
+  }, [permTick])
   const items: any[] = []
   if (hasPerm('menu.dashboard')) items.push({ key: 'dashboard', icon: <ProfileOutlined />, label: <Link href="/dashboard" prefetch={false}>总览</Link> })
   if (hasPerm('menu.landlords')) {
@@ -81,7 +85,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     landlordChildren.push({ key: 'landlord-contracts', label: <Link href="/landlords/contracts" prefetch={false}>房源合同</Link> })
     items.push({ key: 'landlords', icon: <TeamOutlined />, label: '房东管理', children: landlordChildren })
   }
-  if (hasPerm('menu.properties') || ['customer_service','field','cleaner_inspector'].includes(role || '')) {
+  if (hasPerm('menu.properties')) {
     const propChildren: any[] = []
     if (hasPerm('menu.properties.list.visible')) propChildren.push({ key: 'properties-list', label: <Link href="/properties" prefetch={false}>房源列表</Link> })
     if (hasPerm('menu.properties.keys.visible')) propChildren.push({ key: 'properties-keys', label: <Link href="/keys" prefetch={false}>房源钥匙</Link> })
@@ -118,7 +122,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   ] })
   if (hasPerm('menu.finance.company_revenue.visible')) financeChildren.push({ key: 'company-revenue', label: <Link href="/finance/company-revenue" prefetch={false}>公司营收</Link> })
   if (hasPerm('menu.finance')) items.push({ key: 'finance', icon: <DollarOutlined />, label: '财务管理', children: financeChildren })
-  if (hasPerm('menu.cleaning') || hasPerm('cleaning.task.assign') || role === 'customer_service' || role === 'cleaning_manager' || role === 'cleaner_inspector') items.push({ key: 'cleaning', icon: <CalendarOutlined />, label: <Link href="/cleaning" prefetch={false}>清洁安排</Link> })
+  if (hasPerm('menu.cleaning')) items.push({ key: 'cleaning', icon: <CalendarOutlined />, label: <Link href="/cleaning" prefetch={false}>清洁安排</Link> })
   if (hasPerm('menu.rbac') || hasPerm('rbac.manage')) items.push({ key: 'rbac', icon: <ProfileOutlined />, label: <Link href="/rbac" prefetch={false}>角色权限</Link> })
   if (hasPerm('menu.jobs.email_sync.visible')) items.push({ key: 'jobs', icon: <ProfileOutlined />, label: '系统任务', children: [
     { key: 'jobs-email-sync', label: <Link href="/jobs/email-sync" prefetch={false}>邮件同步</Link> },

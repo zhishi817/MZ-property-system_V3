@@ -622,9 +622,9 @@ const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
     ],
   },
   'cleaning_app.media.upload': {
-    displayName: '清洁 App：上传媒体（中高）',
-    riskLevel: 'high',
-    purpose: '允许上传照片/视频等媒体资料，用于验收与审计。',
+    displayName: '清洁 App：上传媒体（中）',
+    riskLevel: 'medium',
+    purpose: '允许上传照片/视频等媒体资料，用于检查验收与问题反馈。',
     scenarios: [
       '上传清洁前后对比、钥匙照片、锁盒视频等',
     ],
