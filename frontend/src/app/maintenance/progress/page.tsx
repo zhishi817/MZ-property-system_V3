@@ -215,6 +215,7 @@ import { getRole, hasPerm } from '../../../lib/auth'
                         <Space direction="vertical" style={{ width:'100%', marginTop: 8 }}>
                           <Form.Item label="维修前照片">
                             <Upload.Dragger
+                              multiple
                               listType="picture"
                               fileList={preFiles[field.name] || []}
                               onChange={({ fileList }) => {
@@ -242,6 +243,11 @@ import { getRole, hasPerm } from '../../../lib/auth'
                                       try {
                                         const j = JSON.parse(xhr.responseText || '{}')
                                         if (xhr.status >= 200 && xhr.status < 300 && j?.url) {
+                                          try { (file as any).url = j.url } catch {}
+                                          const uid = String((file as any)?.uid || '')
+                                          if (uid) {
+                                            setPreFiles(s => ({ ...s, [field.name]: (s[field.name] || []).map(x => x.uid === uid ? ({ ...x, url: j.url, status: 'done' } as any) : x) }))
+                                          }
                                           setPreUrls(s => ({ ...s, [field.name]: [ ...(s[field.name] || []), j.url ] }))
                                           onSuccess && onSuccess(j, file)
                                         } else {
@@ -262,6 +268,7 @@ import { getRole, hasPerm } from '../../../lib/auth'
                           </Form.Item>
                           <Form.Item label="维修后照片">
                             <Upload.Dragger
+                              multiple
                               listType="picture"
                               fileList={postFiles[field.name] || []}
                               onChange={({ fileList }) => {
@@ -289,6 +296,11 @@ import { getRole, hasPerm } from '../../../lib/auth'
                                       try {
                                         const j = JSON.parse(xhr.responseText || '{}')
                                         if (xhr.status >= 200 && xhr.status < 300 && j?.url) {
+                                          try { (file as any).url = j.url } catch {}
+                                          const uid = String((file as any)?.uid || '')
+                                          if (uid) {
+                                            setPostFiles(s => ({ ...s, [field.name]: (s[field.name] || []).map(x => x.uid === uid ? ({ ...x, url: j.url, status: 'done' } as any) : x) }))
+                                          }
                                           setPostUrls(s => ({ ...s, [field.name]: [ ...(s[field.name] || []), j.url ] }))
                                           onSuccess && onSuccess(j, file)
                                         } else {

@@ -1,9 +1,10 @@
 "use client"
-import { Card, Table, Drawer, Space, Button, Select, message, Modal, Form, Input, Checkbox, Divider, Typography, Tag } from 'antd'
-import { useEffect, useState } from 'react'
+import { Alert, Card, Table, Drawer, Space, Button, Select, message, Modal, Form, Input, Checkbox, Typography, Tag, Collapse, Tree, Empty, Divider, Radio } from 'antd'
+import { useEffect, useMemo, useState } from 'react'
 import { API_BASE, authHeaders } from '../../lib/api'
 import { preloadRolePerms } from '../../lib/auth'
 import { hasPerm } from '../../lib/auth'
+import { MENU_PERMISSION_MAP, buildMenuKeySet, buildPermToMenuIndex, findMenuNode, findMenuPathLabels } from './rbacMenuMap'
 
 type Role = { id: string; name: string; description?: string }
 type RiskLevel = 'low' | 'medium' | 'high'
@@ -40,6 +41,11 @@ export default function RBACPage() {
   const [pwUser, setPwUser] = useState<User | null>(null)
   const [pwForm] = Form.useForm()
   const [savedSnapshot, setSavedSnapshot] = useState<string[]>([])
+  const [menuCheckedKeys, setMenuCheckedKeys] = useState<string[]>([])
+  const [menuExpandedKeys, setMenuExpandedKeys] = useState<string[]>([])
+  const [menuSearch, setMenuSearch] = useState<string>('')
+  const [activeMenuKey, setActiveMenuKey] = useState<string>('')
+  const [advancedSearch, setAdvancedSearch] = useState<string>('')
 
   function riskTag(level?: RiskLevel) {
     const lv = level || 'medium'
@@ -153,6 +159,9 @@ export default function RBACPage() {
   async function edit(role: Role) {
     setCurrent(role)
     setOpen(true)
+    setActiveMenuKey('')
+    setMenuSearch('')
+    setAdvancedSearch('')
     const rp = await fetch(`${API_BASE}/rbac/role-permissions?role_id=${role.id}`).then(r => r.json())
     const list = canonicalizePerms((rp || []).map((x: any) => String(x.permission_code || '')).filter(Boolean))
     const key = `rbac:rolePermDraft:${role.id}`
@@ -167,9 +176,12 @@ export default function RBACPage() {
     const initial = restored || list
     setSelectedPerms(initial)
     setSavedSnapshot(list)
+    const menuKeySet = buildMenuKeySet(MENU_PERMISSION_MAP)
+    setMenuCheckedKeys(initial.filter((c) => menuKeySet.has(String(c || ''))))
+    setMenuExpandedKeys(Array.from(menuKeySet))
   }
 
-  async function save() {
+  async function doSave() {
     const res = await fetch(`${API_BASE}/rbac/role-permissions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ role_id: current?.id, permissions: selectedPerms }) })
     if (res.ok) {
       try { if (current?.id) window.localStorage.removeItem(`rbac:rolePermDraft:${current.id}`) } catch {}
@@ -329,43 +341,167 @@ export default function RBACPage() {
     ) },
   ]
 
-  const menuRows = dedupeBySynonyms(perms
-    .filter(p => p.code.startsWith('menu.') && !/\.visible$/.test(p.code))
-    .map(p => ({ key: p.code, ...p })))
-  const menuCodes = menuRows.map((p: any) => p.code)
+  const menuKeySet = useMemo(() => buildMenuKeySet(MENU_PERMISSION_MAP), [])
+  const permToMenuIndex = useMemo(() => buildPermToMenuIndex(MENU_PERMISSION_MAP), [])
+  const mappedPermSet = useMemo(() => new Set(Object.keys(permToMenuIndex)), [permToMenuIndex])
 
-  const resourceRows = dedupeBySynonyms(perms
-    .filter(p => !p.code.startsWith('menu.') && /\.(view|write|delete|archive)$/.test(p.code))
-    .map(p => ({ key: p.code, ...p })))
-  const resourceCodes = resourceRows.map((p: any) => p.code)
+  const permByCode: Record<string, Permission> = (() => {
+    const m: Record<string, Permission> = {}
+    perms.forEach((p) => { if (p?.code) m[String(p.code)] = p })
+    return m
+  })()
 
-  const featureRows = dedupeBySynonyms(perms
-    .filter(p => !p.code.startsWith('menu.') && !/\.(view|write|delete|archive)$/.test(p.code))
-    .map(p => ({ key: p.code, ...p })))
-  const featureCodes = featureRows.map((p: any) => p.code)
+  function humanizeCode(code: string) {
+    const raw = String(code || '').trim()
+    if (!raw) return ''
+    return raw
+      .replace(/[._]/g, ' ')
+      .replace(/\b([a-z])/g, (m) => m.toUpperCase())
+  }
 
-  const matrixRows = [
-    { key:'properties.list', label:'房源列表', menu:'menu.properties.list.visible', resources:['properties'] },
-    { key:'properties.maintenance', label:'房源维修', menu:'menu.properties.maintenance.visible', resources:['property_maintenance'] },
-    { key:'finance.expenses', label:'房源支出', menu:'menu.finance.expenses.visible', resources:['property_expenses'] },
-    { key:'finance.recurring', label:'固定支出', menu:'menu.finance.recurring.visible', resources:['recurring_payments'] },
-    { key:'finance.orders', label:'订单管理', menu:'menu.finance.orders.visible', resources:['order'] },
-    { key:'finance.invoices', label:'发票中心', menu:'menu.finance.invoices.visible', resources:[] },
-    { key:'finance.company_overview', label:'财务总览', menu:'menu.finance.company_overview.visible', resources:['finance_transactions','order','properties','property_expenses'] },
-    { key:'finance.company_revenue', label:'公司营收', menu:'menu.finance.company_revenue.visible', resources:['company_incomes','company_expenses'] },
-    { key:'landlords', label:'房东管理', menu:'menu.landlords.visible', resources:['landlords'] },
-    { key:'cleaning', label:'清洁安排', menu:'menu.cleaning.visible', resources:['cleaning_tasks'] },
-    { key:'cms', label:'CMS管理', menu:'menu.cms.visible', resources:['cms_pages'] },
-  ]
+  function getDisplayName(code: string) {
+    const p = permByCode[code]
+    const name = String(p?.meta?.displayName || p?.name || p?.code || '')
+    return name || humanizeCode(code) || code
+  }
+
+  function getPurpose(code: string) {
+    const p = permByCode[code]
+    const v = String(p?.meta?.purpose || '').trim()
+    return v || '该权限暂无说明（建议补齐权限文档）。'
+  }
+
+  function getRiskLevel(code: string): RiskLevel {
+    if (String(code).endsWith('.delete')) return 'high'
+    const p = permByCode[code]
+    const lv = (p?.meta?.riskLevel as RiskLevel | undefined) || undefined
+    return lv || 'low'
+  }
+
+  function isHighRiskCode(code: string) {
+    return getRiskLevel(code) === 'high'
+  }
+
+  function isMenuCode(code: string) {
+    return menuKeySet.has(String(code || ''))
+  }
+
   function has(code: string) { return selectedPerms.includes(code) }
-  function toggle(code: string, checked: boolean) {
-    setSelectedPerms(prev => checked ? Array.from(new Set([...prev, code])) : prev.filter(c => c !== code))
+
+  function applyChecked(code: string, checked: boolean) {
+    setSelectedPerms((prev) => {
+      const s = new Set(prev)
+      if (checked) s.add(code); else s.delete(code)
+      return Array.from(s)
+    })
   }
-  function isMenu(code: string) { return code.startsWith('menu.') }
-  function isFeature(code: string) { return !isMenu(code) && !/\.(view|write|delete)$/.test(code) }
-  function ensureVisibleWhenAction(menuCode: string) {
-    setSelectedPerms(prev => (prev.includes(menuCode) ? prev : [...prev, menuCode]))
+
+  function confirmHighRiskEnable(code: string) {
+    const title = `授予【${getDisplayName(code)}】`
+    const content = (
+      <div style={{ display: 'grid', gap: 8 }}>
+        <Alert type="error" showIcon message="⚠️ 以下权限可能造成财务、系统或数据不可逆影响" />
+        <div>
+          <Typography.Text strong>启用后果：</Typography.Text>
+          <Typography.Paragraph style={{ marginBottom: 0 }}>{getPurpose(code)}</Typography.Paragraph>
+        </div>
+      </div>
+    )
+    return new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title,
+        content,
+        okType: 'danger',
+        okText: '确认启用',
+        cancelText: '取消',
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      })
+    })
   }
+
+  async function setChecked(code: string, checked: boolean) {
+    if (checked && isHighRiskCode(code)) {
+      const ok = await confirmHighRiskEnable(code)
+      if (!ok) return
+    }
+    applyChecked(code, checked)
+  }
+
+  function isViewLike(code: string) {
+    const c = String(code || '')
+    if (!c) return false
+    if (/\.(view|read)$/i.test(c)) return true
+    if (/\.view\./i.test(c)) return true
+    if (/\.read\./i.test(c)) return true
+    if (c === 'invoice.view') return true
+    return false
+  }
+
+  function classifyAction(code: string) {
+    const c = String(code || '')
+    if (!c) return '流程动作'
+    if (/\.(view|read)$/i.test(c) || /\.view\./i.test(c) || /\.read\./i.test(c)) return '查看'
+    if (/\.create$/i.test(c) || /\.create\./i.test(c)) return '新增'
+    if (/\.write$/i.test(c) || /\.write\./i.test(c) || /\.manage$/i.test(c) || /\.manage\./i.test(c)) return '编辑'
+    if (/\.delete$/i.test(c)) return '删除'
+    if (/\.archive$/i.test(c)) return '归档'
+    return '流程动作'
+  }
+
+  const menuTreeData: any[] = useMemo(() => {
+    function build(nodes: Record<string, any>): any[] {
+      return Object.entries(nodes).map(([k, n]) => ({
+        key: k,
+        title: n.label,
+        children: n.children ? build(n.children) : undefined,
+      }))
+    }
+    return build(MENU_PERMISSION_MAP as any)
+  }, [])
+
+  const filteredMenuTreeData: any[] = useMemo(() => {
+    const q = String(menuSearch || '').trim().toLowerCase()
+    if (!q) return menuTreeData
+    function filter(nodes: any[]): any[] {
+      const out: any[] = []
+      nodes.forEach((n) => {
+        const title = String(n.title || '').toLowerCase()
+        const children = Array.isArray(n.children) ? filter(n.children) : []
+        if (title.includes(q) || children.length) out.push({ ...n, children: children.length ? children : undefined })
+      })
+      return out
+    }
+    return filter(menuTreeData)
+  }, [menuTreeData, menuSearch])
+
+  const mappedPermsAll = useMemo(() => {
+    const s = new Set<string>()
+    Object.keys(permToMenuIndex).forEach((k) => s.add(k))
+    return s
+  }, [permToMenuIndex])
+
+  const unmappedRows = useMemo(() => {
+    const q = String(advancedSearch || '').trim().toLowerCase()
+    const list = dedupeBySynonyms(perms
+      .filter((p) => {
+        const code = String(p.code || '')
+        if (!code) return false
+        if (isMenuCode(code)) return false
+        if (mappedPermsAll.has(code)) return false
+        if (isHighRiskCode(code)) return false
+        return true
+      }))
+    const rows = list.map((p) => ({ key: p.code, ...p }))
+    if (!q) return rows
+    return rows.filter((r: any) => {
+      const dn = getDisplayName(String(r.code)).toLowerCase()
+      const cc = String(r.code || '').toLowerCase()
+      return dn.includes(q) || cc.includes(q)
+    })
+  }, [advancedSearch, perms, mappedPermsAll])
+
+  const unmappedCodes = useMemo(() => unmappedRows.map((r: any) => String(r.code)), [unmappedRows])
 
   useEffect(() => {
     if (!open || !current?.id) return
@@ -376,86 +512,197 @@ export default function RBACPage() {
     } catch {}
   }, [open, current?.id, selectedPerms, savedSnapshot])
 
-  const matrixGroups: { key: string; title: string; rows: any[] }[] = (() => {
-    const groupBy: Record<string, any[]> = {}
-    matrixRows.forEach((row) => {
-      const parent = String(row.menu).split('.').slice(0, 2).join('.')
-      groupBy[parent] = groupBy[parent] || []
-      groupBy[parent].push(row)
-    })
-    const titleByCode: Record<string, string> = {}
-    perms.forEach((p) => { if (p.code) titleByCode[p.code] = String(p.meta?.displayName || p.name || p.code) })
-    return Object.keys(groupBy).map((k) => ({ key: k, title: titleByCode[k] || k, rows: groupBy[k] }))
-  })()
+  const menuIndex = useMemo(() => {
+    const idx: Record<string, { key: string; label: string; perms: string[]; children: string[]; parent?: string }> = {}
+    function walk(nodes: Record<string, any>, parent?: string) {
+      Object.entries(nodes).forEach(([k, n]) => {
+        const key = String(k)
+        const label = String((n as any)?.label || key)
+        const perms = Array.isArray((n as any)?.perms) ? (n as any).perms.map((x: any) => String(x || '')).filter(Boolean) : []
+        const children = (n as any)?.children ? Object.keys((n as any).children) : []
+        idx[key] = { key, label, perms, children, parent }
+        if ((n as any)?.children) walk((n as any).children, key)
+      })
+    }
+    walk(MENU_PERMISSION_MAP as any, undefined)
+    return idx
+  }, [])
 
-  const matrixColumns: any[] = [
-    { title: '子菜单', dataIndex: 'label', width: 240, render: (v: any) => <Typography.Text strong>{v}</Typography.Text> },
-    { title: '可见', dataIndex: 'visible', align: 'center', width: 110, render: (_: any, row: any) => <Checkbox checked={has(row.menu)} onChange={(e) => toggle(row.menu, e.target.checked)} /> },
-    {
-      title: '查看',
-      dataIndex: 'view',
-      align: 'center',
-      width: 110,
-      render: (_: any, row: any) => (
-        <Checkbox
-          checked={row.resources.every((res: string) => has(`${res}.view`))}
-          onChange={(e) => {
-            const checked = e.target.checked
-            ensureVisibleWhenAction(row.menu)
-            row.resources.forEach((res: string) => toggle(`${res}.view`, checked))
-          }}
-        />
-      ),
-    },
-    {
-      title: '编辑',
-      dataIndex: 'write',
-      align: 'center',
-      width: 110,
-      render: (_: any, row: any) => (
-        <Checkbox
-          checked={row.resources.every((res: string) => has(`${res}.write`))}
-          onChange={(e) => {
-            const checked = e.target.checked
-            ensureVisibleWhenAction(row.menu)
-            row.resources.forEach((res: string) => toggle(`${res}.write`, checked))
-          }}
-        />
-      ),
-    },
-    {
-      title: '删除',
-      dataIndex: 'delete',
-      align: 'center',
-      width: 110,
-      render: (_: any, row: any) => (
-        <Checkbox
-          checked={row.resources.every((res: string) => has(`${res}.delete`))}
-          onChange={(e) => {
-            const checked = e.target.checked
-            ensureVisibleWhenAction(row.menu)
-            row.resources.forEach((res: string) => toggle(`${res}.delete`, checked))
-          }}
-        />
-      ),
-    },
-    {
-      title: '归档',
-      dataIndex: 'archive',
-      align: 'center',
-      width: 110,
-      render: (_: any, row: any) => (
-        <Checkbox
-          checked={row.resources.every((res: string) => has(`${res}.archive`))}
-          onChange={(e) => {
-            const checked = e.target.checked
-            ensureVisibleWhenAction(row.menu)
-            row.resources.forEach((res: string) => toggle(`${res}.archive`, checked))
-          }}
-        />
-      ),
-    },
-  ]
+  function getAncestors(key: string) {
+    const out: string[] = []
+    let cur = menuIndex[key]?.parent
+    while (cur) {
+      out.push(cur)
+      cur = menuIndex[cur]?.parent
+    }
+    return out
+  }
+
+  function getDescendantsInclusive(key: string) {
+    const out: string[] = []
+    function walk(k: string) {
+      out.push(k)
+      const kids = menuIndex[k]?.children || []
+      kids.forEach(walk)
+    }
+    walk(key)
+    return out
+  }
+
+  function hasAnyCheckedChild(parentKey: string, checkedSet: Set<string>): boolean {
+    const kids = menuIndex[parentKey]?.children || []
+    return kids.some((k) => checkedSet.has(k) || hasAnyCheckedChild(k, checkedSet))
+  }
+
+  const halfCheckedKeys = useMemo(() => {
+    const checkedSet = new Set(menuCheckedKeys)
+    const half: string[] = []
+    Object.values(menuIndex).forEach((n) => {
+      if (!n.children.length) return
+      const anyChild = n.children.some((c) => checkedSet.has(c) || hasAnyCheckedChild(c, checkedSet))
+      const allChild = n.children.every((c) => checkedSet.has(c) || hasAnyCheckedChild(c, checkedSet))
+      if (anyChild && !allChild && !checkedSet.has(n.key)) half.push(n.key)
+    })
+    return half
+  }, [menuCheckedKeys, menuIndex])
+
+  function confirmMenuHideOrRemove(keys: string[]) {
+    const labels = keys.map((k) => menuIndex[k]?.label || k)
+    let choice: 'hide' | 'remove' = 'remove'
+    return new Promise<'hide' | 'remove'>((resolve) => {
+      Modal.confirm({
+        title: '取消菜单可见',
+        content: (
+          <div style={{ display: 'grid', gap: 10 }}>
+            <Typography.Text>你正在隐藏：{labels.slice(0, 6).join('，')}{labels.length > 6 ? '…' : ''}</Typography.Text>
+            <Radio.Group
+              defaultValue="remove"
+              onChange={(e) => { choice = e.target.value }}
+              options={[
+                { value: 'hide', label: '仅隐藏菜单（保留操作权限）' },
+                { value: 'remove', label: '隐藏菜单并移除该菜单下所有操作权限（推荐）' },
+              ]}
+            />
+          </div>
+        ),
+        okText: '确认',
+        cancelText: '取消',
+        onOk: () => resolve(choice),
+        onCancel: () => resolve('hide'),
+      })
+    })
+  }
+
+  async function toggleMenuVisibility(menuKey: string, checked: boolean, opts?: { skipPrompt?: boolean }) {
+    const key = String(menuKey || '')
+    if (!key) return
+    const prevSet = new Set(menuCheckedKeys)
+    let nextSet = new Set(prevSet)
+
+    const affected = getDescendantsInclusive(key)
+    if (checked) {
+      affected.forEach((k) => nextSet.add(k))
+      getAncestors(key).forEach((a) => nextSet.add(a))
+    } else {
+      affected.forEach((k) => nextSet.delete(k))
+      getAncestors(key).forEach((a) => {
+        if (!hasAnyCheckedChild(a, nextSet)) nextSet.delete(a)
+      })
+    }
+
+    const newlyChecked = Array.from(nextSet).filter((k) => !prevSet.has(k))
+    const newlyUnchecked = Array.from(prevSet).filter((k) => !nextSet.has(k))
+
+    const toPrompt = !checked
+      ? newlyUnchecked.filter((k) => (menuIndex[k]?.perms || []).length > 0)
+      : []
+    let removeOps = false
+    if (!opts?.skipPrompt && toPrompt.length) {
+      const choice = await confirmMenuHideOrRemove(toPrompt)
+      removeOps = choice === 'remove'
+    }
+
+    const selectedSet = new Set(selectedPerms)
+    newlyChecked.forEach((k) => selectedSet.add(k))
+    newlyUnchecked.forEach((k) => selectedSet.delete(k))
+    newlyChecked.forEach((k) => {
+      const perms = menuIndex[k]?.perms || []
+      perms.forEach((p) => {
+        if (isViewLike(p) && !isHighRiskCode(p)) selectedSet.add(p)
+      })
+    })
+
+    if (removeOps && toPrompt.length) {
+      const permsToRemove = new Set<string>()
+      toPrompt.forEach((mk) => (menuIndex[mk]?.perms || []).forEach((p) => permsToRemove.add(p)))
+      permsToRemove.forEach((p) => {
+        const refs = permToMenuIndex[p]
+        const usedElsewhere = refs ? Array.from(refs).some((mk) => nextSet.has(mk)) : false
+        if (!usedElsewhere) selectedSet.delete(p)
+      })
+    }
+
+    const finalSelected = canonicalizePerms(Array.from(selectedSet))
+    setMenuCheckedKeys(Array.from(nextSet))
+    setSelectedPerms(finalSelected)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const fromSelected = selectedPerms.filter((c) => isMenuCode(c))
+    const a = JSON.stringify(fromSelected.slice().sort())
+    const b = JSON.stringify(menuCheckedKeys.slice().sort())
+    if (a !== b) setMenuCheckedKeys(fromSelected)
+  }, [open, selectedPerms, menuCheckedKeys])
+
+  const activeNode = activeMenuKey ? findMenuNode(MENU_PERMISSION_MAP, activeMenuKey) : null
+  const activePath = activeMenuKey ? findMenuPathLabels(MENU_PERMISSION_MAP, activeMenuKey) : []
+  const activePerms = (activeNode?.perms || []).map((x) => String(x || '')).filter(Boolean)
+  const permsByAction = useMemo(() => {
+    const map: Record<string, string[]> = {}
+    activePerms.forEach((p) => {
+      const act = classifyAction(p)
+      map[act] = map[act] || []
+      map[act].push(p)
+    })
+    const order = ['查看', '新增', '编辑', '删除', '归档', '流程动作']
+    const out: Record<string, string[]> = {}
+    order.forEach((k) => { if (map[k]?.length) out[k] = map[k] })
+    Object.keys(map).forEach((k) => { if (!out[k]) out[k] = map[k] })
+    return out
+  }, [activePerms.join('|')])
+
+  async function setAllMenusVisible(checked: boolean) {
+    if (checked) {
+      const allKeys = Array.from(menuKeySet)
+      const selectedSet = new Set(selectedPerms)
+      allKeys.forEach((k) => selectedSet.add(k))
+      allKeys.forEach((k) => {
+        const perms = menuIndex[k]?.perms || []
+        perms.forEach((p) => { if (isViewLike(p) && !isHighRiskCode(p)) selectedSet.add(p) })
+      })
+      setMenuCheckedKeys(allKeys)
+      setMenuExpandedKeys(allKeys)
+      setSelectedPerms(canonicalizePerms(Array.from(selectedSet)))
+      return
+    }
+
+    const submenus = Object.values(menuIndex).filter((n) => n.perms.length > 0).map((n) => n.key).filter((k) => menuCheckedKeys.includes(k))
+    let removeOps = false
+    if (submenus.length) {
+      const choice = await confirmMenuHideOrRemove(submenus)
+      removeOps = choice === 'remove'
+    }
+    const selectedSet = new Set(selectedPerms)
+    menuCheckedKeys.forEach((k) => selectedSet.delete(k))
+    if (removeOps && submenus.length) {
+      const permsToRemove = new Set<string>()
+      submenus.forEach((mk) => (menuIndex[mk]?.perms || []).forEach((p) => permsToRemove.add(p)))
+      permsToRemove.forEach((p) => selectedSet.delete(p))
+    }
+    setMenuCheckedKeys([])
+    setSelectedPerms(canonicalizePerms(Array.from(selectedSet)))
+  }
 
   return (
     <Card
@@ -481,87 +728,143 @@ export default function RBACPage() {
         style={{ maxWidth: '98vw' }}
         styles={{ body: { padding: 12 } }}
       >
-        <Card size="small" title="菜单显示（仅影响入口可见性）">
-          <Table
-            size="small"
-            rowKey={(r) => (r as any).code}
-            dataSource={menuRows as any}
-            tableLayout="fixed"
-            scroll={{ x: 980 }}
-            pagination={{ pageSize: 20, showSizeChanger: true }}
-            rowSelection={{
-              selectedRowKeys: selectedPerms.filter((c) => menuCodes.includes(c)),
-              onChange: (keys) => groupUpdate(menuCodes, keys as string[]),
-            }}
-            expandable={{
-              expandedRowRender: (record) => renderPermDetail(record as any),
-              rowExpandable: (record) => !!(record as any).meta,
-            }}
-            columns={permColumns}
-          />
-        </Card>
-        <Divider />
-        <div style={{ display: 'grid', gap: 12 }}>
-          {matrixGroups.map((g) => (
-            <div key={g.key}>
-              <Typography.Text strong style={{ display: 'block', margin: '4px 0 8px' }}>{g.title}</Typography.Text>
-              <Card size="small" styles={{ body: { padding: 0 } }}>
-                <Table
-                  size="middle"
-                  rowKey={(r) => (r as any).key}
-                  dataSource={g.rows as any}
-                  pagination={false}
-                  tableLayout="fixed"
-                  columns={matrixColumns}
-                />
-              </Card>
+        <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 12, alignItems: 'start' }}>
+          <Card size="small" title="菜单（入口权限）" styles={{ body: { padding: 10 } }}>
+            <div style={{ display: 'grid', gap: 10 }}>
+              <Input
+                placeholder="搜索菜单"
+                value={menuSearch}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setMenuSearch(v)
+                  if (v) setMenuExpandedKeys(Array.from(menuKeySet))
+                }}
+              />
+              <Space wrap>
+                <Button size="small" onClick={() => setMenuExpandedKeys(Array.from(menuKeySet))}>展开</Button>
+                <Button size="small" onClick={() => setMenuExpandedKeys([])}>折叠</Button>
+                <Button size="small" onClick={() => { setAllMenusVisible(true).catch(() => {}) }}>全选</Button>
+                <Button size="small" onClick={() => { setAllMenusVisible(false).catch(() => {}) }}>反选</Button>
+              </Space>
+              <Tree
+                checkable
+                selectable
+                checkStrictly
+                expandedKeys={menuExpandedKeys}
+                onExpand={(keys) => setMenuExpandedKeys((keys as any[]).map((k) => String(k)))}
+                checkedKeys={{ checked: menuCheckedKeys, halfChecked: halfCheckedKeys }}
+                onCheck={(_, info: any) => {
+                  const k = String(info?.node?.key || '')
+                  const c = !!info?.checked
+                  toggleMenuVisibility(k, c).catch(() => {})
+                }}
+                selectedKeys={activeMenuKey ? [activeMenuKey] : []}
+                onSelect={(keys) => setActiveMenuKey(String((keys as any[])[0] || ''))}
+                treeData={filteredMenuTreeData as any}
+              />
+              <Typography.Text type="secondary">菜单层仅控制是否可见/是否能进入，不包含任何操作权限。</Typography.Text>
             </div>
-          ))}
+          </Card>
+
+          <Card
+            size="small"
+            title={activePath.length ? `${activePath[activePath.length - 1]} · 可执行操作` : '可执行操作'}
+            extra={activePath.length ? <Typography.Text type="secondary">{activePath.join(' > ')}</Typography.Text> : null}
+            styles={{ body: { padding: 12 } }}
+          >
+            {!activeMenuKey ? (
+              <Empty description="请选择左侧子菜单查看可执行操作" />
+            ) : !activePerms.length ? (
+              <Empty description="该菜单未配置可执行操作（未在 MENU_PERMISSION_MAP 中声明 perms）" />
+            ) : (
+              <div style={{ display: 'grid', gap: 12 }}>
+                <Alert type="info" showIcon message="提示" description="这里展示的是“行为/操作权限”。菜单本身只控制入口可见性。" />
+                {Object.entries(permsByAction).map(([action, list]) => (
+                  <div key={action}>
+                    <Typography.Text strong>{action}</Typography.Text>
+                    <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                      {list.map((code) => {
+                        const high = isHighRiskCode(code)
+                        const label = getDisplayName(code)
+                        const purpose = getPurpose(code)
+                        return (
+                          <div key={code} style={{ display: 'grid', gap: 4, padding: 10, border: '1px solid #f0f0f0', borderRadius: 8 }}>
+                            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                              <Checkbox
+                                checked={has(code)}
+                                onChange={async (e) => {
+                                  const next = e.target.checked
+                                  if (next && activeMenuKey && !menuCheckedKeys.includes(activeMenuKey)) {
+                                    await toggleMenuVisibility(activeMenuKey, true, { skipPrompt: true })
+                                  }
+                                  await setChecked(code, next)
+                                }}
+                              >
+                                <Typography.Text strong>{high ? `🔒 ${label}` : label}</Typography.Text>
+                              </Checkbox>
+                              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                {riskTag(getRiskLevel(code))}
+                              </div>
+                            </div>
+                            <Typography.Text type="secondary">{purpose}</Typography.Text>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <Divider style={{ margin: '12px 0' }} />
+                  </div>
+                ))}
+
+                <Collapse
+                  defaultActiveKey={[]}
+                  items={[
+                    {
+                      key: 'advanced',
+                      label: '未映射权限（高级）',
+                      children: (
+                        <div style={{ display: 'grid', gap: 10 }}>
+                          <Typography.Text type="secondary">仅展示低/中风险权限；高风险权限不进入该区域。</Typography.Text>
+                          <Input
+                            placeholder="搜索未映射权限"
+                            value={advancedSearch}
+                            onChange={(e) => setAdvancedSearch(e.target.value)}
+                          />
+                          <Table
+                            size="small"
+                            rowKey={(r) => String((r as any).code)}
+                            dataSource={unmappedRows as any}
+                            pagination={{ pageSize: 10, showSizeChanger: true }}
+                            tableLayout="fixed"
+                            columns={[
+                              { title: '权限', width: 360, render: (_: any, r: any) => permTitleCell(r) },
+                              { title: '风险', width: 110, render: (_: any, r: any) => riskTag(getRiskLevel(String(r.code))) },
+                              {
+                                title: '启用',
+                                width: 90,
+                                align: 'center',
+                                render: (_: any, r: any) => (
+                                  <Checkbox
+                                    checked={has(String(r.code))}
+                                    onChange={(e) => { setChecked(String(r.code), e.target.checked).catch(() => {}) }}
+                                  />
+                                ),
+                              },
+                            ]}
+                          />
+                        </div>
+                      ),
+                    },
+                  ]}
+                />
+              </div>
+            )}
+
+            <Space style={{ marginTop: 12 }}>
+              <Button type="primary" onClick={() => { doSave().catch(() => {}) }}>保存</Button>
+              <Button onClick={() => setOpen(false)}>取消</Button>
+            </Space>
+          </Card>
         </div>
-        <Divider />
-        <Card size="small" title="数据权限（资源操作）">
-          <Table
-            size="small"
-            rowKey={(r) => (r as any).code}
-            dataSource={resourceRows as any}
-            tableLayout="fixed"
-            scroll={{ x: 980 }}
-            pagination={{ pageSize: 20, showSizeChanger: true }}
-            rowSelection={{
-              selectedRowKeys: selectedPerms.filter((c) => resourceCodes.includes(c)),
-              onChange: (keys) => groupUpdate(resourceCodes, keys as string[]),
-            }}
-            expandable={{
-              expandedRowRender: (record) => renderPermDetail(record as any),
-              rowExpandable: (record) => !!(record as any).meta,
-            }}
-            columns={permColumns}
-          />
-        </Card>
-        <Divider />
-        <Card size="small" title="功能权限（系统能力）">
-          <Table
-            size="small"
-            rowKey={(r) => (r as any).code}
-            dataSource={featureRows as any}
-            tableLayout="fixed"
-            scroll={{ x: 980 }}
-            pagination={{ pageSize: 20, showSizeChanger: true }}
-            rowSelection={{
-              selectedRowKeys: selectedPerms.filter((c) => featureCodes.includes(c)),
-              onChange: (keys) => groupUpdate(featureCodes, keys as string[]),
-            }}
-            expandable={{
-              expandedRowRender: (record) => renderPermDetail(record as any),
-              rowExpandable: (record) => !!(record as any).meta,
-            }}
-            columns={permColumns}
-          />
-        </Card>
-        <Space style={{ marginTop: 12 }}>
-          <Button type="primary" onClick={save}>保存</Button>
-          <Button onClick={() => setOpen(false)}>取消</Button>
-        </Space>
       </Drawer>
       <Modal open={userOpen} onCancel={() => setUserOpen(false)} onOk={submitUser} title="新建用户">
         <Form form={userForm} layout="vertical">

@@ -31,7 +31,7 @@ async function ensureMaintenanceShareTables() {
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_maintenance_share_expires ON maintenance_share_links(expires_at);')
 }
 
-router.post('/upload', requireAnyPerm(['property.write','rbac.manage']), upload.single('file'), async (req, res) => {
+router.post('/upload', requireAnyPerm(['property_maintenance.write','property.write','rbac.manage']), upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'missing file' })
   try {
     if (!hasR2 || !(req.file as any).buffer) {
