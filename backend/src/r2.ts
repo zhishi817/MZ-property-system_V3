@@ -8,7 +8,14 @@ const publicBase = process.env.R2_PUBLIC_BASE_URL || process.env.R2_PUBLIC_BASE 
 
 export const hasR2 = !!(endpoint && accessKeyId && secretAccessKey && bucket)
 
-export const r2 = hasR2 ? new S3Client({ region: 'auto', endpoint, credentials: { accessKeyId, secretAccessKey } }) : null
+export const r2 = hasR2
+  ? new S3Client({
+    region: 'auto',
+    endpoint,
+    forcePathStyle: true,
+    credentials: { accessKeyId, secretAccessKey },
+  })
+  : null
 
 export async function r2Upload(key: string, contentType: string, body: Buffer) {
   if (!hasR2 || !r2) throw new Error('R2 not configured')

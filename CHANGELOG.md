@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.7-invoice-types.20260207+build.2 (2026-02-07)
+
+- R2: Fix production uploads by enabling S3 path-style requests (forcePathStyle) to support Cloudflare R2 bucket addressing.
+- Versions: frontend 0.2.7-invoice-types.20260207+build.2, backend 0.2.7-invoice-types.20260207+build.2.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## v0.2.7-invoice-types.20260207+build.1 (2026-02-07)
 
 - Invoice center: Add Quote/Invoice/Receipt types with permissions (invoice.type.switch).
