@@ -53,9 +53,10 @@ export function InvoiceCompaniesManager(props: { bordered?: boolean; onChanged?:
     const j = await res.json().catch(() => ({}))
     if (!res.ok) { message.error(String(j?.message || '保存失败')); return }
     const saved = j
-    if (logoFile?.file) {
+    const pickedFile: any = (logoFile as any)?.originFileObj || (logoFile as any)?.file
+    if (pickedFile) {
       const fd = new FormData()
-      fd.append('file', logoFile.file as any)
+      fd.append('file', pickedFile as any)
       const up = await fetch(`${API_BASE}/invoices/companies/${saved.id}/logo/upload`, { method: 'POST', headers: { ...authHeaders() }, body: fd })
       if (!up.ok) {
         const uj = await up.json().catch(() => ({}))
@@ -184,4 +185,3 @@ export function InvoiceCompaniesManager(props: { bordered?: boolean; onChanged?:
     </>
   )
 }
-
