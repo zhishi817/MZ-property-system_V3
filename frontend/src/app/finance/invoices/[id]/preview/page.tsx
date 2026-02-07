@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation'
 import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 import { getJSON } from '../../../../../lib/api'
-import { buildInvoiceTemplateHtml } from '../../../../../lib/invoiceTemplateHtml'
+import { buildInvoiceTemplateHtml, normalizeAssetUrl } from '../../../../../lib/invoiceTemplateHtml'
 
 export default function InvoicePreviewPage({ params }: { params: { id: string } }) {
   const router = useRouter()
@@ -20,11 +20,77 @@ export default function InvoicePreviewPage({ params }: { params: { id: string } 
   const [loading, setLoading] = useState(true)
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
 
+  function isR2Url(u: string) {
+    try {
+      const url = new URL(u)
+      const host = String(url.hostname || '').toLowerCase()
+      return host.endsWith('.r2.dev') || host.includes('r2.cloudflarestorage.com')
+    } catch {
+      return false
+    }
+  }
+
+  async function tryFetchDataUrl(url: string) {
+    const u = String(url || '').trim()
+    if (!u) return null
+    if (u.startsWith('data:')) return u
+    try {
+      const resp = await fetch(u, { credentials: 'include' })
+      if (!resp.ok) return null
+      const blob = await resp.blob()
+      const dataUrl: string = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ''))
+        reader.onerror = () => reject(new Error('read_logo_failed'))
+        reader.readAsDataURL(blob)
+      })
+      if (!String(dataUrl || '').startsWith('data:')) return null
+      return dataUrl
+    } catch {
+      return null
+    }
+  }
+
+  async function waitForIframeAssets(doc: Document) {
+    try {
+      const fonts: any = (doc as any).fonts
+      if (fonts?.ready) {
+        await Promise.race([fonts.ready, new Promise((r) => setTimeout(r, 1500))])
+      }
+    } catch {}
+    try {
+      const imgs = Array.from(doc.images || [])
+      const loaders = imgs.map((img) => {
+        if (img.complete) return Promise.resolve()
+        return new Promise<void>((resolve) => {
+          const done = () => {
+            img.removeEventListener('load', done)
+            img.removeEventListener('error', done)
+            resolve()
+          }
+          img.addEventListener('load', done)
+          img.addEventListener('error', done)
+        })
+      })
+      await Promise.race([Promise.all(loaders), new Promise((r) => setTimeout(r, 4000))])
+    } catch {}
+  }
+
   useEffect(() => {
     if (!id) return
     setLoading(true)
     getJSON<any>(`/invoices/${id}`)
-      .then((j) => { setInvoice(j); })
+      .then(async (j) => {
+        const next = { ...(j || {}), company: { ...(j?.company || {}) } }
+        const logo = String(next.company?.logo_url || '').trim()
+        if (logo) {
+          const abs = normalizeAssetUrl(logo)
+          const proxied = isR2Url(abs) ? `${normalizeAssetUrl('/public/r2-image')}?url=${encodeURIComponent(abs)}` : abs
+          const inlined = await tryFetchDataUrl(proxied)
+          next.company.logo_url = inlined || proxied
+        }
+        setInvoice(next)
+      })
       .catch((e: any) => message.error(String(e?.message || '加载失败')))
       .finally(() => setLoading(false))
   }, [id])
@@ -37,88 +103,113 @@ export default function InvoicePreviewPage({ params }: { params: { id: string } 
 
   async function doPrint() {
     try {
+      const doc = iframeRef.current?.contentDocument
+      if (!doc) { message.error('打印失败'); return }
+      const printCss = `
+        @media print {
+          .inv-header { grid-template-columns: 1fr 1fr !important; gap: 16px !important; }
+          .inv-title { text-align: right !important; }
+          .inv-band { grid-template-columns: 1fr 1fr !important; }
+          .inv-footer-grid { grid-template-columns: 1fr 0.9fr !important; }
+        }
+      `
       const win = iframeRef.current?.contentWindow
       if (!win) return
       win.focus()
-      win.print()
+      await withTempStyle(doc, 'inv-print-style', printCss, async () => {
+        await waitForIframeAssets(doc)
+        win.print()
+      })
     } catch {
       message.error('打印失败')
     }
   }
 
-  async function capturePng(params: { label: string; injectStyleText?: string }) {
-    const doc = iframeRef.current?.contentDocument
-    if (!doc) throw new Error('missing_iframe')
-    const styleId = 'inv-capture-style'
-    const prev = doc.getElementById(styleId)
+  async function withTempStyle<T>(doc: Document, id: string, cssText: string, fn: () => Promise<T>): Promise<T> {
+    const prev = doc.getElementById(id)
     if (prev) prev.remove()
-    if (params.injectStyleText) {
-      const st = doc.createElement('style')
-      st.id = styleId
-      st.textContent = params.injectStyleText
-      doc.head.appendChild(st)
-    }
-    await new Promise(r => setTimeout(r, 50))
-    const canvas = await html2canvas(doc.body, { scale: 2, backgroundColor: '#ffffff', useCORS: true })
-    const blob: Blob = await new Promise((resolve, reject) => {
-      canvas.toBlob((b) => b ? resolve(b) : reject(new Error('toBlob_failed')), 'image/png')
-    })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `invoice_${invoice?.invoice_no || id}_${params.label}_${dayjs().format('YYYYMMDD_HHmm')}.png`.replace(/[^\w\-\.]+/g, '_')
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    URL.revokeObjectURL(url)
-    if (params.injectStyleText) {
-      const now = doc.getElementById(styleId)
-      if (now) now.remove()
-    }
-  }
-
-  async function downloadCompare() {
+    const st = doc.createElement('style')
+    st.id = id
+    st.textContent = cssText
+    doc.head.appendChild(st)
     try {
-      if (!invoice) return
-      const beforeStyle = `
-        html, body { font-size: 10px !important; font-weight: 300 !important; }
-        .inv-title h1 { font-size: 16px !important; font-weight: 600 !important; }
-        .inv-band .meta .v { font-size: 12px !important; font-weight: 500 !important; }
-        .inv-table { font-size: 10px !important; }
-        .inv-summary td:last-child { font-size: 12px !important; }
-        .inv-amount-due .value { font-size: 18px !important; }
-      `
-      await capturePng({ label: 'before', injectStyleText: beforeStyle })
-      await capturePng({ label: 'after' })
-      message.success('对比图已下载')
-    } catch (e: any) {
-      message.error(String(e?.message || '导出失败'))
+      return await fn()
+    } finally {
+      try { st.remove() } catch {}
     }
   }
 
   async function exportPdf() {
+    const key = 'invoice-export-pdf'
+    message.loading({ content: '正在生成 PDF…', key, duration: 0 })
     try {
       const doc = iframeRef.current?.contentDocument
-      if (!doc) return
-      const body = doc.body
-      const canvas = await html2canvas(body, { scale: 2, backgroundColor: '#ffffff', useCORS: true })
-      const imgData = canvas.toDataURL('image/jpeg', 0.92)
-      const pdf = new jsPDF('p', 'mm', 'a4')
-      const pageW = 210
-      const pageH = 297
-      const imgW = pageW
-      const imgH = canvas.height * (imgW / canvas.width)
-      let y = 0
-      let remaining = imgH
-      while (remaining > 0) {
-        pdf.addImage(imgData, 'JPEG', 0, y, imgW, imgH)
-        remaining -= pageH
-        if (remaining > 0) { pdf.addPage(); y -= pageH }
+      if (!doc) throw new Error('missing_iframe')
+      const target = (doc.querySelector('.inv-sheet') as HTMLElement | null) || doc.body
+      const exportCss = `
+        html, body { background: #ffffff !important; }
+        .inv-preview-wrap { padding: 0 !important; justify-content: flex-start !important; }
+        .inv-sheet { border: none !important; border-radius: 0 !important; box-shadow: none !important; width: 210mm !important; height: 297mm !important; min-height: 0 !important; overflow: hidden !important; }
+        .inv-page { padding: 20mm !important; height: 297mm !important; min-height: 0 !important; box-sizing: border-box !important; }
+        .inv-title .company .company-line { white-space: normal !important; word-break: break-all !important; }
+        .inv-header { grid-template-columns: 1fr 1fr !important; gap: 16px !important; }
+        .inv-title { text-align: right !important; }
+        .inv-band { grid-template-columns: 1fr 1fr !important; }
+        .inv-footer-grid { grid-template-columns: 1fr 0.9fr !important; }
+      `
+      const canvas = await withTempStyle(doc, 'inv-export-style', exportCss, async () => {
+        await new Promise(r => setTimeout(r, 60))
+        await waitForIframeAssets(doc)
+        return await html2canvas(target, {
+          scale: 2,
+          backgroundColor: '#ffffff',
+          useCORS: true,
+          allowTaint: false,
+          imageTimeout: 15000,
+          scrollX: 0,
+          scrollY: 0,
+          windowWidth: Math.max(target.scrollWidth || 0, target.clientWidth || 0),
+          windowHeight: Math.max(target.scrollHeight || 0, target.clientHeight || 0),
+        })
+      })
+      const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4', compress: true })
+      const pageW = pdf.internal.pageSize.getWidth()
+      const pageH = pdf.internal.pageSize.getHeight()
+      const pxPerMm = canvas.width / pageW
+      const pagePxH = Math.floor(pageH * pxPerMm)
+      let yPx = 0
+      let pageIndex = 0
+      while (yPx < canvas.height) {
+        const remaining = canvas.height - yPx
+        if (pageIndex > 0 && remaining < Math.ceil(pxPerMm * 2)) break
+        if (pageIndex > 0) pdf.addPage()
+        const sliceH = Math.min(pagePxH, remaining)
+        const pageCanvas = document.createElement('canvas')
+        pageCanvas.width = canvas.width
+        pageCanvas.height = sliceH
+        const ctx = pageCanvas.getContext('2d')
+        if (!ctx) throw new Error('canvas_ctx_failed')
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height)
+        ctx.drawImage(canvas, 0, yPx, canvas.width, sliceH, 0, 0, canvas.width, sliceH)
+        const imgData = pageCanvas.toDataURL('image/png')
+        const imgH = pageW * (sliceH / canvas.width)
+        pdf.addImage(imgData, 'PNG', 0, 0, pageW, imgH)
+        yPx += sliceH
+        pageIndex += 1
       }
       const name = `invoice_${invoice?.invoice_no || id}_${dayjs().format('YYYYMMDD_HHmm')}.pdf`.replace(/[^\w\-\.]+/g, '_')
       pdf.save(name)
+      message.success({ content: 'PDF 已导出', key })
     } catch (e: any) {
-      message.error(String(e?.message || '导出失败'))
+      const msg = String(e?.message || '')
+      if (msg.includes('missing_iframe')) {
+        message.error({ content: '导出失败：预览未加载完成，请稍后重试', key })
+      } else if (msg.includes('SecurityError') || msg.toLowerCase().includes('taint')) {
+        message.error({ content: '导出失败：存在跨域图片导致截图受限（请检查公司 Logo 链接/权限）', key })
+      } else {
+        message.error({ content: msg || '导出失败', key })
+      }
     }
   }
 
@@ -131,7 +222,6 @@ export default function InvoicePreviewPage({ params }: { params: { id: string } 
           <Space wrap style={{ justifyContent: isMobile ? 'flex-start' : 'flex-end' }}>
             <Button onClick={doPrint} disabled={!srcDoc}>打印</Button>
             <Button onClick={exportPdf} disabled={!srcDoc}>导出 PDF</Button>
-            <Button onClick={downloadCompare} disabled={!srcDoc}>下载对比图</Button>
             <Button type="primary" onClick={() => router.back()}>返回编辑</Button>
           </Space>
         )}

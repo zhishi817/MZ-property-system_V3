@@ -1,13 +1,15 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { App, Button, Card, Col, Collapse, DatePicker, Divider, Form, Grid, Input, InputNumber, Modal, Row, Select, Space, Steps, Table, Tag } from 'antd'
+import { App, Button, Card, Checkbox, Col, Collapse, DatePicker, Divider, Form, Grid, Input, InputNumber, Modal, Popconfirm, Row, Select, Space, Steps, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useRouter } from 'next/navigation'
+import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
 import { API_BASE, authHeaders, getJSON, patchJSON, postJSON } from '../../../../lib/api'
 import { hasPerm } from '../../../../lib/auth'
-import { canBackendAutosaveDraft, computeLine, computeTotals, extractDiscount, normalizeLineItemsForSave, stableHash, type GstType, type InvoiceLineItemInput } from '../../../../lib/invoiceEditorModel'
+import { buildInvoicePayload } from '../../../../lib/invoicePayload'
+import { canBackendAutosaveDraft, computeLine, computeTotals, extractDiscount, normalizeLineItemsForSave, stableHash, type GstType } from '../../../../lib/invoiceEditorModel'
 import styles from './InvoiceEditor.module.css'
 
 type Company = {
@@ -36,14 +38,22 @@ type Company = {
 type InvoiceDetail = {
   id: string
   company_id: string
+  invoice_type?: string
   invoice_no?: string
   status?: string
   issue_date?: string
   due_date?: string
+  valid_until?: string
   currency?: string
+  customer_id?: string
   bill_to_name?: string
   bill_to_email?: string
+  bill_to_phone?: string
+  bill_to_abn?: string
   bill_to_address?: string
+  payment_method?: string
+  payment_method_note?: string
+  paid_at?: string
   notes?: string
   terms?: string
   subtotal?: number
@@ -79,9 +89,29 @@ function normalizeDraftDates(values: any) {
   const v = { ...(values || {}) }
   const a = v.issue_date
   const b = v.due_date
+  const c = v.valid_until
   if (typeof a === 'string' && a) v.issue_date = dayjs(a)
   if (typeof b === 'string' && b) v.due_date = dayjs(b)
+  if (typeof c === 'string' && c) v.valid_until = dayjs(c)
   return v
+}
+
+function splitItemDesc(raw: any) {
+  const s0 = String(raw || '').replace(/\r\n/g, '\n').trim()
+  if (!s0) return { title: '', content: '' }
+  const parts = s0.split('\n')
+  const title = String(parts.shift() || '').trim()
+  const content = parts.join('\n').trim()
+  return { title, content }
+}
+
+function joinItemDesc(title: any, content: any) {
+  const t = String(title || '').trim()
+  const c = String(content || '').trim()
+  if (!t && !c) return ''
+  if (!c) return t
+  if (!t) return c
+  return `${t}\n${c}`
 }
 
 export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string }) {
@@ -97,13 +127,31 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
   const [autosaving, setAutosaving] = useState(false)
   const [invoiceId, setInvoiceId] = useState<string | null>(props.invoiceId || null)
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null)
+  const status = String(invoice?.status || 'draft')
+  const lineItemsLocked = mode === 'edit' && status !== 'draft'
   const [discountAmount, setDiscountAmount] = useState<number>(0)
+  const [savedCustomers, setSavedCustomers] = useState<Array<{ id: string; name?: string; email?: string; phone?: string; abn?: string; address?: string }>>([])
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | undefined>(undefined)
+  const [saveAsCommonCustomer, setSaveAsCommonCustomer] = useState(false)
   const [auditRows, setAuditRows] = useState<any[]>([])
   const [sendLogs, setSendLogs] = useState<any[]>([])
+  const [paymentEvents, setPaymentEvents] = useState<any[]>([])
   const [formVersion, setFormVersion] = useState(0)
 
   const [form] = Form.useForm()
   const lastSavedHashRef = useRef<string>('')
+  const lineItems = Form.useWatch('line_items', form) as any[] | undefined
+  const invoiceType = String(Form.useWatch('invoice_type', form) || 'invoice')
+  const watchedIssueDate = Form.useWatch('issue_date', form)
+  const watchedValidUntil = Form.useWatch('valid_until', form)
+  const canSwitchInvoiceType = hasPerm('invoice.type.switch')
+  const [itemModalOpen, setItemModalOpen] = useState(false)
+  const [itemModalIndex, setItemModalIndex] = useState<number | null>(null)
+  const [itemModalForm] = Form.useForm()
+  function setLineItems(next: any[]) {
+    form.setFieldsValue({ line_items: next })
+    setFormVersion(v => v + 1)
+  }
 
   const companyOptions = useMemo(() => companies.map(c => ({ value: c.id, label: `${c.code || 'INV'} · ${c.legal_name} (${c.abn})` })), [companies])
   const companyById = useMemo(() => {
@@ -120,6 +168,23 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
     }
   }
 
+  async function loadSavedCustomers() {
+    try {
+      const rows = await getJSON<any[]>('/invoices/customers')
+      const list = Array.isArray(rows) ? rows : []
+      setSavedCustomers(list.filter((x: any) => String(x?.status || 'active') === 'active').map((x: any) => ({
+        id: String(x?.id || ''),
+        name: String(x?.name || '') || undefined,
+        email: String(x?.email || '') || undefined,
+        phone: String(x?.phone || '') || undefined,
+        abn: String(x?.abn || '') || undefined,
+        address: String(x?.address || '') || undefined,
+      })).filter((x: any) => x.id))
+    } catch {
+      setSavedCustomers([])
+    }
+  }
+
   async function loadInvoice(id: string) {
     setLoading(true)
     try {
@@ -129,13 +194,20 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       setDiscountAmount(Number(extracted.discount_amount || 0))
       form.setFieldsValue({
         company_id: j.company_id,
+        invoice_type: j.invoice_type || 'invoice',
         currency: j.currency || 'AUD',
         invoice_no: j.invoice_no || '',
         issue_date: j.issue_date ? dayjs(j.issue_date) : null,
         due_date: j.due_date ? dayjs(j.due_date) : null,
+        valid_until: j.valid_until ? dayjs(j.valid_until) : null,
+        customer_id: j.customer_id || '',
         bill_to_name: j.bill_to_name || '',
         bill_to_email: j.bill_to_email || '',
+        bill_to_phone: j.bill_to_phone || '',
+        bill_to_abn: j.bill_to_abn || '',
         bill_to_address: j.bill_to_address || '',
+        payment_method: j.payment_method || '',
+        payment_method_note: j.payment_method_note || '',
         notes: j.notes || '',
         terms: j.terms || '',
         line_items: (extracted.user_items || []).map((x: any) => ({
@@ -145,6 +217,8 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
           gst_type: (x.gst_type || 'GST_10') as GstType,
         })),
       })
+      setSelectedCustomerId(j.customer_id ? String(j.customer_id) : undefined)
+      setSaveAsCommonCustomer(false)
       const base = form.getFieldsValue(true)
       lastSavedHashRef.current = stableHash({ ...base, discountAmount: Number(extracted.discount_amount || 0) })
       try {
@@ -198,27 +272,51 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
     }
   }
 
-  function buildPayload(values: any) {
-    const userItems = (values.line_items || []) as InvoiceLineItemInput[]
-    const items = normalizeLineItemsForSave({ user_items: userItems, discount_amount: discountAmount })
-    return {
-      company_id: values.company_id,
-      currency: values.currency || 'AUD',
-      bill_to_name: values.bill_to_name || undefined,
-      bill_to_email: values.bill_to_email || undefined,
-      bill_to_address: values.bill_to_address || undefined,
-      notes: values.notes || undefined,
-      terms: values.terms || undefined,
-      issue_date: values.issue_date ? dayjs(values.issue_date).format('YYYY-MM-DD') : undefined,
-      due_date: values.due_date ? dayjs(values.due_date).format('YYYY-MM-DD') : undefined,
-      line_items: items.map((x) => ({ description: x.description, quantity: Number(x.quantity), unit_price: Number(x.unit_price), gst_type: x.gst_type })),
+  async function loadPaymentHistory(id: string) {
+    try {
+      const rows = await getJSON<any[]>(`/invoices/${id}/payment-history`)
+      setPaymentEvents(Array.isArray(rows) ? rows : [])
+    } catch {
+      setPaymentEvents([])
+    }
+  }
+
+  function buildPayload(values: any, status: string) {
+    return buildInvoicePayload(values, status, discountAmount)
+  }
+
+  async function saveCustomerIfNeeded(params?: { silent?: boolean; fromAutosave?: boolean }) {
+    try {
+      if (!saveAsCommonCustomer) return null
+      if (params?.fromAutosave) return null
+      const name = String(form.getFieldValue('bill_to_name') || '').trim()
+      const email = String(form.getFieldValue('bill_to_email') || '').trim()
+      const phone = String(form.getFieldValue('bill_to_phone') || '').trim()
+      const abn = String(form.getFieldValue('bill_to_abn') || '').trim()
+      const address = String(form.getFieldValue('bill_to_address') || '').trim()
+      if (!name) { message.warning('请先填写客户姓名再保存为常用客户'); return null }
+      const created = await postJSON<any>('/invoices/customers', { name, email: email || undefined, phone: phone || undefined, abn: abn || undefined, address: address || undefined })
+      const id = String(created?.id || '')
+      if (!id) return null
+      form.setFieldsValue({ customer_id: id })
+      setSelectedCustomerId(id)
+      setSaveAsCommonCustomer(false)
+      await loadSavedCustomers()
+      if (!params?.silent) message.success('已保存为常用客户')
+      return id
+    } catch (e: any) {
+      if (!params?.silent) message.error(String(e?.message || '保存常用客户失败'))
+      return null
     }
   }
 
   async function saveDraft(params?: { silent?: boolean; fromAutosave?: boolean }): Promise<string | null> {
+    await saveCustomerIfNeeded(params)
     const values = form.getFieldsValue(true)
-    const payload = buildPayload(values)
+    const status = String(invoice?.status || 'draft')
+    const payload = buildPayload(values, status)
     const hash = stableHash({ ...values, discountAmount })
+    const shouldMarkPaidAfterSave = invoiceType === 'receipt' && !params?.fromAutosave
     try {
       try {
         const k = invoiceId ? `invoice:draft:${invoiceId}` : 'invoice:draft:new'
@@ -226,9 +324,11 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       } catch {
       }
 
-      if (!canBackendAutosaveDraft({ company_id: payload.company_id, line_items: values.line_items })) {
-        if (!params?.silent && !params?.fromAutosave) message.warning('请先填写开票主体与至少 1 条项目描述再保存草稿')
-        return invoiceId
+      if (status === 'draft') {
+        if (!canBackendAutosaveDraft({ company_id: (payload as any).company_id, line_items: values.line_items })) {
+          if (!params?.silent && !params?.fromAutosave) message.warning('请先填写开票主体与至少 1 条项目描述再保存草稿')
+          return invoiceId
+        }
       }
 
       if (params?.fromAutosave && hash === lastSavedHashRef.current) return invoiceId
@@ -239,6 +339,20 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
         lastSavedHashRef.current = hash
         if (!params?.silent) message.success('草稿已保存')
         router.replace(`/finance/invoices/${created.id}`)
+        if (shouldMarkPaidAfterSave) {
+          const method = String(form.getFieldValue('payment_method') || '').trim()
+          if (method) {
+            try {
+              const row = await postJSON<any>(`/invoices/${created.id}/mark-paid`, { payment_method: method })
+              setInvoice(row)
+              await loadInvoice(created.id)
+              await loadAudits(created.id)
+              await loadPaymentHistory(created.id)
+            } catch (e: any) {
+              if (!params?.silent) message.error(String(e?.message || '标记已收款失败'))
+            }
+          }
+        }
         return created.id
       }
       const updated = await patchJSON<any>(`/invoices/${invoiceId}`, payload)
@@ -247,8 +361,26 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       if (invoiceId) {
         await loadInvoice(invoiceId)
         await loadAudits(invoiceId)
+        await loadPaymentHistory(invoiceId)
       }
       setInvoice(prev => prev ? { ...prev, ...updated } : prev)
+      if (shouldMarkPaidAfterSave && invoiceId) {
+        const st = String(invoice?.status || 'draft')
+        if (st !== 'paid') {
+          const method = String(form.getFieldValue('payment_method') || '').trim()
+          if (method) {
+            try {
+              const row = await postJSON<any>(`/invoices/${invoiceId}/mark-paid`, { payment_method: method })
+              setInvoice(row)
+              await loadInvoice(invoiceId)
+              await loadAudits(invoiceId)
+              await loadPaymentHistory(invoiceId)
+            } catch (e: any) {
+              if (!params?.silent) message.error(String(e?.message || '标记已收款失败'))
+            }
+          }
+        }
+      }
       return invoiceId
     } catch (e: any) {
       if (!params?.silent) message.error(String(e?.message || '保存失败'))
@@ -287,8 +419,68 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
     return { items, totals: computeTotals(lines as any, Number(invoice?.amount_paid || 0)) }
   }, [form, formVersion, discountAmount, invoice?.amount_paid, invoice?.line_items, invoice?.updated_at])
 
+  const gstModeLabel = useMemo(() => {
+    const items = (derived.items || []) as any[]
+    let hasInc = false
+    let hasExc = false
+    for (const it of items) {
+      const t = String(it?.gst_type || '')
+      if (t === 'GST_INCLUDED_10') hasInc = true
+      else if (t === 'GST_10') hasExc = true
+    }
+    if (hasInc && !hasExc) return 'Included GST'
+    if (hasExc && !hasInc) return 'Excluded GST'
+    if (!hasInc && !hasExc) return 'No GST'
+    return 'Mixed'
+  }, [derived.items])
+
+  const payStatusLabel = useMemo(() => {
+    const st = String(invoice?.status || 'draft')
+    if (st === 'paid') return 'PAID'
+    if (st === 'void') return 'VOID'
+    if (st === 'refunded') return 'REFUNDED'
+    if (Number(derived.totals?.amount_due || 0) <= 0 && Number(derived.totals?.total || 0) > 0) return 'PAID'
+    return 'UNPAID'
+  }, [invoice?.status, derived.totals?.amount_due, derived.totals?.total])
+
+  const watchedPaymentMethod = Form.useWatch('payment_method', form)
+  const watchedPaymentMethodNote = Form.useWatch('payment_method_note', form)
+  const markPaidBusyRef = useRef(false)
+
+  useEffect(() => {
+    if (invoiceType === 'receipt') return
+    let id = invoiceId
+    const method = String(watchedPaymentMethod || '').trim()
+    if (!method) return
+    if (!form.isFieldTouched('payment_method')) return
+    if (markPaidBusyRef.current) return
+    const st = String(invoice?.status || '')
+    if (st === 'paid') return
+    markPaidBusyRef.current = true
+    ;(async () => {
+      try {
+        if (!id) {
+          const created = await saveDraft({ silent: true })
+          if (!created) { message.warning('请先保存草稿后再选择付款方式'); return }
+          id = created
+          setInvoiceId(created)
+        }
+        const row = await postJSON<any>(`/invoices/${id}/mark-paid`, { payment_method: method, payment_method_note: String(watchedPaymentMethodNote || '').trim() || undefined })
+        setInvoice(row)
+        await loadAudits(id)
+        await loadPaymentHistory(id)
+        message.success('已标记为已收款')
+      } catch (e: any) {
+        message.error(String(e?.message || '标记已收款失败'))
+      } finally {
+        markPaidBusyRef.current = false
+      }
+    })()
+  }, [invoiceType, invoiceId, watchedPaymentMethod])
+
   useEffect(() => {
     loadCompanies().then(() => {})
+    loadSavedCustomers().then(() => {})
   }, [])
 
   useEffect(() => {
@@ -297,10 +489,12 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       const def = companies.find(c => c.is_default) || companies[0]
       form.setFieldsValue({
         company_id: def?.id,
+        invoice_type: 'invoice',
         currency: 'AUD',
         issue_date: dayjs(),
         due_date: dayjs().add(14, 'day'),
-        line_items: [{ description: '', quantity: 1, unit_price: 0, gst_type: 'GST_10' as GstType }],
+        valid_until: dayjs().add(30, 'day'),
+        line_items: [],
       })
       lastSavedHashRef.current = stableHash({ ...form.getFieldsValue(true), discountAmount: 0 })
       try {
@@ -333,6 +527,78 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
   }, [companies.length, mode, props.invoiceId])
 
   useEffect(() => {
+    if (canSwitchInvoiceType) return
+    if (invoiceType !== 'invoice') {
+      form.setFieldsValue({ invoice_type: 'invoice' })
+      setFormVersion(v => v + 1)
+    }
+  }, [canSwitchInvoiceType, invoiceType])
+
+  useEffect(() => {
+    if (invoiceType === 'invoice') return
+    const list = (form.getFieldValue('line_items') || []) as any[]
+    if (!Array.isArray(list) || !list.length) return
+    const needs = list.some((x) => String(x?.gst_type || '') !== 'GST_FREE')
+    if (!needs) return
+    setLineItems(list.map((x: any) => ({ ...x, gst_type: 'GST_FREE' })))
+  }, [invoiceType])
+
+  useEffect(() => {
+    if (invoiceType !== 'quote') return
+    if (!watchedValidUntil && watchedIssueDate) {
+      form.setFieldsValue({ valid_until: dayjs(watchedIssueDate).add(30, 'day') })
+      setFormVersion(v => v + 1)
+    }
+    if (form.getFieldValue('due_date')) {
+      form.setFieldsValue({ due_date: null })
+      setFormVersion(v => v + 1)
+    }
+  }, [invoiceType, watchedIssueDate, watchedValidUntil])
+
+  function openItemEditor(params: { mode: 'add' } | { mode: 'edit'; index: number }) {
+    if (lineItemsLocked) {
+      message.error('已开票发票不可修改项目明细')
+      return
+    }
+    if (params.mode === 'add') {
+      setItemModalIndex(null)
+      itemModalForm.setFieldsValue({ title: '', content: '', quantity: 1, unit_price: 0, gst_type: (invoiceType === 'invoice' ? 'GST_10' : 'GST_FREE') })
+      setItemModalOpen(true)
+      return
+    }
+    const idx = params.index
+    setItemModalIndex(idx)
+    const v = form.getFieldValue(['line_items', idx]) || {}
+    const d = splitItemDesc(v.description)
+    itemModalForm.setFieldsValue({
+      title: d.title,
+      content: d.content,
+      quantity: Number(v.quantity || 1),
+      unit_price: Number(v.unit_price || 0),
+      gst_type: (v.gst_type || 'GST_10') as GstType,
+    })
+    setItemModalOpen(true)
+  }
+
+  async function applyItemEditor() {
+    const v = await itemModalForm.validateFields()
+    const desc = joinItemDesc(v.title, v.content)
+    if (!desc) throw new Error('请输入项目标题或内容')
+    const nextItem = { description: desc, quantity: Number(v.quantity || 0), unit_price: Number(v.unit_price || 0), gst_type: (v.gst_type || 'GST_10') as GstType }
+    if (itemModalIndex == null) {
+      const list = (form.getFieldValue('line_items') || []) as any[]
+      setLineItems([...list, nextItem])
+      message.success('已添加项目')
+    } else {
+      const list = (form.getFieldValue('line_items') || []) as any[]
+      const next = list.map((x: any, i: number) => i === itemModalIndex ? nextItem : x)
+      setLineItems(next)
+      message.success('已更新项目')
+    }
+    setItemModalOpen(false)
+  }
+
+  useEffect(() => {
     if (mode !== 'edit') return
     const id = String(props.invoiceId || '')
     if (!id) return
@@ -340,6 +606,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
     loadInvoice(id).then(() => {})
     loadAudits(id).then(() => {})
     loadSendLogs(id).then(() => {})
+    loadPaymentHistory(id).then(() => {})
   }, [mode, props.invoiceId])
 
   useEffect(() => {
@@ -371,41 +638,82 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
   }, [mode, invoiceId, invoice?.status, form, formVersion])
 
   const itemColumns: ColumnsType<any> = [
-    { title: '项目描述', dataIndex: 'description', width: isMobile ? undefined : 420, render: (_: any, _r: any, idx: number) => (
-      <Form.Item name={['line_items', idx, 'description']} rules={[{ required: true, message: '请输入项目描述' }]} style={{ marginBottom: 0 }}>
-        <Input placeholder="输入项目描述" />
-      </Form.Item>
-    ) },
+    { title: '项目描述', dataIndex: 'description', width: isMobile ? undefined : 420, render: (_: any, _r: any, idx: number) => {
+      const raw = form.getFieldValue(['line_items', idx, 'description'])
+      const d = splitItemDesc(raw)
+      const title = d.title || '（未填写标题）'
+      const content = d.content
+      return (
+        <div style={{ display:'flex', gap: 8, alignItems:'flex-start' }}>
+          <Form.Item name={['line_items', idx, 'description']} rules={[{ required: true, message: '请输入项目描述' }]} hidden>
+            <Input />
+          </Form.Item>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 700, whiteSpace:'pre-wrap', wordBreak:'break-word', overflowWrap:'anywhere' }}>{title}</div>
+            {content ? <div className={styles.muted} style={{ marginTop: 2, whiteSpace:'pre-wrap', wordBreak:'break-word', overflowWrap:'anywhere' }}>{content}</div> : null}
+          </div>
+        </div>
+      )
+    } },
     { title: '数量', dataIndex: 'quantity', width: 120, render: (_: any, _r: any, idx: number) => (
       <Form.Item name={['line_items', idx, 'quantity']} rules={[{ required: true, message: '数量必填' }]} style={{ marginBottom: 0 }}>
-        <InputNumber min={0} step={1} style={{ width: '100%' }} />
+        <InputNumber min={0} step={1} style={{ width: '100%' }} disabled={lineItemsLocked} />
       </Form.Item>
     ) },
     { title: '单价 (AUD)', dataIndex: 'unit_price', width: 160, render: (_: any, _r: any, idx: number) => (
       <Form.Item name={['line_items', idx, 'unit_price']} rules={[{ required: true, message: '单价必填' }]} style={{ marginBottom: 0 }}>
-        <InputNumber min={0} step={1} style={{ width: '100%' }} prefix="$" />
+        <InputNumber min={0} step={1} style={{ width: '100%' }} prefix="$" disabled={lineItemsLocked} />
       </Form.Item>
     ) },
     { title: '税率', dataIndex: 'gst_type', width: 140, render: (_: any, _r: any, idx: number) => (
-      <Form.Item name={['line_items', idx, 'gst_type']} rules={[{ required: true }]} style={{ marginBottom: 0 }}>
-        <Select options={[
-          { value: 'GST_10', label: '10%' },
-          { value: 'GST_FREE', label: '免税' },
-          { value: 'INPUT_TAXED', label: 'Input' },
-        ]} />
-      </Form.Item>
+      invoiceType === 'invoice' ? (
+        <Form.Item name={['line_items', idx, 'gst_type']} rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+          <Select options={[
+            { value: 'GST_INCLUDED_10', label: 'Included GST' },
+            { value: 'GST_10', label: 'Excluded GST' },
+            { value: 'GST_FREE', label: 'No GST' },
+          ]} disabled={lineItemsLocked} />
+        </Form.Item>
+      ) : (
+        <>
+          <Form.Item name={['line_items', idx, 'gst_type']} hidden initialValue="GST_FREE">
+            <Input />
+          </Form.Item>
+          <span className={styles.muted}>No GST</span>
+        </>
+      )
     ) },
     { title: '小计 (AUD)', dataIndex: 'subtotal', width: 150, align: 'right', render: (_: any, _r: any, idx: number) => {
       const v = form.getFieldValue(['line_items', idx]) || {}
       const c = computeLine({ quantity: Number(v.quantity || 0), unit_price: Number(v.unit_price || 0), gst_type: (v.gst_type || 'GST_10') as GstType })
       return <b>{fmtMoney(c.line_total)}</b>
     } },
-    { title: '操作', key: 'act', width: 90, render: (_: any, _r: any, idx: number) => (
-      <Button danger type="text" onClick={() => {
-        const list = (form.getFieldValue('line_items') || []) as any[]
-        const next = list.filter((_: any, i: number) => i !== idx)
-        form.setFieldValue('line_items', next.length ? next : [{ description: '', quantity: 1, unit_price: 0, gst_type: 'GST_10' }])
-      }}>删除</Button>
+    { title: '操作', key: 'act', width: 96, render: (_: any, _r: any, idx: number) => (
+      <Space size={6}>
+        <Tooltip title="编辑">
+          <Button
+            type="text"
+            aria-label="编辑"
+            icon={<EditOutlined />}
+            disabled={lineItemsLocked}
+            onClick={() => openItemEditor({ mode: 'edit', index: idx })}
+          />
+        </Tooltip>
+        <Popconfirm
+          title="确认删除该项目？"
+          okText="删除"
+          cancelText="取消"
+          disabled={lineItemsLocked}
+          onConfirm={() => {
+            const list = (form.getFieldValue('line_items') || []) as any[]
+            setLineItems(list.filter((_: any, i: number) => i !== idx))
+          }}
+        >
+          <Tooltip title="删除">
+            <Button type="text" danger aria-label="删除" icon={<DeleteOutlined />} disabled={lineItemsLocked} />
+          </Tooltip>
+        </Popconfirm>
+      </Space>
     ) },
   ]
 
@@ -430,41 +738,114 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
             <Col xs={24} lg={16}>
               <Card className={styles.sectionCard} title={<div className={styles.sectionTitle}><span>发票信息</span><span className={styles.muted}>必填</span></div>} style={{ marginBottom: 12 }}>
                 <Row gutter={16}>
-                  <Col xs={24} md={12}>
+                  <Col xs={24} md={10}>
                     <Form.Item name="company_id" label="开票主体" rules={[{ required: true, message: '请选择开票主体' }]}>
-                      <Select placeholder="选择开票主体" options={companyOptions} showSearch optionFilterProp="label" />
+                      <Select placeholder="选择开票主体" options={companyOptions} showSearch optionFilterProp="label" disabled={mode === 'edit' && status !== 'draft'} />
                     </Form.Item>
                   </Col>
                   <Col xs={24} md={6}>
+                    <Form.Item name="invoice_type" label="发票类型" initialValue="invoice" rules={[{ required: true, message: '请选择发票类型' }]}>
+                      <Select
+                        options={[
+                          { value: 'quote', label: '报价单（Quote）' },
+                          { value: 'invoice', label: '发票（Invoice）' },
+                          { value: 'receipt', label: '收据（Receipt）' },
+                        ]}
+                        disabled={!canSwitchInvoiceType || (mode === 'edit' && status !== 'draft')}
+                      />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} md={4}>
                     <Form.Item name="currency" label="币种" initialValue="AUD" rules={[{ required: true }]}>
-                      <Select options={[{ value: 'AUD', label: 'AUD' }]} />
+                      <Select options={[{ value: 'AUD', label: 'AUD' }]} disabled={mode === 'edit' && status !== 'draft'} />
                     </Form.Item>
                   </Col>
-                  <Col xs={24} md={6}>
-                    <Form.Item name="invoice_no" label="发票号">
+                  <Col xs={24} md={4}>
+                    <Form.Item name="invoice_no" label={invoiceType === 'quote' ? '报价单号' : (invoiceType === 'receipt' ? '收据号' : '发票号')}>
                       <Input disabled placeholder="出号后自动生成" />
                     </Form.Item>
                   </Col>
                 </Row>
                 <Row gutter={16}>
                   <Col xs={24} md={12}>
-                    <Form.Item name="issue_date" label="开票日期" rules={[{ required: true, message: '请选择开票日期' }]}>
-                      <DatePicker style={{ width: '100%' }} />
+                    <Form.Item name="issue_date" label={invoiceType === 'quote' ? '报价日期' : (invoiceType === 'receipt' ? '收款日期' : '开票日期')} rules={[{ required: true, message: '请选择日期' }]}>
+                      <DatePicker style={{ width: '100%' }} disabled={mode === 'edit' && status !== 'draft'} />
                     </Form.Item>
                   </Col>
                   <Col xs={24} md={12}>
-                    <Form.Item name="due_date" label="到期日期" rules={[{ required: true, message: '请选择到期日期' }]}>
-                      <DatePicker style={{ width: '100%' }} />
-                    </Form.Item>
+                    {invoiceType === 'invoice' ? (
+                      <Form.Item name="due_date" label="到期日期" rules={[{ required: true, message: '请选择到期日期' }]}>
+                        <DatePicker style={{ width: '100%' }} />
+                      </Form.Item>
+                    ) : invoiceType === 'quote' ? (
+                      <Form.Item name="valid_until" label="有效期至" rules={[{ required: true, message: '请选择有效期' }]}>
+                        <DatePicker style={{ width: '100%' }} disabled={mode === 'edit' && status !== 'draft'} />
+                      </Form.Item>
+                    ) : (
+                      <Form.Item name="payment_method" label="收款方式" rules={[{ required: true, message: '请选择收款方式' }]}>
+                        <Select
+                          placeholder="选择收款方式"
+                          options={[
+                            { value: 'bank_transfer', label: '银行转账' },
+                            { value: 'bpay', label: 'BPAY' },
+                            { value: 'payid', label: 'PayID' },
+                            { value: 'cash', label: '现金' },
+                            { value: 'rent_deduction', label: '租金扣除' },
+                            { value: 'other', label: '其他' },
+                          ]}
+                          disabled={mode === 'edit' && status !== 'draft'}
+                        />
+                      </Form.Item>
+                    )}
                   </Col>
                 </Row>
+                {invoiceType === 'quote' ? (
+                  <div className={styles.muted} style={{ marginTop: -6, marginBottom: 6 }}>此报价有效期为30天</div>
+                ) : null}
               </Card>
 
-              <Card className={styles.sectionCard} title={<div className={styles.sectionTitle}><span>购买方信息</span><span className={styles.muted}>选填</span></div>} style={{ marginBottom: 12 }}>
+              <Card className={styles.sectionCard} title={<div className={styles.sectionTitle}><span>客户信息</span><span className={styles.muted}>选填</span></div>} style={{ marginBottom: 12 }}>
+                <div style={{ display:'flex', gap: 10, alignItems:'center', flexWrap:'wrap', marginBottom: 10 }}>
+                  <Select
+                    style={{ minWidth: 260 }}
+                    placeholder="选择常用客户"
+                    value={selectedCustomerId}
+                    options={savedCustomers.map((c) => ({
+                      value: c.id,
+                      label: `${c.name || '-'}${c.email ? ` · ${c.email}` : ''}`,
+                    }))}
+                    onChange={(v) => {
+                      if (!v) {
+                        setSelectedCustomerId(undefined)
+                        form.setFieldsValue({ customer_id: '' })
+                        setFormVersion(x => x + 1)
+                        return
+                      }
+                      setSelectedCustomerId(v)
+                      const c = savedCustomers.find(x => x.id === v)
+                      if (!c) return
+                      form.setFieldsValue({
+                        customer_id: c.id,
+                        bill_to_name: c.name || '',
+                        bill_to_email: c.email || '',
+                        bill_to_phone: c.phone || '',
+                        bill_to_abn: c.abn || '',
+                        bill_to_address: c.address || '',
+                      })
+                      setFormVersion(x => x + 1)
+                    }}
+                    allowClear
+                  />
+                  <Checkbox checked={saveAsCommonCustomer} onChange={(e) => setSaveAsCommonCustomer(e.target.checked)}>保存为常用客户</Checkbox>
+                  <Button onClick={() => { try { router.push('/finance/invoices?tab=customers') } catch {} }}>管理常用客户</Button>
+                </div>
+                <Form.Item name="customer_id" hidden>
+                  <Input />
+                </Form.Item>
                 <Row gutter={16}>
                   <Col xs={24} md={8}>
                     <Form.Item name="bill_to_name" label="姓名">
-                      <Input placeholder="购买方姓名" />
+                      <Input placeholder="客户姓名" disabled={mode === 'edit' && status !== 'draft'} />
                     </Form.Item>
                   </Col>
                   <Col xs={24} md={8}>
@@ -472,11 +853,27 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                       <Input placeholder="name@example.com" />
                     </Form.Item>
                   </Col>
+                  {invoiceType !== 'receipt' ? (
+                    <Col xs={24} md={8}>
+                      <Form.Item name="bill_to_address" label="地址">
+                        <Input placeholder="地址" />
+                      </Form.Item>
+                    </Col>
+                  ) : null}
+                </Row>
+                <Row gutter={16}>
                   <Col xs={24} md={8}>
-                    <Form.Item name="bill_to_address" label="地址">
-                      <Input placeholder="地址" />
+                    <Form.Item name="bill_to_phone" label="电话">
+                      <Input placeholder="联系电话" />
                     </Form.Item>
                   </Col>
+                  {invoiceType === 'invoice' ? (
+                    <Col xs={24} md={8}>
+                      <Form.Item name="bill_to_abn" label="税号">
+                        <Input placeholder="税号/ABN" />
+                      </Form.Item>
+                    </Col>
+                  ) : null}
                 </Row>
               </Card>
 
@@ -484,68 +881,161 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                 className={styles.sectionCard}
                 title={<div className={styles.sectionTitle}><span>项目明细</span><span className={styles.muted}>必填</span></div>}
                 extra={(
-                  <Button type="primary" onClick={() => {
-                    const list = (form.getFieldValue('line_items') || []) as any[]
-                    form.setFieldValue('line_items', [...list, { description: '', quantity: 1, unit_price: 0, gst_type: 'GST_10' }])
-                  }}>添加项目</Button>
+                  <Tooltip title="添加项目">
+                    <Button
+                      type="primary"
+                      shape="circle"
+                      aria-label="添加项目"
+                      icon={<PlusOutlined />}
+                      disabled={lineItemsLocked}
+                      onClick={(e) => {
+                        try { e.preventDefault(); e.stopPropagation() } catch {}
+                        openItemEditor({ mode: 'add' })
+                      }}
+                    />
+                  </Tooltip>
                 )}
                 style={{ marginBottom: 12 }}
               >
-                {!isMobile ? (
-                  <Table
-                    rowKey={(_, idx) => String(idx)}
-                    dataSource={(form.getFieldValue('line_items') || []) as any[]}
-                    columns={itemColumns}
-                    pagination={false}
-                  />
-                ) : (
-                  <div style={{ display:'grid', gap: 10 }}>
-                    {((form.getFieldValue('line_items') || []) as any[]).map((_x: any, idx: number) => (
-                      <Card key={idx} size="small">
-                        <Form.Item name={['line_items', idx, 'description']} label="项目描述" rules={[{ required: true, message: '请输入项目描述' }]}>
-                          <Input placeholder="输入项目描述" />
-                        </Form.Item>
-                        <Row gutter={12}>
-                          <Col span={8}>
-                            <Form.Item name={['line_items', idx, 'quantity']} label="数量" rules={[{ required: true, message: '必填' }]}>
-                              <InputNumber min={0} step={1} style={{ width: '100%' }} />
-                            </Form.Item>
-                          </Col>
-                          <Col span={10}>
-                            <Form.Item name={['line_items', idx, 'unit_price']} label="单价" rules={[{ required: true, message: '必填' }]}>
-                              <InputNumber min={0} step={1} style={{ width: '100%' }} prefix="$" />
-                            </Form.Item>
-                          </Col>
-                          <Col span={6}>
-                            <Form.Item name={['line_items', idx, 'gst_type']} label="税率" rules={[{ required: true }]}>
-                              <Select options={[
-                                { value: 'GST_10', label: '10%' },
-                                { value: 'GST_FREE', label: '免税' },
-                                { value: 'INPUT_TAXED', label: 'Input' },
-                              ]} />
-                            </Form.Item>
-                          </Col>
-                        </Row>
-                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                          <span className={styles.muted}>小计</span>
-                          <b>{(() => {
-                            const v = form.getFieldValue(['line_items', idx]) || {}
-                            const c = computeLine({ quantity: Number(v.quantity || 0), unit_price: Number(v.unit_price || 0), gst_type: (v.gst_type || 'GST_10') as GstType })
-                            return fmtMoney(c.line_total)
-                          })()}</b>
-                        </div>
-                        <div style={{ marginTop: 8, textAlign:'right' }}>
-                          <Button danger type="text" onClick={() => {
-                            const list = (form.getFieldValue('line_items') || []) as any[]
-                            const next = list.filter((_: any, i: number) => i !== idx)
-                            form.setFieldValue('line_items', next.length ? next : [{ description: '', quantity: 1, unit_price: 0, gst_type: 'GST_10' }])
-                          }}>删除</Button>
-                        </div>
-                      </Card>
-                    ))}
-                  </div>
-                )}
+                  {!isMobile ? (
+                    <Table
+                      rowKey={(_, idx) => String(idx)}
+                      dataSource={((form.getFieldValue('line_items') || []) as any[])}
+                      columns={itemColumns}
+                      pagination={false}
+                    />
+                  ) : (
+                    <div style={{ display:'grid', gap: 10 }}>
+                      {(((form.getFieldValue('line_items') || []) as any[]) as any[]).map((_x: any, idx: number) => (
+                        <Card key={idx} size="small">
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap: 10, marginBottom: 6 }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <Form.Item name={['line_items', idx, 'description']} rules={[{ required: true, message: '请输入项目描述' }]} hidden>
+                                <Input />
+                              </Form.Item>
+                              {(() => {
+                                const raw = form.getFieldValue(['line_items', idx, 'description'])
+                                const d = splitItemDesc(raw)
+                                const title = d.title || '（未填写标题）'
+                                const content = d.content
+                                return (
+                                  <>
+                                    <div style={{ fontWeight: 700, whiteSpace:'pre-wrap', wordBreak:'break-word', overflowWrap:'anywhere' }}>{title}</div>
+                                    {content ? <div className={styles.muted} style={{ marginTop: 2, whiteSpace:'pre-wrap', wordBreak:'break-word', overflowWrap:'anywhere' }}>{content}</div> : null}
+                                  </>
+                                )
+                              })()}
+                            </div>
+                            <Space size={6}>
+                              <Tooltip title="编辑">
+                                <Button type="text" aria-label="编辑" icon={<EditOutlined />} disabled={lineItemsLocked} onClick={() => openItemEditor({ mode: 'edit', index: idx })} />
+                              </Tooltip>
+                              <Popconfirm title="确认删除该项目？" okText="删除" cancelText="取消" disabled={lineItemsLocked} onConfirm={() => {
+                                const list = (form.getFieldValue('line_items') || []) as any[]
+                                setLineItems(list.filter((_: any, i: number) => i !== idx))
+                              }}>
+                                <Tooltip title="删除">
+                                  <Button type="text" danger aria-label="删除" icon={<DeleteOutlined />} disabled={lineItemsLocked} />
+                                </Tooltip>
+                              </Popconfirm>
+                            </Space>
+                          </div>
+                          <Row gutter={12}>
+                            <Col span={8}>
+                              <Form.Item name={['line_items', idx, 'quantity']} label="数量" rules={[{ required: true, message: '必填' }]}>
+                                <InputNumber min={0} step={1} style={{ width: '100%' }} disabled={lineItemsLocked} />
+                              </Form.Item>
+                            </Col>
+                            <Col span={10}>
+                              <Form.Item name={['line_items', idx, 'unit_price']} label="单价" rules={[{ required: true, message: '必填' }]}>
+                                <InputNumber min={0} step={1} style={{ width: '100%' }} prefix="$" disabled={lineItemsLocked} />
+                              </Form.Item>
+                            </Col>
+                            <Col span={6}>
+                              {invoiceType === 'invoice' ? (
+                                <Form.Item name={['line_items', idx, 'gst_type']} label="税率" rules={[{ required: true }]}>
+                                  <Select options={[
+                                    { value: 'GST_INCLUDED_10', label: 'Included GST' },
+                                    { value: 'GST_10', label: 'Excluded GST' },
+                                    { value: 'GST_FREE', label: 'No GST' },
+                                  ]} disabled={lineItemsLocked} />
+                                </Form.Item>
+                              ) : (
+                                <>
+                                  <Form.Item name={['line_items', idx, 'gst_type']} hidden initialValue="GST_FREE">
+                                    <Input />
+                                  </Form.Item>
+                                  <Form.Item label="税率" style={{ marginBottom: 0 }}>
+                                    <Input value="No GST" disabled />
+                                  </Form.Item>
+                                </>
+                              )}
+                            </Col>
+                          </Row>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                            <span className={styles.muted}>小计</span>
+                            <b>{(() => {
+                              const v = form.getFieldValue(['line_items', idx]) || {}
+                              const c = computeLine({ quantity: Number(v.quantity || 0), unit_price: Number(v.unit_price || 0), gst_type: (v.gst_type || 'GST_10') as GstType })
+                              return fmtMoney(c.line_total)
+                            })()}</b>
+                          </div>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
               </Card>
+
+              <Modal
+                open={itemModalOpen}
+                title={itemModalIndex == null ? '新增项目' : '编辑项目'}
+                okText={itemModalIndex == null ? '添加' : '保存'}
+                cancelText="取消"
+                onCancel={() => setItemModalOpen(false)}
+                onOk={async () => {
+                  try {
+                    await applyItemEditor()
+                  } catch (e: any) {
+                    message.error(String(e?.message || '操作失败'))
+                  }
+                }}
+              >
+                <Form form={itemModalForm} layout="vertical">
+                  <Form.Item name="title" label="项目标题" rules={[{ required: true, message: '请输入项目标题' }]}>
+                    <Input placeholder="请输入项目标题" />
+                  </Form.Item>
+                  <Form.Item name="content" label="项目内容描述（文本）">
+                    <Input.TextArea rows={4} placeholder="请输入项目内容描述（可选）" />
+                  </Form.Item>
+                  <Row gutter={12}>
+                    <Col span={8}>
+                      <Form.Item name="quantity" label="数量" rules={[{ required: true, message: '必填' }]}>
+                        <InputNumber min={0} step={1} style={{ width: '100%' }} />
+                      </Form.Item>
+                    </Col>
+                    <Col span={10}>
+                      <Form.Item name="unit_price" label="单价 (AUD)" rules={[{ required: true, message: '必填' }]}>
+                        <InputNumber min={0} step={1} style={{ width: '100%' }} prefix="$" />
+                      </Form.Item>
+                    </Col>
+                    <Col span={6}>
+                      {invoiceType === 'invoice' ? (
+                        <Form.Item name="gst_type" label="税率" rules={[{ required: true }]}>
+                          <Select options={[
+                            { value: 'GST_INCLUDED_10', label: 'Included GST' },
+                            { value: 'GST_10', label: 'Excluded GST' },
+                            { value: 'GST_FREE', label: 'No GST' },
+                          ]} />
+                        </Form.Item>
+                      ) : (
+                        <Form.Item name="gst_type" label="税率" initialValue="GST_FREE">
+                          <Select disabled options={[{ value: 'GST_FREE', label: 'No GST' }]} />
+                        </Form.Item>
+                      )}
+                    </Col>
+                  </Row>
+                </Form>
+              </Modal>
 
               <Card className={styles.sectionCard} title={<div className={styles.sectionTitle}><span>备注与条款</span><span className={styles.muted}>选填</span></div>} style={{ marginBottom: 12 }}>
                 <Row gutter={16}>
@@ -608,6 +1098,28 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                               )}
                             </div>
                           </div>
+                          <div>
+                            <Divider style={{ margin: '10px 0' }} />
+                            <b>付款记录</b>
+                            <div style={{ marginTop: 6 }}>
+                              {paymentEvents.length ? (
+                                <Table
+                                  size="small"
+                                  rowKey="id"
+                                  dataSource={paymentEvents}
+                                  pagination={{ pageSize: 5 }}
+                                  columns={[
+                                    { title: '时间', dataIndex: 'created_at', width: 180, render: (v: any) => String(v || '').replace('T', ' ').slice(0, 19) },
+                                    { title: '状态', dataIndex: 'status', width: 110, render: (v: any) => v || '-' },
+                                    { title: '方式', dataIndex: 'payment_method', width: 160, render: (v: any) => v || '-' },
+                                    { title: '备注', dataIndex: 'payment_method_note', render: (v: any) => v || '-' },
+                                  ]}
+                                />
+                              ) : (
+                                <div className={styles.muted}>暂无付款记录</div>
+                              )}
+                            </div>
+                          </div>
                         </div>
                       ),
                     },
@@ -619,13 +1131,39 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
             <Col xs={24} lg={8}>
               <Card className={styles.summaryCard} title="金额计算" styles={{ body: { padding: 16 } }}>
                 <div className={styles.summaryRow}><span>小计</span><b>{fmtMoney(derived.totals.subtotal)}</b></div>
-                <div className={styles.summaryRow}><span>% 税率</span><span>10%</span></div>
-                <div className={styles.summaryRow}><span>税费 (GST)</span><b>{fmtMoney(derived.totals.tax_total)}</b></div>
+                {invoiceType === 'invoice' ? (
+                  <>
+                    <div className={styles.summaryRow}><span>GST 模式</span><span>{gstModeLabel}</span></div>
+                    <div className={styles.summaryRow}><span>税费 (GST)</span><b>{fmtMoney(derived.totals.tax_total)}</b></div>
+                  </>
+                ) : null}
                 <div className={styles.summaryRow} style={{ alignItems:'center' }}>
                   <span>$ 折扣</span>
                   <InputNumber min={0} step={1} value={discountAmount} onChange={(v) => setDiscountAmount(Number(v || 0))} style={{ width: 140 }} />
                 </div>
                 <div className={styles.summaryTotal}><span>总计</span><span style={{ color: '#0052D9' }}>{fmtMoney(derived.totals.total)} {String(form.getFieldValue('currency') || 'AUD')}</span></div>
+                <div className={styles.summaryRow}><span>状态</span><Tag color={payStatusLabel === 'PAID' ? 'blue' : (payStatusLabel === 'UNPAID' ? 'default' : 'red')}>{payStatusLabel}</Tag></div>
+                <Divider style={{ margin: '10px 0' }} />
+                {invoiceType !== 'receipt' ? (
+                  <>
+                    <Form.Item name="payment_method" label="付款方式" style={{ marginBottom: 8 }}>
+                      <Select
+                        placeholder="选择付款方式（可选）"
+                        options={[
+                          { value: 'bank_transfer', label: '银行转账' },
+                          { value: 'bpay', label: 'BPAY' },
+                          { value: 'payid', label: 'PayID' },
+                          { value: 'cash', label: '现金' },
+                          { value: 'rent_deduction', label: '租金扣除' },
+                          { value: 'other', label: '其他' },
+                        ]}
+                      />
+                    </Form.Item>
+                    <Form.Item name="payment_method_note" label="付款方式备注" style={{ marginBottom: 0 }}>
+                      <Input placeholder="例如：参考号/说明（可选）" />
+                    </Form.Item>
+                  </>
+                ) : null}
                 <div className={styles.muted} style={{ marginTop: 10 }}>
                   开票主体：{(() => {
                     const c = companyById[String(form.getFieldValue('company_id') || '')]
@@ -650,7 +1188,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
               >
                 取消
               </Button>
-              <Button onClick={() => saveDraft({})} loading={saving}>保存草稿</Button>
+              <Button onClick={() => saveDraft({})} loading={saving}>{status === 'draft' ? '保存草稿' : '保存'}</Button>
               <Button onClick={() => {
                 if (!invoiceId) { message.warning('请先保存草稿'); return }
                 try { router.push(`/finance/invoices/${invoiceId}/preview`) } catch {}

@@ -1,4 +1,4 @@
-export type GstType = 'GST_10' | 'GST_FREE' | 'INPUT_TAXED'
+export type GstType = 'GST_10' | 'GST_INCLUDED_10' | 'GST_FREE' | 'INPUT_TAXED'
 
 export type InvoiceLineItemInput = {
   description: string
@@ -23,11 +23,16 @@ function round2(n: any) {
 export function computeLine(item: { quantity: number; unit_price: number; gst_type: GstType }) {
   const qty = Number(item.quantity || 0)
   const unit = Number(item.unit_price || 0)
-  const lineSubtotal = round2(qty * unit)
+  const base = round2(qty * unit)
+  if (item.gst_type === 'GST_INCLUDED_10') {
+    const tax = round2(base / 11)
+    const sub = round2(base - tax)
+    return { line_subtotal: sub, tax_amount: tax, line_total: base }
+  }
   let tax = 0
-  if (item.gst_type === 'GST_10') tax = round2(lineSubtotal * 0.1)
-  const lineTotal = round2(lineSubtotal + tax)
-  return { line_subtotal: lineSubtotal, tax_amount: tax, line_total: lineTotal }
+  if (item.gst_type === 'GST_10') tax = round2(base * 0.1)
+  const lineTotal = round2(base + tax)
+  return { line_subtotal: base, tax_amount: tax, line_total: lineTotal }
 }
 
 export function computeTotals(lines: Array<{ line_subtotal: number; tax_amount: number; line_total: number }>, amountPaid: any): InvoiceTotals {
@@ -83,4 +88,3 @@ export function stableHash(obj: any) {
   }
   return String(h)
 }
-

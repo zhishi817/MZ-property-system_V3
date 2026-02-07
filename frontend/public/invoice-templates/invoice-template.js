@@ -27,14 +27,41 @@
       .replace(/'/g, '&#39;')
   }
 
+  function splitItemDesc(raw) {
+    var s0 = String(raw == null ? '' : raw).replace(/\r\n/g, '\n').trim()
+    if (!s0) return { title: '-', content: '' }
+    var parts = s0.split('\n')
+    var title = String(parts.shift() || '').trim()
+    var content = parts.join('\n').trim()
+    if (!title && content) {
+      var p2 = content.split('\n')
+      title = String(p2.shift() || '').trim()
+      content = p2.join('\n').trim()
+    }
+    return { title: title || '-', content: content }
+  }
+
+  function renderItemDescHtml(raw) {
+    var d = splitItemDesc(raw)
+    var html = '<div class="li-title">' + escapeHtml(d.title || '-') + '</div>'
+    if (d.content) html += '<div class="li-content">' + escapeHtml(d.content) + '</div>'
+    return html
+  }
+
   function computeLine(item) {
     var qty = Number(item.quantity || 0)
     var unit = Number(item.unit_price || 0)
-    var sub = round2(qty * unit)
+    var base = round2(qty * unit)
+    var t = String(item.gst_type || 'GST_10')
+    if (t === 'GST_INCLUDED_10') {
+      var taxInc = round2(base / 11)
+      var subInc = round2(base - taxInc)
+      return { line_subtotal: subInc, tax_amount: taxInc, line_total: base }
+    }
     var tax = 0
-    if (String(item.gst_type || 'GST_10') === 'GST_10') tax = round2(sub * 0.1)
-    var total = round2(sub + tax)
-    return { line_subtotal: sub, tax_amount: tax, line_total: total }
+    if (t === 'GST_10') tax = round2(base * 0.1)
+    var total = round2(base + tax)
+    return { line_subtotal: base, tax_amount: tax, line_total: total }
   }
 
   function computeTotals(lines, paid) {
@@ -50,6 +77,37 @@
     var amountPaid = round2(paid)
     var due = round2(total - amountPaid)
     return { subtotal: subtotal, tax_total: taxTotal, total: total, amount_paid: amountPaid, amount_due: due }
+  }
+
+  function gstLabel(items) {
+    var hasInc = false, hasExc = false
+    for (var i = 0; i < items.length; i++) {
+      var t = String(items[i] && items[i].gst_type || '')
+      if (t === 'GST_INCLUDED_10') hasInc = true
+      else if (t === 'GST_10') hasExc = true
+    }
+    if (hasInc && !hasExc) return 'GST included'
+    if (hasExc && !hasInc) return 'GST excluded'
+    if (!hasInc && !hasExc) return 'No GST'
+    return 'GST'
+  }
+
+  function payStatus(inv, totals) {
+    var st = String(inv && inv.status || '')
+    if (st === 'paid') return 'PAID'
+    if (st === 'void') return 'VOID'
+    if (st === 'refunded') return 'REFUNDED'
+    if (Number(totals && totals.amount_due || 0) <= 0 && Number(totals && totals.total || 0) > 0) return 'PAID'
+    return 'UNPAID'
+  }
+
+  function payMethodText(inv) {
+    var m = String(inv && inv.payment_method || '').trim()
+    var note = String(inv && inv.payment_method_note || '').trim()
+    if (!m && !note) return ''
+    if (!m) return note
+    if (!note) return m
+    return m + ' - ' + note
   }
 
   function normalizeData(data) {
@@ -69,6 +127,18 @@
   function renderClassic(data) {
     var d = normalizeData(data)
     var inv = d.inv, company = d.company, items = d.items, totals = d.totals
+    var invType = String(inv && inv.invoice_type || 'invoice')
+    var titleText = invType === 'quote' ? 'QUOTE' : (invType === 'receipt' ? 'RECEIPT' : 'INVOICE')
+    var noLabel = invType === 'quote' ? 'QUOTE #' : (invType === 'receipt' ? 'RECEIPT #' : 'INVOICE #')
+    var dateLabel = invType === 'receipt' ? 'Paid date' : 'Date'
+    var thirdLabel = invType === 'quote' ? 'Valid until' : (invType === 'receipt' ? 'Paid via' : 'Due date')
+    var thirdValue = invType === 'quote'
+      ? ((inv.valid_until || '').slice(0, 10) || '-')
+      : (invType === 'receipt'
+        ? (payMethodText(inv) || '-')
+        : ((inv.due_date || '').slice(0, 10) || '-'))
+    var amountLabel = invType === 'receipt' ? 'Amount Received' : (invType === 'quote' ? 'Total' : 'Amount Due')
+    var amountValue = invType === 'invoice' ? totals.amount_due : totals.total
 
     var addr = [
       company.address_line1,
@@ -77,16 +147,31 @@
       company.address_country
     ].filter(Boolean).join('\n')
 
+    var companyLines = []
+    if (company.legal_name) companyLines.push(String(company.legal_name))
+    if (addr) {
+      var addrLines = String(addr).split('\n').map(function (s) { return String(s || '').trim() }).filter(Boolean)
+      companyLines = companyLines.concat(addrLines)
+    }
+    if (company.phone) companyLines.push(String(company.phone))
+    if (company.email) companyLines.push(String(company.email))
+    if (company.abn) companyLines.push('ABN: ' + String(company.abn))
+    var companyHtml = companyLines.length
+      ? companyLines.map(function (s) { return '<div class="company-line">' + escapeHtml(s) + '</div>' }).join('')
+      : '<div class="company-line">-</div>'
+
     var billTo = [
       inv.bill_to_name,
       inv.bill_to_address,
+      inv.bill_to_phone,
+      inv.bill_to_abn ? ('ABN: ' + inv.bill_to_abn) : null,
       inv.bill_to_email
     ].filter(Boolean).join('\n')
 
     var rows = items.map(function (x) {
       return (
         '<tr>' +
-        '<td class="desc">' + escapeHtml(x.description || '-') + '</td>' +
+        '<td class="desc">' + renderItemDescHtml(x.description) + '</td>' +
         '<td class="nowrap num">' + escapeHtml(String(x.quantity == null ? '' : x.quantity)) + '</td>' +
         '<td class="nowrap num">$' + escapeHtml(formatMoney(x.unit_price || 0)) + '</td>' +
         '<td class="nowrap num">$' + escapeHtml(formatMoney(x.line_total || 0)) + '</td>' +
@@ -115,18 +200,12 @@
       watermark +
       '<div class="inv-header">' +
       '<div class="inv-logo">' +
-      (company.logo_url ? ('<img alt="logo" src="' + escapeHtml(company.logo_url) + '"/>') : '') +
+      (company.logo_url ? ('<img alt="logo" crossorigin="anonymous" referrerpolicy="no-referrer" src="' + escapeHtml(company.logo_url) + '"/>') : '') +
       '</div>' +
       '<div class="inv-title">' +
-      '<h1>INVOICE</h1>' +
+      '<h1>' + escapeHtml(titleText) + '</h1>' +
       '<div style="margin-top:6px"><span class="' + badgeCls + '">' + escapeHtml(String(st).toUpperCase()) + '</span></div>' +
-      '<div class="company">' +
-      escapeHtml(company.legal_name || '') + '\n' +
-      escapeHtml(addr) + '\n' +
-      (company.phone ? escapeHtml(company.phone) + '\n' : '') +
-      (company.email ? escapeHtml(company.email) + '\n' : '') +
-      'ABN : ' + escapeHtml(company.abn || '') +
-      '</div>' +
+      '<div class="company">' + companyHtml + '</div>' +
       '</div>' +
       '</div>' +
       '<div class="inv-band">' +
@@ -136,9 +215,9 @@
       '</div>' +
       '<div>' +
       '<div class="meta">' +
-      '<div class="k">INVOICE #</div><div class="v">' + escapeHtml(inv.invoice_no || '-') + '</div>' +
-      '<div class="k">Date</div><div class="v">' + escapeHtml((inv.issue_date || '').slice(0, 10) || '-') + '</div>' +
-      '<div class="k">Due date</div><div class="v">' + escapeHtml((inv.due_date || '').slice(0, 10) || '-') + '</div>' +
+      '<div class="k">' + escapeHtml(noLabel) + '</div><div class="v">' + escapeHtml(inv.invoice_no || '-') + '</div>' +
+      '<div class="k">' + escapeHtml(dateLabel) + '</div><div class="v">' + escapeHtml((inv.issue_date || '').slice(0, 10) || '-') + '</div>' +
+      (invType === 'receipt' ? '' : ('<div class="k">' + escapeHtml(thirdLabel) + '</div><div class="v">' + escapeHtml(thirdValue) + '</div>')) +
       '</div>' +
       '</div>' +
       '</div>' +
@@ -156,22 +235,26 @@
       '</table>' +
       '<div class="inv-footer-grid">' +
       '<div class="inv-placeholder"></div>' +
-      '<div>' +
+      '<div class="inv-footer-right">' +
+      '<div class="inv-card inv-summary-card">' +
       '<table class="inv-summary">' +
       '<tr><td>Subtotal</td><td>$' + escapeHtml(formatMoney(totals.subtotal)) + '</td></tr>' +
-      '<tr><td>TAX included(10%)</td><td>$' + escapeHtml(formatMoney(totals.tax_total)) + '</td></tr>' +
+      (invType === 'invoice' ? ('<tr><td>' + escapeHtml(gstLabel(items)) + '</td><td>$' + escapeHtml(formatMoney(totals.tax_total)) + '</td></tr>') : '') +
       '<tr><td class="strong">Total</td><td class="strong">$' + escapeHtml(formatMoney(totals.total)) + '</td></tr>' +
       '</table>' +
       '<div class="inv-amount-due">' +
-      '<div class="label">Amount Due</div>' +
-      '<div class="value">$' + escapeHtml(formatMoney(totals.amount_due)) + '<span class="cur">' + escapeHtml(inv.currency || 'AUD') + '</span></div>' +
+      '<div class="label">' + escapeHtml(amountLabel) + '</div>' +
+      '<div class="value">$' + escapeHtml(formatMoney(amountValue)) + '<span class="cur">' + escapeHtml(inv.currency || 'AUD') + '</span><div class="inv-pay-status">' + escapeHtml(payStatus(inv, totals)) + '</div>' +
+      ((invType === 'invoice' && payMethodText(inv)) ? ('<div class="inv-pay-method">' + escapeHtml(payMethodText(inv)) + '</div>') : '') +
       '</div>' +
       '</div>' +
       '</div>' +
-      '<div class="inv-card inv-payment-bottom">' +
-      '<h3>Payment Instructions</h3>' +
-      '<div class="text">' + escapeHtml(payInst || '-') + '</div>' +
       '</div>' +
+      '</div>' +
+      (invType === 'invoice'
+        ? ('<div class="inv-card inv-payment-bottom"><h3>Payment&nbsp;Instructions</h3><div class="text">' + escapeHtml(payInst || '-') + '</div></div>')
+        : '') +
+      (invType === 'quote' ? ('<div class="inv-disclaimer">本报价单仅供参考，具体以实际交易为准</div>') : '') +
       '</div>' +
       '</div>' +
       '</div>'
@@ -181,10 +264,22 @@
   function renderModern(data) {
     var d = normalizeData(data)
     var inv = d.inv, company = d.company, items = d.items, totals = d.totals
+    var invType = String(inv && inv.invoice_type || 'invoice')
+    var titleText = invType === 'quote' ? 'QUOTE' : (invType === 'receipt' ? 'RECEIPT' : 'TAX INVOICE')
+    var noLabel = invType === 'quote' ? 'Quote # ' : (invType === 'receipt' ? 'Receipt # ' : 'Invoice # ')
+    var dateLabel = invType === 'receipt' ? 'Paid date ' : 'Date '
+    var thirdLabel = invType === 'quote' ? 'Valid until ' : (invType === 'receipt' ? 'Paid via ' : 'Due ')
+    var thirdValue = invType === 'quote'
+      ? ((inv.valid_until || '').slice(0, 10) || '-')
+      : (invType === 'receipt'
+        ? (payMethodText(inv) || '-')
+        : ((inv.due_date || '').slice(0, 10) || '-'))
+    var amountLabel = invType === 'receipt' ? 'Amount Received' : (invType === 'quote' ? 'Total' : 'Amount Due')
+    var amountValue = invType === 'invoice' ? totals.amount_due : totals.total
     var rows = items.map(function (x) {
       return (
         '<tr>' +
-        '<td class="desc">' + escapeHtml(x.description || '-') + '</td>' +
+        '<td class="desc">' + renderItemDescHtml(x.description) + '</td>' +
         '<td class="nowrap num">' + escapeHtml(String(x.quantity == null ? '' : x.quantity)) + '</td>' +
         '<td class="nowrap num">$' + escapeHtml(formatMoney(x.unit_price || 0)) + '</td>' +
         '<td class="nowrap num">$' + escapeHtml(formatMoney(x.line_total || 0)) + '</td>' +
@@ -203,21 +298,21 @@
       '<div class="inv-page inv-page-wrap">' +
       '<div class="inv-header" style="border-bottom:1px solid rgba(0,82,217,0.25)">' +
       '<div class="inv-logo">' +
-      (company.logo_url ? ('<img alt="logo" src="' + escapeHtml(company.logo_url) + '"/>') : '') +
+      (company.logo_url ? ('<img alt="logo" crossorigin="anonymous" referrerpolicy="no-referrer" src="' + escapeHtml(company.logo_url) + '"/>') : '') +
       '<div style="font-weight:800; color:var(--inv-primary); font-size:16px">' + escapeHtml(company.legal_name || '') + '</div>' +
       '</div>' +
       '<div class="inv-title">' +
-      '<h1 style="color:var(--inv-primary)">TAX INVOICE</h1>' +
+      '<h1 style="color:var(--inv-primary)">' + escapeHtml(titleText) + '</h1>' +
       '<div class="company">' +
-      'Invoice # ' + escapeHtml(inv.invoice_no || '-') + '\n' +
-      'Date ' + escapeHtml((inv.issue_date || '').slice(0, 10) || '-') + '\n' +
-      'Due ' + escapeHtml((inv.due_date || '').slice(0, 10) || '-') +
+      escapeHtml(noLabel) + escapeHtml(inv.invoice_no || '-') + '\n' +
+      escapeHtml(dateLabel) + escapeHtml((inv.issue_date || '').slice(0, 10) || '-') +
+      (invType === 'receipt' ? '' : ('\n' + escapeHtml(thirdLabel) + escapeHtml(thirdValue))) +
       '</div>' +
       '</div>' +
       '</div>' +
       '<div class="inv-band" style="background:rgba(0,82,217,0.05)">' +
       '<div><h3>BILL TO</h3><div class="text" style="white-space:pre-wrap; font-size:12px; color:rgba(17,24,39,0.75)">' +
-      escapeHtml([inv.bill_to_name, inv.bill_to_address, inv.bill_to_email].filter(Boolean).join('\n') || '-') +
+      escapeHtml([inv.bill_to_name, inv.bill_to_address, inv.bill_to_phone, inv.bill_to_abn ? ('ABN: ' + inv.bill_to_abn) : null, inv.bill_to_email].filter(Boolean).join('\n') || '-') +
       '</div></div>' +
       '<div><h3>ISSUER</h3><div class="text" style="white-space:pre-wrap">' +
       escapeHtml([company.abn ? ('ABN: ' + company.abn) : '', company.email, company.phone].filter(Boolean).join('\n')) +
@@ -237,21 +332,26 @@
       '</table>' +
       '<div class="inv-footer-grid">' +
       '<div class="inv-placeholder"></div>' +
-      '<div>' +
-      '<div class="inv-card" style="border-color:rgba(0,82,217,0.25)">' +
+      '<div class="inv-footer-right">' +
+      '<div class="inv-card inv-summary-card" style="border-color:rgba(0,82,217,0.25)">' +
       '<table class="inv-summary">' +
       '<tr><td>Subtotal</td><td>$' + escapeHtml(formatMoney(totals.subtotal)) + '</td></tr>' +
-      '<tr><td>GST (10%)</td><td>$' + escapeHtml(formatMoney(totals.tax_total)) + '</td></tr>' +
+      (invType === 'invoice' ? ('<tr><td>' + escapeHtml(gstLabel(items)) + '</td><td>$' + escapeHtml(formatMoney(totals.tax_total)) + '</td></tr>') : '') +
       '<tr><td class="strong">Total</td><td class="strong">$' + escapeHtml(formatMoney(totals.total)) + '</td></tr>' +
       '</table>' +
       '<div class="inv-amount-due" style="background:rgba(0,82,217,0.06)">' +
-      '<div class="label">Amount Due</div>' +
-      '<div class="value" style="color:var(--inv-primary)">$' + escapeHtml(formatMoney(totals.amount_due)) + '<span class="cur">' + escapeHtml(inv.currency || 'AUD') + '</span></div>' +
+      '<div class="label">' + escapeHtml(amountLabel) + '</div>' +
+      '<div class="value" style="color:var(--inv-primary)">$' + escapeHtml(formatMoney(amountValue)) + '<span class="cur">' + escapeHtml(inv.currency || 'AUD') + '</span><div class="inv-pay-status">' + escapeHtml(payStatus(inv, totals)) + '</div>' +
+      ((invType === 'invoice' && payMethodText(inv)) ? ('<div class="inv-pay-method">' + escapeHtml(payMethodText(inv)) + '</div>') : '') +
       '</div>' +
       '</div>' +
       '</div>' +
       '</div>' +
-      '<div class="inv-card inv-payment-bottom"><h3>Payment Instructions</h3><div class="text">' + escapeHtml(payInst || '-') + '</div></div>' +
+      '</div>' +
+      (invType === 'invoice'
+        ? ('<div class="inv-card inv-payment-bottom"><h3>Payment&nbsp;Instructions</h3><div class="text">' + escapeHtml(payInst || '-') + '</div></div>')
+        : '') +
+      (invType === 'quote' ? ('<div class="inv-disclaimer">本报价单仅供参考，具体以实际交易为准</div>') : '') +
       '</div></div></div>'
     )
   }
