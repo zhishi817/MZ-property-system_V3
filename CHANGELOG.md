@@ -7,6 +7,13 @@
 
 Author: MZ System Bot <dev@mzpropertygroup.com>
 
+## v0.2.7-invoice-types.20260207+build.3 (2026-02-07)
+
+- Invoice settings: Fix company logo upload by correctly sending the picked file from AntD Upload (originFileObj).
+- Versions: frontend 0.2.7-invoice-types.20260207+build.3, backend 0.2.7-invoice-types.20260207+build.3.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## v0.2.7-invoice-types.20260207+build.1 (2026-02-07)
 
 - Invoice center: Add Quote/Invoice/Receipt types with permissions (invoice.type.switch).
