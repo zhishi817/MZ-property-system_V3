@@ -8,7 +8,7 @@ export type InvoiceTemplateData = {
 }
 
 export function normalizeAssetUrl(url: string): string {
-  const u = String(url || '')
+  const u = String(url || '').trim()
   if (!u) return ''
   if (/^https?:\/\//i.test(u)) return u
   if (u.startsWith('/')) return `${API_BASE}${u}`

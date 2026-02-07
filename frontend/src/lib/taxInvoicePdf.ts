@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf'
 
-export type GstType = 'GST_10' | 'GST_FREE' | 'INPUT_TAXED'
+export type GstType = 'GST_10' | 'GST_INCLUDED_10' | 'GST_FREE' | 'INPUT_TAXED'
 
 export type InvoicePdfCompany = {
   legal_name: string
@@ -60,14 +60,28 @@ function fmtMoney(n: any) {
   return `$${round2(n).toFixed(2)}`
 }
 
+function splitItemDesc(raw: any) {
+  const s0 = String(raw || '').replace(/\r\n/g, '\n').trim()
+  if (!s0) return { title: '-', content: '' }
+  const parts = s0.split('\n')
+  const title = String(parts.shift() || '').trim() || '-'
+  const content = parts.join('\n').trim()
+  return { title, content }
+}
+
 function computeLine(item: { quantity: number; unit_price: number; gst_type: GstType }) {
   const qty = Number(item.quantity || 0)
   const unit = Number(item.unit_price || 0)
-  const lineSubtotal = round2(qty * unit)
+  const base = round2(qty * unit)
+  if (item.gst_type === 'GST_INCLUDED_10') {
+    const tax = round2(base / 11)
+    const sub = round2(base - tax)
+    return { line_subtotal: sub, tax_amount: tax, line_total: base }
+  }
   let tax = 0
-  if (item.gst_type === 'GST_10') tax = round2(lineSubtotal * 0.1)
-  const lineTotal = round2(lineSubtotal + tax)
-  return { line_subtotal: lineSubtotal, tax_amount: tax, line_total: lineTotal }
+  if (item.gst_type === 'GST_10') tax = round2(base * 0.1)
+  const lineTotal = round2(base + tax)
+  return { line_subtotal: base, tax_amount: tax, line_total: lineTotal }
 }
 
 function computeTotals(lines: Array<{ line_subtotal: number; tax_amount: number; line_total: number }>, amountPaid: any) {
@@ -206,17 +220,24 @@ export async function buildTaxInvoicePdf(params: { invoice: InvoicePdfData; comp
 
   const maxDescWidth = 300
   for (const li of computedLines) {
-    const desc = String(li.description || '').trim() || '-'
-    const lines = doc.splitTextToSize(desc, maxDescWidth) as string[]
-    const rowHeight = Math.max(1, lines.length) * 14
+    const d = splitItemDesc(li.description)
+    doc.setFont('helvetica', 'bold')
+    const titleLines = doc.splitTextToSize(String(d.title || '-'), maxDescWidth) as string[]
+    doc.setFont('helvetica', 'normal')
+    const contentLines = d.content ? (doc.splitTextToSize(String(d.content), maxDescWidth) as string[]) : []
+    const rowHeight = Math.max(1, titleLines.length + contentLines.length) * 14
     if (tableY + rowHeight > 700) {
       doc.addPage()
       tableY = 80
     }
-    doc.text(lines, leftX, tableY)
+    doc.setFont('helvetica', 'bold')
+    doc.text(titleLines, leftX, tableY)
+    const y2 = tableY + titleLines.length * 14
+    doc.setFont('helvetica', 'normal')
+    if (contentLines.length) doc.text(contentLines, leftX, y2)
     doc.text(String(li.quantity ?? ''), 360, tableY)
     doc.text(fmtMoney(li.unit_price), 420, tableY)
-    doc.text(li.gst_type === 'GST_10' ? '10%' : (li.gst_type === 'GST_FREE' ? 'Free' : 'Input'), 480, tableY)
+    doc.text(li.gst_type === 'GST_10' ? 'Excl' : (li.gst_type === 'GST_INCLUDED_10' ? 'Incl' : 'No'), 480, tableY)
     doc.text(fmtMoney(li.line_total), rightX, tableY, { align: 'right' })
     tableY += rowHeight
     doc.setDrawColor(245)

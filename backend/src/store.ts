@@ -448,7 +448,8 @@ if (db.roles.length === 0) {
     { code: 'invoice.send' },
     { code: 'invoice.void' },
     { code: 'invoice.payment.record' },
-    { code: 'invoice.company.manage' }
+    { code: 'invoice.company.manage' },
+    { code: 'invoice.type.switch' }
   ]
   function grant(roleId: string, codes: string[]) {
     codes.forEach(c => db.rolePermissions.push({ role_id: roleId, permission_code: c }))
@@ -462,7 +463,7 @@ if (db.roles.length === 0) {
   // 清洁/检查人员：无写权限，仅查看（后端接口默认允许 GET）
   grant(cleanerId, ['menu.cleaning','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 财务人员：财务结算与交易录入、房东/房源管理
-  grant(financeId, ['finance.payout','finance.tx.write','invoice.view','invoice.draft.create','invoice.issue','invoice.send','invoice.void','invoice.payment.record','invoice.company.manage','order.deduction.manage','order.cancel','landlord.manage','property.write','onboarding.manage','onboarding.read','menu.finance','menu.finance.invoices.visible','menu.landlords','menu.properties','menu.onboarding','menu.dashboard'])
+  grant(financeId, ['finance.payout','finance.tx.write','invoice.view','invoice.draft.create','invoice.issue','invoice.send','invoice.void','invoice.payment.record','invoice.company.manage','invoice.type.switch','order.deduction.manage','order.cancel','landlord.manage','property.write','onboarding.manage','onboarding.read','menu.finance','menu.finance.invoices.visible','menu.landlords','menu.properties','menu.onboarding','menu.dashboard'])
   // 仓库管理员：仓库与钥匙管理
   grant(inventoryId, ['inventory.move','keyset.manage','key.flow','menu.inventory','menu.keys','menu.dashboard'])
   // 维修人员：暂无写接口，预留

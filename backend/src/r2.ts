@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3'
 
 const endpoint = process.env.R2_ENDPOINT || ''
 const accessKeyId = process.env.R2_ACCESS_KEY_ID || ''
@@ -37,6 +37,58 @@ function computePublicBase(): string {
     ? pb.replace(new RegExp(`/${bucket}$`), '')
     : pb
   return cleaned || `${endpoint.replace(/\/$/, '')}/${bucket}`
+}
+
+export function r2KeyFromUrl(url: string): string | null {
+  try {
+    if (!hasR2) return null
+    const clean = String(url || '').trim().replace(/\?[^#]*$/, '')
+    if (!clean) return null
+    try {
+      const u = new URL(clean)
+      const host = String(u.hostname || '').toLowerCase()
+      if (host.endsWith('.r2.dev')) {
+        const key = String(u.pathname || '').replace(/^\//, '')
+        return key || null
+      }
+    } catch {}
+    const base1 = computePublicBase()
+    const base2 = `${endpoint.replace(/\/$/, '')}/${bucket}`
+    if (clean.startsWith(base1 + '/')) return clean.slice(base1.length + 1) || null
+    if (clean.startsWith(base2 + '/')) return clean.slice(base2.length + 1) || null
+    return null
+  } catch {
+    return null
+  }
+}
+
+async function streamToBuffer(body: any): Promise<Buffer> {
+  if (!body) return Buffer.from([])
+  if (typeof body.transformToByteArray === 'function') {
+    const arr = await body.transformToByteArray()
+    return Buffer.from(arr)
+  }
+  const chunks: Buffer[] = []
+  await new Promise<void>((resolve, reject) => {
+    body.on('data', (c: any) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)))
+    body.on('end', () => resolve())
+    body.on('error', (e: any) => reject(e))
+  })
+  return Buffer.concat(chunks)
+}
+
+export async function r2GetObjectByKey(key: string): Promise<{ body: Buffer; contentType: string; cacheControl?: string; etag?: string } | null> {
+  try {
+    if (!hasR2 || !r2) return null
+    const resp: any = await r2.send(new GetObjectCommand({ Bucket: bucket, Key: key }))
+    const body = await streamToBuffer(resp?.Body)
+    const contentType = String(resp?.ContentType || 'application/octet-stream')
+    const cacheControl = resp?.CacheControl ? String(resp.CacheControl) : undefined
+    const etag = resp?.ETag ? String(resp.ETag).replace(/"/g, '') : undefined
+    return { body, contentType, cacheControl, etag }
+  } catch {
+    return null
+  }
 }
 
 export async function r2DeleteByUrl(url: string): Promise<boolean> {

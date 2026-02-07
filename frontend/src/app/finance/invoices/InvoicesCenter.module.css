@@ -1,0 +1,8 @@
+.invoiceCenterCard :global(.ant-card-head .ant-tabs-tab) {
+  font-size: 14px;
+}
+
+.invoiceCenterCard :global(.ant-card-head .ant-tabs-tab-btn) {
+  font-weight: 400;
+}
+

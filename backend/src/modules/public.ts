@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import multer from 'multer'
 import path from 'path'
-import { hasR2, r2Upload } from '../r2'
+import { hasR2, r2GetObjectByKey, r2KeyFromUrl, r2Upload } from '../r2'
 import { v4 as uuidv4 } from 'uuid'
 import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate } from '../dbAdapter'
 import jwt from 'jsonwebtoken'
@@ -19,6 +19,27 @@ const DEFAULT_PUBLIC_PROPERTY_EXPENSE_PASSWORD = process.env.PROPERTY_EXPENSE_PU
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
+
+router.get('/r2-image', async (req, res) => {
+  try {
+    const u = String((req.query as any)?.url || (req.query as any)?.u || '').trim()
+    if (!u) return res.status(400).json({ message: 'missing_url' })
+    if (!hasR2) return res.status(404).json({ message: 'r2_not_configured' })
+    const key = r2KeyFromUrl(u)
+    if (!key) return res.status(400).json({ message: 'invalid_r2_url' })
+    if (!key.startsWith('invoice-company-logos/')) return res.status(403).json({ message: 'forbidden_key' })
+    const obj = await r2GetObjectByKey(key)
+    if (!obj || !obj.body?.length) return res.status(404).json({ message: 'not_found' })
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.setHeader('Content-Type', obj.contentType || 'application/octet-stream')
+    res.setHeader('Cache-Control', obj.cacheControl || 'public, max-age=86400, stale-while-revalidate=604800')
+    if (obj.etag) res.setHeader('ETag', obj.etag)
+    return res.status(200).send(obj.body)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'proxy_failed' })
+  }
+})
 
 function randomSuffix(len: number): string {
   const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'

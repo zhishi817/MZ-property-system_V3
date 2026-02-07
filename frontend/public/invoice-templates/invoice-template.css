@@ -13,6 +13,7 @@
   --inv-muted:rgba(17,24,39,0.65);
   --inv-border:rgba(0,0,0,0.08);
   --inv-soft:rgba(0,0,0,0.03);
+  --inv-card-pad-x:14px;
   --inv-a4-w:210mm;
   --inv-a4-h:297mm;
   --inv-margin:20mm;
@@ -81,8 +82,9 @@ body{
   gap:12px;
 }
 .inv-logo img{
-  width:140px;
-  height:auto;
+  width:auto;
+  height:160px;
+  max-width:280px;
   object-fit:contain;
 }
 .inv-title{
@@ -98,6 +100,15 @@ body{
   margin-top:8px;
   font-size:var(--inv-font-body);
   color:var(--inv-muted);
+  word-break:break-word;
+  overflow-wrap:anywhere;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+}
+.inv-title .company .company-line{
+  max-width:100%;
+  text-align:right;
   white-space:pre-wrap;
 }
 
@@ -129,6 +140,10 @@ body{
   font-size:var(--inv-font-strong);
   font-weight:600;
   letter-spacing:0.01em;
+}
+.inv-band .text{
+  overflow-wrap:anywhere;
+  word-break:break-word;
 }
 
 .inv-table{
@@ -166,6 +181,22 @@ body{
   overflow-wrap:anywhere;
   font-weight:400;
 }
+.inv-table .desc .li-title{
+  font-weight:700;
+  color:var(--inv-text);
+  white-space:pre-wrap;
+  word-break:break-word;
+  overflow-wrap:anywhere;
+}
+.inv-table .desc .li-content{
+  margin-top:4px;
+  color:var(--inv-muted);
+  font-size:12px;
+  line-height:1.45;
+  white-space:pre-wrap;
+  word-break:break-word;
+  overflow-wrap:anywhere;
+}
 
 .inv-footer-grid{
   margin-top:18px;
@@ -186,7 +217,7 @@ body{
 .inv-card{
   border:1px solid var(--inv-border);
   border-radius:10px;
-  padding:12px 14px;
+  padding:12px var(--inv-card-pad-x);
 }
 .inv-card h3{
   margin:0 0 10px 0;
@@ -200,6 +231,7 @@ body{
   color:var(--inv-muted);
   white-space:pre-wrap;
   word-break:break-word;
+  overflow-wrap:anywhere;
 }
 
 .inv-summary{
@@ -226,15 +258,17 @@ body{
   margin-top:14px;
   background:var(--inv-soft);
   border-radius:10px;
-  padding:12px 14px;
+  padding:12px var(--inv-card-pad-x);
   display:flex;
   justify-content:space-between;
   align-items:flex-end;
+  gap:12px;
 }
 .inv-amount-due .label{
   font-size:12px;
   font-weight:600;
   color:var(--inv-muted);
+  white-space:nowrap;
 }
 .inv-amount-due .value{
   font-size:var(--inv-font-amount);
@@ -242,12 +276,38 @@ body{
   letter-spacing:0.02em;
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;
+  text-align:right;
 }
 .inv-amount-due .value .cur{
   font-size:12px;
   font-weight:700;
   color:var(--inv-muted);
   margin-left:6px;
+}
+.inv-pay-status{
+  margin-top:4px;
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:0.04em;
+  color:var(--inv-muted);
+}
+.inv-pay-method{
+  margin-top:2px;
+  font-size:11px;
+  font-weight:500;
+  color:var(--inv-muted);
+  overflow-wrap:anywhere;
+  word-break:break-word;
+}
+
+.inv-footer-right{
+  width:100%;
+}
+
+.inv-summary-card .inv-amount-due{
+  margin-left: calc(var(--inv-card-pad-x) * -1);
+  margin-right: calc(var(--inv-card-pad-x) * -1);
+  border-radius:0 0 10px 10px;
 }
 
 .inv-watermark{
@@ -283,29 +343,50 @@ body{
   background:rgba(0,82,217,0.06);
 }
 
+.inv-disclaimer{
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--inv-muted);
+  padding: 0 2px;
+}
+
 @media (max-width: 768px){
   .inv-preview-wrap{padding:12px;}
   .inv-sheet{border-radius:8px;}
   .inv-page{padding:16px;}
   .inv-header{grid-template-columns:1fr; gap:10px;}
-  .inv-title{text-align:left;}
   .inv-band{grid-template-columns:1fr;}
   .inv-footer-grid{grid-template-columns:1fr;}
 }
 
 @media print{
   @page{ size:A4; margin:0; }
+  html,body{ width:var(--inv-a4-w); height:var(--inv-a4-h); }
   body{ background:#fff; }
   .inv-preview-wrap{ padding:0; }
   .inv-sheet{
     width:var(--inv-a4-w);
-    min-height:var(--inv-a4-h);
+    height:var(--inv-a4-h);
+    min-height:0;
     border:none;
     border-radius:0;
     box-shadow:none;
+    overflow:hidden;
   }
   .inv-page{
     padding:var(--inv-margin);
+    height:var(--inv-a4-h);
+    min-height:0;
+    box-sizing:border-box;
+  }
+  .inv-header{ grid-template-columns: 1fr 1fr; gap:16px; }
+  .inv-title{ text-align:right; }
+  .inv-band{ grid-template-columns: 1fr 1fr; }
+  .inv-footer-grid{ grid-template-columns: 1fr 0.9fr; }
+  .inv-card{ break-inside: avoid; page-break-inside: avoid; }
+  .inv-logo img{
+    height:120px;
+    max-width:260px;
   }
   *{
     -webkit-print-color-adjust: exact;

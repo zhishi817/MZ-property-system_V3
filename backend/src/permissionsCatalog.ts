@@ -327,6 +327,21 @@ const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
       '包含银行账户等敏感信息，需最小授权',
     ],
   },
+  'invoice.type.switch': {
+    displayName: '发票中心：切换发票类型（高危）',
+    riskLevel: 'high',
+    purpose: '允许在报价单/发票/收据之间切换类型，影响编号规则、模板内容与财务口径。',
+    scenarios: [
+      '财务根据业务场景创建报价单或收据',
+      '调整草稿阶段的凭证类型并生成对应编号',
+    ],
+    denyImpact: [
+      '普通用户只能使用默认“发票”类型',
+    ],
+    privacyRisk: [
+      '误选类型可能造成合规/对账偏差，需严格授权与审计',
+    ],
+  },
   'landlord.manage': {
     displayName: '房东：资料管理（中）',
     riskLevel: 'medium',
