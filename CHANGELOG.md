@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.7-invoice-types.20260207+build.1 (2026-02-07)
+
+- Invoice center: Add Quote/Invoice/Receipt types with permissions (invoice.type.switch).
+- Numbering: company code + INV/QT/REC + YYYY + 4-digit sequence; Receipt number auto-generated on mark-paid/issue.
+- Receipt workflow: keep line items, hide GST; show PAID after Save/Submit (not on select).
+- Templates: type-aware preview/print; Receipt/Quote hide payment info; remove signature section.
+- List UX: records actions use pill buttons (View/Edit/Delete=void) aligned with Properties UI.
+- PDF export: fix layout distortion, email wrapping, and extra blank page.
+- Versions: frontend 0.2.7-invoice-types.20260207+build.1, backend 0.2.7-invoice-types.20260207+build.1.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+Commit: b267683
+
 ## Dev (2026-01-16)
 
 - Email sync
