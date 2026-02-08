@@ -128,7 +128,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
   const [invoiceId, setInvoiceId] = useState<string | null>(props.invoiceId || null)
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null)
   const status = String(invoice?.status || 'draft')
-  const lineItemsLocked = mode === 'edit' && status !== 'draft'
+  const lineItemsLocked = false
   const [discountAmount, setDiscountAmount] = useState<number>(0)
   const [savedCustomers, setSavedCustomers] = useState<Array<{ id: string; name?: string; email?: string; phone?: string; abn?: string; address?: string }>>([])
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | undefined>(undefined)
@@ -324,11 +324,9 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       } catch {
       }
 
-      if (status === 'draft') {
-        if (!canBackendAutosaveDraft({ company_id: (payload as any).company_id, line_items: values.line_items })) {
-          if (!params?.silent && !params?.fromAutosave) message.warning('请先填写开票主体与至少 1 条项目描述再保存草稿')
-          return invoiceId
-        }
+      if (!canBackendAutosaveDraft({ company_id: (payload as any).company_id, line_items: values.line_items })) {
+        if (!params?.silent && !params?.fromAutosave) message.warning('请先填写开票主体与至少 1 条项目描述再保存')
+        return invoiceId
       }
 
       if (params?.fromAutosave && hash === lastSavedHashRef.current) return invoiceId
@@ -357,7 +355,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       }
       const updated = await patchJSON<any>(`/invoices/${invoiceId}`, payload)
       lastSavedHashRef.current = hash
-      if (!params?.silent) message.success('草稿已保存')
+      if (!params?.silent) message.success(status === 'draft' ? '草稿已保存' : '已保存')
       if (invoiceId) {
         await loadInvoice(invoiceId)
         await loadAudits(invoiceId)
@@ -383,7 +381,11 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       }
       return invoiceId
     } catch (e: any) {
-      if (!params?.silent) message.error(String(e?.message || '保存失败'))
+      const msg = String(e?.message || '')
+      if (!params?.silent) {
+        if (msg === 'duplicate_invoice') message.error('该记录已存在，请勿重复录入')
+        else message.error(msg || '保存失败')
+      }
       return invoiceId
     }
   }
@@ -406,7 +408,9 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       message.success('已提交')
       try { router.push(`/finance/invoices/${id}/preview`) } catch {}
     } catch (e: any) {
-      message.error(String(e?.message || '提交失败'))
+      const msg = String(e?.message || '')
+      if (msg === 'duplicate_invoice') message.error('该记录已存在，请勿重复录入')
+      else message.error(msg || '提交失败')
     } finally {
       setSaving(false)
     }
@@ -740,7 +744,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                 <Row gutter={16}>
                   <Col xs={24} md={10}>
                     <Form.Item name="company_id" label="开票主体" rules={[{ required: true, message: '请选择开票主体' }]}>
-                      <Select placeholder="选择开票主体" options={companyOptions} showSearch optionFilterProp="label" disabled={mode === 'edit' && status !== 'draft'} />
+                      <Select placeholder="选择开票主体" options={companyOptions} showSearch optionFilterProp="label" />
                     </Form.Item>
                   </Col>
                   <Col xs={24} md={6}>
@@ -751,13 +755,13 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                           { value: 'invoice', label: '发票（Invoice）' },
                           { value: 'receipt', label: '收据（Receipt）' },
                         ]}
-                        disabled={!canSwitchInvoiceType || (mode === 'edit' && status !== 'draft')}
+                        disabled={!canSwitchInvoiceType}
                       />
                     </Form.Item>
                   </Col>
                   <Col xs={24} md={4}>
                     <Form.Item name="currency" label="币种" initialValue="AUD" rules={[{ required: true }]}>
-                      <Select options={[{ value: 'AUD', label: 'AUD' }]} disabled={mode === 'edit' && status !== 'draft'} />
+                      <Select options={[{ value: 'AUD', label: 'AUD' }]} />
                     </Form.Item>
                   </Col>
                   <Col xs={24} md={4}>
@@ -769,7 +773,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                 <Row gutter={16}>
                   <Col xs={24} md={12}>
                     <Form.Item name="issue_date" label={invoiceType === 'quote' ? '报价日期' : (invoiceType === 'receipt' ? '收款日期' : '开票日期')} rules={[{ required: true, message: '请选择日期' }]}>
-                      <DatePicker style={{ width: '100%' }} disabled={mode === 'edit' && status !== 'draft'} />
+                      <DatePicker style={{ width: '100%' }} />
                     </Form.Item>
                   </Col>
                   <Col xs={24} md={12}>
@@ -779,7 +783,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                       </Form.Item>
                     ) : invoiceType === 'quote' ? (
                       <Form.Item name="valid_until" label="有效期至" rules={[{ required: true, message: '请选择有效期' }]}>
-                        <DatePicker style={{ width: '100%' }} disabled={mode === 'edit' && status !== 'draft'} />
+                        <DatePicker style={{ width: '100%' }} />
                       </Form.Item>
                     ) : (
                       <Form.Item name="payment_method" label="收款方式" rules={[{ required: true, message: '请选择收款方式' }]}>
@@ -793,7 +797,6 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                             { value: 'rent_deduction', label: '租金扣除' },
                             { value: 'other', label: '其他' },
                           ]}
-                          disabled={mode === 'edit' && status !== 'draft'}
                         />
                       </Form.Item>
                     )}
@@ -845,7 +848,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                 <Row gutter={16}>
                   <Col xs={24} md={8}>
                     <Form.Item name="bill_to_name" label="姓名">
-                      <Input placeholder="客户姓名" disabled={mode === 'edit' && status !== 'draft'} />
+                      <Input placeholder="客户姓名" />
                     </Form.Item>
                   </Col>
                   <Col xs={24} md={8}>

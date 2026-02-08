@@ -346,6 +346,7 @@ async function run() {
       id text PRIMARY KEY,
       company_id text REFERENCES invoice_companies(id) ON DELETE RESTRICT,
       invoice_no text,
+      biz_unique_key text,
       issue_date date,
       due_date date,
       currency text DEFAULT 'AUD',
@@ -378,7 +379,8 @@ async function run() {
     `CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);`,
     `CREATE INDEX IF NOT EXISTS idx_invoices_issue_date ON invoices(issue_date);`,
     `CREATE INDEX IF NOT EXISTS idx_invoices_invoice_no ON invoices(invoice_no);`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_invoices_company_invoice_no ON invoices(company_id, invoice_no) WHERE invoice_no IS NOT NULL;`
+    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_invoices_company_invoice_no ON invoices(company_id, invoice_no) WHERE invoice_no IS NOT NULL;`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_invoices_biz_unique_key ON invoices(biz_unique_key) WHERE biz_unique_key IS NOT NULL;`
     ,
     `CREATE TABLE IF NOT EXISTS invoice_sources (
       invoice_id text REFERENCES invoices(id) ON DELETE CASCADE,

@@ -2,6 +2,7 @@ import { Router } from 'express'
 import multer from 'multer'
 import path from 'path'
 import fs from 'fs'
+import { createHash } from 'crypto'
 import { z } from 'zod'
 import { PDFDocument } from 'pdf-lib'
 import { requireAnyPerm, requirePerm } from '../auth'
@@ -51,6 +52,7 @@ async function ensureInvoiceTables() {
     company_id text REFERENCES invoice_companies(id) ON DELETE RESTRICT,
     invoice_type text DEFAULT 'invoice',
     invoice_no text,
+    biz_unique_key text,
     issue_date date,
     due_date date,
     valid_until date,
@@ -87,6 +89,7 @@ async function ensureInvoiceTables() {
   );`)
   await pgPool.query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS customer_id text;`)
   await pgPool.query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS invoice_type text DEFAULT 'invoice';`)
+  await pgPool.query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS biz_unique_key text;`)
   await pgPool.query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS valid_until date;`)
   await pgPool.query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS bill_to_phone text;`)
   await pgPool.query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS bill_to_abn text;`)
@@ -98,6 +101,7 @@ async function ensureInvoiceTables() {
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_invoices_type ON invoices(invoice_type);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_invoices_invoice_no ON invoices(invoice_no);')
   await pgPool.query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_invoices_company_invoice_no ON invoices(company_id, invoice_no) WHERE invoice_no IS NOT NULL;")
+  await pgPool.query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_invoices_biz_unique_key ON invoices(biz_unique_key) WHERE biz_unique_key IS NOT NULL;")
 
   await pgPool.query(`CREATE TABLE IF NOT EXISTS invoice_customers (
     id text PRIMARY KEY,
@@ -257,6 +261,43 @@ function round2(n: any) {
 }
  
 type GstType = 'GST_10' | 'GST_INCLUDED_10' | 'GST_FREE' | 'INPUT_TAXED'
+
+function stableBizKeyPayload(payload: any) {
+  const p = payload || {}
+  const items = Array.isArray(p.line_items) ? p.line_items : []
+  const normalizedItems = items.map((x: any) => ({
+    description: String(x?.description || '').trim(),
+    quantity: round2(Number(x?.quantity || 0)),
+    unit_price: round2(Number(x?.unit_price || 0)),
+    gst_type: String(x?.gst_type || '').trim(),
+    sort_order: Number(x?.sort_order ?? 0),
+  })).filter((x: any) => x.description)
+    .sort((a: any, b: any) => (a.sort_order - b.sort_order) || a.description.localeCompare(b.description))
+
+  return {
+    company_id: String(p.company_id || '').trim(),
+    invoice_type: normalizeInvoiceType(p.invoice_type),
+    issue_date: toDateOnly(p.issue_date) || '',
+    total: round2(Number(p.total || 0)),
+    currency: String(p.currency || 'AUD').trim(),
+    bill_to_name: String(p.bill_to_name || '').trim(),
+    bill_to_email: String(p.bill_to_email || '').trim(),
+    primary_source_type: String(p.primary_source_type || '').trim(),
+    primary_source_id: String(p.primary_source_id || '').trim(),
+    line_items: normalizedItems,
+  }
+}
+
+function computeBizUniqueKey(payload: any) {
+  const base = stableBizKeyPayload(payload)
+  const raw = JSON.stringify(base)
+  return createHash('sha256').update(raw).digest('hex')
+}
+
+function isPgUniqueViolation(e: any) {
+  const code = String(e?.code || '')
+  return code === '23505'
+}
  
 function computeLine(item: { quantity: number; unit_price: number; gst_type: GstType }) {
   const qty = Number(item.quantity || 0)
@@ -697,6 +738,10 @@ router.post('/', requireAnyPerm(['invoice.draft.create','invoice.issue']), async
       updated_at: nowIso(),
       ...totals,
     }
+    const bizKey = computeBizUniqueKey({ ...invoicePayload, issue_date: issueDate, total: totals.total, line_items: lines })
+    const dup = await pgPool!.query('SELECT id FROM invoices WHERE biz_unique_key=$1 LIMIT 1', [bizKey])
+    if (dup?.rowCount) return res.status(409).json({ message: 'duplicate_invoice' })
+    invoicePayload.biz_unique_key = bizKey
     const row = await pgInsert('invoices', invoicePayload)
     for (const li of lines) await pgInsert('invoice_line_items', li as any)
     if (Array.isArray(v.sources) && v.sources.length) {
@@ -707,6 +752,7 @@ router.post('/', requireAnyPerm(['invoice.draft.create','invoice.issue']), async
     addAudit('Invoice', invoiceId, 'create', null, { ...row, line_items: lines, sources: v.sources || [] }, createdBy, { ip: req.ip, user_agent: req.headers['user-agent'] })
     return res.status(201).json({ ...row, line_items: lines, sources: v.sources || [] })
   } catch (e: any) {
+    if (isPgUniqueViolation(e)) return res.status(409).json({ message: 'duplicate_invoice' })
     return res.status(400).json({ message: e?.message || 'create_failed' })
   }
 })
@@ -730,6 +776,7 @@ router.get('/:id', requirePerm('invoice.view'), async (req, res) => {
 })
  
 const InvoicePatchSchema = z.object({
+  company_id: z.string().trim().min(1).max(80).optional(),
   invoice_type: z.enum(['quote','invoice','receipt']).optional(),
   currency: z.string().trim().min(1).max(10).optional(),
   customer_id: z.string().trim().max(80).optional(),
@@ -757,77 +804,135 @@ router.patch('/:id', requireAnyPerm(['invoice.draft.create','invoice.issue']), a
     const user = (req as any).user || {}
     const actor = user?.sub || user?.username || null
     const roleName = String(user?.role || '')
-    const beforeRows = await pgSelect('invoices', '*', { id })
-    const before = Array.isArray(beforeRows) ? beforeRows[0] : null
-    if (!before) return res.status(404).json({ message: 'not_found' })
     const v = InvoicePatchSchema.parse(req.body || {})
-    const status = String(before.status || 'draft')
-    const canSwitchType = await roleHasPermAsync(roleName, 'invoice.type.switch')
-    const beforeType = normalizeInvoiceType(before.invoice_type)
-    const nextType = (status === 'draft' && canSwitchType && v.invoice_type !== undefined) ? normalizeInvoiceType(v.invoice_type) : beforeType
-    const editableAfterIssue = ['bill_to_email','bill_to_phone','bill_to_abn','bill_to_address','notes','terms','due_date','payment_method','payment_method_note']
-    if (status !== 'draft') {
-      for (const k of Object.keys(v)) {
-        if (k === 'line_items') return res.status(400).json({ message: 'issued_invoice_cannot_edit_line_items' })
-        if (!editableAfterIssue.includes(k)) return res.status(400).json({ message: `issued_invoice_cannot_edit_${k}` })
+    const updated = await pgRunInTransaction(async (client) => {
+      const rs = await client.query('SELECT * FROM invoices WHERE id=$1 FOR UPDATE', [id])
+      const before = rs?.rows?.[0]
+      if (!before) return null
+
+      const canSwitchType = await roleHasPermAsync(roleName, 'invoice.type.switch')
+      const beforeType = normalizeInvoiceType(before.invoice_type)
+      const nextType = (canSwitchType && v.invoice_type !== undefined) ? normalizeInvoiceType(v.invoice_type) : beforeType
+
+      const nextCompanyId = v.company_id !== undefined ? String(v.company_id || '').trim() : String(before.company_id || '').trim()
+      const nextCurrency = v.currency !== undefined ? String(v.currency || 'AUD').trim() : String(before.currency || 'AUD').trim()
+
+      const nextIssueDate = v.issue_date !== undefined ? toDateOnly(v.issue_date) : toDateOnly(before.issue_date)
+      const nextDueDate = v.due_date !== undefined ? toDateOnly(v.due_date) : toDateOnly(before.due_date)
+      const nextValidUntilInput = v.valid_until !== undefined ? toDateOnly(v.valid_until) : toDateOnly(before.valid_until)
+      const baseDate = nextIssueDate || new Date().toISOString().slice(0, 10)
+      const nextValidUntil = nextType === 'quote' ? (nextValidUntilInput || addDays(baseDate, 30)) : nextValidUntilInput
+
+      const nextPaidAtDateOnly = v.paid_at !== undefined ? toDateOnly(v.paid_at) : toDateOnly(before.paid_at)
+      const nextPaidAt = nextPaidAtDateOnly ? `${nextPaidAtDateOnly}T00:00:00Z` : null
+
+      const nextAmountPaid = v.amount_paid !== undefined ? round2(Number(v.amount_paid || 0)) : round2(Number(before.amount_paid || 0))
+
+      const toNullIfBlank = (x: any) => {
+        if (x === undefined) return undefined
+        const s = String(x || '').trim()
+        return s ? s : null
       }
-    }
-    const issueDate = status === 'draft' ? toDateOnly(v.issue_date) : null
-    const validUntilInput = status === 'draft' ? toDateOnly(v.valid_until) : null
-    const baseDate = issueDate || toDateOnly(before.issue_date) || new Date().toISOString().slice(0, 10)
-    const validUntil = nextType === 'quote' ? (validUntilInput || addDays(baseDate, 30)) : validUntilInput
-    const paidAt = status === 'draft' ? toDateOnly(v.paid_at) : null
-    let updated = await pgUpdate('invoices', id, {
-      invoice_type: status === 'draft' ? nextType : undefined,
-      currency: v.currency,
-      customer_id: status === 'draft' ? v.customer_id : undefined,
-      bill_to_name: status === 'draft' ? v.bill_to_name : undefined,
-      bill_to_email: v.bill_to_email,
-      bill_to_phone: v.bill_to_phone,
-      bill_to_abn: v.bill_to_abn,
-      bill_to_address: v.bill_to_address,
-      notes: v.notes,
-      terms: v.terms,
-      payment_method: v.payment_method,
-      payment_method_note: v.payment_method_note,
-      issue_date: status === 'draft' ? issueDate : undefined,
-      due_date: toDateOnly(v.due_date),
-      valid_until: status === 'draft' ? validUntil : undefined,
-      paid_at: status === 'draft' ? (paidAt ? `${paidAt}T00:00:00Z` : undefined) : undefined,
-      amount_paid: (status === 'draft' && v.amount_paid !== undefined) ? Number(v.amount_paid || 0) : undefined,
-      updated_by: actor,
-      updated_at: nowIso(),
-    } as any)
-    if (Array.isArray(v.line_items)) {
-      await pgPool!.query('DELETE FROM invoice_line_items WHERE invoice_id=$1', [id])
-      const lines = v.line_items.map((x, idx) => {
-        const gstType: GstType = (nextType === 'invoice' ? (x.gst_type as GstType) : 'GST_FREE')
-        const computed = computeLine({ quantity: x.quantity, unit_price: x.unit_price, gst_type: gstType })
-        return {
-          id: uuid(),
-          invoice_id: id,
-          description: x.description,
-          quantity: x.quantity,
-          unit_price: x.unit_price,
-          gst_type: gstType,
-          tax_amount: computed.tax_amount,
-          line_subtotal: computed.line_subtotal,
-          line_total: computed.line_total,
-          sort_order: x.sort_order ?? idx,
+
+      let nextLines: any[] = []
+      if (Array.isArray(v.line_items)) {
+        nextLines = v.line_items.map((x, idx) => {
+          const gstType: GstType = (nextType === 'invoice' ? (x.gst_type as GstType) : 'GST_FREE')
+          const computed = computeLine({ quantity: x.quantity, unit_price: x.unit_price, gst_type: gstType })
+          return {
+            id: uuid(),
+            invoice_id: id,
+            description: x.description,
+            quantity: x.quantity,
+            unit_price: x.unit_price,
+            gst_type: gstType,
+            tax_amount: computed.tax_amount,
+            line_subtotal: computed.line_subtotal,
+            line_total: computed.line_total,
+            sort_order: x.sort_order ?? idx,
+          }
+        })
+        await client.query('DELETE FROM invoice_line_items WHERE invoice_id=$1', [id])
+        for (const li of nextLines) await pgInsert('invoice_line_items', li as any, client)
+      } else {
+        const rsLines = await client.query('SELECT * FROM invoice_line_items WHERE invoice_id=$1 ORDER BY sort_order ASC', [id])
+        const existing = rsLines?.rows || []
+        nextLines = existing.map((x: any, idx: number) => {
+          const gstType: GstType = (nextType === 'invoice' ? (x.gst_type as GstType) : 'GST_FREE')
+          const computed = computeLine({ quantity: x.quantity, unit_price: x.unit_price, gst_type: gstType })
+          return {
+            id: String(x.id || uuid()),
+            invoice_id: id,
+            description: String(x.description || ''),
+            quantity: Number(x.quantity || 0),
+            unit_price: Number(x.unit_price || 0),
+            gst_type: gstType,
+            tax_amount: computed.tax_amount,
+            line_subtotal: computed.line_subtotal,
+            line_total: computed.line_total,
+            sort_order: Number(x.sort_order ?? idx),
+          }
+        })
+        if (nextType !== beforeType) {
+          await client.query('DELETE FROM invoice_line_items WHERE invoice_id=$1', [id])
+          for (const li of nextLines) {
+            await pgInsert('invoice_line_items', { ...li, id: uuid() } as any, client)
+          }
+          nextLines = (await client.query('SELECT * FROM invoice_line_items WHERE invoice_id=$1 ORDER BY sort_order ASC', [id]))?.rows || nextLines
         }
+      }
+
+      const totals = computeTotals(nextLines as any, nextAmountPaid)
+      const bizKey = computeBizUniqueKey({
+        company_id: nextCompanyId,
+        invoice_type: nextType,
+        issue_date: nextIssueDate,
+        currency: nextCurrency,
+        total: totals.total,
+        bill_to_name: v.bill_to_name !== undefined ? v.bill_to_name : before.bill_to_name,
+        bill_to_email: v.bill_to_email !== undefined ? v.bill_to_email : before.bill_to_email,
+        primary_source_type: before.primary_source_type,
+        primary_source_id: before.primary_source_id,
+        line_items: nextLines,
       })
-      for (const li of lines) await pgInsert('invoice_line_items', li as any)
-      const totals = computeTotals(lines as any, Number(updated?.amount_paid || 0))
-      updated = await pgUpdate('invoices', id, { ...totals, updated_by: actor, updated_at: nowIso() } as any)
-    } else if (status === 'draft' && v.amount_paid !== undefined) {
-      const total = round2(Number(updated?.total || 0))
-      const paid = round2(Number(updated?.amount_paid || 0))
-      const due = round2(total - paid)
-      updated = await pgUpdate('invoices', id, { amount_due: due, updated_by: actor, updated_at: nowIso() } as any)
-    }
-    addAudit('Invoice', id, 'update', before, updated, actor, { ip: req.ip, user_agent: req.headers['user-agent'] })
+      const dup = await client.query('SELECT id FROM invoices WHERE biz_unique_key=$1 AND id<>$2 LIMIT 1', [bizKey, id])
+      if (dup?.rowCount) throw new Error('duplicate_invoice')
+
+      const nextRow = await pgUpdate('invoices', id, {
+        company_id: nextCompanyId || undefined,
+        invoice_type: nextType,
+        currency: nextCurrency,
+        customer_id: v.customer_id !== undefined ? toNullIfBlank(v.customer_id) : before.customer_id,
+        bill_to_name: v.bill_to_name !== undefined ? toNullIfBlank(v.bill_to_name) : before.bill_to_name,
+        bill_to_email: v.bill_to_email !== undefined ? toNullIfBlank(v.bill_to_email) : before.bill_to_email,
+        bill_to_phone: v.bill_to_phone !== undefined ? toNullIfBlank(v.bill_to_phone) : before.bill_to_phone,
+        bill_to_abn: v.bill_to_abn !== undefined ? toNullIfBlank(v.bill_to_abn) : before.bill_to_abn,
+        bill_to_address: v.bill_to_address !== undefined ? toNullIfBlank(v.bill_to_address) : before.bill_to_address,
+        notes: v.notes !== undefined ? toNullIfBlank(v.notes) : before.notes,
+        terms: v.terms !== undefined ? toNullIfBlank(v.terms) : before.terms,
+        payment_method: v.payment_method !== undefined ? toNullIfBlank(v.payment_method) : before.payment_method,
+        payment_method_note: v.payment_method_note !== undefined ? toNullIfBlank(v.payment_method_note) : before.payment_method_note,
+        issue_date: nextIssueDate,
+        due_date: nextDueDate,
+        valid_until: nextValidUntil,
+        paid_at: nextPaidAt,
+        amount_paid: nextAmountPaid,
+        amount_due: totals.amount_due,
+        subtotal: totals.subtotal,
+        tax_total: totals.tax_total,
+        total: totals.total,
+        biz_unique_key: bizKey,
+        updated_by: actor,
+        updated_at: nowIso(),
+      } as any, client)
+      addAudit('Invoice', id, 'update', before, nextRow, actor, { ip: req.ip, user_agent: req.headers['user-agent'] })
+      return nextRow
+    })
+    if (!updated) return res.status(404).json({ message: 'not_found' })
     return res.json(updated)
   } catch (e: any) {
+    if (String(e?.message || '') === 'duplicate_invoice') return res.status(409).json({ message: 'duplicate_invoice' })
+    if (isPgUniqueViolation(e)) return res.status(409).json({ message: 'duplicate_invoice' })
     return res.status(400).json({ message: e?.message || 'update_failed' })
   }
 })
@@ -848,15 +953,31 @@ router.post('/:id/issue', requirePerm('invoice.issue'), async (req, res) => {
       const invoiceNo = inv.invoice_no ? String(inv.invoice_no) : await nextInvoiceNoByType(String(inv.company_id), invType, issueDate, client)
       const nextStatus = invType === 'receipt' ? 'paid' : 'issued'
       const shouldMarkPaid = invType === 'receipt'
+      const lines = (await client.query('SELECT * FROM invoice_line_items WHERE invoice_id=$1 ORDER BY sort_order ASC', [id]))?.rows || []
+      const bizKey = computeBizUniqueKey({
+        company_id: inv.company_id,
+        invoice_type: invType,
+        issue_date: issueDate,
+        currency: inv.currency,
+        total: inv.total,
+        bill_to_name: inv.bill_to_name,
+        bill_to_email: inv.bill_to_email,
+        primary_source_type: inv.primary_source_type,
+        primary_source_id: inv.primary_source_id,
+        line_items: lines,
+      })
+      const dup = await client.query('SELECT id FROM invoices WHERE biz_unique_key=$1 AND id<>$2 LIMIT 1', [bizKey, id])
+      if (dup?.rowCount) throw new Error('duplicate_invoice')
       const upd = await client.query(
         `UPDATE invoices
          SET status=$1, invoice_no=$2, issue_date=to_date($3,'YYYY-MM-DD'), issued_at=now(),
-             paid_at=CASE WHEN $4::boolean THEN COALESCE(paid_at, now()) ELSE paid_at END,
-             amount_paid=CASE WHEN $4::boolean THEN COALESCE(total,0) ELSE amount_paid END,
-             amount_due=CASE WHEN $4::boolean THEN 0 ELSE amount_due END,
-             updated_by=$5, updated_at=now()
-         WHERE id=$6 RETURNING *`,
-        [nextStatus, invoiceNo, issueDate, shouldMarkPaid, actor, id]
+             biz_unique_key=$4,
+             paid_at=CASE WHEN $5::boolean THEN COALESCE(paid_at, now()) ELSE paid_at END,
+             amount_paid=CASE WHEN $5::boolean THEN COALESCE(total,0) ELSE amount_paid END,
+             amount_due=CASE WHEN $5::boolean THEN 0 ELSE amount_due END,
+             updated_by=$6, updated_at=now()
+         WHERE id=$7 RETURNING *`,
+        [nextStatus, invoiceNo, issueDate, bizKey, shouldMarkPaid, actor, id]
       )
       return upd?.rows?.[0]
     })
@@ -865,10 +986,32 @@ router.post('/:id/issue', requirePerm('invoice.issue'), async (req, res) => {
   } catch (e: any) {
     const msg = String(e?.message || '')
     if (msg === 'not_found') return res.status(404).json({ message: 'not_found' })
+    if (msg === 'duplicate_invoice') return res.status(409).json({ message: 'duplicate_invoice' })
+    if (isPgUniqueViolation(e)) return res.status(409).json({ message: 'duplicate_invoice' })
     return res.status(400).json({ message: e?.message || 'issue_failed' })
   }
 })
  
+router.delete('/:id', requireAnyPerm(['invoice.draft.create','invoice.issue']), async (req, res) => {
+  try {
+    await ensureInvoiceTables()
+    const { id } = req.params
+    const user = (req as any).user || {}
+    const actor = user?.sub || user?.username || null
+    const beforeRows = await pgSelect('invoices', '*', { id })
+    const before = Array.isArray(beforeRows) ? beforeRows[0] : null
+    if (!before) return res.status(404).json({ message: 'not_found' })
+    const status = String(before.status || 'draft')
+    if (status !== 'draft') return res.status(400).json({ message: 'only_draft_can_delete' })
+    const deleted = await pgDelete('invoices', id)
+    addAudit('Invoice', id, 'delete', before, deleted, actor, { ip: req.ip, user_agent: req.headers['user-agent'] })
+    return res.json({ ok: true })
+  } catch (e: any) {
+    if (isPgUniqueViolation(e)) return res.status(409).json({ message: 'duplicate_invoice' })
+    return res.status(400).json({ message: e?.message || 'delete_failed' })
+  }
+})
+
 router.post('/:id/void', requirePerm('invoice.void'), async (req, res) => {
   try {
     await ensureInvoiceTables()
@@ -1169,7 +1312,10 @@ router.post('/draft-from-sources', requireAnyPerm(['invoice.draft.create','invoi
         })
         const totals = computeTotals(lines as any, 0)
         const primary = payload.sources[0]
-        const row = await pgInsert('invoices', { id: invoiceId, company_id: payload.company_id, currency: payload.currency, status: 'draft', primary_source_type: primary.source_type, primary_source_id: primary.source_id, created_by: actor, updated_by: actor, created_at: nowIso(), updated_at: nowIso(), ...totals } as any)
+        const bizKey = computeBizUniqueKey({ company_id: payload.company_id, invoice_type: 'invoice', currency: payload.currency, total: totals.total, primary_source_type: primary.source_type, primary_source_id: primary.source_id, line_items: lines })
+        const dup = await pgPool!.query('SELECT id FROM invoices WHERE biz_unique_key=$1 LIMIT 1', [bizKey])
+        if (dup?.rowCount) throw new Error('duplicate_invoice')
+        const row = await pgInsert('invoices', { id: invoiceId, company_id: payload.company_id, invoice_type: 'invoice', currency: payload.currency, status: 'draft', biz_unique_key: bizKey, primary_source_type: primary.source_type, primary_source_id: primary.source_id, created_by: actor, updated_by: actor, created_at: nowIso(), updated_at: nowIso(), ...totals } as any)
         for (const li of lines) await pgInsert('invoice_line_items', li as any)
         for (const s of payload.sources) {
           await pgPool!.query('INSERT INTO invoice_sources (invoice_id, source_type, source_id, label) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING', [invoiceId, s.source_type, s.source_id, null])
@@ -1197,7 +1343,10 @@ router.post('/draft-from-sources', requireAnyPerm(['invoice.draft.create','invoi
         return { id: uuid(), invoice_id: invoiceId, description: x.description, quantity: x.quantity, unit_price: x.unit_price, gst_type: x.gst_type, tax_amount: computed.tax_amount, line_subtotal: computed.line_subtotal, line_total: computed.line_total, sort_order: idx }
       })
       const totals = computeTotals(lines as any, 0)
-      const row = await pgInsert('invoices', { id: invoiceId, company_id: payload.company_id, currency: payload.currency, status: 'draft', bill_to_name: payload.bill_to_name, bill_to_email: payload.bill_to_email, bill_to_address: payload.bill_to_address, primary_source_type: s.source_type, primary_source_id: s.source_id, created_by: actor, updated_by: actor, created_at: nowIso(), updated_at: nowIso(), ...totals } as any)
+      const bizKey = computeBizUniqueKey({ company_id: payload.company_id, invoice_type: 'invoice', currency: payload.currency, total: totals.total, bill_to_name: payload.bill_to_name, bill_to_email: payload.bill_to_email, primary_source_type: s.source_type, primary_source_id: s.source_id, line_items: lines })
+      const dup = await pgPool!.query('SELECT id FROM invoices WHERE biz_unique_key=$1 LIMIT 1', [bizKey])
+      if (dup?.rowCount) throw new Error('duplicate_invoice')
+      const row = await pgInsert('invoices', { id: invoiceId, company_id: payload.company_id, invoice_type: 'invoice', currency: payload.currency, status: 'draft', biz_unique_key: bizKey, bill_to_name: payload.bill_to_name, bill_to_email: payload.bill_to_email, bill_to_address: payload.bill_to_address, primary_source_type: s.source_type, primary_source_id: s.source_id, created_by: actor, updated_by: actor, created_at: nowIso(), updated_at: nowIso(), ...totals } as any)
       for (const li of lines) await pgInsert('invoice_line_items', li as any)
       await pgPool!.query('INSERT INTO invoice_sources (invoice_id, source_type, source_id, label) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING', [invoiceId, s.source_type, s.source_id, d.label || null])
       addAudit('Invoice', invoiceId, 'create', null, { ...row, line_items: lines, sources: [s] }, actor, { ip: req.ip, user_agent: req.headers['user-agent'] })
@@ -1205,6 +1354,8 @@ router.post('/draft-from-sources', requireAnyPerm(['invoice.draft.create','invoi
     }
     return res.status(201).json({ mode: 'per_item', invoices: outputs })
   } catch (e: any) {
+    if (String(e?.message || '') === 'duplicate_invoice') return res.status(409).json({ message: 'duplicate_invoice' })
+    if (isPgUniqueViolation(e)) return res.status(409).json({ message: 'duplicate_invoice' })
     return res.status(400).json({ message: e?.message || 'draft_from_sources_failed' })
   }
 })

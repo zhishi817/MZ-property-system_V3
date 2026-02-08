@@ -44,8 +44,18 @@
   function renderItemDescHtml(raw) {
     var d = splitItemDesc(raw)
     var html = '<div class="li-title">' + escapeHtml(d.title || '-') + '</div>'
-    if (d.content) html += '<div class="li-content">' + escapeHtml(d.content) + '</div>'
+    if (d.content) {
+      var c = escapeHtml(d.content).replace(/\n/g, '<br/>')
+      html += '<div class="li-content">' + c + '</div>'
+    }
     return html
+  }
+
+  function renderLinesHtml(raw) {
+    var s0 = String(raw == null ? '' : raw).replace(/\r\n/g, '\n')
+    var lines = s0.split('\n').map(function (s) { return String(s || '').trim() }).filter(Boolean)
+    if (!lines.length) lines = ['-']
+    return lines.map(function (s) { return '<div class="inv-line">' + escapeHtml(s) + '</div>' }).join('')
   }
 
   function computeLine(item) {
@@ -157,7 +167,11 @@
     if (company.email) companyLines.push(String(company.email))
     if (company.abn) companyLines.push('ABN: ' + String(company.abn))
     var companyHtml = companyLines.length
-      ? companyLines.map(function (s) { return '<div class="company-line">' + escapeHtml(s) + '</div>' }).join('')
+      ? companyLines.map(function (s) {
+        var cls = 'company-line'
+        if (String(s).indexOf('@') >= 0) cls += ' is-email'
+        return '<div class="' + cls + '">' + escapeHtml(s) + '</div>'
+      }).join('')
       : '<div class="company-line">-</div>'
 
     var billTo = [
@@ -181,8 +195,8 @@
 
     var watermark = ''
     var st = String(inv.status || 'draft')
-    if (st === 'draft') watermark = '<div class="inv-watermark">DRAFT</div>'
-    if (st === 'paid') watermark = '<div class="inv-watermark">PAID</div>'
+    if (st === 'draft') watermark = '<div class="inv-watermark"><span>DRAFT</span></div>'
+    if (st === 'paid') watermark = '<div class="inv-watermark"><span>PAID</span></div>'
 
     var payInst = [
       (company.bank_account_name ? ('Account Name: ' + company.bank_account_name) : ''),
@@ -198,28 +212,34 @@
       '<div class="inv-sheet">' +
       '<div class="inv-page inv-page-wrap">' +
       watermark +
-      '<div class="inv-header">' +
-      '<div class="inv-logo">' +
+      '<table class="inv-header-table" cellspacing="0" cellpadding="0"><tr>' +
+      '<td class="inv-logo-cell">' +
+      '<div class="inv-logo-box">' +
       (company.logo_url ? ('<img alt="logo" crossorigin="anonymous" referrerpolicy="no-referrer" src="' + escapeHtml(company.logo_url) + '"/>') : '') +
       '</div>' +
-      '<div class="inv-title">' +
+      '</td>' +
+      '<td class="inv-info-cell">' +
+      '<div class="inv-doc-title">' +
       '<h1>' + escapeHtml(titleText) + '</h1>' +
       '<div style="margin-top:6px"><span class="' + badgeCls + '">' + escapeHtml(String(st).toUpperCase()) + '</span></div>' +
-      '<div class="company">' + companyHtml + '</div>' +
       '</div>' +
-      '</div>' +
+      '<div class="inv-company-td">' + companyHtml + '</div>' +
+      '</td>' +
+      '</tr></table>' +
       '<div class="inv-band">' +
-      '<div>' +
+      '<table class="inv-band-table" cellspacing="0" cellpadding="0"><tr>' +
+      '<td class="inv-band-left">' +
       '<h3>BILL TO</h3>' +
-      '<div class="text" style="white-space:pre-wrap; font-size:12px; color:rgba(17,24,39,0.75)">' + escapeHtml(billTo || '-') + '</div>' +
-      '</div>' +
-      '<div>' +
-      '<div class="meta">' +
-      '<div class="k">' + escapeHtml(noLabel) + '</div><div class="v">' + escapeHtml(inv.invoice_no || '-') + '</div>' +
-      '<div class="k">' + escapeHtml(dateLabel) + '</div><div class="v">' + escapeHtml((inv.issue_date || '').slice(0, 10) || '-') + '</div>' +
-      (invType === 'receipt' ? '' : ('<div class="k">' + escapeHtml(thirdLabel) + '</div><div class="v">' + escapeHtml(thirdValue) + '</div>')) +
-      '</div>' +
-      '</div>' +
+      '<div class="text inv-lines" style="font-size:12px; color:rgba(17,24,39,0.75); white-space:normal; word-wrap:break-word;">' + renderLinesHtml(billTo || '-') + '</div>' +
+      '</td>' +
+      '<td class="inv-band-right">' +
+      '<table class="inv-meta-table" cellspacing="0" cellpadding="0">' +
+      '<tr><td class="k">' + escapeHtml(noLabel) + '</td><td class="v">' + escapeHtml(inv.invoice_no || '-') + '</td></tr>' +
+      '<tr><td class="k">' + escapeHtml(dateLabel) + '</td><td class="v">' + escapeHtml((inv.issue_date || '').slice(0, 10) || '-') + '</td></tr>' +
+      (invType === 'receipt' ? '' : ('<tr><td class="k">' + escapeHtml(thirdLabel) + '</td><td class="v">' + escapeHtml(thirdValue) + '</td></tr>')) +
+      '</table>' +
+      '</td>' +
+      '</tr></table>' +
       '</div>' +
       '<table class="inv-table">' +
       '<colgroup>' +
@@ -233,9 +253,9 @@
       '</tr></thead>' +
       '<tbody>' + rows + '</tbody>' +
       '</table>' +
-      '<div class="inv-footer-grid">' +
-      '<div class="inv-placeholder"></div>' +
-      '<div class="inv-footer-right">' +
+      '<table class="inv-footer-table" cellspacing="0" cellpadding="0"><tr>' +
+      '<td class="inv-footer-left"></td>' +
+      '<td class="inv-footer-right">' +
       '<div class="inv-card inv-summary-card">' +
       '<table class="inv-summary">' +
       '<tr><td>Subtotal</td><td>$' + escapeHtml(formatMoney(totals.subtotal)) + '</td></tr>' +
@@ -243,14 +263,16 @@
       '<tr><td class="strong">Total</td><td class="strong">$' + escapeHtml(formatMoney(totals.total)) + '</td></tr>' +
       '</table>' +
       '<div class="inv-amount-due">' +
-      '<div class="label">' + escapeHtml(amountLabel) + '</div>' +
-      '<div class="value">$' + escapeHtml(formatMoney(amountValue)) + '<span class="cur">' + escapeHtml(inv.currency || 'AUD') + '</span><div class="inv-pay-status">' + escapeHtml(payStatus(inv, totals)) + '</div>' +
+      '<table class="inv-amount-table" cellspacing="0" cellpadding="0"><tr>' +
+      '<td class="label">' + escapeHtml(amountLabel) + '</td>' +
+      '<td class="value">$' + escapeHtml(formatMoney(amountValue)) + '<span class="cur">' + escapeHtml(inv.currency || 'AUD') + '</span></td>' +
+      '</tr></table>' +
+      '<div class="inv-pay-status">' + escapeHtml(payStatus(inv, totals)) + '</div>' +
       ((invType === 'invoice' && payMethodText(inv)) ? ('<div class="inv-pay-method">' + escapeHtml(payMethodText(inv)) + '</div>') : '') +
       '</div>' +
       '</div>' +
-      '</div>' +
-      '</div>' +
-      '</div>' +
+      '</td>' +
+      '</tr></table>' +
       (invType === 'invoice'
         ? ('<div class="inv-card inv-payment-bottom"><h3>Payment&nbsp;Instructions</h3><div class="text">' + escapeHtml(payInst || '-') + '</div></div>')
         : '') +
@@ -311,12 +333,14 @@
       '</div>' +
       '</div>' +
       '<div class="inv-band" style="background:rgba(0,82,217,0.05)">' +
-      '<div><h3>BILL TO</h3><div class="text" style="white-space:pre-wrap; font-size:12px; color:rgba(17,24,39,0.75)">' +
-      escapeHtml([inv.bill_to_name, inv.bill_to_address, inv.bill_to_phone, inv.bill_to_abn ? ('ABN: ' + inv.bill_to_abn) : null, inv.bill_to_email].filter(Boolean).join('\n') || '-') +
-      '</div></div>' +
-      '<div><h3>ISSUER</h3><div class="text" style="white-space:pre-wrap">' +
-      escapeHtml([company.abn ? ('ABN: ' + company.abn) : '', company.email, company.phone].filter(Boolean).join('\n')) +
-      '</div></div>' +
+      '<table class="inv-band-table" cellspacing="0" cellpadding="0"><tr>' +
+      '<td class="inv-band-left"><h3>BILL TO</h3><div class="text inv-lines" style="font-size:12px; color:rgba(17,24,39,0.75); white-space:normal; word-wrap:break-word;">' +
+      renderLinesHtml([inv.bill_to_name, inv.bill_to_address, inv.bill_to_phone, inv.bill_to_abn ? ('ABN: ' + inv.bill_to_abn) : null, inv.bill_to_email].filter(Boolean).join('\n') || '-') +
+      '</div></td>' +
+      '<td class="inv-band-right"><h3>ISSUER</h3><div class="text inv-lines" style="white-space:normal; word-wrap:break-word;">' +
+      renderLinesHtml([company.abn ? ('ABN: ' + company.abn) : '', company.email, company.phone].filter(Boolean).join('\n') || '-') +
+      '</div></td>' +
+      '</tr></table>' +
       '</div>' +
       '<table class="inv-table">' +
       '<colgroup>' +
