@@ -148,14 +148,9 @@ export default function InvoicePreviewPage({ params }: { params: { id: string } 
       const target = (doc.querySelector('.inv-sheet') as HTMLElement | null) || doc.body
       const exportCss = `
         html, body { background: #ffffff !important; }
-        .inv-preview-wrap { padding: 0 !important; justify-content: flex-start !important; }
-        .inv-sheet { border: none !important; border-radius: 0 !important; box-shadow: none !important; width: 210mm !important; height: 297mm !important; min-height: 0 !important; overflow: hidden !important; }
-        .inv-page { padding: 20mm !important; height: 297mm !important; min-height: 0 !important; box-sizing: border-box !important; }
-        .inv-title .company .company-line { white-space: normal !important; word-break: break-all !important; }
-        .inv-header { grid-template-columns: 1fr 1fr !important; gap: 16px !important; }
-        .inv-title { text-align: right !important; }
-        .inv-band { grid-template-columns: 1fr 1fr !important; }
-        .inv-footer-grid { grid-template-columns: 1fr 0.9fr !important; }
+        .inv-preview-wrap { padding: 0 !important; text-align: left !important; }
+        .inv-sheet { border: none !important; border-radius: 0 !important; box-shadow: none !important; width: 794px !important; height: 1123px !important; min-height: 0 !important; overflow: hidden !important; }
+        .inv-page { padding: 76px !important; height: 1123px !important; min-height: 0 !important; box-sizing: border-box !important; }
       `
       const canvas = await withTempStyle(doc, 'inv-export-style', exportCss, async () => {
         await new Promise(r => setTimeout(r, 60))

@@ -5,19 +5,7 @@ import type { GstType, InvoiceLineItemInput } from './invoiceEditorModel'
 import { normalizeLineItemsForSave } from './invoiceEditorModel'
 
 export function buildInvoicePayload(values: any, status: string, discountAmount: number) {
-  if (status !== 'draft') {
-    return {
-      bill_to_email: values.bill_to_email || undefined,
-      bill_to_phone: values.bill_to_phone || undefined,
-      bill_to_abn: values.bill_to_abn || undefined,
-      bill_to_address: values.bill_to_address || undefined,
-      notes: values.notes || undefined,
-      terms: values.terms || undefined,
-      due_date: values.due_date ? dayjs(values.due_date).format('YYYY-MM-DD') : undefined,
-      payment_method: values.payment_method || undefined,
-      payment_method_note: values.payment_method_note || undefined,
-    }
-  }
+  void status
 
   const t = String(values.invoice_type || 'invoice')
   const isQuote = t === 'quote'
