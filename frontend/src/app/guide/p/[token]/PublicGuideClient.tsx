@@ -306,6 +306,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
   const derivedWifi = findWifi(sections)
   const lang = String((content?.language || langHint) || '').trim().toLowerCase()
   const isEn = lang === 'en' || lang.startsWith('en-')
+  const langKnown = Boolean(lang)
   const pageTitle = isEn ? 'Check-in & Check-out Instructions' : '入住指南'
   const heroTitle = String(meta.title || '').trim() || (content?.property_code ? `${content.property_code} ${pageTitle}` : pageTitle)
   const heroAddr = String(meta.address || '').trim() || String(content?.property_address || '').trim()
@@ -364,11 +365,12 @@ export default function PublicGuideClient({ token }: { token: string }) {
           <div className={styles.badgeRow}>
             <div className={styles.badge}>{heroBadge}</div>
           </div>
-          <div className={styles.title}>{heroTitle}</div>
-          {heroAddr ? (
+          {langKnown ? <div className={styles.title}>{heroTitle}</div> : null}
+          {langKnown && heroAddr ? (
             <div className={styles.addr}>
               <EnvironmentOutlined />
               <span
+                className={styles.addrText}
                 onClick={() => {
                   copyText(heroAddr).then((ok) => (ok ? message.success(copiedText) : message.error(copyFailedText)))
                 }}
@@ -381,7 +383,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
                   onClick={() => {
                     copyText(heroAddr).then((ok) => (ok ? message.success(copiedText) : message.error(copyFailedText)))
                   }}
-                  style={{ cursor: 'pointer', opacity: 0.9, display: 'inline-flex', alignItems: 'center' }}
+                  className={styles.addrCopy}
                 >
                   <CopyOutlined />
                 </span>
