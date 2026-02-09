@@ -53,7 +53,7 @@ function findWifi(sections: GuideSection[]): { ssid?: string; password?: string 
   return {}
 }
 
-function mapTabs(sections: GuideSection[]) {
+function mapTabs(sections: GuideSection[], isEn: boolean) {
   const ordered: Array<{ key: string; label: string; icon: React.ReactNode; section: GuideSection }> = []
   for (let i = 0; i < sections.length; i++) {
     const s = sections[i]
@@ -64,12 +64,12 @@ function mapTabs(sections: GuideSection[]) {
     if (t.includes('守则') || t.includes('rules')) icon = <CheckCircleFilled />
     else if (t.includes('周边') || t.includes('around') || t.includes('附近')) icon = <CompassOutlined />
     else if (t.includes('退房') || t.includes('check-out') || t.includes('check out')) icon = <LogoutOutlined />
-    ordered.push({ key, label: s.title || '内容', icon, section: s })
+    ordered.push({ key, label: s.title || (isEn ? 'Content' : '内容'), icon, section: s })
   }
   return ordered
 }
 
-function renderSection(section: GuideSection, tabKey: string) {
+function renderSection(section: GuideSection, tabKey: string, isEn: boolean) {
   const blocks = Array.isArray(section.blocks) ? section.blocks : []
   const nodes: React.ReactNode[] = []
   for (let i = 0; i < blocks.length; i++) {
@@ -131,7 +131,7 @@ function renderSection(section: GuideSection, tabKey: string) {
         <div key={`steps-${i}`} id={anchorId} className={styles.anchor}>
           <div className={styles.sectionTitleRow}>
             <span style={{ color: '#ff4d6d' }}><InfoCircleOutlined /></span>
-            <div className={styles.sectionTitle}>{b.title || '分步指引'}</div>
+            <div className={styles.sectionTitle}>{b.title || (isEn ? 'Step-by-step' : '分步指引')}</div>
           </div>
           <div className={styles.timeline}>
             {steps.map((s, idx) => (
@@ -172,7 +172,7 @@ function renderSection(section: GuideSection, tabKey: string) {
       continue
     }
   }
-  if (!nodes.length) return <div className={styles.paragraph}>暂无内容</div>
+  if (!nodes.length) return <div className={styles.paragraph}>{isEn ? 'No content' : '暂无内容'}</div>
   return <div style={{ display: 'grid', gap: 12 }}>{nodes}</div>
 }
 
@@ -306,7 +306,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
   const derivedWifi = findWifi(sections)
   const lang = String((content?.language || langHint) || '').trim().toLowerCase()
   const isEn = lang === 'en' || lang.startsWith('en-')
-  const pageTitle = isEn ? 'Check IN&OUT Instructions' : '入住指南'
+  const pageTitle = isEn ? 'Check-in & Check-out Instructions' : '入住指南'
   const heroTitle = String(meta.title || '').trim() || (content?.property_code ? `${content.property_code} ${pageTitle}` : pageTitle)
   const heroAddr = String(meta.address || '').trim() || String(content?.property_address || '').trim()
   const heroBadge = String(meta.badge || '').trim() || 'PREMIUM STAY'
@@ -315,7 +315,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
   const wifiLabel = String(meta.wifi_ssid || '').trim() || String(derivedWifi.ssid || '').trim()
   const checkinTime = String(meta.checkin_time || '').trim()
   const checkoutTime = String(meta.checkout_time || '').trim()
-  const tabItems = mapTabs(sections)
+  const tabItems = mapTabs(sections, isEn)
   useEffect(() => {
     if (!tabItems.length) return
     if (tabItems.some((x) => x.key === activeTab)) return
@@ -349,6 +349,11 @@ export default function PublicGuideClient({ token }: { token: string }) {
   const wifiPwdKey = isEn ? 'Wi‑Fi Password' : 'Wi‑Fi 密码'
   const checkinLabel = isEn ? 'CHECK‑IN TIME' : '入住时间'
   const checkoutLabel = isEn ? 'CHECK‑OUT TIME' : '退房时间'
+  const copiedText = isEn ? 'Copied' : '已复制'
+  const copyFailedText = isEn ? 'Copy failed' : '复制失败'
+  const copyAddressText = isEn ? 'Copy address' : '复制地址'
+  const copyWifiPwdText = isEn ? 'Copy Wi‑Fi password' : '复制 Wi‑Fi 密码'
+  const copyWifiPwdOkText = isEn ? 'Wi‑Fi password copied' : '复制 Wi‑Fi 密码'
 
   return (
     <div className={styles.page}>
@@ -365,16 +370,16 @@ export default function PublicGuideClient({ token }: { token: string }) {
               <EnvironmentOutlined />
               <span
                 onClick={() => {
-                  copyText(heroAddr).then((ok) => (ok ? message.success('已复制') : message.error('复制失败')))
+                  copyText(heroAddr).then((ok) => (ok ? message.success(copiedText) : message.error(copyFailedText)))
                 }}
                 style={{ cursor: 'pointer' }}
               >
                 {heroAddr}
               </span>
-              <Tooltip title="复制地址">
+              <Tooltip title={copyAddressText}>
                 <span
                   onClick={() => {
-                    copyText(heroAddr).then((ok) => (ok ? message.success('已复制') : message.error('复制失败')))
+                    copyText(heroAddr).then((ok) => (ok ? message.success(copiedText) : message.error(copyFailedText)))
                   }}
                   style={{ cursor: 'pointer', opacity: 0.9, display: 'inline-flex', alignItems: 'center' }}
                 >
@@ -445,26 +450,26 @@ export default function PublicGuideClient({ token }: { token: string }) {
                           tabIndex={0}
                           onClick={() => {
                             if (!wifiPwd) return
-                            copyText(wifiPwd).then((ok) => (ok ? message.success('已复制') : message.error('复制失败')))
+                            copyText(wifiPwd).then((ok) => (ok ? message.success(copyWifiPwdOkText) : message.error(copyFailedText)))
                           }}
                           onKeyDown={(e) => {
                             if (!wifiPwd) return
                             if (e.key === 'Enter' || e.key === ' ') {
                               e.preventDefault()
-                              copyText(wifiPwd).then((ok) => (ok ? message.success('已复制') : message.error('复制失败')))
+                              copyText(wifiPwd).then((ok) => (ok ? message.success(copyWifiPwdOkText) : message.error(copyFailedText)))
                             }
                           }}
                         >
                           {wifiPwd || '-'}
                         </div>
-                        <Tooltip title="复制 Wi‑Fi 密码">
+                        <Tooltip title={copyWifiPwdText}>
                           <Button
                             size="small"
                             icon={<CopyOutlined />}
                             disabled={!wifiPwd}
                             onClick={() => {
                               if (!wifiPwd) return
-                              copyText(wifiPwd).then((ok) => (ok ? message.success('已复制') : message.error('复制失败')))
+                              copyText(wifiPwd).then((ok) => (ok ? message.success(copyWifiPwdOkText) : message.error(copyFailedText)))
                             }}
                           />
                         </Tooltip>
@@ -554,7 +559,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
                     <Card className={styles.sectionCard}>
                       <div id={`toc-${t.key}-top`} className={styles.anchor} />
                       {t.section?.title ? <div className={styles.chapterTitle}>{t.section.title}</div> : null}
-                      {renderSection(t.section, t.key)}
+                      {renderSection(t.section, t.key, isEn)}
                     </Card>
                   ),
                 }))}
