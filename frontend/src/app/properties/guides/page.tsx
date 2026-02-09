@@ -440,22 +440,32 @@ export default function Page() {
         onOk={() => setLinksOpen(false)}
         okText="关闭"
         cancelButtonProps={{ style: { display: 'none' } }}
-        width={isMobile ? '96vw' : 980}
+        width={isMobile ? '96vw' : '90vw'}
         style={{ maxWidth: 980, top: 24 }}
+        styles={{ body: { maxHeight: '74vh', overflow: 'auto' } }}
         title="外部访问链接"
       >
         {linksGuide ? (
           <div style={{ display: 'grid', gap: 12 }}>
             <Card size="small">
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
-                <Space wrap>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: isMobile ? '1fr' : '1fr auto',
+                  gap: 10,
+                  alignItems: 'center',
+                }}
+              >
+                <Space wrap style={{ minWidth: 0 }}>
                   <span>Guide：</span>
                   <Tag>{linksGuide.language}</Tag>
                   <Tag>{linksGuide.version}</Tag>
                   <span>过期时间：</span>
-                  <DatePicker showTime value={linkExpiresAt} onChange={setLinkExpiresAt as any} style={{ width: 220 }} />
+                  <DatePicker showTime value={linkExpiresAt} onChange={setLinkExpiresAt as any} style={{ width: 220, maxWidth: '100%' }} />
                 </Space>
-                <Button type="primary" onClick={createLink}>生成外链</Button>
+                <div style={{ display: 'flex', justifyContent: isMobile ? 'flex-start' : 'flex-end' }}>
+                  <Button type="primary" onClick={createLink}>生成外链</Button>
+                </div>
               </div>
               {newToken ? (
                 <div style={{ marginTop: 10 }}>
@@ -485,8 +495,8 @@ export default function Page() {
                     if (!token) return <span style={{ color: '#999' }}>-（旧链接无法回显，重新生成即可）</span>
                     const url = `${window.location.origin}/public/guide/p/${token}`
                     return (
-                      <Space>
-                        <Input value={url} readOnly style={{ width: '100%' }} />
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', width: '100%', minWidth: 0 }}>
+                        <Input value={url} readOnly style={{ flex: '1 1 auto', minWidth: 0 }} />
                         <Button
                           size="small"
                           onClick={() => {
@@ -496,7 +506,7 @@ export default function Page() {
                         >
                           复制
                         </Button>
-                      </Space>
+                      </div>
                     )
                   },
                 },
