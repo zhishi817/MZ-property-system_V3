@@ -216,12 +216,13 @@ async function copyText(text: string): Promise<boolean> {
 export default function PublicGuideClient({ token }: { token: string }) {
   const { message } = App.useApp()
   const [loading, setLoading] = useState(true)
-  const [status, setStatus] = useState<{ active: boolean; expires_at?: string | null; revoked?: boolean } | null>(null)
+  const [status, setStatus] = useState<{ active: boolean; expires_at?: string | null; revoked?: boolean; language?: string | null; version?: string | null } | null>(null)
   const [mode, setMode] = useState<'password' | 'content' | 'invalid'>('password')
   const [password, setPassword] = useState('')
   const [guideSess, setGuideSess] = useState<string>('')
   const [content, setContent] = useState<{ content_json: GuideContent; property_code?: string | null; property_address?: string | null; language?: string | null } | null>(null)
   const [activeTab, setActiveTab] = useState<string>('checkin')
+  const [langHint, setLangHint] = useState<string>('')
 
   async function fetchStatus() {
     const res = await fetch(`${API_BASE}/public/guide/p/${encodeURIComponent(token)}/status`, { cache: 'no-store', credentials: 'include' })
@@ -249,10 +250,12 @@ export default function PublicGuideClient({ token }: { token: string }) {
       const st = await fetchStatus()
       if (!st) { setMode('invalid'); setStatus(null); return }
       setStatus(st)
+      if (st?.language) setLangHint(String(st.language))
       if (!st.active) { setMode('invalid'); return }
       const c = await fetchContent()
       if (c.needPassword) { setMode('password'); return }
       setContent(c.data)
+      if (c?.data?.language) setLangHint(String(c.data.language))
       setMode('content')
     } catch {
       setMode('invalid')
@@ -266,7 +269,8 @@ export default function PublicGuideClient({ token }: { token: string }) {
   }, [token])
 
   async function submitPassword() {
-    if (!/^\d{4,6}$/.test(password)) { message.error('请输入 4–6 位数字'); return }
+    const isEnNow = String(langHint || '').trim().toLowerCase().startsWith('en')
+    if (!/^\d{4,6}$/.test(password)) { message.error(isEnNow ? 'Please enter 4–6 digits' : '请输入 4–6 位数字'); return }
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/public/guide/p/${encodeURIComponent(token)}/login`, {
@@ -285,11 +289,13 @@ export default function PublicGuideClient({ token }: { token: string }) {
       const c = await fetchContent(sid)
       if (c.needPassword) throw new Error('password_required')
       setContent(c.data)
+      if (c?.data?.language) setLangHint(String(c.data.language))
       setMode('content')
     } catch (e: any) {
       const msg = String(e?.message || '')
-      if (/invalid password/i.test(msg)) message.error('密码错误')
-      else message.error('验证失败或链接已失效')
+      const isEnNow2 = String(langHint || '').trim().toLowerCase().startsWith('en')
+      if (/invalid password/i.test(msg)) message.error(isEnNow2 ? 'Incorrect password' : '密码错误')
+      else message.error(isEnNow2 ? 'Verification failed or link expired' : '验证失败或链接已失效')
     } finally {
       setLoading(false)
     }
@@ -298,7 +304,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
   const sections = Array.isArray(content?.content_json?.sections) ? content!.content_json!.sections! : []
   const meta: GuideMeta = (content?.content_json as any)?.meta || {}
   const derivedWifi = findWifi(sections)
-  const lang = String(content?.language || '').trim().toLowerCase()
+  const lang = String((content?.language || langHint) || '').trim().toLowerCase()
   const isEn = lang === 'en' || lang.startsWith('en-')
   const pageTitle = isEn ? 'Check IN&OUT Instructions' : '入住指南'
   const heroTitle = String(meta.title || '').trim() || (content?.property_code ? `${content.property_code} ${pageTitle}` : pageTitle)
@@ -385,7 +391,11 @@ export default function PublicGuideClient({ token }: { token: string }) {
 
         {!loading && mode === 'invalid' ? (
           <div style={{ paddingTop: 18 }}>
-            <Alert type="error" message="链接已失效或不存在" description={status?.expires_at ? `expires_at: ${status.expires_at}` : undefined} />
+            <Alert
+              type="error"
+              message={isEn ? 'Link expired or not found' : '链接已失效或不存在'}
+              description={status?.expires_at ? `expires_at: ${status.expires_at}` : undefined}
+            />
           </div>
         ) : null}
 
@@ -394,19 +404,21 @@ export default function PublicGuideClient({ token }: { token: string }) {
             <Card className={styles.sectionCard}>
               <div className={styles.sectionTitleRow}>
                 <span style={{ color: '#ff4d6d' }}><InfoCircleOutlined /></span>
-                <div className={styles.sectionTitle}>验证密码</div>
+                <div className={styles.sectionTitle}>{isEn ? 'Password' : '验证密码'}</div>
               </div>
-              <div className={styles.paragraph} style={{ marginBottom: 10 }}>请输入外链验证密码（4–6 位数字）</div>
+              <div className={styles.paragraph} style={{ marginBottom: 10 }}>
+                {isEn ? 'Enter the access password (4–6 digits)' : '请输入外链验证密码（4–6 位数字）'}
+              </div>
               <Input
                 value={password}
                 onChange={(e) => setPassword(e.target.value.replace(/[^\d]/g, '').slice(0, 6))}
                 inputMode="numeric"
-                placeholder="密码"
+                placeholder={isEn ? 'Password' : '密码'}
                 style={{ maxWidth: 260 }}
                 onPressEnter={submitPassword}
               />
               <div style={{ marginTop: 12 }}>
-                <Button type="primary" onClick={submitPassword} disabled={loading}>验证并查看</Button>
+                <Button type="primary" onClick={submitPassword} disabled={loading}>{isEn ? 'Verify' : '验证并查看'}</Button>
               </div>
             </Card>
           </div>

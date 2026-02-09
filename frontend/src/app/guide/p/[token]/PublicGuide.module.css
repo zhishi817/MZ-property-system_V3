@@ -54,19 +54,27 @@
 }
 
 .title {
-  font-size: 26px;
-  line-height: 1.18;
+  font-size: clamp(18px, 5.8vw, 28px);
+  line-height: 1.12;
   font-weight: 900;
   margin: 0 0 8px;
+  word-break: break-word;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
 .addr {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
   color: rgba(255,255,255,0.86);
   font-size: 14px;
   font-weight: 600;
+  line-height: 1.25;
+  word-break: break-word;
 }
 
 .container {
@@ -168,10 +176,16 @@
 }
 
 .tripleCards {
-  margin-top: -42px;
+  margin-top: -22px;
   display: grid;
   grid-template-columns: 1fr;
   gap: 14px;
+}
+
+@media (min-width: 520px) {
+  .tripleCards {
+    margin-top: -42px;
+  }
 }
 
 @media (min-width: 860px) {
@@ -180,6 +194,17 @@
     grid-template-rows: 1fr 1fr;
     align-items: stretch;
     gap: 18px;
+  }
+}
+
+@media (max-width: 420px) {
+  .hero {
+    height: 240px;
+  }
+  .heroContent {
+    left: 14px;
+    right: 14px;
+    bottom: 14px;
   }
 }
 
