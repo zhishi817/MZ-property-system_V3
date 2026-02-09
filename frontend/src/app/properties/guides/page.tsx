@@ -440,25 +440,38 @@ export default function Page() {
         onOk={() => setLinksOpen(false)}
         okText="关闭"
         cancelButtonProps={{ style: { display: 'none' } }}
-        width={920}
+        width={isMobile ? '96vw' : '90vw'}
+        style={{ maxWidth: 980, top: 24 }}
+        styles={{ body: { maxHeight: '74vh', overflow: 'auto' } }}
         title="外部访问链接"
       >
         {linksGuide ? (
           <div style={{ display: 'grid', gap: 12 }}>
             <Card size="small">
-              <Space wrap>
-                <span>Guide：</span>
-                <Tag>{linksGuide.language}</Tag>
-                <Tag>{linksGuide.version}</Tag>
-                <span>过期时间：</span>
-                <DatePicker showTime value={linkExpiresAt} onChange={setLinkExpiresAt as any} />
-                <Button type="primary" onClick={createLink}>生成外链</Button>
-              </Space>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: isMobile ? '1fr' : '1fr auto',
+                  gap: 10,
+                  alignItems: 'center',
+                }}
+              >
+                <Space wrap style={{ minWidth: 0 }}>
+                  <span>Guide：</span>
+                  <Tag>{linksGuide.language}</Tag>
+                  <Tag>{linksGuide.version}</Tag>
+                  <span>过期时间：</span>
+                  <DatePicker showTime value={linkExpiresAt} onChange={setLinkExpiresAt as any} style={{ width: 220, maxWidth: '100%' }} />
+                </Space>
+                <div style={{ display: 'flex', justifyContent: isMobile ? 'flex-start' : 'flex-end' }}>
+                  <Button type="primary" onClick={createLink}>生成外链</Button>
+                </div>
+              </div>
               {newToken ? (
                 <div style={{ marginTop: 10 }}>
                   <div style={{ fontWeight: 700, marginBottom: 6 }}>新链接</div>
-                  <Space wrap>
-                    <Input value={`${window.location.origin}/public/guide/p/${newToken}`} readOnly style={{ width: 620 }} />
+                  <Space wrap style={{ width: '100%' }}>
+                    <Input value={`${window.location.origin}/public/guide/p/${newToken}`} readOnly style={{ width: 620, maxWidth: '100%', flex: '1 1 520px', minWidth: 280 }} />
                     <Button onClick={() => { navigator.clipboard?.writeText?.(`${window.location.origin}/public/guide/p/${newToken}`); message.success('已复制') }}>复制链接</Button>
                   </Space>
                 </div>
@@ -469,17 +482,21 @@ export default function Page() {
               rowKey={(r) => r.token_hash}
               dataSource={links}
               pagination={false}
+              size="small"
+              tableLayout="fixed"
+              scroll={{ x: 980 }}
               columns={[
-                { title: 'token_hash', dataIndex: 'token_hash', render: (v: any) => <span>{String(v || '').slice(0, 10)}…</span> },
+                { title: 'token_hash', dataIndex: 'token_hash', width: 120, render: (v: any) => <span>{String(v || '').slice(0, 10)}…</span> },
                 {
                   title: '链接',
+                  width: 520,
                   render: (_: any, r: LinkRow) => {
                     const token = String(r.token || '')
                     if (!token) return <span style={{ color: '#999' }}>-（旧链接无法回显，重新生成即可）</span>
                     const url = `${window.location.origin}/public/guide/p/${token}`
                     return (
-                      <Space>
-                        <Input value={url} readOnly style={{ width: 380, maxWidth: '100%' }} />
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', width: '100%', minWidth: 0 }}>
+                        <Input value={url} readOnly style={{ flex: '1 1 auto', minWidth: 0 }} />
                         <Button
                           size="small"
                           onClick={() => {
@@ -489,14 +506,15 @@ export default function Page() {
                         >
                           复制
                         </Button>
-                      </Space>
+                      </div>
                     )
                   },
                 },
-                { title: 'expires_at', dataIndex: 'expires_at' },
-                { title: 'revoked_at', dataIndex: 'revoked_at', render: (v: any) => v || '-' },
+                { title: 'expires_at', dataIndex: 'expires_at', width: 160 },
+                { title: 'revoked_at', dataIndex: 'revoked_at', width: 140, render: (v: any) => v || '-' },
                 {
                   title: '状态',
+                  width: 90,
                   render: (_: any, r: LinkRow) => {
                     const revoked = !!r.revoked_at
                     const expired = r.expires_at ? dayjs(r.expires_at).isBefore(dayjs()) : true
@@ -507,6 +525,7 @@ export default function Page() {
                 },
                 {
                   title: '操作',
+                  width: 110,
                   render: (_: any, r: LinkRow) => (
                     <Space>
                       <Button danger disabled={!!r.revoked_at} onClick={() => revokeLink(r.token_hash)}>一键失效</Button>

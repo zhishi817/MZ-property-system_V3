@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { App, Button, Card, Input, Space, Typography, Upload } from 'antd'
 import type { UploadProps } from 'antd'
-import { ClockCircleOutlined, CopyOutlined } from '@ant-design/icons'
+import { ClockCircleOutlined, CopyOutlined, DeleteOutlined } from '@ant-design/icons'
 import { API_BASE, authHeaders } from '../lib/api'
 import { moveBlockToIndex as moveBlockToIndexAcrossSections, moveSectionToIndex as moveSectionToIndexAcross, arrayInsertMove as arrayInsertMovePure } from '../lib/guideDrag'
 
@@ -104,6 +104,7 @@ export default function PropertyGuideEditor({
 }) {
   const { message } = App.useApp()
   const isEn = String(language || '').trim().toLowerCase().startsWith('en')
+  const [hoverActionId, setHoverActionId] = useState<string>('')
   const [content, setContent] = useState<GuideContent>(() => normalizeContent(value))
   const [dragging, setDragging] = useState<{ kind: 'section'; sectionId: string } | { kind: 'block'; sectionId: string; blockId: string } | null>(null)
   const [dragOver, setDragOver] = useState<{ kind: 'section'; index: number } | { kind: 'block'; sectionId: string; index: number } | null>(null)
@@ -642,7 +643,15 @@ export default function PropertyGuideEditor({
                       <Input value={sec.title} onChange={(e) => updateSectionTitle(si, e.target.value)} style={{ width: 360, fontSize: 18, fontWeight: 900 }} placeholder="章节标题" />
                     </Space>
                   }
-                  extra={<Button danger onClick={() => removeSection(si)}>删除章节</Button>}
+                  extra={
+                    <Button
+                      danger
+                      type="text"
+                      icon={<DeleteOutlined />}
+                      aria-label="删除章节"
+                      onClick={() => removeSection(si)}
+                    />
+                  }
                   style={{
                     marginBottom: 12,
                     touchAction: 'none',
@@ -716,7 +725,16 @@ export default function PropertyGuideEditor({
                         <span>{b.type}</span>
                       </Space>
                     }
-                    extra={<Button danger size="small" onClick={() => removeBlock(si, bi)}>删除</Button>}
+                    extra={
+                      <Button
+                        danger
+                        size="small"
+                        type="text"
+                        icon={<DeleteOutlined />}
+                        aria-label="删除模块"
+                        onClick={() => removeBlock(si, bi)}
+                      />
+                    }
                     style={{
                       marginBottom: 10,
                       touchAction: 'none',
@@ -775,13 +793,15 @@ export default function PropertyGuideEditor({
                             />
                             <Button
                               danger
+                              type="text"
+                              icon={<DeleteOutlined />}
+                              aria-label="删除条目"
                               onClick={() => {
                                 const items = [...(b.items || [])]
                                 items.splice(i, 1)
                                 updateBlock(si, bi, { items } as any)
                               }}
                             >
-                              删除
                             </Button>
                           </Space>
                         ))}
@@ -793,9 +813,6 @@ export default function PropertyGuideEditor({
                   {b.type === 'steps' ? (
                     <div style={{ display: 'grid', gap: 8 }}>
                       <Input value={b.title} onChange={(e) => updateBlock(si, bi, { title: e.target.value } as any)} placeholder="步骤模块标题（可选）" />
-                      <Space>
-                        <Button onClick={() => updateBlock(si, bi, { steps: [...(b.steps || []), { title: '', text: '', url: '', caption: '' }] } as any)}>新增步骤</Button>
-                      </Space>
                       {(b.steps || []).map((st, i) => (
                         <Card
                           key={i}
@@ -805,13 +822,15 @@ export default function PropertyGuideEditor({
                             <Button
                               danger
                               size="small"
+                              type="text"
+                              icon={<DeleteOutlined />}
+                              aria-label="删除步骤"
                               onClick={() => {
                                 const steps = [...(b.steps || [])]
                                 steps.splice(i, 1)
                                 updateBlock(si, bi, { steps } as any)
                               }}
                             >
-                              删除
                             </Button>
                           }
                         >
@@ -849,6 +868,43 @@ export default function PropertyGuideEditor({
                           </div>
                         </Card>
                       ))}
+                      {(() => {
+                        const actionId = `steps-add-${String(sec.id)}-${String((b as any).id)}`
+                        const hover = hoverActionId === actionId
+                        return (
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => updateBlock(si, bi, { steps: [...(b.steps || []), { title: '', text: '', url: '', caption: '' }] } as any)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') updateBlock(si, bi, { steps: [...(b.steps || []), { title: '', text: '', url: '', caption: '' }] } as any)
+                            }}
+                            onPointerEnter={() => setHoverActionId(actionId)}
+                            onPointerLeave={() => setHoverActionId('')}
+                            onMouseEnter={() => setHoverActionId(actionId)}
+                            onMouseLeave={() => setHoverActionId('')}
+                            style={{
+                              width: '100%',
+                              borderRadius: 12,
+                              border: `1px solid ${hover ? 'rgba(22, 119, 255, 0.55)' : '#d9d9d9'}`,
+                              background: hover ? 'rgba(22, 119, 255, 0.06)' : '#fafafa',
+                              boxShadow: hover ? '0 10px 26px rgba(22, 119, 255, 0.18)' : 'none',
+                              color: 'rgba(0, 0, 0, 0.88)',
+                              fontWeight: 900,
+                              fontSize: 14,
+                              letterSpacing: 0.2,
+                              padding: '10px 14px',
+                              textAlign: 'center',
+                              cursor: 'pointer',
+                              userSelect: 'none',
+                              transition: 'background 140ms ease, box-shadow 140ms ease, border-color 140ms ease',
+                              marginTop: 2,
+                            }}
+                          >
+                            新增步骤
+                          </div>
+                        )
+                      })()}
                     </div>
                   ) : null}
                   </Card>
