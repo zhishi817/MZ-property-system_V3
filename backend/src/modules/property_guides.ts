@@ -16,6 +16,34 @@ function sha256Hex(input: string) {
   return crypto.createHash('sha256').update(input).digest('hex')
 }
 
+function linkTokenKey() {
+  const secret = String(process.env.JWT_SECRET || 'dev-secret')
+  return crypto.createHash('sha256').update(secret).digest()
+}
+
+function encryptLinkToken(token: string) {
+  const key = linkTokenKey()
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
+  const ciphertext = Buffer.concat([cipher.update(Buffer.from(token, 'utf8')), cipher.final()])
+  const tag = cipher.getAuthTag()
+  return `${iv.toString('base64')}:${tag.toString('base64')}:${ciphertext.toString('base64')}`
+}
+
+function decryptLinkToken(tokenEnc: string) {
+  const parts = String(tokenEnc || '').split(':')
+  if (parts.length !== 3) return ''
+  const [ivB64, tagB64, ctB64] = parts
+  const iv = Buffer.from(ivB64, 'base64')
+  const tag = Buffer.from(tagB64, 'base64')
+  const ciphertext = Buffer.from(ctB64, 'base64')
+  const key = linkTokenKey()
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv)
+  decipher.setAuthTag(tag)
+  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+  return plaintext.toString('utf8')
+}
+
 function randomToken(bytes = 24) {
   const b64 = crypto.randomBytes(bytes).toString('base64')
   return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
@@ -63,11 +91,13 @@ async function ensurePropertyGuidePublicLinksTable() {
   if (!pgPool) return
   await pgPool.query(`CREATE TABLE IF NOT EXISTS property_guide_public_links (
     token_hash text PRIMARY KEY,
+    token_enc text,
     guide_id text NOT NULL REFERENCES property_guides(id) ON DELETE CASCADE,
     created_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz NOT NULL,
     revoked_at timestamptz
   );`)
+  await pgPool.query('ALTER TABLE property_guide_public_links ADD COLUMN IF NOT EXISTS token_enc text')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_links_guide_id ON property_guide_public_links(guide_id);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_links_expires_at ON property_guide_public_links(expires_at);')
 }
@@ -393,9 +423,10 @@ router.post('/:id/public-link', requireAnyPerm(['property_guides.write', 'rbac.m
     })()
     const token = randomToken(24)
     const tokenHash = sha256Hex(token)
+    const tokenEnc = encryptLinkToken(token)
     await pgPool.query(
-      'INSERT INTO property_guide_public_links(token_hash, guide_id, expires_at) VALUES($1,$2,$3)',
-      [tokenHash, id, expiresAt]
+      'INSERT INTO property_guide_public_links(token_hash, token_enc, guide_id, expires_at) VALUES($1,$2,$3,$4)',
+      [tokenHash, tokenEnc, id, expiresAt]
     )
     return res.json({ token, expires_at: expiresAt })
   } catch (e: any) {
@@ -409,8 +440,22 @@ router.get('/:id/public-links', requireAnyPerm(['property_guides.view', 'rbac.ma
   try {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
     await ensurePropertyGuidePublicLinksTable()
-    const rows = await pgPool.query('SELECT token_hash, guide_id, created_at, expires_at, revoked_at FROM property_guide_public_links WHERE guide_id=$1 ORDER BY created_at DESC', [id])
-    return res.json(rows?.rows || [])
+    const rows = await pgPool.query('SELECT token_hash, token_enc, guide_id, created_at, expires_at, revoked_at FROM property_guide_public_links WHERE guide_id=$1 ORDER BY created_at DESC', [id])
+    const out = (rows?.rows || []).map((r: any) => {
+      let token = ''
+      try {
+        token = r?.token_enc ? decryptLinkToken(String(r.token_enc)) : ''
+      } catch {}
+      return {
+        token_hash: r.token_hash,
+        guide_id: r.guide_id,
+        created_at: r.created_at,
+        expires_at: r.expires_at,
+        revoked_at: r.revoked_at,
+        token: token || null,
+      }
+    })
+    return res.json(out)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'list links failed' })
   }
