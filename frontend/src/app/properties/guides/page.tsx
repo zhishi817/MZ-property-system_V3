@@ -475,11 +475,11 @@ export default function Page() {
                   title: '链接',
                   render: (_: any, r: LinkRow) => {
                     const token = String(r.token || '')
-                    if (!token) return <span>-</span>
+                    if (!token) return <span style={{ color: '#999' }}>-（旧链接无法回显，重新生成即可）</span>
                     const url = `${window.location.origin}/public/guide/p/${token}`
                     return (
                       <Space>
-                        <Input value={url} readOnly style={{ width: 420 }} />
+                        <Input value={url} readOnly style={{ width: 380, maxWidth: '100%' }} />
                         <Button
                           size="small"
                           onClick={() => {
