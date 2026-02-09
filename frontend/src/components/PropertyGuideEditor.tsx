@@ -230,6 +230,7 @@ export default function PropertyGuideEditor({
     const tag = String(el.tagName || '').toLowerCase()
     if (tag === 'input' || tag === 'textarea' || tag === 'button') return true
     if (el.closest('input, textarea, button, [contenteditable="true"]')) return true
+    if (el.closest('[role="button"], [data-no-drag="1"]')) return true
     return false
   }
 
@@ -812,7 +813,6 @@ export default function PropertyGuideEditor({
 
                   {b.type === 'steps' ? (
                     <div style={{ display: 'grid', gap: 8 }}>
-                      <Input value={b.title} onChange={(e) => updateBlock(si, bi, { title: e.target.value } as any)} placeholder="步骤模块标题（可选）" />
                       {(b.steps || []).map((st, i) => (
                         <Card
                           key={i}

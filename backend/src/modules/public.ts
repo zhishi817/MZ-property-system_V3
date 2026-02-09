@@ -1525,13 +1525,20 @@ router.get('/guide/p/:token/status', async (req, res) => {
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
     await ensurePropertyGuidePublicLinksTable()
     const tokenHash = sha256Hex(token)
-    const r = await pgPool.query('SELECT expires_at, revoked_at FROM property_guide_public_links WHERE token_hash=$1 LIMIT 1', [tokenHash])
+    const r = await pgPool.query(
+      `SELECT l.expires_at, l.revoked_at, g.language, g.version
+       FROM property_guide_public_links l
+       JOIN property_guides g ON g.id = l.guide_id
+       WHERE l.token_hash=$1
+       LIMIT 1`,
+      [tokenHash]
+    )
     if (!r?.rowCount) return res.status(404).json({ message: 'not found' })
     const row = r.rows?.[0] || {}
     const expires_at = row?.expires_at ? new Date(row.expires_at).toISOString() : null
     const revoked = !!row?.revoked_at
     const expired = expires_at ? (new Date(expires_at).getTime() <= Date.now()) : true
-    return res.json({ active: !revoked && !expired, expires_at, revoked })
+    return res.json({ active: !revoked && !expired, expires_at, revoked, language: row?.language || null, version: row?.version || null })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'status failed' })
   }
