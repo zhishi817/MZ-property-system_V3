@@ -229,9 +229,10 @@ export default function PublicGuideClient({ token }: { token: string }) {
     return res.json().catch(() => null)
   }
 
-  async function fetchContent() {
+  async function fetchContent(sessionId?: string) {
+    const sid = String(sessionId ?? guideSess).trim()
     const headers: Record<string, string> = {}
-    if (guideSess) headers['X-Guide-Session'] = guideSess
+    if (sid) headers['X-Guide-Session'] = sid
     const res = await fetch(`${API_BASE}/public/guide/p/${encodeURIComponent(token)}`, { cache: 'no-store', credentials: 'include', headers })
     if (res.status === 401) return { needPassword: true }
     if (!res.ok) {
@@ -281,7 +282,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
       const j = await res.json().catch(() => null) as any
       const sid = String(j?.session_id || '').trim()
       if (sid) setGuideSess(sid)
-      const c = await fetchContent()
+      const c = await fetchContent(sid)
       if (c.needPassword) throw new Error('password_required')
       setContent(c.data)
       setMode('content')
