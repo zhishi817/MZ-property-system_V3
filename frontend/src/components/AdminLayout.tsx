@@ -89,6 +89,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     const propChildren: any[] = []
     if (hasPerm('menu.properties.list.visible')) propChildren.push({ key: 'properties-list', label: <Link href="/properties" prefetch={false}>房源列表</Link> })
     if (hasPerm('menu.properties.keys.visible')) propChildren.push({ key: 'properties-keys', label: <Link href="/keys" prefetch={false}>房源钥匙</Link> })
+    if (hasPerm('menu.properties.guides.visible')) propChildren.push({ key: 'properties-guides', label: <Link href="/properties/guides" prefetch={false}>入住指南</Link> })
     items.push({ key: 'properties', icon: <ApartmentOutlined />, label: '房源管理', children: propChildren })
   }
   if (hasPerm('menu.properties.maintenance.visible')) items.push({ key: 'maintenance', icon: <ProfileOutlined />, label: '房源维修', children: [

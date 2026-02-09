@@ -16,6 +16,7 @@ const DEFAULT_PUBLIC_DEEP_CLEANING_SHARE_PASSWORD = process.env.DEEP_CLEANING_SH
 const DEFAULT_PUBLIC_DEEP_CLEANING_UPLOAD_PASSWORD = process.env.DEEP_CLEANING_UPLOAD_PASSWORD || 'mz-deep-cleaning-upload'
 const DEFAULT_PUBLIC_COMPANY_EXPENSE_PASSWORD = process.env.COMPANY_EXPENSE_PUBLIC_PASSWORD || '1234'
 const DEFAULT_PUBLIC_PROPERTY_EXPENSE_PASSWORD = process.env.PROPERTY_EXPENSE_PUBLIC_PASSWORD || '1234'
+const DEFAULT_PUBLIC_PROPERTY_GUIDE_PASSWORD = process.env.PROPERTY_GUIDE_PUBLIC_PASSWORD || '1234'
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
@@ -47,6 +48,12 @@ function randomSuffix(len: number): string {
   for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)]
   return s
 }
+
+function randomToken(bytes = 24) {
+  const b64 = crypto.randomBytes(bytes).toString('base64')
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
 async function generateWorkNo(): Promise<string> {
   const date = new Date().toISOString().slice(0,10).replace(/-/g,'')
   const prefix = `R-${date}-`
@@ -204,6 +211,21 @@ async function getOrInitPropertyExpenseAccess(): Promise<{ area: string; passwor
   return null
 }
 
+async function getOrInitPropertyGuideAccess(): Promise<{ area: string; password_hash: string; password_updated_at: string } | null> {
+  try {
+    if (hasPg) {
+      await ensurePublicAccessTable()
+      const rows = await pgSelect('public_access', '*', { area: 'property_guide' }) as any[]
+      const existing = rows && rows[0]
+      if (existing) return existing
+      const hash = await bcrypt.hash(DEFAULT_PUBLIC_PROPERTY_GUIDE_PASSWORD, 10)
+      const row = await pgInsert('public_access', { area: 'property_guide', password_hash: hash })
+      return row as any
+    }
+  } catch {}
+  return null
+}
+
 function verifyPublicToken(token: string): { ok: boolean; iat?: number } {
   try {
     const decoded: any = jwt.verify(token, SECRET)
@@ -216,6 +238,25 @@ function verifyPublicToken(token: string): { ok: boolean; iat?: number } {
 
 function sha256Hex(input: string) {
   return crypto.createHash('sha256').update(input).digest('hex')
+}
+
+function readCookie(req: any, name: string): string | null {
+  try {
+    const h = String(req.headers?.cookie || '')
+    if (!h) return null
+    const parts = h.split(';').map((s) => s.trim())
+    for (const p of parts) {
+      if (!p) continue
+      const idx = p.indexOf('=')
+      if (idx < 0) continue
+      const k = p.slice(0, idx).trim()
+      if (k !== name) continue
+      return decodeURIComponent(p.slice(idx + 1))
+    }
+    return null
+  } catch {
+    return null
+  }
 }
 
 function verifyMaintenanceShareJwt(token: string): { ok: boolean; iat?: number; maintenance_id?: string; token_hash?: string } {
@@ -326,6 +367,48 @@ async function ensureDeepCleaningShareLinksTable() {
   );`)
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_deep_cleaning_share_mid ON deep_cleaning_share_links(deep_cleaning_id);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_deep_cleaning_share_expires ON deep_cleaning_share_links(expires_at);')
+}
+
+async function ensurePropertyGuidePublicLinksTable() {
+  if (!pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_guides (
+    id text PRIMARY KEY,
+    property_id text NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+    language text NOT NULL,
+    version text NOT NULL,
+    status text NOT NULL,
+    content_json jsonb,
+    created_by text,
+    updated_by text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz,
+    published_at timestamptz
+  );`)
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_property_id ON property_guides(property_id);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_lang ON property_guides(property_id, language);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_status ON property_guides(status);')
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_guide_public_links (
+    token_hash text PRIMARY KEY,
+    guide_id text NOT NULL REFERENCES property_guides(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL,
+    revoked_at timestamptz
+  );`)
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_links_guide_id ON property_guide_public_links(guide_id);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_links_expires_at ON property_guide_public_links(expires_at);')
+}
+
+async function ensurePropertyGuidePublicSessionsTable() {
+  if (!pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_guide_public_sessions (
+    session_id_hash text PRIMARY KEY,
+    token_hash text NOT NULL REFERENCES property_guide_public_links(token_hash) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL,
+    revoked_at timestamptz
+  );`)
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_sessions_token_hash ON property_guide_public_sessions(token_hash);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_sessions_expires_at ON property_guide_public_sessions(expires_at);')
 }
 
 async function ensurePropertyMaintenanceShareColumns() {
@@ -1420,6 +1503,156 @@ router.patch('/deep-cleaning-share/:token', async (req, res) => {
     return res.json(updated || { ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update failed' })
+  }
+})
+
+const GUIDE_SESSION_COOKIE = 'mz_guide_sess'
+
+router.get('/guide/p/:token/status', async (req, res) => {
+  const token = String((req.params as any)?.token || '').trim()
+  if (!token || token.length < 32) return res.status(404).json({ message: 'not found' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensurePropertyGuidePublicLinksTable()
+    const tokenHash = sha256Hex(token)
+    const r = await pgPool.query('SELECT expires_at, revoked_at FROM property_guide_public_links WHERE token_hash=$1 LIMIT 1', [tokenHash])
+    if (!r?.rowCount) return res.status(404).json({ message: 'not found' })
+    const row = r.rows?.[0] || {}
+    const expires_at = row?.expires_at ? new Date(row.expires_at).toISOString() : null
+    const revoked = !!row?.revoked_at
+    const expired = expires_at ? (new Date(expires_at).getTime() <= Date.now()) : true
+    return res.json({ active: !revoked && !expired, expires_at, revoked })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'status failed' })
+  }
+})
+
+router.post('/guide/p/:token/login', async (req, res) => {
+  const token = String((req.params as any)?.token || '').trim()
+  if (!token || token.length < 32) return res.status(404).json({ message: 'not found' })
+  const password = String((req.body as any)?.password || '').trim()
+  if (!/^\d{4,6}$/.test(password)) return res.status(400).json({ message: 'password must be 4-6 digits' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const access = await getOrInitPropertyGuideAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const ok = await bcrypt.compare(password, access.password_hash)
+    if (!ok) return res.status(401).json({ message: 'invalid password' })
+
+    await ensurePropertyGuidePublicLinksTable()
+    const tokenHash = sha256Hex(token)
+    const r = await pgPool.query(
+      `SELECT l.expires_at, l.revoked_at, g.id AS guide_id, g.status
+       FROM property_guide_public_links l
+       JOIN property_guides g ON g.id = l.guide_id
+       WHERE l.token_hash=$1
+       LIMIT 1`,
+      [tokenHash]
+    )
+    if (!r?.rowCount) return res.status(404).json({ message: 'not found' })
+    const row = r.rows?.[0] || {}
+    if (row?.revoked_at) return res.status(404).json({ message: 'not found' })
+    const linkExpiresAt = row?.expires_at ? new Date(row.expires_at).getTime() : 0
+    if (!linkExpiresAt || linkExpiresAt <= Date.now()) return res.status(404).json({ message: 'not found' })
+    if (String(row?.status || '') !== 'published') return res.status(404).json({ message: 'not found' })
+
+    await ensurePropertyGuidePublicSessionsTable()
+    const now = Date.now()
+    const maxMs = 12 * 3600 * 1000
+    const sessionExpiresMs = Math.min(now + maxMs, linkExpiresAt)
+    const sessionExpiresAt = new Date(sessionExpiresMs).toISOString()
+    const sessionId = randomToken(32)
+    const sessionHash = sha256Hex(sessionId)
+    await pgPool.query(
+      'INSERT INTO property_guide_public_sessions(session_id_hash, token_hash, expires_at) VALUES ($1,$2,$3)',
+      [sessionHash, tokenHash, sessionExpiresAt]
+    )
+    const isProd = process.env.NODE_ENV === 'production'
+    res.setHeader('Cache-Control', 'no-store')
+    res.cookie(GUIDE_SESSION_COOKIE, sessionId, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: isProd,
+      path: '/public/guide/p',
+      maxAge: Math.max(0, sessionExpiresMs - now),
+    })
+    return res.json({ ok: true, expires_at: sessionExpiresAt })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'login failed' })
+  }
+})
+
+router.get('/guide/p/:token', async (req, res) => {
+  const token = String((req.params as any)?.token || '').trim()
+  if (!token || token.length < 32) return res.status(404).json({ message: 'not found' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensurePropertyGuidePublicLinksTable()
+    await ensurePropertyGuidePublicSessionsTable()
+    const tokenHash = sha256Hex(token)
+    const r = await pgPool.query(
+      `SELECT l.expires_at, l.revoked_at, g.id AS guide_id, g.property_id, g.language, g.version, g.content_json, g.status
+       FROM property_guide_public_links l
+       JOIN property_guides g ON g.id = l.guide_id
+       WHERE l.token_hash=$1
+       LIMIT 1`,
+      [tokenHash]
+    )
+    if (!r?.rowCount) return res.status(404).json({ message: 'not found' })
+    const row = r.rows?.[0] || {}
+    if (row?.revoked_at) return res.status(404).json({ message: 'not found' })
+    const linkExpiresAt = row?.expires_at ? new Date(row.expires_at).getTime() : 0
+    if (!linkExpiresAt || linkExpiresAt <= Date.now()) return res.status(404).json({ message: 'not found' })
+    if (String(row?.status || '') !== 'published') return res.status(404).json({ message: 'not found' })
+
+    const sid = readCookie(req, GUIDE_SESSION_COOKIE)
+    if (!sid) return res.status(401).json({ message: 'password_required' })
+    const sessionHash = sha256Hex(sid)
+    const s = await pgPool.query(
+      `SELECT created_at, expires_at, revoked_at
+       FROM property_guide_public_sessions
+       WHERE session_id_hash=$1 AND token_hash=$2
+       LIMIT 1`,
+      [sessionHash, tokenHash]
+    )
+    if (!s?.rowCount) return res.status(401).json({ message: 'password_required' })
+    const sess = s.rows?.[0] || {}
+    if (sess?.revoked_at) return res.status(401).json({ message: 'password_required' })
+    const sessExpiresAt = sess?.expires_at ? new Date(sess.expires_at).getTime() : 0
+    if (!sessExpiresAt || sessExpiresAt <= Date.now()) return res.status(401).json({ message: 'password_required' })
+
+    const access = await getOrInitPropertyGuideAccess()
+    if (!access) return res.status(500).json({ message: 'access not configured' })
+    const pwdAt = new Date(access.password_updated_at).getTime()
+    const createdAt = sess?.created_at ? new Date(sess.created_at).getTime() : 0
+    if (!createdAt || createdAt < pwdAt) return res.status(401).json({ message: 'password_required' })
+
+    let property_code: string | null = null
+    let property_address: string | null = null
+    try {
+      const pid = String(row?.property_id || '').trim()
+      if (pid) {
+        const pr = await pgPool.query('SELECT code, address FROM properties WHERE id=$1 LIMIT 1', [pid])
+        property_code = pr?.rows?.[0]?.code ? String(pr.rows[0].code) : null
+        property_address = pr?.rows?.[0]?.address ? String(pr.rows[0].address) : null
+      }
+    } catch {}
+
+    res.setHeader('Cache-Control', 'no-store')
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow')
+    return res.json({
+      guide_id: String(row.guide_id || ''),
+      property_id: row.property_id || null,
+      property_code,
+      property_address,
+      language: row.language || null,
+      version: row.version || null,
+      content_json: row.content_json || { sections: [] },
+      link_expires_at: new Date(linkExpiresAt).toISOString(),
+      session_expires_at: new Date(sessExpiresAt).toISOString(),
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'get failed' })
   }
 })
 

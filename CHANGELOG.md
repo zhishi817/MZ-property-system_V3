@@ -1,5 +1,22 @@
 # Changelog
 
+## Dev (2026-02-09)
+
+- Guides editor: Fix section block dragging (independent select/drag, cross-section drop), add clearer drop indicator + drag ghost, and add bottom “新增章节” button.
+- Guides content: Remove “Wi‑Fi” as a section block type (keeps header Wi‑Fi card via meta fields).
+- Guides versioning: Allow editing published guides; add revision auto-increment and revision history storage with list endpoint.
+- Public guide: Add chapter contents directory with click-to-jump.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
+## Dev (2026-02-08)
+
+- Properties: Add “入住指南” with per-property versioned content (sections + blocks JSON), draft/published/archived.
+- Public link: Generate external URL /guide/p/{token} with fixed 4–6 digit password, HttpOnly session (<=12h and <=expires_at), and one-click revoke.
+- SEO/Security: Public guide page sets noindex; backend checks token active and expiry on every content access.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## v0.2.7-invoice-types.20260207+build.2 (2026-02-07)
 
 - R2: Fix production uploads by enabling S3 path-style requests (forcePathStyle) to support Cloudflare R2 bucket addressing.

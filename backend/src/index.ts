@@ -25,6 +25,7 @@ import notificationsRouter from './modules/notifications'
 import maintenanceRouter from './modules/maintenance'
 import deepCleaningRouter from './modules/deep_cleaning'
 import { router as propertyOnboardingRouter } from './modules/propertyOnboarding'
+import { router as propertyGuidesRouter } from './modules/property_guides'
 import { router as jobsRouter, runEmailSyncJob } from './modules/jobs'
 import cron from 'node-cron'
 import crudRouter from './modules/crud'
@@ -73,7 +74,7 @@ const corsOpts: cors.CorsOptions = {
     const ok = !origin || allowList.includes(origin)
     cb(null, ok)
   },
-  credentials: false,
+  credentials: true,
   methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization']
 }
@@ -232,6 +233,7 @@ app.use('/events', eventsRouter)
 app.use('/notifications', notificationsRouter)
 app.use('/maintenance', maintenanceRouter)
 app.use('/deep-cleaning', deepCleaningRouter)
+app.use('/property-guides', propertyGuidesRouter)
 app.use('/jobs', jobsRouter)
 app.use('/public', publicAdminRouter)
 app.use('/onboarding', propertyOnboardingRouter)
