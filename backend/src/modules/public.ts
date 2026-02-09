@@ -1571,7 +1571,7 @@ router.post('/guide/p/:token/login', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store')
     res.cookie(GUIDE_SESSION_COOKIE, sessionId, {
       httpOnly: true,
-      sameSite: 'lax',
+      sameSite: isProd ? 'none' : 'lax',
       secure: isProd,
       path: '/public/guide/p',
       maxAge: Math.max(0, sessionExpiresMs - now),

@@ -20,7 +20,7 @@ type GuideRow = {
   published_at?: string
 }
 
-type LinkRow = { token_hash: string; guide_id: string; created_at: string; expires_at: string; revoked_at?: string | null }
+type LinkRow = { token_hash: string; guide_id: string; created_at: string; expires_at: string; revoked_at?: string | null; token?: string | null }
 
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { ...init, headers: { ...(init?.headers || {}), ...authHeaders() } })
@@ -456,7 +456,7 @@ export default function Page() {
               </Space>
               {newToken ? (
                 <div style={{ marginTop: 10 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 6 }}>新 token（仅显示一次）</div>
+                  <div style={{ fontWeight: 700, marginBottom: 6 }}>新链接</div>
                   <Space wrap>
                     <Input value={`${window.location.origin}/public/guide/p/${newToken}`} readOnly style={{ width: 620 }} />
                     <Button onClick={() => { navigator.clipboard?.writeText?.(`${window.location.origin}/public/guide/p/${newToken}`); message.success('已复制') }}>复制链接</Button>
@@ -471,6 +471,28 @@ export default function Page() {
               pagination={false}
               columns={[
                 { title: 'token_hash', dataIndex: 'token_hash', render: (v: any) => <span>{String(v || '').slice(0, 10)}…</span> },
+                {
+                  title: '链接',
+                  render: (_: any, r: LinkRow) => {
+                    const token = String(r.token || '')
+                    if (!token) return <span>-</span>
+                    const url = `${window.location.origin}/public/guide/p/${token}`
+                    return (
+                      <Space>
+                        <Input value={url} readOnly style={{ width: 420 }} />
+                        <Button
+                          size="small"
+                          onClick={() => {
+                            navigator.clipboard?.writeText?.(url)
+                            message.success('已复制')
+                          }}
+                        >
+                          复制
+                        </Button>
+                      </Space>
+                    )
+                  },
+                },
                 { title: 'expires_at', dataIndex: 'expires_at' },
                 { title: 'revoked_at', dataIndex: 'revoked_at', render: (v: any) => v || '-' },
                 {
