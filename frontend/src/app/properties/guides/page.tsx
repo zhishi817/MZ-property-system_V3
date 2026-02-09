@@ -458,8 +458,8 @@ export default function Page() {
                 <div style={{ marginTop: 10 }}>
                   <div style={{ fontWeight: 700, marginBottom: 6 }}>新 token（仅显示一次）</div>
                   <Space wrap>
-                    <Input value={`${window.location.origin}/guide/p/${newToken}`} readOnly style={{ width: 620 }} />
-                    <Button onClick={() => { navigator.clipboard?.writeText?.(`${window.location.origin}/guide/p/${newToken}`); message.success('已复制') }}>复制链接</Button>
+                    <Input value={`${window.location.origin}/public/guide/p/${newToken}`} readOnly style={{ width: 620 }} />
+                    <Button onClick={() => { navigator.clipboard?.writeText?.(`${window.location.origin}/public/guide/p/${newToken}`); message.success('已复制') }}>复制链接</Button>
                   </Space>
                 </div>
               ) : null}
