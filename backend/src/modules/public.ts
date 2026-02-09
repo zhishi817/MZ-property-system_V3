@@ -1507,6 +1507,16 @@ router.patch('/deep-cleaning-share/:token', async (req, res) => {
 })
 
 const GUIDE_SESSION_COOKIE = 'mz_guide_sess'
+const GUIDE_SESSION_HEADER = 'x-guide-session'
+
+function readGuideSessionId(req: any): string {
+  const byHeader = String(req?.headers?.[GUIDE_SESSION_HEADER] || req?.get?.(GUIDE_SESSION_HEADER) || '').trim()
+  if (byHeader) return byHeader
+  const byCookie = readCookie(req, GUIDE_SESSION_COOKIE)
+  if (byCookie) return byCookie
+  const byQuery = String((req?.query as any)?.guide_sess || (req?.query as any)?.sess || '').trim()
+  return byQuery
+}
 
 router.get('/guide/p/:token/status', async (req, res) => {
   const token = String((req.params as any)?.token || '').trim()
@@ -1576,7 +1586,7 @@ router.post('/guide/p/:token/login', async (req, res) => {
       path: '/public/guide/p',
       maxAge: Math.max(0, sessionExpiresMs - now),
     })
-    return res.json({ ok: true, expires_at: sessionExpiresAt })
+    return res.json({ ok: true, expires_at: sessionExpiresAt, session_id: sessionId })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'login failed' })
   }
@@ -1605,7 +1615,7 @@ router.get('/guide/p/:token', async (req, res) => {
     if (!linkExpiresAt || linkExpiresAt <= Date.now()) return res.status(404).json({ message: 'not found' })
     if (String(row?.status || '') !== 'published') return res.status(404).json({ message: 'not found' })
 
-    const sid = readCookie(req, GUIDE_SESSION_COOKIE)
+    const sid = readGuideSessionId(req)
     if (!sid) return res.status(401).json({ message: 'password_required' })
     const sessionHash = sha256Hex(sid)
     const s = await pgPool.query(

@@ -76,7 +76,7 @@ const corsOpts: cors.CorsOptions = {
   },
   credentials: true,
   methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization']
+  allowedHeaders: ['Content-Type','Authorization','X-Guide-Session']
 }
 app.use(cors(corsOpts))
 app.options('*', cors(corsOpts))

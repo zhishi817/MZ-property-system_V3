@@ -219,6 +219,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
   const [status, setStatus] = useState<{ active: boolean; expires_at?: string | null; revoked?: boolean } | null>(null)
   const [mode, setMode] = useState<'password' | 'content' | 'invalid'>('password')
   const [password, setPassword] = useState('')
+  const [guideSess, setGuideSess] = useState<string>('')
   const [content, setContent] = useState<{ content_json: GuideContent; property_code?: string | null; property_address?: string | null; language?: string | null } | null>(null)
   const [activeTab, setActiveTab] = useState<string>('checkin')
 
@@ -229,7 +230,9 @@ export default function PublicGuideClient({ token }: { token: string }) {
   }
 
   async function fetchContent() {
-    const res = await fetch(`${API_BASE}/public/guide/p/${encodeURIComponent(token)}`, { cache: 'no-store', credentials: 'include' })
+    const headers: Record<string, string> = {}
+    if (guideSess) headers['X-Guide-Session'] = guideSess
+    const res = await fetch(`${API_BASE}/public/guide/p/${encodeURIComponent(token)}`, { cache: 'no-store', credentials: 'include', headers })
     if (res.status === 401) return { needPassword: true }
     if (!res.ok) {
       const j = await res.json().catch(() => null)
@@ -275,6 +278,9 @@ export default function PublicGuideClient({ token }: { token: string }) {
         const j = await res.json().catch(() => null)
         throw new Error(String(j?.message || `HTTP ${res.status}`))
       }
+      const j = await res.json().catch(() => null) as any
+      const sid = String(j?.session_id || '').trim()
+      if (sid) setGuideSess(sid)
       const c = await fetchContent()
       if (c.needPassword) throw new Error('password_required')
       setContent(c.data)
