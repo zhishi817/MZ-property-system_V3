@@ -39,6 +39,15 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
           'key.flow',
         ],
       },
+      'menu.properties.guides.visible': {
+        label: '入住指南',
+        perms: [
+          'property_guides.view',
+          'property_guides.write',
+          'property_guides.delete',
+          'property_guides.archive',
+        ],
+      },
     },
   },
   'menu.properties.maintenance.visible': {
@@ -261,4 +270,3 @@ export function findMenuPathLabels(map: Record<string, MenuPermNode>, key: strin
   walk(map, [])
   return path
 }
-

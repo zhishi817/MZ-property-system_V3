@@ -30,6 +30,7 @@ const resourceNames: Record<string, string> = {
   property_maintenance: '维修记录',
   property_deep_cleaning: '深度清洁',
   repair_orders: '报修工单',
+  property_guides: '入住指南',
 }
 
 const moduleNames: Record<string, string> = {
