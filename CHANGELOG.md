@@ -5,6 +5,7 @@
 - Guides editor: Restore Steps block title editing (block title shown on public page), and fix Steps step-title inputs losing focus due to drag handlers.
 - Guides editor: Add validation + inline hints for step titles (1–80 chars, no line breaks) and block invalid saves.
 - Public guide: Fix mobile password input zoom; add per-route viewport config and smooth focus zoom-in/out without layout shift (iOS/Android).
+- Public guide: Keep initial “Contents” page, enable continuous scroll across all chapters, and add sticky side TOC with active highlight + smooth jump.
 
 Author: MZ System Bot <dev@mzpropertygroup.com>
 
