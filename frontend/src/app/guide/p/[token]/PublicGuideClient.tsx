@@ -1,6 +1,6 @@
 "use client"
-import React, { useEffect, useMemo, useState } from 'react'
-import { Alert, App, Button, Card, Input, Spin, Tabs, Tooltip } from 'antd'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { Alert, App, Button, Card, Input, Spin, Tooltip } from 'antd'
 import { API_BASE } from '../../../../lib/api'
 import styles from './PublicGuide.module.css'
 import { EnvironmentOutlined, ClockCircleOutlined, WifiOutlined, InfoCircleOutlined, LogoutOutlined, CompassOutlined, CheckCircleFilled, CopyOutlined } from '@ant-design/icons'
@@ -222,8 +222,11 @@ export default function PublicGuideClient({ token }: { token: string }) {
   const [passwordZoomed, setPasswordZoomed] = useState(false)
   const [guideSess, setGuideSess] = useState<string>('')
   const [content, setContent] = useState<{ content_json: GuideContent; property_code?: string | null; property_address?: string | null; language?: string | null } | null>(null)
-  const [activeTab, setActiveTab] = useState<string>('checkin')
   const [langHint, setLangHint] = useState<string>('')
+  const [activeSectionKey, setActiveSectionKey] = useState<string>('')
+  const [tocDockVisible, setTocDockVisible] = useState(false)
+  const activeSectionKeyRef = useRef<string>('')
+  const rafScrollRef = useRef<number | null>(null)
 
   async function fetchStatus() {
     const res = await fetch(`${API_BASE}/public/guide/p/${encodeURIComponent(token)}/status`, { cache: 'no-store', credentials: 'include' })
@@ -319,34 +322,96 @@ export default function PublicGuideClient({ token }: { token: string }) {
   const wifiLabel = String(meta.wifi_ssid || '').trim() || String(derivedWifi.ssid || '').trim()
   const checkinTime = String(meta.checkin_time || '').trim()
   const checkoutTime = String(meta.checkout_time || '').trim()
-  const tabItems = mapTabs(sections, isEn)
+  const navSections = useMemo(() => mapTabs(sections, isEn), [isEn, sections])
+
   useEffect(() => {
-    if (!tabItems.length) return
-    if (tabItems.some((x) => x.key === activeTab)) return
-    setActiveTab(tabItems[0].key)
-  }, [tabItems.length])
+    activeSectionKeyRef.current = activeSectionKey
+  }, [activeSectionKey])
 
-  const [pendingScroll, setPendingScroll] = useState<{ tabKey: string; id: string } | null>(null)
+  const tocActive = useMemo(() => {
+    if (!navSections.length) return null
+    return navSections.find((s) => s.key === activeSectionKey) || navSections[0]
+  }, [activeSectionKey, navSections])
+
+  const tocActiveHeadings = useMemo(() => {
+    if (!tocActive?.section) return []
+    return collectHeadings(tocActive.section)
+  }, [tocActive])
+
   useEffect(() => {
-    if (!pendingScroll) return
-    if (pendingScroll.tabKey !== activeTab) return
-    const id = pendingScroll.id
-    setPendingScroll(null)
-    requestAnimationFrame(() => {
-      const el = document.getElementById(id)
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    })
-  }, [activeTab, pendingScroll])
+    if (mode !== 'content') return
+    if (!navSections.length) return
+    if (!activeSectionKeyRef.current) setActiveSectionKey(navSections[0].key)
+    const cleanupFns: Array<() => void> = []
 
-  const toc = useMemo(() => {
-    const tabs = tabItems.map((t) => ({ key: t.key, label: t.label, headings: collectHeadings(t.section) }))
-    const active = tabs.find((t) => t.key === activeTab) || tabs[0]
-    return { tabs, active }
-  }, [activeTab, tabItems])
+    function syncDockVisible() {
+      const y = window.scrollY || 0
+      setTocDockVisible(y > 160)
+    }
 
-  function jumpTo(tabKey: string, id: string) {
-    setPendingScroll({ tabKey, id })
-    setActiveTab(tabKey)
+    let lastY = -1
+    function onScroll() {
+      if (rafScrollRef.current != null) return
+      rafScrollRef.current = window.requestAnimationFrame(() => {
+        rafScrollRef.current = null
+        const y = window.scrollY || 0
+        if (y !== lastY) {
+          lastY = y
+          syncDockVisible()
+        }
+
+        const offsetTop = 110
+        let bestKey = ''
+        let bestDelta = Number.POSITIVE_INFINITY
+        for (const s of navSections) {
+          const topAnchorId = `toc-${s.key}-top`
+          const el = document.getElementById(topAnchorId)
+          if (!el) continue
+          const top = el.getBoundingClientRect().top
+          const delta = Math.abs(top - offsetTop)
+          if (delta < bestDelta) {
+            bestDelta = delta
+            bestKey = s.key
+          }
+        }
+        if (bestKey && bestKey !== activeSectionKeyRef.current) setActiveSectionKey(bestKey)
+      })
+    }
+
+    syncDockVisible()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', onScroll)
+    cleanupFns.push(() => window.removeEventListener('scroll', onScroll as any))
+    cleanupFns.push(() => window.removeEventListener('resize', onScroll as any))
+    onScroll()
+
+    return () => {
+      for (const fn of cleanupFns) {
+        try { fn() } catch {}
+      }
+      if (rafScrollRef.current != null) {
+        try { cancelAnimationFrame(rafScrollRef.current) } catch {}
+        rafScrollRef.current = null
+      }
+    }
+  }, [mode, navSections])
+
+  function smoothScrollToId(id: string) {
+    const el = document.getElementById(id)
+    if (!el) return
+    const top = el.getBoundingClientRect().top + (window.scrollY || 0) - 96
+    window.scrollTo({ top, behavior: 'smooth' })
+  }
+
+  function jumpToSection(key: string) {
+    const id = `toc-${key}-top`
+    setActiveSectionKey(key)
+    smoothScrollToId(id)
+  }
+
+  function jumpToHeading(sectionKey: string, blockIndex: number) {
+    setActiveSectionKey(sectionKey)
+    smoothScrollToId(`toc-${sectionKey}-b-${blockIndex}`)
   }
 
   const wifiKey = isEn ? 'Wi‑Fi Username' : 'Wi‑Fi 用户名'
@@ -510,7 +575,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
               </Card>
             </div>
 
-            {toc.tabs.length ? (
+            {navSections.length ? (
               <Card className={styles.tocCard} bodyStyle={{ padding: 16 }}>
                 <div className={styles.tocTitleRow}>
                   <span style={{ color: '#ff4d6d' }}><InfoCircleOutlined /></span>
@@ -518,17 +583,17 @@ export default function PublicGuideClient({ token }: { token: string }) {
                 </div>
                 <div className={styles.tocGroupLabel} style={{ marginBottom: 10 }}>{isEn ? 'Chapters' : '章节'}</div>
                 <div className={styles.tocList}>
-                  {toc.tabs.map((t, idx) => (
+                  {navSections.map((t, idx) => (
                     <div
                       key={t.key}
                       role="button"
                       tabIndex={0}
-                      className={`${styles.tocItem} ${t.key === activeTab ? styles.tocItemActive : ''}`}
-                      onClick={() => jumpTo(t.key, `toc-${t.key}-top`)}
+                      className={`${styles.tocItem} ${t.key === activeSectionKey ? styles.tocItemActive : ''}`}
+                      onClick={() => jumpToSection(t.key)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault()
-                          jumpTo(t.key, `toc-${t.key}-top`)
+                          jumpToSection(t.key)
                         }
                       }}
                     >
@@ -538,12 +603,12 @@ export default function PublicGuideClient({ token }: { token: string }) {
                     </div>
                   ))}
                 </div>
-                {toc.active?.headings?.length ? (
+                {tocActive && tocActiveHeadings.length ? (
                   <div style={{ marginTop: 12 }}>
                     <div className={styles.tocGroupLabel} style={{ marginBottom: 8 }}>{isEn ? 'In this chapter' : '本章小节'}</div>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      {toc.active.headings.slice(0, 20).map((h) => (
-                        <Button key={`${toc.active!.key}-${h.idx}`} size="small" onClick={() => jumpTo(toc.active!.key, `toc-${toc.active!.key}-b-${h.idx}`)}>
+                      {tocActiveHeadings.slice(0, 20).map((h) => (
+                        <Button key={`${tocActive.key}-${h.idx}`} size="small" onClick={() => jumpToHeading(tocActive.key, h.idx)}>
                           {h.text}
                         </Button>
                       ))}
@@ -553,27 +618,45 @@ export default function PublicGuideClient({ token }: { token: string }) {
               </Card>
             ) : null}
 
-            <div className={styles.tabsWrap}>
-              <Tabs
-                activeKey={activeTab}
-                onChange={setActiveTab}
-                items={tabItems.map((t) => ({
-                  key: t.key,
-                  label: (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 800 }}>
-                      <span style={{ opacity: 0.75 }}>{t.icon}</span>
-                      <span>{t.label}</span>
-                    </span>
-                  ),
-                  children: (
-                    <Card className={styles.sectionCard}>
-                      <div id={`toc-${t.key}-top`} className={styles.anchor} />
-                      {t.section?.title ? <div className={styles.chapterTitle}>{t.section.title}</div> : null}
-                      {renderSection(t.section, t.key, isEn)}
-                    </Card>
-                  ),
-                }))}
-              />
+            {navSections.length ? (
+              <div
+                className={`${styles.tocDock} ${tocDockVisible ? styles.tocDockVisible : ''}`}
+                aria-label={isEn ? 'Contents' : '目录'}
+              >
+                <div className={styles.tocDockInner}>
+                  <div className={styles.tocDockTitle}>{isEn ? 'Contents' : '目录'}</div>
+                  <div className={styles.tocDockList}>
+                    {navSections.map((t, idx) => (
+                      <div
+                        key={t.key}
+                        role="button"
+                        tabIndex={0}
+                        className={`${styles.tocDockItem} ${t.key === activeSectionKey ? styles.tocDockItemActive : ''}`}
+                        onClick={() => jumpToSection(t.key)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            jumpToSection(t.key)
+                          }
+                        }}
+                      >
+                        <div className={styles.tocDockNo}>{idx + 1}</div>
+                        <div className={styles.tocDockText}>{t.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            <div className={styles.sectionsFlow}>
+              {navSections.map((t) => (
+                <Card key={t.key} className={styles.sectionCard}>
+                  <div id={`toc-${t.key}-top`} className={styles.anchor} />
+                  {t.section?.title ? <div className={styles.chapterTitle}>{t.section.title}</div> : null}
+                  {renderSection(t.section, t.key, isEn)}
+                </Card>
+              ))}
             </div>
           </div>
         ) : null}
