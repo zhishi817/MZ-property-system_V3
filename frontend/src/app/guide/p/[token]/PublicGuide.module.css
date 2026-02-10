@@ -145,6 +145,7 @@
   transform: translateZ(0);
   will-change: background, backdrop-filter, -webkit-backdrop-filter;
   transition: background var(--toc-trans-ms, 180ms) ease-out, backdrop-filter var(--toc-trans-ms, 180ms) ease-out, -webkit-backdrop-filter var(--toc-trans-ms, 180ms) ease-out;
+  contain: paint;
 }
 
 .tocDockInner:hover,
@@ -156,6 +157,18 @@
 
 .tocDockItem:active {
   background: rgba(22, 119, 255, 0.06);
+}
+
+.tocDockInner {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+@supports (-webkit-touch-callout: none) {
+  .tocDockInner {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 .tocDock:active .tocDockInner {

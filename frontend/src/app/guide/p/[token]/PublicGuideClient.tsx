@@ -240,6 +240,8 @@ export default function PublicGuideClient({ token }: { token: string }) {
   const activeSectionKeyRef = useRef<string>('')
   const rafScrollRef = useRef<number | null>(null)
   const firstChapterTopAbsYRef = useRef<number>(0)
+  const isCatalogRef = useRef<boolean>(true)
+  const tocDockVisibleRef = useRef<boolean>(false)
 
   async function fetchStatus() {
     const res = await fetch(`${API_BASE}/public/guide/p/${encodeURIComponent(token)}/status`, { cache: 'no-store', credentials: 'include' })
@@ -341,6 +343,14 @@ export default function PublicGuideClient({ token }: { token: string }) {
     activeSectionKeyRef.current = activeSectionKey
   }, [activeSectionKey])
 
+  useEffect(() => {
+    isCatalogRef.current = isCatalog
+  }, [isCatalog])
+
+  useEffect(() => {
+    tocDockVisibleRef.current = tocDockVisible
+  }, [tocDockVisible])
+
   const tocActive = useMemo(() => {
     if (!navSections.length) return null
     return navSections.find((s) => s.key === activeSectionKey) || navSections[0]
@@ -385,8 +395,15 @@ export default function PublicGuideClient({ token }: { token: string }) {
       const y = window.scrollY || 0
       const firstAbs = firstChapterTopAbsYRef.current || syncFirstChapterTopAbsY()
       const catalog = isCatalogPage(y, firstAbs, 24)
-      setIsCatalog(catalog)
-      setTocDockVisible(!catalog && y > 160)
+      if (catalog !== isCatalogRef.current) {
+        isCatalogRef.current = catalog
+        setIsCatalog(catalog)
+      }
+      const visible = !catalog && y > 160
+      if (visible !== tocDockVisibleRef.current) {
+        tocDockVisibleRef.current = visible
+        setTocDockVisible(visible)
+      }
     }
 
     let lastY = -1
@@ -399,32 +416,59 @@ export default function PublicGuideClient({ token }: { token: string }) {
           lastY = y
           syncDockVisible()
         }
-
-        if (isCatalogPage(y, firstChapterTopAbsYRef.current || syncFirstChapterTopAbsY(), 24)) return
-
-        const offsetTop = 110
-        let bestKey = ''
-        let bestDelta = Number.POSITIVE_INFINITY
-        for (const s of anchors) {
-          const el = s.el()
-          if (!el) continue
-          const top = el.getBoundingClientRect().top
-          const delta = Math.abs(top - offsetTop)
-          if (delta < bestDelta) {
-            bestDelta = delta
-            bestKey = s.key
-          }
-        }
-        if (bestKey && bestKey !== activeSectionKeyRef.current) setActiveSectionKey(bestKey)
       })
+    }
+
+    let io: IntersectionObserver | null = null
+    if (typeof window !== 'undefined' && 'IntersectionObserver' in window) {
+      const offsetTop = 110
+      io = new IntersectionObserver(
+        (entries) => {
+          if (isCatalogRef.current) return
+          const cand = entries.filter((e) => e.isIntersecting)
+          if (!cand.length) return
+          let bestKey = ''
+          let bestDelta = Number.POSITIVE_INFINITY
+          for (const e of cand) {
+            const el = e.target as HTMLElement
+            const key = String((el as any)?.dataset?.sectionKey || '')
+            if (!key) continue
+            const delta = Math.abs(e.boundingClientRect.top - offsetTop)
+            if (delta < bestDelta) {
+              bestDelta = delta
+              bestKey = key
+            }
+          }
+          if (bestKey && bestKey !== activeSectionKeyRef.current) setActiveSectionKey(bestKey)
+        },
+        {
+          root: null,
+          rootMargin: `-${offsetTop}px 0px -70% 0px`,
+          threshold: [0, 0.01, 1],
+        }
+      )
+      for (const a of anchors) {
+        const el = a.el()
+        if (el) io.observe(el)
+      }
     }
 
     syncFirstChapterTopAbsY()
     syncDockVisible()
     window.addEventListener('scroll', onScroll, { passive: true })
-    window.addEventListener('resize', onScroll)
+    let resizeTimer: any = null
+    const onResize = () => {
+      if (resizeTimer) clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null
+        syncFirstChapterTopAbsY()
+        onScroll()
+      }, 160)
+    }
+    window.addEventListener('resize', onResize)
     cleanupFns.push(() => window.removeEventListener('scroll', onScroll as any))
-    cleanupFns.push(() => window.removeEventListener('resize', onScroll as any))
+    cleanupFns.push(() => window.removeEventListener('resize', onResize as any))
+    if (io) cleanupFns.push(() => { try { io?.disconnect() } catch {} })
     onScroll()
 
     return () => {
@@ -703,7 +747,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
             <div className={styles.sectionsFlow}>
               {navSections.map((t) => (
                 <Card key={t.key} className={styles.sectionCard}>
-                  <div id={`toc-${t.key}-top`} className={styles.anchor} />
+                  <div id={`toc-${t.key}-top`} data-section-key={t.key} className={styles.anchor} />
                   {t.section?.title ? <div className={styles.chapterTitle}>{t.section.title}</div> : null}
                   {renderSection(t.section, t.key, isEn)}
                 </Card>
