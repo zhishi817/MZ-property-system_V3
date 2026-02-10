@@ -152,6 +152,36 @@ export default function Page() {
   async function saveDraft() {
     if (!editing) return
     const meta = await editMetaForm.validateFields()
+    const errors: string[] = []
+    const sections = Array.isArray(editContent?.sections) ? editContent.sections : []
+    for (const [si, s] of sections.entries()) {
+      const sTitle = String((s as any)?.title || '').trim()
+      const sLabel = sTitle ? `章节「${sTitle}」` : `章节 ${si + 1}`
+      const blocks = Array.isArray((s as any)?.blocks) ? (s as any).blocks : []
+      for (const [bi, b] of blocks.entries()) {
+        if (String(b?.type) !== 'steps') continue
+        const blockTitleRaw = String((b as any)?.title || '')
+        const blockTitleTrimmed = blockTitleRaw.trim()
+        if (blockTitleTrimmed) {
+          const normalized = blockTitleTrimmed.replace(/\s+/g, ' ')
+          if (normalized.length > 80) errors.push(`${sLabel}：Step 标题超过 80 字符`)
+          if (/[\r\n]/.test(normalized)) errors.push(`${sLabel}：Step 标题包含换行`)
+        }
+        const steps = Array.isArray(b?.steps) ? b.steps : []
+        for (const [i, st] of steps.entries()) {
+          const raw = String(st?.title || '')
+          const trimmed = raw.trim()
+          if (!trimmed) continue
+          const normalized = trimmed.replace(/\s+/g, ' ')
+          if (normalized.length > 80) errors.push(`${sLabel}：步骤 ${i + 1} 标题超过 80 字符`)
+          if (/[\r\n]/.test(normalized)) errors.push(`${sLabel}：步骤 ${i + 1} 标题包含换行`)
+        }
+      }
+    }
+    if (errors.length) {
+      message.error(errors.length === 1 ? errors[0] : `${errors[0]}（共 ${errors.length} 处需要修正）`)
+      return
+    }
     try {
       const payload = { language: String(meta.language || ''), version: String(meta.version || ''), content_json: editContent }
       const updated = await fetchJSON<GuideRow>(`/property-guides/${editing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
