@@ -105,6 +105,7 @@ export default function PropertyGuideEditor({
   const { message } = App.useApp()
   const isEn = String(language || '').trim().toLowerCase().startsWith('en')
   const [hoverActionId, setHoverActionId] = useState<string>('')
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [content, setContent] = useState<GuideContent>(() => normalizeContent(value))
   const [dragging, setDragging] = useState<{ kind: 'section'; sectionId: string } | { kind: 'block'; sectionId: string; blockId: string } | null>(null)
   const [dragOver, setDragOver] = useState<{ kind: 'section'; index: number } | { kind: 'block'; sectionId: string; index: number } | null>(null)
@@ -228,10 +229,28 @@ export default function PropertyGuideEditor({
     const el = target as HTMLElement | null
     if (!el) return false
     const tag = String(el.tagName || '').toLowerCase()
-    if (tag === 'input' || tag === 'textarea' || tag === 'button') return true
-    if (el.closest('input, textarea, button, [contenteditable="true"]')) return true
+    if (tag === 'input' || tag === 'textarea' || tag === 'button' || tag === 'select') return true
+    if (el.closest('input, textarea, button, select, [contenteditable="true"], [role="textbox"]')) return true
+    if (el.closest('.ant-input, .ant-input-affix-wrapper, .ant-input-group-wrapper, .ant-input-number, .ant-select, .ant-picker, .ant-upload, .ant-btn, .ant-checkbox-wrapper, .ant-radio-wrapper')) return true
     if (el.closest('[role="button"], [data-no-drag="1"]')) return true
     return false
+  }
+
+  function validateStepTitle(v: string) {
+    const raw = String(v || '')
+    const trimmed = raw.trim()
+    if (!trimmed) return ''
+    if (trimmed.length > 80) return isEn ? 'Step title must be 1–80 characters.' : '步骤标题需为 1–80 个字符'
+    if (/[\r\n]/.test(trimmed)) return isEn ? 'Step title cannot contain line breaks.' : '步骤标题不能包含换行'
+    return ''
+  }
+
+  function fieldKeyStepsBlockTitle(sectionId: string, blockId: string) {
+    return `steps-block-title:${sectionId}:${blockId}`
+  }
+
+  function fieldKeyStepTitle(sectionId: string, blockId: string, stepIndex: number) {
+    return `step-title:${sectionId}:${blockId}:${stepIndex}`
   }
 
   function isWithinBlockItem(target: EventTarget | null) {
@@ -813,6 +832,33 @@ export default function PropertyGuideEditor({
 
                   {b.type === 'steps' ? (
                     <div style={{ display: 'grid', gap: 8 }}>
+                      {(() => {
+                        const k = fieldKeyStepsBlockTitle(String(sec.id), String((b as any).id))
+                        const err = fieldErrors[k] || ''
+                        return (
+                          <div style={{ display: 'grid', gap: 4 }}>
+                            <Input
+                              value={(b as any).title}
+                              status={err ? 'error' : undefined}
+                              onChange={(e) => {
+                                updateBlock(si, bi, { title: e.target.value } as any)
+                                if (fieldErrors[k]) setFieldErrors((p) => ({ ...p, [k]: '' }))
+                              }}
+                              onBlur={() => {
+                                const raw = String((b as any).title || '')
+                                const nextTitle = raw.replace(/\s+/g, ' ').trim()
+                                const nextErr = validateStepTitle(nextTitle)
+                                setFieldErrors((p) => ({ ...p, [k]: nextErr }))
+                                if (nextTitle !== raw) updateBlock(si, bi, { title: nextTitle } as any)
+                              }}
+                              placeholder={isEn ? 'Steps title (optional)' : 'Step 标题（可选）'}
+                            />
+                            <Typography.Text type={err ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>
+                              {err || (isEn ? 'Shown as the block title above the list.' : '会显示在公开页的 Step 标题位置')}
+                            </Typography.Text>
+                          </div>
+                        )
+                      })()}
                       {(b.steps || []).map((st, i) => (
                         <Card
                           key={i}
@@ -835,11 +881,39 @@ export default function PropertyGuideEditor({
                           }
                         >
                           <div style={{ display: 'grid', gap: 8 }}>
-                            <Input value={st.title} onChange={(e) => {
-                              const steps = [...(b.steps || [])]
-                              steps[i] = { ...steps[i], title: e.target.value }
-                              updateBlock(si, bi, { steps } as any)
-                            }} placeholder="步骤标题（可选）" />
+                            {(() => {
+                              const k = fieldKeyStepTitle(String(sec.id), String((b as any).id), i)
+                              const err = fieldErrors[k] || ''
+                              return (
+                                <div style={{ display: 'grid', gap: 4 }}>
+                                  <Input
+                                    value={st.title}
+                                    status={err ? 'error' : undefined}
+                                    onChange={(e) => {
+                                      const steps = [...(b.steps || [])]
+                                      steps[i] = { ...steps[i], title: e.target.value }
+                                      updateBlock(si, bi, { steps } as any)
+                                      if (fieldErrors[k]) setFieldErrors((p) => ({ ...p, [k]: '' }))
+                                    }}
+                                    onBlur={() => {
+                                      const raw = String(st.title || '')
+                                      const nextTitle = raw.replace(/\s+/g, ' ').trim()
+                                      const nextErr = validateStepTitle(nextTitle)
+                                      setFieldErrors((p) => ({ ...p, [k]: nextErr }))
+                                      if (nextTitle !== raw) {
+                                        const steps = [...(b.steps || [])]
+                                        steps[i] = { ...steps[i], title: nextTitle }
+                                        updateBlock(si, bi, { steps } as any)
+                                      }
+                                    }}
+                                    placeholder={isEn ? 'Step title (optional)' : '步骤标题（可选）'}
+                                  />
+                                  <Typography.Text type={err ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>
+                                    {err || (isEn ? 'Optional. 1–80 characters, no line breaks.' : '可选；1–80 字符，不支持换行')}
+                                  </Typography.Text>
+                                </div>
+                              )
+                            })()}
                             <Input.TextArea value={st.text} onChange={(e) => {
                               const steps = [...(b.steps || [])]
                               steps[i] = { ...steps[i], text: e.target.value }

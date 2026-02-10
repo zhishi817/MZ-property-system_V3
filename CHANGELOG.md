@@ -1,5 +1,13 @@
 # Changelog
 
+## Dev (2026-02-10)
+
+- Guides editor: Restore Steps block title editing (block title shown on public page), and fix Steps step-title inputs losing focus due to drag handlers.
+- Guides editor: Add validation + inline hints for step titles (1–80 chars, no line breaks) and block invalid saves.
+- Public guide: Fix mobile password input zoom; add per-route viewport config and smooth focus zoom-in/out without layout shift (iOS/Android).
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## Dev (2026-02-09)
 
 - Guides editor: Fix section block dragging (independent select/drag, cross-section drop), add clearer drop indicator + drag ghost, and add bottom “新增章节” button.

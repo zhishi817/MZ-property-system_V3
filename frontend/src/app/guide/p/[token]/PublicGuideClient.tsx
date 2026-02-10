@@ -219,6 +219,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
   const [status, setStatus] = useState<{ active: boolean; expires_at?: string | null; revoked?: boolean; language?: string | null; version?: string | null } | null>(null)
   const [mode, setMode] = useState<'password' | 'content' | 'invalid'>('password')
   const [password, setPassword] = useState('')
+  const [passwordZoomed, setPasswordZoomed] = useState(false)
   const [guideSess, setGuideSess] = useState<string>('')
   const [content, setContent] = useState<{ content_json: GuideContent; property_code?: string | null; property_address?: string | null; language?: string | null } | null>(null)
   const [activeTab, setActiveTab] = useState<string>('checkin')
@@ -271,6 +272,8 @@ export default function PublicGuideClient({ token }: { token: string }) {
   async function submitPassword() {
     const isEnNow = String(langHint || '').trim().toLowerCase().startsWith('en')
     if (!/^\d{4,6}$/.test(password)) { message.error(isEnNow ? 'Please enter 4–6 digits' : '请输入 4–6 位数字'); return }
+    setPasswordZoomed(false)
+    try { (document.activeElement as any)?.blur?.() } catch {}
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/public/guide/p/${encodeURIComponent(token)}/login`, {
@@ -416,14 +419,19 @@ export default function PublicGuideClient({ token }: { token: string }) {
               <div className={styles.paragraph} style={{ marginBottom: 10 }}>
                 {isEn ? 'Enter the access password (4–6 digits)' : '请输入外链验证密码（4–6 位数字）'}
               </div>
-              <Input
-                value={password}
-                onChange={(e) => setPassword(e.target.value.replace(/[^\d]/g, '').slice(0, 6))}
-                inputMode="numeric"
-                placeholder={isEn ? 'Password' : '密码'}
-                style={{ maxWidth: 260 }}
-                onPressEnter={submitPassword}
-              />
+              <div className={`${styles.passwordInputWrap} ${passwordZoomed ? styles.passwordInputWrapZoom : ''}`}>
+                <Input
+                  className={styles.passwordInput}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value.replace(/[^\d]/g, '').slice(0, 6))}
+                  onFocus={() => setPasswordZoomed(true)}
+                  onBlur={() => setPasswordZoomed(false)}
+                  inputMode="numeric"
+                  placeholder={isEn ? 'Password' : '密码'}
+                  style={{ maxWidth: 260 }}
+                  onPressEnter={submitPassword}
+                />
+              </div>
               <div style={{ marginTop: 12 }}>
                 <Button type="primary" onClick={submitPassword} disabled={loading}>{isEn ? 'Verify' : '验证并查看'}</Button>
               </div>
