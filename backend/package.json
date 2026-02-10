@@ -10,6 +10,7 @@
     "db:seed-user": "ts-node-dev --transpile-only scripts/seed_user.ts",
     "db:fix-year-2026": "ts-node-dev --transpile-only scripts/run_fix_year_2026.ts",
     "test:email-year-rule": "ts-node-dev --transpile-only scripts/test_email_year_rule.ts",
+    "test:guide-link-sync": "ts-node-dev --transpile-only scripts/test_guide_link_sync_utils.ts",
     "db:fix-email-year-v2": "ts-node-dev --transpile-only scripts/fix_email_orders_year_v2.ts",
     "db:alter-email-meta": "ts-node-dev --transpile-only scripts/run_alter_orders_email_meta.ts"
   },

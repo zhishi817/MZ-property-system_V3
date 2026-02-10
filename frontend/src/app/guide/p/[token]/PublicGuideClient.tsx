@@ -2,6 +2,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, App, Button, Card, Input, Spin, Tooltip } from 'antd'
 import { API_BASE } from '../../../../lib/api'
+import {
+  TOC_BG_ALPHA_ACTIVE,
+  TOC_BG_ALPHA_BASE,
+  TOC_BG_ALPHA_HOVER,
+  TOC_BLUR_ACTIVE_PX,
+  TOC_BLUR_BASE_PX,
+  TOC_BLUR_HOVER_PX,
+  TOC_TRANSITION_MS,
+  computeAnchorScrollTop,
+  isCatalogPage,
+} from '../../../../lib/publicGuideNav'
 import styles from './PublicGuide.module.css'
 import { EnvironmentOutlined, ClockCircleOutlined, WifiOutlined, InfoCircleOutlined, LogoutOutlined, CompassOutlined, CheckCircleFilled, CopyOutlined } from '@ant-design/icons'
 
@@ -225,8 +236,10 @@ export default function PublicGuideClient({ token }: { token: string }) {
   const [langHint, setLangHint] = useState<string>('')
   const [activeSectionKey, setActiveSectionKey] = useState<string>('')
   const [tocDockVisible, setTocDockVisible] = useState(false)
+  const [isCatalog, setIsCatalog] = useState(true)
   const activeSectionKeyRef = useRef<string>('')
   const rafScrollRef = useRef<number | null>(null)
+  const firstChapterTopAbsYRef = useRef<number>(0)
 
   async function fetchStatus() {
     const res = await fetch(`${API_BASE}/public/guide/p/${encodeURIComponent(token)}/status`, { cache: 'no-store', credentials: 'include' })
@@ -344,9 +357,36 @@ export default function PublicGuideClient({ token }: { token: string }) {
     if (!activeSectionKeyRef.current) setActiveSectionKey(navSections[0].key)
     const cleanupFns: Array<() => void> = []
 
+    const html = document.documentElement
+    const body = document.body
+    const prevScrollBehavior = html.style.scrollBehavior
+    const prevOverflowAnchorHtml = (html.style as any).overflowAnchor
+    const prevOverflowAnchorBody = (body.style as any).overflowAnchor
+    html.style.scrollBehavior = 'smooth'
+    ;(html.style as any).overflowAnchor = 'none'
+    ;(body.style as any).overflowAnchor = 'none'
+    cleanupFns.push(() => { html.style.scrollBehavior = prevScrollBehavior })
+    cleanupFns.push(() => { (html.style as any).overflowAnchor = prevOverflowAnchorHtml })
+    cleanupFns.push(() => { (body.style as any).overflowAnchor = prevOverflowAnchorBody })
+
+    const anchors = navSections
+      .map((s) => ({ key: s.key, el: () => document.getElementById(`toc-${s.key}-top`) as HTMLElement | null }))
+    const firstAnchor = anchors[0]
+
+    function syncFirstChapterTopAbsY() {
+      const el = firstAnchor?.el()
+      if (!el) return 0
+      const absY = (window.scrollY || 0) + el.getBoundingClientRect().top
+      firstChapterTopAbsYRef.current = absY
+      return absY
+    }
+
     function syncDockVisible() {
       const y = window.scrollY || 0
-      setTocDockVisible(y > 160)
+      const firstAbs = firstChapterTopAbsYRef.current || syncFirstChapterTopAbsY()
+      const catalog = isCatalogPage(y, firstAbs, 24)
+      setIsCatalog(catalog)
+      setTocDockVisible(!catalog && y > 160)
     }
 
     let lastY = -1
@@ -360,12 +400,13 @@ export default function PublicGuideClient({ token }: { token: string }) {
           syncDockVisible()
         }
 
+        if (isCatalogPage(y, firstChapterTopAbsYRef.current || syncFirstChapterTopAbsY(), 24)) return
+
         const offsetTop = 110
         let bestKey = ''
         let bestDelta = Number.POSITIVE_INFINITY
-        for (const s of navSections) {
-          const topAnchorId = `toc-${s.key}-top`
-          const el = document.getElementById(topAnchorId)
+        for (const s of anchors) {
+          const el = s.el()
           if (!el) continue
           const top = el.getBoundingClientRect().top
           const delta = Math.abs(top - offsetTop)
@@ -378,6 +419,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
       })
     }
 
+    syncFirstChapterTopAbsY()
     syncDockVisible()
     window.addEventListener('scroll', onScroll, { passive: true })
     window.addEventListener('resize', onScroll)
@@ -399,7 +441,7 @@ export default function PublicGuideClient({ token }: { token: string }) {
   function smoothScrollToId(id: string) {
     const el = document.getElementById(id)
     if (!el) return
-    const top = el.getBoundingClientRect().top + (window.scrollY || 0) - 96
+    const top = computeAnchorScrollTop(el.getBoundingClientRect().top, window.scrollY || 0, 96)
     window.scrollTo({ top, behavior: 'smooth' })
   }
 
@@ -618,10 +660,19 @@ export default function PublicGuideClient({ token }: { token: string }) {
               </Card>
             ) : null}
 
-            {navSections.length ? (
+            {navSections.length && !isCatalog ? (
               <div
                 className={`${styles.tocDock} ${tocDockVisible ? styles.tocDockVisible : ''}`}
                 aria-label={isEn ? 'Contents' : '目录'}
+                style={{
+                  ['--toc-alpha-base' as any]: String(TOC_BG_ALPHA_BASE),
+                  ['--toc-alpha-hover' as any]: String(TOC_BG_ALPHA_HOVER),
+                  ['--toc-alpha-active' as any]: String(TOC_BG_ALPHA_ACTIVE),
+                  ['--toc-blur-base' as any]: `${TOC_BLUR_BASE_PX}px`,
+                  ['--toc-blur-hover' as any]: `${TOC_BLUR_HOVER_PX}px`,
+                  ['--toc-blur-active' as any]: `${TOC_BLUR_ACTIVE_PX}px`,
+                  ['--toc-trans-ms' as any]: `${TOC_TRANSITION_MS}ms`,
+                }}
               >
                 <div className={styles.tocDockInner}>
                   <div className={styles.tocDockTitle}>{isEn ? 'Contents' : '目录'}</div>

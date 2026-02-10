@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 html, body, #__next { height: 100%; }
+html { scrollbar-gutter: stable; }
 body { margin: 0; background: #fff; color: #000; }
 
 /* FullCalendar 细化样式，贴近简洁风 */
