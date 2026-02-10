@@ -26,6 +26,7 @@ import maintenanceRouter from './modules/maintenance'
 import deepCleaningRouter from './modules/deep_cleaning'
 import { router as propertyOnboardingRouter } from './modules/propertyOnboarding'
 import { router as propertyGuidesRouter } from './modules/property_guides'
+import { router as propertyGuideLinkSyncRouter } from './modules/property_guide_link_sync'
 import { router as jobsRouter, runEmailSyncJob } from './modules/jobs'
 import cron from 'node-cron'
 import crudRouter from './modules/crud'
@@ -234,6 +235,7 @@ app.use('/notifications', notificationsRouter)
 app.use('/maintenance', maintenanceRouter)
 app.use('/deep-cleaning', deepCleaningRouter)
 app.use('/property-guides', propertyGuidesRouter)
+app.use('/property-guide-link-sync', propertyGuideLinkSyncRouter)
 app.use('/jobs', jobsRouter)
 app.use('/public', publicAdminRouter)
 app.use('/onboarding', propertyOnboardingRouter)

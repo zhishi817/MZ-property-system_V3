@@ -30,6 +30,8 @@ const notifications_1 = __importDefault(require("./modules/notifications"));
 const maintenance_1 = __importDefault(require("./modules/maintenance"));
 const deep_cleaning_1 = __importDefault(require("./modules/deep_cleaning"));
 const propertyOnboarding_1 = require("./modules/propertyOnboarding");
+const property_guides_1 = require("./modules/property_guides");
+const property_guide_link_sync_1 = require("./modules/property_guide_link_sync");
 const jobs_1 = require("./modules/jobs");
 const node_cron_1 = __importDefault(require("node-cron"));
 const crud_1 = __importDefault(require("./modules/crud"));
@@ -81,9 +83,9 @@ const corsOpts = {
         const ok = !origin || allowList.includes(origin);
         cb(null, ok);
     },
-    credentials: false,
+    credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Guide-Session']
 };
 app.use((0, cors_1.default)(corsOpts));
 app.options('*', (0, cors_1.default)(corsOpts));
@@ -259,6 +261,8 @@ app.use('/events', events_1.router);
 app.use('/notifications', notifications_1.default);
 app.use('/maintenance', maintenance_1.default);
 app.use('/deep-cleaning', deep_cleaning_1.default);
+app.use('/property-guides', property_guides_1.router);
+app.use('/property-guide-link-sync', property_guide_link_sync_1.router);
 app.use('/jobs', jobs_1.router);
 app.use('/public', public_admin_1.default);
 app.use('/onboarding', propertyOnboarding_1.router);

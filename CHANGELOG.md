@@ -6,6 +6,8 @@
 - Guides editor: Add validation + inline hints for step titles (1–80 chars, no line breaks) and block invalid saves.
 - Public guide: Fix mobile password input zoom; add per-route viewport config and smooth focus zoom-in/out without layout shift (iOS/Android).
 - Public guide: Keep initial “Contents” page, enable continuous scroll across all chapters, and add sticky side TOC with active highlight + smooth jump.
+- Public guide: Refine sticky TOC overlay (alpha/blur/hover/focus transitions), hide sticky TOC on catalog area, and reduce scroll jank (overflow-anchor/scrollbar-gutter).
+- Guide links: Add auto-sync service to write latest active public guide URL into properties.access_guide_link (realtime on link creation + batch/manual sync), with logs, consistency checks, and optional webhook failure alerts.
 
 Author: MZ System Bot <dev@mzpropertygroup.com>
 

@@ -7,6 +7,7 @@ import crypto from 'crypto'
 import { requireAnyPerm } from '../auth'
 import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgRunInTransaction } from '../dbAdapter'
 import { hasR2, r2Upload } from '../r2'
+import { syncPropertyAccessGuideLink } from './property_guide_link_sync'
 
 export const router = Router()
 
@@ -428,6 +429,18 @@ router.post('/:id/public-link', requireAnyPerm(['property_guides.write', 'rbac.m
       'INSERT INTO property_guide_public_links(token_hash, token_enc, guide_id, expires_at) VALUES($1,$2,$3,$4)',
       [tokenHash, tokenEnc, id, expiresAt]
     )
+    try {
+      const origin = String(req.headers.origin || '')
+      await syncPropertyAccessGuideLink({
+        propertyId: String(row.property_id || ''),
+        mode: 'realtime',
+        reqOrigin: origin,
+        token,
+        tokenHash,
+        guideId: id,
+        actorId: (req as any)?.user?.sub || undefined,
+      })
+    } catch {}
     return res.json({ token, expires_at: expiresAt })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'create link failed' })
