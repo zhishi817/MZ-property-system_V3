@@ -123,7 +123,10 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   ] })
   if (hasPerm('menu.finance.company_revenue.visible')) financeChildren.push({ key: 'company-revenue', label: <Link href="/finance/company-revenue" prefetch={false}>公司营收</Link> })
   if (hasPerm('menu.finance')) items.push({ key: 'finance', icon: <DollarOutlined />, label: '财务管理', children: financeChildren })
-  if (hasPerm('menu.cleaning')) items.push({ key: 'cleaning', icon: <CalendarOutlined />, label: <Link href="/cleaning" prefetch={false}>清洁安排</Link> })
+  if (hasPerm('menu.cleaning')) items.push({ key: 'cleaning', icon: <CalendarOutlined />, label: '清洁安排', children: [
+    { key: 'cleaning-overview', label: <Link href="/cleaning/overview" prefetch={false}>清洁总览</Link> },
+    { key: 'cleaning-schedule', label: <Link href="/cleaning" prefetch={false}>清洁安排</Link> },
+  ] })
   if (hasPerm('menu.rbac') || hasPerm('rbac.manage')) items.push({ key: 'rbac', icon: <ProfileOutlined />, label: <Link href="/rbac" prefetch={false}>角色权限</Link> })
   if (hasPerm('menu.jobs.email_sync.visible')) items.push({ key: 'jobs', icon: <ProfileOutlined />, label: '系统任务', children: [
     { key: 'jobs-email-sync', label: <Link href="/jobs/email-sync" prefetch={false}>邮件同步</Link> },

@@ -7,6 +7,27 @@ const zod_1 = require("zod");
 const auth_1 = require("../auth");
 const dbAdapter_1 = require("../dbAdapter");
 exports.router = (0, express_1.Router)();
+function auDayStr(d) {
+    const parts = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
+    const get = (t) => { var _a; return ((_a = parts.find((p) => p.type === t)) === null || _a === void 0 ? void 0 : _a.value) || ''; };
+    return `${get('year')}-${get('month')}-${get('day')}`;
+}
+async function ensureOfflineTasksTable() {
+    if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
+        return;
+    await dbAdapter_1.pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_offline_tasks (
+    id text PRIMARY KEY,
+    date date NOT NULL,
+    title text NOT NULL,
+    kind text NOT NULL,
+    status text NOT NULL,
+    urgency text NOT NULL,
+    property_id text,
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now()
+  );`);
+    await dbAdapter_1.pgPool.query('CREATE INDEX IF NOT EXISTS idx_cleaning_offline_tasks_date ON cleaning_offline_tasks(date);');
+}
 exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), (req, res) => {
     const { date } = req.query;
     if (dbAdapter_1.hasPg) {
@@ -218,4 +239,96 @@ exports.router.get('/calendar', (req, res) => {
         });
     }
     res.json(events);
+});
+exports.router.get('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
+    var _a;
+    const dateSchema = zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional();
+    const parsed = dateSchema.safeParse((_a = req.query) === null || _a === void 0 ? void 0 : _a.date);
+    const date = parsed.success ? (parsed.data || auDayStr(new Date())) : auDayStr(new Date());
+    try {
+        if (dbAdapter_1.hasPg) {
+            await ensureOfflineTasksTable();
+            const rows = await (0, dbAdapter_1.pgSelect)('cleaning_offline_tasks', '*', { date }) || [];
+            return res.json(rows);
+        }
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'offline tasks query failed' });
+    }
+    return res.json(store_1.db.cleaningOfflineTasks.filter((t) => String(t.date || '').slice(0, 10) === date));
+});
+const offlineTaskCreateSchema = zod_1.z.object({
+    date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    title: zod_1.z.string().min(1).max(200),
+    kind: zod_1.z.string().min(1).max(64),
+    urgency: zod_1.z.enum(['low', 'medium', 'high', 'urgent']).optional(),
+    property_id: zod_1.z.string().optional(),
+});
+exports.router.post('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
+    const parsed = offlineTaskCreateSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json(parsed.error.format());
+    const { v4: uuid } = require('uuid');
+    const row = {
+        id: uuid(),
+        date: parsed.data.date || auDayStr(new Date()),
+        title: parsed.data.title,
+        kind: parsed.data.kind,
+        status: 'todo',
+        urgency: parsed.data.urgency || 'medium',
+        property_id: parsed.data.property_id || null,
+    };
+    store_1.db.cleaningOfflineTasks.push({ ...row, property_id: row.property_id || undefined });
+    try {
+        if (dbAdapter_1.hasPg) {
+            await ensureOfflineTasksTable();
+            const created = await (0, dbAdapter_1.pgInsert)('cleaning_offline_tasks', row);
+            return res.status(201).json(created || row);
+        }
+    }
+    catch (_e) {
+        return res.status(201).json(row);
+    }
+    return res.status(201).json(row);
+});
+const offlineTaskPatchSchema = zod_1.z.object({
+    title: zod_1.z.string().min(1).max(200).optional(),
+    kind: zod_1.z.string().min(1).max(64).optional(),
+    status: zod_1.z.enum(['todo', 'done']).optional(),
+    urgency: zod_1.z.enum(['low', 'medium', 'high', 'urgent']).optional(),
+    property_id: zod_1.z.string().nullable().optional(),
+});
+exports.router.patch('/offline-tasks/:id', (0, auth_1.requireAnyPerm)(['cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
+    const { id } = req.params;
+    const parsed = offlineTaskPatchSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json(parsed.error.format());
+    const list = store_1.db.cleaningOfflineTasks || [];
+    const local = list.find((t) => String(t.id) === String(id));
+    if (local) {
+        if (parsed.data.title !== undefined)
+            local.title = parsed.data.title;
+        if (parsed.data.kind !== undefined)
+            local.kind = parsed.data.kind;
+        if (parsed.data.status !== undefined)
+            local.status = parsed.data.status;
+        if (parsed.data.urgency !== undefined)
+            local.urgency = parsed.data.urgency;
+        if (parsed.data.property_id !== undefined)
+            local.property_id = parsed.data.property_id || undefined;
+    }
+    try {
+        if (dbAdapter_1.hasPg) {
+            await ensureOfflineTasksTable();
+            const payload = { ...parsed.data, updated_at: new Date().toISOString() };
+            const updated = await (0, dbAdapter_1.pgUpdate)('cleaning_offline_tasks', id, payload);
+            return res.json(updated || local || { id, ...payload });
+        }
+    }
+    catch (_e) {
+        return res.json(local || { id, ...parsed.data });
+    }
+    if (!local)
+        return res.status(404).json({ message: 'task not found' });
+    return res.json(local);
 });

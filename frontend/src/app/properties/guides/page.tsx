@@ -1,17 +1,23 @@
 "use client"
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { App, Button, Card, DatePicker, Drawer, Form, Grid, Input, Modal, Select, Space, Table, Tag } from 'antd'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { App, AutoComplete, Button, Card, DatePicker, Drawer, Form, Grid, Input, Modal, Select, Space, Table, Tag } from 'antd'
 import dayjs from 'dayjs'
 import { API_BASE, authHeaders } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
 import PropertyGuideEditor, { type GuideContent } from '../../../components/PropertyGuideEditor'
+import { deriveBuildingKeyFromProperty, isValidPropertyCode, normalizeBaseVersion } from '../../../lib/propertyGuideCopy'
 
-type PropertyRow = { id: string; code?: string; address?: string }
+type PropertyRow = { id: string; code?: string; address?: string; building_name?: string }
 type GuideRow = {
   id: string
-  property_id: string
+  property_id: string | null
   language: string
   version: string
+  base_version?: string | null
+  building_key?: string | null
+  copied_from_id?: string | null
+  copied_at?: string | null
+  copied_by?: string | null
   revision?: number
   status: 'draft' | 'published' | 'archived'
   content_json?: GuideContent
@@ -52,6 +58,9 @@ export default function Page() {
   const [editing, setEditing] = useState<GuideRow | null>(null)
   const [editMetaForm] = Form.useForm()
   const [editContent, setEditContent] = useState<GuideContent>({ sections: [] })
+  const [roomMustFill, setRoomMustFill] = useState(false)
+  const roomInputRef = useRef<any>(null)
+  const [buildingUsedCodes, setBuildingUsedCodes] = useState<Set<string>>(new Set())
 
   const [linksOpen, setLinksOpen] = useState(false)
   const [linksGuide, setLinksGuide] = useState<GuideRow | null>(null)
@@ -121,7 +130,7 @@ export default function Page() {
     if (!kw) return rows
     const propById = new Map(properties.map((p) => [p.id, p]))
     return rows.filter((r) => {
-      const p = propById.get(r.property_id)
+      const p = r.property_id ? propById.get(r.property_id) : undefined
       const hay = [r.version, r.language, r.status, p?.code, p?.address].map((x) => String(x || '').toLowerCase()).join(' ')
       return hay.includes(kw)
     })
@@ -130,9 +139,39 @@ export default function Page() {
   function openEditor(row: GuideRow) {
     setEditing(row)
     setEditContent((row.content_json || { sections: [] }) as any)
-    editMetaForm.setFieldsValue({ language: row.language, version: row.version })
+    const p = row.property_id ? properties.find((x) => x.id === row.property_id) : undefined
+    const code = p?.code || ''
+    editMetaForm.setFieldsValue({ language: row.language, version: row.version, property_code: code })
     setEditorOpen(true)
   }
+
+  useEffect(() => {
+    if (!editorOpen || !editing) return
+    const needs = !editing.property_id
+    setRoomMustFill(needs)
+    if (!needs) { setBuildingUsedCodes(new Set()); return }
+    const buildingKey =
+      String(editing.building_key || '').trim() ||
+      (editing.copied_from_id ? '' : deriveBuildingKeyFromProperty(properties.find((p) => p.id === editing.property_id) as any))
+    const baseVersion = String(editing.base_version || '').trim() || normalizeBaseVersion(editing.version)
+    const lang = String(editing.language || '').trim()
+    if (buildingKey && baseVersion && lang) {
+      fetchJSON<any[]>(`/property-guides/building-usage?building_key=${encodeURIComponent(buildingKey)}&language=${encodeURIComponent(lang)}&base_version=${encodeURIComponent(baseVersion)}`)
+        .then((rows) => {
+          const set = new Set<string>()
+          ;(Array.isArray(rows) ? rows : []).forEach((r: any) => {
+            const c = String(r?.property_code || '').trim()
+            if (c) set.add(c.toUpperCase())
+          })
+          setBuildingUsedCodes(set)
+        })
+        .catch(() => setBuildingUsedCodes(new Set()))
+    }
+    setTimeout(() => {
+      try { roomInputRef.current?.focus?.() } catch {}
+      editMetaForm.validateFields(['property_code']).catch(() => {})
+    }, 60)
+  }, [editorOpen, editMetaForm, editing, properties])
 
   async function submitCreate() {
     const v = await createForm.validateFields()
@@ -183,9 +222,19 @@ export default function Page() {
       return
     }
     try {
-      const payload = { language: String(meta.language || ''), version: String(meta.version || ''), content_json: editContent }
+      const payload: any = { language: String(meta.language || ''), content_json: editContent }
+      if (!editing.copied_from_id) payload.version = String(meta.version || '')
+      if (!editing.property_id) payload.property_code = String(meta.property_code || '').trim()
       const updated = await fetchJSON<GuideRow>(`/property-guides/${editing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       message.success('已保存')
+      const wasUnassigned = !editing.property_id
+      const nowAssigned = !!updated?.property_id
+      if (wasUnassigned && nowAssigned) {
+        setEditorOpen(false)
+        setEditing(null)
+        await loadGuides()
+        return
+      }
       setEditing(updated)
       await loadGuides()
     } catch (e: any) {
@@ -213,18 +262,32 @@ export default function Page() {
     }
   }
 
-  async function duplicateGuide(row: GuideRow) {
-    let nextVersion = ''
+  async function deleteGuide(row: GuideRow) {
     Modal.confirm({
-      title: '复制为新版本',
-      content: (
-        <div style={{ marginTop: 8 }}>
-          <Input placeholder="新版本号（可选）" onChange={(e) => (nextVersion = e.target.value)} />
-        </div>
-      ),
+      title: '删除入住指南',
+      content: '删除后不可恢复，确认删除该记录？',
+      okText: '删除',
+      okButtonProps: { danger: true },
       onOk: async () => {
         try {
-          const created = await fetchJSON<GuideRow>(`/property-guides/${row.id}/duplicate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: nextVersion }) })
+          await fetchJSON(`/property-guides/${row.id}`, { method: 'DELETE' })
+          message.success('已删除')
+          if (editing?.id === row.id) { setEditorOpen(false); setEditing(null) }
+          await loadGuides()
+        } catch (e: any) {
+          message.error(`删除失败：${e?.message || ''}`)
+        }
+      },
+    })
+  }
+
+  async function duplicateGuide(row: GuideRow) {
+    Modal.confirm({
+      title: '复制',
+      content: '将基于当前指南创建可编辑副本，房号需重新填写。',
+      onOk: async () => {
+        try {
+          const created = await fetchJSON<GuideRow>(`/property-guides/${row.id}/copy`, { method: 'POST' })
           message.success('已复制')
           await loadGuides()
           openEditor(created)
@@ -307,8 +370,9 @@ export default function Page() {
       title: '房号',
       width: 160,
       render: (_: any, r: GuideRow) => {
-        const p = properties.find((x) => x.id === r.property_id)
-        return <span>{p?.code || '-'}</span>
+        const p = r.property_id ? properties.find((x) => x.id === r.property_id) : null
+        if (!p?.code) return <Tag color="red">待填写</Tag>
+        return <span>{p.code}</span>
       }
     },
     { title: '语言', dataIndex: 'language', width: 110 },
@@ -329,13 +393,14 @@ export default function Page() {
     { title: '发布时间', dataIndex: 'published_at', width: 200 },
     {
       title: '操作',
-      width: 360,
+      width: 420,
       render: (_: any, r: GuideRow) => (
         <Space wrap>
           <Button onClick={() => openEditor(r)}>编辑</Button>
           <Button onClick={() => duplicateGuide(r)}>复制</Button>
           <Button disabled={r.status === 'published'} type="primary" onClick={() => publishGuide(r)}>发布</Button>
           <Button disabled={r.status === 'archived'} onClick={() => archiveGuide(r)}>归档</Button>
+          <Button danger disabled={r.status === 'published'} onClick={() => deleteGuide(r)}>删除</Button>
           <Button disabled={r.status !== 'published'} onClick={() => openLinks(r)}>外链</Button>
         </Space>
       ),
@@ -440,11 +505,48 @@ export default function Page() {
                 layout="inline"
                 style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}
               >
+                <Form.Item
+                  name="property_code"
+                  label="房号"
+                  rules={roomMustFill ? [
+                    { required: true, message: '房号必填' },
+                    {
+                      validator: async (_rule, value) => {
+                        const raw = String(value || '').trim()
+                        if (!raw) return Promise.resolve()
+                        if (!isValidPropertyCode(raw)) return Promise.reject(new Error('房号格式不正确'))
+                        const code = raw.toUpperCase()
+                        const srcBuildingKey = String(editing.building_key || '').trim()
+                        const inSameBuilding = properties.some((p) => String(p.code || '').toUpperCase() === code && deriveBuildingKeyFromProperty(p) === srcBuildingKey)
+                        if (!inSameBuilding) return Promise.reject(new Error('房号不属于同一楼栋'))
+                        if (buildingUsedCodes.has(code)) return Promise.reject(new Error('该房号已存在入住指南，请重新输入'))
+                        return Promise.resolve()
+                      },
+                    },
+                  ] : undefined}
+                  style={{ marginBottom: 0 }}
+                >
+                  {roomMustFill ? (
+                    <AutoComplete
+                      options={properties
+                        .filter((p) => deriveBuildingKeyFromProperty(p) === String(editing.building_key || '').trim())
+                        .map((p) => ({ value: String(p.code || '').toUpperCase() }))
+                        .filter((o) => !!o.value && !buildingUsedCodes.has(o.value))
+                      }
+                      filterOption={(inputValue, option) => String(option?.value || '').toUpperCase().includes(String(inputValue || '').toUpperCase())}
+                      onChange={() => { editMetaForm.validateFields(['property_code']).catch(() => {}) }}
+                    >
+                      <Input ref={roomInputRef} placeholder="请输入或选择房号" style={{ width: 150 }} />
+                    </AutoComplete>
+                  ) : (
+                    <Input style={{ width: 150 }} disabled />
+                  )}
+                </Form.Item>
                 <Form.Item name="language" label="语言" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
                   <Select style={{ width: 140 }} options={[{ value: 'zh-CN', label: 'zh-CN' }, { value: 'en', label: 'en' }]} />
                 </Form.Item>
                 <Form.Item name="version" label="版本号" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
-                  <Input style={{ width: 260 }} />
+                  <Input style={{ width: 260 }} disabled={!!editing.copied_from_id} />
                 </Form.Item>
                 <Form.Item label="修订" style={{ marginBottom: 0 }}>
                   <Input value={String(editing.revision ?? 1)} style={{ width: 90 }} readOnly />

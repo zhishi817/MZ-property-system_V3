@@ -13,6 +13,7 @@ exports.db = {
     keyFlows: [],
     orders: [],
     cleaningTasks: [],
+    cleaningOfflineTasks: [],
     cleaners: [],
     properties: [],
     propertyDeepCleaning: [],
@@ -74,6 +75,10 @@ if (exports.db.cleaningTasks.length === 0) {
         d.setDate(today.getDate() + i);
         exports.db.cleaningTasks.push({ id: (0, uuid_1.v4)(), date: formatDate(d), status: i % 3 === 0 ? 'scheduled' : 'pending' });
     }
+}
+if (exports.db.cleaningOfflineTasks.length === 0) {
+    const today = formatDate(new Date());
+    exports.db.cleaningOfflineTasks.push({ id: (0, uuid_1.v4)(), date: today, title: '挂钥匙', kind: 'key_hanging', status: 'todo', urgency: 'medium' }, { id: (0, uuid_1.v4)(), date: today, title: '换密码', kind: 'password_change', status: 'todo', urgency: 'high' }, { id: (0, uuid_1.v4)(), date: today, title: '补消耗品', kind: 'restock', status: 'todo', urgency: 'low' }, { id: (0, uuid_1.v4)(), date: today, title: '维修跟进', kind: 'maintenance', status: 'todo', urgency: 'high' }, { id: (0, uuid_1.v4)(), date: today, title: '检查（Inspection）', kind: 'inspection', status: 'todo', urgency: 'medium' });
 }
 if (exports.db.cleaners.length === 0) {
     exports.db.cleaners.push({ id: (0, uuid_1.v4)(), name: 'Alice', capacity_per_day: 4 }, { id: (0, uuid_1.v4)(), name: 'Bob', capacity_per_day: 3 }, { id: (0, uuid_1.v4)(), name: 'Charlie', capacity_per_day: 5 });

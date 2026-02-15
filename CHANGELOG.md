@@ -1,5 +1,28 @@
 # Changelog
 
+## Dev (2026-02-11)
+
+- Cleaning: Add “清洁总览” submenu and page under “清洁安排”.
+- Cleaning overview: Show today check-in/out counts with platform breakdown (Airbnb/Booking/Direct/Other) and drill-down to order detail.
+- Cleaning overview: Move “未来7天入住/退房趋势” to cleaning overview (bar chart) and highlight peak-pressure date.
+- Cleaning: Add offline task list (status + urgency) with create/update support.
+- Backend: Add `GET /stats/cleaning-overview` and cleaning offline task APIs.
+- Fix: Allow cleaning roles to access `GET /stats/cleaning-overview` without `order.view` (prevents empty overview due to RBAC).
+- Fix: Make `/stats/cleaning-overview` compatible when `orders.checkin/checkout` are stored as text/timestamp (cast via substring to date to avoid SQL type errors).
+- Tests: Add unit tests + coverage gate for cleaning overview utilities.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
+## Dev (2026-02-15)
+
+- Property guides: Redesign “复制” as template copy flow (room cleared, must re-select within same building).
+- Property guides: Add copy trace fields (copied_from_id/copied_at/copied_by) and base_version/building_key for grouping and validation.
+- Property guides: Add idempotent uniqueness guard on assign (advisory lock + server-side duplicate check) and building usage API for fast client-side validation.
+- Property guides: Add delete action for draft/archived guides (published requires archive first).
+- Tests: Add unit tests for guide copy/version/building validation helpers with coverage ≥90%.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## Dev (2026-02-10)
 
 - Guides editor: Restore Steps block title editing (block title shown on public page), and fix Steps step-title inputs losing focus due to drag handlers.

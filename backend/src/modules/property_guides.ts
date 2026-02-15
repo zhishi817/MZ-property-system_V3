@@ -66,10 +66,36 @@ async function ensurePropertyGuidesTable() {
     updated_at timestamptz,
     published_at timestamptz
   );`)
+  try { await pgPool.query('ALTER TABLE property_guides ALTER COLUMN property_id DROP NOT NULL') } catch {}
   await pgPool.query('ALTER TABLE property_guides ADD COLUMN IF NOT EXISTS revision integer NOT NULL DEFAULT 1')
+  await pgPool.query('ALTER TABLE property_guides ADD COLUMN IF NOT EXISTS base_version text')
+  await pgPool.query('ALTER TABLE property_guides ADD COLUMN IF NOT EXISTS building_key text')
+  await pgPool.query('ALTER TABLE property_guides ADD COLUMN IF NOT EXISTS copied_from_id text')
+  await pgPool.query('ALTER TABLE property_guides ADD COLUMN IF NOT EXISTS copied_at timestamptz')
+  await pgPool.query('ALTER TABLE property_guides ADD COLUMN IF NOT EXISTS copied_by text')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_property_id ON property_guides(property_id);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_lang ON property_guides(property_id, language);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_status ON property_guides(status);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_building_key ON property_guides(building_key);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guides_building_lang_base ON property_guides(building_key, language, base_version);')
+  try {
+    await pgPool.query(`
+      UPDATE property_guides g
+      SET 
+        base_version = COALESCE(NULLIF(g.base_version,''), regexp_replace(COALESCE(g.version,''), '-copy-.*$', '')),
+        building_key = COALESCE(
+          NULLIF(g.building_key,''),
+          NULLIF(trim(p.building_name),''),
+          upper(regexp_replace(COALESCE(p.code,''), '^([A-Za-z]+-?\\d+).*$','\\1')),
+          p.code
+        )
+      FROM properties p
+      WHERE g.property_id = p.id
+        AND (
+          g.base_version IS NULL OR g.base_version = '' OR g.building_key IS NULL OR g.building_key = ''
+        )
+    `)
+  } catch {}
 }
 
 async function ensurePropertyGuideRevisionsTable() {
@@ -147,12 +173,43 @@ const createSchema = z.object({
 })
 
 const updateSchema = z.object({
+  property_id: z.string().min(1).optional(),
+  property_code: z.string().min(1).max(64).optional(),
   language: z.string().min(1).max(24).optional(),
   version: z.string().min(1).max(64).optional(),
   status: guideStatusSchema.optional(),
   content_json: guideContentSchema.optional(),
   change_note: z.string().max(200).optional(),
 })
+
+function normalizeBaseVersion(v: any): string {
+  const s = String(v || '').trim()
+  if (!s) return ''
+  const i = s.indexOf('-copy-')
+  if (i > 0) return s.slice(0, i)
+  return s
+}
+
+function deriveBuildingKey(buildingName: any, code: any, address: any, fallback: any): string {
+  const bn = String(buildingName || '').trim()
+  if (bn) return bn
+  const c = String(code || '').trim()
+  if (c) {
+    const m = c.match(/^([a-z]+-?\d+)/i)
+    if (m) return String(m[1]).toUpperCase()
+    return c.toUpperCase()
+  }
+  const a = String(address || '').trim()
+  if (a) return a.split(',')[0].trim()
+  return String(fallback || '').trim()
+}
+
+async function resolvePropertyByIdOrCode(client: any, input: string) {
+  const key = String(input || '').trim()
+  if (!key) return null
+  const r = await client.query('SELECT id, code, building_name, address FROM properties WHERE id=$1 OR upper(code)=upper($1) LIMIT 1', [key])
+  return r?.rows?.[0] || null
+}
 
 router.get('/', requireAnyPerm(['property_guides.view', 'rbac.manage']), async (req, res) => {
   try {
@@ -180,6 +237,29 @@ router.get('/', requireAnyPerm(['property_guides.view', 'rbac.manage']), async (
   }
 })
 
+router.get('/building-usage', requireAnyPerm(['property_guides.view', 'rbac.manage']), async (req, res) => {
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensurePropertyGuidesTable()
+    const q: any = req.query || {}
+    const building_key = String(q.building_key || '').trim()
+    const language = String(q.language || '').trim()
+    const base_version = String(q.base_version || '').trim()
+    if (!building_key || !language || !base_version) return res.status(400).json({ message: 'missing building_key/language/base_version' })
+    const rows = await pgPool.query(
+      `SELECT g.id, g.property_id, p.code AS property_code
+       FROM property_guides g
+       JOIN properties p ON p.id = g.property_id
+       WHERE g.building_key = $1 AND g.language = $2 AND g.base_version = $3 AND g.property_id IS NOT NULL
+       ORDER BY p.code ASC`,
+      [building_key, language, base_version]
+    )
+    return res.json(rows?.rows || [])
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'usage failed' })
+  }
+})
+
 router.post('/', requireAnyPerm(['property_guides.write', 'rbac.manage']), async (req, res) => {
   const parsed = createSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -189,11 +269,16 @@ router.post('/', requireAnyPerm(['property_guides.write', 'rbac.manage']), async
     await ensurePropertyGuideRevisionsTable()
     const user = (req as any).user || {}
     const id = uuidv4()
+    const prop = await resolvePropertyByIdOrCode(pgPool, parsed.data.property_id)
+    if (!prop) return res.status(400).json({ message: 'property not found' })
+    const buildingKey = deriveBuildingKey(prop.building_name, prop.code, prop.address, parsed.data.property_id)
     const payload: any = {
       id,
-      property_id: parsed.data.property_id,
+      property_id: String(prop.id),
       language: parsed.data.language,
       version: parsed.data.version,
+      base_version: normalizeBaseVersion(parsed.data.version),
+      building_key: buildingKey,
       revision: 1,
       status: 'draft',
       content_json: parsed.data.content_json || { sections: [] },
@@ -231,16 +316,52 @@ router.patch('/:id', requireAnyPerm(['property_guides.write', 'rbac.manage']), a
       const existing = await client.query('SELECT * FROM property_guides WHERE id=$1 FOR UPDATE', [id])
       const old = existing?.rows?.[0]
       if (!old) return null
+      const baseVersion = String(old.base_version || '') || normalizeBaseVersion(old.version)
+      const buildingKey = String(old.building_key || '')
+      const wantVersion = parsed.data.version !== undefined
+      if (wantVersion && String(old.copied_from_id || '')) throw new Error('复制记录不允许修改基础版本号')
+      let resolvedProp: any = null
+      const nextLang = String((parsed.data.language !== undefined ? parsed.data.language : old.language) || '')
+      if (parsed.data.property_id || parsed.data.property_code) {
+        const propInput = String(parsed.data.property_id || parsed.data.property_code || '').trim()
+        resolvedProp = await resolvePropertyByIdOrCode(client, propInput)
+        if (!resolvedProp) {
+          const e: any = new Error('property_not_found')
+          e.statusCode = 400
+          throw e
+        }
+        const propBuildingKey = deriveBuildingKey(resolvedProp.building_name, resolvedProp.code, resolvedProp.address, resolvedProp.id)
+        if (buildingKey && propBuildingKey && propBuildingKey !== buildingKey) {
+          const e: any = new Error('not_same_building')
+          e.statusCode = 400
+          throw e
+        }
+        const lockKey = `${String(resolvedProp.id)}|${nextLang}|${baseVersion}`
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [lockKey])
+        const dup = await client.query(
+          'SELECT id FROM property_guides WHERE id <> $1 AND property_id = $2 AND language = $3 AND base_version = $4 LIMIT 1',
+          [id, String(resolvedProp.id), nextLang, baseVersion]
+        )
+        if (dup?.rows?.[0]) {
+          const e: any = new Error('duplicate_property_guide')
+          e.statusCode = 409
+          throw e
+        }
+      }
       const oldRev = Number(old.revision || 1)
       const nextRev = oldRev + 1
       const nextRow = {
         ...old,
         ...parsed.data,
+        property_id: resolvedProp ? String(resolvedProp.id) : old.property_id,
+        base_version: baseVersion || normalizeBaseVersion(parsed.data.version ?? old.version),
+        building_key: (old.building_key || (resolvedProp ? deriveBuildingKey(resolvedProp.building_name, resolvedProp.code, resolvedProp.address, resolvedProp.id) : null)) || null,
         revision: nextRev,
         updated_by: user?.sub || null,
         updated_at: new Date().toISOString(),
       }
       delete (nextRow as any).change_note
+      delete (nextRow as any).property_code
       const row = await pgUpdate('property_guides', id, nextRow, client)
       await pgInsert('property_guide_revisions', {
         guide_id: id,
@@ -256,7 +377,42 @@ router.patch('/:id', requireAnyPerm(['property_guides.write', 'rbac.manage']), a
     if (!updated) return res.status(404).json({ message: 'not found' })
     return res.json(updated)
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'update failed' })
+    const msg = String(e?.message || 'update failed')
+    const statusCode = Number(e?.statusCode || 0)
+    if (msg === 'property_not_found') return res.status(400).json({ message: '房号不存在' })
+    if (msg === 'not_same_building') return res.status(400).json({ message: '房号不属于同一楼栋' })
+    if (msg === 'duplicate_property_guide') return res.status(409).json({ message: '该房号已存在入住指南，请重新输入' })
+    return res.status(statusCode || 500).json({ message: msg })
+  }
+})
+
+router.delete('/:id', requireAnyPerm(['property_guides.write', 'rbac.manage']), async (req, res) => {
+  const { id } = req.params as any
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensurePropertyGuidesTable()
+    await ensurePropertyGuideRevisionsTable()
+    await ensurePropertyGuidePublicLinksTable()
+    const deleted = await pgRunInTransaction(async (client) => {
+      const r = await client.query('SELECT id, status FROM property_guides WHERE id=$1 FOR UPDATE', [id])
+      const row = r?.rows?.[0]
+      if (!row) return null
+      const status = String(row.status || '')
+      if (status === 'published') {
+        const e: any = new Error('cannot_delete_published')
+        e.statusCode = 400
+        throw e
+      }
+      await client.query('DELETE FROM property_guides WHERE id=$1', [id])
+      return { id }
+    })
+    if (!deleted) return res.status(404).json({ message: 'not found' })
+    return res.json({ ok: true, id })
+  } catch (e: any) {
+    const msg = String(e?.message || 'delete failed')
+    if (msg === 'cannot_delete_published') return res.status(400).json({ message: '已发布的入住指南不允许删除，请先归档后再删除' })
+    return res.status(Number(e?.statusCode || 0) || 500).json({ message: msg })
   }
 })
 
@@ -272,6 +428,11 @@ router.post('/:id/publish', requireAnyPerm(['property_guides.write', 'rbac.manag
       const row = existing?.rows?.[0]
       if (!row) return null
       const propertyId = String(row.property_id || '')
+      if (!propertyId) {
+        const e: any = new Error('missing_property')
+        e.statusCode = 400
+        throw e
+      }
       const language = String(row.language || '')
       const now = new Date().toISOString()
       await client.query(
@@ -295,7 +456,9 @@ router.post('/:id/publish', requireAnyPerm(['property_guides.write', 'rbac.manag
     if (!updated) return res.status(404).json({ message: 'not found' })
     return res.json(updated)
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'publish failed' })
+    const msg = String(e?.message || 'publish failed')
+    if (msg === 'missing_property') return res.status(400).json({ message: '请先填写房号后再发布' })
+    return res.status(Number(e?.statusCode || 0) || 500).json({ message: msg })
   }
 })
 
@@ -352,6 +515,8 @@ router.post('/:id/duplicate', requireAnyPerm(['property_guides.write', 'rbac.man
       property_id: row.property_id,
       language: row.language,
       version: newVer,
+      base_version: normalizeBaseVersion(newVer),
+      building_key: String(row.building_key || null),
       revision: 1,
       status: 'draft',
       content_json: row.content_json || { sections: [] },
@@ -374,6 +539,75 @@ router.post('/:id/duplicate', requireAnyPerm(['property_guides.write', 'rbac.man
     return res.status(201).json(inserted || payload)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'duplicate failed' })
+  }
+})
+
+router.post('/:id/copy', requireAnyPerm(['property_guides.write', 'rbac.manage']), async (req, res) => {
+  const { id } = req.params as any
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensurePropertyGuidesTable()
+    await ensurePropertyGuideRevisionsTable()
+    const user = (req as any).user || {}
+    const now = new Date().toISOString()
+    const created = await pgRunInTransaction(async (client) => {
+      const r = await client.query('SELECT * FROM property_guides WHERE id=$1 FOR UPDATE', [id])
+      const src = r?.rows?.[0]
+      if (!src) return null
+      const srcPropId = String(src.property_id || '')
+      if (!srcPropId) {
+        const e: any = new Error('source_missing_property')
+        e.statusCode = 400
+        throw e
+      }
+      const prop = await resolvePropertyByIdOrCode(client, srcPropId)
+      if (!prop) {
+        const e: any = new Error('property_not_found')
+        e.statusCode = 400
+        throw e
+      }
+      const buildingKey = deriveBuildingKey(prop.building_name, prop.code, prop.address, prop.id)
+      const baseVersion = String(src.base_version || '') || normalizeBaseVersion(src.version)
+      const newId = uuidv4()
+      const payload: any = {
+        id: newId,
+        property_id: null,
+        language: src.language,
+        version: baseVersion,
+        base_version: baseVersion,
+        building_key: buildingKey,
+        copied_from_id: String(id),
+        copied_at: now,
+        copied_by: user?.sub || null,
+        revision: 1,
+        status: 'draft',
+        content_json: src.content_json || { sections: [] },
+        created_by: user?.sub || null,
+        updated_by: user?.sub || null,
+        created_at: now,
+        updated_at: now,
+        published_at: null,
+      }
+      const inserted = await pgInsert('property_guides', payload, client)
+      await pgInsert('property_guide_revisions', {
+        guide_id: newId,
+        revision: 1,
+        action: 'copy',
+        content_json: (inserted as any)?.content_json ?? payload.content_json,
+        change_note: null,
+        changed_by: user?.sub || null,
+        changed_at: now,
+      }, client)
+      return inserted || payload
+    })
+    if (!created) return res.status(404).json({ message: 'not found' })
+    return res.status(201).json(created)
+  } catch (e: any) {
+    const msg = String(e?.message || 'copy failed')
+    if (msg === 'source_missing_property') return res.status(400).json({ message: '源指南缺少房号，无法复制' })
+    if (msg === 'property_not_found') return res.status(400).json({ message: '房号不存在' })
+    return res.status(Number(e?.statusCode || 0) || 500).json({ message: msg })
   }
 })
 
@@ -414,6 +648,7 @@ router.post('/:id/public-link', requireAnyPerm(['property_guides.write', 'rbac.m
     const row = existing && existing[0]
     if (!row) return res.status(404).json({ message: 'not found' })
     if (String(row.status || '') !== 'published') return res.status(400).json({ message: 'guide must be published' })
+    if (!String(row.property_id || '')) return res.status(400).json({ message: 'missing property_id' })
     const expiresAtRaw = req.body?.expires_at ? String(req.body.expires_at) : ''
     const expiresAt = (() => {
       if (expiresAtRaw) {

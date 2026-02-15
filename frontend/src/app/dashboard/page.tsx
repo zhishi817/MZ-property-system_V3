@@ -10,7 +10,7 @@ dayjs.extend(isSameOrAfter)
 import { useEffect, useMemo, useState } from 'react'
 import { API_BASE, getJSON } from '../../lib/api'
 import { monthSegments, toDayStr, parseDateOnly } from '../../lib/orders'
-import { PieChart as RePieChart, Pie as RePie, Cell as ReCell, Tooltip as ReTooltip, Legend as ReLegend, ResponsiveContainer, BarChart as ReBarChart, Bar as ReBar, LineChart as ReLineChart, Line as ReLine, XAxis as ReXAxis, YAxis as ReYAxis, CartesianGrid as ReCartesianGrid } from 'recharts'
+import { PieChart as RePieChart, Pie as RePie, Cell as ReCell, Tooltip as ReTooltip, Legend as ReLegend, ResponsiveContainer } from 'recharts'
 
  type Property = { id: string; code?: string; address?: string; region?: string; biz_category?: 'leased'|'management_fee'; type?: string }
 type Order = { id: string; source?: string; property_id?: string; checkin?: string; checkout?: string; nights?: number; avg_nightly_price?: number; net_income?: number; price?: number }
@@ -358,31 +358,6 @@ export default function DashboardPage() {
         <Col xs={24} md={8}><Card title="订单总量" style={{ height: 160 }}><Space direction="vertical" style={{ width:'100%', height:'100%', justifyContent:'center' }}><Statistic title="总订单数" value={orderSummary.total_orders} valueStyle={{ fontSize: 26 }} /></Space></Card></Col>
       </Row>
 
-      <Row gutter={[16,16]}>
-        <Col xs={24} md={24}>
-          <Card title="未来一周入住/退房趋势" extra={<div style={{ display:'flex', alignItems:'center', gap:12 }}>
-            <span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
-              <span style={{ width:12, height:12, borderRadius:2, background:'#E59C24' }} />
-              <span>入住</span>
-            </span>
-            <span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
-              <span style={{ width:12, height:12, borderRadius:2, background:'#3996D1' }} />
-              <span>退房</span>
-            </span>
-          </div>} style={{ height: 360 }}>
-            <ResponsiveContainer width="100%" height={300}>
-              <ReBarChart data={orderSummary.next7days} margin={{ top: 10, right: 20, left: 0, bottom: 40 }}>
-                <ReCartesianGrid strokeDasharray="3 3" />
-                <ReXAxis dataKey="date" tickMargin={10} />
-                <ReYAxis allowDecimals={false} />
-                <ReTooltip />
-                <ReBar dataKey="checkin_count" name="入住" fill="#E59C24" radius={[4,4,0,0]} />
-                <ReBar dataKey="checkout_count" name="退房" fill="#3996D1" radius={[4,4,0,0]} />
-              </ReBarChart>
-            </ResponsiveContainer>
-          </Card>
-        </Col>
-      </Row>
       <Row gutter={[16,16]}>
         <Col xs={24} md={12}><Card title="房源管理类型占比" style={{ height: 300 }}><ManagementTypePieChart /></Card></Col>
         <Col xs={24} md={12}><Card title="各平台订单占比" style={{ height: 300, display:'flex', flexDirection:'column' }}>
