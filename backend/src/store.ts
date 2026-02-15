@@ -175,6 +175,16 @@ export type CleaningTask = {
   inspected?: boolean
 }
 
+export type CleaningOfflineTask = {
+  id: string
+  date: string
+  title: string
+  kind: string
+  status: 'todo' | 'done'
+  urgency: 'low' | 'medium' | 'high' | 'urgent'
+  property_id?: string
+}
+
 export type RepairOrder = {
   id: string
   property_id?: string
@@ -211,6 +221,7 @@ export const db = {
   keyFlows: [] as { id: string; key_set_id: string; action: 'borrow'|'return'|'lost'|'replace'; handler_id?: string; timestamp: string; note?: string; old_code?: string; new_code?: string }[],
   orders: [] as Order[],
   cleaningTasks: [] as CleaningTask[],
+  cleaningOfflineTasks: [] as CleaningOfflineTask[],
   cleaners: [] as { id: string; name: string; capacity_per_day: number }[],
   properties: [] as Property[],
   propertyDeepCleaning: [] as any[],
@@ -279,6 +290,17 @@ if (db.cleaningTasks.length === 0) {
     d.setDate(today.getDate() + i)
     db.cleaningTasks.push({ id: uuid(), date: formatDate(d), status: i % 3 === 0 ? 'scheduled' : 'pending' })
   }
+}
+
+if (db.cleaningOfflineTasks.length === 0) {
+  const today = formatDate(new Date())
+  db.cleaningOfflineTasks.push(
+    { id: uuid(), date: today, title: '挂钥匙', kind: 'key_hanging', status: 'todo', urgency: 'medium' },
+    { id: uuid(), date: today, title: '换密码', kind: 'password_change', status: 'todo', urgency: 'high' },
+    { id: uuid(), date: today, title: '补消耗品', kind: 'restock', status: 'todo', urgency: 'low' },
+    { id: uuid(), date: today, title: '维修跟进', kind: 'maintenance', status: 'todo', urgency: 'high' },
+    { id: uuid(), date: today, title: '检查（Inspection）', kind: 'inspection', status: 'todo', urgency: 'medium' },
+  )
 }
 
 if (db.cleaners.length === 0) {

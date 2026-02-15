@@ -34,7 +34,22 @@ export async function getJSON<T>(path: string): Promise<T> {
     if (typeof window !== 'undefined') window.location.href = '/login'
     throw new Error('HTTP 401')
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok) {
+    try {
+      const ct = res.headers.get('content-type') || ''
+      if (/application\/json/i.test(ct)) {
+        const j = await res.json() as any
+        const msg = String(j?.message || j?.error || `HTTP ${res.status}`)
+        throw new Error(msg)
+      } else {
+        const t = await res.text()
+        const msg = t ? t : `HTTP ${res.status}`
+        throw new Error(msg)
+      }
+    } catch {
+      throw new Error(`HTTP ${res.status}`)
+    }
+  }
   return res.json() as Promise<T>
 }
 
