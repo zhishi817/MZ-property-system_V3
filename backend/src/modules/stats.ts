@@ -3,6 +3,7 @@ import { hasPg, pgPool } from '../dbAdapter'
 import { db } from '../store'
 import { requireAnyPerm } from '../auth'
 import { z } from 'zod'
+import { ensureCleaningSchemaV2 } from '../services/cleaningSync'
 
 export const router = Router()
 
@@ -83,82 +84,61 @@ router.get('/cleaning-overview', requireAnyPerm(['cleaning.view','cleaning.sched
   const dateStr = parsedDate.success ? parsedDate.data : undefined
   try {
     if (hasPg && pgPool) {
-      const dayExprCheckin = `CASE WHEN substring(o.checkin::text,1,10) ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN substring(o.checkin::text,1,10)::date END`
-      const dayExprCheckout = `CASE WHEN substring(o.checkout::text,1,10) ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN substring(o.checkout::text,1,10)::date END`
-      const sql = `
+      await ensureCleaningSchemaV2()
+      const baseSql = `SELECT COALESCE($1::date, (now() AT TIME ZONE 'Australia/Melbourne')::date) AS day_au`
+      const baseRes = await pgPool.query(baseSql, [dateStr || null])
+      const baseDay = baseRes?.rows?.[0]?.day_au ? String(baseRes.rows[0].day_au).slice(0, 10) : (dateStr || '')
+
+      const byStatusSql = `
+        SELECT COALESCE(status,'pending') AS status, COUNT(*)::int AS c
+        FROM cleaning_tasks
+        WHERE (task_date::date) = ($1::date)
+        GROUP BY COALESCE(status,'pending')
+      `
+      const r1 = await pgPool.query(byStatusSql, [baseDay])
+      const byStatus: Record<string, number> = {}
+      for (const row of (r1?.rows || [])) {
+        byStatus[String(row.status || 'pending')] = Number(row.c || 0)
+      }
+
+      const unassignedSql = `
+        SELECT COUNT(*)::int AS c
+        FROM cleaning_tasks
+        WHERE (task_date::date) = ($1::date)
+          AND assignee_id IS NULL
+          AND COALESCE(status,'') <> 'cancelled'
+      `
+      const r2 = await pgPool.query(unassignedSql, [baseDay])
+      const unassigned = Number(r2?.rows?.[0]?.c || 0)
+
+      const trendSql = `
         WITH base AS (
-          SELECT COALESCE($1::date, (now() AT TIME ZONE 'Australia/Melbourne')::date) AS day_au
+          SELECT ($1::date) AS day_au
         ), days AS (
           SELECT generate_series((SELECT day_au FROM base), (SELECT day_au FROM base) + interval '6 day', interval '1 day')::date AS day
         )
-        SELECT 
-          to_char(d.day, 'YYYY-MM-DD') AS day,
-          COUNT(*) FILTER (WHERE ${dayExprCheckin} = d.day) AS checkin_count,
-          COUNT(*) FILTER (WHERE ${dayExprCheckout} = d.day) AS checkout_count
+        SELECT to_char(d.day, 'YYYY-MM-DD') AS day, COUNT(t.id)::int AS total
         FROM days d
-        LEFT JOIN orders o ON (${dayExprCheckin} = d.day OR ${dayExprCheckout} = d.day)
+        LEFT JOIN cleaning_tasks t ON (t.task_date::date = d.day)
         GROUP BY d.day
         ORDER BY d.day
       `
-      const rDays = await pgPool.query(sql, [dateStr || null])
-      const next7days = (rDays?.rows || []).map((r: any) => ({ date: String(r.day), checkin_count: Number(r.checkin_count || 0), checkout_count: Number(r.checkout_count || 0) }))
+      const r3 = await pgPool.query(trendSql, [baseDay])
+      const next7days = (r3?.rows || []).map((r: any) => ({ date: String(r.day), total: Number(r.total || 0) }))
 
-      const sqlOrders = `
-        WITH base AS (
-          SELECT COALESCE($1::date, (now() AT TIME ZONE 'Australia/Melbourne')::date) AS day_au
-        )
-        SELECT 
-          o.id::text AS id,
-          COALESCE(o.property_id::text, '') AS property_id,
-          COALESCE(p.code, COALESCE(o.property_id::text, '')) AS property_code,
-          COALESCE(o.guest_name, '') AS guest_name,
-          substring(o.checkin::text,1,10) AS checkin,
-          substring(o.checkout::text,1,10) AS checkout,
-          COALESCE(o.source, '') AS source,
-          COALESCE(o.status, '') AS status
-        FROM orders o
-        LEFT JOIN properties p ON (p.id::text = o.property_id::text OR p.code = o.property_id::text)
-        CROSS JOIN base b
-        WHERE ${dayExprCheckin} = b.day_au OR ${dayExprCheckout} = b.day_au
-        ORDER BY COALESCE(p.code, COALESCE(o.property_id::text, '')), o.id
-      `
-      const rOrders = await pgPool.query(sqlOrders, [dateStr || null])
-      const baseDate = dateStr || String(rDays?.rows?.[0]?.day || '').slice(0, 10)
-      const orders = (rOrders?.rows || []).map((r: any) => ({
-        id: String(r.id),
-        property_id: String(r.property_id || ''),
-        property_code: String(r.property_code || ''),
-        guest_name: String(r.guest_name || ''),
-        checkin: String(r.checkin || ''),
-        checkout: String(r.checkout || ''),
-        source: String(r.source || ''),
-        status: String(r.status || ''),
-      }))
-
-      const initCounts = () => ({ total: 0, by_platform: { airbnb: 0, booking: 0, direct: 0, other: 0 } as Record<string, number> })
-      const checkins = initCounts()
-      const checkouts = initCounts()
-      const checkinOrdersByPlatform: Record<string, any[]> = { airbnb: [], booking: [], direct: [], other: [] }
-      const checkoutOrdersByPlatform: Record<string, any[]> = { airbnb: [], booking: [], direct: [], other: [] }
-      orders.forEach((o) => {
-        const p = normalizePlatform(o.source)
-        if (o.checkin === baseDate) {
-          checkins.total++
-          checkins.by_platform[p] = (checkins.by_platform[p] || 0) + 1
-          checkinOrdersByPlatform[p].push(o)
-        }
-        if (o.checkout === baseDate) {
-          checkouts.total++
-          checkouts.by_platform[p] = (checkouts.by_platform[p] || 0) + 1
-          checkoutOrdersByPlatform[p].push(o)
-        }
-      })
-
+      const total = Object.values(byStatus).reduce((a, b) => a + Number(b || 0), 0)
       return res.json({
-        date: baseDate,
+        date: baseDay,
         today: {
-          checkins: { ...checkins, orders_by_platform: checkinOrdersByPlatform },
-          checkouts: { ...checkouts, orders_by_platform: checkoutOrdersByPlatform },
+          total,
+          unassigned,
+          by_status: {
+            pending: byStatus.pending || 0,
+            assigned: byStatus.assigned || 0,
+            in_progress: byStatus.in_progress || 0,
+            completed: byStatus.completed || 0,
+            cancelled: byStatus.cancelled || byStatus.canceled || 0,
+          },
         },
         next7days,
       })
@@ -168,72 +148,42 @@ router.get('/cleaning-overview', requireAnyPerm(['cleaning.view','cleaning.sched
   }
   try {
     const tz = 'Australia/Melbourne'
-    function dayStrAtTZ(d: Date): string {
+    const dayStrAtTZ = (d: Date): string => {
       const parts = new Intl.DateTimeFormat('en-AU', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d)
       const get = (t: string) => parts.find(p => p.type === t)?.value || ''
-      const yyyy = get('year'); const mm = get('month'); const dd = get('day')
-      return `${yyyy}-${mm}-${dd}`
+      return `${get('year')}-${get('month')}-${get('day')}`
     }
-    const now = new Date()
-    const baseStr = dateStr || dayStrAtTZ(now)
+    const baseStr = dateStr || dayStrAtTZ(new Date())
+    const byStatus: Record<string, number> = {}
+    const tasks = (db.cleaningTasks as any[]).filter((t: any) => String(t.task_date || t.date || '').slice(0, 10) === baseStr)
+    for (const t of tasks) {
+      const st = String(t.status || 'pending')
+      byStatus[st] = (byStatus[st] || 0) + 1
+    }
+    const unassigned = tasks.filter((t: any) => !t.assignee_id && String(t.status || '') !== 'cancelled').length
+    const next7days: any[] = []
     const baseDate = new Date(`${baseStr}T00:00:00`)
-
-    function orderDayStr(s?: string): string {
-      if (!s) return ''
-      const d = new Date(s)
-      return dayStrAtTZ(d)
-    }
-
-    const orders = (db.orders || []).filter((o: any) => {
-      const ci = orderDayStr(o.checkin)
-      const co = orderDayStr(o.checkout)
-      return ci === baseStr || co === baseStr
-    }).map((o: any) => ({
-      id: String(o.id || ''),
-      property_id: String(o.property_id || ''),
-      property_code: String(o.property_code || ''),
-      guest_name: String(o.guest_name || ''),
-      checkin: orderDayStr(o.checkin),
-      checkout: orderDayStr(o.checkout),
-      source: String(o.source || ''),
-      status: String(o.status || ''),
-    }))
-
-    const days: { date: string; checkin_count: number; checkout_count: number }[] = []
     for (let i = 0; i < 7; i++) {
       const d = new Date(baseDate.getTime() + i * 24 * 3600 * 1000)
-      const dayStr = dayStrAtTZ(d)
-      const ci = (db.orders || []).filter((o: any) => orderDayStr(o.checkin) === dayStr).length
-      const co = (db.orders || []).filter((o: any) => orderDayStr(o.checkout) === dayStr).length
-      days.push({ date: dayStr, checkin_count: ci, checkout_count: co })
+      const ds = dayStrAtTZ(d)
+      const total = (db.cleaningTasks as any[]).filter((t: any) => String(t.task_date || t.date || '').slice(0, 10) === ds).length
+      next7days.push({ date: ds, total })
     }
-
-    const initCounts = () => ({ total: 0, by_platform: { airbnb: 0, booking: 0, direct: 0, other: 0 } as Record<string, number> })
-    const checkins = initCounts()
-    const checkouts = initCounts()
-    const checkinOrdersByPlatform: Record<string, any[]> = { airbnb: [], booking: [], direct: [], other: [] }
-    const checkoutOrdersByPlatform: Record<string, any[]> = { airbnb: [], booking: [], direct: [], other: [] }
-    orders.forEach((o: any) => {
-      const p = normalizePlatform(o.source)
-      if (o.checkin === baseStr) {
-        checkins.total++
-        checkins.by_platform[p] = (checkins.by_platform[p] || 0) + 1
-        checkinOrdersByPlatform[p].push(o)
-      }
-      if (o.checkout === baseStr) {
-        checkouts.total++
-        checkouts.by_platform[p] = (checkouts.by_platform[p] || 0) + 1
-        checkoutOrdersByPlatform[p].push(o)
-      }
-    })
-
+    const total = tasks.length
     return res.json({
       date: baseStr,
       today: {
-        checkins: { ...checkins, orders_by_platform: checkinOrdersByPlatform },
-        checkouts: { ...checkouts, orders_by_platform: checkoutOrdersByPlatform },
+        total,
+        unassigned,
+        by_status: {
+          pending: byStatus.pending || 0,
+          assigned: byStatus.assigned || 0,
+          in_progress: byStatus.in_progress || 0,
+          completed: byStatus.completed || 0,
+          cancelled: byStatus.cancelled || byStatus.canceled || 0,
+        },
       },
-      next7days: days,
+      next7days,
     })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'stats compute failed' })

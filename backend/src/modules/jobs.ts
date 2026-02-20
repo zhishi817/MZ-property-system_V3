@@ -694,7 +694,12 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
         if (pgPool) {
           const upd = await pgPool.query('UPDATE orders SET status=$2 WHERE confirmation_code=$1 RETURNING id', [ccCancel, 'cancelled'])
           const oid = upd?.rows?.[0]?.id || null
-          try { if (oid) { const { deriveCleaningTaskFromOrder } = require('../services/cleaningDerive'); await deriveCleaningTaskFromOrder(String(oid)) } } catch {}
+          try {
+            if (oid) {
+              const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
+              await syncOrderToCleaningTasks(String(oid))
+            }
+          } catch {}
           return { matched: true, inserted: false, skipped_duplicate: false, failed: false, updated: !!oid, order_id: oid, last_uid: Number(msg.uid || 0) }
         }
       } catch (e: any) {
@@ -746,7 +751,10 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
       const dup: any[] = await pgSelect('orders', 'id', { source: sourceTag, confirmation_code: cc, property_id: pid }) as any[] || []
       if (Array.isArray(dup) && dup[0]) {
         console.log(JSON.stringify({ tag: 'orders_write_done', action: 'duplicate_check', upserted: false, duplicate: true, order_id: dup[0].id }))
-        try { const { deriveCleaningTaskFromOrder } = require('../services/cleaningDerive'); await deriveCleaningTaskFromOrder(String(dup[0].id)) } catch {}
+        try {
+          const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
+          await syncOrderToCleaningTasks(String(dup[0].id))
+        } catch {}
         try { if (pgPool) { await pgPool.query("UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE uid=$1", [Number(msg.uid || 0), String(dup[0].id || '')]) } } catch {}
         return { matched: true, inserted: false, skipped_duplicate: true, failed: false, order_id: dup[0].id, last_uid: Number(msg.uid || 0) }
       }
@@ -755,10 +763,20 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
     try {
       safeDbLog('orders','upsert', payload, { conflict: ['idempotency_key'] })
       const row = await pgInsertOnConflictDoNothing('orders', payload, ['idempotency_key'])
-      console.log(JSON.stringify({ tag: 'orders_write_done', action: 'upsert', upserted: !!row, duplicate: !row, order_id: row?.id || null }))
-      try { const { deriveCleaningTaskFromOrder } = require('../services/cleaningDerive'); if (row?.id) await deriveCleaningTaskFromOrder(String(row.id)) } catch {}
-      try { if (row?.id && pgPool) { await pgPool.query("UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE uid=$1", [Number(msg.uid || 0), String(row.id || '')]) } } catch {}
-      return { matched: true, inserted: !!row, skipped_duplicate: !row, failed: false, order_id: row?.id, last_uid: Number(msg.uid || 0) }
+      let orderId = row?.id ? String(row.id) : ''
+      if (!orderId) {
+        try {
+          const q = await pgPool!.query('SELECT id::text AS id FROM orders WHERE idempotency_key=$1 LIMIT 1', [String(payload.idempotency_key || '')])
+          orderId = q?.rows?.[0]?.id ? String(q.rows[0].id) : ''
+        } catch {}
+      }
+      console.log(JSON.stringify({ tag: 'orders_write_done', action: 'upsert', upserted: !!row, duplicate: !row, order_id: orderId || null }))
+      try {
+        const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
+        if (orderId) await syncOrderToCleaningTasks(String(orderId))
+      } catch {}
+      try { if (orderId && pgPool) { await pgPool.query("UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE uid=$1", [Number(msg.uid || 0), String(orderId)]) } } catch {}
+      return { matched: true, inserted: !!row, skipped_duplicate: !row, failed: false, order_id: orderId || null, last_uid: Number(msg.uid || 0) }
     } catch (e: any) {
       console.error(JSON.stringify({ tag: 'db_write_failed', table: 'orders', columns: Object.keys(payload), conflict: ['idempotency_key'], code: String((e as any)?.code || ''), message: String(e?.message || ''), payload_keys: Object.keys(payload), payload_sample: { idempotency_key, external_id: cc, property_id: pid, guest_name: fields.guest_name, checkin: ci, checkout: co } }))
       return { matched: true, inserted: false, skipped_duplicate: false, failed: true, reason: 'db_write_failed:orders', last_uid: Number(msg.uid || 0) }
@@ -1067,19 +1085,7 @@ router.post('/email-sync/retry', requirePerm('order.manage'), async (req, res) =
   }
 })
 
-const genRangeSchema = z.object({ from: z.string(), to: z.string(), type: z.string().optional() })
-router.post('/cleaning/generate-for-date-range', requirePerm('cleaning.schedule.manage'), async (req, res) => {
-  const parsed = genRangeSchema.safeParse(req.body || req.query || {})
-  if (!parsed.success) return res.status(400).json(parsed.error.format())
-  try {
-    const { deriveCleaningTasksForDateRange } = require('../services/cleaningDerive')
-    const r = await deriveCleaningTasksForDateRange(parsed.data.from, parsed.data.to, parsed.data.type)
-    return res.json(r)
-  } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'generate_failed' })
-  }
-})
-
+ 
 // 查询最近运行记录（可观测性接口）
 router.get('/email-sync-runs', requirePerm('order.manage'), async (req, res) => {
   try {
@@ -1296,6 +1302,7 @@ router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req
       if (!propCheck?.rows?.[0]) { await client.query('ROLLBACK'); client.release(); return res.status(404).json({ message: 'property_not_found' }) }
       const ins = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, property_id, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
       const newId = String(ins?.rows?.[0]?.id || '')
+      try { if (newId) { const { syncOrderToCleaningTasks } = require('../services/cleaningSync'); await syncOrderToCleaningTasks(newId, { client }) } } catch {}
       await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE (($1::bigint IS NOT NULL AND uid=$1::bigint) OR ($3::text IS NOT NULL AND message_id=$3::text))`, [uid ?? null, newId || null, message_id ?? null])
       await client.query('COMMIT')
       client.release()
@@ -1317,6 +1324,7 @@ router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req
           await client.query('BEGIN')
           const ins2 = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, property_id, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
           const newId2 = String(ins2?.rows?.[0]?.id || '')
+          try { if (newId2) { const { syncOrderToCleaningTasks } = require('../services/cleaningSync'); await syncOrderToCleaningTasks(newId2, { client }) } } catch {}
           await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE (($1::bigint IS NOT NULL AND uid=$1::bigint) OR ($3::text IS NOT NULL AND message_id=$3::text))`, [uid ?? null, newId2 || null, message_id ?? null])
           await client.query('COMMIT')
           client.release()
@@ -1341,6 +1349,7 @@ router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req
           await client.query('BEGIN')
           const ins3 = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, property_id, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
           const newId3 = String(ins3?.rows?.[0]?.id || '')
+          try { if (newId3) { const { syncOrderToCleaningTasks } = require('../services/cleaningSync'); await syncOrderToCleaningTasks(newId3, { client }) } } catch {}
           await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE (($1::bigint IS NOT NULL AND uid=$1::bigint) OR ($3::text IS NOT NULL AND message_id=$3::text))`, [uid ?? null, newId3 || null, message_id ?? null])
           await client.query('COMMIT')
           client.release()
@@ -1401,6 +1410,7 @@ router.post('/email-orders-raw/resolve-bulk', requirePerm('order.manage'), async
           if (!propCheck?.rows?.[0]) { await client.query('ROLLBACK'); client.release(); results.push({ ok: false, error: 'property_not_found', uid, message_id: mid, property_id: pid }); failed++; continue }
           const ins = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, pid, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
           const newId = String(ins?.rows?.[0]?.id || '')
+          try { if (newId) { const { syncOrderToCleaningTasks } = require('../services/cleaningSync'); await syncOrderToCleaningTasks(newId, { client }) } } catch {}
           await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE (($1::bigint IS NOT NULL AND uid=$1::bigint) OR ($3::text IS NOT NULL AND message_id=$3::text))`, [uid ?? null, newId || null, mid ?? null])
           await client.query('COMMIT')
           client.release()
@@ -1423,6 +1433,7 @@ router.post('/email-orders-raw/resolve-bulk', requirePerm('order.manage'), async
               await client.query('BEGIN')
               const ins2 = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, pid, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
               const newId2 = String(ins2?.rows?.[0]?.id || '')
+              try { if (newId2) { const { syncOrderToCleaningTasks } = require('../services/cleaningSync'); await syncOrderToCleaningTasks(newId2, { client }) } } catch {}
               await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE (($1::bigint IS NOT NULL AND uid=$1::bigint) OR ($3::text IS NOT NULL AND message_id=$3::text))`, [uid ?? null, newId2 || null, mid ?? null])
               await client.query('COMMIT')
               client.release()

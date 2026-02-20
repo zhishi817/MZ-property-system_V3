@@ -1,4 +1,8 @@
-import { Pool } from 'pg'
+import { Pool, types } from 'pg'
+
+types.setTypeParser(1082, (val) => val)
+types.setTypeParser(1114, (val) => val)
+types.setTypeParser(1184, (val) => val)
 
 const conn = process.env.DATABASE_URL || ''
 export const pgPool = conn ? new Pool({ connectionString: conn, ssl: { rejectUnauthorized: false }, max: Number(process.env.PG_POOL_MAX || 10), idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000), connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 10000) }) : null

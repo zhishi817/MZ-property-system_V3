@@ -513,6 +513,11 @@ exports.router.get('/my-permissions', auth_1.auth, async (req, res) => {
     if (!user)
         return res.status(401).json({ message: 'unauthorized' });
     const roleName = String(user.role || '');
+    if (roleName === 'admin') {
+        const all = (store_1.db.permissions || []).map((p) => String((p === null || p === void 0 ? void 0 : p.code) || '')).filter(Boolean);
+        const list = expandPermissionSynonyms(all);
+        return res.json(Array.from(new Set(list)));
+    }
     let roleId = (_a = store_1.db.roles.find(r => r.name === roleName)) === null || _a === void 0 ? void 0 : _a.id;
     try {
         if (dbAdapter_1.hasPg) {
@@ -555,8 +560,8 @@ exports.router.get('/my-permissions', auth_1.auth, async (req, res) => {
             return res.json(Array.from(normalized));
         }
     }
-    catch (e) {
-        return res.status(500).json({ message: e.message });
+    catch (_c) {
+        return res.json([]);
     }
     if (!roleId)
         return res.json([]);

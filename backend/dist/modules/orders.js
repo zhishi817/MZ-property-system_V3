@@ -25,6 +25,21 @@ function dayOnly(s) {
     const m = /^\d{4}-\d{2}-\d{2}/.exec(String(s));
     return m ? m[0] : undefined;
 }
+function normalizePropertyId(raw) {
+    const s = String(raw || '').trim();
+    if (!s)
+        return undefined;
+    const m = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(true|false)?$/i.exec(s);
+    return m ? m[1] : s;
+}
+async function syncCleaningTasksForOrderId(orderId) {
+    const { syncOrderToCleaningTasks } = require('../services/cleaningSync');
+    await syncOrderToCleaningTasks(String(orderId));
+}
+async function syncCleaningTasksForOrderIdTx(orderId, client) {
+    const { syncOrderToCleaningTasks } = require('../services/cleaningSync');
+    await syncOrderToCleaningTasks(String(orderId), { client });
+}
 async function findSimilarOrders(candidate) {
     var _a, _b, _c, _d;
     const reasons = [];
@@ -464,7 +479,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
             return res.status(400).json({ message: '入住日期必须早于退房日期' });
     }
     catch (_g) { }
-    let propertyId = o.property_id || (o.property_code ? ((_c = store_1.db.properties.find(p => (p.code || '') === o.property_code)) === null || _c === void 0 ? void 0 : _c.id) : undefined);
+    let propertyId = normalizePropertyId(o.property_id) || (o.property_code ? ((_c = store_1.db.properties.find(p => (p.code || '') === o.property_code)) === null || _c === void 0 ? void 0 : _c.id) : undefined);
     // 如果传入的 property_id 不存在于 PG，则尝试用房号 code 在 PG 中查找并替换
     if (dbAdapter_1.hasPg) {
         try {
@@ -542,7 +557,11 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                             if (newOrder[k] !== undefined)
                                 payload[k] = newOrder[k];
                         }
-                        const row = await (0, dbAdapter_1.pgUpdate)('orders', String(dup[0].id), payload);
+                        const row = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                            const r1 = await (0, dbAdapter_1.pgUpdate)('orders', String(dup[0].id), payload, client);
+                            await syncCleaningTasksForOrderIdTx(String(dup[0].id), client);
+                            return r1;
+                        });
                         try {
                             (0, events_1.broadcastOrdersUpdated)({ action: 'update', id: String(dup[0].id) });
                         }
@@ -579,7 +598,11 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
             delete insertOrder.property_code;
             await ensureOrdersColumns();
             await ensureOrdersIndexes();
-            const row = await (0, dbAdapter_1.pgInsert)('orders', insertOrder);
+            const row = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                const r1 = await (0, dbAdapter_1.pgInsert)('orders', insertOrder, client);
+                await syncCleaningTasksForOrderIdTx(String((r1 === null || r1 === void 0 ? void 0 : r1.id) || newOrder.id), client);
+                return r1;
+            });
             try {
                 (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: row === null || row === void 0 ? void 0 : row.id });
             }
@@ -597,7 +620,11 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                     await ensureOrdersIndexes();
                     const ins = { ...newOrder };
                     delete ins.property_code;
-                    const row = await (0, dbAdapter_1.pgInsert)('orders', ins);
+                    const row = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                        const r1 = await (0, dbAdapter_1.pgInsert)('orders', ins, client);
+                        await syncCleaningTasksForOrderIdTx(String((r1 === null || r1 === void 0 ? void 0 : r1.id) || newOrder.id), client);
+                        return r1;
+                    });
                     return res.status(201).json(row);
                 }
                 catch (e2) {
@@ -616,6 +643,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
         (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: newOrder.id });
     }
     catch (_r) { }
+    syncCleaningTasksForOrderId(String(newOrder.id)).catch(() => { });
     return res.status(201).json(newOrder);
 });
 exports.router.post('/validate-duplicate', (0, auth_1.requireAnyPerm)(['order.create', 'order.manage']), async (req, res) => {
@@ -770,6 +798,12 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
                         }
                     }
                 }
+                try {
+                    await syncCleaningTasksForOrderIdTx(String(id), client);
+                }
+                catch (e) {
+                    throw e;
+                }
                 return r1;
             });
             if (idx !== -1)
@@ -795,7 +829,11 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
                         if (updated[k] !== undefined)
                             payload2[k] = updated[k];
                     }
-                    const row = await (0, dbAdapter_1.pgUpdate)('orders', id, payload2);
+                    const row = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                        const r1 = await (0, dbAdapter_1.pgUpdate)('orders', id, payload2, client);
+                        await syncCleaningTasksForOrderIdTx(String(id), client);
+                        return r1;
+                    });
                     if (idx !== -1)
                         store_1.db.orders[idx] = row;
                     return res.json(row);
@@ -814,6 +852,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
         (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
     }
     catch (_h) { }
+    syncCleaningTasksForOrderId(String(id)).catch(() => { });
     return res.json(updated);
 });
 exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), (req, res) => {
@@ -865,56 +904,45 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('order.write'), async (req
         removed = store_1.db.orders[idx];
         store_1.db.orders.splice(idx, 1);
     }
-    if (dbAdapter_1.hasPg) {
-        try {
-            const row = await (0, dbAdapter_1.pgDelete)('orders', id);
-            removed = removed || row;
+    try {
+        const { syncOrderToCleaningTasks } = require('../services/cleaningSync');
+        if (dbAdapter_1.hasPg) {
+            try {
+                await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                    try {
+                        await (0, dbAdapter_1.pgDelete)('orders', id, client);
+                    }
+                    catch (_a) { }
+                    try {
+                        await syncOrderToCleaningTasks(String(id), { deleted: true, client });
+                    }
+                    catch (_b) { }
+                });
+            }
+            catch (_a) {
+                return res.status(500).json({ message: '数据库删除失败' });
+            }
             try {
                 (0, events_1.broadcastOrdersUpdated)({ action: 'delete', id });
             }
-            catch (_a) { }
+            catch (_b) { }
             return res.json({ ok: true, id });
         }
-        catch (e) {
-            return res.status(500).json({ message: '数据库删除失败' });
+        try {
+            await syncOrderToCleaningTasks(String(id), { deleted: true });
         }
+        catch (_c) { }
     }
-    // Supabase branch removed
+    catch (_d) { }
     if (!removed)
         return res.status(404).json({ message: 'order not found' });
     try {
         (0, events_1.broadcastOrdersUpdated)({ action: 'delete', id });
     }
-    catch (_b) { }
-    return res.json({ ok: true, id: removed.id });
-});
-exports.router.delete('/:id', (0, auth_1.requirePerm)('order.write'), async (req, res) => {
-    const { id } = req.params;
-    const idx = store_1.db.orders.findIndex((x) => x.id === id);
-    if (idx === -1)
-        return res.status(404).json({ message: 'order not found' });
-    const removed = store_1.db.orders[idx];
-    store_1.db.orders.splice(idx, 1);
-    if (dbAdapter_1.hasPg) {
-        try {
-            await (0, dbAdapter_1.pgDelete)('orders', id);
-        }
-        catch (_a) { }
-    }
+    catch (_e) { }
     return res.json({ ok: true, id: removed.id });
 });
 // 清洁任务模块已移除
-exports.router.post('/:id/generate-cleaning', (0, auth_1.requireAnyPerm)(['order.manage', 'cleaning.schedule.manage']), async (req, res) => {
-    const { id } = req.params;
-    try {
-        const { deriveCleaningTaskFromOrder } = require('../services/cleaningDerive');
-        const row = await deriveCleaningTaskFromOrder(String(id));
-        return res.json({ ok: true, task: row });
-    }
-    catch (e) {
-        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'derive_failed' });
-    }
-});
 exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, express_1.text)({ type: ['text/csv', 'text/plain'] }), async (req, res) => {
     var _a, _b;
     function toNumber(v) {
@@ -1303,6 +1331,10 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                     const insertPayload = { ...newOrder };
                     delete insertPayload.property_code;
                     await (0, dbAdapter_1.pgInsert)('orders', insertPayload);
+                    try {
+                        syncCleaningTasksForOrderId(String(insertPayload.id || newOrder.id)).catch(() => { });
+                    }
+                    catch (_o) { }
                     writeOk = true;
                 }
                 catch (e) {
@@ -1319,10 +1351,14 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                                         payload[k] = newOrder[k];
                                 }
                                 await (0, dbAdapter_1.pgUpdate)('orders', String(dup[0].id), payload);
+                                try {
+                                    syncCleaningTasksForOrderId(String(dup[0].id)).catch(() => { });
+                                }
+                                catch (_p) { }
                                 continue;
                             }
                         }
-                        catch (_o) { }
+                        catch (_q) { }
                         results.push({ ok: false, error: 'duplicate', confirmation_code: newOrder.confirmation_code, source: newOrder.source, property_id: newOrder.property_id });
                         skipped++;
                         continue;
@@ -1477,16 +1513,20 @@ exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage
                         }
                         const row = await (0, dbAdapter_1.pgUpdate)('orders', String(dup[0].id), payload);
                         try {
-                            (0, events_1.broadcastOrdersUpdated)({ action: 'update', id: String(dup[0].id) });
+                            syncCleaningTasksForOrderId(String(dup[0].id)).catch(() => { });
                         }
                         catch (_e) { }
+                        try {
+                            (0, events_1.broadcastOrdersUpdated)({ action: 'update', id: String(dup[0].id) });
+                        }
+                        catch (_f) { }
                         return res.status(200).json(row || dup[0]);
                     }
-                    catch (_f) { }
+                    catch (_g) { }
                 }
             }
         }
-        catch (_g) { }
+        catch (_h) { }
         const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout);
         if (conflict)
             return res.status(409).json({ message: 'overlap' });
@@ -1517,11 +1557,15 @@ exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage
                 try {
                     await (0, dbAdapter_1.pgUpdate)('order_import_staging', id, { status: 'resolved', property_id, resolved_at: new Date().toISOString() });
                 }
-                catch (_h) { }
+                catch (_j) { }
                 try {
                     (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: newOrder.id });
                 }
-                catch (_j) { }
+                catch (_k) { }
+                try {
+                    syncCleaningTasksForOrderId(String(newOrder.id)).catch(() => { });
+                }
+                catch (_l) { }
             }
         }
         else {
@@ -1531,7 +1575,11 @@ exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage
             try {
                 (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: newOrder.id });
             }
-            catch (_k) { }
+            catch (_m) { }
+            try {
+                syncCleaningTasksForOrderId(String(newOrder.id)).catch(() => { });
+            }
+            catch (_o) { }
         }
         return res.status(201).json(newOrder);
     }
@@ -1901,6 +1949,10 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                                 throw e2;
                             }
                         }
+                        try {
+                            syncCleaningTasksForOrderId(String(exists.id)).catch(() => { });
+                        }
+                        catch (_k) { }
                         updatedCount++;
                     }
                     else {
@@ -1932,22 +1984,38 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                         if ((row === null || row === void 0 ? void 0 : row.id) && idToCode[pid])
                             row.property_code = idToCode[pid];
                         store_1.db.orders.push(row);
+                        try {
+                            if (row === null || row === void 0 ? void 0 : row.id)
+                                syncCleaningTasksForOrderId(String(row.id)).catch(() => { });
+                        }
+                        catch (_l) { }
                         createdCount++;
                     }
                     try {
                         (0, events_1.broadcastOrdersUpdated)({ action: exists ? 'update' : 'create', id: ((exists === null || exists === void 0 ? void 0 : exists.id) || undefined) });
                     }
-                    catch (_k) { }
+                    catch (_m) { }
                 }
                 else {
-                    if (exists)
+                    let oid = '';
+                    if (exists) {
                         Object.assign(exists, payload);
-                    else
-                        store_1.db.orders.push({ id: require('uuid').v4(), ...payload });
+                        oid = String(exists.id || '');
+                    }
+                    else {
+                        const rowLocal = { id: require('uuid').v4(), ...payload };
+                        store_1.db.orders.push(rowLocal);
+                        oid = String(rowLocal.id || '');
+                    }
+                    try {
+                        if (oid)
+                            syncCleaningTasksForOrderId(String(oid)).catch(() => { });
+                    }
+                    catch (_o) { }
                     try {
                         (0, events_1.broadcastOrdersUpdated)({ action: exists ? 'update' : 'create' });
                     }
-                    catch (_l) { }
+                    catch (_p) { }
                     if (exists)
                         updatedCount++;
                     else
@@ -1956,7 +2024,7 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
                 try {
                     (0, store_1.addAudit)('OrderImportAudit', ((exists === null || exists === void 0 ? void 0 : exists.id) || (payload === null || payload === void 0 ? void 0 : payload.confirmation_code) || 'unknown'), 'process', null, { source_platform: platform, external_id: cc, total_payment_raw: (platform === 'booking' ? Number(tpRawStr) : undefined), price, status: 'ok', actor_id: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub, processed_at: new Date().toISOString() }, (_b = req.user) === null || _b === void 0 ? void 0 : _b.sub);
                 }
-                catch (_m) { }
+                catch (_q) { }
             }
             catch (e) {
                 errors.push({ rowIndex: rowIndexBase + i, confirmation_code: cc, listing_name: ln, reason: '写入失败: ' + String((e === null || e === void 0 ? void 0 : e.message) || '') });
@@ -1976,7 +2044,7 @@ exports.router.post('/actions/importBookings', (0, auth_1.requirePerm)('order.ma
             else
                 store_1.db.orderImportStaging.push(payload);
         }
-        catch (_o) { }
+        catch (_r) { }
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'import failed', buildVersion: (process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown') });
     }
 });
@@ -2054,6 +2122,31 @@ exports.router.post('/actions/dedupeByConfirmationCode', (0, auth_1.requirePerm)
         });
         if (!dryRun) {
             await ensureOrdersIndexes();
+        }
+        if (!dryRun) {
+            try {
+                const { syncOrderToCleaningTasks } = require('../services/cleaningSync');
+                for (const it of results) {
+                    const kept = (it === null || it === void 0 ? void 0 : it.kept_id) ? String(it.kept_id) : '';
+                    if (kept) {
+                        try {
+                            await syncOrderToCleaningTasks(kept);
+                        }
+                        catch (_a) { }
+                    }
+                    const dels = Array.isArray(it === null || it === void 0 ? void 0 : it.deleted_ids) ? it.deleted_ids : [];
+                    for (const did of dels) {
+                        const dd = did ? String(did) : '';
+                        if (!dd)
+                            continue;
+                        try {
+                            await syncOrderToCleaningTasks(dd, { deleted: true });
+                        }
+                        catch (_b) { }
+                    }
+                }
+            }
+            catch (_c) { }
         }
         return res.json({ ok: true, deduped: results.length, items: results });
     }
@@ -2314,10 +2407,18 @@ exports.router.post('/:id/confirm-payment', (0, auth_1.requirePerm)('order.confi
     if (dbAdapter_1.hasPg) {
         try {
             const row = await (0, dbAdapter_1.pgUpdate)('orders', id, { payment_received: true });
+            try {
+                syncCleaningTasksForOrderId(String(id)).catch(() => { });
+            }
+            catch (_b) { }
             return res.json(row || base);
         }
-        catch (_b) { }
+        catch (_c) { }
     }
+    try {
+        syncCleaningTasksForOrderId(String(id)).catch(() => { });
+    }
+    catch (_d) { }
     return res.json(base);
 });
 exports.router.post('/:id/unconfirm-payment', (0, auth_1.requirePerm)('order.confirm_payment'), async (req, res) => {
@@ -2338,10 +2439,18 @@ exports.router.post('/:id/unconfirm-payment', (0, auth_1.requirePerm)('order.con
     if (dbAdapter_1.hasPg) {
         try {
             const row = await (0, dbAdapter_1.pgUpdate)('orders', id, { payment_received: false });
+            try {
+                syncCleaningTasksForOrderId(String(id)).catch(() => { });
+            }
+            catch (_b) { }
             return res.json(row || base);
         }
-        catch (_b) { }
+        catch (_c) { }
     }
+    try {
+        syncCleaningTasksForOrderId(String(id)).catch(() => { });
+    }
+    catch (_d) { }
     return res.json(base);
 });
 const importJobs = {};
@@ -2565,6 +2674,7 @@ async function startImportJob(csv, channel) {
                     try {
                         await (0, dbAdapter_1.pgInsert)('orders', insertPayload);
                         job.inserted++;
+                        syncCleaningTasksForOrderId(String(newOrder.id)).catch(() => { });
                     }
                     catch (_d) {
                         job.skipped++;

@@ -1,0 +1,41 @@
+{
+  "overallOk": true,
+  "results": [
+    {
+      "kind": "diff",
+      "browser": "chromium",
+      "vp": "1920x400",
+      "actualPath": "ui/cleaning-daily-task-report/screenshots/chromium/1920x400.png",
+      "diffPath": "ui/cleaning-daily-task-report/diffs/chromium/1920x400.png",
+      "pct": 0,
+      "pass": true
+    },
+    {
+      "kind": "diff",
+      "browser": "chromium",
+      "vp": "1366x400",
+      "actualPath": "ui/cleaning-daily-task-report/screenshots/chromium/1366x400.png",
+      "diffPath": "ui/cleaning-daily-task-report/diffs/chromium/1366x400.png",
+      "pct": 0,
+      "pass": true
+    },
+    {
+      "kind": "diff",
+      "browser": "webkit",
+      "vp": "1920x400",
+      "actualPath": "ui/cleaning-daily-task-report/screenshots/webkit/1920x400.png",
+      "diffPath": "ui/cleaning-daily-task-report/diffs/webkit/1920x400.png",
+      "pct": 0,
+      "pass": true
+    },
+    {
+      "kind": "diff",
+      "browser": "webkit",
+      "vp": "1366x400",
+      "actualPath": "ui/cleaning-daily-task-report/screenshots/webkit/1366x400.png",
+      "diffPath": "ui/cleaning-daily-task-report/diffs/webkit/1366x400.png",
+      "pct": 0,
+      "pass": true
+    }
+  ]
+}

@@ -1,66 +1,77 @@
 "use client"
-import { Alert, Button, Card, Col, Drawer, Input, List, Modal, Row, Select, Space, Tag, Typography } from 'antd'
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { API_BASE, getJSON, patchJSON, postJSON } from '../../../lib/api'
-import { useRouter } from 'next/navigation'
+import { Alert, Button, DatePicker, Drawer, Form, Input, Modal, Popconfirm, Select, Space, message } from 'antd'
+import { useCallback, useEffect, useState } from 'react'
+import dayjs, { type Dayjs } from 'dayjs'
+import { API_BASE, deleteJSON, getJSON, patchJSON, postJSON } from '../../../lib/api'
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { computePeak, flattenOrdersByPlatform, type OrderLite, type Platform, type TodayBlock } from '../../../lib/cleaningOverview'
+import { sortProperties } from '../../../lib/properties'
+import { ClockCircleOutlined, DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined, RiseOutlined } from '@ant-design/icons'
+import styles from './cleaningOverview.module.scss'
 
 type OverviewResp = {
   date: string
   today: {
-    checkins: TodayBlock
-    checkouts: TodayBlock
+    total: number
+    unassigned: number
+    by_status: {
+      pending: number
+      assigned: number
+      in_progress: number
+      completed: number
+      cancelled: number
+    }
   }
-  next7days: { date: string; checkin_count: number; checkout_count: number }[]
+  next7days: { date: string; total: number }[]
 }
 
 type OfflineTask = {
   id: string
   date: string
+  task_type: 'property' | 'company' | 'other'
   title: string
+  content?: string | null
   kind: string
   status: 'todo' | 'done'
   urgency: 'low' | 'medium' | 'high' | 'urgent'
   property_id?: string | null
+  assignee_id?: string | null
 }
 
-const platformLabel: Record<Platform, string> = {
-  airbnb: 'Airbnb',
-  booking: 'Booking',
-  direct: 'Direct',
+type StaffLite = { id: string; name: string }
+type PropertyLite = { id: string; code?: string; address?: string }
+
+const kindLabel: Record<string, string> = {
+  key_hanging: '挂钥匙',
+  password_change: '换密码',
+  restock: '补消耗品',
+  maintenance: '维修',
+  inspection: '检查（Inspection）',
   other: '其他',
 }
 
-const urgencyColor: Record<OfflineTask['urgency'], string> = {
-  low: 'default',
-  medium: 'blue',
-  high: 'orange',
-  urgent: 'red',
-}
-
 export default function CleaningOverviewPage() {
-  const router = useRouter()
   const [data, setData] = useState<OverviewResp | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const [drawerTitle, setDrawerTitle] = useState('')
-  const [drawerOrders, setDrawerOrders] = useState<OrderLite[]>([])
   const [offlineTasks, setOfflineTasks] = useState<OfflineTask[]>([])
   const [createOpen, setCreateOpen] = useState(false)
-  const [newTitle, setNewTitle] = useState('')
-  const [newKind, setNewKind] = useState('other')
-  const [newUrgency, setNewUrgency] = useState<OfflineTask['urgency']>('medium')
+  const [staff, setStaff] = useState<StaffLite[]>([])
+  const [properties, setProperties] = useState<PropertyLite[]>([])
+  const [createForm] = Form.useForm()
+  const [editForm] = Form.useForm()
+  const [editOpen, setEditOpen] = useState(false)
+  const [editing, setEditing] = useState<OfflineTask | null>(null)
+  const [rescheduleOpen, setRescheduleOpen] = useState(false)
+  const [rescheduleTask, setRescheduleTask] = useState<OfflineTask | null>(null)
+  const [rescheduleDate, setRescheduleDate] = useState<Dayjs | null>(null)
+  const [dbStatus, setDbStatus] = useState<any>(null)
 
   const reload = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true)
     if (!opts?.silent) setLoadError(null)
     try {
-      const [resp, tasks] = await Promise.all([
-        getJSON<OverviewResp>('/stats/cleaning-overview'),
-        getJSON<OfflineTask[]>('/cleaning/offline-tasks'),
-      ])
+      const resp = await getJSON<OverviewResp>('/stats/cleaning-overview')
+      const tasks = await getJSON<OfflineTask[]>(`/cleaning/offline-tasks?date=${encodeURIComponent(resp.date)}&include_overdue=1`)
       setData(resp)
       setOfflineTasks(Array.isArray(tasks) ? tasks : [])
     } catch (e: any) {
@@ -73,6 +84,15 @@ export default function CleaningOverviewPage() {
   useEffect(() => {
     reload().catch(() => {})
   }, [reload])
+  useEffect(() => {
+    getJSON<StaffLite[]>('/cleaning/staff')
+      .then((rows) => setStaff(Array.isArray(rows) ? rows : []))
+      .catch(() => setStaff([]))
+    getJSON<PropertyLite[]>('/properties')
+      .then((rows) => setProperties(Array.isArray(rows) ? rows : []))
+      .catch(() => setProperties([]))
+    getJSON<any>('/health/db').then(setDbStatus).catch(() => setDbStatus(null))
+  }, [])
   useEffect(() => {
     const id = window.setInterval(() => {
       reload({ silent: true }).catch(() => {})
@@ -88,218 +108,432 @@ export default function CleaningOverviewPage() {
     return () => { try { es?.close() } catch {} }
   }, [reload])
 
-  const allTodayCheckins = useMemo(() => {
-    return flattenOrdersByPlatform(data?.today?.checkins?.orders_by_platform)
-  }, [data])
-
-  const allTodayCheckouts = useMemo(() => {
-    return flattenOrdersByPlatform(data?.today?.checkouts?.orders_by_platform)
-  }, [data])
-
-  const openOrders = useCallback((kind: 'checkin' | 'checkout', platform?: Platform) => {
-    const base = kind === 'checkin' ? data?.today?.checkins : data?.today?.checkouts
-    const orders =
-      platform ? (base?.orders_by_platform?.[platform] || []) : (kind === 'checkin' ? allTodayCheckins : allTodayCheckouts)
-    if (orders.length === 1) {
-      router.push(`/orders/${orders[0].id}`)
-      return
-    }
-    const titleBase = kind === 'checkin' ? '今日入住' : '今日退房'
-    setDrawerTitle(platform ? `${titleBase} · ${platformLabel[platform]}` : titleBase)
-    setDrawerOrders(orders)
-    setDrawerOpen(true)
-  }, [allTodayCheckins, allTodayCheckouts, data, router])
-
   const dateLabel = data?.date ? `（${data.date}）` : ''
-  const peak = useMemo(() => computePeak(data?.next7days), [data])
+  const viewDate = data?.date || dayjs().format('YYYY-MM-DD')
+  const today = data?.today
 
-  const updateOfflineTask = useCallback(async (id: string, patch: Partial<Pick<OfflineTask, 'status' | 'urgency' | 'title' | 'kind' | 'property_id'>>) => {
+  const updateOfflineTask = useCallback(async (id: string, patch: Partial<Pick<OfflineTask, 'status' | 'urgency' | 'title' | 'content' | 'kind' | 'property_id' | 'task_type' | 'assignee_id' | 'date'>>) => {
     const updated = await patchJSON<OfflineTask>(`/cleaning/offline-tasks/${id}`, patch)
-    setOfflineTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...updated } : t)))
-  }, [])
+    setOfflineTasks((prev) => {
+      const next = prev.map((t) => (t.id === id ? { ...t, ...updated } : t))
+      const u = next.find((t) => t.id === id)
+      if (u && String(u.date).slice(0, 10) !== viewDate) return next.filter((t) => t.id !== id)
+      return next
+    })
+    return updated
+  }, [viewDate])
+
+  const openCreate = useCallback(() => {
+    setCreateOpen(true)
+    createForm.setFieldsValue({
+      date: dayjs(viewDate),
+      task_type: 'other',
+      title: '',
+      content: '',
+      kind: 'other',
+      urgency: 'medium',
+      property_id: undefined,
+      assignee_id: undefined,
+    })
+  }, [createForm, viewDate])
 
   const createOfflineTask = useCallback(async () => {
-    const title = newTitle.trim()
-    if (!title) return
-    const created = await postJSON<OfflineTask>('/cleaning/offline-tasks', { title, kind: newKind, urgency: newUrgency, date: data?.date })
-    setOfflineTasks((prev) => [created, ...prev])
+    const v = await createForm.validateFields()
+    const payload: any = {
+      date: v.date ? dayjs(v.date).format('YYYY-MM-DD') : viewDate,
+      task_type: v.task_type,
+      title: String(v.title || '').trim(),
+      content: String(v.content || '').trim(),
+      kind: v.kind,
+      urgency: v.urgency,
+      property_id: v.task_type === 'property' ? v.property_id : undefined,
+      assignee_id: v.assignee_id || undefined,
+    }
+    const created = await postJSON<OfflineTask>('/cleaning/offline-tasks', payload)
+    if (String(created.date).slice(0, 10) === viewDate) setOfflineTasks((prev) => [created, ...prev])
+    else reload({ silent: true }).catch(() => {})
     setCreateOpen(false)
-    setNewTitle('')
-    setNewKind('other')
-    setNewUrgency('medium')
-  }, [data?.date, newKind, newTitle, newUrgency])
+    createForm.resetFields()
+    message.success('任务已创建')
+  }, [createForm, reload, viewDate])
+
+  const openEdit = useCallback((t: OfflineTask) => {
+    setEditing(t)
+    setEditOpen(true)
+    editForm.setFieldsValue({
+      date: dayjs(String(t.date).slice(0, 10)),
+      task_type: t.task_type || 'other',
+      title: t.title || '',
+      content: t.content || '',
+      kind: t.kind || 'other',
+      urgency: t.urgency || 'medium',
+      property_id: t.property_id || undefined,
+      assignee_id: t.assignee_id || undefined,
+      status: t.status,
+    })
+  }, [editForm])
+
+  const saveEdit = useCallback(async () => {
+    if (!editing) return
+    const v = await editForm.validateFields()
+    const patch: any = {
+      date: v.date ? dayjs(v.date).format('YYYY-MM-DD') : undefined,
+      task_type: v.task_type,
+      title: String(v.title || '').trim(),
+      content: String(v.content || '').trim(),
+      kind: v.kind,
+      urgency: v.urgency,
+      status: v.status,
+      property_id: v.task_type === 'property' ? (v.property_id || null) : null,
+      assignee_id: v.assignee_id || null,
+    }
+    const updated = await updateOfflineTask(editing.id, patch)
+    setEditing(updated)
+    if (String(updated.date).slice(0, 10) !== viewDate) setEditOpen(false)
+    message.success('已保存')
+  }, [editForm, editing, updateOfflineTask, viewDate])
+
+  const deleteOfflineTask = useCallback(async (id: string) => {
+    await deleteJSON(`/cleaning/offline-tasks/${id}`)
+    setOfflineTasks((prev) => prev.filter((t) => t.id !== id))
+    if (editing?.id === id) setEditOpen(false)
+    message.success('已删除')
+  }, [editing?.id])
+
+  const openReschedule = useCallback((t: OfflineTask) => {
+    setRescheduleTask(t)
+    setRescheduleDate(dayjs(viewDate).add(1, 'day'))
+    setRescheduleOpen(true)
+  }, [viewDate])
+
+  const submitReschedule = useCallback(async () => {
+    if (!rescheduleTask) return
+    const nextDate = rescheduleDate ? dayjs(rescheduleDate).format('YYYY-MM-DD') : null
+    if (!nextDate) return
+    await updateOfflineTask(rescheduleTask.id, { date: nextDate, status: 'todo' })
+    setRescheduleOpen(false)
+    setRescheduleTask(null)
+    message.success('已更新执行日期')
+  }, [rescheduleDate, rescheduleTask, updateOfflineTask])
+
+  const staffNameById = useCallback((id?: string | null) => {
+    if (!id) return null
+    return staff.find((s) => String(s.id) === String(id))?.name || String(id)
+  }, [staff])
+
+  const propertyLabelById = useCallback((id?: string | null) => {
+    if (!id) return null
+    const p = properties.find((x) => String(x.id) === String(id))
+    return p ? (p.code || p.address || p.id) : String(id)
+  }, [properties])
 
   return (
-    <Space direction="vertical" style={{ width: '100%' }} size={16}>
-      <Card title={`清洁总览${dateLabel}`} loading={loading}>
-        {loadError ? <Alert type="error" showIcon message="清洁总览数据加载失败" description={loadError} style={{ marginBottom: 12 }} /> : null}
-        <Row gutter={[12, 12]}>
-          <Col xs={24} md={12}>
-            <Card size="small" title="今日退房数量" styles={{ body: { padding: 12 } }}>
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                <Typography.Link onClick={() => openOrders('checkout')} style={{ fontSize: 28, fontWeight: 700 }}>
-                  {data?.today?.checkouts?.total ?? 0}
-                </Typography.Link>
-                <Space wrap>
-                  {(Object.keys(platformLabel) as Platform[]).map((p) => (
-                    <Tag key={p} style={{ cursor: 'pointer' }} onClick={() => openOrders('checkout', p)}>
-                      {platformLabel[p]}：{data?.today?.checkouts?.by_platform?.[p] ?? 0}
-                    </Tag>
-                  ))}
-                </Space>
-              </Space>
-            </Card>
-          </Col>
-          <Col xs={24} md={12}>
-            <Card size="small" title="今日入住数量" styles={{ body: { padding: 12 } }}>
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                <Typography.Link onClick={() => openOrders('checkin')} style={{ fontSize: 28, fontWeight: 700 }}>
-                  {data?.today?.checkins?.total ?? 0}
-                </Typography.Link>
-                <Space wrap>
-                  {(Object.keys(platformLabel) as Platform[]).map((p) => (
-                    <Tag key={p} style={{ cursor: 'pointer' }} onClick={() => openOrders('checkin', p)}>
-                      {platformLabel[p]}：{data?.today?.checkins?.by_platform?.[p] ?? 0}
-                    </Tag>
-                  ))}
-                </Space>
-              </Space>
-            </Card>
-          </Col>
-        </Row>
-      </Card>
+    <div className={styles.page}>
+      <div className={styles.container}>
+        <div className={styles.topTitle}>清洁总览{dateLabel}</div>
+        {loadError ? <Alert type="error" showIcon message="清洁总览数据加载失败" description={loadError} /> : null}
+        {dbStatus && dbStatus.pg === false ? <Alert type="warning" showIcon message="后端未连接数据库" description={String(dbStatus.pg_error || 'pg=false')} /> : null}
 
-      <Card
-        title="未来7天入住/退房趋势"
-        extra={peak ? <Tag color="volcano">清洁压力峰值：{peak.date}（{peak.total}）</Tag> : null}
-      >
-        <div style={{ width: '100%', height: 320 }}>
-          <ResponsiveContainer>
-            <BarChart data={data?.next7days || []} margin={{ top: 12, right: 16, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
-              <YAxis allowDecimals={false} />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey="checkout_count" name="退房" fill="#4AB1F2" />
-              <Bar dataKey="checkin_count" name="入住" fill="#F98743" />
-            </BarChart>
-          </ResponsiveContainer>
+        <div className={styles.row2} aria-label="统计卡片">
+          <div className={`${styles.card} ${styles.metricCard}`} aria-label="今日清洁任务">
+            <div className={styles.metricHead}>
+              <div className={styles.metricTitle}>今日清洁任务</div>
+              <div className={styles.metricIcon} aria-hidden="true">
+                <RiseOutlined />
+              </div>
+            </div>
+            <div className={styles.metricValue}>
+              {today?.total ?? 0}
+              <span className={styles.metricUnit}>间</span>
+            </div>
+            <div className={styles.divider} aria-hidden="true" />
+            <div className={styles.platformGrid} aria-label="状态拆分">
+              <div><div className={styles.platformK}>PENDING</div><div className={styles.platformV}>{today?.by_status?.pending ?? 0}</div></div>
+              <div><div className={styles.platformK}>ASSIGNED</div><div className={styles.platformV}>{today?.by_status?.assigned ?? 0}</div></div>
+              <div><div className={styles.platformK}>IN PROGRESS</div><div className={styles.platformV}>{today?.by_status?.in_progress ?? 0}</div></div>
+              <div><div className={styles.platformK}>COMPLETED</div><div className={styles.platformV}>{today?.by_status?.completed ?? 0}</div></div>
+            </div>
+          </div>
+
+          <div className={`${styles.card} ${styles.metricCard}`} aria-label="今日未分配数量">
+            <div className={styles.metricHead}>
+              <div className={styles.metricTitle}>今日未分配</div>
+              <div className={`${styles.metricIcon} ${styles.metricIconOrange}`} aria-hidden="true">
+                <RiseOutlined />
+              </div>
+            </div>
+            <div className={`${styles.metricValue} ${styles.metricValueOrange}`}>
+              {today?.unassigned ?? 0}
+              <span className={styles.metricUnit}>个</span>
+            </div>
+            <div className={styles.divider} aria-hidden="true" />
+            <div className={styles.platformGrid} aria-label="今日取消/完成">
+              <div><div className={styles.platformK}>CANCELLED</div><div className={styles.platformV}>{today?.by_status?.cancelled ?? 0}</div></div>
+              <div><div className={styles.platformK}>COMPLETED</div><div className={styles.platformV}>{today?.by_status?.completed ?? 0}</div></div>
+            </div>
+          </div>
         </div>
-      </Card>
 
-      <Card
-        title="今日其他线下任务"
-        extra={<Button onClick={() => setCreateOpen(true)}>新增任务</Button>}
-      >
-        <List
-          dataSource={offlineTasks}
-          rowKey={(t) => t.id}
-          pagination={offlineTasks.length > 20 ? { pageSize: 20, size: 'small' } : false}
-          renderItem={(t) => (
-            <List.Item
-              actions={[
-                <Select
-                  key="status"
-                  size="small"
-                  value={t.status}
-                  style={{ width: 120 }}
-                  options={[
-                    { label: '未完成', value: 'todo' },
-                    { label: '已完成', value: 'done' },
-                  ]}
-                  onChange={(v) => updateOfflineTask(t.id, { status: v as any }).catch(() => {})}
-                />,
-                <Select
-                  key="urgency"
-                  size="small"
-                  value={t.urgency}
-                  style={{ width: 120 }}
-                  options={[
-                    { label: '低', value: 'low' },
-                    { label: '中', value: 'medium' },
-                    { label: '高', value: 'high' },
-                    { label: '紧急', value: 'urgent' },
-                  ]}
-                  onChange={(v) => updateOfflineTask(t.id, { urgency: v as any }).catch(() => {})}
-                />,
-              ]}
-            >
-              <List.Item.Meta
-                title={
-                  <Space wrap>
-                    <span>{t.title}</span>
-                    <Tag color={urgencyColor[t.urgency]}>{t.urgency === 'low' ? '低' : t.urgency === 'medium' ? '中' : t.urgency === 'high' ? '高' : '紧急'}</Tag>
-                    <Tag>{t.kind}</Tag>
-                  </Space>
-                }
-                description={t.property_id ? `房源：${t.property_id}` : null}
-              />
-            </List.Item>
-          )}
-        />
-      </Card>
+        <div className={`${styles.card} ${styles.sectionCard}`} aria-label="未来7天清洁任务趋势">
+          <div className={styles.cardHead}>
+            <div className={styles.cardTitle}>未来 7 天清洁任务趋势</div>
+          </div>
+          <div className={styles.chartWrap}>
+            <div className={styles.chartBox}>
+              <ResponsiveContainer>
+                <BarChart
+                  data={data?.next7days || []}
+                  margin={{ top: 18, right: 18, left: 8, bottom: 10 }}
+                  barCategoryGap={34}
+                  barGap={10}
+                >
+                  <CartesianGrid stroke="var(--clean-overview-divider)" strokeDasharray="2 6" vertical={false} />
+                  <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: 'var(--clean-overview-subtle)', fontSize: 12, fontWeight: 600 }} />
+                  <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: 'var(--clean-overview-subtle)', fontSize: 12, fontWeight: 600 }} />
+                  <Tooltip />
+                  <Legend content={() => null} />
+                  <Bar dataKey="total" name="清洁任务" fill="var(--clean-overview-blue)" radius={[6, 6, 0, 0]} maxBarSize={44} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
 
-      <Drawer open={drawerOpen} title={drawerTitle} onClose={() => setDrawerOpen(false)} width={520}>
-        <List
-          dataSource={drawerOrders}
-          rowKey={(o) => o.id}
-          renderItem={(o) => (
-            <List.Item
-              actions={[
-                <Typography.Link key="detail" onClick={() => router.push(`/orders/${o.id}`)}>
-                  查看详情
-                </Typography.Link>,
-              ]}
-            >
-              <List.Item.Meta
-                title={<span>{o.property_code || o.property_id}</span>}
-                description={
-                  <span>
-                    {o.guest_name ? `${o.guest_name} · ` : ''}
-                    {o.source || 'unknown'}
-                    {o.status ? ` · ${o.status}` : ''}
-                  </span>
-                }
-              />
-            </List.Item>
-          )}
-        />
-      </Drawer>
+        <div className={`${styles.card} ${styles.sectionCard}`} aria-label="今日其他线下任务">
+          <div className={styles.cardHead}>
+            <div className={styles.taskHeaderLeft}>
+              <div className={styles.cardTitle}>今日其他线下任务</div>
+              <div className={styles.countPill}>{offlineTasks.length} 个任务</div>
+            </div>
+            <Button type="primary" className={styles.primaryBtn} icon={<PlusOutlined />} onClick={openCreate}>
+              新增任务
+            </Button>
+          </div>
+
+          <div className={styles.tableWrap} role="table" aria-label="线下任务表格">
+            <div className={`${styles.tableRow} ${styles.tableHeadRow}`} role="row">
+              <div className={styles.cell} role="columnheader">任务信息</div>
+              <div className={styles.cell} role="columnheader">执行人</div>
+              <div className={styles.cell} role="columnheader">房源 ID</div>
+              <div className={styles.cell} role="columnheader">优先级</div>
+              <div className={styles.cell} role="columnheader">状态</div>
+              <div className={styles.cell} role="columnheader">操作</div>
+            </div>
+            {offlineTasks.map((t) => {
+              const urgencyLabel = t.urgency === 'low' ? '低' : t.urgency === 'medium' ? '中' : t.urgency === 'high' ? '高' : '紧急'
+              const isDone = t.status === 'done'
+              return (
+                <div key={t.id} className={`${styles.tableRow} ${styles.bodyRow} ${styles.rowHover} ${isDone ? styles.doneRow : ''}`} role="row">
+                  <div className={styles.cell} role="cell">
+                    <div className={styles.taskInfo}>
+                      <div className={styles.taskIcon} aria-hidden="true"><ClockCircleOutlined /></div>
+                      <div className={styles.taskMeta}>
+                        <div className={styles.taskTitleLink} onClick={() => openEdit(t)}>{t.title}</div>
+                        <div className={styles.taskSub}>
+                          <span>{String(t.date || '').slice(0, 10)}</span>
+                          <span className={styles.pill}>{kindLabel[t.kind] || t.kind}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className={styles.cell} role="cell">
+                    <span className={`${styles.pill} ${styles.pillGreen}`}>{staffNameById(t.assignee_id) || '-'}</span>
+                  </div>
+                  <div className={styles.cell} role="cell">
+                    <span>{t.property_id ? (propertyLabelById(t.property_id) || t.property_id) : '-'}</span>
+                  </div>
+                  <div className={styles.cell} role="cell">
+                    <span className={`${styles.pill} ${styles.pillBlue}`}>{urgencyLabel}</span>
+                  </div>
+                  <div className={styles.cell} role="cell">
+                    <Select
+                      size="small"
+                      value={t.status}
+                      style={{ width: 120 }}
+                      options={[
+                        { label: '未完成', value: 'todo' },
+                        { label: '已完成', value: 'done' },
+                      ]}
+                      onChange={(v) => updateOfflineTask(t.id, { status: v as any }).catch(() => {})}
+                    />
+                  </div>
+                  <div className={styles.cell} role="cell">
+                    <div className={styles.ops}>
+                      <Button className={styles.iconBtn} icon={<EyeOutlined />} aria-label="查看" onClick={() => openEdit(t)} />
+                      <Button className={styles.iconBtn} icon={<EditOutlined />} aria-label="编辑" onClick={() => openEdit(t)} />
+                      <Popconfirm title="确认删除该任务？" okText="删除" cancelText="取消" onConfirm={() => deleteOfflineTask(t.id).catch(() => {})}>
+                        <Button className={styles.iconBtn} icon={<DeleteOutlined />} aria-label="删除" />
+                      </Popconfirm>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
 
       <Modal
         open={createOpen}
         title="新增线下任务"
         okText="创建"
-        onOk={() => createOfflineTask().catch(() => {})}
+        onOk={() => createOfflineTask().catch((e) => message.error(e?.message || '创建失败'))}
         onCancel={() => setCreateOpen(false)}
       >
+        <Form
+          form={createForm}
+          layout="vertical"
+          onValuesChange={(changed, all) => {
+            if (changed?.task_type && all.task_type !== 'property') createForm.setFieldsValue({ property_id: undefined })
+          }}
+        >
+          <Form.Item name="date" label="执行日期" rules={[{ required: true, message: '请选择执行日期' }]}>
+            <DatePicker style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="task_type" label="任务类型" rules={[{ required: true, message: '请选择任务类型' }]}>
+            <Select options={[{ label: '房源', value: 'property' }, { label: '公司', value: 'company' }, { label: '其他', value: 'other' }]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.task_type !== cur.task_type}>
+            {() => (createForm.getFieldValue('task_type') === 'property' ? (
+              <Form.Item name="property_id" label="房源" rules={[{ required: true, message: '请选择房源' }]}>
+                <Select
+                  showSearch
+                  optionFilterProp="label"
+                  filterOption={(input, option) => String((option as any)?.label || '').toLowerCase().includes(String(input || '').toLowerCase())}
+                  options={sortProperties(Array.isArray(properties) ? properties : []).map((p) => ({ value: p.id, label: p.code || p.address || p.id }))}
+                />
+              </Form.Item>
+            ) : null)}
+          </Form.Item>
+          <Form.Item name="title" label="任务标题" rules={[{ required: true, message: '请输入任务标题' }]}>
+            <Input placeholder="例如：换密码 / 挂钥匙 / 维修跟进" />
+          </Form.Item>
+          <Form.Item name="content" label="任务具体内容">
+            <Input.TextArea rows={4} placeholder="填写任务说明、需要注意的点、联系人等" />
+          </Form.Item>
+          <Form.Item name="assignee_id" label="分配人员">
+            <Select allowClear placeholder="选择人员" options={staff.map((s) => ({ value: s.id, label: s.name }))} />
+          </Form.Item>
+          <Form.Item name="kind" label="任务分类" rules={[{ required: true, message: '请选择任务分类' }]}>
+            <Select
+              options={[
+                { label: '挂钥匙', value: 'key_hanging' },
+                { label: '换密码', value: 'password_change' },
+                { label: '补消耗品', value: 'restock' },
+                { label: '维修', value: 'maintenance' },
+                { label: '检查（Inspection）', value: 'inspection' },
+                { label: '其他', value: 'other' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="urgency" label="紧急程度" rules={[{ required: true, message: '请选择紧急程度' }]}>
+            <Select
+              options={[
+                { label: '低', value: 'low' },
+                { label: '中', value: 'medium' },
+                { label: '高', value: 'high' },
+                { label: '紧急', value: 'urgent' },
+              ]}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Drawer
+        open={editOpen}
+        title="查看 / 编辑线下任务"
+        width={560}
+        onClose={() => setEditOpen(false)}
+        footer={
+          <div style={{ textAlign: 'right' }}>
+            <Space>
+              <Popconfirm title="确认删除该任务？" okText="删除" cancelText="取消" onConfirm={() => (editing ? deleteOfflineTask(editing.id).catch((e) => message.error(e?.message || '删除失败')) : undefined)}>
+                <Button danger disabled={!editing}>
+                  删除
+                </Button>
+              </Popconfirm>
+              <Button onClick={() => setEditOpen(false)}>关闭</Button>
+              <Button type="primary" onClick={() => saveEdit().catch((e) => message.error(e?.message || '保存失败'))} disabled={!editing}>
+                保存
+              </Button>
+            </Space>
+          </div>
+        }
+      >
+        <Form
+          form={editForm}
+          layout="vertical"
+          onValuesChange={(changed, all) => {
+            if (changed?.task_type && all.task_type !== 'property') editForm.setFieldsValue({ property_id: undefined })
+          }}
+        >
+          <Form.Item name="date" label="执行日期" rules={[{ required: true, message: '请选择执行日期' }]}>
+            <DatePicker style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="task_type" label="任务类型" rules={[{ required: true, message: '请选择任务类型' }]}>
+            <Select options={[{ label: '房源', value: 'property' }, { label: '公司', value: 'company' }, { label: '其他', value: 'other' }]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.task_type !== cur.task_type}>
+            {() => (editForm.getFieldValue('task_type') === 'property' ? (
+              <Form.Item name="property_id" label="房源" rules={[{ required: true, message: '请选择房源' }]}>
+                <Select
+                  showSearch
+                  optionFilterProp="label"
+                  filterOption={(input, option) => String((option as any)?.label || '').toLowerCase().includes(String(input || '').toLowerCase())}
+                  options={sortProperties(Array.isArray(properties) ? properties : []).map((p) => ({ value: p.id, label: p.code || p.address || p.id }))}
+                />
+              </Form.Item>
+            ) : null)}
+          </Form.Item>
+          <Form.Item name="title" label="任务标题" rules={[{ required: true, message: '请输入任务标题' }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="content" label="任务具体内容">
+            <Input.TextArea rows={4} />
+          </Form.Item>
+          <Form.Item name="assignee_id" label="分配人员">
+            <Select allowClear options={staff.map((s) => ({ value: s.id, label: s.name }))} />
+          </Form.Item>
+          <Form.Item name="kind" label="任务分类" rules={[{ required: true, message: '请选择任务分类' }]}>
+            <Select
+              options={[
+                { label: '挂钥匙', value: 'key_hanging' },
+                { label: '换密码', value: 'password_change' },
+                { label: '补消耗品', value: 'restock' },
+                { label: '维修', value: 'maintenance' },
+                { label: '检查（Inspection）', value: 'inspection' },
+                { label: '其他', value: 'other' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="urgency" label="紧急程度" rules={[{ required: true, message: '请选择紧急程度' }]}>
+            <Select
+              options={[
+                { label: '低', value: 'low' },
+                { label: '中', value: 'medium' },
+                { label: '高', value: 'high' },
+                { label: '紧急', value: 'urgent' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="status" label="完成状态" rules={[{ required: true, message: '请选择状态' }]}>
+            <Select options={[{ label: '未完成', value: 'todo' }, { label: '已完成', value: 'done' }]} />
+          </Form.Item>
+        </Form>
+      </Drawer>
+
+      <Modal
+        open={rescheduleOpen}
+        title="设置下次执行日期"
+        okText="确定"
+        onOk={() => submitReschedule().catch((e) => message.error(e?.message || '更新失败'))}
+        onCancel={() => setRescheduleOpen(false)}
+      >
         <Space direction="vertical" style={{ width: '100%' }}>
-          <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="任务内容（例如：挂钥匙 / 换密码 / 补消耗品 / 维修 / Inspection）" />
-          <Select
-            value={newKind}
-            onChange={setNewKind}
-            options={[
-              { label: '挂钥匙', value: 'key_hanging' },
-              { label: '换密码', value: 'password_change' },
-              { label: '补消耗品', value: 'restock' },
-              { label: '维修', value: 'maintenance' },
-              { label: '检查（Inspection）', value: 'inspection' },
-              { label: '其他', value: 'other' },
-            ]}
-          />
-          <Select
-            value={newUrgency}
-            onChange={(v) => setNewUrgency(v as any)}
-            options={[
-              { label: '低', value: 'low' },
-              { label: '中', value: 'medium' },
-              { label: '高', value: 'high' },
-              { label: '紧急', value: 'urgent' },
-            ]}
-          />
+          <div style={{ color: '#888' }}>{rescheduleTask ? `任务：${rescheduleTask.title}` : ''}</div>
+          <DatePicker style={{ width: '100%' }} value={rescheduleDate} onChange={setRescheduleDate} />
         </Space>
       </Modal>
-    </Space>
+      </div>
+    </div>
   )
 }

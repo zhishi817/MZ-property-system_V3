@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import dayjs from 'dayjs'
-import { calcOrderMonthAmounts } from './orders'
+import { calcOrderMonthAmounts, toDayStr } from './orders'
+import { execFileSync } from 'node:child_process'
 
 describe('calcOrderMonthAmounts', () => {
   it('uses visible net (net - internal deduction) for checkout month', () => {
@@ -54,3 +55,36 @@ describe('calcOrderMonthAmounts', () => {
   })
 })
 
+describe('toDayStr', () => {
+  it('extracts YYYY-MM-DD from various ISO strings without timezone shifting', () => {
+    expect(toDayStr('2026-02-12')).toBe('2026-02-12')
+    expect(toDayStr('2026-02-12T00:00:00Z')).toBe('2026-02-12')
+    expect(toDayStr('2026-02-12T00:00:00.000Z')).toBe('2026-02-12')
+    expect(toDayStr('2026-02-12T13:00:00.000Z')).toBe('2026-02-12')
+    expect(toDayStr('2026-02-12T00:00:00+11:00')).toBe('2026-02-12')
+  })
+
+  it('demonstrates why dayjs(...).format can shift dates in negative timezones', () => {
+    const out = execFileSync(
+      process.execPath,
+      ['-e', "const dayjs=require('dayjs'); console.log(dayjs('2026-02-12T00:30:00Z').format('YYYY-MM-DD'))"],
+      { env: { ...process.env, TZ: 'America/Los_Angeles' } }
+    )
+      .toString()
+      .trim()
+    expect(out).toBe('2026-02-11')
+    expect(toDayStr('2026-02-12T00:30:00Z')).toBe('2026-02-12')
+  })
+
+  it('stays stable across DST transitions when input is ISO with Z', () => {
+    const la = execFileSync(
+      process.execPath,
+      ['-e', "const dayjs=require('dayjs'); console.log(dayjs('2026-03-08T00:30:00Z').format('YYYY-MM-DD'))"],
+      { env: { ...process.env, TZ: 'America/Los_Angeles' } }
+    )
+      .toString()
+      .trim()
+    expect(la).toBe('2026-03-07')
+    expect(toDayStr('2026-03-08T00:30:00Z')).toBe('2026-03-08')
+  })
+})

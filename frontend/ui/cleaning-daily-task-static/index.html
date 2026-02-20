@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>清洁当日任务卡片（静态交付）</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <div class="card">
+        <div class="accent"></div>
+        <div class="top">
+          <div class="summary">
+            <span class="dot" aria-hidden="true"></span>
+            <div class="summary-text">
+              <span class="region">Southbank</span>
+              <span class="code">MSQ402</span>
+              <span class="detail">11:30退房 3pm入住</span>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn ghost" type="button">编辑</button>
+            <button class="btn subtle" type="button">恢复自动同步</button>
+          </div>
+        </div>
+        <div class="body">
+          <div class="pills">
+            <span class="pill blue">5晚</span>
+            <span class="pill blue">退房 入住</span>
+            <span class="pill">pending</span>
+            <span class="pill">cleaning_tasks</span>
+            <span class="pill orange">已锁定</span>
+            <span class="pill">退房单:HMD88219</span>
+            <span class="pill">入住单:IN_88241</span>
+          </div>
+          <div class="right">
+            <div class="field">
+              <span class="field-label">执行人</span>
+              <span class="select">Alice</span>
+            </div>
+            <div class="field">
+              <span class="field-label">状态</span>
+              <span class="select">pending</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script>
+      window.__CLEANING_DAILY_TASK_READY__ = true
+    </script>
+  </body>
+</html>
+

@@ -10,7 +10,7 @@ import dayGridPlugin from '@fullcalendar/daygrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { sortOrders } from '../../lib/orderSort'
-import { monthSegments, getMonthSegmentsForProperty, calcOrderMonthAmounts } from '../../lib/orders'
+import { monthSegments, getMonthSegmentsForProperty, calcOrderMonthAmounts, toDayStr } from '../../lib/orders'
 import { sortProperties } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 import { buildSegments, placeIntoLanes } from '../../lib/calendarTimeline'
@@ -97,12 +97,6 @@ export default function OrdersPage() {
     const p = getPropertyById(o.property_id)
     const byCodeAsId = (Array.isArray(properties) ? properties : []).find(px => (px.code || '') === (o.property_id || ''))
     return (p?.code || byCodeAsId?.code || o.property_code || p?.address || o.property_id || '')
-  }
-  function toDayStr(raw?: any): string {
-    const str = String(raw || '')
-    if (/^\d{4}-\d{2}-\d{2}T/.test(str)) return dayjs(str).format('YYYY-MM-DD')
-    const m = str.match(/^(\d{4}-\d{2}-\d{2})$/)
-    return m ? m[1] : dayjs(str).format('YYYY-MM-DD')
   }
   function fmtDay(s?: string) {
     if (!s) return ''

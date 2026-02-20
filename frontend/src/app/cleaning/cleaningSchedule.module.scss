@@ -1,0 +1,451 @@
+.page {
+  --clean-schedule-bg: #f5f7fb;
+  --clean-schedule-card-bg: #ffffff;
+  --clean-schedule-border: #e6effa;
+  --clean-schedule-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  --clean-schedule-radius: 18px;
+  --clean-schedule-gap: 16px;
+  --clean-schedule-pad: clamp(12px, 1.6vw, 24px);
+  --clean-schedule-max: 1680px;
+  --clean-schedule-text: #0f172a;
+  --clean-schedule-muted: #64748b;
+  --clean-schedule-subtle: #94a3b8;
+  --clean-schedule-blue: #3b82f6;
+  --clean-schedule-orange: #f97316;
+  --clean-schedule-red: #ef4444;
+  --clean-schedule-purple: #4f46e5;
+  --clean-schedule-ant-blue: #1890ff;
+
+  min-height: 100%;
+  padding: var(--clean-schedule-pad);
+  background: var(--clean-schedule-bg);
+  color: var(--clean-schedule-text);
+}
+
+.container {
+  width: 100%;
+  max-width: min(var(--clean-schedule-max), 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: var(--clean-schedule-gap);
+}
+
+.card {
+  background: var(--clean-schedule-card-bg);
+  border: 1px solid var(--clean-schedule-border);
+  border-radius: var(--clean-schedule-radius);
+  box-shadow: var(--clean-schedule-shadow);
+}
+
+.headerCard {
+  padding: 18px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.monthTitle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: 0.2px;
+}
+
+.navGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.navBtn {
+  height: 34px;
+  border-radius: 12px;
+  font-weight: 800;
+}
+
+.todayBtn {
+  height: 34px;
+  border-radius: 12px;
+  font-weight: 800;
+  color: var(--clean-schedule-muted);
+}
+
+.rightGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.viewSegment {
+  background: #f1f5f9;
+  border-radius: 12px;
+  padding: 4px;
+}
+
+.primaryBtn {
+  height: 36px;
+  border-radius: 12px;
+  background: var(--clean-schedule-blue);
+  border-color: var(--clean-schedule-blue);
+  font-weight: 800;
+}
+
+.secondaryBtn {
+  height: 36px;
+  border-radius: 12px;
+  font-weight: 800;
+  color: var(--clean-schedule-muted);
+}
+
+.primaryBtn:global(.ant-btn:hover),
+.primaryBtn:global(.ant-btn:active),
+.primaryBtn:global(.ant-btn:focus-visible) {
+  background: var(--clean-schedule-blue);
+  border-color: var(--clean-schedule-blue);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+}
+
+.calendarCard {
+  padding: 16px 16px 18px 16px;
+}
+
+.weekHeader {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0;
+  padding: 8px 10px 12px 10px;
+  color: var(--clean-schedule-subtle);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  border-top: 1px solid var(--clean-schedule-border);
+  border-left: 1px solid var(--clean-schedule-border);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.cell {
+  min-height: 116px;
+  padding: 10px 10px 8px 10px;
+  border-right: 1px solid var(--clean-schedule-border);
+  border-bottom: 1px solid var(--clean-schedule-border);
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.cellMuted {
+  background: #fbfcfe;
+}
+
+.cellActive {
+  outline: 2px solid rgba(59, 130, 246, 0.9);
+  outline-offset: -2px;
+}
+
+.dayNum {
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--clean-schedule-subtle);
+}
+
+.pills {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pill {
+  height: 20px;
+  border-radius: 8px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pillCheckout {
+  background: rgba(239, 68, 68, 0.14);
+  color: #b91c1c;
+}
+
+.pillCheckin {
+  background: rgba(59, 130, 246, 0.14);
+  color: #1d4ed8;
+}
+
+.pillCombined {
+  background: rgba(249, 115, 22, 0.14);
+  color: #c2410c;
+}
+
+.pillUnassigned {
+  background: rgba(24, 144, 255, 0.14);
+  color: var(--clean-schedule-ant-blue);
+}
+
+.detailsHead {
+  padding: 18px 20px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.detailsTitle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.detailsDate {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--clean-schedule-subtle);
+  font-weight: 700;
+}
+
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.missionList {
+  padding: 0 16px 18px 16px;
+  display: grid;
+  gap: 14px;
+}
+
+.missionCard {
+  position: relative;
+  padding: 18px 18px 18px 18px;
+  border-radius: 20px;
+  border: 1px solid var(--clean-schedule-border);
+  background: #ffffff;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
+  overflow: hidden;
+}
+
+.accent {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  background: rgba(59, 130, 246, 0.85);
+}
+
+.accentCheckout { background: rgba(239, 68, 68, 0.85); }
+.accentCombined { background: rgba(249, 115, 22, 0.85); }
+.accentUnassigned { background: rgba(24, 144, 255, 0.85); }
+
+.missionTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.summaryRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.summaryDot {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--clean-schedule-ant-blue);
+  flex: 0 0 auto;
+}
+
+.summaryTitle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.summaryRegion {
+  color: var(--clean-schedule-ant-blue);
+  font-weight: 1000;
+  font-size: 20px;
+}
+
+.summaryCode {
+  color: #0f172a;
+  font-weight: 1000;
+  font-size: 20px;
+}
+
+.summaryDetail {
+  color: #0f172a;
+  font-weight: 900;
+  font-size: 20px;
+}
+
+.taskActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.taskBtn {
+  border-radius: 10px;
+  font-weight: 900;
+}
+
+.taskBtnGhost {
+  background: #ffffff;
+  border-color: #dbeafe;
+  color: #1d4ed8;
+}
+
+.taskBtnGhost :global(.anticon) {
+  color: currentColor;
+}
+
+.taskBtnSubtle {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  color: #334155;
+}
+
+.missionName {
+  font-size: 22px;
+  font-weight: 1000;
+  letter-spacing: 0.2px;
+}
+
+.missionNameCheckout { color: #b91c1c; }
+.missionNameCheckin { color: #1d4ed8; }
+.missionNameCombined { color: #c2410c; }
+.missionNameUnassigned { color: var(--clean-schedule-ant-blue); }
+
+.missionBody {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 1.6fr 1fr;
+  gap: 14px;
+  align-items: center;
+}
+
+.infoPills {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: #f8fafc;
+  border: 1px solid #eef2ff;
+  border-radius: 999px;
+  padding: 10px 12px;
+}
+
+.infoItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  height: 34px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  font-weight: 900;
+  color: #334155;
+}
+
+.codeBox {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.25);
+  color: #1d4ed8;
+}
+
+.codeBoxOrange {
+  background: rgba(249, 115, 22, 0.1);
+  border-color: rgba(249, 115, 22, 0.25);
+  color: #c2410c;
+}
+
+.assignees {
+  justify-self: end;
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-direction: column;
+}
+
+.assigneeGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+}
+
+.assigneeLabel {
+  font-size: 12px;
+  font-weight: 900;
+  color: #1d4ed8;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  padding: 0 10px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+}
+
+.assigneeSelect {
+  min-width: 270px;
+}
+
+.assigneeSelect :global(.ant-select-selector) {
+  border-radius: 999px !important;
+  height: 30px !important;
+  padding: 0 12px !important;
+}
+
+.assigneeSelect :global(.ant-select-selection-item) {
+  line-height: 28px !important;
+  font-weight: 900;
+}
+
+.assigneeSelect :global(.ant-select-selection-placeholder) {
+  line-height: 28px !important;
+  font-weight: 900;
+  color: #94a3b8;
+}
+
+@media (max-width: 1024px) {
+  .missionBody { grid-template-columns: 1fr; }
+  .assignees { justify-self: start; align-items: flex-start; }
+  .assigneeSelect { min-width: 100%; }
+}
+
+@media (max-width: 720px) {
+  .headerCard { flex-direction: column; align-items: stretch; }
+  .rightGroup { justify-content: space-between; }
+  .grid { border-radius: 14px; }
+  .cell { min-height: 104px; }
+  .missionName { font-size: 18px; }
+}

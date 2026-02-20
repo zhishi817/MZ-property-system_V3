@@ -11,6 +11,14 @@ const SESSION_IDLE_TIMEOUT_MINUTES = Number(process.env.SESSION_IDLE_TIMEOUT_MIN
 
 type User = { id: string; username: string; role: string }
 
+type SessionRow = { id: string; revoked?: boolean; expires_at?: any; last_seen_at?: any; created_at?: any }
+const sessionCache = new Map<string, { row: SessionRow | null; at: number }>()
+const sessionLastSeenUpdateAt = new Map<string, number>()
+const permsCache = new Map<string, { okSet: Set<string>; at: number }>()
+const SESSION_CACHE_TTL_MS = Number(process.env.SESSION_CACHE_TTL_MS || 15000)
+const SESSION_TOUCH_INTERVAL_MS = Number(process.env.SESSION_TOUCH_INTERVAL_MS || 60000)
+const PERM_CACHE_TTL_MS = Number(process.env.PERM_CACHE_TTL_MS || 5 * 60 * 1000)
+
 export const users: Record<string, User & { password: string }> = {
   admin: { id: 'u-admin', username: 'admin', role: 'admin', password: process.env.ADMIN_PASSWORD || 'admin' },
   cs: { id: 'u-cs', username: 'cs', role: 'customer_service', password: process.env.CS_PASSWORD || 'cs' },
@@ -127,18 +135,34 @@ export async function login(req: Request, res: Response) {
 }
 
 export async function auth(req: Request, res: Response, next: NextFunction) {
-  const h = req.headers.authorization
-  if (h && h.startsWith('Bearer ')) {
-    const token = h.slice(7)
+  const hRaw = String(req.headers.authorization || '')
+  const h = hRaw.trim()
+  let token = ''
+  if (/^bearer\s+/i.test(h)) token = h.replace(/^bearer\s+/i, '').trim()
+  if (!token) {
+    const cookie = String(req.headers.cookie || '')
+    const m = cookie.match(/(?:^|;\s*)auth=([^;]+)/)
+    if (m && m[1]) {
+      try { token = decodeURIComponent(m[1]) } catch { token = m[1] }
+    }
+  }
+  if (token) {
     try {
       const decoded: any = jwt.verify(token, SECRET)
       const sid = decoded?.sid
       if (sid && hasPg) {
         try {
-          const rows: any = await pgSelect('sessions', '*', { id: sid })
-          const s = rows && rows[0]
-          if (!s) return res.status(401).json({ message: 'session not found' })
           const now = Date.now()
+          const cached = sessionCache.get(String(sid))
+          let s: any = null
+          if (cached && now - cached.at <= SESSION_CACHE_TTL_MS) {
+            s = cached.row
+          } else {
+            const rows: any = await pgSelect('sessions', '*', { id: sid })
+            s = rows && rows[0]
+            sessionCache.set(String(sid), { row: s || null, at: now })
+          }
+          if (!s) return res.status(401).json({ message: 'session not found' })
           const exp = new Date(s.expires_at).getTime()
           const last = new Date(s.last_seen_at || s.created_at).getTime()
           const idleMs = SESSION_IDLE_TIMEOUT_MINUTES * 60 * 1000
@@ -146,9 +170,17 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
           if (exp < now) return res.status(401).json({ message: 'session expired' })
           if (now - last > idleMs) return res.status(401).json({ message: 'session idle timeout' })
           ;(req as any).user = decoded
-          try { const { pgPool } = require('./dbAdapter'); if (pgPool) await pgPool.query('UPDATE sessions SET last_seen_at=now() WHERE id=$1', [sid]) } catch {}
-        } catch (e) {
-          return res.status(401).json({ message: 'unauthorized' })
+          try {
+            const lastTouch = sessionLastSeenUpdateAt.get(String(sid)) || 0
+            if (now - lastTouch >= SESSION_TOUCH_INTERVAL_MS) {
+              const { pgPool } = require('./dbAdapter')
+              if (pgPool) await pgPool.query('UPDATE sessions SET last_seen_at=now() WHERE id=$1', [sid])
+              sessionLastSeenUpdateAt.set(String(sid), now)
+            }
+          } catch {}
+        } catch (e: any) {
+          ;(req as any).user = decoded
+          ;(req as any).session_unverified = true
         }
       } else {
         ;(req as any).user = decoded
@@ -158,23 +190,42 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
   next()
 }
 
+async function hasAnyPermViaPg(roleName: string, codes: string[]): Promise<boolean> {
+  const now = Date.now()
+  const cached = permsCache.get(roleName)
+  if (cached && now - cached.at <= PERM_CACHE_TTL_MS) {
+    for (const c of codes) { if (cached.okSet.has(c)) return true }
+    return false
+  }
+  const { pgPool } = require('./dbAdapter')
+  if (!pgPool) return false
+  let roleId = db.roles.find(r => r.name === roleName)?.id
+  try {
+    const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName])
+    if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id) roleId = String(r0.rows[0].id)
+  } catch {}
+  const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)))
+  const okSet = new Set<string>()
+  try {
+    const r = await pgPool.query('SELECT permission_code FROM role_permissions WHERE role_id = ANY($1::text[])', [roleIds])
+    for (const row of (r?.rows || []) as any[]) okSet.add(String(row.permission_code))
+  } catch {}
+  permsCache.set(roleName, { okSet, at: now })
+  for (const c of codes) { if (okSet.has(c)) return true }
+  return false
+}
+
 export function requirePerm(code: string) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const user = (req as any).user
     if (!user) return res.status(401).json({ message: 'unauthorized' })
     const roleName = String(user.role || '')
+    if (roleName === 'admin') return next()
     let ok = false
     try {
       const { hasPg, pgPool } = require('./dbAdapter')
       if (hasPg && pgPool) {
-        let roleId = db.roles.find(r => r.name === roleName)?.id
-        try {
-          const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName])
-          if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id) roleId = String(r0.rows[0].id)
-        } catch {}
-        const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)))
-        const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = $2 LIMIT 1', [roleIds, code])
-        ok = !!r?.rowCount
+        ok = await hasAnyPermViaPg(roleName, [code])
       }
     } catch {}
     if (!ok) ok = roleHasPermission(roleName, code)
@@ -188,18 +239,12 @@ export function requireAnyPerm(codes: string[]) {
     const user = (req as any).user
     if (!user) return res.status(401).json({ message: 'unauthorized' })
     const roleName = String(user.role || '')
+    if (roleName === 'admin') return next()
     let ok = false
     try {
       const { hasPg, pgPool } = require('./dbAdapter')
       if (hasPg && pgPool) {
-        let roleId = db.roles.find(r => r.name === roleName)?.id
-        try {
-          const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName])
-          if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id) roleId = String(r0.rows[0].id)
-        } catch {}
-        const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)))
-        const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = ANY($2::text[]) LIMIT 1', [roleIds, codes])
-        ok = !!r?.rowCount
+        ok = await hasAnyPermViaPg(roleName, codes)
       }
     } catch {}
     if (!ok) ok = codes.some((c) => roleHasPermission(roleName, c))

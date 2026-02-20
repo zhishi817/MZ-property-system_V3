@@ -4,6 +4,7 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env.local'), override: true 
 dotenv.config()
 import { pgPool } from '../src/dbAdapter'
 import { ymdInTz, inferYearByDelta } from '../src/modules/jobs'
+import { syncOrderToCleaningTasks } from '../src/services/cleaningSync'
 
 function recompute(base: Date, origDay: string | null): string | null {
   if (!origDay) return null
@@ -34,6 +35,7 @@ async function run() {
       const ciNew = recompute(base, r.checkin ? String(r.checkin).slice(0,10) : null)
       const coNew = recompute(base, r.checkout ? String(r.checkout).slice(0,10) : null)
       await pgPool.query('UPDATE orders SET checkin = COALESCE($2::date, checkin), checkout = COALESCE($3::date, checkout) WHERE id=$1', [r.id, ciNew, coNew])
+      try { await syncOrderToCleaningTasks(String(r.id)) } catch {}
       updated++
     } catch (e) {
       console.error('fix_failed', r.id, e)
