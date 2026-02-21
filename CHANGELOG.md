@@ -1,5 +1,17 @@
 # Changelog
 
+## Dev (2026-02-21)
+
+- Git: Strongly isolate `MZStay_app/` (ignore and prevent commit/push to any branch).
+- Orders: Fix calendar date shifting (displayed day -1) by using day-only parsing (no timezone conversion) and add TZ/DST unit tests.
+- Cleaning: Fix schedule duplication caused by invalid `property_id` suffix (`<uuid>true/false`) and cancel orphan tasks when orders are removed.
+- Cleaning: Enforce color rule — unassigned tasks always use Ant Design blue `#1890ff`; other colors only after assignment; add unit tests.
+- Cleaning: Implement daily task card UI header summary (region + code + checkout/checkin time), nights badge, loading skeleton, and empty state.
+- Backend: Extend `/cleaning/calendar-range` to return `property_region`, `nights`, and summary fields; add interface documentation and audit scripts.
+- UI QA: Add pixel-diff scripts and reports for cleaning overview and daily task card rendering.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## Dev (2026-02-11)
 
 - Cleaning: Add “清洁总览” submenu and page under “清洁安排”.
