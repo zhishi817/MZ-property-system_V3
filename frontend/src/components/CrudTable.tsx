@@ -5,6 +5,7 @@ import type { UploadProps } from 'antd'
 import dayjs from 'dayjs'
 import { apiList, apiCreate, apiUpdate, apiDelete } from '../lib/api'
 import { API_BASE, authHeaders } from '../lib/api'
+import TableHeaderTitle from './TableHeaderTitle'
 
 export type Field = { key: string; label: string; type?: 'text'|'number'|'date'|'select'|'rich'; required?: boolean; options?: { value: string; label: string }[] }
 type Column = any
@@ -53,6 +54,11 @@ export default function CrudTable({ resource, columns, fields }: { resource: str
   }
 
   const opsCol = { title: '操作', render: (_: any, r: any) => (<Space><Button onClick={() => { setEditing(r); setOpen(true); form.setFieldsValue(r) }}>编辑</Button><Button danger onClick={() => remove(r)}>删除</Button></Space>) }
+  const safeColumns = [...columns, opsCol].map((c: any) => {
+    const raw = c?.title
+    if (!raw) return c
+    return { ...c, title: <TableHeaderTitle title={raw} /> }
+  })
 
   return (
     <div>
@@ -60,7 +66,7 @@ export default function CrudTable({ resource, columns, fields }: { resource: str
         <Button type="primary" onClick={() => { setEditing(null); form.resetFields(); setOpen(true) }}>新建</Button>
         <Button onClick={load}>刷新</Button>
       </Space>
-      <Table rowKey={(r) => r.id} dataSource={data} columns={[...columns, opsCol] as any} pagination={{ pageSize: 10 }} />
+      <Table rowKey={(r) => r.id} dataSource={data} columns={safeColumns as any} pagination={{ pageSize: 10 }} tableLayout="auto" scroll={{ x: 'max-content' }} />
       <Modal open={open} onCancel={() => setOpen(false)} onOk={submit} title={editing ? '编辑' : '新建'}>
         <Form form={form} layout="vertical">
           {fields.map(f => (

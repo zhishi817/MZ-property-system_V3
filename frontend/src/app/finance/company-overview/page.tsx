@@ -1,8 +1,6 @@
 "use client"
 import { Card, DatePicker, Table, Select, Button, Modal, message, Switch, Progress } from 'antd'
 import styles from './ExpandedRow.module.css'
-import html2canvas from 'html2canvas'
-import { jsPDF } from 'jspdf'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getJSON, apiList, API_BASE, authHeaders, patchJSON } from '../../../lib/api'
@@ -16,6 +14,7 @@ const debugOnce = (..._args: any[]) => {}
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
 import { MailOutlined, CreditCardOutlined, CheckOutlined } from '@ant-design/icons'
 import { nextToggleValue } from '../../../lib/toggleStatus'
+import { exportElementToPdfBlob } from '../../../lib/pdfExport'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; ref_type?: string; ref_id?: string }
@@ -37,6 +36,7 @@ export default function PropertyRevenuePage() {
   const [previewPid, setPreviewPid] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [mergeUi, setMergeUi] = useState<{ open: boolean; percent: number; status: MergeUiStatus; stage: string; detail?: string }>({ open: false, percent: 0, status: 'active', stage: '', detail: '' })
+  const [exportPreview, setExportPreview] = useState<{ open: boolean; url: string; pageCount: number; filename: string; loading: boolean }>({ open: false, url: '', pageCount: 0, filename: '', loading: false })
   const printRef = useRef<HTMLDivElement>(null)
   const [period, setPeriod] = useState<'month'|'year'|'half-year'|'fiscal-year'>('month')
   const [startMonth, setStartMonth] = useState<any>(dayjs())
@@ -46,6 +46,12 @@ export default function PropertyRevenuePage() {
   const [pendingOps, setPendingOps] = useState<PendingOps>({})
   const statusKeyOf = (pid: string, monthKey: string) => `${String(pid)}__${String(monthKey)}`
   const isMerging = mergeUi.open && mergeUi.status === 'active'
+  const closeExportPreview = () => {
+    setExportPreview((prev) => {
+      try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
+      return { ...prev, open: false, url: '', loading: false }
+    })
+  }
   useEffect(() => {
     getJSON<Order[]>('/orders').then(setOrders).catch(()=>setOrders([]))
     ;(async () => {
@@ -722,6 +728,57 @@ export default function PropertyRevenuePage() {
           try { (iframe.contentWindow as any).focus(); (iframe.contentWindow as any).print() } catch {}
           setTimeout(() => { try { document.body.removeChild(iframe) } catch {} }, 500)
         }}>导出PDF</Button>
+        <Button onClick={async () => {
+          if (!printRef.current) return
+          if (exportPreview.loading) return
+          setExportPreview((prev) => ({ ...prev, loading: true }))
+          try {
+            const orientation = period === 'fiscal-year' ? 'l' : 'p'
+            const rootWidthMm = period === 'fiscal-year' ? 277 : 190
+            const prop = properties.find(p => String(p.id) === String(previewPid || ''))
+            const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
+            const prefix = period === 'month'
+              ? `Monthly Statement - ${month.format('YYYY-MM')}`
+              : period === 'year'
+                ? `Annual Statement - ${month.format('YYYY')}`
+                : period === 'fiscal-year'
+                  ? `Fiscal Year Statement - ${month.format('YYYY-MM')}`
+                  : `Statement - ${month.format('YYYY-MM')}`
+            const filename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
+            const { blob, pageCount } = await exportElementToPdfBlob({
+              element: printRef.current as HTMLElement,
+              orientation,
+              rootWidthMm,
+              marginMm: 10,
+              scale: 2,
+              imageQuality: 0.82,
+              minSlicePx: 80,
+              reservePx: 60,
+              tailGapPx: 16,
+              cssText: `
+                html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; background:#ffffff; }
+                body { margin: 0; }
+                .__pdf_capture_root__ { padding: 0 2mm; }
+                table { width: 100%; border-collapse: collapse; }
+                th, td { border-bottom: 1px solid #ddd; }
+                .landlord-calendar .mz-booking { border-radius: 0; }
+                .landlord-calendar .fc-event-start .mz-booking { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
+                .landlord-calendar .fc-event-end .mz-booking { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
+                .landlord-calendar .mz-evt--airbnb .mz-booking { background-color: #FFE4E6 !important; border-color: #FB7185 !important; color: #881337 !important; }
+                .landlord-calendar .mz-evt--booking .mz-booking { background-color: #DBEAFE !important; border-color: #60A5FA !important; color: #1E3A8A !important; }
+                .landlord-calendar .mz-evt--other .mz-booking { background-color: #F3F4F6 !important; border-color: #9CA3AF !important; color: #111827 !important; }
+              `,
+            })
+            const url = URL.createObjectURL(blob)
+            setExportPreview((prev) => {
+              try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
+              return { ...prev, open: true, url, pageCount, filename, loading: false }
+            })
+          } catch (e: any) {
+            message.error(String(e?.message || '生成导出预览失败'))
+            setExportPreview((prev) => ({ ...prev, loading: false }))
+          }
+        }} loading={exportPreview.loading}>导出预览</Button>
         <Button type="primary" onClick={async () => {
           if (!printRef.current || !previewPid) return
           if (isMerging) return
@@ -739,135 +796,44 @@ export default function PropertyRevenuePage() {
           }
           updateMerge(5, '正在生成报表PDF...')
           try {
-            const nodeOrig = printRef.current as HTMLElement
-            const node = nodeOrig.cloneNode(true) as HTMLElement
-            const mmWidth = period==='fiscal-year' ? '277mm' : '190mm'
-            const styleEl = document.createElement('style')
-            styleEl.innerHTML = `
-              html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; background:#ffffff; }
-              body { margin: 0; }
-              .__pdf_root__ { width: ${mmWidth}; margin: 0 auto; box-sizing: border-box; padding: 0 2mm; }
-              table { width: 100%; border-collapse: collapse; }
-              th, td { border-bottom: 1px solid #ddd; }
-              .landlord-calendar .mz-booking { border-radius: 0; }
-              .landlord-calendar .fc-event-start .mz-booking { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
-              .landlord-calendar .fc-event-end .mz-booking { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
-              .landlord-calendar .mz-evt--airbnb .mz-booking { background-color: #FFE4E6 !important; border-color: #FB7185 !important; color: #881337 !important; }
-              .landlord-calendar .mz-evt--booking .mz-booking { background-color: #DBEAFE !important; border-color: #60A5FA !important; color: #1E3A8A !important; }
-              .landlord-calendar .mz-evt--other .mz-booking { background-color: #F3F4F6 !important; border-color: #9CA3AF !important; color: #111827 !important; }
-            `
-            const sandbox = document.createElement('div')
-            sandbox.style.position = 'fixed'
-            sandbox.style.left = '-9999px'
-            sandbox.style.top = '0'
-            sandbox.style.width = '0'
-            sandbox.style.height = '0'
-            document.body.appendChild(sandbox)
-            sandbox.appendChild(styleEl)
-            node.className = `${node.className} __pdf_root__`.trim()
-            sandbox.appendChild(node)
-            const scaleFactor = 2
             updateMerge(20, '正在渲染页面...')
-            const rootRect = node.getBoundingClientRect()
-            const anchors = Array.from(node.querySelectorAll('[data-keep-with-next="true"]')) as HTMLElement[]
-            const anchorYs = anchors
-              .map(a => ((a.getBoundingClientRect().top - rootRect.top) * scaleFactor))
-              .filter((n) => Number.isFinite(n))
-              .sort((a,b)=>a-b)
-            const breakEls = Array.from(node.querySelectorAll('[data-pdf-break-before="true"]')) as HTMLElement[]
-            const breakYs = breakEls
-              .map(a => ((a.getBoundingClientRect().top - rootRect.top) * scaleFactor))
-              .filter((n) => Number.isFinite(n))
-              .sort((a,b)=>a-b)
-            const avoidRows = Array.from(node.querySelectorAll('tr')) as HTMLElement[]
-            const avoidRanges = avoidRows
-              .map((el) => {
-                const r = el.getBoundingClientRect()
-                const top = (r.top - rootRect.top) * scaleFactor
-                const bottom = (r.bottom - rootRect.top) * scaleFactor
-                return { top, bottom }
-              })
-              .filter((r) => Number.isFinite(r.top) && Number.isFinite(r.bottom) && r.bottom > r.top)
-              .sort((a,b)=>a.top-b.top)
-            const canvas = await html2canvas(node, { scale: scaleFactor, useCORS: true, allowTaint: true, backgroundColor: '#ffffff' })
-            try { document.body.removeChild(sandbox) } catch {}
-            updateMerge(40, '正在生成PDF分页...')
-            const pdf = new jsPDF('p', 'mm', 'a4')
-            const pageWidth = pdf.internal.pageSize.getWidth()
-            const pageHeight = pdf.internal.pageSize.getHeight()
-            const margin = 10
-            const contentWidthMm = pageWidth - margin * 2
-            const contentHeightMm = pageHeight - margin * 2
-            const pxPerMm = canvas.width / contentWidthMm
-            const pageContentHeightPx = contentHeightMm * pxPerMm
-            const reserve = 60 * scaleFactor
-            const minSlice = 80 * scaleFactor
-            const tailGap = 16 * scaleFactor
-            const isBlankSlice = (c: HTMLCanvasElement) => {
-              try {
-                const ctx = c.getContext('2d', { willReadFrequently: true } as any) as any
-                if (!ctx) return false
-                const w = c.width, h = c.height
-                const samples = 64
-                for (let i = 0; i < samples; i++) {
-                  const x = Math.floor(((i % 8) + 0.5) * (w / 8))
-                  const y0 = Math.floor((Math.floor(i / 8) + 0.5) * (h / 8))
-                  const d = ctx.getImageData(Math.min(w - 1, x), Math.min(h - 1, y0), 1, 1).data
-                  const a = d[3]
-                  const r = d[0], g = d[1], b = d[2]
-                  if (a > 10 && (r < 245 || g < 245 || b < 245)) return false
-                }
-                return true
-              } catch {
-                return false
-              }
-            }
-            let y = 0
-            while (y < canvas.height) {
-              let sliceHeightPx = Math.min(pageContentHeightPx, canvas.height - y)
-              const endCandidate = y + sliceHeightPx
-              const near = anchorYs.find(pos => pos > y && pos <= endCandidate && (endCandidate - pos) < reserve)
-              if (near) sliceHeightPx = Math.max(10, near - y)
-              const end2 = y + sliceHeightPx
-              const cut = avoidRanges.find(r => end2 > r.top && end2 < r.bottom)
-              if (cut) {
-                const adjusted = cut.top - y
-                if (adjusted >= minSlice) sliceHeightPx = adjusted
-              }
-              const end3 = y + sliceHeightPx
-              const bp = (() => {
-                for (let i = breakYs.length - 1; i >= 0; i--) {
-                  const v = breakYs[i]
-                  if (v > y + minSlice && v < end3 - tailGap) return v
-                }
-                return null
-              })()
-              if (bp) {
-                const adjusted = bp - y
-                if (adjusted >= minSlice) sliceHeightPx = adjusted
-              }
-              const sliceCanvas = document.createElement('canvas')
-              sliceCanvas.width = canvas.width
-              sliceCanvas.height = sliceHeightPx
-              const ctx = sliceCanvas.getContext('2d')!
-              ctx.drawImage(canvas, 0, y, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx)
-              if (sliceHeightPx < minSlice && (canvas.height - (y + sliceHeightPx)) > minSlice) { y += sliceHeightPx; continue }
-              if (isBlankSlice(sliceCanvas)) { y += sliceHeightPx; continue }
-              const sliceImg = sliceCanvas.toDataURL('image/jpeg', 0.82)
-              const sliceHeightMm = sliceHeightPx / pxPerMm
-              if (y === 0) {
-                pdf.addImage(sliceImg, 'JPEG', margin, margin, contentWidthMm, sliceHeightMm)
-              } else {
-                pdf.addPage()
-                pdf.addImage(sliceImg, 'JPEG', margin, margin, contentWidthMm, sliceHeightMm)
-              }
-              y += sliceHeightPx
-            }
-            updateMerge(55, '正在准备合并附件...')
-            const statementBlob = pdf.output('blob') as Blob
+            const orientation = period === 'fiscal-year' ? 'l' : 'p'
+            const rootWidthMm = period === 'fiscal-year' ? 277 : 190
+            const { blob: statementBlob, pageCount } = await exportElementToPdfBlob({
+              element: printRef.current as HTMLElement,
+              orientation,
+              rootWidthMm,
+              marginMm: 10,
+              scale: 2,
+              imageQuality: 0.82,
+              minSlicePx: 80,
+              reservePx: 60,
+              tailGapPx: 16,
+              cssText: `
+                html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; background:#ffffff; }
+                body { margin: 0; }
+                .__pdf_capture_root__ { padding: 0 2mm; }
+                table { width: 100%; border-collapse: collapse; }
+                th, td { border-bottom: 1px solid #ddd; }
+                .landlord-calendar .mz-booking { border-radius: 0; }
+                .landlord-calendar .fc-event-start .mz-booking { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
+                .landlord-calendar .fc-event-end .mz-booking { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
+                .landlord-calendar .mz-evt--airbnb .mz-booking { background-color: #FFE4E6 !important; border-color: #FB7185 !important; color: #881337 !important; }
+                .landlord-calendar .mz-evt--booking .mz-booking { background-color: #DBEAFE !important; border-color: #60A5FA !important; color: #1E3A8A !important; }
+                .landlord-calendar .mz-evt--other .mz-booking { background-color: #F3F4F6 !important; border-color: #9CA3AF !important; color: #111827 !important; }
+              `,
+            })
+            updateMerge(55, '正在准备合并附件...', `报表页数：${pageCount}`)
             const prop = properties.find(p => String(p.id) === String(previewPid || ''))
             const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
-            const filename = `Monthly Statement - ${month.format('YYYY-MM')}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
+            const prefix = period === 'month'
+              ? `Monthly Statement - ${month.format('YYYY-MM')}`
+              : period === 'year'
+                ? `Annual Statement - ${month.format('YYYY')}`
+                : period === 'fiscal-year'
+                  ? `Fiscal Year Statement - ${month.format('YYYY-MM')}`
+                  : `Statement - ${month.format('YYYY-MM')}`
+            const filename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
             const downloadBlob = (blob: Blob) => {
               try {
                 const url = URL.createObjectURL(blob)
@@ -1010,6 +976,24 @@ export default function PropertyRevenuePage() {
               })()}
             </div>
           )
+        ) : null}
+      </Modal>
+      <Modal title={exportPreview.pageCount ? `导出预览（${exportPreview.pageCount}页）` : '导出预览'} open={exportPreview.open} onCancel={closeExportPreview} footer={<>
+        <Button onClick={closeExportPreview}>关闭</Button>
+        <Button type="primary" onClick={() => {
+          try {
+            if (!exportPreview.url) return
+            const a = document.createElement('a')
+            a.href = exportPreview.url
+            a.download = exportPreview.filename || 'statement.pdf'
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+          } catch {}
+        }} disabled={!exportPreview.url}>下载</Button>
+      </>} width={1000}>
+        {exportPreview.url ? (
+          <iframe title="statement-export-preview" src={exportPreview.url} style={{ width: '100%', height: '70vh', border: '1px solid rgba(0,0,0,0.08)', borderRadius: 8, background: '#fff' }} />
         ) : null}
       </Modal>
       <Modal title="合并PDF下载" open={mergeUi.open} onCancel={() => setMergeUi((prev) => ({ ...prev, open: false }))} footer={<>

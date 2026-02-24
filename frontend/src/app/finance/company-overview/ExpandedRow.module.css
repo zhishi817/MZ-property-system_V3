@@ -33,14 +33,21 @@
   background: #F5F5F5;
   padding: 6px 8px;
 }
-.childTable :global(.ant-table-cell) {
+.childTable :global(.ant-table-thead > tr > th.ant-table-cell) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-overflow: clip;
+  overflow: visible;
+}
+.childTable :global(.ant-table-tbody .ant-table-cell) {
   white-space: nowrap;
   text-overflow: ellipsis;
   overflow: hidden;
   padding: 6px 8px;
 }
 @media (max-width: 768px) {
-  .childTable :global(.ant-table-cell) { padding: 3px 6px; font-size: 12px; }
+  .childTable :global(.ant-table-tbody .ant-table-cell) { padding: 3px 6px; font-size: 12px; }
   .childHeader { font-size: 13px; }
 }
 

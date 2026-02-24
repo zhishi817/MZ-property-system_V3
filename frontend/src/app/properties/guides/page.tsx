@@ -1,11 +1,10 @@
 "use client"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { App, AutoComplete, Button, Card, DatePicker, Drawer, Form, Grid, Input, Modal, Select, Space, Table, Tag } from 'antd'
+import { App, Button, Card, DatePicker, Drawer, Form, Grid, Input, Modal, Select, Space, Table, Tag } from 'antd'
 import dayjs from 'dayjs'
 import { API_BASE, authHeaders } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
 import PropertyGuideEditor, { type GuideContent } from '../../../components/PropertyGuideEditor'
-import { deriveBuildingKeyFromProperty, isValidPropertyCode, normalizeBaseVersion } from '../../../lib/propertyGuideCopy'
 
 type PropertyRow = { id: string; code?: string; address?: string; building_name?: string }
 type GuideRow = {
@@ -60,7 +59,7 @@ export default function Page() {
   const [editContent, setEditContent] = useState<GuideContent>({ sections: [] })
   const [roomMustFill, setRoomMustFill] = useState(false)
   const roomInputRef = useRef<any>(null)
-  const [buildingUsedCodes, setBuildingUsedCodes] = useState<Set<string>>(new Set())
+  const metaPropertyId = Form.useWatch('property_id', editMetaForm)
 
   const [linksOpen, setLinksOpen] = useState(false)
   const [linksGuide, setLinksGuide] = useState<GuideRow | null>(null)
@@ -139,9 +138,7 @@ export default function Page() {
   function openEditor(row: GuideRow) {
     setEditing(row)
     setEditContent((row.content_json || { sections: [] }) as any)
-    const p = row.property_id ? properties.find((x) => x.id === row.property_id) : undefined
-    const code = p?.code || ''
-    editMetaForm.setFieldsValue({ language: row.language, version: row.version, property_code: code })
+    editMetaForm.setFieldsValue({ language: row.language, version: row.version, property_id: row.property_id || undefined })
     setEditorOpen(true)
   }
 
@@ -149,27 +146,9 @@ export default function Page() {
     if (!editorOpen || !editing) return
     const needs = !editing.property_id
     setRoomMustFill(needs)
-    if (!needs) { setBuildingUsedCodes(new Set()); return }
-    const buildingKey =
-      String(editing.building_key || '').trim() ||
-      (editing.copied_from_id ? '' : deriveBuildingKeyFromProperty(properties.find((p) => p.id === editing.property_id) as any))
-    const baseVersion = String(editing.base_version || '').trim() || normalizeBaseVersion(editing.version)
-    const lang = String(editing.language || '').trim()
-    if (buildingKey && baseVersion && lang) {
-      fetchJSON<any[]>(`/property-guides/building-usage?building_key=${encodeURIComponent(buildingKey)}&language=${encodeURIComponent(lang)}&base_version=${encodeURIComponent(baseVersion)}`)
-        .then((rows) => {
-          const set = new Set<string>()
-          ;(Array.isArray(rows) ? rows : []).forEach((r: any) => {
-            const c = String(r?.property_code || '').trim()
-            if (c) set.add(c.toUpperCase())
-          })
-          setBuildingUsedCodes(set)
-        })
-        .catch(() => setBuildingUsedCodes(new Set()))
-    }
     setTimeout(() => {
       try { roomInputRef.current?.focus?.() } catch {}
-      editMetaForm.validateFields(['property_code']).catch(() => {})
+      editMetaForm.validateFields(['property_id']).catch(() => {})
     }, 60)
   }, [editorOpen, editMetaForm, editing, properties])
 
@@ -224,7 +203,7 @@ export default function Page() {
     try {
       const payload: any = { language: String(meta.language || ''), content_json: editContent }
       if (!editing.copied_from_id) payload.version = String(meta.version || '')
-      if (!editing.property_id) payload.property_code = String(meta.property_code || '').trim()
+      if (!editing.property_id) payload.property_id = String(meta.property_id || '').trim()
       const updated = await fetchJSON<GuideRow>(`/property-guides/${editing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       message.success('已保存')
       const wasUnassigned = !editing.property_id
@@ -506,40 +485,25 @@ export default function Page() {
                 style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}
               >
                 <Form.Item
-                  name="property_code"
+                  name="property_id"
                   label="房号"
                   rules={roomMustFill ? [
                     { required: true, message: '房号必填' },
-                    {
-                      validator: async (_rule, value) => {
-                        const raw = String(value || '').trim()
-                        if (!raw) return Promise.resolve()
-                        if (!isValidPropertyCode(raw)) return Promise.reject(new Error('房号格式不正确'))
-                        const code = raw.toUpperCase()
-                        const srcBuildingKey = String(editing.building_key || '').trim()
-                        const inSameBuilding = properties.some((p) => String(p.code || '').toUpperCase() === code && deriveBuildingKeyFromProperty(p) === srcBuildingKey)
-                        if (!inSameBuilding) return Promise.reject(new Error('房号不属于同一楼栋'))
-                        if (buildingUsedCodes.has(code)) return Promise.reject(new Error('该房号已存在入住指南，请重新输入'))
-                        return Promise.resolve()
-                      },
-                    },
                   ] : undefined}
                   style={{ marginBottom: 0 }}
                 >
                   {roomMustFill ? (
-                    <AutoComplete
-                      options={properties
-                        .filter((p) => deriveBuildingKeyFromProperty(p) === String(editing.building_key || '').trim())
-                        .map((p) => ({ value: String(p.code || '').toUpperCase() }))
-                        .filter((o) => !!o.value && !buildingUsedCodes.has(o.value))
-                      }
-                      filterOption={(inputValue, option) => String(option?.value || '').toUpperCase().includes(String(inputValue || '').toUpperCase())}
-                      onChange={() => { editMetaForm.validateFields(['property_code']).catch(() => {}) }}
-                    >
-                      <Input ref={roomInputRef} placeholder="请输入或选择房号" style={{ width: 150 }} />
-                    </AutoComplete>
+                    <Select
+                      ref={roomInputRef as any}
+                      showSearch
+                      placeholder="请选择房源"
+                      style={{ width: 320, maxWidth: '100%' }}
+                      options={propertyOptions}
+                      filterOption={(input, option) => String(option?.label || '').toLowerCase().includes(String(input || '').toLowerCase())}
+                      onChange={() => { editMetaForm.validateFields(['property_id']).catch(() => {}) }}
+                    />
                   ) : (
-                    <Input style={{ width: 150 }} disabled />
+                    <Select style={{ width: 320, maxWidth: '100%' }} options={propertyOptions} disabled />
                   )}
                 </Form.Item>
                 <Form.Item name="language" label="语言" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
@@ -559,7 +523,7 @@ export default function Page() {
             <PropertyGuideEditor
               value={editContent}
               onChange={setEditContent}
-              property={properties.find((p) => p.id === editing.property_id)}
+              property={properties.find((p) => p.id === String(metaPropertyId || editing.property_id || ''))}
               language={editing.language}
             />
           </div>

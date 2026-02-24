@@ -15,7 +15,8 @@
     "ui:cleaning-overview:diff": "node scripts/ui/cleaning-overview-diff.mjs",
     "ui:cleaning-overview:update-baseline": "node scripts/ui/cleaning-overview-diff.mjs --update-baseline",
     "ui:cleaning-daily-task:diff": "node scripts/ui/cleaning-daily-task-diff.mjs",
-    "ui:cleaning-daily-task:update-baseline": "node scripts/ui/cleaning-daily-task-diff.mjs --update-baseline"
+    "ui:cleaning-daily-task:update-baseline": "node scripts/ui/cleaning-daily-task-diff.mjs --update-baseline",
+    "ui:table-header:check": "node scripts/ui/table-header-truncation-check.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^5.3.6",

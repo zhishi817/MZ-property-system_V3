@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
 import { shouldAutoMarkPaidForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
+import { isAutoPaidInRent } from '../../../lib/recurringPaymentRules'
 
 type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; is_paid?: boolean; created_at?: string }
 type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
@@ -56,6 +57,7 @@ export default function RecurringPage() {
   function statusTag(r: Recurring & { is_paid?: boolean }) {
     const today = nowAU()
     if ((r.status||'')==='paused') return <Tag color="default">暂停</Tag>
+    if (isAutoPaidInRent(r)) return <Tag color="green">已付款</Tag>
     if (r.is_paid) return <Tag color="green">已付款</Tag>
     const nd = parseAU(r.next_due_date)
     if (nd && nd.isSame(today, 'day')) return <Tag color="gold">今天到期</Tag>
@@ -292,9 +294,10 @@ export default function RecurringPage() {
     .map(t => {
       const e = expByFixed[String(t.id)]
       const amount = e ? Number(e.amount || 0) : Number(t.amount || 0)
-      const next_due_date = e ? e.due_date : dueForSelectedMonth(t)
-      const is_paid = e ? String(e.status||'')==='paid' : false
       const category = e ? String(e.category || t.category || '') : t.category
+      const autoPaidInRent = isAutoPaidInRent({ ...t, category } as any)
+      const next_due_date = autoPaidInRent ? undefined : (e ? e.due_date : dueForSelectedMonth(t))
+      const is_paid = autoPaidInRent ? true : (e ? String(e.status||'')==='paid' : false)
       return { ...t, amount, next_due_date, is_paid, status: is_paid ? 'paid' : (t.status||''), category }
     })
     .sort((a,b)=>{
@@ -332,8 +335,9 @@ export default function RecurringPage() {
       const tasks = templatesForMonth.map(async (t)=>{
         const e = expByFixed[String(t.id)]
         const startKey = String((t as any).start_month_key || '')
+        const autoPaidInRent = isAutoPaidInRent(t)
         if (e) {
-          if (shouldAutoMarkPaidForMonth(startKey || undefined, monthKey, currentMonthKey) && String(e.status || '') !== 'paid') {
+          if ((autoPaidInRent || shouldAutoMarkPaidForMonth(startKey || undefined, monthKey, currentMonthKey)) && String(e.status || '') !== 'paid') {
             const resType = (t.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
             const dueDay = Number(t.due_day_of_month || 1)
             const dim = m.endOf('month').date()
@@ -348,7 +352,7 @@ export default function RecurringPage() {
         const dueDay = Number(t.due_day_of_month || 1)
         const dim = m.endOf('month').date()
         const dueISO = m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
-        const autoPaid = shouldAutoMarkPaidForMonth(startKey || undefined, monthKey, currentMonthKey)
+        const autoPaid = autoPaidInRent || shouldAutoMarkPaidForMonth(startKey || undefined, monthKey, currentMonthKey)
         const body = { occurred_at: dueISO, amount: Number(t.amount||0), currency: 'AUD', category: t.category || 'other', note: 'Fixed payment snapshot', generated_from: 'recurring_payments', fixed_expense_id: t.id, month_key: monthKey, due_date: dueISO, status: autoPaid ? 'paid' : 'unpaid', paid_date: autoPaid ? dueISO : null, property_id: t.property_id }
         try {
           const resp = await fetch(`${API_BASE}/crud/${resType}`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(body) })
