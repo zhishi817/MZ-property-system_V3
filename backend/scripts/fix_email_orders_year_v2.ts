@@ -4,6 +4,7 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env.local'), override: true 
 dotenv.config()
 import { pgPool } from '../src/dbAdapter'
 import { ymdInTz, inferYearByDelta } from '../src/modules/jobs'
+import { syncOrderToCleaningTasks } from '../src/services/cleaningSync'
 
 function recomputeDate(baseDate: Date, orig: Date): Date {
   const base = ymdInTz(baseDate, 'Australia/Melbourne')
@@ -72,6 +73,7 @@ async function run() {
           [require('uuid').v4(), r.id, ci ? ci.toISOString().slice(0,10) : null, co ? co.toISOString().slice(0,10) : null, afterCheckin, afterCheckout, ruleVersion]
         )
         await pgPool.query('COMMIT')
+        try { await syncOrderToCleaningTasks(String(r.id)) } catch {}
         updated++
       }
     } catch (e) {

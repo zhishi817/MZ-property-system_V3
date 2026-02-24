@@ -137,6 +137,18 @@ async function run() {
     `CREATE INDEX IF NOT EXISTS idx_cleaning_date ON cleaning_tasks(date);`,
     `CREATE INDEX IF NOT EXISTS idx_cleaning_property ON cleaning_tasks(property_id);`
     ,
+    `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS order_id text;`,
+    `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS type text DEFAULT 'checkout_cleaning';`,
+    `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS auto_managed boolean DEFAULT true;`,
+    `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS locked boolean DEFAULT false;`,
+    `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS reschedule_required boolean DEFAULT false;`,
+    `DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'uniq_cleaning_tasks_order_type') THEN
+        CREATE UNIQUE INDEX uniq_cleaning_tasks_order_type ON cleaning_tasks(order_id, type) WHERE order_id IS NOT NULL;
+      END IF;
+    END $$;`,
+    `CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_property_date ON cleaning_tasks(property_id, date);`,
+    `CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_status ON cleaning_tasks(status);`,
     `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS started_at timestamptz;`,
     `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS finished_at timestamptz;`,
     `ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS key_photo_uploaded_at timestamptz;`,

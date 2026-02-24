@@ -3,7 +3,7 @@ BEGIN;
 
 -- Columns
 ALTER TABLE IF EXISTS cleaning_tasks
-  ADD COLUMN IF NOT EXISTS order_id uuid,
+  ADD COLUMN IF NOT EXISTS order_id text,
   ADD COLUMN IF NOT EXISTS type text DEFAULT 'checkout_cleaning',
   ADD COLUMN IF NOT EXISTS auto_managed boolean DEFAULT true,
   ADD COLUMN IF NOT EXISTS locked boolean DEFAULT false,
@@ -32,4 +32,3 @@ CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_property_date ON cleaning_tasks(pr
 CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_status ON cleaning_tasks(status);
 
 COMMIT;
-

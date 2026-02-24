@@ -5,6 +5,7 @@ import type { UploadProps } from 'antd'
 import { ClockCircleOutlined, CopyOutlined, DeleteOutlined } from '@ant-design/icons'
 import { API_BASE, authHeaders } from '../lib/api'
 import { moveBlockToIndex as moveBlockToIndexAcrossSections, moveSectionToIndex as moveSectionToIndexAcross, arrayInsertMove as arrayInsertMovePure } from '../lib/guideDrag'
+import { computeAutoSyncAddress } from '../lib/propertyGuideMeta'
 
 export type GuideStep = { title?: string; text?: string; url?: string; caption?: string }
 export type GuideBlock =
@@ -119,6 +120,7 @@ export default function PropertyGuideEditor({
   const dragCleanupRef = useRef<null | (() => void)>(null)
   const ghostRafRef = useRef<number | null>(null)
   const ghostNextRef = useRef<{ x: number; y: number; label: string } | null>(null)
+  const lastSyncedAddressRef = useRef<string>('')
 
   useEffect(() => {
     setContent(normalizeContent(value))
@@ -151,18 +153,25 @@ export default function PropertyGuideEditor({
 
   useEffect(() => {
     const code = String(property?.code || '').trim()
-    const addr = String(property?.address || '').trim()
     const needTitle = !String(meta?.title || '').trim()
-    const needAddr = !String(meta?.address || '').trim()
-    if (!needTitle && !needAddr) return
+    if (!needTitle) return
     const patch: any = {}
     const lang = String(language || '').trim().toLowerCase()
     const suffix = lang === 'en' ? 'Check IN&OUT Instructions' : '入住指南'
     if (needTitle && code) patch.title = `${code} ${suffix}`
-    if (needAddr && addr) patch.address = addr
     if (Object.keys(patch).length) updateMeta(patch)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [property?.code, property?.address, language])
+
+  useEffect(() => {
+    const addr = String(property?.address || '').trim()
+    const { patch, nextSyncedAddress } = computeAutoSyncAddress({
+      meta: meta || {},
+      propertyAddress: addr,
+      lastSyncedAddress: lastSyncedAddressRef.current,
+    })
+    lastSyncedAddressRef.current = nextSyncedAddress
+    if (patch.address) updateMeta(patch as any)
+  }, [property?.address])
 
   function addSection() {
     const next = { meta, sections: [...sections, { id: makeId(), title: '新章节', blocks: [] }] }

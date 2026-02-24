@@ -420,6 +420,11 @@ router.get('/my-permissions', auth, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const roleName = String(user.role || '')
+  if (roleName === 'admin') {
+    const all = (db.permissions || []).map((p: any) => String(p?.code || '')).filter(Boolean)
+    const list = expandPermissionSynonyms(all)
+    return res.json(Array.from(new Set(list)))
+  }
   let roleId = db.roles.find(r => r.name === roleName)?.id
   try {
     if (hasPg) {
@@ -451,7 +456,9 @@ router.get('/my-permissions', auth, async (req, res) => {
       })
       return res.json(Array.from(normalized))
     }
-  } catch (e: any) { return res.status(500).json({ message: e.message }) }
+  } catch {
+    return res.json([])
+  }
   if (!roleId) return res.json([])
   const list = expandPermissionSynonyms(db.rolePermissions.filter(rp => rp.role_id === roleId).map(rp => rp.permission_code))
   const normalized = new Set<string>(list)

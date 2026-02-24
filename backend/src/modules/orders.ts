@@ -23,6 +23,23 @@ function dayOnly(s?: any): string | undefined {
   return m ? m[0] : undefined
 }
 
+function normalizePropertyId(raw: any): string | undefined {
+  const s = String(raw || '').trim()
+  if (!s) return undefined
+  const m = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(true|false)?$/i.exec(s)
+  return m ? m[1] : s
+}
+
+async function syncCleaningTasksForOrderId(orderId: string) {
+  const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
+  await syncOrderToCleaningTasks(String(orderId))
+}
+
+async function syncCleaningTasksForOrderIdTx(orderId: string, client: any) {
+  const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
+  await syncOrderToCleaningTasks(String(orderId), { client })
+}
+
 async function findSimilarOrders(candidate: any): Promise<{ reasons: string[]; similar: any[]; duplicateByCodeId?: string }> {
   const reasons: string[] = []
   const similar: any[] = []
@@ -391,7 +408,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
     const co = normalizeEnd(o.checkout || '')
     if (ci && co && !(ci < co)) return res.status(400).json({ message: '入住日期必须早于退房日期' })
   } catch {}
-  let propertyId = o.property_id || (o.property_code ? (db.properties.find(p => (p.code || '') === o.property_code)?.id) : undefined)
+  let propertyId = normalizePropertyId(o.property_id) || (o.property_code ? (db.properties.find(p => (p.code || '') === o.property_code)?.id) : undefined)
   // 如果传入的 property_id 不存在于 PG，则尝试用房号 code 在 PG 中查找并替换
   if (hasPg) {
     try {
@@ -457,7 +474,11 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
               const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code','payment_currency','payment_received','total_payment_raw','processed_status']
             const payload: any = {}
             for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
-            const row = await pgUpdate('orders', String(dup[0].id), payload)
+            const row = await pgRunInTransaction(async (client: any) => {
+              const r1 = await pgUpdate('orders', String(dup[0].id), payload, client)
+              await syncCleaningTasksForOrderIdTx(String(dup[0].id), client)
+              return r1
+            })
             try { broadcastOrdersUpdated({ action: 'update', id: String(dup[0].id) }) } catch {}
             return res.status(200).json(row || dup[0])
           } catch {}
@@ -486,7 +507,11 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
       delete insertOrder.property_code
       await ensureOrdersColumns()
       await ensureOrdersIndexes()
-      const row = await pgInsert('orders', insertOrder)
+      const row = await pgRunInTransaction(async (client: any) => {
+        const r1 = await pgInsert('orders', insertOrder, client)
+        await syncCleaningTasksForOrderIdTx(String(r1?.id || newOrder.id), client)
+        return r1
+      })
       try { broadcastOrdersUpdated({ action: 'create', id: row?.id }) } catch {}
       return res.status(201).json(row)
     } catch (e: any) {
@@ -499,7 +524,11 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
           await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_confirmation_code_unique ON orders(source, confirmation_code) WHERE confirmation_code IS NOT NULL')
           await ensureOrdersIndexes()
           const ins: any = { ...newOrder }; delete ins.property_code
-          const row = await pgInsert('orders', ins)
+          const row = await pgRunInTransaction(async (client: any) => {
+            const r1 = await pgInsert('orders', ins, client)
+            await syncCleaningTasksForOrderIdTx(String(r1?.id || newOrder.id), client)
+            return r1
+          })
           return res.status(201).json(row)
         } catch (e2: any) {
           return res.status(500).json({ message: '数据库写入失败', error: String(e2?.message || '') })
@@ -513,6 +542,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   // 无远端数据库，使用内存存储
   db.orders.push(newOrder)
   try { broadcastOrdersUpdated({ action: 'create', id: newOrder.id }) } catch {}
+  syncCleaningTasksForOrderId(String(newOrder.id)).catch(() => {})
   return res.status(201).json(newOrder)
 })
 
@@ -645,6 +675,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
             for (const tx of delTxs) { try { addAudit('FinanceTransaction', tx.id, 'delete', tx, null) } catch {} }
           }
         }
+        try { await syncCleaningTasksForOrderIdTx(String(id), client) } catch (e: any) { throw e }
         return r1
       })
       if (idx !== -1) db.orders[idx] = row as any
@@ -662,7 +693,11 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
           const allowExtra2 = ['payment_currency','payment_received']
           const payload2: any = {}
           for (const k of [...allow, ...allowExtra2]) { if ((updated as any)[k] !== undefined) payload2[k] = (updated as any)[k] }
-          const row = await pgUpdate('orders', id, payload2)
+          const row = await pgRunInTransaction(async (client: any) => {
+            const r1 = await pgUpdate('orders', id, payload2, client)
+            await syncCleaningTasksForOrderIdTx(String(id), client)
+            return r1
+          })
           if (idx !== -1) db.orders[idx] = row as any
           return res.json(row)
         } catch (e2: any) {
@@ -675,6 +710,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   }
   // Supabase branch removed
   try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
+  syncCleaningTasksForOrderId(String(id)).catch(() => {})
   return res.json(updated)
 })
 router.patch('/:id', requirePerm('order.write'), (req, res) => {
@@ -723,45 +759,30 @@ router.delete('/:id', requirePerm('order.write'), async (req, res) => {
     removed = db.orders[idx]
     db.orders.splice(idx, 1)
   }
-  if (hasPg) {
-    try {
-      const row = await pgDelete('orders', id)
-      removed = removed || (row as any)
+  try {
+    const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
+    if (hasPg) {
+      try {
+        await pgRunInTransaction(async (client: any) => {
+          try { await pgDelete('orders', id, client) } catch {}
+          try { await syncOrderToCleaningTasks(String(id), { deleted: true, client }) } catch {}
+        })
+      } catch {
+        return res.status(500).json({ message: '数据库删除失败' })
+      }
       try { broadcastOrdersUpdated({ action: 'delete', id }) } catch {}
       return res.json({ ok: true, id })
-    } catch (e) {
-      return res.status(500).json({ message: '数据库删除失败' })
     }
-  }
-  // Supabase branch removed
+    try { await syncOrderToCleaningTasks(String(id), { deleted: true }) } catch {}
+  } catch {}
   if (!removed) return res.status(404).json({ message: 'order not found' })
   try { broadcastOrdersUpdated({ action: 'delete', id }) } catch {}
-  return res.json({ ok: true, id: removed.id })
-})
-router.delete('/:id', requirePerm('order.write'), async (req, res) => {
-  const { id } = req.params
-  const idx = db.orders.findIndex((x) => x.id === id)
-  if (idx === -1) return res.status(404).json({ message: 'order not found' })
-  const removed = db.orders[idx]
-  db.orders.splice(idx, 1)
-  if (hasPg) {
-    try { await pgDelete('orders', id) } catch {}
-  }
   return res.json({ ok: true, id: removed.id })
 })
 
 // 清洁任务模块已移除
 
-router.post('/:id/generate-cleaning', requireAnyPerm(['order.manage','cleaning.schedule.manage']), async (req, res) => {
-  const { id } = req.params
-  try {
-    const { deriveCleaningTaskFromOrder } = require('../services/cleaningDerive')
-    const row = await deriveCleaningTaskFromOrder(String(id))
-    return res.json({ ok: true, task: row })
-  } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'derive_failed' })
-  }
-})
+ 
 
 router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','text/plain'] }), async (req, res) => {
   function toNumber(v: any): number | undefined {
@@ -1061,6 +1082,7 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
           const insertPayload: any = { ...newOrder }
           delete insertPayload.property_code
           await pgInsert('orders', insertPayload)
+          try { syncCleaningTasksForOrderId(String(insertPayload.id || newOrder.id)).catch(() => {}) } catch {}
           writeOk = true
         } catch (e: any) {
           const code = (e && (e as any).code) || ''
@@ -1073,6 +1095,7 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
                 const payload: any = {}
                 for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
                 await pgUpdate('orders', String(dup[0].id), payload)
+                try { syncCleaningTasksForOrderId(String(dup[0].id)).catch(() => {}) } catch {}
                 continue
               }
             } catch {}
@@ -1197,6 +1220,7 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
             const payload: any = {}
             for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
             const row = await pgUpdate('orders', String(dup[0].id), payload)
+            try { syncCleaningTasksForOrderId(String(dup[0].id)).catch(() => {}) } catch {}
             try { broadcastOrdersUpdated({ action: 'update', id: String(dup[0].id) }) } catch {}
             return res.status(200).json(row || dup[0])
           } catch {}
@@ -1227,11 +1251,13 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
       if (insertedOk) {
         try { await pgUpdate('order_import_staging', id, { status: 'resolved', property_id, resolved_at: new Date().toISOString() }) } catch {}
         try { broadcastOrdersUpdated({ action: 'create', id: newOrder.id }) } catch {}
+        try { syncCleaningTasksForOrderId(String(newOrder.id)).catch(() => {}) } catch {}
       }
     } else {
       const idx = (db as any).orderImportStaging.findIndex((x: any) => x.id === id)
       if (idx !== -1) (db as any).orderImportStaging[idx] = { ...(db as any).orderImportStaging[idx], status: 'resolved', property_id, resolved_at: new Date().toISOString() }
       try { broadcastOrdersUpdated({ action: 'create', id: newOrder.id }) } catch {}
+      try { syncCleaningTasksForOrderId(String(newOrder.id)).catch(() => {}) } catch {}
     }
     return res.status(201).json(newOrder)
   } catch (e: any) {
@@ -1550,6 +1576,7 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
                 await pgUpdate('orders', exists.id, payload)
               } catch (e2: any) { throw e2 }
             }
+            try { syncCleaningTasksForOrderId(String(exists.id)).catch(() => {}) } catch {}
             updatedCount++
           } else {
             let row: any
@@ -1565,11 +1592,21 @@ router.post('/actions/importBookings', requirePerm('order.manage'), async (req, 
             }
             if (row?.id && idToCode[pid]) row.property_code = idToCode[pid]
             db.orders.push(row as any)
+            try { if (row?.id) syncCleaningTasksForOrderId(String(row.id)).catch(() => {}) } catch {}
             createdCount++
           }
           try { broadcastOrdersUpdated({ action: exists ? 'update' : 'create', id: (exists?.id || undefined) }) } catch {}
         } else {
-          if (exists) Object.assign(exists, payload); else db.orders.push({ id: require('uuid').v4(), ...payload })
+          let oid = ''
+          if (exists) {
+            Object.assign(exists, payload)
+            oid = String((exists as any).id || '')
+          } else {
+            const rowLocal = { id: require('uuid').v4(), ...payload }
+            db.orders.push(rowLocal as any)
+            oid = String(rowLocal.id || '')
+          }
+          try { if (oid) syncCleaningTasksForOrderId(String(oid)).catch(() => {}) } catch {}
           try { broadcastOrdersUpdated({ action: exists ? 'update' : 'create' }) } catch {}
           if (exists) updatedCount++; else createdCount++
         }
@@ -1655,6 +1692,21 @@ router.post('/actions/dedupeByConfirmationCode', requirePerm('order.manage'), as
       }
     })
     if (!dryRun) { await ensureOrdersIndexes() }
+    if (!dryRun) {
+      try {
+        const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
+        for (const it of results) {
+          const kept = it?.kept_id ? String(it.kept_id) : ''
+          if (kept) { try { await syncOrderToCleaningTasks(kept) } catch {} }
+          const dels = Array.isArray(it?.deleted_ids) ? it.deleted_ids : []
+          for (const did of dels) {
+            const dd = did ? String(did) : ''
+            if (!dd) continue
+            try { await syncOrderToCleaningTasks(dd, { deleted: true }) } catch {}
+          }
+        }
+      } catch {}
+    }
     return res.json({ ok: true, deduped: results.length, items: results })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'dedupe_failed' })
@@ -1829,8 +1881,13 @@ router.post('/:id/confirm-payment', requirePerm('order.confirm_payment'), async 
   base.payment_received = true
   addAudit('Order', id, 'confirm_payment', before, base)
   if (hasPg) {
-    try { const row = await pgUpdate('orders', id, { payment_received: true } as any); return res.json(row || base) } catch {}
+    try {
+      const row = await pgUpdate('orders', id, { payment_received: true } as any)
+      try { syncCleaningTasksForOrderId(String(id)).catch(() => {}) } catch {}
+      return res.json(row || base)
+    } catch {}
   }
+  try { syncCleaningTasksForOrderId(String(id)).catch(() => {}) } catch {}
   return res.json(base)
 })
 router.post('/:id/unconfirm-payment', requirePerm('order.confirm_payment'), async (req, res) => {
@@ -1842,8 +1899,13 @@ router.post('/:id/unconfirm-payment', requirePerm('order.confirm_payment'), asyn
   base.payment_received = false
   addAudit('Order', id, 'unconfirm_payment', before, base)
   if (hasPg) {
-    try { const row = await pgUpdate('orders', id, { payment_received: false } as any); return res.json(row || base) } catch {}
+    try {
+      const row = await pgUpdate('orders', id, { payment_received: false } as any)
+      try { syncCleaningTasksForOrderId(String(id)).catch(() => {}) } catch {}
+      return res.json(row || base)
+    } catch {}
   }
+  try { syncCleaningTasksForOrderId(String(id)).catch(() => {}) } catch {}
   return res.json(base)
 })
 type ImportJob = { id: string; channel?: string; total: number; parsed: number; inserted: number; skipped: number; reason_counts: Record<string, number>; started_at: number; finished_at?: number }
@@ -2002,7 +2064,11 @@ async function startImportJob(csv: string, channel?: string): Promise<string> {
         const newOrder: any = { id: require('uuid').v4(), ...o, checkin: ciIso, checkout: coIso }
         if (hasPg) {
           const insertPayload: any = { ...newOrder }
-          try { await pgInsert('orders', insertPayload); job.inserted++ } catch { job.skipped++; inc('write_failed') }
+          try {
+            await pgInsert('orders', insertPayload)
+            job.inserted++
+            syncCleaningTasksForOrderId(String(newOrder.id)).catch(() => {})
+          } catch { job.skipped++; inc('write_failed') }
         } else { job.inserted++ }
       } catch { job.skipped++ }
       job.parsed++

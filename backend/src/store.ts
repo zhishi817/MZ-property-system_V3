@@ -153,7 +153,7 @@ export type CleaningTask = {
   order_id?: string
   type?: string
   date: string
-  status: 'pending' | 'scheduled' | 'in_progress' | 'ready' | 'canceled'
+  status: 'pending' | 'scheduled' | 'in_progress' | 'ready' | 'done' | 'canceled'
   assignee_id?: string
   scheduled_at?: string
   old_code?: string
@@ -178,11 +178,14 @@ export type CleaningTask = {
 export type CleaningOfflineTask = {
   id: string
   date: string
+  task_type: 'property' | 'company' | 'other'
   title: string
+  content?: string
   kind: string
   status: 'todo' | 'done'
   urgency: 'low' | 'medium' | 'high' | 'urgent'
   property_id?: string
+  assignee_id?: string
 }
 
 export type RepairOrder = {
@@ -295,11 +298,11 @@ if (db.cleaningTasks.length === 0) {
 if (db.cleaningOfflineTasks.length === 0) {
   const today = formatDate(new Date())
   db.cleaningOfflineTasks.push(
-    { id: uuid(), date: today, title: '挂钥匙', kind: 'key_hanging', status: 'todo', urgency: 'medium' },
-    { id: uuid(), date: today, title: '换密码', kind: 'password_change', status: 'todo', urgency: 'high' },
-    { id: uuid(), date: today, title: '补消耗品', kind: 'restock', status: 'todo', urgency: 'low' },
-    { id: uuid(), date: today, title: '维修跟进', kind: 'maintenance', status: 'todo', urgency: 'high' },
-    { id: uuid(), date: today, title: '检查（Inspection）', kind: 'inspection', status: 'todo', urgency: 'medium' },
+    { id: uuid(), date: today, task_type: 'other', title: '挂钥匙', content: '', kind: 'key_hanging', status: 'todo', urgency: 'medium' },
+    { id: uuid(), date: today, task_type: 'other', title: '换密码', content: '', kind: 'password_change', status: 'todo', urgency: 'high' },
+    { id: uuid(), date: today, task_type: 'other', title: '补消耗品', content: '', kind: 'restock', status: 'todo', urgency: 'low' },
+    { id: uuid(), date: today, task_type: 'other', title: '维修跟进', content: '', kind: 'maintenance', status: 'todo', urgency: 'high' },
+    { id: uuid(), date: today, task_type: 'other', title: '检查（Inspection）', content: '', kind: 'inspection', status: 'todo', urgency: 'medium' },
   )
 }
 

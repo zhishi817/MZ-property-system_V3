@@ -96,6 +96,30 @@ async function ensurePropertyGuidesTable() {
         )
     `)
   } catch {}
+  try {
+    await pgPool.query(`
+      WITH ranked AS (
+        SELECT
+          id,
+          property_id,
+          row_number() OVER (
+            PARTITION BY property_id
+            ORDER BY (status='published') DESC, published_at DESC NULLS LAST, updated_at DESC NULLS LAST, created_at DESC
+          ) AS rn
+        FROM property_guides
+        WHERE property_id IS NOT NULL
+      )
+      UPDATE property_guides g
+      SET property_id = NULL,
+          status = 'archived',
+          updated_at = now()
+      FROM ranked r
+      WHERE g.id = r.id AND r.rn > 1
+    `)
+  } catch {}
+  try {
+    await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_property_guides_property_id ON property_guides(property_id) WHERE property_id IS NOT NULL;')
+  } catch {}
 }
 
 async function ensurePropertyGuideRevisionsTable() {
@@ -271,6 +295,8 @@ router.post('/', requireAnyPerm(['property_guides.write', 'rbac.manage']), async
     const id = uuidv4()
     const prop = await resolvePropertyByIdOrCode(pgPool, parsed.data.property_id)
     if (!prop) return res.status(400).json({ message: 'property not found' })
+    const dup = await pgPool.query('SELECT id FROM property_guides WHERE property_id=$1 LIMIT 1', [String(prop.id)])
+    if (dup?.rows?.[0]) return res.status(409).json({ message: '该房源已存在入住指南' })
     const buildingKey = deriveBuildingKey(prop.building_name, prop.code, prop.address, parsed.data.property_id)
     const payload: any = {
       id,
@@ -298,6 +324,8 @@ router.post('/', requireAnyPerm(['property_guides.write', 'rbac.manage']), async
     })
     return res.status(201).json(row || payload)
   } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (msg.toLowerCase().includes('uq_property_guides_property_id')) return res.status(409).json({ message: '该房源已存在入住指南' })
     return res.status(500).json({ message: e?.message || 'create failed' })
   }
 })
@@ -330,17 +358,11 @@ router.patch('/:id', requireAnyPerm(['property_guides.write', 'rbac.manage']), a
           e.statusCode = 400
           throw e
         }
-        const propBuildingKey = deriveBuildingKey(resolvedProp.building_name, resolvedProp.code, resolvedProp.address, resolvedProp.id)
-        if (buildingKey && propBuildingKey && propBuildingKey !== buildingKey) {
-          const e: any = new Error('not_same_building')
-          e.statusCode = 400
-          throw e
-        }
-        const lockKey = `${String(resolvedProp.id)}|${nextLang}|${baseVersion}`
+        const lockKey = `${String(resolvedProp.id)}`
         await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [lockKey])
         const dup = await client.query(
-          'SELECT id FROM property_guides WHERE id <> $1 AND property_id = $2 AND language = $3 AND base_version = $4 LIMIT 1',
-          [id, String(resolvedProp.id), nextLang, baseVersion]
+          'SELECT id FROM property_guides WHERE id <> $1 AND property_id = $2 LIMIT 1',
+          [id, String(resolvedProp.id)]
         )
         if (dup?.rows?.[0]) {
           const e: any = new Error('duplicate_property_guide')
@@ -355,7 +377,7 @@ router.patch('/:id', requireAnyPerm(['property_guides.write', 'rbac.manage']), a
         ...parsed.data,
         property_id: resolvedProp ? String(resolvedProp.id) : old.property_id,
         base_version: baseVersion || normalizeBaseVersion(parsed.data.version ?? old.version),
-        building_key: (old.building_key || (resolvedProp ? deriveBuildingKey(resolvedProp.building_name, resolvedProp.code, resolvedProp.address, resolvedProp.id) : null)) || null,
+        building_key: (resolvedProp ? deriveBuildingKey(resolvedProp.building_name, resolvedProp.code, resolvedProp.address, resolvedProp.id) : (old.building_key || null)) || null,
         revision: nextRev,
         updated_by: user?.sub || null,
         updated_at: new Date().toISOString(),
@@ -380,8 +402,8 @@ router.patch('/:id', requireAnyPerm(['property_guides.write', 'rbac.manage']), a
     const msg = String(e?.message || 'update failed')
     const statusCode = Number(e?.statusCode || 0)
     if (msg === 'property_not_found') return res.status(400).json({ message: '房号不存在' })
-    if (msg === 'not_same_building') return res.status(400).json({ message: '房号不属于同一楼栋' })
-    if (msg === 'duplicate_property_guide') return res.status(409).json({ message: '该房号已存在入住指南，请重新输入' })
+    if (msg === 'duplicate_property_guide') return res.status(409).json({ message: '该房源已存在入住指南，请选择其他房源' })
+    if (msg.toLowerCase().includes('uq_property_guides_property_id')) return res.status(409).json({ message: '该房源已存在入住指南，请选择其他房源' })
     return res.status(statusCode || 500).json({ message: msg })
   }
 })
@@ -433,11 +455,10 @@ router.post('/:id/publish', requireAnyPerm(['property_guides.write', 'rbac.manag
         e.statusCode = 400
         throw e
       }
-      const language = String(row.language || '')
       const now = new Date().toISOString()
       await client.query(
-        `UPDATE property_guides SET status='archived', updated_at=$1 WHERE property_id=$2 AND language=$3 AND status='published' AND id <> $4`,
-        [now, propertyId, language, id]
+        `UPDATE property_guides SET status='archived', updated_at=$1 WHERE property_id=$2 AND status='published' AND id <> $3`,
+        [now, propertyId, id]
       )
       const oldRev = Number(row.revision || 1)
       const nextRev = oldRev + 1
@@ -512,11 +533,14 @@ router.post('/:id/duplicate', requireAnyPerm(['property_guides.write', 'rbac.man
     const newVer = version || `${String(row.version || 'v')}-copy-${now.slice(0, 10)}`
     const payload: any = {
       id: newId,
-      property_id: row.property_id,
+      property_id: null,
       language: row.language,
       version: newVer,
       base_version: normalizeBaseVersion(newVer),
       building_key: String(row.building_key || null),
+      copied_from_id: String(id),
+      copied_at: now,
+      copied_by: user?.sub || null,
       revision: 1,
       status: 'draft',
       content_json: row.content_json || { sections: [] },

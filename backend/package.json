@@ -12,7 +12,8 @@
     "test:email-year-rule": "ts-node-dev --transpile-only scripts/test_email_year_rule.ts",
     "test:guide-link-sync": "ts-node-dev --transpile-only scripts/test_guide_link_sync_utils.ts",
     "db:fix-email-year-v2": "ts-node-dev --transpile-only scripts/fix_email_orders_year_v2.ts",
-    "db:alter-email-meta": "ts-node-dev --transpile-only scripts/run_alter_orders_email_meta.ts"
+    "db:alter-email-meta": "ts-node-dev --transpile-only scripts/run_alter_orders_email_meta.ts",
+    "test:cleaning-rules": "ts-node-dev --transpile-only scripts/tests/test_cleaning_rules.ts"
   },
   "dependencies": {
     "pdf-lib": "^1.17.1",

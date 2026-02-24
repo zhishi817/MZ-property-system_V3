@@ -1,4 +1,5 @@
 import { pgPool } from '../../src/dbAdapter'
+import { syncOrderToCleaningTasks } from '../../src/services/cleaningSync'
 
 async function main() {
   const rs = await pgPool.query(`
@@ -14,7 +15,11 @@ async function main() {
     const remove = ids.slice(1)
     if (remove.length) {
       await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [remove])
+      for (const id of remove) {
+        try { await syncOrderToCleaningTasks(String(id), { deleted: true }) } catch {}
+      }
     }
+    try { if (keep) await syncOrderToCleaningTasks(String(keep)) } catch {}
     console.log('dedup', row.confirmation_code, 'keep', keep, 'removed', remove.length)
   }
 }

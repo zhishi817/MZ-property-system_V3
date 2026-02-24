@@ -31,3 +31,7 @@ backend/uploads/
 .cache/
 .trae/
 cleaning-frontend/
+
+MZStay_app/
+MZStay_app/**
+/MZStay_app/

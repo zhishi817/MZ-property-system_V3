@@ -20,6 +20,12 @@ const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const SECRET = process.env.JWT_SECRET || 'dev-secret';
 const SESSION_MAX_AGE_HOURS = Number(process.env.SESSION_MAX_AGE_HOURS || 5);
 const SESSION_IDLE_TIMEOUT_MINUTES = Number(process.env.SESSION_IDLE_TIMEOUT_MINUTES || 60);
+const sessionCache = new Map();
+const sessionLastSeenUpdateAt = new Map();
+const permsCache = new Map();
+const SESSION_CACHE_TTL_MS = Number(process.env.SESSION_CACHE_TTL_MS || 15000);
+const SESSION_TOUCH_INTERVAL_MS = Number(process.env.SESSION_TOUCH_INTERVAL_MS || 60000);
+const PERM_CACHE_TTL_MS = Number(process.env.PERM_CACHE_TTL_MS || 5 * 60 * 1000);
 exports.users = {
     admin: { id: 'u-admin', username: 'admin', role: 'admin', password: process.env.ADMIN_PASSWORD || 'admin' },
     cs: { id: 'u-cs', username: 'cs', role: 'customer_service', password: process.env.CS_PASSWORD || 'cs' },
@@ -142,19 +148,42 @@ async function login(req, res) {
     res.json({ token, role: u.role });
 }
 async function auth(req, res, next) {
-    const h = req.headers.authorization;
-    if (h && h.startsWith('Bearer ')) {
-        const token = h.slice(7);
+    const hRaw = String(req.headers.authorization || '');
+    const h = hRaw.trim();
+    let token = '';
+    if (/^bearer\s+/i.test(h))
+        token = h.replace(/^bearer\s+/i, '').trim();
+    if (!token) {
+        const cookie = String(req.headers.cookie || '');
+        const m = cookie.match(/(?:^|;\s*)auth=([^;]+)/);
+        if (m && m[1]) {
+            try {
+                token = decodeURIComponent(m[1]);
+            }
+            catch (_a) {
+                token = m[1];
+            }
+        }
+    }
+    if (token) {
         try {
             const decoded = jsonwebtoken_1.default.verify(token, SECRET);
             const sid = decoded === null || decoded === void 0 ? void 0 : decoded.sid;
             if (sid && dbAdapter_1.hasPg) {
                 try {
-                    const rows = await (0, dbAdapter_1.pgSelect)('sessions', '*', { id: sid });
-                    const s = rows && rows[0];
+                    const now = Date.now();
+                    const cached = sessionCache.get(String(sid));
+                    let s = null;
+                    if (cached && now - cached.at <= SESSION_CACHE_TTL_MS) {
+                        s = cached.row;
+                    }
+                    else {
+                        const rows = await (0, dbAdapter_1.pgSelect)('sessions', '*', { id: sid });
+                        s = rows && rows[0];
+                        sessionCache.set(String(sid), { row: s || null, at: now });
+                    }
                     if (!s)
                         return res.status(401).json({ message: 'session not found' });
-                    const now = Date.now();
                     const exp = new Date(s.expires_at).getTime();
                     const last = new Date(s.last_seen_at || s.created_at).getTime();
                     const idleMs = SESSION_IDLE_TIMEOUT_MINUTES * 60 * 1000;
@@ -166,14 +195,20 @@ async function auth(req, res, next) {
                         return res.status(401).json({ message: 'session idle timeout' });
                     req.user = decoded;
                     try {
-                        const { pgPool } = require('./dbAdapter');
-                        if (pgPool)
-                            await pgPool.query('UPDATE sessions SET last_seen_at=now() WHERE id=$1', [sid]);
+                        const lastTouch = sessionLastSeenUpdateAt.get(String(sid)) || 0;
+                        if (now - lastTouch >= SESSION_TOUCH_INTERVAL_MS) {
+                            const { pgPool } = require('./dbAdapter');
+                            if (pgPool)
+                                await pgPool.query('UPDATE sessions SET last_seen_at=now() WHERE id=$1', [sid]);
+                            sessionLastSeenUpdateAt.set(String(sid), now);
+                        }
                     }
-                    catch (_a) { }
+                    catch (_b) { }
                 }
                 catch (e) {
-                    return res.status(401).json({ message: 'unauthorized' });
+                    ;
+                    req.user = decoded;
+                    req.session_unverified = true;
                 }
             }
             else {
@@ -181,34 +216,62 @@ async function auth(req, res, next) {
                 req.user = decoded;
             }
         }
-        catch (_b) { }
+        catch (_c) { }
     }
     next();
 }
+async function hasAnyPermViaPg(roleName, codes) {
+    var _a;
+    const now = Date.now();
+    const cached = permsCache.get(roleName);
+    if (cached && now - cached.at <= PERM_CACHE_TTL_MS) {
+        for (const c of codes) {
+            if (cached.okSet.has(c))
+                return true;
+        }
+        return false;
+    }
+    const { pgPool } = require('./dbAdapter');
+    if (!pgPool)
+        return false;
+    let roleId = (_a = store_1.db.roles.find(r => r.name === roleName)) === null || _a === void 0 ? void 0 : _a.id;
+    try {
+        const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName]);
+        if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id)
+            roleId = String(r0.rows[0].id);
+    }
+    catch (_b) { }
+    const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)));
+    const okSet = new Set();
+    try {
+        const r = await pgPool.query('SELECT permission_code FROM role_permissions WHERE role_id = ANY($1::text[])', [roleIds]);
+        for (const row of ((r === null || r === void 0 ? void 0 : r.rows) || []))
+            okSet.add(String(row.permission_code));
+    }
+    catch (_c) { }
+    permsCache.set(roleName, { okSet, at: now });
+    for (const c of codes) {
+        if (okSet.has(c))
+            return true;
+    }
+    return false;
+}
 function requirePerm(code) {
     return async (req, res, next) => {
-        var _a;
         const user = req.user;
         if (!user)
             return res.status(401).json({ message: 'unauthorized' });
         const roleName = String(user.role || '');
+        if (roleName === 'admin')
+            return next();
         let ok = false;
         try {
             const { hasPg, pgPool } = require('./dbAdapter');
             if (hasPg && pgPool) {
-                let roleId = (_a = store_1.db.roles.find(r => r.name === roleName)) === null || _a === void 0 ? void 0 : _a.id;
-                try {
-                    const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName]);
-                    if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id)
-                        roleId = String(r0.rows[0].id);
-                }
-                catch (_b) { }
-                const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)));
-                const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = $2 LIMIT 1', [roleIds, code]);
-                ok = !!(r === null || r === void 0 ? void 0 : r.rowCount);
+                ok = await hasAnyPermViaPg(roleName, [code]);
             }
         }
-        catch (_c) { }
+        catch (_a) { }
         if (!ok)
             ok = (0, store_1.roleHasPermission)(roleName, code);
         if (!ok)
@@ -218,28 +281,20 @@ function requirePerm(code) {
 }
 function requireAnyPerm(codes) {
     return async (req, res, next) => {
-        var _a;
         const user = req.user;
         if (!user)
             return res.status(401).json({ message: 'unauthorized' });
         const roleName = String(user.role || '');
+        if (roleName === 'admin')
+            return next();
         let ok = false;
         try {
             const { hasPg, pgPool } = require('./dbAdapter');
             if (hasPg && pgPool) {
-                let roleId = (_a = store_1.db.roles.find(r => r.name === roleName)) === null || _a === void 0 ? void 0 : _a.id;
-                try {
-                    const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName]);
-                    if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id)
-                        roleId = String(r0.rows[0].id);
-                }
-                catch (_b) { }
-                const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)));
-                const r = await pgPool.query('SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = ANY($2::text[]) LIMIT 1', [roleIds, codes]);
-                ok = !!(r === null || r === void 0 ? void 0 : r.rowCount);
+                ok = await hasAnyPermViaPg(roleName, codes);
             }
         }
-        catch (_c) { }
+        catch (_a) { }
         if (!ok)
             ok = codes.some((c) => (0, store_1.roleHasPermission)(roleName, c));
         if (!ok)

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>清洁总览（静态交付）</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <div class="container">
+        <div class="row-2" aria-label="统计卡片">
+          <section class="card metric-card" aria-label="今日退房数量">
+            <div class="metric-head">
+              <div class="metric-title">今日退房数量</div>
+              <div class="metric-icon" aria-hidden="true">↗</div>
+            </div>
+            <div class="metric-value"><span id="checkoutTotal">17</span><span class="metric-unit">间</span></div>
+            <div class="metric-divider" aria-hidden="true"></div>
+            <div class="metric-grid" aria-label="平台拆分">
+              <div class="metric-grid-item"><div class="metric-grid-k">AIRBNB</div><div class="metric-grid-v" id="checkoutAirbnb">17</div></div>
+              <div class="metric-grid-item"><div class="metric-grid-k">BOOKING</div><div class="metric-grid-v" id="checkoutBooking">0</div></div>
+              <div class="metric-grid-item"><div class="metric-grid-k">DIRECT</div><div class="metric-grid-v" id="checkoutDirect">0</div></div>
+              <div class="metric-grid-item"><div class="metric-grid-k">OTHER</div><div class="metric-grid-v" id="checkoutOther">0</div></div>
+            </div>
+          </section>
+          <section class="card metric-card" aria-label="今日入住数量">
+            <div class="metric-head">
+              <div class="metric-title">今日入住数量</div>
+              <div class="metric-icon orange" aria-hidden="true">↗</div>
+            </div>
+            <div class="metric-value orange"><span id="checkinTotal">17</span><span class="metric-unit">间</span></div>
+            <div class="metric-divider" aria-hidden="true"></div>
+            <div class="metric-grid" aria-label="平台拆分">
+              <div class="metric-grid-item"><div class="metric-grid-k">AIRBNB</div><div class="metric-grid-v" id="checkinAirbnb">17</div></div>
+              <div class="metric-grid-item"><div class="metric-grid-k">BOOKING</div><div class="metric-grid-v" id="checkinBooking">0</div></div>
+              <div class="metric-grid-item"><div class="metric-grid-k">DIRECT</div><div class="metric-grid-v" id="checkinDirect">0</div></div>
+              <div class="metric-grid-item"><div class="metric-grid-k">OTHER</div><div class="metric-grid-v" id="checkinOther">0</div></div>
+            </div>
+          </section>
+        </div>
+        <section class="card chart-card" aria-label="未来7天入住/退房趋势">
+          <div class="card-head">
+            <div class="card-title">未来 7 天入住 / 退房趋势</div>
+            <div class="legend" aria-label="图例">
+              <div class="legend-item"><span class="dot blue" aria-hidden="true"></span><span>退房</span></div>
+              <div class="legend-item"><span class="dot orange" aria-hidden="true"></span><span>入住</span></div>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="trendChart" width="960" height="320" aria-label="趋势柱状图"></canvas>
+          </div>
+        </section>
+        <section class="card tasks-card" aria-label="今日其他线下任务">
+          <div class="card-head">
+            <div class="card-title">今日其他线下任务</div>
+            <div class="actions">
+              <button class="btn btn-primary" type="button" id="createTaskBtn">+ 新增任务</button>
+            </div>
+          </div>
+          <div class="table-wrap" role="table" aria-label="线下任务表格">
+            <div class="table-head" role="rowgroup">
+              <div class="table-row head" role="row">
+                <div class="cell" role="columnheader">任务信息</div>
+                <div class="cell" role="columnheader">执行人</div>
+                <div class="cell" role="columnheader">房源 ID</div>
+                <div class="cell" role="columnheader">优先级</div>
+                <div class="cell" role="columnheader">状态</div>
+                <div class="cell" role="columnheader">操作</div>
+              </div>
+            </div>
+            <div class="table-body" role="rowgroup" id="tasksBody"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+    <script src="./app.js"></script>
+  </body>
+</html>

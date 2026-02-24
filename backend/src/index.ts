@@ -36,6 +36,8 @@ import { auth } from './auth'
 import publicRouter from './modules/public'
 import publicAdminRouter from './modules/public_admin'
 import { r2Status } from './r2'
+ 
+ 
 // 环境保险锁（允许缺省采用智能默认，不再抛错）
 let appEnv = process.env.APP_ENV
 let dbRole = process.env.DATABASE_ROLE

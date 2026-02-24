@@ -208,6 +208,45 @@ ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS new_code text;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS note text;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkout_time text;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkin_time text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS order_id text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS type text DEFAULT 'checkout_cleaning';
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS auto_managed boolean DEFAULT true;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS locked boolean DEFAULT false;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS reschedule_required boolean DEFAULT false;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS task_type text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS task_date date;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS auto_sync_enabled boolean DEFAULT true;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS sync_fingerprint text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS source text DEFAULT 'auto';
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'uniq_cleaning_tasks_order_type') THEN
+    CREATE UNIQUE INDEX uniq_cleaning_tasks_order_type ON cleaning_tasks(order_id, type) WHERE order_id IS NOT NULL;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uniq_cleaning_tasks_order_task_type') THEN
+    ALTER TABLE cleaning_tasks
+    ADD CONSTRAINT uniq_cleaning_tasks_order_task_type UNIQUE (order_id, task_type);
+  END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_cleaning_task_date ON cleaning_tasks(task_date);
+CREATE INDEX IF NOT EXISTS idx_cleaning_order_id ON cleaning_tasks(order_id);
+
+-- Cleaning sync logs (auditable actions)
+CREATE TABLE IF NOT EXISTS cleaning_sync_logs (
+  id text PRIMARY KEY,
+  order_id text,
+  task_id text,
+  action text,
+  before jsonb,
+  after jsonb,
+  meta jsonb,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cleaning_sync_logs_order ON cleaning_sync_logs(order_id);
+CREATE INDEX IF NOT EXISTS idx_cleaning_sync_logs_created_at ON cleaning_sync_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_cleaning_sync_logs_action ON cleaning_sync_logs(action);
 
 -- Users table for system login
 CREATE TABLE IF NOT EXISTS users (

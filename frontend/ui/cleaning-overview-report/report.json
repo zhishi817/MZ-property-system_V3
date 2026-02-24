@@ -1,0 +1,23 @@
+{
+  "overallOk": true,
+  "results": [
+    {
+      "kind": "diff",
+      "browser": "webkit",
+      "vp": "1920x1080",
+      "actualPath": "ui/cleaning-overview-report/screenshots/webkit/1920x1080.png",
+      "diffPath": "ui/cleaning-overview-report/diffs/webkit/1920x1080.png",
+      "pct": 0,
+      "pass": true
+    },
+    {
+      "kind": "diff",
+      "browser": "webkit",
+      "vp": "1366x768",
+      "actualPath": "ui/cleaning-overview-report/screenshots/webkit/1366x768.png",
+      "diffPath": "ui/cleaning-overview-report/diffs/webkit/1366x768.png",
+      "pct": 0,
+      "pass": true
+    }
+  ]
+}
