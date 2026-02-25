@@ -155,6 +155,9 @@ export type CleaningTask = {
   date: string
   status: 'pending' | 'scheduled' | 'in_progress' | 'ready' | 'done' | 'canceled'
   assignee_id?: string
+  cleaner_id?: string
+  inspector_id?: string
+  nights_override?: number
   scheduled_at?: string
   old_code?: string
   new_code?: string
@@ -225,7 +228,7 @@ export const db = {
   orders: [] as Order[],
   cleaningTasks: [] as CleaningTask[],
   cleaningOfflineTasks: [] as CleaningOfflineTask[],
-  cleaners: [] as { id: string; name: string; capacity_per_day: number }[],
+  cleaners: [] as { id: string; name: string; capacity_per_day: number; kind?: 'cleaner' | 'inspector'; is_active?: boolean }[],
   properties: [] as Property[],
   propertyDeepCleaning: [] as any[],
   orderImportStaging: [] as OrderImportStaging[],
@@ -308,9 +311,11 @@ if (db.cleaningOfflineTasks.length === 0) {
 
 if (db.cleaners.length === 0) {
   db.cleaners.push(
-    { id: uuid(), name: 'Alice', capacity_per_day: 4 },
-    { id: uuid(), name: 'Bob', capacity_per_day: 3 },
-    { id: uuid(), name: 'Charlie', capacity_per_day: 5 },
+    { id: uuid(), name: 'Alice', capacity_per_day: 4, kind: 'cleaner', is_active: true },
+    { id: uuid(), name: 'Bob', capacity_per_day: 3, kind: 'cleaner', is_active: true },
+    { id: uuid(), name: 'Charlie', capacity_per_day: 5, kind: 'cleaner', is_active: true },
+    { id: uuid(), name: 'Diana', capacity_per_day: 6, kind: 'inspector', is_active: true },
+    { id: uuid(), name: 'Ethan', capacity_per_day: 6, kind: 'inspector', is_active: true },
   )
 }
 

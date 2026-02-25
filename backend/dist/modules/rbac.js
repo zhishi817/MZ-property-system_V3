@@ -576,8 +576,20 @@ exports.router.get('/my-permissions', auth_1.auth, async (req, res) => {
     return res.json(Array.from(normalized));
 });
 // Users management
-const userCreateSchema = zod_1.z.object({ username: zod_1.z.string().min(1), email: zod_1.z.string().email(), role: zod_1.z.string().min(1), password: zod_1.z.string().min(6) });
-const userUpdateSchema = zod_1.z.object({ username: zod_1.z.string().optional(), email: zod_1.z.string().email().optional(), role: zod_1.z.string().optional(), password: zod_1.z.string().min(6).optional() });
+const userCreateSchema = zod_1.z.object({
+    username: zod_1.z.string().min(1),
+    email: zod_1.z.string().email(),
+    role: zod_1.z.string().min(1),
+    password: zod_1.z.string().min(6),
+    color_hex: zod_1.z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+});
+const userUpdateSchema = zod_1.z.object({
+    username: zod_1.z.string().optional(),
+    email: zod_1.z.string().email().optional(),
+    role: zod_1.z.string().optional(),
+    password: zod_1.z.string().min(6).optional(),
+    color_hex: zod_1.z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+});
 exports.router.get('/users', (0, auth_1.requirePerm)('rbac.manage'), async (_req, res) => {
     try {
         if (dbAdapter_1.hasPg) {
@@ -591,13 +603,34 @@ exports.router.get('/users', (0, auth_1.requirePerm)('rbac.manage'), async (_req
         return res.status(500).json({ message: e.message });
     }
 });
+exports.router.get('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+    const id = String(req.params.id || '').trim();
+    if (!id)
+        return res.status(400).json({ message: 'id required' });
+    try {
+        if (dbAdapter_1.hasPg) {
+            const rows = await (0, dbAdapter_1.pgSelect)('users', '*', { id }) || [];
+            const row = rows[0];
+            if (!row)
+                return res.status(404).json({ message: 'user not found' });
+            return res.json(row);
+        }
+        const row = store_1.db.users.find((u) => String(u.id) === id);
+        if (!row)
+            return res.status(404).json({ message: 'user not found' });
+        return res.json(row);
+    }
+    catch (e) {
+        return res.status(500).json({ message: e.message });
+    }
+});
 exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
     const parsed = userCreateSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
     const { v4: uuid } = require('uuid');
     const hash = await bcryptjs_1.default.hash(parsed.data.password, 10);
-    const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, role: parsed.data.role, password_hash: hash };
+    const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, role: parsed.data.role, password_hash: hash, color_hex: parsed.data.color_hex || '#3B82F6' };
     try {
         if (dbAdapter_1.hasPg) {
             try {
@@ -609,11 +642,13 @@ exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req
             email text UNIQUE,
             password_hash text NOT NULL,
             role text NOT NULL,
+            color_hex text NOT NULL DEFAULT '#3B82F6',
             created_at timestamptz DEFAULT now()
           );`);
                     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);');
                     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);');
                     await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_password_hash text;');
+                    await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`);
                 }
             }
             catch (e) {
@@ -658,6 +693,13 @@ exports.router.patch('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async
     const { id } = req.params;
     try {
         if (dbAdapter_1.hasPg) {
+            try {
+                const { pgPool } = require('../dbAdapter');
+                if (pgPool) {
+                    await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`);
+                }
+            }
+            catch (_a) { }
             const updated = await (0, dbAdapter_1.pgUpdate)('users', id, payload);
             if (didResetPassword) {
                 try {
@@ -680,7 +722,7 @@ exports.router.patch('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async
                         await pgPool.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [id]);
                     }
                 }
-                catch (_a) { }
+                catch (_b) { }
             }
             return res.json(updated || { id, ...payload });
         }

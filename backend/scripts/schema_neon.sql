@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS users (
   email text UNIQUE,
   password_hash text NOT NULL,
   role text NOT NULL,
+  color_hex text NOT NULL DEFAULT '#3B82F6',
   delete_password_hash text,
   created_at timestamptz DEFAULT now()
 );

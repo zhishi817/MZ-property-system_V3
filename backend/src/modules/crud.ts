@@ -834,9 +834,46 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS parts_amount numeric(12,2);`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+          try {
+            const c = await pgPool.query(
+              `SELECT data_type, udt_name
+               FROM information_schema.columns
+               WHERE table_schema = 'public'
+                 AND table_name = 'property_maintenance'
+                 AND column_name = 'photo_urls'
+               LIMIT 1`
+            )
+            const dataType = String(c?.rows?.[0]?.data_type || '')
+            const udtName = String(c?.rows?.[0]?.udt_name || '')
+            const isTextArray = dataType === 'ARRAY' && udtName === '_text'
+            if (!isTextArray) {
+              await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];`)
+              await pgPool.query(`UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;`)
+              await pgPool.query(`
+                UPDATE property_maintenance
+                SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
+                WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array'
+              `)
+              await pgPool.query(`
+                UPDATE property_maintenance
+                SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
+                WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string'
+              `)
+              await pgPool.query(`ALTER TABLE property_maintenance DROP COLUMN photo_urls;`)
+              await pgPool.query(`ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;`)
+              await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+            }
+          } catch {}
           const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, property_code, work_no, category, status, urgency, submitted_at, submitter_name, completed_at, maintenance_amount, has_parts, parts_amount, pay_method, pay_other_note)
-            VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`
+            VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::text[],$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`
           const detailsArr = Array.isArray(detailsRaw) ? detailsRaw : []
+          let photoUrlsArr: any = (payload as any).photo_urls
+          if (typeof photoUrlsArr === 'string') {
+            try { photoUrlsArr = JSON.parse(photoUrlsArr) } catch { photoUrlsArr = [] }
+          }
+          if (!Array.isArray(photoUrlsArr)) photoUrlsArr = []
+          photoUrlsArr = photoUrlsArr.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
           if (detailsArr.length > 1) {
             const created: any[] = []
             for (const d of detailsArr) {
@@ -849,7 +886,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 typeof d === 'string' ? JSON.stringify([d]) : JSON.stringify([d || {}]),
                 payload.notes || '',
                 payload.created_by || null,
-                JSON.stringify(Array.isArray(payload.photo_urls) ? payload.photo_urls : []),
+                photoUrlsArr,
                 payload.property_code || null,
                 workNo,
                 payload.category || null,
@@ -877,7 +914,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               typeof payload.details === 'string' ? payload.details : JSON.stringify(payload.details || []),
               payload.notes || '',
               payload.created_by || null,
-              JSON.stringify(Array.isArray(payload.photo_urls) ? payload.photo_urls : []),
+              photoUrlsArr,
               payload.property_code || null,
               workNo,
               payload.category || null,
@@ -1613,10 +1650,51 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
             await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
             await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;`)
             await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+            try {
+              const c = await pgPool.query(
+                `SELECT data_type, udt_name
+                 FROM information_schema.columns
+                 WHERE table_schema = 'public'
+                   AND table_name = 'property_maintenance'
+                   AND column_name = 'photo_urls'
+                 LIMIT 1`
+              )
+              const dataType = String(c?.rows?.[0]?.data_type || '')
+              const udtName = String(c?.rows?.[0]?.udt_name || '')
+              const isTextArray = dataType === 'ARRAY' && udtName === '_text'
+              if (!isTextArray) {
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];`)
+                await pgPool.query(`UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;`)
+                await pgPool.query(`
+                  UPDATE property_maintenance
+                  SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
+                  WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array'
+                `)
+                await pgPool.query(`
+                  UPDATE property_maintenance
+                  SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
+                  WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string'
+                `)
+                await pgPool.query(`ALTER TABLE property_maintenance DROP COLUMN photo_urls;`)
+                await pgPool.query(`ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+              }
+            } catch (e: any) {
+              return res.status(500).json({ message: String(e?.message || 'photo_urls type migration failed') })
+            }
           }
         } catch {}
         if (toUpdate.details && typeof toUpdate.details !== 'string') {
           try { toUpdate.details = JSON.stringify(toUpdate.details) } catch {}
+        }
+        if (toUpdate.photo_urls !== undefined) {
+          let v: any = toUpdate.photo_urls
+          if (typeof v === 'string') {
+            try { v = JSON.parse(v) } catch { v = [] }
+          }
+          if (!Array.isArray(v)) v = []
+          toUpdate.photo_urls = v.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
         }
         if (toUpdate.repair_photo_urls && !Array.isArray(toUpdate.repair_photo_urls)) {
           toUpdate.repair_photo_urls = [toUpdate.repair_photo_urls]
@@ -1751,10 +1829,16 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
           const { pgPool } = require('../dbAdapter')
           if (pgPool) {
             const keys = Object.keys(toUpdate).filter(k => toUpdate[k] !== undefined)
-            const set = keys.map((k, i) => (k === 'repair_photo_urls' || k === 'photo_urls') ? `"${k}" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`).join(', ')
-            const values = keys.map((k) => ((k === 'repair_photo_urls' || k === 'photo_urls')
-              ? JSON.stringify(Array.isArray(toUpdate[k]) ? toUpdate[k] : [])
-              : toUpdate[k]))
+            const set = keys.map((k, i) => {
+              if (k === 'repair_photo_urls') return `"${k}" = $${i + 1}::jsonb`
+              if (k === 'photo_urls') return `"${k}" = $${i + 1}::text[]`
+              return `"${k}" = $${i + 1}`
+            }).join(', ')
+            const values = keys.map((k) => {
+              if (k === 'repair_photo_urls') return JSON.stringify(Array.isArray(toUpdate[k]) ? toUpdate[k] : [])
+              if (k === 'photo_urls') return Array.isArray(toUpdate[k]) ? toUpdate[k].filter((x: any) => typeof x === 'string') : []
+              return toUpdate[k]
+            })
             const sql = `UPDATE property_maintenance SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
             const res2 = await pgPool.query(sql, [...values, id])
             row = res2.rows && res2.rows[0]

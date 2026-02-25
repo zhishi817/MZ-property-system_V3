@@ -24,6 +24,8 @@ async function main() {
        t.status,
        t.assignee_id,
        t.scheduled_at,
+       t.checkout_time,
+       t.checkin_time,
        t.source,
        t.auto_sync_enabled,
        t.old_code,
@@ -50,8 +52,8 @@ async function main() {
     task_type: row.task_type ? String(row.task_type) : null,
     task_date: String(row.task_date || '').slice(0, 10),
     nights: row.nights != null ? Number(row.nights) : null,
-    summary_checkout_time: '11:30',
-    summary_checkin_time: '3pm',
+    summary_checkout_time: String(row.checkout_time || '').trim() || '10am',
+    summary_checkin_time: String(row.checkin_time || '').trim() || '3pm',
   }))
 
   process.stdout.write(JSON.stringify({ from, to, sample: mapped }, null, 2) + '\n')
@@ -61,4 +63,3 @@ main().catch((e) => {
   console.error(e)
   process.exit(1)
 })
-

@@ -622,7 +622,8 @@ router.post('/repair/report', async (req, res) => {
   const property_id = String(body.property_id || '').trim()
   const category = String(body.category || '').trim()
   const detail = String(body.detail || '').trim()
-  const attachments = Array.isArray(body.attachment_urls) ? body.attachment_urls : (body.attachment_urls ? [body.attachment_urls] : [])
+  const attachments0 = Array.isArray(body.attachment_urls) ? body.attachment_urls : (body.attachment_urls ? [body.attachment_urls] : [])
+  const attachments = attachments0.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
   const item_type = String(body.item_type || '').trim() || 'other'
   const labelPhotos = Array.isArray(body.label_photo_urls) ? body.label_photo_urls : (body.label_photo_urls ? [body.label_photo_urls] : [])
   const submitter_name = String(body.submitter_name || '').trim()
@@ -649,10 +650,44 @@ router.post('/repair/report', async (req, res) => {
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS item_type text;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS label_photo_urls jsonb;`)
+      const pool = pgPool!
+      await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+      try {
+        const c = await pool.query(
+          `SELECT data_type, udt_name
+           FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'property_maintenance'
+             AND column_name = 'photo_urls'
+           LIMIT 1`
+        )
+        const dataType = String(c?.rows?.[0]?.data_type || '')
+        const udtName = String(c?.rows?.[0]?.udt_name || '')
+        const isTextArray = dataType === 'ARRAY' && udtName === '_text'
+        if (!isTextArray) {
+          await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];`)
+          await pool.query(`UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;`)
+          await pool.query(`
+            UPDATE property_maintenance
+            SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
+            WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array'
+          `)
+          await pool.query(`
+            UPDATE property_maintenance
+            SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
+            WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string'
+          `)
+          await pool.query(`ALTER TABLE property_maintenance DROP COLUMN photo_urls;`)
+          await pool.query(`ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;`)
+          await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+        }
+      } catch (e: any) {
+        return res.status(500).json({ message: String(e?.message || 'photo_urls type migration failed') })
+      }
       const id = uuidv4()
       const workNo = await generateWorkNo()
       const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, label_photo_urls, item_type, property_code, work_no, category, status, urgency, assignee_id, eta, submitted_at, submitter_name)
-        VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`
+        VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::text[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`
       const values = [
         id,
         property_id || null,
@@ -661,7 +696,7 @@ router.post('/repair/report', async (req, res) => {
         detail ? JSON.stringify([{ content: detail }]) : JSON.stringify([]),
         '',
         submitter_id || null,
-        JSON.stringify(attachments || []),
+        attachments,
         JSON.stringify(labelPhotos || []),
         item_type || null,
         null,
@@ -840,10 +875,44 @@ router.post('/maintenance-progress/submit', async (req, res) => {
     const pwdAt = new Date(access.password_updated_at).getTime()
     if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
     await ensurePropertyMaintenanceShareColumns()
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS notes text;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS worker_name text;`)
-    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS occurred_at date;`)
+    const pool = pgPool
+    if (!pool) return res.status(500).json({ message: 'no database configured' })
+    await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+    try {
+      const c = await pool.query(
+        `SELECT data_type, udt_name
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'property_maintenance'
+           AND column_name = 'photo_urls'
+         LIMIT 1`
+      )
+      const dataType = String(c?.rows?.[0]?.data_type || '')
+      const udtName = String(c?.rows?.[0]?.udt_name || '')
+      const isTextArray = dataType === 'ARRAY' && udtName === '_text'
+      if (!isTextArray) {
+        await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];`)
+        await pool.query(`UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;`)
+        await pool.query(`
+          UPDATE property_maintenance
+          SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
+          WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array'
+        `)
+        await pool.query(`
+          UPDATE property_maintenance
+          SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
+          WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string'
+        `)
+        await pool.query(`ALTER TABLE property_maintenance DROP COLUMN photo_urls;`)
+        await pool.query(`ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;`)
+        await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+      }
+    } catch (e: any) {
+      return res.status(500).json({ message: String(e?.message || 'photo_urls type migration failed') })
+    }
+    await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS notes text;`)
+    await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS worker_name text;`)
+    await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS occurred_at date;`)
     const nowIso = new Date().toISOString()
     const sql = `INSERT INTO property_maintenance (
       id, property_id, occurred_at, worker_name, details, notes, created_by,
@@ -852,7 +921,7 @@ router.post('/maintenance-progress/submit', async (req, res) => {
     )
     VALUES (
       $1,$2,$3,$4,$5::text,$6,$7,
-      $8::jsonb,$9::jsonb,$10,$11,$12,$13,$14,
+      $8::text[],$9::jsonb,$10,$11,$12,$13,$14,
       $15,$16,$17,$18,$19,$20,$21,$22
     ) RETURNING id`
     let created = 0
@@ -865,6 +934,8 @@ router.post('/maintenance-progress/submit', async (req, res) => {
       const detailText = item ? JSON.stringify([{ content: item }]) : JSON.stringify([])
       const prePhotos = Array.isArray(d?.pre_photo_urls) ? d.pre_photo_urls : (d?.pre_photo_urls ? [d.pre_photo_urls] : [])
       const postPhotos = Array.isArray(d?.post_photo_urls) ? d.post_photo_urls : (d?.post_photo_urls ? [d.post_photo_urls] : [])
+      const prePhotoUrls = prePhotos.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
+      const postPhotoUrls = postPhotos.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
       const maintenance_amount = d?.maintenance_amount !== undefined ? Number(d.maintenance_amount || 0) : null
       const has_parts = d?.has_parts !== undefined ? (d.has_parts === true) : null
       const parts_amount = d?.parts_amount !== undefined ? Number(d.parts_amount || 0) : null
@@ -878,8 +949,8 @@ router.post('/maintenance-progress/submit', async (req, res) => {
         detailText,
         notes || '',
         null,
-        JSON.stringify(prePhotos || []),
-        JSON.stringify(postPhotos || []),
+        prePhotoUrls,
+        JSON.stringify(postPhotoUrls || []),
         null,
         workNo,
         category || null,

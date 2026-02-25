@@ -1,5 +1,5 @@
 "use client"
-import { Alert, Card, Table, Drawer, Space, Button, Select, message, Modal, Form, Input, Checkbox, Typography, Tag, Collapse, Tree, Empty, Divider, Radio } from 'antd'
+import { Alert, Card, Table, Drawer, Space, Button, Select, message, Modal, Form, Input, Checkbox, Typography, Tag, Collapse, Tree, Empty, Divider, Radio, ColorPicker } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import { API_BASE, authHeaders } from '../../lib/api'
 import { preloadRolePerms } from '../../lib/auth'
@@ -18,7 +18,7 @@ type PermissionMeta = {
   privacyRisk: string[]
 }
 type Permission = { code: string; name?: string; meta?: PermissionMeta }
-type User = { id: string; username: string; email?: string; role: string }
+type User = { id: string; username: string; email?: string; role: string; color_hex?: string | null }
 
 export default function RBACPage() {
   const [roles, setRoles] = useState<Role[]>([])
@@ -194,14 +194,16 @@ export default function RBACPage() {
 
   async function submitUser() {
     const v = await userForm.validateFields()
-    const res = await fetch(`${API_BASE}/rbac/users`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(v) })
+    const payload: any = { ...v }
+    if (payload.color_hex) payload.color_hex = String(payload.color_hex).trim().toUpperCase()
+    const res = await fetch(`${API_BASE}/rbac/users`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('已创建用户'); setUserOpen(false); userForm.resetFields(); load() } else { message.error('创建失败') }
   }
 
   function openEditUser(u: User) {
     setEditUser(u)
     setEditUserOpen(true)
-    editUserForm.setFieldsValue({ username: u.username, email: u.email || '', role: u.role })
+    editUserForm.setFieldsValue({ username: u.username, email: u.email || '', role: u.role, color_hex: (u.color_hex || '#3B82F6') })
   }
 
   async function submitEditUser() {
@@ -210,6 +212,8 @@ export default function RBACPage() {
     if (!id) return
     const payload: any = { ...v }
     if (!payload.email) delete payload.email
+    if (!payload.color_hex) delete payload.color_hex
+    if (payload.color_hex) payload.color_hex = String(payload.color_hex).trim().toUpperCase()
     const res = await fetch(`${API_BASE}/rbac/users/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
     if (res.ok) {
       message.success('已更新用户')
@@ -867,10 +871,26 @@ export default function RBACPage() {
         </div>
       </Drawer>
       <Modal open={userOpen} onCancel={() => setUserOpen(false)} onOk={submitUser} title="新建用户">
-        <Form form={userForm} layout="vertical">
+        <Form form={userForm} layout="vertical" initialValues={{ color_hex: '#3B82F6' }}>
           <Form.Item name="username" label="用户名" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="email" label="邮箱" rules={[{ required: true, type: 'email' }]}><Input /></Form.Item>
           <Form.Item name="role" label="角色" rules={[{ required: true }]}><Select options={roles.map(r => ({ value: r.name, label: r.name }))} /></Form.Item>
+          <Form.Item
+            name="color_hex"
+            label="颜色"
+            rules={[{ pattern: /^#[0-9a-fA-F]{6}$/, message: '请输入形如 #RRGGBB 的颜色值' }]}
+            getValueProps={(v) => ({ value: (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v)) ? v.toUpperCase() : '#3B82F6' })}
+            getValueFromEvent={(...args: any[]) => {
+              const hex = args?.[1]
+              const color = args?.[0]
+              if (typeof hex === 'string' && /^#[0-9a-fA-F]{6}$/.test(hex)) return hex.toUpperCase()
+              if (typeof color?.toHexString === 'function') return String(color.toHexString()).toUpperCase()
+              if (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) return color.toUpperCase()
+              return undefined
+            }}
+          >
+            <ColorPicker format="hex" showText getPopupContainer={(n) => (n?.parentElement as any) || document.body} />
+          </Form.Item>
           <Form.Item name="password" label="密码" rules={[{ required: true, min: 6 }]}><Input.Password /></Form.Item>
         </Form>
       </Modal>
@@ -884,6 +904,22 @@ export default function RBACPage() {
           <Form.Item name="username" label="用户名" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="email" label="邮箱" rules={[{ type: 'email' }]}><Input placeholder="留空则不修改" /></Form.Item>
           <Form.Item name="role" label="角色" rules={[{ required: true }]}><Select options={roles.map(r => ({ value: r.name, label: r.name }))} /></Form.Item>
+          <Form.Item
+            name="color_hex"
+            label="颜色"
+            rules={[{ pattern: /^#[0-9a-fA-F]{6}$/, message: '请输入形如 #RRGGBB 的颜色值' }]}
+            getValueProps={(v) => ({ value: (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v)) ? v.toUpperCase() : '#3B82F6' })}
+            getValueFromEvent={(...args: any[]) => {
+              const hex = args?.[1]
+              const color = args?.[0]
+              if (typeof hex === 'string' && /^#[0-9a-fA-F]{6}$/.test(hex)) return hex.toUpperCase()
+              if (typeof color?.toHexString === 'function') return String(color.toHexString()).toUpperCase()
+              if (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) return color.toUpperCase()
+              return undefined
+            }}
+          >
+            <ColorPicker format="hex" showText getPopupContainer={(n) => (n?.parentElement as any) || document.body} />
+          </Form.Item>
         </Form>
       </Modal>
       <Modal open={roleOpen} onCancel={() => setRoleOpen(false)} onOk={submitRole} title="新建角色">

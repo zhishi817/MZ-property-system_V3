@@ -1,15 +1,15 @@
 "use client"
 
-import { Alert, Button, DatePicker, Empty, Input, Modal, Segmented, Select, Skeleton, Space, message } from 'antd'
-import { EditOutlined, LeftOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
+import { Alert, Button, Checkbox, DatePicker, Empty, Input, InputNumber, Modal, Segmented, Select, Skeleton, Space, message } from 'antd'
+import { DeleteOutlined, EditOutlined, LeftOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { API_BASE, getJSON, patchJSON, postJSON } from '../../lib/api'
 import { cleaningColorKind } from '../../lib/cleaningColor'
-import { formatTaskTime, isTaskLocked } from '../../lib/cleaningTaskUi'
+import { isTaskLocked } from '../../lib/cleaningTaskUi'
 import styles from './cleaningSchedule.module.scss'
 
-type Staff = { id: string; name: string; capacity_per_day: number }
+type Staff = { id: string; name: string; capacity_per_day: number; kind?: 'cleaner' | 'inspector'; is_active?: boolean; color_hex?: string | null }
 
 type CalendarItem = {
   source: 'cleaning_tasks' | 'offline_tasks' | 'calendar_events'
@@ -25,6 +25,8 @@ type CalendarItem = {
   task_date: string
   status: string
   assignee_id: string | null
+  cleaner_id?: string | null
+  inspector_id?: string | null
   scheduled_at: string | null
   auto_sync_enabled?: boolean
   old_code?: string | null
@@ -48,23 +50,49 @@ type CleaningTaskRow = {
   property_id?: string | null
   task_type?: string | null
   task_date?: string | null
+  date?: string | null
   status?: string | null
   assignee_id?: string | null
+  cleaner_id?: string | null
+  inspector_id?: string | null
   scheduled_at?: string | null
   note?: string | null
   auto_sync_enabled?: boolean | null
   old_code?: string | null
   new_code?: string | null
+  checkout_time?: string | null
+  checkin_time?: string | null
+  nights_override?: number | null
 }
 
 type EditTaskForm = {
   ids: string[]
   task_date: Dayjs
+  property_id: string | null
   status: string
-  assignee_id: string | null
-  scheduled_at: Dayjs | null
+  cleaner_id: string | null
+  inspector_id: string | null
   note: string
+  nights_override: number | null
+  checkout_ids: string[]
+  checkin_ids: string[]
+  checkout_password: string
+  checkin_password: string
+  checkout_time: string
+  checkin_time: string
+  checkin_task_date: Dayjs
+  can_add_checkout: boolean
+  can_add_checkin: boolean
+  pending_add_checkout: boolean
+  pending_add_checkin: boolean
   auto_sync_enabled: boolean
+}
+
+type BulkEditForm = {
+  ids: string[]
+  status: string
+  cleaner: string
+  inspector: string
 }
 
 export default function CleaningPage() {
@@ -77,12 +105,18 @@ export default function CleaningPage() {
   const [staff, setStaff] = useState<Staff[]>([])
   const [filterRoom, setFilterRoom] = useState('')
   const [filterStatus, setFilterStatus] = useState<string | undefined>(undefined)
+  const [filterCleaner, setFilterCleaner] = useState<string | undefined>(undefined)
+  const [filterInspector, setFilterInspector] = useState<string | undefined>(undefined)
+  const [bulkMode, setBulkMode] = useState(false)
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([])
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [dbStatus, setDbStatus] = useState<any>(null)
   const [tasksMinMax, setTasksMinMax] = useState<{ min: string | null; max: string | null; from: string } | null>(null)
   const [tasksMinMaxError, setTasksMinMaxError] = useState<string | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [editForm, setEditForm] = useState<EditTaskForm | null>(null)
+  const [bulkEditOpen, setBulkEditOpen] = useState(false)
+  const [bulkEditForm, setBulkEditForm] = useState<BulkEditForm | null>(null)
   const [backfillOpen, setBackfillOpen] = useState(false)
   const [backfillFrom, setBackfillFrom] = useState<Dayjs>(() => dayjs().subtract(90, 'day'))
   const [backfillTo, setBackfillTo] = useState<Dayjs>(() => dayjs().add(365, 'day'))
@@ -90,6 +124,15 @@ export default function CleaningPage() {
   const [debugOpen, setDebugOpen] = useState(false)
   const [debugLoading, setDebugLoading] = useState(false)
   const [debugState, setDebugState] = useState<any>(null)
+  const [showDevDebugInfo, setShowDevDebugInfo] = useState(false)
+
+  useEffect(() => {
+    try {
+      setShowDevDebugInfo(process.env.NODE_ENV === 'development' && new URLSearchParams(window.location.search).get('debug') === 'true')
+    } catch {
+      setShowDevDebugInfo(false)
+    }
+  }, [])
 
   const monthLabel = useMemo(() => `${month.year()}年${String(month.month() + 1).padStart(2, '0')}月`, [month])
   const selectedDateStr = useMemo(() => selectedDate.format('YYYY-MM-DD'), [selectedDate])
@@ -132,8 +175,8 @@ export default function CleaningPage() {
   const summaryText = useCallback((it: CalendarItem) => {
     const region = String(it.property_region || '').trim()
     const code = String(it.property_code || '').trim() || propertyLabelForItem(it)
-    const checkoutT = String(it.summary_checkout_time || '11:30').trim()
-    const checkinT = String(it.summary_checkin_time || '3pm').trim()
+    const checkoutT = String(it.summary_checkout_time || '').trim() || '10am'
+    const checkinT = String(it.summary_checkin_time || '').trim() || '3pm'
     const type = String(it.task_type || '').toLowerCase()
     const label = String(it.label || '')
     const isTurnover = type === 'turnover' || (label.includes('退房') && label.includes('入住'))
@@ -196,6 +239,10 @@ export default function CleaningPage() {
           const all = [...checkins0, ...checkouts0]
           const ids = all.map((x) => String(x.entity_id))
           const assignee = all.every((x) => String(x.assignee_id || '') === String(all[0].assignee_id || '')) ? all[0].assignee_id : null
+          const cleanerKey = (x: CalendarItem) => String(x.cleaner_id || x.assignee_id || '').trim()
+          const inspectorKey = (x: CalendarItem) => String(x.inspector_id || '').trim()
+          const cleanerId = all.every((x) => cleanerKey(x) === cleanerKey(all[0])) ? (cleanerKey(all[0]) || null) : null
+          const inspectorId = all.every((x) => inspectorKey(x) === inspectorKey(all[0])) ? (inspectorKey(all[0]) || null) : null
           const sched = all.every((x) => String(x.scheduled_at || '') === String(all[0].scheduled_at || '')) ? all[0].scheduled_at : null
           const status = mergedStatus(all.map((x) => String(x.status || 'pending')))
           const autoSync = all.every((x) => x.auto_sync_enabled !== false)
@@ -215,11 +262,13 @@ export default function CleaningPage() {
             task_date: String(all[0].task_date || '').slice(0, 10),
             status,
             assignee_id: assignee,
+            cleaner_id: cleanerId,
+            inspector_id: inspectorId,
             scheduled_at: sched,
             auto_sync_enabled: autoSync,
             nights: all.find((x) => x.nights != null)?.nights ?? null,
-            summary_checkout_time: all[0].summary_checkout_time || null,
-            summary_checkin_time: all[0].summary_checkin_time || null,
+            summary_checkout_time: checkout?.summary_checkout_time || null,
+            summary_checkin_time: checkin?.summary_checkin_time || null,
             checkout_order_id: checkout?.order_id ? String(checkout.order_id) : null,
             checkin_order_id: checkin?.order_id ? String(checkin.order_id) : null,
             checkout_order_code: checkout?.order_code ? String(checkout.order_code) : null,
@@ -236,6 +285,8 @@ export default function CleaningPage() {
           const status = mergedStatus(checkins0.map((x) => String(x.status || 'pending')))
           const autoSync = checkins0.every((x) => x.auto_sync_enabled !== false)
           const assignee = checkins0.every((x) => String(x.assignee_id || '') === String(checkins0[0].assignee_id || '')) ? checkins0[0].assignee_id : null
+          const cleanerId = checkins0.every((x) => String(x.cleaner_id || x.assignee_id || '') === String(checkins0[0].cleaner_id || checkins0[0].assignee_id || '')) ? (String(checkins0[0].cleaner_id || checkins0[0].assignee_id || '').trim() || null) : null
+          const inspectorId = checkins0.every((x) => String(x.inspector_id || '') === String(checkins0[0].inspector_id || '')) ? (String(checkins0[0].inspector_id || '').trim() || null) : null
           const sched = checkins0.every((x) => String(x.scheduled_at || '') === String(checkins0[0].scheduled_at || '')) ? checkins0[0].scheduled_at : null
           mergedCleaning.push({
             source: 'cleaning_tasks',
@@ -250,8 +301,11 @@ export default function CleaningPage() {
             task_date: String(checkins0[0].task_date || '').slice(0, 10),
             status,
             assignee_id: assignee,
+            cleaner_id: cleanerId,
+            inspector_id: inspectorId,
             scheduled_at: sched,
             auto_sync_enabled: autoSync,
+            summary_checkin_time: checkins0[0].summary_checkin_time || null,
             checkin_order_id: null,
             checkout_order_id: null,
             checkin_order_code: checkins0.map((x) => String(x.order_code || x.order_id || '')).filter(Boolean).join(','),
@@ -268,6 +322,8 @@ export default function CleaningPage() {
           const status = mergedStatus(checkouts0.map((x) => String(x.status || 'pending')))
           const autoSync = checkouts0.every((x) => x.auto_sync_enabled !== false)
           const assignee = checkouts0.every((x) => String(x.assignee_id || '') === String(checkouts0[0].assignee_id || '')) ? checkouts0[0].assignee_id : null
+          const cleanerId = checkouts0.every((x) => String(x.cleaner_id || x.assignee_id || '') === String(checkouts0[0].cleaner_id || checkouts0[0].assignee_id || '')) ? (String(checkouts0[0].cleaner_id || checkouts0[0].assignee_id || '').trim() || null) : null
+          const inspectorId = checkouts0.every((x) => String(x.inspector_id || '') === String(checkouts0[0].inspector_id || '')) ? (String(checkouts0[0].inspector_id || '').trim() || null) : null
           const sched = checkouts0.every((x) => String(x.scheduled_at || '') === String(checkouts0[0].scheduled_at || '')) ? checkouts0[0].scheduled_at : null
           mergedCleaning.push({
             source: 'cleaning_tasks',
@@ -282,8 +338,11 @@ export default function CleaningPage() {
             task_date: String(checkouts0[0].task_date || '').slice(0, 10),
             status,
             assignee_id: assignee,
+            cleaner_id: cleanerId,
+            inspector_id: inspectorId,
             scheduled_at: sched,
             auto_sync_enabled: autoSync,
+            summary_checkout_time: checkouts0[0].summary_checkout_time || null,
             checkout_order_id: null,
             checkin_order_id: null,
             checkout_order_code: checkouts0.map((x) => String(x.order_code || x.order_id || '')).filter(Boolean).join(','),
@@ -299,12 +358,40 @@ export default function CleaningPage() {
           mergedCleaning.push(...list)
         }
       }
+      const regionKey = (x: any) => {
+        const r = String(x?.property_region || '').trim()
+        return r ? r.toLowerCase() : '\uffff'
+      }
+      const codeKey = (x: any) => {
+        const c = String(x?.property_code || '').trim()
+        return c ? c.toLowerCase() : String(x?.property_id || '').trim().toLowerCase()
+      }
       const next = [...mergedCleaning, ...other]
-      next.sort((a, b) => (a.source || '').localeCompare(b.source || '') || String(a.property_id || '').localeCompare(String(b.property_id || '')) || String(a.label || '').localeCompare(String(b.label || '')))
+      next.sort((a, b) =>
+        regionKey(a).localeCompare(regionKey(b)) ||
+        codeKey(a).localeCompare(codeKey(b)) ||
+        String(a.label || '').localeCompare(String(b.label || '')) ||
+        String(a.source || '').localeCompare(String(b.source || '')) ||
+        String(a.entity_id || '').localeCompare(String(b.entity_id || ''))
+      )
       m.set(k, next)
     }
     for (const [k, arr] of m.entries()) {
-      arr.sort((a, b) => (a.source || '').localeCompare(b.source || '') || String(a.property_id || '').localeCompare(String(b.property_id || '')) || String(a.label || '').localeCompare(String(b.label || '')))
+      const regionKey = (x: any) => {
+        const r = String(x?.property_region || '').trim()
+        return r ? r.toLowerCase() : '\uffff'
+      }
+      const codeKey = (x: any) => {
+        const c = String(x?.property_code || '').trim()
+        return c ? c.toLowerCase() : String(x?.property_id || '').trim().toLowerCase()
+      }
+      arr.sort((a, b) =>
+        regionKey(a).localeCompare(regionKey(b)) ||
+        codeKey(a).localeCompare(codeKey(b)) ||
+        String(a.label || '').localeCompare(String(b.label || '')) ||
+        String(a.source || '').localeCompare(String(b.source || '')) ||
+        String(a.entity_id || '').localeCompare(String(b.entity_id || ''))
+      )
       m.set(k, arr)
     }
     return m
@@ -315,11 +402,19 @@ export default function CleaningPage() {
     const q = filterRoom.trim().toLowerCase()
     return base.filter((it) => {
       if (filterStatus && String(it.status || '') !== filterStatus) return false
+      if (filterCleaner) {
+        const v = String(it.cleaner_id || it.assignee_id || '').trim()
+        if (!v || v !== String(filterCleaner)) return false
+      }
+      if (filterInspector) {
+        const v = String(it.inspector_id || '').trim()
+        if (!v || v !== String(filterInspector)) return false
+      }
       if (!q) return true
       const label = propertyLabelForItem(it).toLowerCase()
       return label.includes(q)
     })
-  }, [filterRoom, filterStatus, itemsByDate, propertyLabelForItem, selectedDateStr])
+  }, [filterCleaner, filterInspector, filterRoom, filterStatus, itemsByDate, propertyLabelForItem, selectedDateStr])
 
   const loadStaff = useCallback(async () => {
     const s = await getJSON<Staff[]>('/cleaning/staff').catch(() => [])
@@ -372,25 +467,73 @@ export default function CleaningPage() {
     if (it.source !== 'cleaning_tasks') return
     const date = String(it.task_date || '').slice(0, 10)
     const rows = await getJSON<CleaningTaskRow[]>(`/cleaning/tasks?date=${encodeURIComponent(date)}`).catch(() => [])
-    const ids = entityIds(it)
+    const clickedIds = entityIds(it)
+    const clickedRow = (Array.isArray(rows) ? rows : []).find((r) => String(r.id) === String(clickedIds[0])) || null
+    const propertyId = it.property_id ? String(it.property_id) : (clickedRow?.property_id ? String(clickedRow.property_id) : null)
+    const rowsForProp = (Array.isArray(rows) ? rows : []).filter((r) => String(r?.property_id || '') && propertyId && String(r.property_id) === String(propertyId))
+    const isCheckoutRow = (r: CleaningTaskRow | null) => String(r?.task_type || '').toLowerCase() === 'checkout_clean'
+    const isCheckinRow = (r: CleaningTaskRow | null) => String(r?.task_type || '').toLowerCase() === 'checkin_clean'
+    const notCancelled = (r: CleaningTaskRow) => String(r?.status || '').toLowerCase() !== 'cancelled'
+    const checkoutIdsAll = rowsForProp.filter((r) => notCancelled(r) && isCheckoutRow(r as any)).map((r) => String(r.id))
+    const checkinIdsAll = rowsForProp.filter((r) => notCancelled(r) && isCheckinRow(r as any)).map((r) => String(r.id))
+    const ids = Array.from(new Set([...clickedIds, ...checkoutIdsAll, ...checkinIdsAll]))
     const selectedRows = ids.map((id) => (Array.isArray(rows) ? rows : []).find((r) => String(r.id) === String(id)) || null)
-    const baseRow = selectedRows[0]
+    const baseRow = selectedRows.find((r) => r && String(r.id) === String(clickedIds[0])) || selectedRows[0]
+    const checkoutAllExists = checkoutIdsAll.length > 0
+    const checkinAllExists = checkinIdsAll.length > 0
     const note = ids.length === 1 ? (baseRow?.note != null ? String(baseRow.note || '') : '') : ''
-    const scheduledAt0 = baseRow?.scheduled_at ? dayjs(String(baseRow.scheduled_at)) : (it.scheduled_at ? dayjs(String(it.scheduled_at)) : null)
-    const scheduledAt = scheduledAt0 && scheduledAt0.isValid() ? scheduledAt0 : null
     const status = ids.length === 1 ? String(baseRow?.status || it.status || 'pending') : mergedStatus(selectedRows.map((r) => String(r?.status || it.status || 'pending')))
-    const assigneeId =
+    const getCleaner = (r: CleaningTaskRow | null) => String(r?.cleaner_id || r?.assignee_id || '').trim()
+    const getInspector = (r: CleaningTaskRow | null) => String(r?.inspector_id || '').trim()
+    const cleanerId =
       ids.length === 1
-        ? (baseRow?.assignee_id ? String(baseRow.assignee_id) : (it.assignee_id ? String(it.assignee_id) : null))
-        : (selectedRows.every((r) => String(r?.assignee_id || '') === String(selectedRows[0]?.assignee_id || '')) ? (selectedRows[0]?.assignee_id ? String(selectedRows[0]?.assignee_id) : null) : null)
+        ? (getCleaner(baseRow) ? getCleaner(baseRow) : (String(it.cleaner_id || it.assignee_id || '').trim() || null))
+        : (selectedRows.every((r) => getCleaner(r) === getCleaner(selectedRows[0])) ? (getCleaner(selectedRows[0]) || null) : null)
+    const inspectorId =
+      ids.length === 1
+        ? (getInspector(baseRow) ? getInspector(baseRow) : (String(it.inspector_id || '').trim() || null))
+        : (selectedRows.every((r) => getInspector(r) === getInspector(selectedRows[0])) ? (getInspector(selectedRows[0]) || null) : null)
+    const checkoutRows = selectedRows.filter(isCheckoutRow)
+    const checkinRows = selectedRows.filter(isCheckinRow)
+    const nightsAllSame = checkinRows.length > 0 && checkinRows.every((r) => String(r?.nights_override ?? '') === String(checkinRows[0]?.nights_override ?? ''))
+    const nightsOverride =
+      checkinRows.length === 1
+        ? (checkinRows[0]?.nights_override != null ? Number(checkinRows[0]?.nights_override) : null)
+        : (nightsAllSame ? (checkinRows[0]?.nights_override != null ? Number(checkinRows[0]?.nights_override) : null) : null)
+    const checkoutKey = (r: CleaningTaskRow | null) => String(r?.old_code ?? '').trim()
+    const checkinKey = (r: CleaningTaskRow | null) => String(r?.new_code ?? '').trim()
+    const checkoutPwd = checkoutRows.length > 0 && checkoutRows.every((r) => checkoutKey(r) === checkoutKey(checkoutRows[0])) ? (checkoutKey(checkoutRows[0]) || '') : ''
+    const checkinPwd = checkinRows.length > 0 && checkinRows.every((r) => checkinKey(r) === checkinKey(checkinRows[0])) ? (checkinKey(checkinRows[0]) || '') : ''
+    const checkoutTimeKey = (r: CleaningTaskRow | null) => String(r?.checkout_time ?? '').trim()
+    const checkinTimeKey = (r: CleaningTaskRow | null) => String(r?.checkin_time ?? '').trim()
+    const checkoutTime = checkoutRows.length > 0 && checkoutRows.every((r) => checkoutTimeKey(r) === checkoutTimeKey(checkoutRows[0])) ? (checkoutTimeKey(checkoutRows[0]) || '10am') : '10am'
+    const checkinTime = checkinRows.length > 0 && checkinRows.every((r) => checkinTimeKey(r) === checkinTimeKey(checkinRows[0])) ? (checkinTimeKey(checkinRows[0]) || '3pm') : '3pm'
+    const checkinTaskDateKey = (r: CleaningTaskRow | null) => String(r?.task_date || r?.date || '').slice(0, 10)
+    const checkinTaskDate =
+      checkinRows.length > 0 && checkinRows.every((r) => checkinTaskDateKey(r) === checkinTaskDateKey(checkinRows[0]))
+        ? dayjs(checkinTaskDateKey(checkinRows[0]) || date)
+        : dayjs(date)
     const autoSync = selectedRows.every((r) => (r?.auto_sync_enabled !== false)) && it.auto_sync_enabled !== false
     setEditForm({
       ids,
       task_date: dayjs(date),
+      property_id: propertyId,
       status,
-      assignee_id: assigneeId,
-      scheduled_at: scheduledAt,
+      cleaner_id: cleanerId,
+      inspector_id: inspectorId,
       note,
+      nights_override: nightsOverride,
+      checkout_ids: checkoutIdsAll,
+      checkin_ids: checkinIdsAll,
+      checkout_password: checkoutPwd,
+      checkin_password: checkinPwd,
+      checkout_time: checkoutTime,
+      checkin_time: checkinTime,
+      checkin_task_date: checkinTaskDate,
+      can_add_checkout: !!propertyId && !checkoutAllExists,
+      can_add_checkin: !!propertyId && !checkinAllExists,
+      pending_add_checkout: false,
+      pending_add_checkin: false,
       auto_sync_enabled: autoSync,
     })
     setEditOpen(true)
@@ -398,19 +541,72 @@ export default function CleaningPage() {
 
   const submitEdit = useCallback(async () => {
     if (!editForm) return
-    const payload: any = {
+    const toNull = (s: string) => (String(s || '').trim() ? String(s).trim() : null)
+    const base: any = {
       task_date: editForm.task_date.format('YYYY-MM-DD'),
       status: editForm.status,
-      assignee_id: editForm.assignee_id,
-      scheduled_at: editForm.scheduled_at ? editForm.scheduled_at.toISOString() : null,
-      note: editForm.note || null,
     }
-    await Promise.all(editForm.ids.map((id) => patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, payload)))
+    if (editForm.ids.length === 1 || editForm.cleaner_id !== null) base.cleaner_id = editForm.cleaner_id
+    if (editForm.ids.length === 1 || editForm.inspector_id !== null) base.inspector_id = editForm.inspector_id
+    if (editForm.ids.length === 1) base.note = editForm.note || null
+    else if (String(editForm.note || '').trim()) base.note = editForm.note
+
+    if (editForm.pending_add_checkout && editForm.property_id) {
+      await postJSON('/cleaning/tasks', {
+        task_type: 'checkout_clean',
+        task_date: editForm.task_date.format('YYYY-MM-DD'),
+        property_id: editForm.property_id,
+        status: editForm.status,
+        cleaner_id: editForm.cleaner_id,
+        inspector_id: editForm.inspector_id,
+        old_code: toNull(editForm.checkout_password),
+        checkout_time: toNull(editForm.checkout_time),
+      })
+    }
+    if (editForm.pending_add_checkin && editForm.property_id) {
+      await postJSON('/cleaning/tasks', {
+        task_type: 'checkin_clean',
+        task_date: editForm.checkin_task_date.format('YYYY-MM-DD'),
+        property_id: editForm.property_id,
+        status: editForm.status,
+        cleaner_id: editForm.cleaner_id,
+        inspector_id: editForm.inspector_id,
+        new_code: toNull(editForm.checkin_password),
+        nights_override: editForm.nights_override ?? null,
+        checkin_time: toNull(editForm.checkin_time),
+      })
+    }
+
+    const patches = editForm.ids.map((id) => {
+      const p: any = { ...base }
+      if (editForm.checkout_ids.some((x) => String(x) === String(id))) {
+        p.old_code = toNull(editForm.checkout_password)
+        p.checkout_time = toNull(editForm.checkout_time)
+      }
+      if (editForm.checkin_ids.some((x) => String(x) === String(id))) {
+        p.task_date = editForm.checkin_task_date.format('YYYY-MM-DD')
+        p.new_code = toNull(editForm.checkin_password)
+        p.nights_override = editForm.nights_override ?? null
+        p.checkin_time = toNull(editForm.checkin_time)
+      }
+      return patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, p)
+    })
+    await Promise.all(patches)
     setEditOpen(false)
     setEditForm(null)
     message.success('已更新')
     loadRangeItems().catch(() => {})
   }, [editForm, loadRangeItems])
+
+  const cancelTasksInEdit = useCallback(async (ids: string[], label: string) => {
+    const uniq = Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
+    if (!uniq.length) return
+    await postJSON('/cleaning/tasks/bulk-delete', { ids: uniq })
+    message.success(`${label}已取消`)
+    setEditOpen(false)
+    setEditForm(null)
+    loadRangeItems().catch(() => {})
+  }, [loadRangeItems])
 
   const restoreAutoSync = useCallback(async (it: CalendarItem) => {
     if (it.source !== 'cleaning_tasks') return
@@ -462,10 +658,196 @@ export default function CleaningPage() {
     return staff.find((s) => String(s.id) === String(id))?.name || String(id)
   }, [staff])
 
+  const staffById = useMemo(() => {
+    const m = new Map<string, Staff>()
+    for (const s of staff) m.set(String(s.id), s)
+    return m
+  }, [staff])
+
+  const normalizeHex = useCallback((hex: any): string | null => {
+    const v = String(hex || '').trim()
+    if (!/^#[0-9a-fA-F]{6}$/.test(v)) return null
+    return v.toUpperCase()
+  }, [])
+
+  const isDarkBg = useCallback((hex: string) => {
+    const h = hex.replace('#', '')
+    const r = parseInt(h.slice(0, 2), 16) / 255
+    const g = parseInt(h.slice(2, 4), 16) / 255
+    const b = parseInt(h.slice(4, 6), 16) / 255
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return lum < 0.6
+  }, [])
+
+  const cleanerColorOf = useCallback((it: CalendarItem) => {
+    const id = String(it.cleaner_id || it.assignee_id || '').trim()
+    const hex = id ? normalizeHex(staffById.get(id)?.color_hex) : null
+    return hex || '#CBD5E1'
+  }, [normalizeHex, staffById])
+
+  const cleanerOptions = useMemo(() => (
+    staff
+      .filter((s) => (s.kind || 'cleaner') === 'cleaner' && s.is_active !== false)
+      .reduce((acc, s) => {
+        const k = String(s.id)
+        if (!acc.some((x) => String(x.value) === k)) acc.push({ value: s.id, label: s.name })
+        return acc
+      }, [] as { value: string; label: string }[])
+  ), [staff])
+
+  const inspectorOptions = useMemo(() => (
+    staff
+      .filter((s) => (s.kind || 'cleaner') === 'inspector' && s.is_active !== false)
+      .reduce((acc, s) => {
+        const k = String(s.id)
+        if (!acc.some((x) => String(x.value) === k)) acc.push({ value: s.id, label: s.name })
+        return acc
+      }, [] as { value: string; label: string }[])
+  ), [staff])
+
+  const statusOptions = useMemo(() => ([
+    { label: '待处理', value: 'pending' },
+    { label: '已分配', value: 'assigned' },
+    { label: '进行中', value: 'in_progress' },
+    { label: '已完成', value: 'completed' },
+    { label: '已取消', value: 'cancelled' },
+  ]), [])
+
+  const statusText = useCallback((s: string | null | undefined) => {
+    const v = String(s || '').trim()
+    if (v === 'pending') return '待处理'
+    if (v === 'assigned') return '已分配'
+    if (v === 'in_progress') return '进行中'
+    if (v === 'completed') return '已完成'
+    if (v === 'cancelled') return '已取消'
+    if (v === 'todo') return '待处理'
+    if (v === 'done') return '已完成'
+    return v || '-'
+  }, [])
+
+  const statusChipCls = useCallback((s: string | null | undefined) => {
+    const v = String(s || '').trim()
+    if (v === 'completed' || v === 'done') return styles.statusDone
+    if (v === 'in_progress') return styles.statusInProgress
+    if (v === 'assigned') return styles.statusAssigned
+    if (v === 'cancelled') return styles.statusCancelled
+    return styles.statusPending
+  }, [])
+
+  const timeOptions = useMemo(() => {
+    const out: { value: string; label: string }[] = []
+    const startMin = 0
+    const endMin = 23 * 60 + 30
+    for (let m = startMin; m <= endMin; m += 30) {
+      const hour24 = Math.floor(m / 60)
+      const min = m % 60
+      const isAm = hour24 < 12
+      let hour12 = hour24 % 12
+      if (hour12 === 0) hour12 = 12
+      const label =
+        min === 0
+          ? `${hour12}${isAm ? 'am' : 'pm'}`
+          : `${hour12}:${String(min).padStart(2, '0')}${isAm ? 'am' : 'pm'}`
+      out.push({ value: label, label })
+    }
+    return out
+  }, [])
+
   const updateTaskQuick = useCallback(async (ids: string[], patch: any) => {
-    await Promise.all(ids.map((id) => patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, patch)))
+    const normIds = Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
+    const idSet = new Set(normIds)
+    const keyChanged =
+      patch.task_date !== undefined ||
+      patch.cleaner_id !== undefined ||
+      patch.assignee_id !== undefined ||
+      patch.scheduled_at !== undefined
+
+    setItems((prev) => prev.map((it) => {
+      if (it.source !== 'cleaning_tasks') return it
+      if (!idSet.has(String(it.entity_id))) return it
+      const next: any = { ...it }
+      if (patch.status !== undefined) next.status = patch.status
+      if (patch.task_date !== undefined) next.task_date = patch.task_date
+      if (patch.scheduled_at !== undefined) next.scheduled_at = patch.scheduled_at
+      if (patch.cleaner_id !== undefined) {
+        next.cleaner_id = patch.cleaner_id
+        if (patch.assignee_id === undefined) next.assignee_id = patch.cleaner_id
+      }
+      if (patch.assignee_id !== undefined) {
+        next.assignee_id = patch.assignee_id
+        if (patch.cleaner_id === undefined) next.cleaner_id = patch.assignee_id
+      }
+      if (patch.inspector_id !== undefined) next.inspector_id = patch.inspector_id
+      if (keyChanged) next.auto_sync_enabled = false
+      return next
+    }))
+
+    try {
+      await postJSON('/cleaning/tasks/bulk-patch', { ids: normIds, patch })
+    } catch (e) {
+      loadRangeItems().catch(() => {})
+      throw e
+    }
+  }, [loadRangeItems])
+
+  const selectedSet = useMemo(() => new Set(selectedTaskIds.map((x) => String(x))), [selectedTaskIds])
+
+  useEffect(() => {
+    setSelectedTaskIds([])
+    setBulkMode(false)
+    setBulkEditOpen(false)
+    setBulkEditForm(null)
+  }, [selectedDateStr])
+
+  const toggleSelectItem = useCallback((it: CalendarItem, checked: boolean) => {
+    const ids = entityIds(it)
+    setSelectedTaskIds((prev) => {
+      const set = new Set(prev.map((x) => String(x)))
+      for (const id of ids) {
+        if (checked) set.add(String(id))
+        else set.delete(String(id))
+      }
+      return Array.from(set)
+    })
+  }, [entityIds])
+
+  const deleteTasks = useCallback(async (ids: string[]) => {
+    const uniq = Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
+    if (!uniq.length) return
+    await postJSON('/cleaning/tasks/bulk-delete', { ids: uniq })
+    message.success('已删除')
+    setSelectedTaskIds([])
     loadRangeItems().catch(() => {})
   }, [loadRangeItems])
+
+  const openBulkEdit = useCallback(() => {
+    const ids = Array.from(new Set(selectedTaskIds.map((x) => String(x)).filter(Boolean)))
+    if (!ids.length) {
+      message.warning('请先选择任务')
+      return
+    }
+    setBulkEditForm({ ids, status: '__keep__', cleaner: '__keep__', inspector: '__keep__' })
+    setBulkEditOpen(true)
+  }, [selectedTaskIds])
+
+  const submitBulkEdit = useCallback(async () => {
+    if (!bulkEditForm) return
+    const patch: any = {}
+    if (bulkEditForm.status !== '__keep__') patch.status = bulkEditForm.status
+    if (bulkEditForm.cleaner === '__clear__') patch.cleaner_id = null
+    else if (bulkEditForm.cleaner !== '__keep__') patch.cleaner_id = bulkEditForm.cleaner
+    if (bulkEditForm.inspector === '__clear__') patch.inspector_id = null
+    else if (bulkEditForm.inspector !== '__keep__') patch.inspector_id = bulkEditForm.inspector
+    if (!Object.keys(patch).length) {
+      message.warning('未选择任何要批量修改的字段')
+      return
+    }
+    await postJSON('/cleaning/tasks/bulk-patch', { ids: bulkEditForm.ids, patch })
+    setBulkEditOpen(false)
+    setBulkEditForm(null)
+    message.success('已批量更新')
+    loadRangeItems().catch(() => {})
+  }, [bulkEditForm, loadRangeItems])
 
   const goPrev = useCallback(() => {
     if (view === 'month') setMonth((m) => m.subtract(1, 'month'))
@@ -517,9 +899,13 @@ export default function CleaningPage() {
           </div>
         </div>
 
-        {API_BASE ? <Alert type="info" showIcon message={`API_BASE=${API_BASE}`} /> : <Alert type="warning" showIcon message="NEXT_PUBLIC_API_BASE_URL 未设置" />}
-        {tasksMinMaxError ? <Alert type="warning" showIcon message="任务范围查询失败" description={tasksMinMaxError} /> : null}
-        {tasksMinMax?.min || tasksMinMax?.max ? <Alert type="info" showIcon message={`任务范围：${tasksMinMax.min || '-'} ～ ${tasksMinMax.max || '-'}`} /> : null}
+        {showDevDebugInfo ? (
+          <>
+            {API_BASE ? <Alert type="info" showIcon message={`API_BASE=${API_BASE}`} /> : <Alert type="warning" showIcon message="NEXT_PUBLIC_API_BASE_URL 未设置" />}
+            {tasksMinMaxError ? <Alert type="warning" showIcon message="任务范围查询失败" description={tasksMinMaxError} /> : null}
+            {tasksMinMax?.min || tasksMinMax?.max ? <Alert type="info" showIcon message={`任务范围：${tasksMinMax.min || '-'} ～ ${tasksMinMax.max || '-'}`} /> : null}
+          </>
+        ) : null}
 
         <div className={`${styles.card} ${styles.calendarCard}`}>
           <div className={styles.weekHeader}>
@@ -556,8 +942,15 @@ export default function CleaningPage() {
                               : styles.pillCheckout
                       const room = propertyLabelForItem(it) || '-'
                       const title = `${room} ${it.label}`.trim()
+                      const bg = cleanerColorOf(it)
+                      const fg = isDarkBg(bg) ? '#ffffff' : '#0f172a'
                       return (
-                        <div key={`${it.source}:${it.entity_id}`} className={`${styles.pill} ${pillCls}`} title={title}>
+                        <div
+                          key={`${it.source}:${it.entity_id}`}
+                          className={`${styles.pill} ${pillCls}`}
+                          title={title}
+                          style={{ backgroundColor: bg, color: fg }}
+                        >
                           {title}
                         </div>
                       )
@@ -587,21 +980,73 @@ export default function CleaningPage() {
                 allowClear
               />
               <Select
+                value={filterCleaner}
+                onChange={(v) => setFilterCleaner(v)}
+                placeholder="筛选清洁"
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                style={{ width: 180 }}
+                options={cleanerOptions}
+              />
+              <Select
+                value={filterInspector}
+                onChange={(v) => setFilterInspector(v)}
+                placeholder="筛选检查"
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                style={{ width: 180 }}
+                options={inspectorOptions}
+              />
+              <Select
                 value={filterStatus}
                 onChange={(v) => setFilterStatus(v)}
                 placeholder="筛选状态"
                 allowClear
                 style={{ width: 180 }}
                 options={[
-                  { label: 'pending', value: 'pending' },
-                  { label: 'assigned', value: 'assigned' },
-                  { label: 'in_progress', value: 'in_progress' },
-                  { label: 'completed', value: 'completed' },
-                  { label: 'cancelled', value: 'cancelled' },
-                  { label: 'todo（线下）', value: 'todo' },
-                  { label: 'done（线下）', value: 'done' },
+                  { label: '待处理', value: 'pending' },
+                  { label: '已分配', value: 'assigned' },
+                  { label: '进行中', value: 'in_progress' },
+                  { label: '已完成', value: 'completed' },
+                  { label: '已取消', value: 'cancelled' },
+                  { label: '待处理（线下）', value: 'todo' },
+                  { label: '已完成（线下）', value: 'done' },
                 ]}
               />
+              <Button
+                className={styles.secondaryBtn}
+                onClick={() => {
+                  setBulkMode((v) => !v)
+                  setSelectedTaskIds([])
+                }}
+              >
+                {bulkMode ? '退出批量' : '批量操作'}
+              </Button>
+              {bulkMode ? (
+                <>
+                  <Button className={styles.secondaryBtn} onClick={openBulkEdit} disabled={!selectedTaskIds.length}>
+                    批量编辑（{selectedTaskIds.length}）
+                  </Button>
+                  <Button
+                    danger
+                    className={styles.secondaryBtn}
+                    disabled={!selectedTaskIds.length}
+                    onClick={() => {
+                      Modal.confirm({
+                        title: '确认删除所选任务？',
+                        content: `将删除 ${selectedTaskIds.length} 个任务（会标记为 cancelled 并从列表移除）`,
+                        okText: '删除',
+                        okButtonProps: { danger: true },
+                        onOk: () => deleteTasks(selectedTaskIds).catch((e) => message.error(e?.message || '删除失败')),
+                      })
+                    }}
+                  >
+                    批量删除
+                  </Button>
+                </>
+              ) : null}
             </div>
           </div>
 
@@ -615,37 +1060,37 @@ export default function CleaningPage() {
               const kind = itemKind(it)
               const room = propertyLabelForItem(it) || '-'
               const sum = summaryText(it)
-              const timeStr = formatTaskTime(it.scheduled_at)
               const accentCls =
                 kind === 'unassigned' ? styles.accentUnassigned : kind === 'checkout' ? styles.accentCheckout : kind === 'combined' ? styles.accentCombined : ''
-              const nameCls =
-                kind === 'unassigned' ? styles.missionNameUnassigned : kind === 'checkout' ? styles.missionNameCheckout : kind === 'combined' ? styles.missionNameCombined : styles.missionNameCheckin
+              const accentColor = cleanerColorOf(it)
               const isMerged = Array.isArray(it.entity_ids) && it.entity_ids.length > 1
+              const ids = entityIds(it)
+              const selectChecked = it.source === 'cleaning_tasks' && ids.length > 0 && ids.every((x) => selectedSet.has(String(x)))
+              const selectIndeterminate = it.source === 'cleaning_tasks' && !selectChecked && ids.some((x) => selectedSet.has(String(x)))
               const orderDisplay = (id: string | null | undefined, code: string | null | undefined) => {
                 const v = String(code || id || '').trim()
                 return v ? v : '-'
               }
-              const showPwd = (label: string, oldCode?: string | null, newCode?: string | null) => {
-                const o = String(oldCode || '').trim()
-                const n = String(newCode || '').trim()
-                if (!o && !n) return null
-                return (
-                  <>
-                    {o ? <div className={styles.infoItem}>{label}旧:{o}</div> : null}
-                    {n ? <div className={styles.infoItem}>{label}新:{n}</div> : null}
-                  </>
-                )
-              }
+              const isTurnover = String(it.task_type || '').toLowerCase() === 'turnover' || (String(it.label || '').includes('退房') && String(it.label || '').includes('入住'))
+              const checkoutCode = isTurnover ? orderDisplay(it.checkout_order_id, it.checkout_order_code) : orderDisplay(it.order_id, it.order_code)
+              const checkinCode = orderDisplay(it.checkin_order_id, it.checkin_order_code)
               return (
                 <div key={`${it.source}:${it.entity_id}`} className={styles.missionCard}>
-                  <div className={`${styles.accent} ${accentCls}`} />
+                  <div className={`${styles.accent} ${accentCls}`} style={{ backgroundColor: accentColor }} />
                   <div className={styles.missionTop}>
-                    <div className={styles.summaryRow}>
-                      <div className={styles.summaryDot} />
-                      <div className={styles.summaryTitle}>
-                        {sum.region ? <span className={styles.summaryRegion}>{sum.region}</span> : null}
-                        <span className={styles.summaryCode}>{sum.code || room}</span>
-                        {sum.detail ? <span className={styles.summaryDetail}>{sum.detail}</span> : null}
+                    <div className={styles.headerLeft}>
+                      {bulkMode && it.source === 'cleaning_tasks' ? (
+                        <Checkbox
+                          checked={selectChecked}
+                          indeterminate={selectIndeterminate}
+                          onChange={(e) => toggleSelectItem(it, e.target.checked)}
+                        />
+                      ) : null}
+                      <span className={`${styles.statusChip} ${statusChipCls(it.status)}`}>{statusText(it.status)}</span>
+                      <div className={styles.headerTitle}>
+                        {sum.region ? <span className={styles.headerRegion}>{sum.region}</span> : null}
+                        <span className={styles.headerCode}>{sum.code || room}</span>
+                        {sum.detail ? <span className={styles.headerDetail}>{sum.detail}</span> : null}
                       </div>
                     </div>
                     {it.source === 'cleaning_tasks' ? (
@@ -653,68 +1098,74 @@ export default function CleaningPage() {
                         <Button className={`${styles.taskBtn} ${styles.taskBtnGhost}`} size="small" icon={<EditOutlined />} onClick={() => openEdit(it).catch((e) => message.error(e?.message || '打开失败'))}>
                           编辑
                         </Button>
-                        {isTaskLocked(it.auto_sync_enabled) ? (
-                          <Button className={`${styles.taskBtn} ${styles.taskBtnSubtle}`} size="small" onClick={() => restoreAutoSync(it).catch((e) => message.error(e?.message || '恢复失败'))}>
-                            恢复自动同步
-                          </Button>
-                        ) : null}
+                        <Button
+                          className={`${styles.taskBtn} ${styles.taskBtnDanger}`}
+                          size="small"
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={() => {
+                            Modal.confirm({
+                              title: '确认删除任务？',
+                              content: isMerged ? `将删除 ${ids.length} 个任务（会标记为 cancelled 并从列表移除）` : '将删除该任务（会标记为 cancelled 并从列表移除）',
+                              okText: '删除',
+                              okButtonProps: { danger: true },
+                              onOk: () => deleteTasks(ids).catch((e) => message.error(e?.message || '删除失败')),
+                            })
+                          }}
+                        >
+                          删除
+                        </Button>
                       </div>
                     ) : null}
                   </div>
-                  <div className={styles.missionBody}>
-                    <div className={styles.infoPills}>
-                      {it.nights != null ? <div className={`${styles.infoItem} ${styles.codeBox}`}>{`${it.nights}晚`}</div> : null}
-                      <div className={`${styles.infoItem} ${styles.codeBox}`}>{it.label}</div>
-                      <div className={styles.infoItem}>{it.status}</div>
-                      <div className={styles.infoItem}>{it.source}</div>
-                      {timeStr ? <div className={styles.infoItem}>{timeStr}</div> : null}
-                      {isTaskLocked(it.auto_sync_enabled) ? <div className={`${styles.infoItem} ${styles.codeBoxOrange}`}>已锁定</div> : null}
-                      {isMerged ? (
-                        <>
-                          <div className={styles.infoItem}>退房单:{orderDisplay(it.checkout_order_id, it.checkout_order_code)}</div>
-                          <div className={styles.infoItem}>入住单:{orderDisplay(it.checkin_order_id, it.checkin_order_code)}</div>
-                          {showPwd('退房', it.checkout_old_code, it.checkout_new_code)}
-                          {showPwd('入住', it.checkin_old_code, it.checkin_new_code)}
-                        </>
-                      ) : (
-                        <>
-                          {it.order_id || it.order_code ? <div className={styles.infoItem}>订单:{orderDisplay(it.order_id, it.order_code)}</div> : null}
-                          {showPwd('', it.old_code, it.new_code)}
-                        </>
-                      )}
-                    </div>
-                    <div className={styles.assignees}>
-                      {it.source === 'cleaning_tasks' ? (
+                  <div className={styles.metaRow}>
+                    {it.nights != null ? <span className={styles.metaChip}>{`${it.nights}晚`}</span> : null}
+                    {checkoutCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>退房</span>{checkoutCode}</span> : null}
+                    {isTurnover && checkinCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>入住</span>{checkinCode}</span> : null}
+                  </div>
+                  <div className={styles.controlsRow}>
+                    {it.source === 'cleaning_tasks' ? (
+                      <>
                         <div className={styles.assigneeGroup}>
-                          <div className={styles.assigneeLabel}>执行人</div>
+                          <div className={styles.assigneeLabel}>清洁</div>
                           <Select
                             className={styles.assigneeSelect}
                             allowClear
-                            value={it.assignee_id || undefined}
-                            options={staff.map((s) => ({ value: s.id, label: s.name }))}
-                            onChange={(v) => updateTaskQuick(entityIds(it), { assignee_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
-                            placeholder={staffNameById(it.assignee_id)}
+                            showSearch
+                            optionFilterProp="label"
+                            disabled={bulkMode}
+                            value={(it.cleaner_id || it.assignee_id) || undefined}
+                            options={cleanerOptions}
+                            onChange={(v) => updateTaskQuick(ids, { cleaner_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
+                            placeholder={staffNameById((it.cleaner_id || it.assignee_id) || null)}
                           />
                         </div>
-                      ) : null}
-                      {it.source === 'cleaning_tasks' ? (
+                        <div className={styles.assigneeGroup}>
+                          <div className={styles.assigneeLabel}>检查</div>
+                          <Select
+                            className={styles.assigneeSelect}
+                            allowClear
+                            showSearch
+                            optionFilterProp="label"
+                            disabled={bulkMode}
+                            value={it.inspector_id || undefined}
+                            options={inspectorOptions}
+                            onChange={(v) => updateTaskQuick(ids, { inspector_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
+                            placeholder={staffNameById(it.inspector_id || null)}
+                          />
+                        </div>
                         <div className={styles.assigneeGroup}>
                           <div className={styles.assigneeLabel}>状态</div>
                           <Select
                             className={styles.assigneeSelect}
+                            disabled={bulkMode}
                             value={String(it.status || 'pending')}
-                            options={[
-                              { label: 'pending', value: 'pending' },
-                              { label: 'assigned', value: 'assigned' },
-                              { label: 'in_progress', value: 'in_progress' },
-                              { label: 'completed', value: 'completed' },
-                              { label: 'cancelled', value: 'cancelled' },
-                            ]}
-                            onChange={(v) => updateTaskQuick(entityIds(it), { status: v }).catch((e) => message.error(e?.message || '更新失败'))}
+                            options={statusOptions}
+                            onChange={(v) => updateTaskQuick(ids, { status: v }).catch((e) => message.error(e?.message || '更新失败'))}
                           />
                         </div>
-                      ) : null}
-                    </div>
+                      </>
+                    ) : null}
                   </div>
                 </div>
               )
@@ -746,34 +1197,165 @@ export default function CleaningPage() {
                 value={editForm.status}
                 onChange={(v) => setEditForm((p) => (p ? { ...p, status: v } : p))}
                 style={{ width: '100%' }}
-                options={[
-                  { label: 'pending', value: 'pending' },
-                  { label: 'assigned', value: 'assigned' },
-                  { label: 'in_progress', value: 'in_progress' },
-                  { label: 'completed', value: 'completed' },
-                  { label: 'cancelled', value: 'cancelled' },
-                ]}
+                options={statusOptions}
               />
             </div>
             <div>
-              <div className={styles.fieldLabel}>分配人员</div>
+              <div className={styles.fieldLabel}>清洁人员</div>
               <Select
                 allowClear
-                value={editForm.assignee_id || undefined}
-                onChange={(v) => setEditForm((p) => (p ? { ...p, assignee_id: v ? String(v) : null } : p))}
+                showSearch
+                optionFilterProp="label"
+                value={editForm.cleaner_id || undefined}
+                onChange={(v) => setEditForm((p) => (p ? { ...p, cleaner_id: v ? String(v) : null } : p))}
                 style={{ width: '100%' }}
-                options={staff.map((s) => ({ value: s.id, label: s.name }))}
+                options={cleanerOptions}
               />
             </div>
             <div>
-              <div className={styles.fieldLabel}>时间</div>
-              <DatePicker
-                picker="time"
-                value={editForm.scheduled_at}
-                onChange={(v) => setEditForm((p) => (p ? { ...p, scheduled_at: v } : p))}
+              <div className={styles.fieldLabel}>检查人员</div>
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                value={editForm.inspector_id || undefined}
+                onChange={(v) => setEditForm((p) => (p ? { ...p, inspector_id: v ? String(v) : null } : p))}
                 style={{ width: '100%' }}
+                options={inspectorOptions}
               />
             </div>
+            <div>
+              <div className={styles.fieldLabel}>新增任务</div>
+              <Space wrap>
+                {editForm.checkout_ids.length ? (
+                  <Button
+                    danger
+                    onClick={() => {
+                      Modal.confirm({
+                        title: '确认取消退房任务？',
+                        content: `将取消 ${editForm.checkout_ids.length} 个退房任务`,
+                        okText: '取消退房',
+                        okButtonProps: { danger: true },
+                        onOk: () => cancelTasksInEdit(editForm.checkout_ids, '退房').catch((e) => message.error(e?.message || '取消失败')),
+                      })
+                    }}
+                  >
+                    取消退房
+                  </Button>
+                ) : (
+                  <Button
+                    disabled={!editForm.can_add_checkout && !editForm.pending_add_checkout}
+                    onClick={() => setEditForm((p) => {
+                      if (!p) return p
+                      const next = !p.pending_add_checkout
+                      if (!next) return { ...p, pending_add_checkout: false, checkout_password: '', checkout_time: '10am' }
+                      return { ...p, pending_add_checkout: true, checkout_time: p.checkout_time || '10am' }
+                    })}
+                  >
+                    {editForm.pending_add_checkout ? '取消新增退房' : '新增退房'}
+                  </Button>
+                )}
+
+                {editForm.checkin_ids.length ? (
+                  <Button
+                    danger
+                    onClick={() => {
+                      Modal.confirm({
+                        title: '确认取消入住任务？',
+                        content: `将取消 ${editForm.checkin_ids.length} 个入住任务`,
+                        okText: '取消入住',
+                        okButtonProps: { danger: true },
+                        onOk: () => cancelTasksInEdit(editForm.checkin_ids, '入住').catch((e) => message.error(e?.message || '取消失败')),
+                      })
+                    }}
+                  >
+                    取消入住
+                  </Button>
+                ) : (
+                  <Button
+                    disabled={!editForm.can_add_checkin && !editForm.pending_add_checkin}
+                    onClick={() => setEditForm((p) => {
+                      if (!p) return p
+                      const next = !p.pending_add_checkin
+                      if (!next) return { ...p, pending_add_checkin: false, checkin_password: '', nights_override: null, checkin_time: '3pm', checkin_task_date: p.task_date }
+                      return { ...p, pending_add_checkin: true, checkin_time: p.checkin_time || '3pm', checkin_task_date: p.checkin_task_date || p.task_date }
+                    })}
+                  >
+                    {editForm.pending_add_checkin ? '取消新增入住' : '新增入住'}
+                  </Button>
+                )}
+              </Space>
+              {editForm.pending_add_checkout ? <Alert type="info" showIcon message="保存时将新增退房任务" /> : null}
+              {editForm.pending_add_checkin ? <Alert type="info" showIcon message="保存时将新增入住任务" /> : null}
+              {!editForm.property_id ? <Alert type="warning" showIcon message="该任务缺少 property_id，无法新增退房/入住" /> : null}
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>退房密码（旧密码）</div>
+              <Input
+                value={editForm.checkout_password}
+                onChange={(e) => setEditForm((p) => (p ? { ...p, checkout_password: e.target.value } : p))}
+                placeholder="退房密码"
+              />
+            </div>
+            {editForm.checkout_ids.length || editForm.pending_add_checkout ? (
+              <div>
+                <div className={styles.fieldLabel}>退房时间</div>
+                <Select
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  value={editForm.checkout_time || undefined}
+                  onChange={(v) => setEditForm((p) => (p ? { ...p, checkout_time: String(v || '') } : p))}
+                  style={{ width: '100%' }}
+                  options={timeOptions}
+                />
+              </div>
+            ) : null}
+            {editForm.checkin_ids.length || editForm.pending_add_checkin ? (
+              <>
+                <div>
+                  <div className={styles.fieldLabel}>入住日期</div>
+                  <DatePicker
+                    value={editForm.checkin_task_date}
+                    onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_task_date: v || p.task_date } : p))}
+                    style={{ width: '100%' }}
+                  />
+                  {editForm.checkin_task_date && !editForm.checkin_task_date.isSame(editForm.task_date, 'day') ? (
+                    <Alert type="info" showIcon message="已标记为隔天入住（入住任务会移动到所选日期）" />
+                  ) : null}
+                </div>
+                <div>
+                  <div className={styles.fieldLabel}>入住时间</div>
+                  <Select
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    value={editForm.checkin_time || undefined}
+                    onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
+                    style={{ width: '100%' }}
+                    options={timeOptions}
+                  />
+                </div>
+                <div>
+                  <div className={styles.fieldLabel}>入住天数</div>
+                  <InputNumber
+                    style={{ width: '100%' }}
+                    min={0}
+                    placeholder="例如 2"
+                    value={editForm.nights_override ?? undefined}
+                    onChange={(v) => setEditForm((p) => (p ? { ...p, nights_override: v == null ? null : Number(v) } : p))}
+                  />
+                </div>
+                <div>
+                  <div className={styles.fieldLabel}>入住密码（新密码）</div>
+                  <Input
+                    value={editForm.checkin_password}
+                    onChange={(e) => setEditForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))}
+                    placeholder="入住密码"
+                  />
+                </div>
+              </>
+            ) : null}
             <div>
               <div className={styles.fieldLabel}>备注</div>
               <Input.TextArea
@@ -783,6 +1365,62 @@ export default function CleaningPage() {
               />
             </div>
             {!editForm.auto_sync_enabled ? <Alert type="warning" showIcon message="该任务已锁定自动同步" /> : null}
+          </Space>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={bulkEditOpen}
+        title="批量编辑清洁任务"
+        okText="保存"
+        onOk={() => submitBulkEdit().catch((e) => message.error(e?.message || '保存失败'))}
+        onCancel={() => { setBulkEditOpen(false); setBulkEditForm(null) }}
+      >
+        {bulkEditForm ? (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Alert type="info" showIcon message={`已选择 ${bulkEditForm.ids.length} 个任务`} />
+            <div>
+              <div className={styles.fieldLabel}>状态</div>
+              <Select
+                value={bulkEditForm.status}
+                onChange={(v) => setBulkEditForm((p) => (p ? { ...p, status: v } : p))}
+                style={{ width: '100%' }}
+                options={[
+                  { label: '不修改', value: '__keep__' },
+                  ...statusOptions,
+                ]}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>清洁人员</div>
+              <Select
+                showSearch
+                optionFilterProp="label"
+                value={bulkEditForm.cleaner}
+                onChange={(v) => setBulkEditForm((p) => (p ? { ...p, cleaner: v } : p))}
+                style={{ width: '100%' }}
+                options={[
+                  { label: '不修改', value: '__keep__' },
+                  { label: '清空', value: '__clear__' },
+                  ...cleanerOptions,
+                ]}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>检查人员</div>
+              <Select
+                showSearch
+                optionFilterProp="label"
+                value={bulkEditForm.inspector}
+                onChange={(v) => setBulkEditForm((p) => (p ? { ...p, inspector: v } : p))}
+                style={{ width: '100%' }}
+                options={[
+                  { label: '不修改', value: '__keep__' },
+                  { label: '清空', value: '__clear__' },
+                  ...inspectorOptions,
+                ]}
+              />
+            </div>
           </Space>
         ) : null}
       </Modal>

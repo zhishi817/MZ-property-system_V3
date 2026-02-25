@@ -39,7 +39,7 @@
 - `nights`: number | null
 
 ### 顶部摘要字段（用于 1:1 UI 还原）
-- `summary_checkout_time`: string | null（默认 `11:30`）
+- `summary_checkout_time`: string | null（默认 `10am`）
 - `summary_checkin_time`: string | null（默认 `3pm`）
 
 ### 密码字段（source=cleaning_tasks）
@@ -51,4 +51,3 @@
 - `cleaning_tasks.status = 'cancelled'`
 - `order_id` 有值但订单不存在
 - 订单状态为空/invalid/包含 cancel
-

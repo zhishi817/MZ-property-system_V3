@@ -2,6 +2,8 @@
 import { Alert, Button, DatePicker, Drawer, Form, Input, Modal, Popconfirm, Select, Space, message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
+import utc from 'dayjs/plugin/utc'
+import timezone from 'dayjs/plugin/timezone'
 import { API_BASE, deleteJSON, getJSON, patchJSON, postJSON } from '../../../lib/api'
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { sortProperties } from '../../../lib/properties'
@@ -21,7 +23,7 @@ type OverviewResp = {
       cancelled: number
     }
   }
-  next7days: { date: string; total: number }[]
+  next7days: { date: string; check_out_count: number; check_in_count: number }[]
 }
 
 type OfflineTask = {
@@ -48,6 +50,10 @@ const kindLabel: Record<string, string> = {
   inspection: '检查（Inspection）',
   other: '其他',
 }
+
+dayjs.extend(utc)
+dayjs.extend(timezone)
+dayjs.tz.setDefault('Australia/Melbourne')
 
 export default function CleaningOverviewPage() {
   const [data, setData] = useState<OverviewResp | null>(null)
@@ -227,6 +233,12 @@ export default function CleaningOverviewPage() {
     return p ? (p.code || p.address || p.id) : String(id)
   }, [properties])
 
+  const weekLabel = useCallback((dateStr: string) => {
+    const d = dayjs.tz(`${String(dateStr).slice(0, 10)}T00:00:00`, 'Australia/Melbourne')
+    const map = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+    return map[d.day()] || ''
+  }, [])
+
   return (
     <div className={styles.page}>
       <div className={styles.container}>
@@ -283,16 +295,50 @@ export default function CleaningOverviewPage() {
               <ResponsiveContainer>
                 <BarChart
                   data={data?.next7days || []}
-                  margin={{ top: 18, right: 18, left: 8, bottom: 10 }}
-                  barCategoryGap={34}
-                  barGap={10}
+                  margin={{ top: 18, right: 18, left: 8, bottom: 22 }}
+                  barCategoryGap={26}
+                  barGap={6}
                 >
                   <CartesianGrid stroke="var(--clean-overview-divider)" strokeDasharray="2 6" vertical={false} />
-                  <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: 'var(--clean-overview-subtle)', fontSize: 12, fontWeight: 600 }} />
+                  <XAxis
+                    dataKey="date"
+                    axisLine={false}
+                    tickLine={false}
+                    height={44}
+                    tickMargin={10}
+                    tick={({ x, y, payload }: any) => {
+                      const v = String(payload?.value || '')
+                      const top = dayjs(v).format('MM-DD')
+                      const bottom = weekLabel(v)
+                      return (
+                        <g transform={`translate(${x},${y})`}>
+                          <text x={0} y={0} textAnchor="middle" fill="var(--clean-overview-subtle)" fontSize={12} fontWeight={600}>
+                            <tspan x={0} dy={0}>{top}</tspan>
+                            <tspan x={0} dy={14}>{bottom}</tspan>
+                          </text>
+                        </g>
+                      )
+                    }}
+                  />
                   <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: 'var(--clean-overview-subtle)', fontSize: 12, fontWeight: 600 }} />
-                  <Tooltip />
-                  <Legend content={() => null} />
-                  <Bar dataKey="total" name="清洁任务" fill="var(--clean-overview-blue)" radius={[6, 6, 0, 0]} maxBarSize={44} />
+                  <Tooltip
+                    labelFormatter={(v) => {
+                      const ds = String(v || '')
+                      return `${ds} ${weekLabel(ds)}`
+                    }}
+                  />
+                  <Legend
+                    verticalAlign="top"
+                    align="right"
+                    content={() => (
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 14, padding: '0 6px 4px' }}>
+                        <span className={styles.legendItem}><span className={`${styles.dot} ${styles.dotBlue}`} />退房</span>
+                        <span className={styles.legendItem}><span className={`${styles.dot} ${styles.dotOrange}`} />入住</span>
+                      </div>
+                    )}
+                  />
+                  <Bar dataKey="check_out_count" name="退房" fill="var(--clean-overview-blue)" radius={[6, 6, 0, 0]} maxBarSize={36} />
+                  <Bar dataKey="check_in_count" name="入住" fill="var(--clean-overview-orange)" radius={[6, 6, 0, 0]} maxBarSize={36} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

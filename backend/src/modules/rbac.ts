@@ -471,8 +471,20 @@ router.get('/my-permissions', auth, async (req, res) => {
 })
 
 // Users management
-const userCreateSchema = z.object({ username: z.string().min(1), email: z.string().email(), role: z.string().min(1), password: z.string().min(6) })
-const userUpdateSchema = z.object({ username: z.string().optional(), email: z.string().email().optional(), role: z.string().optional(), password: z.string().min(6).optional() })
+const userCreateSchema = z.object({
+  username: z.string().min(1),
+  email: z.string().email(),
+  role: z.string().min(1),
+  password: z.string().min(6),
+  color_hex: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+})
+const userUpdateSchema = z.object({
+  username: z.string().optional(),
+  email: z.string().email().optional(),
+  role: z.string().optional(),
+  password: z.string().min(6).optional(),
+  color_hex: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+})
 
 router.get('/users', requirePerm('rbac.manage'), async (_req, res) => {
   try {
@@ -482,12 +494,28 @@ router.get('/users', requirePerm('rbac.manage'), async (_req, res) => {
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
 })
 
+router.get('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'id required' })
+  try {
+    if (hasPg) {
+      const rows = await pgSelect('users', '*', { id }) as any[] || []
+      const row = rows[0]
+      if (!row) return res.status(404).json({ message: 'user not found' })
+      return res.json(row)
+    }
+    const row = db.users.find((u: any) => String(u.id) === id)
+    if (!row) return res.status(404).json({ message: 'user not found' })
+    return res.json(row)
+  } catch (e: any) { return res.status(500).json({ message: e.message }) }
+})
+
 router.post('/users', requirePerm('rbac.manage'), async (req, res) => {
   const parsed = userCreateSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const { v4: uuid } = require('uuid')
   const hash = await bcrypt.hash(parsed.data.password, 10)
-  const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, role: parsed.data.role, password_hash: hash }
+  const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, role: parsed.data.role, password_hash: hash, color_hex: parsed.data.color_hex || '#3B82F6' }
   try {
     if (hasPg) {
       try {
@@ -499,11 +527,13 @@ router.post('/users', requirePerm('rbac.manage'), async (req, res) => {
             email text UNIQUE,
             password_hash text NOT NULL,
             role text NOT NULL,
+            color_hex text NOT NULL DEFAULT '#3B82F6',
             created_at timestamptz DEFAULT now()
           );`)
           await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);')
           await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);')
           await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_password_hash text;')
+          await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`)
         }
       } catch (e: any) {
         try { console.error(`[RBAC] ensure users table error message=${String(e?.message || '')}`) } catch {}
@@ -537,6 +567,12 @@ router.patch('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
   const { id } = req.params
   try {
     if (hasPg) {
+      try {
+        const { pgPool } = require('../dbAdapter')
+        if (pgPool) {
+          await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`)
+        }
+      } catch {}
       const updated = await pgUpdate('users', id, payload as any)
       if (didResetPassword) {
         try {
