@@ -16,6 +16,9 @@ export type SyncOrderToCleaningTasksOpts = { deleted?: boolean; client?: any }
 const CHECKOUT_TASK_TYPE = 'checkout_clean'
 const CHECKIN_TASK_TYPE = 'checkin_clean'
 
+const DEFAULT_CHECKOUT_TIME = '10am'
+const DEFAULT_CHECKIN_TIME = '3pm'
+
 let schemaEnsured: Promise<void> | null = null
 
 function sha256(input: string): string {
@@ -112,6 +115,9 @@ export async function ensureCleaningSchemaV2(): Promise<void> {
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS note text;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkout_time text;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkin_time text;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS cleaner_id text;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspector_id text;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS nights_override int;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS old_code text;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS new_code text;`)
 
@@ -294,10 +300,12 @@ async function insertTask(row: any, client?: any): Promise<any> {
         task_type, task_date,
         type, date,
         status, assignee_id, scheduled_at,
+        checkout_time, checkin_time,
+        cleaner_id, inspector_id,
         auto_sync_enabled, sync_fingerprint, source,
         updated_at
       )
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now())
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now())
       ON CONFLICT ON CONSTRAINT uniq_cleaning_tasks_order_task_type_v3
       DO UPDATE SET
         property_id = EXCLUDED.property_id,
@@ -319,6 +327,10 @@ async function insertTask(row: any, client?: any): Promise<any> {
       String(row.status),
       row.assignee_id ? String(row.assignee_id) : null,
       row.scheduled_at ? String(row.scheduled_at) : null,
+      row.checkout_time != null ? String(row.checkout_time) : null,
+      row.checkin_time != null ? String(row.checkin_time) : null,
+      row.cleaner_id != null ? String(row.cleaner_id) : null,
+      row.inspector_id != null ? String(row.inspector_id) : null,
       row.auto_sync_enabled !== false,
       row.sync_fingerprint ? String(row.sync_fingerprint) : null,
       row.source ? String(row.source) : 'auto',
@@ -385,6 +397,8 @@ async function syncOneTask(params: {
       status: 'pending',
       assignee_id: null,
       scheduled_at: null,
+      checkout_time: taskType === CHECKOUT_TASK_TYPE ? DEFAULT_CHECKOUT_TIME : null,
+      checkin_time: taskType === CHECKIN_TASK_TYPE ? DEFAULT_CHECKIN_TIME : null,
       auto_sync_enabled: true,
       sync_fingerprint: fingerprint,
       source: 'auto',
@@ -415,6 +429,12 @@ async function syncOneTask(params: {
     sync_fingerprint: fingerprint,
     source: 'auto',
     auto_sync_enabled: true,
+  }
+  if (taskType === CHECKOUT_TASK_TYPE && !String(beforeTask.checkout_time || '').trim()) {
+    patch.checkout_time = DEFAULT_CHECKOUT_TIME
+  }
+  if (taskType === CHECKIN_TASK_TYPE && !String(beforeTask.checkin_time || '').trim()) {
+    patch.checkin_time = DEFAULT_CHECKIN_TIME
   }
   if (propChanged) {
     patch.assignee_id = null

@@ -117,14 +117,27 @@ router.get('/cleaning-overview', requireAnyPerm(['cleaning.view','cleaning.sched
         ), days AS (
           SELECT generate_series((SELECT day_au FROM base), (SELECT day_au FROM base) + interval '6 day', interval '1 day')::date AS day
         )
-        SELECT to_char(d.day, 'YYYY-MM-DD') AS day, COUNT(t.id)::int AS total
+        SELECT
+          to_char(d.day, 'YYYY-MM-DD') AS day,
+          COUNT(t.id) FILTER (WHERE
+            COALESCE(t.task_type,'') ILIKE 'checkout%' OR
+            COALESCE(t.type,'') ILIKE 'checkout%'
+          )::int AS check_out_count,
+          COUNT(t.id) FILTER (WHERE
+            COALESCE(t.task_type,'') ILIKE 'checkin%' OR
+            COALESCE(t.type,'') ILIKE 'checkin%'
+          )::int AS check_in_count
         FROM days d
         LEFT JOIN cleaning_tasks t ON (t.task_date::date = d.day)
         GROUP BY d.day
         ORDER BY d.day
       `
       const r3 = await pgPool.query(trendSql, [baseDay])
-      const next7days = (r3?.rows || []).map((r: any) => ({ date: String(r.day), total: Number(r.total || 0) }))
+      const next7days = (r3?.rows || []).map((r: any) => {
+        const co = Number(r.check_out_count || 0)
+        const ci = Number(r.check_in_count || 0)
+        return { date: String(r.day), check_out_count: co, check_in_count: ci, total: co + ci }
+      })
 
       const total = Object.values(byStatus).reduce((a, b) => a + Number(b || 0), 0)
       return res.json({
@@ -163,11 +176,23 @@ router.get('/cleaning-overview', requireAnyPerm(['cleaning.view','cleaning.sched
     const unassigned = tasks.filter((t: any) => !t.assignee_id && String(t.status || '') !== 'cancelled').length
     const next7days: any[] = []
     const baseDate = new Date(`${baseStr}T00:00:00`)
+    const isCheckoutTask = (t: any) => {
+      const tt = String(t.task_type || t.type || '').toLowerCase()
+      const lb = String(t.label || '').toLowerCase()
+      return tt.startsWith('checkout') || tt.includes('turnover') || lb.includes('退房') || lb.includes('checkout')
+    }
+    const isCheckinTask = (t: any) => {
+      const tt = String(t.task_type || t.type || '').toLowerCase()
+      const lb = String(t.label || '').toLowerCase()
+      return tt.startsWith('checkin') || tt.includes('turnover') || lb.includes('入住') || lb.includes('checkin')
+    }
     for (let i = 0; i < 7; i++) {
       const d = new Date(baseDate.getTime() + i * 24 * 3600 * 1000)
       const ds = dayStrAtTZ(d)
-      const total = (db.cleaningTasks as any[]).filter((t: any) => String(t.task_date || t.date || '').slice(0, 10) === ds).length
-      next7days.push({ date: ds, total })
+      const dayTasks = (db.cleaningTasks as any[]).filter((t: any) => String(t.task_date || t.date || '').slice(0, 10) === ds)
+      const check_out_count = dayTasks.filter(isCheckoutTask).length
+      const check_in_count = dayTasks.filter(isCheckinTask).length
+      next7days.push({ date: ds, check_out_count, check_in_count, total: check_out_count + check_in_count })
     }
     const total = tasks.length
     return res.json({

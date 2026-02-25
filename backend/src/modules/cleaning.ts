@@ -1,12 +1,15 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { requireAnyPerm, requirePerm } from '../auth'
-import { db } from '../store'
+import { addAudit, db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
 import { backfillCleaningTasks, ensureCleaningSchemaV2, syncOrderToCleaningTasks } from '../services/cleaningSync'
 import { v4 as uuid } from 'uuid'
 
 export const router = Router()
+
+const DEFAULT_SUMMARY_CHECKOUT_TIME = '10am'
+const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm'
 
 function auDayStr(d: Date): string {
   const parts = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d)
@@ -41,8 +44,62 @@ async function ensureOfflineTasksTable() {
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_cleaning_offline_tasks_date ON cleaning_offline_tasks(date);')
 }
 
-router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), (_req, res) => {
-  res.json(db.cleaners)
+router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
+  const kind = String((req.query as any)?.kind || '').trim().toLowerCase()
+  const rolesForKind = (k: string): string[] => {
+    if (k === 'cleaner') return ['cleaner', 'cleaner_inspector']
+    if (k === 'inspector') return ['cleaning_inspector', 'cleaner_inspector']
+    return ['cleaner', 'cleaning_inspector', 'cleaner_inspector']
+  }
+  const roles = rolesForKind(kind)
+  try {
+    if (hasPg && pgPool) {
+      await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`)
+      const r = await pgPool.query(
+        `SELECT
+           id,
+           username,
+           email,
+           role,
+           (color_hex::text) AS color_hex
+         FROM users
+         WHERE role = ANY($1::text[])
+         ORDER BY COALESCE(username, email) ASC, id ASC`,
+        [roles]
+      )
+      const out: any[] = []
+      for (const u of (r?.rows || []) as any[]) {
+        const role = String(u.role || '')
+        const name = String(u.username || u.email || u.id || '').trim() || String(u.id)
+        const base = { id: String(u.id), name, capacity_per_day: 0, is_active: true, color_hex: String(u.color_hex || '#3B82F6') }
+        if (role === 'cleaner' && kind !== 'inspector') out.push({ ...base, kind: 'cleaner' })
+        else if (role === 'cleaning_inspector' && kind !== 'cleaner') out.push({ ...base, kind: 'inspector' })
+        else if (role === 'cleaner_inspector') {
+          if (kind === 'cleaner') out.push({ ...base, kind: 'cleaner' })
+          else if (kind === 'inspector') out.push({ ...base, kind: 'inspector' })
+          else out.push({ ...base, kind: 'cleaner' }, { ...base, kind: 'inspector' })
+        }
+      }
+      return res.json(out)
+    }
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'staff_failed' })
+  }
+  const users = (db.users || []).filter((u: any) => roles.includes(String(u.role || '')))
+  const out: any[] = []
+  for (const u of users) {
+    const role = String(u.role || '')
+    const name = String(u.username || u.email || u.id || '').trim() || String(u.id)
+    const base = { id: String(u.id), name, capacity_per_day: 0, is_active: true, color_hex: String((u as any).color_hex || '#3B82F6') }
+    if (role === 'cleaner' && kind !== 'inspector') out.push({ ...base, kind: 'cleaner' })
+    else if (role === 'cleaning_inspector' && kind !== 'cleaner') out.push({ ...base, kind: 'inspector' })
+    else if (role === 'cleaner_inspector') {
+      if (kind === 'cleaner') out.push({ ...base, kind: 'cleaner' })
+      else if (kind === 'inspector') out.push({ ...base, kind: 'inspector' })
+      else out.push({ ...base, kind: 'cleaner' }, { ...base, kind: 'inspector' })
+    }
+  }
+  return res.json(out)
 })
 
 const offlineTaskSchema = z.object({
@@ -216,14 +273,49 @@ const patchTaskSchema = z.object({
   task_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   status: z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled']).optional(),
   assignee_id: z.union([z.string().min(1), z.null()]).optional(),
+  cleaner_id: z.union([z.string().min(1), z.null()]).optional(),
+  inspector_id: z.union([z.string().min(1), z.null()]).optional(),
+  nights_override: z.union([z.number().int().nonnegative(), z.null()]).optional(),
+  old_code: z.union([z.string(), z.null()]).optional(),
+  new_code: z.union([z.string(), z.null()]).optional(),
+  checkout_time: z.union([z.string(), z.null()]).optional(),
+  checkin_time: z.union([z.string(), z.null()]).optional(),
   scheduled_at: z.union([z.string().min(1), z.null()]).optional(),
   note: z.union([z.string(), z.null()]).optional(),
 }).strict()
+
+async function isValidStaffId(id: any, kind: 'cleaner' | 'inspector'): Promise<boolean> {
+  if (!id) return true
+  const sid = String(id)
+  const allowed =
+    kind === 'cleaner'
+      ? ['cleaner', 'cleaner_inspector']
+      : ['cleaning_inspector', 'cleaner_inspector']
+
+  if (hasPg && pgPool) {
+    try {
+      const r = await pgPool.query('SELECT role FROM users WHERE id=$1 LIMIT 1', [sid])
+      const role = String(r?.rows?.[0]?.role || '')
+      return allowed.includes(role)
+    } catch {
+      return false
+    }
+  }
+
+  const u = (db.users || []).find((x: any) => String(x.id) === sid)
+  if (u) return allowed.includes(String((u as any).role || ''))
+
+  const all = (db.cleaners || []).map((x: any) => ({ ...x, kind: x?.kind || 'cleaner', is_active: x?.is_active !== false }))
+  const found = all.find((x: any) => String(x.id) === sid && x.is_active !== false && x.kind === kind)
+  return !!found
+}
 
 router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res) => {
   const { id } = req.params
   const parsed = patchTaskSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!(await isValidStaffId((parsed.data as any).cleaner_id ?? null, 'cleaner'))) return res.status(400).json({ message: '无效的清洁人员' })
+  if (!(await isValidStaffId((parsed.data as any).inspector_id ?? null, 'inspector'))) return res.status(400).json({ message: '无效的检查人员' })
   try {
     if (hasPg && pgPool) {
       await ensureCleaningSchemaV2()
@@ -231,13 +323,24 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       const before = r0?.rows?.[0] || null
       if (!before) return res.status(404).json({ message: 'task not found' })
 
+      const nextCleaner =
+        (parsed.data as any).cleaner_id !== undefined
+          ? ((parsed.data as any).cleaner_id ?? null)
+          : (parsed.data.assignee_id !== undefined ? (parsed.data.assignee_id ?? null) : (before.cleaner_id ?? before.assignee_id ?? null))
       const keyChanged =
         (parsed.data.task_date != null && String(parsed.data.task_date) !== String(before.task_date || before.date || '')) ||
-        (parsed.data.assignee_id !== undefined && String(parsed.data.assignee_id ?? '') !== String(before.assignee_id ?? '')) ||
+        (nextCleaner !== undefined && String(nextCleaner ?? '') !== String(before.cleaner_id ?? before.assignee_id ?? '')) ||
         (parsed.data.scheduled_at !== undefined && String(parsed.data.scheduled_at ?? '') !== String(before.scheduled_at ?? ''))
 
       const patch: any = { ...parsed.data }
+      if (patch.cleaner_id !== undefined && patch.assignee_id === undefined) patch.assignee_id = patch.cleaner_id
+      if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) patch.cleaner_id = patch.assignee_id
       if (patch.task_date != null) patch.date = patch.task_date
+      if ((parsed.data as any).status === undefined) {
+        const nextCleanerId = patch.cleaner_id !== undefined ? (patch.cleaner_id ?? null) : (before.cleaner_id ?? before.assignee_id ?? null)
+        const nextInspectorId = (parsed.data as any).inspector_id !== undefined ? ((parsed.data as any).inspector_id ?? null) : (before.inspector_id ?? null)
+        if (nextCleanerId && nextInspectorId && String(before.status || 'pending') === 'pending') patch.status = 'assigned'
+      }
       if (keyChanged) patch.auto_sync_enabled = false
       patch.updated_at = new Date().toISOString()
 
@@ -255,17 +358,234 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
     if (parsed.data.property_id !== undefined) task.property_id = parsed.data.property_id
     if (parsed.data.task_date !== undefined) { task.task_date = parsed.data.task_date; task.date = parsed.data.task_date }
     if (parsed.data.status !== undefined) task.status = parsed.data.status
+    if ((parsed.data as any).cleaner_id !== undefined) task.cleaner_id = (parsed.data as any).cleaner_id
+    if ((parsed.data as any).inspector_id !== undefined) task.inspector_id = (parsed.data as any).inspector_id
+    if ((parsed.data as any).nights_override !== undefined) task.nights_override = (parsed.data as any).nights_override
+    if ((parsed.data as any).old_code !== undefined) task.old_code = (parsed.data as any).old_code
+    if ((parsed.data as any).new_code !== undefined) task.new_code = (parsed.data as any).new_code
+    if ((parsed.data as any).checkout_time !== undefined) task.checkout_time = (parsed.data as any).checkout_time
+    if ((parsed.data as any).checkin_time !== undefined) task.checkin_time = (parsed.data as any).checkin_time
     if (parsed.data.assignee_id !== undefined) task.assignee_id = parsed.data.assignee_id
+    if ((parsed.data as any).cleaner_id !== undefined && parsed.data.assignee_id === undefined) task.assignee_id = (parsed.data as any).cleaner_id
+    if (parsed.data.assignee_id !== undefined && (parsed.data as any).cleaner_id === undefined) task.cleaner_id = parsed.data.assignee_id
     if (parsed.data.scheduled_at !== undefined) task.scheduled_at = parsed.data.scheduled_at
     if (parsed.data.note !== undefined) task.note = parsed.data.note
+    const nextCleanerMem =
+      (parsed.data as any).cleaner_id !== undefined
+        ? ((parsed.data as any).cleaner_id ?? null)
+        : (parsed.data.assignee_id !== undefined ? (parsed.data.assignee_id ?? null) : (before as any).cleaner_id ?? before.assignee_id ?? null)
     const keyChanged =
       (parsed.data.task_date != null && String(parsed.data.task_date) !== String(before.task_date || before.date || '')) ||
-      (parsed.data.assignee_id !== undefined && String(parsed.data.assignee_id ?? '') !== String(before.assignee_id ?? '')) ||
+      (nextCleanerMem !== undefined && String(nextCleanerMem ?? '') !== String((before as any).cleaner_id ?? before.assignee_id ?? '')) ||
       (parsed.data.scheduled_at !== undefined && String(parsed.data.scheduled_at ?? '') !== String(before.scheduled_at ?? ''))
     if (keyChanged) task.auto_sync_enabled = false
+    if ((parsed.data as any).status === undefined) {
+      const cleaner = String(task.cleaner_id || task.assignee_id || '').trim()
+      const inspector = String(task.inspector_id || '').trim()
+      if (cleaner && inspector && String(before.status || 'pending') === 'pending') task.status = 'assigned'
+    }
     return res.json(task)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update_failed' })
+  }
+})
+
+const createTaskSchema = z.object({
+  task_type: z.enum(['checkout_clean', 'checkin_clean']),
+  task_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  property_id: z.string().min(1),
+  status: z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled']).optional(),
+  cleaner_id: z.union([z.string().min(1), z.null()]).optional(),
+  inspector_id: z.union([z.string().min(1), z.null()]).optional(),
+  scheduled_at: z.union([z.string().min(1), z.null()]).optional(),
+  old_code: z.union([z.string(), z.null()]).optional(),
+  new_code: z.union([z.string(), z.null()]).optional(),
+  checkout_time: z.union([z.string(), z.null()]).optional(),
+  checkin_time: z.union([z.string(), z.null()]).optional(),
+  nights_override: z.union([z.number().int().nonnegative(), z.null()]).optional(),
+}).strict()
+
+router.post('/tasks', requirePerm('cleaning.task.assign'), async (req, res) => {
+  const parsed = createTaskSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!(await isValidStaffId((parsed.data as any).cleaner_id ?? null, 'cleaner'))) return res.status(400).json({ message: '无效的清洁人员' })
+  if (!(await isValidStaffId((parsed.data as any).inspector_id ?? null, 'inspector'))) return res.status(400).json({ message: '无效的检查人员' })
+  try {
+    const row: any = {
+      id: uuid(),
+      order_id: null,
+      property_id: String(parsed.data.property_id),
+      task_type: parsed.data.task_type,
+      task_date: parsed.data.task_date,
+      type: parsed.data.task_type,
+      date: parsed.data.task_date,
+      status: parsed.data.status || ((parsed.data.cleaner_id ?? null) && ((parsed.data as any).inspector_id ?? null) ? 'assigned' : 'pending'),
+      assignee_id: (parsed.data.cleaner_id ?? null),
+      cleaner_id: (parsed.data.cleaner_id ?? null),
+      inspector_id: (parsed.data.inspector_id ?? null),
+      scheduled_at: parsed.data.scheduled_at ?? null,
+      old_code: parsed.data.old_code ?? null,
+      new_code: parsed.data.new_code ?? null,
+      checkout_time: parsed.data.checkout_time ?? null,
+      checkin_time: parsed.data.checkin_time ?? null,
+      nights_override: (parsed.data as any).nights_override ?? null,
+      auto_sync_enabled: true,
+      source: 'manual',
+    }
+    if (hasPg && pgPool) {
+      await ensureCleaningSchemaV2()
+      const keys = Object.keys(row).filter((k) => row[k] !== undefined)
+      const cols = keys.map((k) => `"${k}"`).join(', ')
+      const args = keys.map((_, i) => `$${i + 1}`).join(', ')
+      const values = keys.map((k) => row[k])
+      const sql = `INSERT INTO cleaning_tasks(${cols}) VALUES(${args}) RETURNING *`
+      const r = await pgPool.query(sql, values)
+      return res.json(r?.rows?.[0] || row)
+    }
+    ;(db.cleaningTasks as any[]).push(row)
+    return res.json(row)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'create_failed' })
+  }
+})
+
+router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res) => {
+  const { id } = req.params
+  const actor = (req as any).user
+  const actorId = actor?.sub ? String(actor.sub) : undefined
+  try {
+    if (hasPg && pgPool) {
+      await ensureCleaningSchemaV2()
+      const r0 = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [String(id)])
+      const before = r0?.rows?.[0] || null
+      if (!before) return res.status(404).json({ message: 'task not found' })
+      const r1 = await pgPool.query(`UPDATE cleaning_tasks SET status='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)])
+      const after = r1?.rows?.[0] || null
+      addAudit('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
+      return res.json({ ok: true })
+    }
+    const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
+    if (!task) return res.status(404).json({ message: 'task not found' })
+    const before = { ...task }
+    task.status = 'cancelled'
+    task.auto_sync_enabled = false
+    addAudit('cleaning_task', String(id), 'delete', before, { ...task }, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'delete_failed' })
+  }
+})
+
+const bulkDeleteSchema = z.object({ ids: z.array(z.string().min(1)).min(1) }).strict()
+router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (req, res) => {
+  const parsed = bulkDeleteSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const actor = (req as any).user
+  const actorId = actor?.sub ? String(actor.sub) : undefined
+  const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)))
+  try {
+    if (hasPg && pgPool) {
+      await ensureCleaningSchemaV2()
+      const client = await pgPool.connect()
+      try {
+        await client.query('BEGIN')
+        for (const id of ids) {
+          const r0 = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+          const before = r0?.rows?.[0] || null
+          if (!before) continue
+          const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [id])
+          const after = r1?.rows?.[0] || null
+          addAudit('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
+        }
+        await client.query('COMMIT')
+      } catch (e) {
+        try { await client.query('ROLLBACK') } catch {}
+        throw e
+      } finally {
+        client.release()
+      }
+      return res.json({ ok: true, deleted: ids.length })
+    }
+    let cnt = 0
+    for (const id of ids) {
+      const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
+      if (!task) continue
+      const before = { ...task }
+      task.status = 'cancelled'
+      task.auto_sync_enabled = false
+      addAudit('cleaning_task', String(id), 'delete', before, { ...task }, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
+      cnt++
+    }
+    return res.json({ ok: true, deleted: cnt })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'bulk_delete_failed' })
+  }
+})
+
+const bulkPatchSchema = z.object({ ids: z.array(z.string().min(1)).min(1), patch: patchTaskSchema }).strict()
+router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req, res) => {
+  const parsed = bulkPatchSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!(await isValidStaffId((parsed.data.patch as any).cleaner_id ?? null, 'cleaner'))) return res.status(400).json({ message: '无效的清洁人员' })
+  if (!(await isValidStaffId((parsed.data.patch as any).inspector_id ?? null, 'inspector'))) return res.status(400).json({ message: '无效的检查人员' })
+  const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)))
+  const basePatch: any = { ...parsed.data.patch }
+  if (basePatch.cleaner_id !== undefined && basePatch.assignee_id === undefined) basePatch.assignee_id = basePatch.cleaner_id
+  if (basePatch.assignee_id !== undefined && basePatch.cleaner_id === undefined) basePatch.cleaner_id = basePatch.assignee_id
+  if (hasPg && pgPool) {
+    await ensureCleaningSchemaV2()
+  }
+  try {
+    const updated: any[] = []
+    for (const id of ids) {
+      const r = await (async () => {
+        if (hasPg && pgPool) {
+          const r0 = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+          const before = r0?.rows?.[0] || null
+          if (!before) return null
+          const patch: any = { ...basePatch }
+          if (patch.task_date != null) patch.date = patch.task_date
+          if ((basePatch as any).status === undefined) {
+            const nextCleanerId = patch.cleaner_id !== undefined ? (patch.cleaner_id ?? null) : (before.cleaner_id ?? before.assignee_id ?? null)
+            const nextInspectorId = patch.inspector_id !== undefined ? (patch.inspector_id ?? null) : (before.inspector_id ?? null)
+            if (nextCleanerId && nextInspectorId && String(before.status || 'pending') === 'pending') patch.status = 'assigned'
+          }
+          const keyChanged =
+            (patch.task_date != null && String(patch.task_date) !== String(before.task_date || before.date || '')) ||
+            (patch.cleaner_id !== undefined && String(patch.cleaner_id ?? '') !== String(before.cleaner_id ?? before.assignee_id ?? '')) ||
+            (patch.scheduled_at !== undefined && String(patch.scheduled_at ?? '') !== String(before.scheduled_at ?? ''))
+          if (keyChanged) patch.auto_sync_enabled = false
+          patch.updated_at = new Date().toISOString()
+          const keys = Object.keys(patch).filter((k) => patch[k] !== undefined)
+          if (!keys.length) return before
+          const set = keys.map((k, i) => `"${k}"=$${i + 1}`).join(', ')
+          const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]))
+          const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`
+          const r1 = await pgPool.query(sql, [...values, id])
+          return r1?.rows?.[0] || before
+        }
+        const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
+        if (!task) return null
+        if (basePatch.property_id !== undefined) task.property_id = basePatch.property_id
+        if (basePatch.task_date !== undefined) { task.task_date = basePatch.task_date; task.date = basePatch.task_date }
+        if (basePatch.status !== undefined) task.status = basePatch.status
+        if (basePatch.cleaner_id !== undefined) task.cleaner_id = basePatch.cleaner_id
+        if (basePatch.inspector_id !== undefined) task.inspector_id = basePatch.inspector_id
+        if (basePatch.assignee_id !== undefined) task.assignee_id = basePatch.assignee_id
+        if (basePatch.scheduled_at !== undefined) task.scheduled_at = basePatch.scheduled_at
+        if (basePatch.note !== undefined) task.note = basePatch.note
+        if ((basePatch as any).status === undefined) {
+          const cleaner = String(task.cleaner_id || task.assignee_id || '').trim()
+          const inspector = String(task.inspector_id || '').trim()
+          if (cleaner && inspector && String((task as any).status || 'pending') === 'pending') (task as any).status = 'assigned'
+        }
+        return task
+      })()
+      if (r) updated.push(r)
+    }
+    return res.json({ ok: true, updated: updated.length })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'bulk_patch_failed' })
   }
 })
 
@@ -339,13 +659,18 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            COALESCE(t.task_date, t.date)::text AS task_date,
            t.status,
            t.assignee_id,
+           t.cleaner_id,
+           t.inspector_id,
            t.scheduled_at,
+           t.checkout_time,
+           t.checkin_time,
+           t.nights_override,
            t.source,
            t.auto_sync_enabled,
            t.old_code,
            t.new_code,
            (o.confirmation_code::text) AS order_code,
-           (o.nights) AS nights
+           COALESCE(t.nights_override, o.nights) AS nights
          FROM cleaning_tasks t
          LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
          LEFT JOIN properties p ON (p.id::text) = (t.property_id::text)
@@ -383,13 +708,15 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
           task_date: d,
           status: String(row.status || 'pending'),
           assignee_id: row.assignee_id ? String(row.assignee_id) : null,
+          cleaner_id: row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null),
+          inspector_id: row.inspector_id ? String(row.inspector_id) : null,
           scheduled_at: row.scheduled_at ? String(row.scheduled_at) : null,
           auto_sync_enabled: row.auto_sync_enabled !== false,
           old_code: row.old_code != null ? String(row.old_code || '') : null,
           new_code: row.new_code != null ? String(row.new_code || '') : null,
           nights: row.nights != null ? Number(row.nights) : null,
-          summary_checkout_time: '11:30',
-          summary_checkin_time: '3pm',
+          summary_checkout_time: String(row.checkout_time || '').trim() || DEFAULT_SUMMARY_CHECKOUT_TIME,
+          summary_checkin_time: String(row.checkin_time || '').trim() || DEFAULT_SUMMARY_CHECKIN_TIME,
         })
       }
       await ensureOfflineTasksTable()
@@ -455,13 +782,15 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
         task_date: d,
         status: String(t.status || 'pending'),
         assignee_id: t.assignee_id ? String(t.assignee_id) : null,
+        cleaner_id: t.cleaner_id ? String(t.cleaner_id) : (t.assignee_id ? String(t.assignee_id) : null),
+        inspector_id: t.inspector_id ? String(t.inspector_id) : null,
         scheduled_at: t.scheduled_at ? String(t.scheduled_at) : null,
         auto_sync_enabled: t.auto_sync_enabled !== false,
         old_code: t.old_code != null ? String(t.old_code || '') : null,
         new_code: t.new_code != null ? String(t.new_code || '') : null,
-        nights: order?.nights != null ? Number(order.nights) : null,
-        summary_checkout_time: '11:30',
-        summary_checkin_time: '3pm',
+        nights: t.nights_override != null ? Number(t.nights_override) : (order?.nights != null ? Number(order.nights) : null),
+        summary_checkout_time: String(t.checkout_time || '').trim() || DEFAULT_SUMMARY_CHECKOUT_TIME,
+        summary_checkin_time: String(t.checkin_time || '').trim() || DEFAULT_SUMMARY_CHECKIN_TIME,
       })
     }
     const offline = (db as any).cleaningOfflineTasks || []

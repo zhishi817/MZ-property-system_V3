@@ -4,6 +4,24 @@
   --clean-schedule-border: #e6effa;
   --clean-schedule-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
   --clean-schedule-radius: 18px;
+  --daily-task-radius: 12px;
+  --daily-task-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+  --daily-task-accent: 4px;
+  --daily-status-pending-bg: rgba(245, 158, 11, 0.18);
+  --daily-status-pending-bd: rgba(245, 158, 11, 0.35);
+  --daily-status-pending-fg: #92400e;
+  --daily-status-assigned-bg: rgba(59, 130, 246, 0.14);
+  --daily-status-assigned-bd: rgba(59, 130, 246, 0.28);
+  --daily-status-assigned-fg: #1d4ed8;
+  --daily-status-progress-bg: rgba(99, 102, 241, 0.14);
+  --daily-status-progress-bd: rgba(99, 102, 241, 0.28);
+  --daily-status-progress-fg: #4338ca;
+  --daily-status-done-bg: rgba(34, 197, 94, 0.14);
+  --daily-status-done-bd: rgba(34, 197, 94, 0.28);
+  --daily-status-done-fg: #15803d;
+  --daily-status-cancelled-bg: rgba(148, 163, 184, 0.18);
+  --daily-status-cancelled-bd: rgba(148, 163, 184, 0.3);
+  --daily-status-cancelled-fg: #475569;
   --clean-schedule-gap: 16px;
   --clean-schedule-pad: clamp(12px, 1.6vw, 24px);
   --clean-schedule-max: 1680px;
@@ -233,12 +251,17 @@
 
 .missionCard {
   position: relative;
-  padding: 18px 18px 18px 18px;
-  border-radius: 20px;
+  padding: 14px 16px 12px 16px;
+  border-radius: var(--daily-task-radius);
   border: 1px solid var(--clean-schedule-border);
   background: #ffffff;
-  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
+  box-shadow: var(--daily-task-shadow);
   overflow: hidden;
+}
+
+.missionCard:hover {
+  border-color: rgba(148, 163, 184, 0.7);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
 }
 
 .accent {
@@ -246,7 +269,7 @@
   left: 0;
   top: 0;
   bottom: 0;
-  width: 12px;
+  width: var(--daily-task-accent);
   background: rgba(59, 130, 246, 0.85);
 }
 
@@ -259,6 +282,86 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.headerLeft {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.statusChip {
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  line-height: 22px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 900;
+  border: 1px solid transparent;
+  flex: 0 0 auto;
+}
+
+.statusPending {
+  background: var(--daily-status-pending-bg);
+  border-color: var(--daily-status-pending-bd);
+  color: var(--daily-status-pending-fg);
+}
+
+.statusAssigned {
+  background: var(--daily-status-assigned-bg);
+  border-color: var(--daily-status-assigned-bd);
+  color: var(--daily-status-assigned-fg);
+}
+
+.statusInProgress {
+  background: var(--daily-status-progress-bg);
+  border-color: var(--daily-status-progress-bd);
+  color: var(--daily-status-progress-fg);
+}
+
+.statusDone {
+  background: var(--daily-status-done-bg);
+  border-color: var(--daily-status-done-bd);
+  color: var(--daily-status-done-fg);
+}
+
+.statusCancelled {
+  background: var(--daily-status-cancelled-bg);
+  border-color: var(--daily-status-cancelled-bd);
+  color: var(--daily-status-cancelled-fg);
+}
+
+.headerTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.headerRegion {
+  font-weight: 900;
+  font-size: 16px;
+  color: #0f172a;
+}
+
+.headerCode {
+  font-weight: 1000;
+  font-size: 16px;
+  color: #0f172a;
+}
+
+.headerDetail {
+  font-weight: 900;
+  font-size: 16px;
+  color: #0f172a;
 }
 
 .summaryRow {
@@ -282,6 +385,19 @@
   gap: 10px;
   min-width: 0;
   flex-wrap: wrap;
+}
+
+.doneTag {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.14);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  color: #15803d;
+  font-weight: 1000;
+  font-size: 14px;
 }
 
 .summaryRegion {
@@ -315,18 +431,94 @@
 
 .taskBtnGhost {
   background: #ffffff;
-  border-color: #dbeafe;
-  color: #1d4ed8;
+  border-color: #e2e8f0;
+  color: #111827;
 }
 
 .taskBtnGhost :global(.anticon) {
   color: currentColor;
 }
 
+.taskBtnGhost:global(.ant-btn:hover),
+.taskBtnGhost:global(.ant-btn:active),
+.taskBtnGhost:global(.ant-btn:focus-visible) {
+  background: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+  color: #111827 !important;
+}
+
 .taskBtnSubtle {
   background: #ffffff;
   border-color: #e2e8f0;
   color: #334155;
+}
+
+.taskBtnSubtle:global(.ant-btn:hover),
+.taskBtnSubtle:global(.ant-btn:active),
+.taskBtnSubtle:global(.ant-btn:focus-visible) {
+  background: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+  color: #111827 !important;
+}
+
+.taskBtnDanger {
+  background: #ffffff;
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #ef4444;
+}
+
+.taskBtnDanger:global(.ant-btn:hover),
+.taskBtnDanger:global(.ant-btn:active),
+.taskBtnDanger:global(.ant-btn:focus-visible) {
+  background: rgba(239, 68, 68, 0.06) !important;
+  border-color: rgba(239, 68, 68, 0.55) !important;
+  color: #ef4444 !important;
+}
+
+.metaRow {
+  margin-top: 10px;
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.metaChip {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.14);
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  color: #1d4ed8;
+  font-weight: 900;
+  flex: 0 0 auto;
+}
+
+.metaText {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.metaKey {
+  color: #64748b;
+  font-weight: 900;
+}
+
+.controlsRow {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: center;
 }
 
 .missionName {
@@ -395,51 +587,76 @@
 .assigneeGroup {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 4px 6px;
   border-radius: 999px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
+  width: 100%;
 }
 
 .assigneeLabel {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 900;
   color: #1d4ed8;
   background: rgba(59, 130, 246, 0.1);
   border: 1px solid rgba(59, 130, 246, 0.25);
-  padding: 0 10px;
-  height: 30px;
+  padding: 0 8px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
 }
 
 .assigneeSelect {
-  min-width: 270px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .assigneeSelect :global(.ant-select-selector) {
   border-radius: 999px !important;
-  height: 30px !important;
-  padding: 0 12px !important;
+  height: 32px !important;
+  padding: 0 !important;
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  display: flex !important;
+  align-items: center !important;
 }
 
 .assigneeSelect :global(.ant-select-selection-item) {
-  line-height: 28px !important;
+  line-height: 32px !important;
   font-weight: 900;
 }
 
 .assigneeSelect :global(.ant-select-selection-placeholder) {
-  line-height: 28px !important;
+  line-height: 32px !important;
   font-weight: 900;
   color: #94a3b8;
+}
+
+.assigneeSelect :global(.ant-select-selection-search-input) {
+  height: 32px !important;
+}
+
+.assigneeSelect :global(.ant-select-arrow) {
+  color: #94a3b8;
+}
+
+.assigneeGroup:hover {
+  border-color: rgba(148, 163, 184, 0.75);
+  background: #f8fafc;
+}
+
+.assigneeGroup :global(.ant-select-disabled) {
+  opacity: 0.6;
 }
 
 @media (max-width: 1024px) {
   .missionBody { grid-template-columns: 1fr; }
   .assignees { justify-self: start; align-items: flex-start; }
   .assigneeSelect { min-width: 100%; }
+  .controlsRow { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 720px) {

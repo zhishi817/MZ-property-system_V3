@@ -18,6 +18,7 @@ import cleaningAppRouter from './modules/cleaning_app'
 import { router as authRouter } from './modules/auth'
 import { router as auditsRouter } from './modules/audits'
 import { router as rbacRouter } from './modules/rbac'
+import { router as usersRouter } from './modules/users'
 import { router as versionRouter } from './modules/version'
 import { router as statsRouter } from './modules/stats'
 import { router as eventsRouter } from './modules/events'
@@ -230,6 +231,7 @@ app.use('/config', configRouter)
 app.use('/auth', authRouter)
 app.use('/audits', auditsRouter)
 app.use('/rbac', rbacRouter)
+app.use('/users', usersRouter)
 app.use('/version', versionRouter)
 app.use('/stats', statsRouter)
 app.use('/events', eventsRouter)

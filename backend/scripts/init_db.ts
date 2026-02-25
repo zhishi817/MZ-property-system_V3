@@ -170,12 +170,15 @@ async function run() {
       email text UNIQUE,
       password_hash text NOT NULL,
       role text NOT NULL,
+      color_hex text NOT NULL DEFAULT '#3B82F6',
       created_at timestamptz DEFAULT now()
     );`,
     `CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);`,
     `CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);`
     ,
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_password_hash text;`
+    ,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`
     ,
     `CREATE TABLE IF NOT EXISTS key_sets (
       id text PRIMARY KEY,
@@ -483,11 +486,36 @@ async function run() {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_property_maintenance_pid ON property_maintenance(property_id);`,
     `CREATE INDEX IF NOT EXISTS idx_property_maintenance_date ON property_maintenance(occurred_at);`,
-    `ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;`
+    `ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`
     ,
     `ALTER TABLE property_maintenance ALTER COLUMN details TYPE text USING details::text;`
     ,
-    `DO $$ BEGIN BEGIN ALTER TABLE property_maintenance ALTER COLUMN photo_urls TYPE jsonb USING to_jsonb(photo_urls); EXCEPTION WHEN others THEN NULL; END; END $$;`
+    `DO $$ 
+    DECLARE dt text; udt text;
+    BEGIN
+      BEGIN
+        SELECT data_type, udt_name INTO dt, udt
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'property_maintenance'
+          AND column_name = 'photo_urls'
+        LIMIT 1;
+        IF NOT (dt = 'ARRAY' AND udt = '_text') THEN
+          ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];
+          UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;
+          UPDATE property_maintenance
+          SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
+          WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array';
+          UPDATE property_maintenance
+          SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
+          WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string';
+          ALTER TABLE property_maintenance DROP COLUMN IF EXISTS photo_urls;
+          ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;
+          ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];
+        END IF;
+      EXCEPTION WHEN others THEN NULL;
+      END;
+    END $$;`
     ,
     `ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;`
     ,
