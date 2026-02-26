@@ -5,6 +5,8 @@ import { useState, useEffect } from 'react'
 import { MailOutlined, LockOutlined } from '@ant-design/icons'
 import { useRouter } from 'next/navigation'
 import { API_BASE } from '../../lib/api'
+import { preloadRolePerms } from '../../lib/auth'
+import { pickHomeRoute } from '../../lib/homeRoute'
 import './styles.css'
 
 export default function LoginInner() {
@@ -70,9 +72,8 @@ export default function LoginInner() {
         else if (v.username === 'admin') { try { localStorage.setItem('role', 'admin') } catch {} }
       } catch {}
       msg.success('登录成功'); try { await new Promise(r => setTimeout(r, 100)) } catch {}
-      const r0 = (() => { try { return localStorage.getItem('role') || '' } catch { return '' } })()
-      const target = r0 === 'maintenance_staff' ? '/maintenance/overview' : '/dashboard'
-      router.push(target)
+      try { await preloadRolePerms() } catch {}
+      router.push(pickHomeRoute())
     } else { try { const err = await res.json(); msg.error(err?.message || `登录失败 (${res.status})`) } catch { msg.error(`登录失败 (${res.status})`) } }
     setLoading(false)
   }
