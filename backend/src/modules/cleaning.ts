@@ -268,6 +268,55 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
   }
 })
 
+router.get('/history', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
+  const propertyId = String((req.query as any)?.property_id || '').trim()
+  if (!propertyId) return res.status(400).json({ message: 'property_id_required' })
+  const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+  const parsedFrom = dateSchema.optional().safeParse((req.query as any)?.from)
+  const parsedTo = dateSchema.optional().safeParse((req.query as any)?.to)
+  const fromRaw = parsedFrom.success ? parsedFrom.data : undefined
+  const toRaw = parsedTo.success ? parsedTo.data : undefined
+  const limitRaw = Number((req.query as any)?.limit || 200)
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 1000) : 200
+  const today = new Date()
+  const defaultTo = today.toISOString().slice(0, 10)
+  const defaultFrom = new Date(today.getTime() - 180 * 24 * 3600 * 1000).toISOString().slice(0, 10)
+  const from = fromRaw || defaultFrom
+  const to = toRaw || defaultTo
+  try {
+    if (hasPg && pgPool) {
+      await ensureCleaningSchemaV2()
+      const sql = `
+        SELECT
+          t.*,
+          p.code AS property_code,
+          p.region AS property_region
+        FROM cleaning_tasks t
+        LEFT JOIN properties p ON p.id = t.property_id
+        WHERE t.property_id = $1
+          AND (COALESCE(t.task_date, t.date)::date) >= ($2::date)
+          AND (COALESCE(t.task_date, t.date)::date) <= ($3::date)
+        ORDER BY (COALESCE(t.task_date, t.date)::date) DESC, t.id DESC
+        LIMIT $4
+      `
+      const r = await pgPool.query(sql, [propertyId, from, to, limit])
+      return res.json(r?.rows || [])
+    }
+    const rows = (db.cleaningTasks as any[]).slice().filter((t: any) => String(t.property_id || '') === propertyId)
+    const filtered = rows.filter((t: any) => {
+      const d = String(t.task_date || t.date || '').slice(0, 10)
+      return d && d >= from && d <= to
+    })
+    filtered.sort((a: any, b: any) => String(b.task_date || b.date || '').localeCompare(String(a.task_date || a.date || '')) || String(b.id || '').localeCompare(String(a.id || '')))
+    const props = ((db as any).properties || []) as any[]
+    const p = props.find((x: any) => String(x.id) === propertyId) || null
+    const out = filtered.slice(0, limit).map((t: any) => ({ ...t, property_code: p?.code || t?.property_code || null, property_region: p?.region || t?.property_region || null }))
+    return res.json(out)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'history_failed' })
+  }
+})
+
 const patchTaskSchema = z.object({
   property_id: z.string().nullable().optional(),
   task_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -336,10 +385,19 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       if (patch.cleaner_id !== undefined && patch.assignee_id === undefined) patch.assignee_id = patch.cleaner_id
       if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) patch.cleaner_id = patch.assignee_id
       if (patch.task_date != null) patch.date = patch.task_date
-      if ((parsed.data as any).status === undefined) {
-        const nextCleanerId = patch.cleaner_id !== undefined ? (patch.cleaner_id ?? null) : (before.cleaner_id ?? before.assignee_id ?? null)
-        const nextInspectorId = (parsed.data as any).inspector_id !== undefined ? ((parsed.data as any).inspector_id ?? null) : (before.inspector_id ?? null)
-        if (nextCleanerId && nextInspectorId && String(before.status || 'pending') === 'pending') patch.status = 'assigned'
+      {
+        const beforeStatus = String(before.status || 'pending')
+        const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned'
+        const incomingStatus = (parsed.data as any).status
+        const incomingStatusEligible =
+          incomingStatus === undefined || String(incomingStatus) === 'pending' || String(incomingStatus) === 'assigned'
+        const touchingAssignees =
+          (parsed.data as any).cleaner_id !== undefined || (parsed.data as any).inspector_id !== undefined || parsed.data.assignee_id !== undefined
+        if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
+          const nextCleanerId = patch.cleaner_id !== undefined ? (patch.cleaner_id ?? null) : (before.cleaner_id ?? before.assignee_id ?? null)
+          const nextInspectorId = (parsed.data as any).inspector_id !== undefined ? ((parsed.data as any).inspector_id ?? null) : (before.inspector_id ?? null)
+          patch.status = nextCleanerId && nextInspectorId ? 'assigned' : 'pending'
+        }
       }
       if (keyChanged) patch.auto_sync_enabled = false
       patch.updated_at = new Date().toISOString()
@@ -379,10 +437,19 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       (nextCleanerMem !== undefined && String(nextCleanerMem ?? '') !== String((before as any).cleaner_id ?? before.assignee_id ?? '')) ||
       (parsed.data.scheduled_at !== undefined && String(parsed.data.scheduled_at ?? '') !== String(before.scheduled_at ?? ''))
     if (keyChanged) task.auto_sync_enabled = false
-    if ((parsed.data as any).status === undefined) {
-      const cleaner = String(task.cleaner_id || task.assignee_id || '').trim()
-      const inspector = String(task.inspector_id || '').trim()
-      if (cleaner && inspector && String(before.status || 'pending') === 'pending') task.status = 'assigned'
+    {
+      const beforeStatus = String((before as any).status || 'pending')
+      const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned'
+      const incomingStatus = (parsed.data as any).status
+      const incomingStatusEligible =
+        incomingStatus === undefined || String(incomingStatus) === 'pending' || String(incomingStatus) === 'assigned'
+      const touchingAssignees =
+        (parsed.data as any).cleaner_id !== undefined || (parsed.data as any).inspector_id !== undefined || parsed.data.assignee_id !== undefined
+      if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
+        const cleaner = String(task.cleaner_id || task.assignee_id || '').trim()
+        const inspector = String(task.inspector_id || '').trim()
+        task.status = cleaner && inspector ? 'assigned' : 'pending'
+      }
     }
     return res.json(task)
   } catch (e: any) {
@@ -391,7 +458,8 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
 })
 
 const createTaskSchema = z.object({
-  task_type: z.enum(['checkout_clean', 'checkin_clean']),
+  task_type: z.enum(['checkout_clean', 'checkin_clean', 'stayover_clean']).optional(),
+  create_mode: z.enum(['checkout', 'checkin', 'turnover', 'stayover']).optional(),
   task_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   property_id: z.string().min(1),
   status: z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled']).optional(),
@@ -403,6 +471,7 @@ const createTaskSchema = z.object({
   checkout_time: z.union([z.string(), z.null()]).optional(),
   checkin_time: z.union([z.string(), z.null()]).optional(),
   nights_override: z.union([z.number().int().nonnegative(), z.null()]).optional(),
+  note: z.union([z.string(), z.null()]).optional(),
 }).strict()
 
 router.post('/tasks', requirePerm('cleaning.task.assign'), async (req, res) => {
@@ -411,13 +480,21 @@ router.post('/tasks', requirePerm('cleaning.task.assign'), async (req, res) => {
   if (!(await isValidStaffId((parsed.data as any).cleaner_id ?? null, 'cleaner'))) return res.status(400).json({ message: '无效的清洁人员' })
   if (!(await isValidStaffId((parsed.data as any).inspector_id ?? null, 'inspector'))) return res.status(400).json({ message: '无效的检查人员' })
   try {
-    const row: any = {
-      id: uuid(),
+    const mode = (parsed.data as any).create_mode
+    const taskType = parsed.data.task_type
+    if (!mode && !taskType) return res.status(400).json({ message: 'missing task_type' })
+    const types =
+      mode === 'turnover' ? ['checkout_clean', 'checkin_clean'] :
+      mode === 'checkout' ? ['checkout_clean'] :
+      mode === 'checkin' ? ['checkin_clean'] :
+      mode === 'stayover' ? ['stayover_clean'] :
+      [String(taskType)]
+
+    const createdRows: any[] = []
+    const base: any = {
       order_id: null,
       property_id: String(parsed.data.property_id),
-      task_type: parsed.data.task_type,
       task_date: parsed.data.task_date,
-      type: parsed.data.task_type,
       date: parsed.data.task_date,
       status: parsed.data.status || ((parsed.data.cleaner_id ?? null) && ((parsed.data as any).inspector_id ?? null) ? 'assigned' : 'pending'),
       assignee_id: (parsed.data.cleaner_id ?? null),
@@ -429,21 +506,42 @@ router.post('/tasks', requirePerm('cleaning.task.assign'), async (req, res) => {
       checkout_time: parsed.data.checkout_time ?? null,
       checkin_time: parsed.data.checkin_time ?? null,
       nights_override: (parsed.data as any).nights_override ?? null,
-      auto_sync_enabled: true,
+      note: (parsed.data as any).note ?? null,
+      auto_sync_enabled: false,
       source: 'manual',
     }
     if (hasPg && pgPool) {
       await ensureCleaningSchemaV2()
-      const keys = Object.keys(row).filter((k) => row[k] !== undefined)
-      const cols = keys.map((k) => `"${k}"`).join(', ')
-      const args = keys.map((_, i) => `$${i + 1}`).join(', ')
-      const values = keys.map((k) => row[k])
-      const sql = `INSERT INTO cleaning_tasks(${cols}) VALUES(${args}) RETURNING *`
-      const r = await pgPool.query(sql, values)
-      return res.json(r?.rows?.[0] || row)
+      const client = await pgPool.connect()
+      try {
+        await client.query('BEGIN')
+        for (const tt of types) {
+          const row: any = { id: uuid(), ...base, task_type: tt, type: tt }
+          const keys = Object.keys(row).filter((k) => row[k] !== undefined)
+          const cols = keys.map((k) => `"${k}"`).join(', ')
+          const args = keys.map((_, i) => `$${i + 1}`).join(', ')
+          const values = keys.map((k) => row[k])
+          const sql = `INSERT INTO cleaning_tasks(${cols}) VALUES(${args}) RETURNING *`
+          const r = await client.query(sql, values)
+          createdRows.push(r?.rows?.[0] || row)
+        }
+        await client.query('COMMIT')
+      } catch (e) {
+        try { await client.query('ROLLBACK') } catch {}
+        throw e
+      } finally {
+        client.release()
+      }
+      if (createdRows.length === 1) return res.json(createdRows[0])
+      return res.json({ ok: true, created: createdRows.length })
     }
-    ;(db.cleaningTasks as any[]).push(row)
-    return res.json(row)
+    for (const tt of types) {
+      const row: any = { id: uuid(), ...base, task_type: tt, type: tt }
+      ;(db.cleaningTasks as any[]).push(row)
+      createdRows.push(row)
+    }
+    if (createdRows.length === 1) return res.json(createdRows[0])
+    return res.json({ ok: true, created: createdRows.length })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'create_failed' })
   }
@@ -545,10 +643,18 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
           if (!before) return null
           const patch: any = { ...basePatch }
           if (patch.task_date != null) patch.date = patch.task_date
-          if ((basePatch as any).status === undefined) {
-            const nextCleanerId = patch.cleaner_id !== undefined ? (patch.cleaner_id ?? null) : (before.cleaner_id ?? before.assignee_id ?? null)
-            const nextInspectorId = patch.inspector_id !== undefined ? (patch.inspector_id ?? null) : (before.inspector_id ?? null)
-            if (nextCleanerId && nextInspectorId && String(before.status || 'pending') === 'pending') patch.status = 'assigned'
+          {
+            const beforeStatus = String(before.status || 'pending')
+            const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned'
+            const incomingStatus = (basePatch as any).status
+            const incomingStatusEligible =
+              incomingStatus === undefined || String(incomingStatus) === 'pending' || String(incomingStatus) === 'assigned'
+            const touchingAssignees = (basePatch as any).cleaner_id !== undefined || (basePatch as any).inspector_id !== undefined || (basePatch as any).assignee_id !== undefined
+            if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
+              const nextCleanerId = patch.cleaner_id !== undefined ? (patch.cleaner_id ?? null) : (before.cleaner_id ?? before.assignee_id ?? null)
+              const nextInspectorId = patch.inspector_id !== undefined ? (patch.inspector_id ?? null) : (before.inspector_id ?? null)
+              patch.status = nextCleanerId && nextInspectorId ? 'assigned' : 'pending'
+            }
           }
           const keyChanged =
             (patch.task_date != null && String(patch.task_date) !== String(before.task_date || before.date || '')) ||
@@ -574,10 +680,18 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
         if (basePatch.assignee_id !== undefined) task.assignee_id = basePatch.assignee_id
         if (basePatch.scheduled_at !== undefined) task.scheduled_at = basePatch.scheduled_at
         if (basePatch.note !== undefined) task.note = basePatch.note
-        if ((basePatch as any).status === undefined) {
-          const cleaner = String(task.cleaner_id || task.assignee_id || '').trim()
-          const inspector = String(task.inspector_id || '').trim()
-          if (cleaner && inspector && String((task as any).status || 'pending') === 'pending') (task as any).status = 'assigned'
+        {
+          const beforeStatus = String((task as any).status || 'pending')
+          const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned'
+          const incomingStatus = (basePatch as any).status
+          const incomingStatusEligible =
+            incomingStatus === undefined || String(incomingStatus) === 'pending' || String(incomingStatus) === 'assigned'
+          const touchingAssignees = (basePatch as any).cleaner_id !== undefined || (basePatch as any).inspector_id !== undefined || (basePatch as any).assignee_id !== undefined
+          if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
+            const cleaner = String(task.cleaner_id || task.assignee_id || '').trim()
+            const inspector = String(task.inspector_id || '').trim()
+            ;(task as any).status = cleaner && inspector ? 'assigned' : 'pending'
+          }
         }
         return task
       })()
@@ -694,6 +808,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
         const label =
           rawType === 'checkout_clean' ? '退房' :
           rawType === 'checkin_clean' ? '入住' :
+          rawType === 'stayover_clean' ? '入住中清洁' :
           rawType
         items.push({
           source: 'cleaning_tasks',
@@ -763,6 +878,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
       const label =
         rawType === 'checkout_clean' ? '退房' :
         rawType === 'checkin_clean' ? '入住' :
+        rawType === 'stayover_clean' ? '入住中清洁' :
         rawType
       const order = (db.orders as any[]).find((o: any) => String(o.id) === String(t.order_id)) || null
       const prop = (db.properties as any[]).find((p: any) => String(p.id) === String(t.property_id)) || null

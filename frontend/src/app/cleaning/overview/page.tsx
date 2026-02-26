@@ -41,6 +41,27 @@ type OfflineTask = {
 
 type StaffLite = { id: string; name: string }
 type PropertyLite = { id: string; code?: string; address?: string }
+type CleaningHistoryRow = {
+  id: string
+  task_date?: string | null
+  date?: string | null
+  task_type?: string | null
+  type?: string | null
+  status?: string | null
+  assignee_id?: string | null
+  cleaner_id?: string | null
+  inspector_id?: string | null
+  checkout_time?: string | null
+  checkin_time?: string | null
+  note?: string | null
+  property_id?: string | null
+  property_code?: string | null
+  property_region?: string | null
+}
+
+type CleaningHistoryDisplayRow =
+  | { kind: 'single'; key: string; dateStr: string; row: CleaningHistoryRow }
+  | { kind: 'turnover'; key: string; dateStr: string; checkout: CleaningHistoryRow; checkin: CleaningHistoryRow }
 
 const kindLabel: Record<string, string> = {
   key_hanging: '挂钥匙',
@@ -71,6 +92,10 @@ export default function CleaningOverviewPage() {
   const [rescheduleTask, setRescheduleTask] = useState<OfflineTask | null>(null)
   const [rescheduleDate, setRescheduleDate] = useState<Dayjs | null>(null)
   const [dbStatus, setDbStatus] = useState<any>(null)
+  const [historyPropertyId, setHistoryPropertyId] = useState<string | null>(null)
+  const [historyRange, setHistoryRange] = useState<[Dayjs, Dayjs]>(() => [dayjs().subtract(180, 'day'), dayjs()])
+  const [historyRows, setHistoryRows] = useState<CleaningHistoryDisplayRow[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
 
   const reload = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true)
@@ -233,6 +258,81 @@ export default function CleaningOverviewPage() {
     return p ? (p.code || p.address || p.id) : String(id)
   }, [properties])
 
+  const taskTypeLabel = useCallback((t: CleaningHistoryRow) => {
+    const tt = String(t.task_type || t.type || '').toLowerCase()
+    if (tt === 'stayover_clean') return '清洁'
+    if (tt.startsWith('checkout')) return '退房清洁'
+    if (tt.startsWith('checkin')) return '入住清洁'
+    if (tt.includes('turnover')) return '退房+入住'
+    return tt || '-'
+  }, [])
+
+  const mergeHistory = useCallback((rows: CleaningHistoryRow[]): CleaningHistoryDisplayRow[] => {
+    const isCheckout = (t: CleaningHistoryRow) => String(t.task_type || t.type || '').toLowerCase().startsWith('checkout')
+    const isCheckin = (t: CleaningHistoryRow) => String(t.task_type || t.type || '').toLowerCase().startsWith('checkin')
+    const buckets = new Map<string, { checkout: CleaningHistoryRow | null; checkin: CleaningHistoryRow | null; singles: CleaningHistoryRow[] }>()
+    const order: string[] = []
+    for (const r of rows) {
+      const dateStr = String(r.task_date || r.date || '').slice(0, 10)
+      if (!dateStr) continue
+      let b = buckets.get(dateStr)
+      if (!b) {
+        b = { checkout: null, checkin: null, singles: [] }
+        buckets.set(dateStr, b)
+        order.push(dateStr)
+      }
+      if (isCheckout(r)) {
+        if (!b.checkout) b.checkout = r
+        else b.singles.push(r)
+        continue
+      }
+      if (isCheckin(r)) {
+        if (!b.checkin) b.checkin = r
+        else b.singles.push(r)
+        continue
+      }
+      b.singles.push(r)
+    }
+    const out: CleaningHistoryDisplayRow[] = []
+    for (const dateStr of order) {
+      const b = buckets.get(dateStr)
+      if (!b) continue
+      if (b.checkout && b.checkin) {
+        out.push({ kind: 'turnover', key: `${dateStr}:turnover:${b.checkout.id}:${b.checkin.id}`, dateStr, checkout: b.checkout, checkin: b.checkin })
+      } else if (b.checkout) {
+        out.push({ kind: 'single', key: b.checkout.id, dateStr, row: b.checkout })
+      } else if (b.checkin) {
+        out.push({ kind: 'single', key: b.checkin.id, dateStr, row: b.checkin })
+      }
+      for (const s of b.singles) out.push({ kind: 'single', key: s.id, dateStr, row: s })
+    }
+    return out
+  }, [])
+
+  const loadHistory = useCallback(async () => {
+    if (!historyPropertyId) {
+      setHistoryRows([])
+      return
+    }
+    setHistoryLoading(true)
+    try {
+      const from = historyRange?.[0] ? dayjs(historyRange[0]).format('YYYY-MM-DD') : undefined
+      const to = historyRange?.[1] ? dayjs(historyRange[1]).format('YYYY-MM-DD') : undefined
+      const qs = new URLSearchParams()
+      qs.set('property_id', historyPropertyId)
+      if (from) qs.set('from', from)
+      if (to) qs.set('to', to)
+      qs.set('limit', '500')
+      const rows = await getJSON<CleaningHistoryRow[]>(`/cleaning/history?${qs.toString()}`)
+      setHistoryRows(mergeHistory(Array.isArray(rows) ? rows : []))
+    } catch (e: any) {
+      setHistoryRows([])
+      message.error(String(e?.message || '加载失败'))
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [historyPropertyId, historyRange, mergeHistory])
+
   const weekLabel = useCallback((dateStr: string) => {
     const d = dayjs.tz(`${String(dateStr).slice(0, 10)}T00:00:00`, 'Australia/Melbourne')
     const map = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
@@ -342,6 +442,122 @@ export default function CleaningOverviewPage() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+          </div>
+        </div>
+
+        <div className={`${styles.card} ${styles.sectionCard}`} aria-label="房源清洁历史">
+          <div className={styles.cardHead}>
+            <div className={styles.taskHeaderLeft}>
+              <div className={styles.cardTitle}>房源清洁历史</div>
+              <div className={styles.countPill}>{historyRows.length} 条</div>
+            </div>
+            <Space wrap>
+              <Select
+                showSearch
+                optionFilterProp="label"
+                placeholder="选择房源"
+                style={{ width: 260 }}
+                value={historyPropertyId || undefined}
+                onChange={(v) => setHistoryPropertyId(v ? String(v) : null)}
+                options={sortProperties(properties as any).map((p: any) => {
+                  const code = String(p.code || '').trim()
+                  const addr = String(p.address || '').trim()
+                  const label = code ? (addr ? `${code} ${addr}` : code) : (addr || String(p.id))
+                  return { value: String(p.id), label }
+                })}
+              />
+              <DatePicker.RangePicker
+                value={historyRange}
+                onChange={(v) => {
+                  if (!v || v.length !== 2 || !v[0] || !v[1]) return
+                  setHistoryRange([v[0], v[1]])
+                }}
+              />
+              <Button type="primary" className={styles.primaryBtn} loading={historyLoading} disabled={!historyPropertyId} onClick={() => loadHistory().catch(() => {})}>
+                查询
+              </Button>
+            </Space>
+          </div>
+
+          <div className={styles.tableWrap} role="table" aria-label="清洁历史表格">
+            <div className={`${styles.tableRow} ${styles.tableHeadRow}`} role="row">
+              <div className={styles.cell} role="columnheader">日期</div>
+              <div className={styles.cell} role="columnheader">类型</div>
+              <div className={styles.cell} role="columnheader">清洁</div>
+              <div className={styles.cell} role="columnheader">检查</div>
+              <div className={styles.cell} role="columnheader">状态</div>
+              <div className={styles.cell} role="columnheader">时间</div>
+              <div className={styles.cell} role="columnheader">备注</div>
+            </div>
+            {historyRows.length ? historyRows.map((t) => {
+              const statusRank = (s: string) => {
+                const st = String(s || '').toLowerCase()
+                if (st === 'in_progress') return 5
+                if (st === 'assigned') return 4
+                if (st === 'pending') return 3
+                if (st === 'completed') return 2
+                if (st === 'cancelled' || st === 'canceled') return 1
+                return 3
+              }
+              const statusLabel = (s: string) => {
+                const st = String(s || '').toLowerCase()
+                return st === 'assigned' ? '已分配' : st === 'in_progress' ? '进行中' : st === 'completed' ? '已完成' : st === 'cancelled' ? '已取消' : '待处理'
+              }
+              const joinNames = (a?: string | null, b?: string | null) => {
+                const x = staffNameById(a) || ''
+                const y = staffNameById(b) || ''
+                const uniq = Array.from(new Set([x, y].map((z) => String(z || '').trim()).filter(Boolean)))
+                return uniq.length ? uniq.join(' / ') : '-'
+              }
+              const joinNotes = (a?: string | null, b?: string | null) => {
+                const uniq = Array.from(new Set([a, b].map((z) => String(z || '').trim()).filter(Boolean)))
+                return uniq.length ? uniq.join(' / ') : '-'
+              }
+              const timePart = (time: any, label: string) => {
+                const t0 = String(time || '').trim()
+                return t0 ? `${t0}${label}` : ''
+              }
+
+              const dateStr = t.dateStr
+              const typeLabel = t.kind === 'turnover' ? '退房+入住' : taskTypeLabel(t.row)
+              const st0 = t.kind === 'turnover'
+                ? (statusRank(String(t.checkout.status || '')) >= statusRank(String(t.checkin.status || '')) ? String(t.checkout.status || '') : String(t.checkin.status || ''))
+                : String(t.row.status || '')
+              const stLabel = statusLabel(st0)
+              const cleanerName = t.kind === 'turnover'
+                ? joinNames(t.checkout.cleaner_id || t.checkout.assignee_id, t.checkin.cleaner_id || t.checkin.assignee_id)
+                : (staffNameById(t.row.cleaner_id || t.row.assignee_id) || '-')
+              const inspectorName = t.kind === 'turnover'
+                ? joinNames(t.checkout.inspector_id, t.checkin.inspector_id)
+                : (staffNameById(t.row.inspector_id) || '-')
+              const timeStr = (() => {
+                if (t.kind === 'turnover') {
+                  const parts = [timePart(t.checkout.checkout_time, '退房'), timePart(t.checkin.checkin_time, '入住')].filter(Boolean)
+                  return parts.length ? parts.join(' ') : '-'
+                }
+                const tt = String(t.row.task_type || t.row.type || '').toLowerCase()
+                if (tt === 'stayover_clean') return String(t.row.checkin_time || '').trim() || ''
+                return tt.startsWith('checkout') ? String(t.row.checkout_time || '').trim() : String(t.row.checkin_time || '').trim()
+              })()
+              const noteStr = t.kind === 'turnover' ? joinNotes(t.checkout.note, t.checkin.note) : (String(t.row.note || '').trim() || '-')
+              return (
+                <div key={t.key} className={`${styles.tableRow} ${styles.bodyRow} ${styles.rowHover}`} role="row">
+                  <div className={styles.cell} role="cell">{dateStr || '-'}</div>
+                  <div className={styles.cell} role="cell"><span className={`${styles.pill} ${styles.pillBlue}`}>{typeLabel}</span></div>
+                  <div className={styles.cell} role="cell"><span className={`${styles.pill} ${styles.pillGreen}`}>{cleanerName}</span></div>
+                  <div className={styles.cell} role="cell"><span className={`${styles.pill} ${styles.pillGreen}`}>{inspectorName}</span></div>
+                  <div className={styles.cell} role="cell"><span className={styles.pill}>{stLabel}</span></div>
+                  <div className={styles.cell} role="cell">{timeStr || '-'}</div>
+                  <div className={styles.cell} role="cell">{noteStr}</div>
+                </div>
+              )
+            }) : (
+              <div className={`${styles.tableRow} ${styles.bodyRow}`} role="row">
+                <div className={styles.cell} role="cell" style={{ gridColumn: '1 / -1', color: 'var(--clean-overview-subtle)' }}>
+                  {historyPropertyId ? (historyLoading ? '加载中…' : '暂无记录') : '请选择房源后查询'}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

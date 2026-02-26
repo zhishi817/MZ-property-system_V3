@@ -90,46 +90,124 @@ router.get('/cleaning-overview', requireAnyPerm(['cleaning.view','cleaning.sched
       const baseDay = baseRes?.rows?.[0]?.day_au ? String(baseRes.rows[0].day_au).slice(0, 10) : (dateStr || '')
 
       const byStatusSql = `
-        SELECT COALESCE(status,'pending') AS status, COUNT(*)::int AS c
-        FROM cleaning_tasks
-        WHERE (task_date::date) = ($1::date)
-        GROUP BY COALESCE(status,'pending')
+        WITH day_tasks AS (
+          SELECT
+            COALESCE(property_id, id) AS group_key,
+            BOOL_AND(lower(COALESCE(status,'')) IN ('cancelled','canceled')) AS all_cancelled,
+            BOOL_OR(COALESCE(task_type,'') ILIKE 'checkout%' OR COALESCE(type,'') ILIKE 'checkout%') AS has_checkout,
+            BOOL_OR(lower(COALESCE(task_type,'')) = 'stayover_clean' OR lower(COALESCE(type,'')) = 'stayover_clean') AS has_stayover,
+            BOOL_OR((COALESCE(task_type,'') ILIKE 'checkout%' OR COALESCE(type,'') ILIKE 'checkout%') AND lower(COALESCE(status,'')) NOT IN ('cancelled','canceled')) AS has_checkout_active,
+            BOOL_OR((lower(COALESCE(task_type,'')) = 'stayover_clean' OR lower(COALESCE(type,'')) = 'stayover_clean') AND lower(COALESCE(status,'')) NOT IN ('cancelled','canceled')) AS has_stayover_active,
+            MAX(
+              CASE lower(COALESCE(status,'pending'))
+                WHEN 'in_progress' THEN 4
+                WHEN 'assigned' THEN 3
+                WHEN 'completed' THEN 2
+                WHEN 'pending' THEN 1
+                WHEN 'cancelled' THEN 0
+                WHEN 'canceled' THEN 0
+                ELSE 1
+              END
+            ) AS status_rank
+          FROM cleaning_tasks
+          WHERE (task_date::date) = ($1::date)
+          GROUP BY COALESCE(property_id, id)
+        ),
+        rollup AS (
+          SELECT
+            CASE
+              WHEN all_cancelled THEN 'cancelled'
+              WHEN status_rank = 4 THEN 'in_progress'
+              WHEN status_rank = 3 THEN 'assigned'
+              WHEN status_rank = 2 THEN 'completed'
+              ELSE 'pending'
+            END AS status,
+            CASE
+              WHEN all_cancelled THEN false
+              WHEN status_rank = 1 THEN true
+              ELSE false
+            END AS is_unassigned
+          FROM day_tasks
+          WHERE (has_checkout_active OR has_stayover_active)
+        )
+        SELECT
+          status,
+          COUNT(*)::int AS c,
+          SUM(CASE WHEN is_unassigned THEN 1 ELSE 0 END)::int AS unassigned
+        FROM rollup
+        GROUP BY status
       `
       const r1 = await pgPool.query(byStatusSql, [baseDay])
       const byStatus: Record<string, number> = {}
+      let unassigned = 0
+      let total = 0
       for (const row of (r1?.rows || [])) {
         byStatus[String(row.status || 'pending')] = Number(row.c || 0)
+        unassigned += Number(row.unassigned || 0)
+        total += Number(row.c || 0)
       }
 
-      const unassignedSql = `
-        SELECT COUNT(*)::int AS c
-        FROM cleaning_tasks
-        WHERE (task_date::date) = ($1::date)
-          AND assignee_id IS NULL
-          AND COALESCE(status,'') <> 'cancelled'
-      `
-      const r2 = await pgPool.query(unassignedSql, [baseDay])
-      const unassigned = Number(r2?.rows?.[0]?.c || 0)
-
+      const dayExprCheckout = `CASE
+        WHEN substring(o.checkout::text,1,10) ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN substring(o.checkout::text,1,10)::date
+        WHEN substring(o.checkout::text,1,10) ~ '^\\d{2}/\\d{2}/\\d{4}$' THEN to_date(substring(o.checkout::text,1,10), 'DD/MM/YYYY')
+        ELSE NULL
+      END`
+      const dayExprCheckin = `CASE
+        WHEN substring(o.checkin::text,1,10) ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN substring(o.checkin::text,1,10)::date
+        WHEN substring(o.checkin::text,1,10) ~ '^\\d{2}/\\d{2}/\\d{4}$' THEN to_date(substring(o.checkin::text,1,10), 'DD/MM/YYYY')
+        ELSE NULL
+      END`
       const trendSql = `
         WITH base AS (
           SELECT ($1::date) AS day_au
         ), days AS (
           SELECT generate_series((SELECT day_au FROM base), (SELECT day_au FROM base) + interval '6 day', interval '1 day')::date AS day
+        ),
+        task_agg AS (
+          SELECT
+            t.task_date::date AS day,
+            COUNT(DISTINCT COALESCE(t.property_id, t.id)) FILTER (WHERE
+              COALESCE(t.task_type,'') ILIKE 'checkout%' OR
+              COALESCE(t.type,'') ILIKE 'checkout%' OR
+              lower(COALESCE(t.task_type,'')) = 'stayover_clean' OR
+              lower(COALESCE(t.type,'')) = 'stayover_clean'
+            )::int AS task_out,
+            COUNT(DISTINCT COALESCE(t.property_id, t.id)) FILTER (WHERE
+              COALESCE(t.task_type,'') ILIKE 'checkin%' OR
+              COALESCE(t.type,'') ILIKE 'checkin%'
+            )::int AS task_in
+          FROM cleaning_tasks t
+          WHERE t.task_date::date >= (SELECT day_au FROM base)
+            AND t.task_date::date <= (SELECT day_au FROM base) + interval '6 day'
+            AND lower(COALESCE(t.status,'')) NOT IN ('cancelled','canceled')
+          GROUP BY t.task_date::date
+        ),
+        order_agg AS (
+          SELECT
+            d.day AS day,
+            COUNT(*) FILTER (WHERE (${dayExprCheckout}) = d.day)::int AS order_out,
+            COUNT(*) FILTER (WHERE (${dayExprCheckin}) = d.day)::int AS order_in
+          FROM days d
+          LEFT JOIN orders o ON (
+            ((${dayExprCheckout}) = d.day OR (${dayExprCheckin}) = d.day)
+            AND COALESCE(o.status, '') <> ''
+            AND lower(COALESCE(o.status, '')) <> 'invalid'
+            AND lower(COALESCE(o.status, '')) NOT LIKE '%cancel%'
+          )
+          GROUP BY d.day
         )
         SELECT
           to_char(d.day, 'YYYY-MM-DD') AS day,
-          COUNT(t.id) FILTER (WHERE
-            COALESCE(t.task_type,'') ILIKE 'checkout%' OR
-            COALESCE(t.type,'') ILIKE 'checkout%'
+          (
+            CASE
+              WHEN COALESCE(ta.task_out, 0) > 0 THEN COALESCE(ta.task_out, 0)
+              ELSE COALESCE(oa.order_out, 0)
+            END
           )::int AS check_out_count,
-          COUNT(t.id) FILTER (WHERE
-            COALESCE(t.task_type,'') ILIKE 'checkin%' OR
-            COALESCE(t.type,'') ILIKE 'checkin%'
-          )::int AS check_in_count
+          GREATEST(COALESCE(ta.task_in, 0), COALESCE(oa.order_in, 0))::int AS check_in_count
         FROM days d
-        LEFT JOIN cleaning_tasks t ON (t.task_date::date = d.day)
-        GROUP BY d.day
+        LEFT JOIN task_agg ta ON ta.day = d.day
+        LEFT JOIN order_agg oa ON oa.day = d.day
         ORDER BY d.day
       `
       const r3 = await pgPool.query(trendSql, [baseDay])
@@ -139,7 +217,6 @@ router.get('/cleaning-overview', requireAnyPerm(['cleaning.view','cleaning.sched
         return { date: String(r.day), check_out_count: co, check_in_count: ci, total: co + ci }
       })
 
-      const total = Object.values(byStatus).reduce((a, b) => a + Number(b || 0), 0)
       return res.json({
         date: baseDay,
         today: {
@@ -169,17 +246,48 @@ router.get('/cleaning-overview', requireAnyPerm(['cleaning.view','cleaning.sched
     const baseStr = dateStr || dayStrAtTZ(new Date())
     const byStatus: Record<string, number> = {}
     const tasks = (db.cleaningTasks as any[]).filter((t: any) => String(t.task_date || t.date || '').slice(0, 10) === baseStr)
-    for (const t of tasks) {
-      const st = String(t.status || 'pending')
-      byStatus[st] = (byStatus[st] || 0) + 1
+    const groups = new Map<string, { allCancelled: boolean; rank: number; hasCheckoutActive: boolean; hasStayoverActive: boolean }>()
+    function rankStatus(st: any): number {
+      const s = String(st || 'pending').trim().toLowerCase()
+      if (s === 'in_progress') return 4
+      if (s === 'assigned') return 3
+      if (s === 'completed') return 2
+      if (s === 'cancelled' || s === 'canceled') return 0
+      return 1
     }
-    const unassigned = tasks.filter((t: any) => !t.assignee_id && String(t.status || '') !== 'cancelled').length
+    for (const t of tasks) {
+      const key = String(t.property_id || t.id || '')
+      const r = rankStatus(t.status)
+      const cancelled = ['cancelled', 'canceled'].includes(String(t.status || '').toLowerCase())
+      const tt = String(t.task_type || t.type || '').toLowerCase()
+      const hasCheckoutActive = !cancelled && tt.startsWith('checkout')
+      const hasStayoverActive = !cancelled && tt === 'stayover_clean'
+      const cur = groups.get(key)
+      if (!cur) groups.set(key, { allCancelled: cancelled, rank: r, hasCheckoutActive, hasStayoverActive })
+      else groups.set(key, {
+        allCancelled: cur.allCancelled && cancelled,
+        rank: Math.max(cur.rank, r),
+        hasCheckoutActive: cur.hasCheckoutActive || hasCheckoutActive,
+        hasStayoverActive: cur.hasStayoverActive || hasStayoverActive,
+      })
+    }
+    let unassigned = 0
+    for (const g of groups.values()) {
+      if (!g.hasCheckoutActive && !g.hasStayoverActive) continue
+      let st: string
+      if (g.rank === 4) st = 'in_progress'
+      else if (g.rank === 3) st = 'assigned'
+      else if (g.rank === 2) st = 'completed'
+      else st = 'pending'
+      byStatus[st] = (byStatus[st] || 0) + 1
+      if (st === 'pending') unassigned += 1
+    }
     const next7days: any[] = []
     const baseDate = new Date(`${baseStr}T00:00:00`)
     const isCheckoutTask = (t: any) => {
       const tt = String(t.task_type || t.type || '').toLowerCase()
       const lb = String(t.label || '').toLowerCase()
-      return tt.startsWith('checkout') || tt.includes('turnover') || lb.includes('退房') || lb.includes('checkout')
+      return tt.startsWith('checkout') || tt.includes('turnover') || tt === 'stayover_clean' || lb.includes('退房') || lb.includes('checkout') || lb.includes('入住中清洁')
     }
     const isCheckinTask = (t: any) => {
       const tt = String(t.task_type || t.type || '').toLowerCase()
@@ -190,11 +298,21 @@ router.get('/cleaning-overview', requireAnyPerm(['cleaning.view','cleaning.sched
       const d = new Date(baseDate.getTime() + i * 24 * 3600 * 1000)
       const ds = dayStrAtTZ(d)
       const dayTasks = (db.cleaningTasks as any[]).filter((t: any) => String(t.task_date || t.date || '').slice(0, 10) === ds)
-      const check_out_count = dayTasks.filter(isCheckoutTask).length
-      const check_in_count = dayTasks.filter(isCheckinTask).length
+      const outSet = new Set<string>()
+      const inSet = new Set<string>()
+      for (const t of dayTasks) {
+        const st = String(t.status || '').toLowerCase()
+        if (st === 'cancelled' || st === 'canceled') continue
+        const key = String(t.property_id || t.id || '')
+        if (!key) continue
+        if (isCheckoutTask(t)) outSet.add(key)
+        if (isCheckinTask(t)) inSet.add(key)
+      }
+      const check_out_count = outSet.size
+      const check_in_count = inSet.size
       next7days.push({ date: ds, check_out_count, check_in_count, total: check_out_count + check_in_count })
     }
-    const total = tasks.length
+    const total = Array.from(groups.values()).filter((g) => g.hasCheckoutActive || g.hasStayoverActive).length
     return res.json({
       date: baseStr,
       today: {

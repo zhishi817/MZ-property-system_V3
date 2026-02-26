@@ -24,12 +24,13 @@ export function cleaningColorKind(it: CleaningColorItem): CleaningColorKind {
   if (source === 'offline_tasks') return 'combined'
   if (hasMany) return 'combined'
   if (label.includes('入住') && label.includes('退房')) return 'combined'
+  if (label.includes('入住中清洁')) return 'checkout'
   if (label.includes('入住')) return 'checkin'
   if (label.includes('退房')) return 'checkout'
 
   const s = `${source}:${label}`.toLowerCase()
   if (s.includes('checkin')) return 'checkin'
   if (s.includes('checkout')) return 'checkout'
+  if (s.includes('stayover')) return 'checkout'
   return 'checkout'
 }
-
