@@ -160,3 +160,25 @@ body { margin: 0; background: #fff; color: #000; }
 :where(.ant-table-wrapper) .ant-table-pagination {
   flex-wrap: wrap;
 }
+
+:where(.mz-admin-sider).ant-layout-sider .ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+:where(.mz-admin-sider).ant-layout-sider .ant-menu {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 48px;
+}
+
+:where(.mz-admin-sider).ant-layout-sider .ant-layout-sider-trigger {
+  position: sticky;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+}

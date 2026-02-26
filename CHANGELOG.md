@@ -1,5 +1,15 @@
 # Changelog
 
+## Dev (2026-02-25)
+
+- Cleaning: Auto-sync daily task status in backend updates — when both cleaner + inspector are set → `assigned`, otherwise → `pending` (applies to single update and bulk patch).
+- Cleaning UI: Fix quick-assign state sync so choosing cleaner+inspector immediately reflects `assigned` (supports merged tasks via `entity_ids`).
+- Orders: Ensure any order create/update/delete reliably triggers cleaning task sync (remove duplicate PATCH route, fix PG transaction consistency, and prevent accidental delete-sync on missing orders).
+- Tests: Add end-to-end script to verify order changes propagate to cleaning tasks.
+- Tests: Add integration script to validate the auto status transitions.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## Dev (2026-02-21)
 
 - Git: Strongly isolate `MZStay_app/` (ignore and prevent commit/push to any branch).

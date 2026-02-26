@@ -152,7 +152,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
       <>{children}</>
     ) : (
       <Layout style={{ minHeight: '100vh', display:'flex' }}>
-        <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} breakpoint="md" style={{ background:'#001529', borderRight:'1px solid #e5e7eb' }} width={240}>
+        <Sider className="mz-admin-sider" collapsible collapsed={collapsed} onCollapse={setCollapsed} breakpoint="md" style={{ background:'#001529', borderRight:'1px solid #e5e7eb', overflow:'hidden' }} width={240}>
           <div style={{ color: '#fff', padding: 16, fontWeight: 700 }}>MZ Property</div>
           <AdminMenu items={items} />
         </Sider>

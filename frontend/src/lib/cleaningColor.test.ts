@@ -11,6 +11,7 @@ describe('cleaningColorKind', () => {
   it('allows non-blue kinds only when assigned', () => {
     expect(cleaningColorKind({ source: 'cleaning_tasks', label: '退房', assignee_id: 'u1' })).toBe('checkout')
     expect(cleaningColorKind({ source: 'cleaning_tasks', label: '入住', assignee_id: 'u1' })).toBe('checkin')
+    expect(cleaningColorKind({ source: 'cleaning_tasks', label: '入住中清洁', assignee_id: 'u1' })).toBe('checkout')
     expect(cleaningColorKind({ source: 'cleaning_tasks', label: '退房 入住', assignee_id: 'u1', entity_ids: ['a', 'b'] })).toBe('combined')
     expect(cleaningColorKind({ source: 'offline_tasks', label: '线下', assignee_id: 'u1' })).toBe('combined')
   })
@@ -20,4 +21,3 @@ describe('cleaningColorKind', () => {
     expect(cleaningColorKind({ source: 'cleaning_tasks', label: '退房', cleaner_id: 'c1' })).toBe('checkout')
   })
 })
-

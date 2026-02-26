@@ -607,7 +607,8 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
     const s = normalizeStatus(raw)
     return s === 'canceled' || s === 'cancelled'
   }
-  const prevStatus = normalizeStatus(prev?.status)
+  const prevRow: any = prev || base || {}
+  const prevStatus = normalizeStatus(prevRow?.status)
   const nextStatus = normalizeStatus((updated as any)?.status)
   if (isCanceledStatus(nextStatus) && (updated as any).count_in_income == null) {
     (updated as any).count_in_income = false
@@ -617,7 +618,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   }
   if (!isCanceledStatus(prevStatus) && isCanceledStatus(nextStatus)) {
     const role = String(((req as any).user?.role) || '')
-    const locked = await isOrderMonthLocked(prev)
+    const locked = await isOrderMonthLocked(prevRow)
     if (!locked) {
       const { roleHasPermission } = require('../store')
       if (!roleHasPermission(role, 'order.cancel')) return res.status(403).json({ message: 'no permission to cancel' })
@@ -633,10 +634,6 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   )
   // 编辑场景不再阻断，允许覆盖更新（冲突仅在创建时校验）
   // 保留内部工具函数供日志或后续使用，但不阻塞响应
-
-  if (idx !== -1) {
-    db.orders[idx] = updated
-  }
 
   if (hasPg) {
     try {
@@ -709,73 +706,40 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
     }
   }
   // Supabase branch removed
+  if (idx !== -1) db.orders[idx] = updated
   try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
   syncCleaningTasksForOrderId(String(id)).catch(() => {})
-  return res.json(updated)
-})
-router.patch('/:id', requirePerm('order.write'), (req, res) => {
-  const { id } = req.params
-  const parsed = createOrderSchema.safeParse(req.body)
-  if (!parsed.success) return res.status(400).json(parsed.error.format())
-  const o = parsed.data
-  const force = String((req.body as any).force ?? (req.query as any).force ?? '').toLowerCase() === 'true'
-  const idx = db.orders.findIndex((x) => x.id === id)
-  if (idx === -1) return res.status(404).json({ message: 'order not found' })
-  const prev = db.orders[idx]
-  let nights = o.nights
-  const checkin = o.checkin || prev.checkin
-  const checkout = o.checkout || prev.checkout
-  if (!nights && checkin && checkout) {
-    try {
-      const ci = new Date(checkin)
-      const co = new Date(checkout)
-      const ms = co.getTime() - ci.getTime()
-      nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0
-    } catch { nights = 0 }
-  }
-  const price = o.price != null ? o.price : (prev.price || 0)
-  const cleaning = o.cleaning_fee != null ? o.cleaning_fee : (prev.cleaning_fee || 0)
-  const net = o.net_income != null ? o.net_income : (price - cleaning)
-  const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0)
-  const updated: Order = { ...prev, ...o, nights, net_income: net, avg_nightly_price: avg }
-  // local overlap guard on update，仅在关键字段变更时检查
-  const changedCore2 = (
-    (updated.property_id || '') !== (prev?.property_id || '') ||
-    ((updated.checkin || '').slice(0,10)) !== ((prev?.checkin || '').slice(0,10)) ||
-    ((updated.checkout || '').slice(0,10)) !== ((prev?.checkout || '').slice(0,10))
-  )
-  // 编辑场景：不再返回 409 冲突
-  db.orders[idx] = updated
-  // try remote update; if fails, still respond with updated local record
-  // Supabase branch removed
   return res.json(updated)
 })
 
 router.delete('/:id', requirePerm('order.write'), async (req, res) => {
   const { id } = req.params
-  const idx = db.orders.findIndex((x) => x.id === id)
-  let removed: Order | null = null
-  if (idx !== -1) {
-    removed = db.orders[idx]
-    db.orders.splice(idx, 1)
-  }
-  try {
-    const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
-    if (hasPg) {
-      try {
-        await pgRunInTransaction(async (client: any) => {
-          try { await pgDelete('orders', id, client) } catch {}
-          try { await syncOrderToCleaningTasks(String(id), { deleted: true, client }) } catch {}
-        })
-      } catch {
-        return res.status(500).json({ message: '数据库删除失败' })
-      }
+  if (hasPg) {
+    try {
+      const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
+      const deleted = await pgRunInTransaction(async (client: any) => {
+        const r0 = await pgDelete('orders', id, client)
+        if (!r0) return null
+        await syncOrderToCleaningTasks(String(id), { deleted: true, client })
+        return r0
+      })
+      if (!deleted) return res.status(404).json({ message: 'order not found' })
+      const idx = db.orders.findIndex((x) => x.id === id)
+      if (idx !== -1) db.orders.splice(idx, 1)
       try { broadcastOrdersUpdated({ action: 'delete', id }) } catch {}
       return res.json({ ok: true, id })
+    } catch {
+      return res.status(500).json({ message: '数据库删除失败' })
     }
-    try { await syncOrderToCleaningTasks(String(id), { deleted: true }) } catch {}
+  }
+  const idx = db.orders.findIndex((x) => x.id === id)
+  if (idx === -1) return res.status(404).json({ message: 'order not found' })
+  const removed = db.orders[idx]
+  db.orders.splice(idx, 1)
+  try {
+    const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
+    await syncOrderToCleaningTasks(String(id), { deleted: true })
   } catch {}
-  if (!removed) return res.status(404).json({ message: 'order not found' })
   try { broadcastOrdersUpdated({ action: 'delete', id }) } catch {}
   return res.json({ ok: true, id: removed.id })
 })

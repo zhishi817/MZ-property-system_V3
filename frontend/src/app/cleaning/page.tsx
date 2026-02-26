@@ -66,6 +66,7 @@ type CleaningTaskRow = {
 }
 
 type EditTaskForm = {
+  mode: 'default' | 'stayover'
   ids: string[]
   task_date: Dayjs
   property_id: string | null
@@ -95,6 +96,19 @@ type BulkEditForm = {
   inspector: string
 }
 
+type ManualCreateForm = {
+  task_date: Dayjs
+  area: string | null
+  property_id: string | null
+  create_mode: 'checkout' | 'checkin' | 'turnover' | 'stayover'
+  checkout_password: string
+  checkin_password: string
+  nights_override: number | null
+  checkout_time: string
+  checkin_time: string
+  note: string
+}
+
 export default function CleaningPage() {
   const [view, setView] = useState<'day' | 'week' | 'month'>('month')
   const [month, setMonth] = useState<Dayjs>(() => dayjs())
@@ -109,7 +123,7 @@ export default function CleaningPage() {
   const [filterInspector, setFilterInspector] = useState<string | undefined>(undefined)
   const [bulkMode, setBulkMode] = useState(false)
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([])
-  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
+  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string; region?: string | null }[]>([])
   const [dbStatus, setDbStatus] = useState<any>(null)
   const [tasksMinMax, setTasksMinMax] = useState<{ min: string | null; max: string | null; from: string } | null>(null)
   const [tasksMinMaxError, setTasksMinMaxError] = useState<string | null>(null)
@@ -117,6 +131,8 @@ export default function CleaningPage() {
   const [editForm, setEditForm] = useState<EditTaskForm | null>(null)
   const [bulkEditOpen, setBulkEditOpen] = useState(false)
   const [bulkEditForm, setBulkEditForm] = useState<BulkEditForm | null>(null)
+  const [manualCreateOpen, setManualCreateOpen] = useState(false)
+  const [manualCreateForm, setManualCreateForm] = useState<ManualCreateForm | null>(null)
   const [backfillOpen, setBackfillOpen] = useState(false)
   const [backfillFrom, setBackfillFrom] = useState<Dayjs>(() => dayjs().subtract(90, 'day'))
   const [backfillTo, setBackfillTo] = useState<Dayjs>(() => dayjs().add(365, 'day'))
@@ -136,6 +152,28 @@ export default function CleaningPage() {
 
   const monthLabel = useMemo(() => `${month.year()}年${String(month.month() + 1).padStart(2, '0')}月`, [month])
   const selectedDateStr = useMemo(() => selectedDate.format('YYYY-MM-DD'), [selectedDate])
+
+  const areaOptions = useMemo(() => {
+    const uniq = Array.from(new Set((properties || []).map((p) => String(p.region || '').trim()).filter(Boolean)))
+    uniq.sort((a, b) => a.localeCompare(b))
+    return uniq.map((x) => ({ value: x, label: x }))
+  }, [properties])
+
+  const manualPropertyOptions = useMemo(() => {
+    const area = String(manualCreateForm?.area || '').trim()
+    const list = (properties || []).filter((p) => {
+      if (!area) return true
+      return String(p.region || '').trim() === area
+    })
+    return list
+      .filter((p) => String(p.id || '').trim())
+      .map((p) => {
+        const code = String(p.code || '').trim()
+        const addr = String(p.address || '').trim()
+        const label = code ? (addr ? `${code} ${addr}` : code) : (addr || String(p.id))
+        return { value: String(p.id), label }
+      })
+  }, [manualCreateForm?.area, properties])
 
   const visibleRange = useMemo(() => {
     if (view === 'day') {
@@ -176,16 +214,25 @@ export default function CleaningPage() {
     const region = String(it.property_region || '').trim()
     const code = String(it.property_code || '').trim() || propertyLabelForItem(it)
     const checkoutT = String(it.summary_checkout_time || '').trim() || '10am'
-    const checkinT = String(it.summary_checkin_time || '').trim() || '3pm'
     const type = String(it.task_type || '').toLowerCase()
     const label = String(it.label || '')
     const isTurnover = type === 'turnover' || (label.includes('退房') && label.includes('入住'))
+    const isStayover = type === 'stayover_clean' || label.includes('入住中清洁')
     const isCheckout = type === 'checkout_clean' || label.includes('退房')
-    const isCheckin = type === 'checkin_clean' || label.includes('入住')
+    const isCheckin = (type === 'checkin_clean' || label.includes('入住')) && !isStayover
     const parts: string[] = []
-    if (isTurnover) parts.push(`${checkoutT}退房`, `${checkinT}入住`)
+    if (isTurnover) {
+      const checkinT = String(it.summary_checkin_time || '').trim() || '3pm'
+      parts.push(`${checkoutT}退房`, `${checkinT}入住`)
+    }
     else if (isCheckout) parts.push(`${checkoutT}退房`)
-    else if (isCheckin) parts.push(`${checkinT}入住`)
+    else if (isStayover) {
+      const t = String((it as any).checkin_time || '').trim()
+      parts.push(t ? `${t}清洁` : '清洁')
+    } else if (isCheckin) {
+      const checkinT = String(it.summary_checkin_time || '').trim() || '3pm'
+      parts.push(`${checkinT}入住`)
+    }
     return { region, code, detail: parts.join(' ') }
   }, [propertyLabelForItem])
 
@@ -225,13 +272,15 @@ export default function CleaningPage() {
         byProp.set(pid, list)
       }
       const mergedCleaning: CalendarItem[] = []
-      const isCheckin = (x: CalendarItem) => String(x.task_type || '').toLowerCase() === 'checkin_clean' || String(x.label || '').includes('入住') || `${x.label}`.toLowerCase().includes('checkin')
+      const isStayover = (x: CalendarItem) => String(x.task_type || '').toLowerCase() === 'stayover_clean' || String(x.label || '').includes('入住中清洁') || `${x.label}`.toLowerCase().includes('stayover')
+      const isCheckin = (x: CalendarItem) => !isStayover(x) && (String(x.task_type || '').toLowerCase() === 'checkin_clean' || (String(x.label || '').includes('入住') && !String(x.label || '').includes('入住中清洁')) || `${x.label}`.toLowerCase().includes('checkin'))
       const isCheckout = (x: CalendarItem) => String(x.task_type || '').toLowerCase() === 'checkout_clean' || String(x.label || '').includes('退房') || `${x.label}`.toLowerCase().includes('checkout')
       const preferOrderLinked = (xs: CalendarItem[]) => {
         const withOrder = xs.filter((x) => !!(x.order_id || x.order_code))
         return withOrder.length ? withOrder : xs
       }
       for (const list of byProp.values()) {
+        const stayovers0 = list.filter(isStayover)
         const checkins0 = preferOrderLinked(list.filter(isCheckin))
         const checkouts0 = preferOrderLinked(list.filter(isCheckout))
 
@@ -279,6 +328,43 @@ export default function CleaningPage() {
             checkin_new_code: checkin?.new_code != null ? String(checkin.new_code || '') : null,
           })
           const rest = list.filter((x) => !isCheckin(x) && !isCheckout(x))
+          mergedCleaning.push(...rest)
+        } else if (stayovers0.length > 1) {
+          const ids = stayovers0.map((x) => String(x.entity_id))
+          const status = mergedStatus(stayovers0.map((x) => String(x.status || 'pending')))
+          const autoSync = stayovers0.every((x) => x.auto_sync_enabled !== false)
+          const assignee = stayovers0.every((x) => String(x.assignee_id || '') === String(stayovers0[0].assignee_id || '')) ? stayovers0[0].assignee_id : null
+          const cleanerId = stayovers0.every((x) => String(x.cleaner_id || x.assignee_id || '') === String(stayovers0[0].cleaner_id || stayovers0[0].assignee_id || '')) ? (String(stayovers0[0].cleaner_id || stayovers0[0].assignee_id || '').trim() || null) : null
+          const inspectorId = stayovers0.every((x) => String(x.inspector_id || '') === String(stayovers0[0].inspector_id || '')) ? (String(stayovers0[0].inspector_id || '').trim() || null) : null
+          const sched = stayovers0.every((x) => String(x.scheduled_at || '') === String(stayovers0[0].scheduled_at || '')) ? stayovers0[0].scheduled_at : null
+          mergedCleaning.push({
+            source: 'cleaning_tasks',
+            entity_id: ids.join(','),
+            entity_ids: ids,
+            order_id: null,
+            order_code: null,
+            property_id: stayovers0[0].property_id,
+            property_code: stayovers0[0].property_code || null,
+            task_type: 'stayover_clean',
+            label: `入住中清洁 x${stayovers0.length}`,
+            task_date: String(stayovers0[0].task_date || '').slice(0, 10),
+            status,
+            assignee_id: assignee,
+            cleaner_id: cleanerId,
+            inspector_id: inspectorId,
+            scheduled_at: sched,
+            auto_sync_enabled: autoSync,
+            summary_checkin_time: stayovers0[0].summary_checkin_time || null,
+            checkin_order_id: null,
+            checkout_order_id: null,
+            checkin_order_code: null,
+            checkout_order_code: null,
+            checkin_old_code: stayovers0.map((x) => String(x.old_code || '')).filter(Boolean).join(','),
+            checkin_new_code: stayovers0.map((x) => String(x.new_code || '')).filter(Boolean).join(','),
+            checkout_old_code: null,
+            checkout_new_code: null,
+          })
+          const rest = list.filter((x) => !isStayover(x) && !isCheckin(x) && !isCheckout(x))
           mergedCleaning.push(...rest)
         } else if (checkins0.length > 1) {
           const ids = checkins0.map((x) => String(x.entity_id))
@@ -466,17 +552,22 @@ export default function CleaningPage() {
   const openEdit = useCallback(async (it: CalendarItem) => {
     if (it.source !== 'cleaning_tasks') return
     const date = String(it.task_date || '').slice(0, 10)
-    const rows = await getJSON<CleaningTaskRow[]>(`/cleaning/tasks?date=${encodeURIComponent(date)}`).catch(() => [])
+    const rows = await getJSON<CleaningTaskRow[]>(`/cleaning/tasks?date=${encodeURIComponent(date)}`).catch(() => ([] as CleaningTaskRow[]))
     const clickedIds = entityIds(it)
     const clickedRow = (Array.isArray(rows) ? rows : []).find((r) => String(r.id) === String(clickedIds[0])) || null
     const propertyId = it.property_id ? String(it.property_id) : (clickedRow?.property_id ? String(clickedRow.property_id) : null)
     const rowsForProp = (Array.isArray(rows) ? rows : []).filter((r) => String(r?.property_id || '') && propertyId && String(r.property_id) === String(propertyId))
     const isCheckoutRow = (r: CleaningTaskRow | null) => String(r?.task_type || '').toLowerCase() === 'checkout_clean'
     const isCheckinRow = (r: CleaningTaskRow | null) => String(r?.task_type || '').toLowerCase() === 'checkin_clean'
+    const isStayoverRow = (r: CleaningTaskRow | null) => String(r?.task_type || '').toLowerCase() === 'stayover_clean'
     const notCancelled = (r: CleaningTaskRow) => String(r?.status || '').toLowerCase() !== 'cancelled'
     const checkoutIdsAll = rowsForProp.filter((r) => notCancelled(r) && isCheckoutRow(r as any)).map((r) => String(r.id))
     const checkinIdsAll = rowsForProp.filter((r) => notCancelled(r) && isCheckinRow(r as any)).map((r) => String(r.id))
-    const ids = Array.from(new Set([...clickedIds, ...checkoutIdsAll, ...checkinIdsAll]))
+    const stayoverIdsAll = rowsForProp.filter((r) => notCancelled(r) && isStayoverRow(r as any)).map((r) => String(r.id))
+    const stayoverMode =
+      String(it.task_type || '').toLowerCase() === 'stayover_clean' ||
+      (!!clickedRow && isStayoverRow(clickedRow))
+    const ids = Array.from(new Set(stayoverMode ? [...clickedIds, ...stayoverIdsAll] : [...clickedIds, ...checkoutIdsAll, ...checkinIdsAll]))
     const selectedRows = ids.map((id) => (Array.isArray(rows) ? rows : []).find((r) => String(r.id) === String(id)) || null)
     const baseRow = selectedRows.find((r) => r && String(r.id) === String(clickedIds[0])) || selectedRows[0]
     const checkoutAllExists = checkoutIdsAll.length > 0
@@ -495,6 +586,7 @@ export default function CleaningPage() {
         : (selectedRows.every((r) => getInspector(r) === getInspector(selectedRows[0])) ? (getInspector(selectedRows[0]) || null) : null)
     const checkoutRows = selectedRows.filter(isCheckoutRow)
     const checkinRows = selectedRows.filter(isCheckinRow)
+    const stayoverRows = selectedRows.filter(isStayoverRow)
     const nightsAllSame = checkinRows.length > 0 && checkinRows.every((r) => String(r?.nights_override ?? '') === String(checkinRows[0]?.nights_override ?? ''))
     const nightsOverride =
       checkinRows.length === 1
@@ -507,7 +599,10 @@ export default function CleaningPage() {
     const checkoutTimeKey = (r: CleaningTaskRow | null) => String(r?.checkout_time ?? '').trim()
     const checkinTimeKey = (r: CleaningTaskRow | null) => String(r?.checkin_time ?? '').trim()
     const checkoutTime = checkoutRows.length > 0 && checkoutRows.every((r) => checkoutTimeKey(r) === checkoutTimeKey(checkoutRows[0])) ? (checkoutTimeKey(checkoutRows[0]) || '10am') : '10am'
-    const checkinTime = checkinRows.length > 0 && checkinRows.every((r) => checkinTimeKey(r) === checkinTimeKey(checkinRows[0])) ? (checkinTimeKey(checkinRows[0]) || '3pm') : '3pm'
+    const checkinTime =
+      stayoverMode
+        ? (stayoverRows.length > 0 && stayoverRows.every((r) => checkinTimeKey(r) === checkinTimeKey(stayoverRows[0])) ? (checkinTimeKey(stayoverRows[0]) || '') : '')
+        : (checkinRows.length > 0 && checkinRows.every((r) => checkinTimeKey(r) === checkinTimeKey(checkinRows[0])) ? (checkinTimeKey(checkinRows[0]) || '3pm') : '3pm')
     const checkinTaskDateKey = (r: CleaningTaskRow | null) => String(r?.task_date || r?.date || '').slice(0, 10)
     const checkinTaskDate =
       checkinRows.length > 0 && checkinRows.every((r) => checkinTaskDateKey(r) === checkinTaskDateKey(checkinRows[0]))
@@ -515,6 +610,7 @@ export default function CleaningPage() {
         : dayjs(date)
     const autoSync = selectedRows.every((r) => (r?.auto_sync_enabled !== false)) && it.auto_sync_enabled !== false
     setEditForm({
+      mode: stayoverMode ? 'stayover' : 'default',
       ids,
       task_date: dayjs(date),
       property_id: propertyId,
@@ -522,16 +618,16 @@ export default function CleaningPage() {
       cleaner_id: cleanerId,
       inspector_id: inspectorId,
       note,
-      nights_override: nightsOverride,
-      checkout_ids: checkoutIdsAll,
-      checkin_ids: checkinIdsAll,
-      checkout_password: checkoutPwd,
-      checkin_password: checkinPwd,
+      nights_override: stayoverMode ? null : nightsOverride,
+      checkout_ids: stayoverMode ? [] : checkoutIdsAll,
+      checkin_ids: stayoverMode ? [] : checkinIdsAll,
+      checkout_password: stayoverMode ? '' : checkoutPwd,
+      checkin_password: stayoverMode ? '' : checkinPwd,
       checkout_time: checkoutTime,
       checkin_time: checkinTime,
       checkin_task_date: checkinTaskDate,
-      can_add_checkout: !!propertyId && !checkoutAllExists,
-      can_add_checkin: !!propertyId && !checkinAllExists,
+      can_add_checkout: stayoverMode ? false : (!!propertyId && !checkoutAllExists),
+      can_add_checkin: stayoverMode ? false : (!!propertyId && !checkinAllExists),
       pending_add_checkout: false,
       pending_add_checkin: false,
       auto_sync_enabled: autoSync,
@@ -550,6 +646,19 @@ export default function CleaningPage() {
     if (editForm.ids.length === 1 || editForm.inspector_id !== null) base.inspector_id = editForm.inspector_id
     if (editForm.ids.length === 1) base.note = editForm.note || null
     else if (String(editForm.note || '').trim()) base.note = editForm.note
+
+    if (editForm.mode === 'stayover') {
+      const patches = editForm.ids.map((id) => {
+        const p: any = { ...base, checkin_time: toNull(editForm.checkin_time) }
+        return patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, p)
+      })
+      await Promise.all(patches)
+      setEditOpen(false)
+      setEditForm(null)
+      message.success('已更新')
+      loadRangeItems().catch(() => {})
+      return
+    }
 
     if (editForm.pending_add_checkout && editForm.property_id) {
       await postJSON('/cleaning/tasks', {
@@ -753,6 +862,46 @@ export default function CleaningPage() {
     return out
   }, [])
 
+  const openManualCreate = useCallback(() => {
+    setManualCreateForm({
+      task_date: dayjs(selectedDateStr),
+      area: null,
+      property_id: null,
+      create_mode: 'turnover',
+      checkout_password: '',
+      checkin_password: '',
+      nights_override: null,
+      checkout_time: '10am',
+      checkin_time: '3pm',
+      note: '',
+    })
+    setManualCreateOpen(true)
+  }, [selectedDateStr])
+
+  const submitManualCreate = useCallback(async () => {
+    if (!manualCreateForm) return
+    if (!manualCreateForm.property_id) {
+      message.warning('请选择房号')
+      return
+    }
+    const body: any = {
+      create_mode: manualCreateForm.create_mode,
+      task_date: dayjs(manualCreateForm.task_date).format('YYYY-MM-DD'),
+      property_id: String(manualCreateForm.property_id),
+      old_code: manualCreateForm.checkout_password.trim() ? manualCreateForm.checkout_password.trim() : null,
+      new_code: manualCreateForm.checkin_password.trim() ? manualCreateForm.checkin_password.trim() : null,
+      nights_override: manualCreateForm.nights_override != null ? Number(manualCreateForm.nights_override) : null,
+      checkout_time: manualCreateForm.checkout_time ? String(manualCreateForm.checkout_time) : null,
+      checkin_time: manualCreateForm.checkin_time ? String(manualCreateForm.checkin_time) : null,
+      note: manualCreateForm.note.trim() ? manualCreateForm.note.trim() : null,
+    }
+    await postJSON('/cleaning/tasks', body)
+    setManualCreateOpen(false)
+    setManualCreateForm(null)
+    message.success('已新增清洁任务')
+    loadRangeItems().catch(() => {})
+  }, [loadRangeItems, manualCreateForm])
+
   const updateTaskQuick = useCallback(async (ids: string[], patch: any) => {
     const normIds = Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
     const idSet = new Set(normIds)
@@ -764,7 +913,9 @@ export default function CleaningPage() {
 
     setItems((prev) => prev.map((it) => {
       if (it.source !== 'cleaning_tasks') return it
-      if (!idSet.has(String(it.entity_id))) return it
+      const itIds = Array.isArray(it.entity_ids) && it.entity_ids.length ? it.entity_ids : [it.entity_id]
+      const hit = itIds.some((x) => idSet.has(String(x)))
+      if (!hit) return it
       const next: any = { ...it }
       if (patch.status !== undefined) next.status = patch.status
       if (patch.task_date !== undefined) next.task_date = patch.task_date
@@ -778,6 +929,11 @@ export default function CleaningPage() {
         if (patch.cleaner_id === undefined) next.cleaner_id = patch.assignee_id
       }
       if (patch.inspector_id !== undefined) next.inspector_id = patch.inspector_id
+      if (patch.status === undefined && (String(it.status || 'pending') === 'pending' || String(it.status || 'pending') === 'assigned')) {
+        const cleaner = String(next.cleaner_id || next.assignee_id || '').trim()
+        const inspector = String(next.inspector_id || '').trim()
+        next.status = cleaner && inspector ? 'assigned' : 'pending'
+      }
       if (keyChanged) next.auto_sync_enabled = false
       return next
     }))
@@ -895,6 +1051,9 @@ export default function CleaningPage() {
             </Button>
             <Button className={styles.secondaryBtn} onClick={() => openDebug().catch(() => {})} loading={debugLoading}>
               调试
+            </Button>
+            <Button className={styles.secondaryBtn} onClick={openManualCreate} disabled={bulkMode}>
+              新增清洁
             </Button>
           </div>
         </div>
@@ -1074,6 +1233,8 @@ export default function CleaningPage() {
               const isTurnover = String(it.task_type || '').toLowerCase() === 'turnover' || (String(it.label || '').includes('退房') && String(it.label || '').includes('入住'))
               const checkoutCode = isTurnover ? orderDisplay(it.checkout_order_id, it.checkout_order_code) : orderDisplay(it.order_id, it.order_code)
               const checkinCode = orderDisplay(it.checkin_order_id, it.checkin_order_code)
+              const checkoutPwd = String(isTurnover ? (it.checkout_old_code ?? it.old_code ?? '') : (it.old_code ?? '')).trim()
+              const checkinPwd = String(isTurnover ? (it.checkin_new_code ?? it.new_code ?? '') : (it.new_code ?? '')).trim()
               return (
                 <div key={`${it.source}:${it.entity_id}`} className={styles.missionCard}>
                   <div className={`${styles.accent} ${accentCls}`} style={{ backgroundColor: accentColor }} />
@@ -1122,6 +1283,8 @@ export default function CleaningPage() {
                     {it.nights != null ? <span className={styles.metaChip}>{`${it.nights}晚`}</span> : null}
                     {checkoutCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>退房</span>{checkoutCode}</span> : null}
                     {isTurnover && checkinCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>入住</span>{checkinCode}</span> : null}
+                    <span className={styles.metaText}><span className={styles.metaKey}>退房密码</span>{checkoutPwd || '-'}</span>
+                    <span className={styles.metaText}><span className={styles.metaKey}>入住密码</span>{checkinPwd || '-'}</span>
                   </div>
                   <div className={styles.controlsRow}>
                     {it.source === 'cleaning_tasks' ? (
@@ -1224,138 +1387,155 @@ export default function CleaningPage() {
                 options={inspectorOptions}
               />
             </div>
-            <div>
-              <div className={styles.fieldLabel}>新增任务</div>
-              <Space wrap>
-                {editForm.checkout_ids.length ? (
-                  <Button
-                    danger
-                    onClick={() => {
-                      Modal.confirm({
-                        title: '确认取消退房任务？',
-                        content: `将取消 ${editForm.checkout_ids.length} 个退房任务`,
-                        okText: '取消退房',
-                        okButtonProps: { danger: true },
-                        onOk: () => cancelTasksInEdit(editForm.checkout_ids, '退房').catch((e) => message.error(e?.message || '取消失败')),
-                      })
-                    }}
-                  >
-                    取消退房
-                  </Button>
-                ) : (
-                  <Button
-                    disabled={!editForm.can_add_checkout && !editForm.pending_add_checkout}
-                    onClick={() => setEditForm((p) => {
-                      if (!p) return p
-                      const next = !p.pending_add_checkout
-                      if (!next) return { ...p, pending_add_checkout: false, checkout_password: '', checkout_time: '10am' }
-                      return { ...p, pending_add_checkout: true, checkout_time: p.checkout_time || '10am' }
-                    })}
-                  >
-                    {editForm.pending_add_checkout ? '取消新增退房' : '新增退房'}
-                  </Button>
-                )}
-
-                {editForm.checkin_ids.length ? (
-                  <Button
-                    danger
-                    onClick={() => {
-                      Modal.confirm({
-                        title: '确认取消入住任务？',
-                        content: `将取消 ${editForm.checkin_ids.length} 个入住任务`,
-                        okText: '取消入住',
-                        okButtonProps: { danger: true },
-                        onOk: () => cancelTasksInEdit(editForm.checkin_ids, '入住').catch((e) => message.error(e?.message || '取消失败')),
-                      })
-                    }}
-                  >
-                    取消入住
-                  </Button>
-                ) : (
-                  <Button
-                    disabled={!editForm.can_add_checkin && !editForm.pending_add_checkin}
-                    onClick={() => setEditForm((p) => {
-                      if (!p) return p
-                      const next = !p.pending_add_checkin
-                      if (!next) return { ...p, pending_add_checkin: false, checkin_password: '', nights_override: null, checkin_time: '3pm', checkin_task_date: p.task_date }
-                      return { ...p, pending_add_checkin: true, checkin_time: p.checkin_time || '3pm', checkin_task_date: p.checkin_task_date || p.task_date }
-                    })}
-                  >
-                    {editForm.pending_add_checkin ? '取消新增入住' : '新增入住'}
-                  </Button>
-                )}
-              </Space>
-              {editForm.pending_add_checkout ? <Alert type="info" showIcon message="保存时将新增退房任务" /> : null}
-              {editForm.pending_add_checkin ? <Alert type="info" showIcon message="保存时将新增入住任务" /> : null}
-              {!editForm.property_id ? <Alert type="warning" showIcon message="该任务缺少 property_id，无法新增退房/入住" /> : null}
-            </div>
-            <div>
-              <div className={styles.fieldLabel}>退房密码（旧密码）</div>
-              <Input
-                value={editForm.checkout_password}
-                onChange={(e) => setEditForm((p) => (p ? { ...p, checkout_password: e.target.value } : p))}
-                placeholder="退房密码"
-              />
-            </div>
-            {editForm.checkout_ids.length || editForm.pending_add_checkout ? (
+            {editForm.mode === 'stayover' ? (
               <div>
-                <div className={styles.fieldLabel}>退房时间</div>
+                <div className={styles.fieldLabel}>清洁时间</div>
                 <Select
                   allowClear
                   showSearch
                   optionFilterProp="label"
-                  value={editForm.checkout_time || undefined}
-                  onChange={(v) => setEditForm((p) => (p ? { ...p, checkout_time: String(v || '') } : p))}
+                  value={editForm.checkin_time || undefined}
+                  onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
                   style={{ width: '100%' }}
                   options={timeOptions}
                 />
               </div>
-            ) : null}
-            {editForm.checkin_ids.length || editForm.pending_add_checkin ? (
+            ) : (
               <>
                 <div>
-                  <div className={styles.fieldLabel}>入住日期</div>
-                  <DatePicker
-                    value={editForm.checkin_task_date}
-                    onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_task_date: v || p.task_date } : p))}
-                    style={{ width: '100%' }}
-                  />
-                  {editForm.checkin_task_date && !editForm.checkin_task_date.isSame(editForm.task_date, 'day') ? (
-                    <Alert type="info" showIcon message="已标记为隔天入住（入住任务会移动到所选日期）" />
-                  ) : null}
+                  <div className={styles.fieldLabel}>新增任务</div>
+                  <Space wrap>
+                    {editForm.checkout_ids.length ? (
+                      <Button
+                        danger
+                        onClick={() => {
+                          Modal.confirm({
+                            title: '确认取消退房任务？',
+                            content: `将取消 ${editForm.checkout_ids.length} 个退房任务`,
+                            okText: '取消退房',
+                            okButtonProps: { danger: true },
+                            onOk: () => cancelTasksInEdit(editForm.checkout_ids, '退房').catch((e) => message.error(e?.message || '取消失败')),
+                          })
+                        }}
+                      >
+                        取消退房
+                      </Button>
+                    ) : (
+                      <Button
+                        disabled={!editForm.can_add_checkout && !editForm.pending_add_checkout}
+                        onClick={() => setEditForm((p) => {
+                          if (!p) return p
+                          const next = !p.pending_add_checkout
+                          if (!next) return { ...p, pending_add_checkout: false, checkout_password: '', checkout_time: '10am' }
+                          return { ...p, pending_add_checkout: true, checkout_time: p.checkout_time || '10am' }
+                        })}
+                      >
+                        {editForm.pending_add_checkout ? '取消新增退房' : '新增退房'}
+                      </Button>
+                    )}
+
+                    {editForm.checkin_ids.length ? (
+                      <Button
+                        danger
+                        onClick={() => {
+                          Modal.confirm({
+                            title: '确认取消入住任务？',
+                            content: `将取消 ${editForm.checkin_ids.length} 个入住任务`,
+                            okText: '取消入住',
+                            okButtonProps: { danger: true },
+                            onOk: () => cancelTasksInEdit(editForm.checkin_ids, '入住').catch((e) => message.error(e?.message || '取消失败')),
+                          })
+                        }}
+                      >
+                        取消入住
+                      </Button>
+                    ) : (
+                      <Button
+                        disabled={!editForm.can_add_checkin && !editForm.pending_add_checkin}
+                        onClick={() => setEditForm((p) => {
+                          if (!p) return p
+                          const next = !p.pending_add_checkin
+                          if (!next) return { ...p, pending_add_checkin: false, checkin_password: '', nights_override: null, checkin_time: '3pm', checkin_task_date: p.task_date }
+                          return { ...p, pending_add_checkin: true, checkin_time: p.checkin_time || '3pm', checkin_task_date: p.checkin_task_date || p.task_date }
+                        })}
+                      >
+                        {editForm.pending_add_checkin ? '取消新增入住' : '新增入住'}
+                      </Button>
+                    )}
+                  </Space>
+                  {editForm.pending_add_checkout ? <Alert type="info" showIcon message="保存时将新增退房任务" /> : null}
+                  {editForm.pending_add_checkin ? <Alert type="info" showIcon message="保存时将新增入住任务" /> : null}
+                  {!editForm.property_id ? <Alert type="warning" showIcon message="该任务缺少 property_id，无法新增退房/入住" /> : null}
                 </div>
                 <div>
-                  <div className={styles.fieldLabel}>入住时间</div>
-                  <Select
-                    allowClear
-                    showSearch
-                    optionFilterProp="label"
-                    value={editForm.checkin_time || undefined}
-                    onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
-                    style={{ width: '100%' }}
-                    options={timeOptions}
-                  />
-                </div>
-                <div>
-                  <div className={styles.fieldLabel}>入住天数</div>
-                  <InputNumber
-                    style={{ width: '100%' }}
-                    min={0}
-                    placeholder="例如 2"
-                    value={editForm.nights_override ?? undefined}
-                    onChange={(v) => setEditForm((p) => (p ? { ...p, nights_override: v == null ? null : Number(v) } : p))}
-                  />
-                </div>
-                <div>
-                  <div className={styles.fieldLabel}>入住密码（新密码）</div>
+                  <div className={styles.fieldLabel}>退房密码（旧密码）</div>
                   <Input
-                    value={editForm.checkin_password}
-                    onChange={(e) => setEditForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))}
-                    placeholder="入住密码"
+                    value={editForm.checkout_password}
+                    onChange={(e) => setEditForm((p) => (p ? { ...p, checkout_password: e.target.value } : p))}
+                    placeholder="退房密码"
                   />
                 </div>
+                {editForm.checkout_ids.length || editForm.pending_add_checkout ? (
+                  <div>
+                    <div className={styles.fieldLabel}>退房时间</div>
+                    <Select
+                      allowClear
+                      showSearch
+                      optionFilterProp="label"
+                      value={editForm.checkout_time || undefined}
+                      onChange={(v) => setEditForm((p) => (p ? { ...p, checkout_time: String(v || '') } : p))}
+                      style={{ width: '100%' }}
+                      options={timeOptions}
+                    />
+                  </div>
+                ) : null}
+                {editForm.checkin_ids.length || editForm.pending_add_checkin ? (
+                  <>
+                    <div>
+                      <div className={styles.fieldLabel}>入住日期</div>
+                      <DatePicker
+                        value={editForm.checkin_task_date}
+                        onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_task_date: v || p.task_date } : p))}
+                        style={{ width: '100%' }}
+                      />
+                      {editForm.checkin_task_date && !editForm.checkin_task_date.isSame(editForm.task_date, 'day') ? (
+                        <Alert type="info" showIcon message="已标记为隔天入住（入住任务会移动到所选日期）" />
+                      ) : null}
+                    </div>
+                    <div>
+                      <div className={styles.fieldLabel}>入住时间</div>
+                      <Select
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        value={editForm.checkin_time || undefined}
+                        onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
+                        style={{ width: '100%' }}
+                        options={timeOptions}
+                      />
+                    </div>
+                    <div>
+                      <div className={styles.fieldLabel}>入住天数</div>
+                      <InputNumber
+                        style={{ width: '100%' }}
+                        min={0}
+                        placeholder="例如 2"
+                        value={editForm.nights_override ?? undefined}
+                        onChange={(v) => setEditForm((p) => (p ? { ...p, nights_override: v == null ? null : Number(v) } : p))}
+                      />
+                    </div>
+                    <div>
+                      <div className={styles.fieldLabel}>入住密码（新密码）</div>
+                      <Input
+                        value={editForm.checkin_password}
+                        onChange={(e) => setEditForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))}
+                        placeholder="入住密码"
+                      />
+                    </div>
+                  </>
+                ) : null}
               </>
-            ) : null}
+            )}
             <div>
               <div className={styles.fieldLabel}>备注</div>
               <Input.TextArea
@@ -1365,6 +1545,130 @@ export default function CleaningPage() {
               />
             </div>
             {!editForm.auto_sync_enabled ? <Alert type="warning" showIcon message="该任务已锁定自动同步" /> : null}
+          </Space>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={manualCreateOpen}
+        title="手动新增清洁任务"
+        okText="创建"
+        onOk={() => submitManualCreate().catch((e) => message.error(e?.message || '创建失败'))}
+        onCancel={() => {
+          setManualCreateOpen(false)
+          setManualCreateForm(null)
+        }}
+      >
+        {manualCreateForm ? (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <div>
+              <div className={styles.fieldLabel}>日期</div>
+              <DatePicker
+                value={manualCreateForm.task_date}
+                onChange={(v) => v && setManualCreateForm((p) => (p ? { ...p, task_date: v } : p))}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>区域（area）</div>
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                value={manualCreateForm.area || undefined}
+                onChange={(v) => setManualCreateForm((p) => (p ? { ...p, area: v ? String(v) : null, property_id: null } : p))}
+                style={{ width: '100%' }}
+                options={areaOptions}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>房号</div>
+              <Select
+                showSearch
+                optionFilterProp="label"
+                value={manualCreateForm.property_id || undefined}
+                onChange={(v) => setManualCreateForm((p) => (p ? { ...p, property_id: v ? String(v) : null } : p))}
+                style={{ width: '100%' }}
+                options={manualPropertyOptions}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>类型</div>
+              <Select
+                value={manualCreateForm.create_mode}
+                onChange={(v) => setManualCreateForm((p) => (p ? { ...p, create_mode: v as any } : p))}
+                style={{ width: '100%' }}
+                options={[
+                  { label: '退房+入住', value: 'turnover' },
+                  { label: '新增退房', value: 'checkout' },
+                  { label: '新增入住', value: 'checkin' },
+                  { label: '入住中清洁', value: 'stayover' },
+                ]}
+              />
+            </div>
+
+            {manualCreateForm.create_mode === 'checkout' || manualCreateForm.create_mode === 'turnover' ? (
+              <div>
+                <div className={styles.fieldLabel}>退房时间</div>
+                <Select
+                  value={manualCreateForm.checkout_time}
+                  onChange={(v) => setManualCreateForm((p) => (p ? { ...p, checkout_time: String(v) } : p))}
+                  style={{ width: '100%' }}
+                  options={timeOptions}
+                />
+              </div>
+            ) : null}
+
+            {manualCreateForm.create_mode === 'checkin' || manualCreateForm.create_mode === 'turnover' || manualCreateForm.create_mode === 'stayover' ? (
+              <>
+                <div>
+                  <div className={styles.fieldLabel}>入住时间</div>
+                  <Select
+                    value={manualCreateForm.checkin_time}
+                    onChange={(v) => setManualCreateForm((p) => (p ? { ...p, checkin_time: String(v) } : p))}
+                    style={{ width: '100%' }}
+                    options={timeOptions}
+                  />
+                </div>
+                <div>
+                  <div className={styles.fieldLabel}>入住天数</div>
+                  <InputNumber
+                    value={manualCreateForm.nights_override == null ? null : manualCreateForm.nights_override}
+                    onChange={(v) => setManualCreateForm((p) => (p ? { ...p, nights_override: v == null ? null : Number(v) } : p))}
+                    min={0}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+              </>
+            ) : null}
+
+            <div>
+              <div className={styles.fieldLabel}>退房密码</div>
+              <Input
+                value={manualCreateForm.checkout_password}
+                onChange={(e) => setManualCreateForm((p) => (p ? { ...p, checkout_password: e.target.value } : p))}
+                style={{ width: '100%' }}
+                placeholder="可为空"
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>入住密码</div>
+              <Input
+                value={manualCreateForm.checkin_password}
+                onChange={(e) => setManualCreateForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))}
+                style={{ width: '100%' }}
+                placeholder="可为空"
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>备注</div>
+              <Input.TextArea
+                value={manualCreateForm.note}
+                onChange={(e) => setManualCreateForm((p) => (p ? { ...p, note: e.target.value } : p))}
+                style={{ width: '100%' }}
+                autoSize={{ minRows: 2, maxRows: 6 }}
+              />
+            </div>
           </Space>
         ) : null}
       </Modal>
