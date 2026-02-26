@@ -17,6 +17,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { getRole, hasPerm, preloadRolePerms } from '../lib/auth'
 import { API_BASE, authHeaders } from '../lib/api'
 import { VersionBadge } from './VersionBadge'
+import { pickHomeRoute } from '../lib/homeRoute'
 
 const { Header, Sider, Content } = Layout
 
@@ -76,6 +77,13 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     void permTick
   }, [permTick])
+  useEffect(() => {
+    if (!mounted || !authed) return
+    if (isLogin || isPublic) return
+    if (pathname.startsWith('/dashboard') && !hasPerm('menu.dashboard')) {
+      try { router.replace(pickHomeRoute()) } catch {}
+    }
+  }, [mounted, authed, isLogin, isPublic, pathname, permTick, router])
   const items: any[] = []
   if (hasPerm('menu.dashboard')) items.push({ key: 'dashboard', icon: <ProfileOutlined />, label: <Link href="/dashboard" prefetch={false}>总览</Link> })
   if (hasPerm('menu.landlords')) {

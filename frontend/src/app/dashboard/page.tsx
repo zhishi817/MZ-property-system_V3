@@ -11,6 +11,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { API_BASE, getJSON } from '../../lib/api'
 import { monthSegments, toDayStr, parseDateOnly } from '../../lib/orders'
 import { PieChart as RePieChart, Pie as RePie, Cell as ReCell, Tooltip as ReTooltip, Legend as ReLegend, ResponsiveContainer } from 'recharts'
+import { hasPerm, preloadRolePerms } from '../../lib/auth'
+import { pickHomeRoute } from '../../lib/homeRoute'
 
  type Property = { id: string; code?: string; address?: string; region?: string; biz_category?: 'leased'|'management_fee'; type?: string }
 type Order = { id: string; source?: string; property_id?: string; checkin?: string; checkout?: string; nights?: number; avg_nightly_price?: number; net_income?: number; price?: number }
@@ -30,6 +32,10 @@ export default function DashboardPage() {
       const role = localStorage.getItem('role') || ''
       if (role === 'maintenance_staff') { router.replace('/maintenance/overview'); return }
     } catch {}
+    ;(async () => {
+      try { await preloadRolePerms() } catch {}
+      if (!hasPerm('menu.dashboard')) { try { router.replace(pickHomeRoute()) } catch {} }
+    })()
     getJSON<Property[]>('/properties').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([]))
     getJSON<Order[]>('/orders').then((j) => setOrders(Array.isArray(j) ? j : [])).catch(() => setOrders([]))
     getJSON<PropertyExpense[]>('/crud/property_expenses').then((j) => setExpenses(Array.isArray(j) ? j : [])).catch(() => setExpenses([]))
