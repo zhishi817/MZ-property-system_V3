@@ -230,8 +230,8 @@ export default function DeepCleaningRecordsPage() {
       if (filterPropertyId) params.property_id = filterPropertyId
       if (filterStatus) params.status = filterStatus
       if (filterCat) params.category = filterCat
-      if (dateRange?.[0]) params.submitted_at_from = dayjs(dateRange[0]).startOf('day').toISOString()
-      if (dateRange?.[1]) params.submitted_at_to = dayjs(dateRange[1]).endOf('day').toISOString()
+      if (dateRange?.[0]) params.completed_at_from = dayjs(dateRange[0]).startOf('day').toISOString()
+      if (dateRange?.[1]) params.completed_at_to = dayjs(dateRange[1]).endOf('day').toISOString()
       if (filterKeyword.trim()) params.q = filterKeyword.trim()
       const qs = new URLSearchParams(params as any).toString()
       const res = await fetch(`${API_BASE}/crud/property_deep_cleaning?${qs}`, { cache: 'no-store', headers: authHeaders(), signal: controller.signal })
@@ -440,7 +440,10 @@ export default function DeepCleaningRecordsPage() {
   const columns: any[] = [
     { title:'房号', dataIndex:'code', width: 120, ellipsis: true },
     { title:'工单号', dataIndex:'work_no', width: 160, render: (_: any, r: any) => String((r as any)?.work_no || (r as any)?.id || '') },
-    { title:'清洁日期', dataIndex:'occurred_at', width: 120, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD') : '-' },
+    { title:'清洁日期', dataIndex:'completed_at', width: 120, render: (_: any, r: any) => {
+      const v = (r as any)?.completed_at || (r as any)?.occurred_at
+      return v ? dayjs(v).format('YYYY-MM-DD') : '-'
+    } },
     { title:'清洁人员', dataIndex:'worker_name', width: 140, ellipsis: true, render:(v:string)=> String(v || '-') },
     { title:'提交时间', dataIndex:'submitted_at', width: 160, render:(v:string, r: any)=> (v || (r as any)?.created_at) ? dayjs(v || (r as any)?.created_at).format('YYYY-MM-DD HH:mm') : '-' },
     { title:'区域', dataIndex:'category', width: 120 },

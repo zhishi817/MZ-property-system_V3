@@ -835,6 +835,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
           try {
             const c = await pgPool.query(
               `SELECT data_type, udt_name
@@ -865,8 +866,8 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
             }
           } catch {}
-          const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, property_code, work_no, category, status, urgency, submitted_at, submitter_name, completed_at, maintenance_amount, has_parts, parts_amount, pay_method, pay_other_note)
-            VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::text[],$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`
+          const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, repair_photo_urls, property_code, work_no, category, status, urgency, submitted_at, submitter_name, completed_at, maintenance_amount, has_parts, parts_amount, pay_method, pay_other_note)
+            VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::text[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`
           const detailsArr = Array.isArray(detailsRaw) ? detailsRaw : []
           let photoUrlsArr: any = (payload as any).photo_urls
           if (typeof photoUrlsArr === 'string') {
@@ -874,10 +875,24 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
           }
           if (!Array.isArray(photoUrlsArr)) photoUrlsArr = []
           photoUrlsArr = photoUrlsArr.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
+          let repairPhotoUrlsArr: any = (payload as any).repair_photo_urls
+          if (typeof repairPhotoUrlsArr === 'string') {
+            try { repairPhotoUrlsArr = JSON.parse(repairPhotoUrlsArr) } catch { repairPhotoUrlsArr = [] }
+          }
+          if (repairPhotoUrlsArr && !Array.isArray(repairPhotoUrlsArr)) repairPhotoUrlsArr = [repairPhotoUrlsArr]
+          if (!Array.isArray(repairPhotoUrlsArr)) repairPhotoUrlsArr = []
+          repairPhotoUrlsArr = repairPhotoUrlsArr.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
           if (detailsArr.length > 1) {
             const created: any[] = []
             for (const d of detailsArr) {
               const id = require('uuid').v4()
+              let repairPhotoUrls2: any = (d && (d as any).repair_photo_urls !== undefined) ? (d as any).repair_photo_urls : repairPhotoUrlsArr
+              if (typeof repairPhotoUrls2 === 'string') {
+                try { repairPhotoUrls2 = JSON.parse(repairPhotoUrls2) } catch { repairPhotoUrls2 = [] }
+              }
+              if (repairPhotoUrls2 && !Array.isArray(repairPhotoUrls2)) repairPhotoUrls2 = [repairPhotoUrls2]
+              if (!Array.isArray(repairPhotoUrls2)) repairPhotoUrls2 = []
+              repairPhotoUrls2 = repairPhotoUrls2.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
               const values = [
                 id,
                 payload.property_id || null,
@@ -887,6 +902,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 payload.notes || '',
                 payload.created_by || null,
                 photoUrlsArr,
+                JSON.stringify(repairPhotoUrls2 || []),
                 payload.property_code || null,
                 workNo,
                 payload.category || null,
@@ -915,6 +931,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               payload.notes || '',
               payload.created_by || null,
               photoUrlsArr,
+              JSON.stringify(repairPhotoUrlsArr || []),
               payload.property_code || null,
               workNo,
               payload.category || null,

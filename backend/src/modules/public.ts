@@ -914,6 +914,7 @@ router.post('/maintenance-progress/submit', async (req, res) => {
     await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS worker_name text;`)
     await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS occurred_at date;`)
     const nowIso = new Date().toISOString()
+    const completedIso = /^\d{4}-\d{2}-\d{2}$/.test(occurred_at) ? `${occurred_at}T12:00:00.000Z` : nowIso
     const sql = `INSERT INTO property_maintenance (
       id, property_id, occurred_at, worker_name, details, notes, created_by,
       photo_urls, repair_photo_urls, property_code, work_no, category, status, urgency,
@@ -958,7 +959,7 @@ router.post('/maintenance-progress/submit', async (req, res) => {
         null,
         nowIso,
         worker_name,
-        nowIso,
+        completedIso,
         maintenance_amount,
         has_parts,
         parts_amount,
