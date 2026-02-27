@@ -127,11 +127,14 @@ export async function login(req: Request, res: Response) {
       return res.json({ token, role: found.role })
     }
   }
-  // Fallback static users
-  const u = users[username]
-  if (!u || u.password !== password) return res.status(401).json({ message: 'invalid credentials' })
-  const token = jwt.sign({ sub: u.id, role: u.role, username: u.username }, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
-  res.json({ token, role: u.role })
+  // Fallback static users (dev/no-db only)
+  if (!hasPg || isDev) {
+    const u = users[username]
+    if (!u || u.password !== password) return res.status(401).json({ message: 'invalid credentials' })
+    const token = jwt.sign({ sub: u.id, role: u.role, username: u.username }, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
+    return res.json({ token, role: u.role })
+  }
+  return res.status(401).json({ message: 'invalid credentials' })
 }
 
 export async function auth(req: Request, res: Response, next: NextFunction) {
