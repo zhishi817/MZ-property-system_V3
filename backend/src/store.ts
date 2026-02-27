@@ -572,12 +572,17 @@ resources.forEach(r => {
 })
 
 export function getRoleIdByName(name: string): string | undefined {
-  return db.roles.find(r => r.name === name)?.id
+  const raw = String(name || '').trim()
+  if (!raw) return undefined
+  const normalized = raw.startsWith('role.') ? raw.replace(/^role\./, '') : raw
+  return db.roles.find(r => r.name === normalized || r.id === raw || r.id === `role.${normalized}`)?.id
 }
 
 export function roleHasPermission(roleName: string, perm: string): boolean {
-  if (roleName === 'admin') return true
-  const rid = getRoleIdByName(roleName)
+  const raw = String(roleName || '').trim()
+  if (!raw) return false
+  if (raw === 'admin' || raw === 'role.admin') return true
+  const rid = getRoleIdByName(raw)
   if (!rid) return false
   return db.rolePermissions.some(rp => rp.role_id === rid && rp.permission_code === perm)
 }
