@@ -399,7 +399,8 @@ if (db.roles.length === 0) {
   const csId = 'role.customer_service'
   const cleanMgrId = 'role.cleaning_manager'
   const cleanerOnlyId = 'role.cleaner'
-  const cleanerId = 'role.cleaner_inspector'
+  const inspectorId = 'role.cleaning_inspector'
+  const legacyCleanerInspectorId = 'role.cleaner_inspector'
   const financeId = 'role.finance_staff'
   const inventoryId = 'role.inventory_manager'
   const maintenanceId = 'role.maintenance_staff'
@@ -408,7 +409,8 @@ if (db.roles.length === 0) {
     { id: csId, name: 'customer_service', description: '客服' },
     { id: cleanMgrId, name: 'cleaning_manager', description: '清洁/检查管理员' },
     { id: cleanerOnlyId, name: 'cleaner', description: '清洁人员' },
-    { id: cleanerId, name: 'cleaner_inspector', description: '清洁/检查人员' },
+    { id: inspectorId, name: 'cleaning_inspector', description: '检查人员' },
+    { id: legacyCleanerInspectorId, name: 'cleaner_inspector', description: '清洁/检查人员（兼容旧角色名）' },
     { id: financeId, name: 'finance_staff', description: '财务人员' },
     { id: inventoryId, name: 'inventory_manager', description: '仓库管理员' },
     { id: maintenanceId, name: 'maintenance_staff', description: '维修人员' },
@@ -495,8 +497,10 @@ if (db.roles.length === 0) {
   grant(cleanMgrId, ['cleaning.schedule.manage','cleaning.task.assign','menu.cleaning','menu.dashboard','cleaning_app.calendar.view.all','cleaning_app.assign','cleaning_app.sse.subscribe'])
   // 清洁人员：与清洁/检查人员一致（兼容数据库中 role=cleaner 的账号）
   grant(cleanerOnlyId, ['menu.cleaning','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
-  // 清洁/检查人员：无写权限，仅查看（后端接口默认允许 GET）
-  grant(cleanerId, ['menu.cleaning','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
+  // 检查人员：允许查看与处理检查相关任务（与清洁人员保持一致，避免前端 403）
+  grant(inspectorId, ['menu.cleaning','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
+  // 兼容旧角色名：cleaner_inspector
+  grant(legacyCleanerInspectorId, ['menu.cleaning','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 财务人员：财务结算与交易录入、房东/房源管理
   grant(financeId, ['finance.payout','finance.tx.write','invoice.view','invoice.draft.create','invoice.issue','invoice.send','invoice.void','invoice.payment.record','invoice.company.manage','invoice.type.switch','order.deduction.manage','order.cancel','landlord.manage','property.write','onboarding.manage','onboarding.read','menu.finance','menu.finance.invoices.visible','menu.landlords','menu.properties','menu.onboarding','menu.dashboard'])
   // 仓库管理员：仓库与钥匙管理
