@@ -60,8 +60,8 @@ export default function DeepCleaningOverviewPage() {
       if (filterPropertyId) params.property_id = filterPropertyId
       if (filterStatus) params.status = filterStatus
       if (filterCat) params.category = filterCat
-      if (dateRange?.[0]) params.submitted_at_from = dayjs(dateRange[0]).startOf('day').toISOString()
-      if (dateRange?.[1]) params.submitted_at_to = dayjs(dateRange[1]).endOf('day').toISOString()
+      if (dateRange?.[0]) params.completed_at_from = dayjs(dateRange[0]).startOf('day').toISOString()
+      if (dateRange?.[1]) params.completed_at_to = dayjs(dateRange[1]).endOf('day').toISOString()
       if (filterKeyword.trim()) params.q = filterKeyword.trim()
       const qs = new URLSearchParams(params as any).toString()
       const data = await getJSON<any>(`/crud/property_deep_cleaning?${qs}`)
@@ -171,4 +171,3 @@ export default function DeepCleaningOverviewPage() {
     </Space>
   )
 }
-

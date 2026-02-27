@@ -274,13 +274,21 @@ export default function MaintenanceRecordsUnified() {
       notes: (row as any).notes || (row as any).remark || '',
       urgency: row.urgency || 'normal',
       details: summaryFromDetails(row.details),
+      completed_at: row.completed_at ? dayjs(row.completed_at) : null,
       maintenance_amount: (row as any)?.maintenance_amount !== undefined ? Number((row as any)?.maintenance_amount || 0) : undefined,
       has_parts: (row as any)?.has_parts ?? undefined,
       parts_amount: (row as any)?.parts_amount !== undefined ? Number((row as any)?.parts_amount || 0) : undefined,
       pay_method: (row as any)?.pay_method ?? undefined,
       pay_other_note: (row as any)?.pay_other_note ?? undefined,
     })
-    const urls: string[] = Array.isArray(row.repair_photo_urls) ? row.repair_photo_urls! : []
+    const rawRepair: any = (row as any).repair_photo_urls
+    let urls: string[] = Array.isArray(rawRepair) ? rawRepair : []
+    if (!urls.length && typeof rawRepair === 'string') {
+      try {
+        const j = JSON.parse(rawRepair)
+        if (Array.isArray(j)) urls = j
+      } catch {}
+    }
     setRepairPhotos(urls)
     setFiles(urls.map((u: string, i: number) => ({ uid: String(i), name: `photo-${i+1}`, status: 'done', url: u } as UploadFile)))
     const preUrls: string[] = Array.isArray((row as any)?.photo_urls) ? (row as any)?.photo_urls! : []
@@ -312,7 +320,8 @@ export default function MaintenanceRecordsUnified() {
     }
     if (prePhotos.length) payload.photo_urls = prePhotos
     if (st === 'completed') {
-      payload.completed_at = v.completed_at ? dayjs(v.completed_at).toDate().toISOString() : new Date().toISOString()
+      const existing = (editing as any)?.completed_at
+      payload.completed_at = v.completed_at ? dayjs(v.completed_at).toDate().toISOString() : (existing ? String(existing) : new Date().toISOString())
       if (v.maintenance_amount !== undefined) payload.maintenance_amount = Number(v.maintenance_amount || 0)
       if (v.has_parts !== undefined) payload.has_parts = !!v.has_parts
       if (v.parts_amount !== undefined) payload.parts_amount = Number(v.parts_amount || 0)
@@ -590,6 +599,7 @@ export default function MaintenanceRecordsUnified() {
                           <div>问题区域：{issueAreaLabel(r) || '-'}</div>
                           <div>提交人：{String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '-')}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>提交时间：{(r.submitted_at || (r as any).occurred_at || (r as any).created_at) ? dayjs(r.submitted_at || (r as any).occurred_at || (r as any).created_at).format('YYYY-MM-DD') : '-'}</div>
+                          <div style={{ gridColumn:'1 / span 2' }}>完成日期：{(r as any)?.completed_at ? dayjs((r as any).completed_at).format('YYYY-MM-DD') : '-'}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>问题摘要：{summaryFromDetails(r.details)}</div>
                           <div>维修金额：{fmtAmount((r as any).maintenance_amount)}</div>
                           <div>是否有配件费：{(r as any).has_parts === true ? '是' : (r as any).has_parts === false ? '否' : '-'}</div>
@@ -698,6 +708,13 @@ export default function MaintenanceRecordsUnified() {
                 </Space>
                 <div style={{ color:'#0b1738', marginTop:6 }}>{((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at) ? dayjs((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at).format('YYYY-MM-DD') : '-'}</div>
               </div>
+              <div style={{ gridColumn:'1 / span 2' }}>
+                <Space>
+                  <CheckCircleOutlined style={{ color:'#52c41a' }} />
+                  <Typography.Text type="secondary">完成日期</Typography.Text>
+                </Space>
+                <div style={{ color:'#0b1738', marginTop:6 }}>{(viewRow as any)?.completed_at ? dayjs((viewRow as any).completed_at).format('YYYY-MM-DD') : '-'}</div>
+              </div>
             </div>
           </div>
           <div style={{ background:'#fff', border:'1px solid #eaeef5', borderRadius:16, padding:16 }}>
@@ -761,7 +778,17 @@ export default function MaintenanceRecordsUnified() {
               <Typography.Text style={{ color:'#0b1738', fontWeight:600 }}>维修后照片</Typography.Text>
             </Space>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:16 }}>
-              {(Array.isArray(viewRow?.repair_photo_urls) ? viewRow!.repair_photo_urls! : []).map((u, i) => (
+              {(() => {
+                const raw: any = (viewRow as any)?.repair_photo_urls
+                let arr: string[] = Array.isArray(raw) ? raw : []
+                if (!arr.length && typeof raw === 'string') {
+                  try {
+                    const j = JSON.parse(raw)
+                    if (Array.isArray(j)) arr = j
+                  } catch {}
+                }
+                return arr
+              })().map((u, i) => (
                 <div key={i} aria-label={`维修后照片 ${i+1}`} style={{ border:'1px solid #eaeef5', background:'#f1f6fb', borderRadius:12, padding:8 }}>
                   <Image src={u} width="100%" height={140} style={{ objectFit:'cover', borderRadius:8 }} />
                 </div>

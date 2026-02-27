@@ -1,5 +1,13 @@
 # Changelog
 
+## Dev (2026-02-27)
+
+- Maintenance: Fix missing “after-repair” photos by persisting `repair_photo_urls` on create and adding a safe fallback parser on record view/edit.
+- Maintenance: Make “completed date” reflect the selected date (write to `completed_at` for internal progress + public submit) and prevent edit-save from overwriting it; show completion date on mobile/detail view.
+- Deep cleaning: Align list/overview date display and filtering to `completed_at` (matches edit drawer).
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## Dev (2026-02-25)
 
 - Cleaning: Auto-sync daily task status in backend updates — when both cleaner + inspector are set → `assigned`, otherwise → `pending` (applies to single update and bulk patch).
