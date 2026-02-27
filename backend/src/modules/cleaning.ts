@@ -491,9 +491,27 @@ router.post('/tasks', requirePerm('cleaning.task.assign'), async (req, res) => {
       [String(taskType)]
 
     const createdRows: any[] = []
+    const rawPropertyId = String(parsed.data.property_id || '').trim()
+    let normalizedPropertyId = rawPropertyId
+    if (hasPg && pgPool) {
+      try {
+        const r = await pgPool.query('SELECT id::text AS id FROM properties WHERE id::text=$1 OR upper(code)=upper($1) LIMIT 1', [rawPropertyId])
+        const row = r?.rows?.[0]
+        const id = row?.id ? String(row.id) : ''
+        if (!id) return res.status(400).json({ message: '无效的房源' })
+        normalizedPropertyId = id
+      } catch {}
+    } else {
+      const anyDb: any = db as any
+      const props: any[] = Array.isArray(anyDb?.properties) ? anyDb.properties : []
+      const found = props.find((p) => String(p?.id || '') === rawPropertyId || String(p?.code || '').toLowerCase() === rawPropertyId.toLowerCase())
+      const id = found?.id ? String(found.id) : ''
+      if (!id) return res.status(400).json({ message: '无效的房源' })
+      normalizedPropertyId = id
+    }
     const base: any = {
       order_id: null,
-      property_id: String(parsed.data.property_id),
+      property_id: normalizedPropertyId,
       task_date: parsed.data.task_date,
       date: parsed.data.task_date,
       status: parsed.data.status || ((parsed.data.cleaner_id ?? null) && ((parsed.data as any).inspector_id ?? null) ? 'assigned' : 'pending'),
@@ -766,9 +784,9 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
         `SELECT
            t.id,
            t.order_id,
-           t.property_id,
-           (p.code::text) AS property_code,
-           (p.region::text) AS property_region,
+           COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
+           COALESCE(p_id.code::text, p_code.code::text) AS property_code,
+           COALESCE(p_id.region::text, p_code.region::text) AS property_region,
            t.task_type,
            COALESCE(t.task_date, t.date)::text AS task_date,
            t.status,
@@ -787,7 +805,8 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            COALESCE(t.nights_override, o.nights) AS nights
          FROM cleaning_tasks t
          LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
-         LEFT JOIN properties p ON (p.id::text) = (t.property_id::text)
+         LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+         LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
          WHERE (COALESCE(task_date, date)::date) >= ($1::date) AND (COALESCE(task_date, date)::date) <= ($2::date)
            AND COALESCE(t.status,'') <> 'cancelled'
            AND (t.order_id IS NULL OR o.id IS NOT NULL)
@@ -799,7 +818,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
                AND lower(COALESCE(o.status, '')) NOT LIKE '%cancel%'
              )
            )
-         ORDER BY COALESCE(task_date, date) ASC, property_id NULLS LAST, id`,
+         ORDER BY COALESCE(task_date, date) ASC, COALESCE(p_id.code, p_code.code) NULLS LAST, id`,
         [from, to]
       )
       for (const row of (r?.rows || [])) {
