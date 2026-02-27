@@ -398,6 +398,7 @@ if (db.roles.length === 0) {
   const adminId = 'role.admin'
   const csId = 'role.customer_service'
   const cleanMgrId = 'role.cleaning_manager'
+  const cleanerOnlyId = 'role.cleaner'
   const cleanerId = 'role.cleaner_inspector'
   const financeId = 'role.finance_staff'
   const inventoryId = 'role.inventory_manager'
@@ -406,6 +407,7 @@ if (db.roles.length === 0) {
     { id: adminId, name: 'admin', description: '系统管理员（全权限）' },
     { id: csId, name: 'customer_service', description: '客服' },
     { id: cleanMgrId, name: 'cleaning_manager', description: '清洁/检查管理员' },
+    { id: cleanerOnlyId, name: 'cleaner', description: '清洁人员' },
     { id: cleanerId, name: 'cleaner_inspector', description: '清洁/检查人员' },
     { id: financeId, name: 'finance_staff', description: '财务人员' },
     { id: inventoryId, name: 'inventory_manager', description: '仓库管理员' },
@@ -491,6 +493,8 @@ if (db.roles.length === 0) {
   grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','order.cancel','cleaning.view','finance.tx.write','invoice.view','invoice.draft.create','onboarding.manage','onboarding.read','menu.dashboard','menu.properties','menu.finance','menu.finance.invoices.visible','menu.cleaning','menu.cms','menu.onboarding','cleaning_app.sse.subscribe'])
   // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
   grant(cleanMgrId, ['cleaning.schedule.manage','cleaning.task.assign','menu.cleaning','menu.dashboard','cleaning_app.calendar.view.all','cleaning_app.assign','cleaning_app.sse.subscribe'])
+  // 清洁人员：与清洁/检查人员一致（兼容数据库中 role=cleaner 的账号）
+  grant(cleanerOnlyId, ['menu.cleaning','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 清洁/检查人员：无写权限，仅查看（后端接口默认允许 GET）
   grant(cleanerId, ['menu.cleaning','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 财务人员：财务结算与交易录入、房东/房源管理
