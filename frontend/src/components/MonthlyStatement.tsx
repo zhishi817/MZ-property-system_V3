@@ -6,13 +6,13 @@ import { computeMonthlyStatementBalance, isFurnitureOwnerPayment, isFurnitureRec
 import { formatStatementDesc } from '../lib/statementDesc'
 import { Table } from 'antd'
 import { forwardRef, useEffect, useState } from 'react'
-import { authHeaders } from '../lib/api'
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:4001'
+import { API_BASE, authHeaders } from '../lib/api'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; invoice_url?: string; ref_type?: string; ref_id?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
+type DeepCleaning = { id: string; work_no?: string; property_id?: string; occurred_at?: string; completed_at?: string; started_at?: string; ended_at?: string; category?: string; photo_urls?: any; repair_photo_urls?: any; pay_method?: string; total_cost?: any }
 
 export default forwardRef<HTMLDivElement, {
   month: string
@@ -23,7 +23,9 @@ export default forwardRef<HTMLDivElement, {
   landlords: Landlord[]
   showChinese?: boolean
   showInvoices?: boolean
-}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords, showChinese = true, showInvoices = false }, ref) {
+  pdfMode?: boolean
+  renderEngine?: 'canvas' | 'print'
+}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords, showChinese = true, showInvoices = false, pdfMode = false, renderEngine = 'canvas' }, ref) {
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
   const relatedOrdersRaw = monthSegments(
@@ -63,6 +65,10 @@ export default forwardRef<HTMLDivElement, {
   })
   const expensesInMonthForReport = expensesInMonthAll.filter(t => !isFurnitureRecoverableCharge(t as any))
   const [invoiceMap, setInvoiceMap] = useState<Record<string, ExpenseInvoice[]>>({})
+  const [deepCleanings, setDeepCleanings] = useState<DeepCleaning[]>([])
+  const [deepCleaningsLoaded, setDeepCleaningsLoaded] = useState(false)
+  const [expandAllDeepClean, setExpandAllDeepClean] = useState(false)
+  const [expandedDeepClean, setExpandedDeepClean] = useState<Record<string, boolean>>({})
   useEffect(() => {
     (async () => {
       try {
@@ -101,6 +107,55 @@ export default forwardRef<HTMLDivElement, {
       } catch { setInvoiceMap({}) }
     })()
   }, [propertyId, month, expensesInMonthAll.length])
+  useEffect(() => {
+    (async () => {
+      try {
+        setDeepCleaningsLoaded(false)
+        if (!propertyId) { setDeepCleanings([]); setDeepCleaningsLoaded(true); return }
+        const codeRaw = String(property?.code || '').trim()
+        const code = (() => {
+          if (!codeRaw) return ''
+          const s = codeRaw.split('(')[0].trim()
+          const t = s.split(/\s+/)[0].trim()
+          return t || s || codeRaw
+        })()
+        const buildUrl = (params: Record<string, string>) => {
+          const qs = new URLSearchParams({ ...params, limit: '5000' })
+          return `${API_BASE}/crud/property_deep_cleaning?${qs.toString()}`
+        }
+        const urls = [
+          buildUrl({ property_id: propertyId }),
+          ...(code ? [buildUrl({ property_code: code })] : []),
+          ...(codeRaw && codeRaw !== code ? [buildUrl({ property_code: codeRaw })] : []),
+        ]
+        const rs = await Promise.all(urls.map(async (u) => {
+          try {
+            const res = await fetch(u, { headers: authHeaders() })
+            return res.ok ? await res.json() : []
+          } catch {
+            return []
+          }
+        }))
+        const merged = ([] as any[]).concat(...rs)
+        const map = new Map<string, any>()
+        for (const r of merged) {
+          const id = String(r?.id || '')
+          if (id) map.set(id, r)
+        }
+        const list = Array.from(map.values())
+        const inMonth = list.filter((d: any) => {
+          const raw: any = d?.occurred_at || d?.completed_at || d?.started_at || d?.submitted_at || d?.created_at
+          const day = toDayStr(raw)
+          return day ? dayjs(day).isSame(start, 'month') : false
+        })
+        setDeepCleanings(inMonth as any)
+      } catch {
+        setDeepCleanings([])
+      } finally {
+        setDeepCleaningsLoaded(true)
+      }
+    })()
+  }, [propertyId, month])
   const orderIncomeShare = relatedOrders.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
   const rentIncome = orderIncomeShare
   const orderById = new Map((orders || []).map(o => [String(o.id), o]))
@@ -137,7 +192,48 @@ export default forwardRef<HTMLDivElement, {
     if (raw === 'consumables') return 'consumable'
     return raw
   }
-  const sumByCat = (cat: string) => expensesInMonthForReport.filter(e => catKey(e) === cat).reduce((s, x) => s + Number(x.amount || 0), 0)
+  const deepCleanOwnerTxs = (deepCleanings || [])
+    .filter((d: any) => {
+      const raw = String(d?.pay_method || '')
+      const pm = raw.trim().toLowerCase()
+      if (pm === 'landlord_pay') return true
+      if (pm.includes('landlord') || pm.includes('owner')) return true
+      if (raw.includes('房东')) return true
+      return false
+    })
+    .map((d: any) => {
+      const parseArr = (raw: any) => {
+        if (Array.isArray(raw)) return raw
+        if (typeof raw === 'string') { try { const j = JSON.parse(raw); return Array.isArray(j) ? j : [] } catch { return [] } }
+        return []
+      }
+      const labor = Number(d?.labor_cost || 0)
+      const laborN = Number.isFinite(labor) ? labor : 0
+      const arr = parseArr(d?.consumables)
+      const sum = arr.reduce((s: number, x: any) => {
+        const n = Number(x?.cost || 0)
+        return s + (Number.isFinite(n) ? n : 0)
+      }, 0)
+      const fallbackTotal = Math.round(((laborN + sum) + Number.EPSILON) * 100) / 100
+      const amount = Number((d?.total_cost !== undefined && d?.total_cost !== null) ? d.total_cost : fallbackTotal) || 0
+      const dateKey = toDayStr(d?.occurred_at || d?.completed_at || d?.started_at || d?.submitted_at || d?.created_at) || start.format('YYYY-MM-DD')
+      return {
+        id: `deep-cleaning-${String(d?.id || '')}`,
+        kind: 'expense',
+        amount,
+        currency: 'AUD',
+        property_id: propertyId,
+        occurred_at: dateKey,
+        category: 'other',
+        category_detail: 'Deep cleaning maintenance',
+        note: '',
+        ref_type: 'deep_cleaning',
+        ref_id: String(d?.id || ''),
+      }
+    })
+    .filter((t: any) => t.ref_id && t.amount > 0)
+  const expensesInMonthForReportAll = expensesInMonthForReport.concat(deepCleanOwnerTxs as any)
+  const sumByCat = (cat: string) => expensesInMonthForReportAll.filter(e => catKey(e) === cat).reduce((s, x) => s + Number(x.amount || 0), 0)
   const catElectricity = sumByCat('electricity')
   const catWater = sumByCat('water')
   const catGas = sumByCat('gas')
@@ -156,7 +252,7 @@ export default forwardRef<HTMLDivElement, {
     if (/^fixed\s*payment$/i.test(s)) return ''
     return s
   }
-  const otherItems = expensesInMonthForReport
+  const otherItems = expensesInMonthForReportAll
     .filter(e => catKey(e) === 'other')
     .map(e => cleanOtherDesc((e as any).category_detail || (e as any).note || ''))
     .filter(Boolean)
@@ -171,7 +267,7 @@ export default forwardRef<HTMLDivElement, {
     propertyId,
     propertyCode: property?.code,
     orders,
-    txs: txs as any,
+    txs: (txs as any).concat(deepCleanOwnerTxs as any),
     managementFeeRate: landlord?.management_fee_rate,
   }) : null)
   const netIncome = balance ? balance.operating_net_income : Math.round(((totalIncome - totalExpense) + Number.EPSILON) * 100) / 100
@@ -189,7 +285,14 @@ export default forwardRef<HTMLDivElement, {
   const showBalance = !!balance && (hasCarry || hasFurniture)
   const isImg = (u?: string) => !!u && /\.(png|jpg|jpeg|gif)$/i.test(u)
   const isPdf = (u?: string) => !!u && /\.pdf$/i.test(u)
-  const resolveUrl = (u?: string) => (u && /^https?:\/\//.test(u)) ? u : (u ? `${API_BASE}${u}` : '')
+  const resolveUrl = (u?: string) => {
+    if (!u) return ''
+    if (/^https?:\/\//.test(u)) {
+      if (u.includes('.r2.dev/')) return `${API_BASE}/public/r2-image?url=${encodeURIComponent(u)}`
+      return u
+    }
+    return `${API_BASE}${u}`
+  }
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   function perDayPrice(o: Order): number {
     const ci = o.checkin ? parseDateOnly(toDayStr(o.checkin)) : null
@@ -231,7 +334,14 @@ export default forwardRef<HTMLDivElement, {
   const sourceColor: Record<string, string> = { airbnb: '#FF9F97', booking: '#98B6EC', offline: '#DC8C03', other: '#98B6EC' }
 
   return (
-    <div ref={ref as any} style={{ padding: 24, fontFamily: 'Times New Roman, Times, serif' }}>
+    <div
+      ref={ref as any}
+      data-monthly-statement-root="1"
+      data-pdf-mode={pdfMode ? '1' : '0'}
+      data-deep-clean-loaded={deepCleaningsLoaded ? '1' : '0'}
+      data-deep-clean-count={String((deepCleanings || []).length)}
+      style={{ padding: 24, fontFamily: 'Times New Roman, Times, serif' }}
+    >
       <div className="print-header" style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
         <img src="/mz-logo.png" alt="Company Logo" style={{ height: 64 }} />
         <div style={{ flex: 1, marginLeft: 12 }}></div>
@@ -408,7 +518,7 @@ export default forwardRef<HTMLDivElement, {
               const hasMonthDay = daysRow.some(d => d.isSame(start, 'month'))
               if (!hasMonthDay && segs.length === 0) return null
               return (
-                <div key={idx} data-pdf-break-before="true" data-pdf-avoid-cut="true" style={{ position:'relative', minHeight: Math.max(120, laneCount * 36 + 48), margin:'6px 0' }}>
+                <div key={idx} data-pdf-avoid-cut="true" style={{ position:'relative', minHeight: Math.max(120, laneCount * 36 + 48), margin:'6px 0' }}>
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:0, padding:'2px 0', fontSize:11 }}>
                     {daysRow.map((d, i) => {
                       const inMonth = d.isSame(start, 'month')
@@ -472,6 +582,138 @@ export default forwardRef<HTMLDivElement, {
           </div>
         )
       })()}
+
+      {(deepCleanings && deepCleanings.length) ? (
+        <div data-deep-clean-section="1" data-pdf-break-before={pdfMode ? 'true' : undefined}>
+          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'}</div>
+          {!pdfMode ? (
+            <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 8 }}>
+              <button
+                type="button"
+                onClick={() => setExpandAllDeepClean(v => !v)}
+                style={{ border:'1px solid #e5e7eb', background:'#fff', borderRadius: 8, padding:'6px 10px', fontSize: 12, cursor:'pointer' }}
+              >
+                {expandAllDeepClean ? '收起全部照片' : '展开全部照片'}
+              </button>
+            </div>
+          ) : null}
+          <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
+            {deepCleanings
+              .slice()
+              .sort((a: any, b: any) => String(a?.occurred_at || '').localeCompare(String(b?.occurred_at || '')))
+              .map((d: any) => {
+                const date = String(d?.completed_at || d?.occurred_at || '').slice(0, 10)
+                const startTime = d?.started_at ? dayjs(String(d.started_at)).format('HH:mm') : ''
+                const endTime = d?.ended_at ? dayjs(String(d.ended_at)).format('HH:mm') : ''
+                const timeLabel = [date, (startTime || endTime) ? `${startTime || '-'}~${endTime || '-'}` : ''].filter(Boolean).join(' ')
+                const did = String(d?.id || '')
+                const beforeArr = (() => {
+                  const raw: any = (d as any)?.photo_urls
+                  if (Array.isArray(raw)) return raw
+                  if (typeof raw === 'string') { try { const j = JSON.parse(raw); return Array.isArray(j) ? j : [] } catch { return [] } }
+                  return []
+                })().map((u: any) => String(u || '')).filter(Boolean)
+                const afterArr = (() => {
+                  const raw: any = (d as any)?.repair_photo_urls
+                  if (Array.isArray(raw)) return raw
+                  if (typeof raw === 'string') { try { const j = JSON.parse(raw); return Array.isArray(j) ? j : [] } catch { return [] } }
+                  return []
+                })().map((u: any) => String(u || '')).filter(Boolean)
+                const expanded = !!pdfMode || !!expandAllDeepClean || !!expandedDeepClean[did]
+                const beforeShow = expanded ? beforeArr : beforeArr.slice(0, 2)
+                const afterShow = expanded ? afterArr : afterArr.slice(0, 2)
+                const pairRows = (() => {
+                  const n = Math.max(beforeArr.length, afterArr.length)
+                  const rows: Array<{ b?: string; a?: string; idx: number }> = []
+                  for (let i = 0; i < n; i++) rows.push({ b: beforeArr[i], a: afterArr[i], idx: i })
+                  return rows
+                })()
+                return (
+                  <div
+                    key={did || String(d?.work_no || '')}
+                    data-pdf-avoid-cut={pdfMode ? 'true' : undefined}
+                    data-pdf-break-before={(pdfMode && pairRows.length > 6) ? 'true' : undefined}
+                    style={{ border:'1px solid #eaeef5', borderRadius: 12, padding: 12 }}
+                  >
+                    <div style={{ display:'flex', justifyContent:'space-between', gap: 12, flexWrap:'wrap' }}>
+                      <div style={{ fontWeight: 700 }}>{String(d?.work_no || d?.id || '')}</div>
+                      <div style={{ color:'#111' }}>{timeLabel || '-'}</div>
+                      <div style={{ color:'#111' }}>{showChinese ? `区域：${String(d?.category || '-')}` : `Area: ${String(d?.category || '-')}`}</div>
+                    </div>
+                    {pdfMode ? (
+                      <div style={{ display:'flex', flexDirection:'column', gap: 10, marginTop: 10 }}>
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, fontWeight: 600 }}>
+                          <div>Before</div>
+                          <div>After</div>
+                        </div>
+                        {(pairRows.length ? pairRows : [{ idx: 0 }]).map((r) => (
+                          <div key={r.idx} data-pdf-avoid-cut="true" style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, alignItems:'start' }}>
+                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: 240 }}>
+                              {r.b ? (isImg(r.b) ? (
+                                renderEngine === 'print'
+                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.b)} style={{ width:'100%', height: 360, objectFit:'contain', borderRadius: 8 }} />
+                                  : <div style={{ width:'100%', height: 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.b)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                              ) : (
+                                <a href={resolveUrl(r.b)} target="_blank" rel="noreferrer">{String(r.b).split('/').pop() || 'file'}</a>
+                              )) : <div style={{ color:'#999' }}>-</div>}
+                            </div>
+                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: 240 }}>
+                              {r.a ? (isImg(r.a) ? (
+                                renderEngine === 'print'
+                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.a)} style={{ width:'100%', height: 360, objectFit:'contain', borderRadius: 8 }} />
+                                  : <div style={{ width:'100%', height: 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.a)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                              ) : (
+                                <a href={resolveUrl(r.a)} target="_blank" rel="noreferrer">{String(r.a).split('/').pop() || 'file'}</a>
+                              )) : <div style={{ color:'#999' }}>-</div>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, marginTop: 10 }}>
+                      <div>
+                            <div style={{ fontWeight: 600, marginBottom: 6 }}>Before</div>
+                            <div style={{ display:'grid', gridTemplateColumns: expanded ? 'repeat(2, 1fr)' : '1fr', gap: 10 }}>
+                              {beforeShow.length ? beforeShow.map((u: string, idx: number) => (
+                                <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
+                                  {isImg(u) ? <img crossOrigin="anonymous" loading="lazy" decoding="async" src={resolveUrl(u)} style={{ width:'100%', height: expanded ? 140 : 170, objectFit:'contain', borderRadius: 8 }} /> : <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>}
+                                </div>
+                              )) : <div style={{ color:'#999' }}>-</div>}
+                            </div>
+                            {!expanded && beforeArr.length > beforeShow.length ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${beforeArr.length - beforeShow.length}`}</div> : null}
+                          </div>
+                          <div>
+                            <div style={{ fontWeight: 600, marginBottom: 6 }}>After</div>
+                            <div style={{ display:'grid', gridTemplateColumns: expanded ? 'repeat(2, 1fr)' : '1fr', gap: 10 }}>
+                              {afterShow.length ? afterShow.map((u: string, idx: number) => (
+                                <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
+                                  {isImg(u) ? <img crossOrigin="anonymous" loading="lazy" decoding="async" src={resolveUrl(u)} style={{ width:'100%', height: expanded ? 140 : 170, objectFit:'contain', borderRadius: 8 }} /> : <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>}
+                                </div>
+                              )) : <div style={{ color:'#999' }}>-</div>}
+                            </div>
+                            {!expanded && afterArr.length > afterShow.length ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${afterArr.length - afterShow.length}`}</div> : null}
+                          </div>
+                        </div>
+                        {(!expanded && (beforeArr.length > 2 || afterArr.length > 2)) ? (
+                          <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 10 }}>
+                            <button
+                              type="button"
+                              onClick={() => setExpandedDeepClean(m => ({ ...m, [did]: true }))}
+                              style={{ border:'1px solid #e5e7eb', background:'#fff', borderRadius: 8, padding:'6px 10px', fontSize: 12, cursor:'pointer' }}
+                            >
+                              展开本条照片
+                            </button>
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                )
+              })}
+          </div>
+        </div>
+      ) : null}
 
       {showInvoices && (
       <>

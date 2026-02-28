@@ -46,6 +46,16 @@ export default function DeepCleaningOverviewPage() {
     if (v === 'canceled') return <Tag color="red">{label}</Tag>
     return <Tag>{label}</Tag>
   }
+  function fmtAmount(a?: any) {
+    if (a === undefined || a === null || a === '') return '-'
+    const n = Number(a)
+    if (!Number.isFinite(n)) return String(a)
+    try {
+      return new Intl.NumberFormat('en-AU', { style: 'currency', currency: 'AUD' }).format(n).replace('A$', '$')
+    } catch {
+      return `$${n.toFixed(2)}`
+    }
+  }
 
   async function loadProps() {
     try {
@@ -93,12 +103,23 @@ export default function DeepCleaningOverviewPage() {
     const hit = arr.find((x: any) => String(x?.key || '') === 'completed')
     return Number(hit?.value || 0)
   }, [stats])
+  const totalCostSum = Number(stats?.total_cost_sum || 0)
 
   return (
     <Space direction="vertical" style={{ width:'100%' }}>
       <Card title="深度清洁总览">
         <Space style={{ width:'100%', marginBottom: 12 }} wrap>
-          <Select placeholder="房号" allowClear options={propOptions} value={filterPropertyId} onChange={v=>setFilterPropertyId(v)} style={{ width: isMobile ? '100%' : 200 }} />
+          <Select
+            placeholder="房号"
+            allowClear
+            options={propOptions}
+            value={filterPropertyId}
+            onChange={v=>setFilterPropertyId(v)}
+            style={{ width: isMobile ? '100%' : 200 }}
+            showSearch
+            optionFilterProp="label"
+            filterOption={(input, option) => String((option as any)?.label ?? '').toLowerCase().includes(String(input || '').toLowerCase())}
+          />
           <Select placeholder="状态" allowClear options={statusOptions} value={filterStatus} onChange={v=>setFilterStatus(v)} style={{ width: isMobile ? '100%' : 180 }} />
           <Select placeholder="区域" allowClear options={catOptions} value={filterCat} onChange={v=>setFilterCat(v)} style={{ width: isMobile ? '100%' : 180 }} />
           <DatePicker.RangePicker
@@ -123,11 +144,12 @@ export default function DeepCleaningOverviewPage() {
             setTimeout(() => { loadStats() }, 0)
           }}>重置</Button>
         </Space>
-        <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(4, 1fr)', gap:12, marginBottom: 12 }}>
+        <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(5, 1fr)', gap:12, marginBottom: 12 }}>
           <Card size="small" title="总记录数" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center', fontSize: 22, fontWeight: 700 } }}>{total}</Card>
           <Card size="small" title="本月清洁" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center', fontSize: 22, fontWeight: 700 } }}>{thisMonthCount}</Card>
           <Card size="small" title="待清洁" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center', fontSize: 22, fontWeight: 700 } }}>{pendingCount}</Card>
           <Card size="small" title="待审核" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center', fontSize: 22, fontWeight: 700 } }}>{completedCount}</Card>
+          <Card size="small" title="总费用" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center', fontSize: 22, fontWeight: 700 } }}>{fmtAmount(totalCostSum)}</Card>
         </div>
         <Card size="small" title="状态分布" style={{ marginBottom: 12 }}>
           <div style={{ display:'flex', flexWrap:'wrap', gap: 10 }}>

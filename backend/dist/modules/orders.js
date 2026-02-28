@@ -719,7 +719,8 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
         const s = normalizeStatus(raw);
         return s === 'canceled' || s === 'cancelled';
     }
-    const prevStatus = normalizeStatus(prev === null || prev === void 0 ? void 0 : prev.status);
+    const prevRow = prev || base || {};
+    const prevStatus = normalizeStatus(prevRow === null || prevRow === void 0 ? void 0 : prevRow.status);
     const nextStatus = normalizeStatus(updated === null || updated === void 0 ? void 0 : updated.status);
     if (isCanceledStatus(nextStatus) && updated.count_in_income == null) {
         updated.count_in_income = false;
@@ -729,7 +730,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
     }
     if (!isCanceledStatus(prevStatus) && isCanceledStatus(nextStatus)) {
         const role = String(((_c = req.user) === null || _c === void 0 ? void 0 : _c.role) || '');
-        const locked = await isOrderMonthLocked(prev);
+        const locked = await isOrderMonthLocked(prevRow);
         if (!locked) {
             const { roleHasPermission } = require('../store');
             if (!roleHasPermission(role, 'order.cancel'))
@@ -746,9 +747,6 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
         ((updated.checkout || '').slice(0, 10)) !== (((prev === null || prev === void 0 ? void 0 : prev.checkout) || '').slice(0, 10)));
     // 编辑场景不再阻断，允许覆盖更新（冲突仅在创建时校验）
     // 保留内部工具函数供日志或后续使用，但不阻塞响应
-    if (idx !== -1) {
-        store_1.db.orders[idx] = updated;
-    }
     if (dbAdapter_1.hasPg) {
         try {
             const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
@@ -848,6 +846,8 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
         }
     }
     // Supabase branch removed
+    if (idx !== -1)
+        store_1.db.orders[idx] = updated;
     try {
         (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
     }
@@ -855,91 +855,47 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
     syncCleaningTasksForOrderId(String(id)).catch(() => { });
     return res.json(updated);
 });
-exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), (req, res) => {
-    var _a, _b;
-    const { id } = req.params;
-    const parsed = createOrderSchema.safeParse(req.body);
-    if (!parsed.success)
-        return res.status(400).json(parsed.error.format());
-    const o = parsed.data;
-    const force = String((_b = (_a = req.body.force) !== null && _a !== void 0 ? _a : req.query.force) !== null && _b !== void 0 ? _b : '').toLowerCase() === 'true';
-    const idx = store_1.db.orders.findIndex((x) => x.id === id);
-    if (idx === -1)
-        return res.status(404).json({ message: 'order not found' });
-    const prev = store_1.db.orders[idx];
-    let nights = o.nights;
-    const checkin = o.checkin || prev.checkin;
-    const checkout = o.checkout || prev.checkout;
-    if (!nights && checkin && checkout) {
-        try {
-            const ci = new Date(checkin);
-            const co = new Date(checkout);
-            const ms = co.getTime() - ci.getTime();
-            nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
-        }
-        catch (_c) {
-            nights = 0;
-        }
-    }
-    const price = o.price != null ? o.price : (prev.price || 0);
-    const cleaning = o.cleaning_fee != null ? o.cleaning_fee : (prev.cleaning_fee || 0);
-    const net = o.net_income != null ? o.net_income : (price - cleaning);
-    const avg = o.avg_nightly_price != null ? o.avg_nightly_price : (nights && nights > 0 ? Number((net / nights).toFixed(2)) : 0);
-    const updated = { ...prev, ...o, nights, net_income: net, avg_nightly_price: avg };
-    // local overlap guard on update，仅在关键字段变更时检查
-    const changedCore2 = ((updated.property_id || '') !== ((prev === null || prev === void 0 ? void 0 : prev.property_id) || '') ||
-        ((updated.checkin || '').slice(0, 10)) !== (((prev === null || prev === void 0 ? void 0 : prev.checkin) || '').slice(0, 10)) ||
-        ((updated.checkout || '').slice(0, 10)) !== (((prev === null || prev === void 0 ? void 0 : prev.checkout) || '').slice(0, 10)));
-    // 编辑场景：不再返回 409 冲突
-    store_1.db.orders[idx] = updated;
-    // try remote update; if fails, still respond with updated local record
-    // Supabase branch removed
-    return res.json(updated);
-});
 exports.router.delete('/:id', (0, auth_1.requirePerm)('order.write'), async (req, res) => {
     const { id } = req.params;
-    const idx = store_1.db.orders.findIndex((x) => x.id === id);
-    let removed = null;
-    if (idx !== -1) {
-        removed = store_1.db.orders[idx];
-        store_1.db.orders.splice(idx, 1);
-    }
-    try {
-        const { syncOrderToCleaningTasks } = require('../services/cleaningSync');
-        if (dbAdapter_1.hasPg) {
-            try {
-                await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
-                    try {
-                        await (0, dbAdapter_1.pgDelete)('orders', id, client);
-                    }
-                    catch (_a) { }
-                    try {
-                        await syncOrderToCleaningTasks(String(id), { deleted: true, client });
-                    }
-                    catch (_b) { }
-                });
-            }
-            catch (_a) {
-                return res.status(500).json({ message: '数据库删除失败' });
-            }
+    if (dbAdapter_1.hasPg) {
+        try {
+            const { syncOrderToCleaningTasks } = require('../services/cleaningSync');
+            const deleted = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                const r0 = await (0, dbAdapter_1.pgDelete)('orders', id, client);
+                if (!r0)
+                    return null;
+                await syncOrderToCleaningTasks(String(id), { deleted: true, client });
+                return r0;
+            });
+            if (!deleted)
+                return res.status(404).json({ message: 'order not found' });
+            const idx = store_1.db.orders.findIndex((x) => x.id === id);
+            if (idx !== -1)
+                store_1.db.orders.splice(idx, 1);
             try {
                 (0, events_1.broadcastOrdersUpdated)({ action: 'delete', id });
             }
-            catch (_b) { }
+            catch (_a) { }
             return res.json({ ok: true, id });
         }
-        try {
-            await syncOrderToCleaningTasks(String(id), { deleted: true });
+        catch (_b) {
+            return res.status(500).json({ message: '数据库删除失败' });
         }
-        catch (_c) { }
     }
-    catch (_d) { }
-    if (!removed)
+    const idx = store_1.db.orders.findIndex((x) => x.id === id);
+    if (idx === -1)
         return res.status(404).json({ message: 'order not found' });
+    const removed = store_1.db.orders[idx];
+    store_1.db.orders.splice(idx, 1);
+    try {
+        const { syncOrderToCleaningTasks } = require('../services/cleaningSync');
+        await syncOrderToCleaningTasks(String(id), { deleted: true });
+    }
+    catch (_c) { }
     try {
         (0, events_1.broadcastOrdersUpdated)({ action: 'delete', id });
     }
-    catch (_e) { }
+    catch (_d) { }
     return res.json({ ok: true, id: removed.id });
 });
 // 清洁任务模块已移除

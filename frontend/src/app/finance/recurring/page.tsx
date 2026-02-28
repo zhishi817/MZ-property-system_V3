@@ -50,6 +50,42 @@ export default function RecurringPage() {
     const d = dayjs.tz(t, 'Australia/Melbourne')
     return d.isValid() ? d : undefined
   }
+  function toISODate(s?: string) {
+    const d = parseAU(s)
+    return d ? d.format('YYYY-MM-DD') : ''
+  }
+  function betterExpense(a: ExpenseRow | undefined, b: ExpenseRow): ExpenseRow {
+    if (!a) return b
+    const aPaid = String(a.status || '') === 'paid'
+    const bPaid = String(b.status || '') === 'paid'
+    if (aPaid !== bPaid) return bPaid ? b : a
+    const ap = toISODate(a.paid_date)
+    const bp = toISODate(b.paid_date)
+    if (ap !== bp) {
+      if (bp && !ap) return b
+      if (ap && !bp) return a
+      if (bp > ap) return b
+      if (ap > bp) return a
+    }
+    const ad = toISODate(a.due_date) || toISODate((a as any).occurred_at)
+    const bd = toISODate(b.due_date) || toISODate((b as any).occurred_at)
+    if (ad !== bd) {
+      if (bd && !ad) return b
+      if (ad && !bd) return a
+      if (bd > ad) return b
+      if (ad > bd) return a
+    }
+    return b
+  }
+  function buildExpByFixed(rows: ExpenseRow[]) {
+    const map: Record<string, ExpenseRow> = {}
+    for (const e of Array.isArray(rows) ? rows : []) {
+      const fid = String((e as any).fixed_expense_id || '')
+      if (!fid) continue
+      map[fid] = betterExpense(map[fid], e)
+    }
+    return map
+  }
   function nowAU() { return dayjs.tz(dayjs(), 'Australia/Melbourne') }
   function fmt(d?: string) { const m = parseAU(d); return m ? m.format('DD/MM/YYYY') : '-' }
   function inSelectedMonth(d?: string) { const m = parseAU(d); return !!(m && m.format('YYYY-MM') === (month||dayjs()).format('YYYY-MM')) }
@@ -130,7 +166,7 @@ export default function RecurringPage() {
         <Button onClick={()=>{ const sm = (r as any).start_month_key ? dayjs.tz(`${String((r as any).start_month_key)}-01`, 'YYYY-MM-DD', 'Australia/Melbourne') : nowAU().startOf('month'); setEditing(r); setOpen(true); form.setFieldsValue({ ...r, start_month: sm, frequency_months: r.frequency_months ?? 1 }) }}>编辑</Button>
         {(r.payment_type === 'rent_deduction') ? null : (r.is_paid ? (
           <Popconfirm
-            title="确认标记为未付？"
+            title="确认取消已付并标记为未付？"
             okText="确认"
             cancelText="取消"
             onConfirm={async ()=>{
@@ -163,7 +199,7 @@ export default function RecurringPage() {
               }
             }}
           >
-            <Button loading={rowMutating[String(r.id)]==='unpay'} disabled={!!rowMutating[String(r.id)]}>未付</Button>
+            <Button loading={rowMutating[String(r.id)]==='unpay'} disabled={!!rowMutating[String(r.id)]}>取消已付</Button>
           </Popconfirm>
         ) : (
           <Popconfirm
@@ -203,22 +239,54 @@ export default function RecurringPage() {
               setList(prev => prev.map(x => String(x.id)===id ? ({ ...x, last_paid_date: todayISO, status:'active' } as any) : x))
               try {
                 const resType = (r.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
-                const createBody = { occurred_at: todayISO, amount: Number(r.amount||0), currency: 'AUD', category: r.category || 'other', note: 'Fixed payment', generated_from: 'recurring_payments', fixed_expense_id: fixedId, month_key: monthKey, due_date: dueISO, paid_date: todayISO, status: 'paid', property_id: r.property_id }
-                const createResp = await fetch(`${API_BASE}/crud/${resType}`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(createBody) })
-                if (createResp.ok) {
-                  const created = await createResp.json().catch(()=>null)
-                  if (created?.id) {
-                    setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, id: String(created.id) } as any) : e))
+                const qs = new URLSearchParams({ fixed_expense_id: fixedId, month_key: monthKey })
+                const patchRows = async (rows: any[]) => {
+                  await Promise.all(
+                    rows
+                      .filter((it: any) => it?.id)
+                      .map((it: any) =>
+                        fetch(`${API_BASE}/crud/${resType}/${it.id}`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                          body: JSON.stringify({ paid_date: todayISO, status: 'paid', amount: Number(r.amount || 0), due_date: dueISO }),
+                        })
+                      )
+                  )
+                }
+
+                const listRes1 = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
+                const arr1 = listRes1.ok ? await listRes1.json().catch(()=>[]) : []
+                const rows1 = Array.isArray(arr1) ? arr1 : []
+
+                if (rows1.length) {
+                  await patchRows(rows1)
+                  const keepId = String(rows1[0]?.id || '')
+                  if (keepId) {
+                    setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, id: keepId } as any) : e))
                   }
-                } else if (createResp.status === 409) {
-                  const qs = new URLSearchParams({ fixed_expense_id: fixedId, month_key: monthKey })
-                  const listRes = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
-                  const arr = listRes.ok ? await listRes.json().catch(()=>[]) : []
-                  const rows = Array.isArray(arr) ? arr : []
-                  await Promise.all(rows.filter((it:any)=>it?.id).map((it:any)=> fetch(`${API_BASE}/crud/${resType}/${it.id}`, { method:'PATCH', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ paid_date: todayISO, status: 'paid', amount: Number(r.amount||0), due_date: dueISO }) })))
                 } else {
-                  const txt = await createResp.text().catch(()=> '')
-                  throw new Error(txt || `HTTP ${createResp.status}`)
+                  const createBody = { occurred_at: todayISO, amount: Number(r.amount||0), currency: 'AUD', category: r.category || 'other', note: 'Fixed payment', generated_from: 'recurring_payments', fixed_expense_id: fixedId, month_key: monthKey, due_date: dueISO, paid_date: todayISO, status: 'paid', property_id: r.property_id }
+                  const createResp = await fetch(`${API_BASE}/crud/${resType}`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(createBody) })
+                  if (createResp.ok) {
+                    const created = await createResp.json().catch(()=>null)
+                    if (created?.id) {
+                      setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, id: String(created.id) } as any) : e))
+                    }
+                  } else if (createResp.status === 409) {
+                    const listRes2 = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
+                    const arr2 = listRes2.ok ? await listRes2.json().catch(()=>[]) : []
+                    const rows2 = Array.isArray(arr2) ? arr2 : []
+                    if (rows2.length) {
+                      await patchRows(rows2)
+                      const keepId = String(rows2[0]?.id || '')
+                      if (keepId) {
+                        setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, id: keepId } as any) : e))
+                      }
+                    }
+                  } else {
+                    const txt = await createResp.text().catch(()=> '')
+                    throw new Error(txt || `HTTP ${createResp.status}`)
+                  }
                 }
 
                 const nextBase = m.add(freq,'month')
@@ -283,7 +351,7 @@ export default function RecurringPage() {
   useEffect(()=>{ refreshMonth() },[monthKey])
   const tplById: Record<string, Recurring> = Object.fromEntries((list||[]).map(r=>[String(r.id), r]))
   const monthExpenses = (expenses||[]).filter(e=> String(e.month_key||'')===monthKey)
-  const expByFixed: Record<string, ExpenseRow> = Object.fromEntries(monthExpenses.map(e=>[String(e.fixed_expense_id||''), e]))
+  const expByFixed: Record<string, ExpenseRow> = buildExpByFixed(monthExpenses)
   const templatesForMonth = enhanced.filter(t => {
     const inMonth = inSelectedMonth(dueForSelectedMonth(t))
     const include = (t as any).payment_type === 'rent_deduction' ? true : inMonth

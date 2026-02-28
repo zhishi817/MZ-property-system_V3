@@ -23,7 +23,7 @@ export const users: Record<string, User & { password: string }> = {
   admin: { id: 'u-admin', username: 'admin', role: 'admin', password: process.env.ADMIN_PASSWORD || 'admin' },
   cs: { id: 'u-cs', username: 'cs', role: 'customer_service', password: process.env.CS_PASSWORD || 'cs' },
   cleaning_mgr: { id: 'u-cleaning-mgr', username: 'cleaning_mgr', role: 'cleaning_manager', password: process.env.CLEANING_MGR_PASSWORD || 'cleaning_mgr' },
-  cleaner: { id: 'u-cleaner', username: 'cleaner', role: 'cleaner_inspector', password: process.env.CLEANER_PASSWORD || 'cleaner' },
+  cleaner: { id: 'u-cleaner', username: 'cleaner', role: 'cleaner', password: process.env.CLEANER_PASSWORD || 'cleaner' },
   finance: { id: 'u-finance', username: 'finance', role: 'finance_staff', password: process.env.FINANCE_PASSWORD || 'finance' },
   inventory: { id: 'u-inventory', username: 'inventory', role: 'inventory_manager', password: process.env.INVENTORY_PASSWORD || 'inventory' },
   maintenance: { id: 'u-maintenance', username: 'maintenance', role: 'maintenance_staff', password: process.env.MAINTENANCE_PASSWORD || 'maintenance' },
@@ -127,11 +127,14 @@ export async function login(req: Request, res: Response) {
       return res.json({ token, role: found.role })
     }
   }
-  // Fallback static users
-  const u = users[username]
-  if (!u || u.password !== password) return res.status(401).json({ message: 'invalid credentials' })
-  const token = jwt.sign({ sub: u.id, role: u.role, username: u.username }, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
-  res.json({ token, role: u.role })
+  // Fallback static users (dev/no-db only)
+  if (!hasPg || isDev) {
+    const u = users[username]
+    if (!u || u.password !== password) return res.status(401).json({ message: 'invalid credentials' })
+    const token = jwt.sign({ sub: u.id, role: u.role, username: u.username }, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
+    return res.json({ token, role: u.role })
+  }
+  return res.status(401).json({ message: 'invalid credentials' })
 }
 
 export async function auth(req: Request, res: Response, next: NextFunction) {

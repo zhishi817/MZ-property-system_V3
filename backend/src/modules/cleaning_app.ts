@@ -1,33 +1,145 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { requirePerm, requireAnyPerm } from '../auth'
-import { hasPg, pgSelect, pgUpdate, pgInsert } from '../dbAdapter'
+import { hasPg, pgUpdate, pgInsert } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
 import { hasR2, r2Upload } from '../r2'
 import { broadcastCleaningEvent } from './events'
+import { roleHasPermission } from '../store'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
 
+function parseYmd(value: string): { y: number; m: number; d: number } | null {
+  const s = String(value || '').trim()
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!m) return null
+  const y = Number(m[1])
+  const mo = Number(m[2])
+  const d = Number(m[3])
+  if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return null
+  return { y, m: mo, d }
+}
+
+function utcDay(ts: { y: number; m: number; d: number }) {
+  return Date.UTC(ts.y, ts.m - 1, ts.d)
+}
+
+async function hasPerm(roleName: string, code: string): Promise<boolean> {
+  if (!roleName) return false
+  if (roleName === 'admin') return true
+  try {
+    const { hasPg: hasPg0, pgPool } = require('../dbAdapter')
+    if (hasPg0 && pgPool) {
+      let roleId: string | undefined
+      try {
+        const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName])
+        if (r0 && r0.rows && r0.rows[0] && r0.rows[0].id) roleId = String(r0.rows[0].id)
+      } catch {}
+      const roleIds = Array.from(new Set([roleId, roleName, roleName.startsWith('role.') ? roleName.replace(/^role\./, '') : `role.${roleName}`].filter(Boolean)))
+      const r = await pgPool.query(
+        'SELECT 1 FROM role_permissions WHERE role_id = ANY($1::text[]) AND permission_code = $2 LIMIT 1',
+        [roleIds, code],
+      )
+      return !!r?.rowCount
+    }
+  } catch {}
+  return roleHasPermission(roleName, code)
+}
+
 // List tasks for app (self or all)
 router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_app.tasks.view.self']), async (req, res) => {
-  const { assignee_id, from, to, status } = req.query as { assignee_id?: string; from?: string; to?: string; status?: string }
+  const { assignee_id, date_from, date_to, status } = req.query as { assignee_id?: string; date_from?: string; date_to?: string; status?: string }
   try {
+    const user = (req as any).user
+    if (!user) return res.status(401).json({ message: 'unauthorized' })
+    const roleName = String(user.role || '')
+    const canViewAll = await hasPerm(roleName, 'cleaning_app.calendar.view.all')
+
+    const dfRaw = String(date_from || '').trim()
+    const dtRaw = String(date_to || '').trim()
+    const df = parseYmd(dfRaw)
+    const dt = parseYmd(dtRaw)
+    if (!df || !dt) return res.status(400).json({ message: 'invalid date_from/date_to' })
+    const spanDays = Math.floor((utcDay(dt) - utcDay(df)) / 86400000)
+    if (spanDays < 0) return res.status(400).json({ message: 'date_to must be >= date_from' })
+    if (spanDays > 31) return res.status(400).json({ message: 'date range too large' })
+
     if (hasPg) {
-      const where: any = {}
-      if (assignee_id) where.assignee_id = assignee_id
-      if (status) where.status = status
-      let rows = await pgSelect('cleaning_tasks', '*', Object.keys(where).length ? where : undefined)
-      if (from || to) {
-        const f = from || '0001-01-01'
-        const t = to || '9999-12-31'
-        rows = rows.filter((r: any) => {
-          const d = String(r.date || '').slice(0,10)
-          return d >= f && d <= t
-        })
-      }
-      return res.json(rows)
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.json([])
+
+      const assignee = canViewAll ? (assignee_id ? String(assignee_id) : null) : String(user.sub || '')
+      const status0 = status ? String(status) : null
+
+      const q = `
+        SELECT
+          t.id as task_id,
+          COALESCE(t.task_date, t.date) as task_date,
+          t.status,
+          t.assignee_id,
+          t.inspector_id,
+          t.checkout_time as checkout_time,
+          t.checkin_time as checkin_time,
+          t.old_code,
+          t.new_code,
+          COALESCE(p_id.id, p_code.id) as property_id,
+          COALESCE(p_id.code, p_code.code) as property_code,
+          COALESCE(p_id.address, p_code.address) as property_address,
+          COALESCE(p_id.type, p_code.type) as property_unit_type,
+          COALESCE(p_id.region, p_code.region) as property_region,
+          COALESCE(p_id.keybox_code, p_code.keybox_code) as property_keybox_code,
+          COALESCE(p_id.access_guide_link, p_code.access_guide_link) as property_access_guide_link
+        FROM cleaning_tasks t
+        LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+        LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+        WHERE COALESCE(t.task_date, t.date) BETWEEN $1::date AND $2::date
+          AND ($3::text IS NULL OR t.assignee_id = $3::text)
+          AND ($4::text IS NULL OR t.status = $4::text)
+        ORDER BY COALESCE(t.task_date, t.date) ASC, COALESCE(p_id.code, p_code.code) ASC NULLS LAST, t.created_at ASC
+      `
+      const r = await pgPool.query(q, [dfRaw, dtRaw, assignee, status0])
+      const rows = (r?.rows || []) as any[]
+      return res.json(
+        rows.map((row) => {
+          const taskId = String(row.task_id || '')
+          const taskDate = String(row.task_date || '').slice(0, 10)
+          const oldCode = row.old_code === null || row.old_code === undefined ? null : String(row.old_code)
+          const newCode = row.new_code === null || row.new_code === undefined ? null : String(row.new_code)
+          const keyboxCode = row.property_keybox_code === null || row.property_keybox_code === undefined ? null : String(row.property_keybox_code)
+          const accessCode = (newCode && newCode.trim()) ? newCode : (oldCode && oldCode.trim()) ? oldCode : (keyboxCode && keyboxCode.trim()) ? keyboxCode : null
+          const propertyId = row.property_id === null || row.property_id === undefined ? null : String(row.property_id)
+          const accessGuideLink =
+            row.property_access_guide_link === null || row.property_access_guide_link === undefined ? null : String(row.property_access_guide_link)
+          const region = row.property_region === null || row.property_region === undefined ? null : String(row.property_region)
+          const property = propertyId
+            ? {
+                id: propertyId,
+                code: row.property_code === null || row.property_code === undefined ? '' : String(row.property_code),
+                address: row.property_address === null || row.property_address === undefined ? '' : String(row.property_address),
+                unit_type: row.property_unit_type === null || row.property_unit_type === undefined ? '' : String(row.property_unit_type),
+                region,
+                access_guide_link: accessGuideLink,
+              }
+            : null
+          return {
+            id: taskId,
+            task_id: taskId,
+            date: taskDate,
+            task_date: taskDate,
+            status: row.status === null || row.status === undefined ? '' : String(row.status),
+            assignee_id: row.assignee_id === null || row.assignee_id === undefined ? null : String(row.assignee_id),
+            inspector_id: row.inspector_id === null || row.inspector_id === undefined ? null : String(row.inspector_id),
+            checkout_time: row.checkout_time === null || row.checkout_time === undefined ? null : String(row.checkout_time),
+            checkin_time: row.checkin_time === null || row.checkin_time === undefined ? null : String(row.checkin_time),
+            old_code: oldCode,
+            new_code: newCode,
+            access_code: accessCode,
+            property,
+          }
+        }),
+      )
     }
     return res.json([])
   } catch (e: any) {

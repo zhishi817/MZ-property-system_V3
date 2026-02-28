@@ -31,6 +31,23 @@ const ALLOW: Record<string, true> = {
 
 function okResource(r: string): boolean { return !!ALLOW[r] }
 
+function computeDeepCleaningTotalCost(laborCostRaw: any, consumablesRaw: any) {
+  const labor = Number(laborCostRaw || 0)
+  const laborN = Number.isFinite(labor) ? labor : 0
+  let arr: any[] = []
+  let raw: any = consumablesRaw
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw) } catch { raw = [] }
+  }
+  if (Array.isArray(raw)) arr = raw
+  const sum = arr.reduce((s, x) => {
+    const n = Number((x as any)?.cost || 0)
+    return s + (Number.isFinite(n) ? n : 0)
+  }, 0)
+  const total = laborN + sum
+  return Math.round((total + Number.EPSILON) * 100) / 100
+}
+
 router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
   const { resource } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
@@ -179,6 +196,10 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
                 await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;`)
                 await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS checklist jsonb;`)
                 await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS consumables jsonb;`)
+                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS pay_method text;`)
+                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS gst_type text;`)
+                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS total_cost numeric;`)
+                await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_property_occurred ON property_deep_cleaning(property_id, occurred_at);')
               } catch {}
             }
             const w2 = (() => {
@@ -219,11 +240,15 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
               const q2 = await pgPool.query(`SELECT COALESCE(status,'') AS key, COUNT(*)::int AS value FROM ${resource}${baseWhere} GROUP BY COALESCE(status,'') ORDER BY value DESC`, vals)
               const q3 = await pgPool.query(`SELECT COALESCE(category,'') AS key, COUNT(*)::int AS value FROM ${resource}${baseWhere} GROUP BY COALESCE(category,'') ORDER BY value DESC`, vals)
               const q4 = await pgPool.query(`SELECT to_char(date_trunc('month', occurred_at::date), 'YYYY-MM') AS key, COUNT(*)::int AS value FROM ${resource}${baseWhere} GROUP BY 1 ORDER BY 1 ASC`, vals)
+              const q5 = (resource === 'property_deep_cleaning')
+                ? await pgPool.query(`SELECT COALESCE(SUM(COALESCE(total_cost, 0)), 0)::numeric AS total_cost_sum FROM ${resource}${baseWhere}`, vals)
+                : null
               return res.json({
                 total: q1?.rows?.[0]?.total || 0,
                 by_status: q2?.rows || [],
                 by_category: q3?.rows || [],
                 by_month: q4?.rows || [],
+                total_cost_sum: q5 ? Number(q5?.rows?.[0]?.total_cost_sum || 0) : undefined,
               })
             }
             const lo = getLimitOffset()
@@ -1000,6 +1025,9 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;`)
               await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS checklist jsonb;`)
               await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS consumables jsonb;`)
+              await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS pay_method text;`)
+              await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS gst_type text;`)
+              await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS total_cost numeric;`)
             } catch {}
 
             const allow = [
@@ -1010,6 +1038,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               'property_code','work_no','category','status','urgency',
               'submitted_at','submitter_name','assignee_id','eta','completed_at',
               'repair_notes','checklist','consumables','labor_minutes','labor_cost',
+              'pay_method','gst_type',
               'review_status','reviewed_by','reviewed_at','review_notes',
             ]
             const cleaned: any = { id: payload.id }
@@ -1028,6 +1057,11 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               }
               if (cleaned[k] === undefined) cleaned[k] = JSON.stringify([])
             }
+            const payMethod = String(cleaned.pay_method || '').trim()
+            cleaned.pay_method = payMethod ? payMethod : 'company_pay'
+            const gstType = String(cleaned.gst_type || '').trim()
+            cleaned.gst_type = gstType ? gstType : 'GST_INCLUDED_10'
+            cleaned.total_cost = computeDeepCleaningTotalCost(cleaned.labor_cost, cleaned.consumables)
 
             const sql = `INSERT INTO property_deep_cleaning (
               id, property_id, occurred_at, worker_name,
@@ -1037,6 +1071,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               property_code, work_no, category, status, urgency,
               submitted_at, submitter_name, assignee_id, eta, completed_at,
               repair_notes, checklist, consumables, labor_minutes, labor_cost,
+              pay_method, gst_type, total_cost,
               review_status, reviewed_by, reviewed_at, review_notes
             ) VALUES (
               $1,$2,$3,$4,
@@ -1046,7 +1081,8 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               $15,$16,$17,$18,$19,
               $20,$21,$22,$23,$24,
               $25,$26::jsonb,$27::jsonb,$28,$29,
-              $30,$31,$32,$33
+              $30,$31,$32,
+              $33,$34,$35,$36
             ) RETURNING *`
             const values = [
               cleaned.id,
@@ -1078,6 +1114,9 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               cleaned.consumables,
               cleaned.labor_minutes !== undefined ? cleaned.labor_minutes : null,
               cleaned.labor_cost !== undefined ? cleaned.labor_cost : null,
+              cleaned.pay_method || null,
+              cleaned.gst_type || null,
+              cleaned.total_cost !== undefined ? cleaned.total_cost : null,
               cleaned.review_status || null,
               cleaned.reviewed_by || null,
               cleaned.reviewed_at || null,
@@ -1362,7 +1401,10 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS started_at timestamptz;`)
               await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS ended_at timestamptz;`)
               await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS duration_minutes integer;`)
-              const allow = ['id','property_id','occurred_at','worker_name','project_desc','started_at','ended_at','duration_minutes','details','notes','created_by','photo_urls','property_code','work_no','category','status','urgency','submitted_at','submitter_name','assignee_id','eta','completed_at','repair_notes','repair_photo_urls','attachment_urls','checklist','consumables','labor_minutes','labor_cost','review_status','reviewed_by','reviewed_at','review_notes']
+              await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS pay_method text;`)
+              await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS gst_type text;`)
+              await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS total_cost numeric;`)
+              const allow = ['id','property_id','occurred_at','worker_name','project_desc','started_at','ended_at','duration_minutes','details','notes','created_by','photo_urls','property_code','work_no','category','status','urgency','submitted_at','submitter_name','assignee_id','eta','completed_at','repair_notes','repair_photo_urls','attachment_urls','checklist','consumables','labor_minutes','labor_cost','pay_method','gst_type','review_status','reviewed_by','reviewed_at','review_notes']
               const cleaned: any = { id: payload.id }
               for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
               if (!cleaned.occurred_at) cleaned.occurred_at = new Date().toISOString().slice(0,10)
@@ -1375,6 +1417,9 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               if (cleaned.checklist === undefined) cleaned.checklist = []
               if (cleaned.consumables === undefined) cleaned.consumables = []
               if (cleaned.review_status === undefined) cleaned.review_status = 'pending'
+              if (cleaned.pay_method === undefined) cleaned.pay_method = 'company_pay'
+              if (cleaned.gst_type === undefined) cleaned.gst_type = 'GST_INCLUDED_10'
+              cleaned.total_cost = computeDeepCleaningTotalCost(cleaned.labor_cost, cleaned.consumables)
               row = await pgInsert(resource, cleaned)
               addAudit(resource, String((row as any)?.id || ''), 'create', null, row, (req as any).user?.sub)
               return res.status(201).json(row)
@@ -1767,6 +1812,9 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
             await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;`)
             await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS checklist jsonb;`)
             await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS consumables jsonb;`)
+            await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS pay_method text;`)
+            await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS gst_type text;`)
+            await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS total_cost numeric;`)
           }
         } catch {}
         if (toUpdate.details && typeof toUpdate.details !== 'string') {
@@ -1776,6 +1824,27 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         for (const k of listFields) {
           if (toUpdate[k] !== undefined && toUpdate[k] !== null && (k.endsWith('_urls') || k === 'checklist' || k === 'consumables')) {
             if (k.endsWith('_urls') && !Array.isArray(toUpdate[k])) toUpdate[k] = [toUpdate[k]]
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(toUpdate, 'pay_method')) {
+          const v = String((toUpdate as any).pay_method || '').trim()
+          ;(toUpdate as any).pay_method = v ? v : null
+        }
+        if (Object.prototype.hasOwnProperty.call(toUpdate, 'gst_type')) {
+          const v = String((toUpdate as any).gst_type || '').trim()
+          ;(toUpdate as any).gst_type = v ? v : null
+        }
+        const touchedCost = Object.prototype.hasOwnProperty.call(payload, 'labor_cost') || Object.prototype.hasOwnProperty.call(payload, 'consumables')
+        const touchedMeta = Object.prototype.hasOwnProperty.call(payload, 'pay_method') || Object.prototype.hasOwnProperty.call(payload, 'gst_type')
+        if (touchedCost || touchedMeta) {
+          const beforeRows = await pgSelect('property_deep_cleaning', '*', { id }) as any[]
+          const before = Array.isArray(beforeRows) ? beforeRows[0] : null
+          if (!before) return res.status(404).json({ message: 'not found' })
+          const needRecalc = touchedCost || ((before as any).total_cost === null || (before as any).total_cost === undefined)
+          if (needRecalc) {
+            const labor = Object.prototype.hasOwnProperty.call(payload, 'labor_cost') ? (payload as any).labor_cost : (before as any).labor_cost
+            const consumables = Object.prototype.hasOwnProperty.call(payload, 'consumables') ? (payload as any).consumables : (before as any).consumables
+            ;(toUpdate as any).total_cost = computeDeepCleaningTotalCost(labor, consumables)
           }
         }
       }

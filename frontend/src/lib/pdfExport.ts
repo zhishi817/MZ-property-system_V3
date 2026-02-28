@@ -53,6 +53,7 @@ export async function exportElementToPdfBlob(opts: {
   marginMm?: number
   scale?: number
   imageQuality?: number
+  imageType?: 'jpeg' | 'png'
   minSlicePx?: number
   reservePx?: number
   tailGapPx?: number
@@ -60,6 +61,7 @@ export async function exportElementToPdfBlob(opts: {
   const marginMm = Number.isFinite(opts.marginMm) ? Number(opts.marginMm) : 10
   const scale = Number.isFinite(opts.scale) ? Number(opts.scale) : 2
   const imageQuality = Number.isFinite(opts.imageQuality) ? Number(opts.imageQuality) : 0.82
+  const imageType: 'jpeg' | 'png' = (opts.imageType === 'png' || opts.imageType === 'jpeg') ? opts.imageType : 'jpeg'
   const minSlicePx = Number.isFinite(opts.minSlicePx) ? Number(opts.minSlicePx) : 80
   const reservePx = Number.isFinite(opts.reservePx) ? Number(opts.reservePx) : 60
   const tailGapPx = Number.isFinite(opts.tailGapPx) ? Number(opts.tailGapPx) : 16
@@ -149,9 +151,11 @@ export async function exportElementToPdfBlob(opts: {
         width: Math.ceil(rootWidthPx),
         height: Math.ceil(Math.max(1, s.height)),
       } as any)
-      const img = canvas.toDataURL('image/jpeg', imageQuality)
+      const img = imageType === 'png'
+        ? canvas.toDataURL('image/png')
+        : canvas.toDataURL('image/jpeg', imageQuality)
       const imgHeightMm = (contentWidthMm * canvas.height) / canvas.width
-      pdf.addImage(img, 'JPEG', marginMm, marginMm, contentWidthMm, imgHeightMm)
+      pdf.addImage(img, imageType === 'png' ? 'PNG' : 'JPEG', marginMm, marginMm, contentWidthMm, imgHeightMm)
     }
 
     const blob = pdf.output('blob') as Blob

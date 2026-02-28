@@ -1254,15 +1254,19 @@ async function buildDraftForSource(source_type: string, source_id: string) {
     const rs = await pgPool!.query('SELECT * FROM property_deep_cleaning WHERE id=$1 LIMIT 1', [source_id])
     const d = rs?.rows?.[0]
     if (!d) throw new Error('source_not_found')
-    const labor = round2(d.labor_cost || 0)
+    const price = round2((d.total_cost !== undefined && d.total_cost !== null) ? d.total_cost : (d.labor_cost || 0))
     const desc = `Deep cleaning ${String(d.work_no || d.id)}`
+    const gstTypeRaw = String(d.gst_type || '').trim()
+    const gstType: GstType = (gstTypeRaw === 'GST_10' || gstTypeRaw === 'GST_INCLUDED_10' || gstTypeRaw === 'GST_FREE' || gstTypeRaw === 'INPUT_TAXED')
+      ? (gstTypeRaw as GstType)
+      : ('GST_INCLUDED_10' as GstType)
     return {
       bill_to_name: null,
       bill_to_email: null,
       bill_to_address: null,
       label: desc,
       line_items: [
-        { description: desc, quantity: 1, unit_price: labor, gst_type: 'GST_10' as GstType },
+        { description: desc, quantity: 1, unit_price: price, gst_type: gstType },
       ],
     }
   }

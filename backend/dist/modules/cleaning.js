@@ -276,6 +276,57 @@ exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'query_failed' });
     }
 });
+exports.router.get('/history', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
+    var _a, _b, _c, _d;
+    const propertyId = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.property_id) || '').trim();
+    if (!propertyId)
+        return res.status(400).json({ message: 'property_id_required' });
+    const dateSchema = zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+    const parsedFrom = dateSchema.optional().safeParse((_b = req.query) === null || _b === void 0 ? void 0 : _b.from);
+    const parsedTo = dateSchema.optional().safeParse((_c = req.query) === null || _c === void 0 ? void 0 : _c.to);
+    const fromRaw = parsedFrom.success ? parsedFrom.data : undefined;
+    const toRaw = parsedTo.success ? parsedTo.data : undefined;
+    const limitRaw = Number(((_d = req.query) === null || _d === void 0 ? void 0 : _d.limit) || 200);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 1000) : 200;
+    const today = new Date();
+    const defaultTo = today.toISOString().slice(0, 10);
+    const defaultFrom = new Date(today.getTime() - 180 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    const from = fromRaw || defaultFrom;
+    const to = toRaw || defaultTo;
+    try {
+        if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
+            await (0, cleaningSync_1.ensureCleaningSchemaV2)();
+            const sql = `
+        SELECT
+          t.*,
+          p.code AS property_code,
+          p.region AS property_region
+        FROM cleaning_tasks t
+        LEFT JOIN properties p ON p.id = t.property_id
+        WHERE t.property_id = $1
+          AND (COALESCE(t.task_date, t.date)::date) >= ($2::date)
+          AND (COALESCE(t.task_date, t.date)::date) <= ($3::date)
+        ORDER BY (COALESCE(t.task_date, t.date)::date) DESC, t.id DESC
+        LIMIT $4
+      `;
+            const r = await dbAdapter_1.pgPool.query(sql, [propertyId, from, to, limit]);
+            return res.json((r === null || r === void 0 ? void 0 : r.rows) || []);
+        }
+        const rows = store_1.db.cleaningTasks.slice().filter((t) => String(t.property_id || '') === propertyId);
+        const filtered = rows.filter((t) => {
+            const d = String(t.task_date || t.date || '').slice(0, 10);
+            return d && d >= from && d <= to;
+        });
+        filtered.sort((a, b) => String(b.task_date || b.date || '').localeCompare(String(a.task_date || a.date || '')) || String(b.id || '').localeCompare(String(a.id || '')));
+        const props = (store_1.db.properties || []);
+        const p = props.find((x) => String(x.id) === propertyId) || null;
+        const out = filtered.slice(0, limit).map((t) => ({ ...t, property_code: (p === null || p === void 0 ? void 0 : p.code) || (t === null || t === void 0 ? void 0 : t.property_code) || null, property_region: (p === null || p === void 0 ? void 0 : p.region) || (t === null || t === void 0 ? void 0 : t.property_region) || null }));
+        return res.json(out);
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'history_failed' });
+    }
+});
 const patchTaskSchema = zod_1.z.object({
     property_id: zod_1.z.string().nullable().optional(),
     task_date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -346,11 +397,17 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                 patch.cleaner_id = patch.assignee_id;
             if (patch.task_date != null)
                 patch.date = patch.task_date;
-            if (parsed.data.status === undefined) {
-                const nextCleanerId = patch.cleaner_id !== undefined ? ((_m = patch.cleaner_id) !== null && _m !== void 0 ? _m : null) : ((_p = (_o = before.cleaner_id) !== null && _o !== void 0 ? _o : before.assignee_id) !== null && _p !== void 0 ? _p : null);
-                const nextInspectorId = parsed.data.inspector_id !== undefined ? ((_q = parsed.data.inspector_id) !== null && _q !== void 0 ? _q : null) : ((_r = before.inspector_id) !== null && _r !== void 0 ? _r : null);
-                if (nextCleanerId && nextInspectorId && String(before.status || 'pending') === 'pending')
-                    patch.status = 'assigned';
+            {
+                const beforeStatus = String(before.status || 'pending');
+                const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned';
+                const incomingStatus = parsed.data.status;
+                const incomingStatusEligible = incomingStatus === undefined || String(incomingStatus) === 'pending' || String(incomingStatus) === 'assigned';
+                const touchingAssignees = parsed.data.cleaner_id !== undefined || parsed.data.inspector_id !== undefined || parsed.data.assignee_id !== undefined;
+                if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
+                    const nextCleanerId = patch.cleaner_id !== undefined ? ((_m = patch.cleaner_id) !== null && _m !== void 0 ? _m : null) : ((_p = (_o = before.cleaner_id) !== null && _o !== void 0 ? _o : before.assignee_id) !== null && _p !== void 0 ? _p : null);
+                    const nextInspectorId = parsed.data.inspector_id !== undefined ? ((_q = parsed.data.inspector_id) !== null && _q !== void 0 ? _q : null) : ((_r = before.inspector_id) !== null && _r !== void 0 ? _r : null);
+                    patch.status = nextCleanerId && nextInspectorId ? 'assigned' : 'pending';
+                }
             }
             if (keyChanged)
                 patch.auto_sync_enabled = false;
@@ -406,11 +463,17 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             (parsed.data.scheduled_at !== undefined && String((_z = parsed.data.scheduled_at) !== null && _z !== void 0 ? _z : '') !== String((_0 = before.scheduled_at) !== null && _0 !== void 0 ? _0 : ''));
         if (keyChanged)
             task.auto_sync_enabled = false;
-        if (parsed.data.status === undefined) {
-            const cleaner = String(task.cleaner_id || task.assignee_id || '').trim();
-            const inspector = String(task.inspector_id || '').trim();
-            if (cleaner && inspector && String(before.status || 'pending') === 'pending')
-                task.status = 'assigned';
+        {
+            const beforeStatus = String(before.status || 'pending');
+            const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned';
+            const incomingStatus = parsed.data.status;
+            const incomingStatusEligible = incomingStatus === undefined || String(incomingStatus) === 'pending' || String(incomingStatus) === 'assigned';
+            const touchingAssignees = parsed.data.cleaner_id !== undefined || parsed.data.inspector_id !== undefined || parsed.data.assignee_id !== undefined;
+            if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
+                const cleaner = String(task.cleaner_id || task.assignee_id || '').trim();
+                const inspector = String(task.inspector_id || '').trim();
+                task.status = cleaner && inspector ? 'assigned' : 'pending';
+            }
         }
         return res.json(task);
     }
@@ -419,7 +482,8 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
     }
 });
 const createTaskSchema = zod_1.z.object({
-    task_type: zod_1.z.enum(['checkout_clean', 'checkin_clean']),
+    task_type: zod_1.z.enum(['checkout_clean', 'checkin_clean', 'stayover_clean']).optional(),
+    create_mode: zod_1.z.enum(['checkout', 'checkin', 'turnover', 'stayover']).optional(),
     task_date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     property_id: zod_1.z.string().min(1),
     status: zod_1.z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled']).optional(),
@@ -431,9 +495,10 @@ const createTaskSchema = zod_1.z.object({
     checkout_time: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
     checkin_time: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
     nights_override: zod_1.z.union([zod_1.z.number().int().nonnegative(), zod_1.z.null()]).optional(),
+    note: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
 }).strict();
 exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r;
     const parsed = createTaskSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -442,40 +507,96 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
     if (!(await isValidStaffId((_b = parsed.data.inspector_id) !== null && _b !== void 0 ? _b : null, 'inspector')))
         return res.status(400).json({ message: '无效的检查人员' });
     try {
-        const row = {
-            id: (0, uuid_1.v4)(),
+        const mode = parsed.data.create_mode;
+        const taskType = parsed.data.task_type;
+        if (!mode && !taskType)
+            return res.status(400).json({ message: 'missing task_type' });
+        const types = mode === 'turnover' ? ['checkout_clean', 'checkin_clean'] :
+            mode === 'checkout' ? ['checkout_clean'] :
+                mode === 'checkin' ? ['checkin_clean'] :
+                    mode === 'stayover' ? ['stayover_clean'] :
+                        [String(taskType)];
+        const createdRows = [];
+        const rawPropertyId = String(parsed.data.property_id || '').trim();
+        let normalizedPropertyId = rawPropertyId;
+        if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
+            try {
+                const r = await dbAdapter_1.pgPool.query('SELECT id::text AS id FROM properties WHERE id::text=$1 OR upper(code)=upper($1) LIMIT 1', [rawPropertyId]);
+                const row = (_c = r === null || r === void 0 ? void 0 : r.rows) === null || _c === void 0 ? void 0 : _c[0];
+                const id = (row === null || row === void 0 ? void 0 : row.id) ? String(row.id) : '';
+                if (!id)
+                    return res.status(400).json({ message: '无效的房源' });
+                normalizedPropertyId = id;
+            }
+            catch (_s) { }
+        }
+        else {
+            const anyDb = store_1.db;
+            const props = Array.isArray(anyDb === null || anyDb === void 0 ? void 0 : anyDb.properties) ? anyDb.properties : [];
+            const found = props.find((p) => String((p === null || p === void 0 ? void 0 : p.id) || '') === rawPropertyId || String((p === null || p === void 0 ? void 0 : p.code) || '').toLowerCase() === rawPropertyId.toLowerCase());
+            const id = (found === null || found === void 0 ? void 0 : found.id) ? String(found.id) : '';
+            if (!id)
+                return res.status(400).json({ message: '无效的房源' });
+            normalizedPropertyId = id;
+        }
+        const base = {
             order_id: null,
-            property_id: String(parsed.data.property_id),
-            task_type: parsed.data.task_type,
+            property_id: normalizedPropertyId,
             task_date: parsed.data.task_date,
-            type: parsed.data.task_type,
             date: parsed.data.task_date,
-            status: parsed.data.status || (((_c = parsed.data.cleaner_id) !== null && _c !== void 0 ? _c : null) && ((_d = parsed.data.inspector_id) !== null && _d !== void 0 ? _d : null) ? 'assigned' : 'pending'),
-            assignee_id: ((_e = parsed.data.cleaner_id) !== null && _e !== void 0 ? _e : null),
-            cleaner_id: ((_f = parsed.data.cleaner_id) !== null && _f !== void 0 ? _f : null),
-            inspector_id: ((_g = parsed.data.inspector_id) !== null && _g !== void 0 ? _g : null),
-            scheduled_at: (_h = parsed.data.scheduled_at) !== null && _h !== void 0 ? _h : null,
-            old_code: (_j = parsed.data.old_code) !== null && _j !== void 0 ? _j : null,
-            new_code: (_k = parsed.data.new_code) !== null && _k !== void 0 ? _k : null,
-            checkout_time: (_l = parsed.data.checkout_time) !== null && _l !== void 0 ? _l : null,
-            checkin_time: (_m = parsed.data.checkin_time) !== null && _m !== void 0 ? _m : null,
-            nights_override: (_o = parsed.data.nights_override) !== null && _o !== void 0 ? _o : null,
-            auto_sync_enabled: true,
+            status: parsed.data.status || (((_d = parsed.data.cleaner_id) !== null && _d !== void 0 ? _d : null) && ((_e = parsed.data.inspector_id) !== null && _e !== void 0 ? _e : null) ? 'assigned' : 'pending'),
+            assignee_id: ((_f = parsed.data.cleaner_id) !== null && _f !== void 0 ? _f : null),
+            cleaner_id: ((_g = parsed.data.cleaner_id) !== null && _g !== void 0 ? _g : null),
+            inspector_id: ((_h = parsed.data.inspector_id) !== null && _h !== void 0 ? _h : null),
+            scheduled_at: (_j = parsed.data.scheduled_at) !== null && _j !== void 0 ? _j : null,
+            old_code: (_k = parsed.data.old_code) !== null && _k !== void 0 ? _k : null,
+            new_code: (_l = parsed.data.new_code) !== null && _l !== void 0 ? _l : null,
+            checkout_time: (_m = parsed.data.checkout_time) !== null && _m !== void 0 ? _m : null,
+            checkin_time: (_o = parsed.data.checkin_time) !== null && _o !== void 0 ? _o : null,
+            nights_override: (_p = parsed.data.nights_override) !== null && _p !== void 0 ? _p : null,
+            note: (_q = parsed.data.note) !== null && _q !== void 0 ? _q : null,
+            auto_sync_enabled: false,
             source: 'manual',
         };
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await (0, cleaningSync_1.ensureCleaningSchemaV2)();
-            const keys = Object.keys(row).filter((k) => row[k] !== undefined);
-            const cols = keys.map((k) => `"${k}"`).join(', ');
-            const args = keys.map((_, i) => `$${i + 1}`).join(', ');
-            const values = keys.map((k) => row[k]);
-            const sql = `INSERT INTO cleaning_tasks(${cols}) VALUES(${args}) RETURNING *`;
-            const r = await dbAdapter_1.pgPool.query(sql, values);
-            return res.json(((_p = r === null || r === void 0 ? void 0 : r.rows) === null || _p === void 0 ? void 0 : _p[0]) || row);
+            const client = await dbAdapter_1.pgPool.connect();
+            try {
+                await client.query('BEGIN');
+                for (const tt of types) {
+                    const row = { id: (0, uuid_1.v4)(), ...base, task_type: tt, type: tt };
+                    const keys = Object.keys(row).filter((k) => row[k] !== undefined);
+                    const cols = keys.map((k) => `"${k}"`).join(', ');
+                    const args = keys.map((_, i) => `$${i + 1}`).join(', ');
+                    const values = keys.map((k) => row[k]);
+                    const sql = `INSERT INTO cleaning_tasks(${cols}) VALUES(${args}) RETURNING *`;
+                    const r = await client.query(sql, values);
+                    createdRows.push(((_r = r === null || r === void 0 ? void 0 : r.rows) === null || _r === void 0 ? void 0 : _r[0]) || row);
+                }
+                await client.query('COMMIT');
+            }
+            catch (e) {
+                try {
+                    await client.query('ROLLBACK');
+                }
+                catch (_t) { }
+                throw e;
+            }
+            finally {
+                client.release();
+            }
+            if (createdRows.length === 1)
+                return res.json(createdRows[0]);
+            return res.json({ ok: true, created: createdRows.length });
         }
-        ;
-        store_1.db.cleaningTasks.push(row);
-        return res.json(row);
+        for (const tt of types) {
+            const row = { id: (0, uuid_1.v4)(), ...base, task_type: tt, type: tt };
+            store_1.db.cleaningTasks.push(row);
+            createdRows.push(row);
+        }
+        if (createdRows.length === 1)
+            return res.json(createdRows[0]);
+        return res.json({ ok: true, created: createdRows.length });
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'create_failed' });
@@ -598,11 +719,17 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     const patch = { ...basePatch };
                     if (patch.task_date != null)
                         patch.date = patch.task_date;
-                    if (basePatch.status === undefined) {
-                        const nextCleanerId = patch.cleaner_id !== undefined ? ((_b = patch.cleaner_id) !== null && _b !== void 0 ? _b : null) : ((_d = (_c = before.cleaner_id) !== null && _c !== void 0 ? _c : before.assignee_id) !== null && _d !== void 0 ? _d : null);
-                        const nextInspectorId = patch.inspector_id !== undefined ? ((_e = patch.inspector_id) !== null && _e !== void 0 ? _e : null) : ((_f = before.inspector_id) !== null && _f !== void 0 ? _f : null);
-                        if (nextCleanerId && nextInspectorId && String(before.status || 'pending') === 'pending')
-                            patch.status = 'assigned';
+                    {
+                        const beforeStatus = String(before.status || 'pending');
+                        const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned';
+                        const incomingStatus = basePatch.status;
+                        const incomingStatusEligible = incomingStatus === undefined || String(incomingStatus) === 'pending' || String(incomingStatus) === 'assigned';
+                        const touchingAssignees = basePatch.cleaner_id !== undefined || basePatch.inspector_id !== undefined || basePatch.assignee_id !== undefined;
+                        if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
+                            const nextCleanerId = patch.cleaner_id !== undefined ? ((_b = patch.cleaner_id) !== null && _b !== void 0 ? _b : null) : ((_d = (_c = before.cleaner_id) !== null && _c !== void 0 ? _c : before.assignee_id) !== null && _d !== void 0 ? _d : null);
+                            const nextInspectorId = patch.inspector_id !== undefined ? ((_e = patch.inspector_id) !== null && _e !== void 0 ? _e : null) : ((_f = before.inspector_id) !== null && _f !== void 0 ? _f : null);
+                            patch.status = nextCleanerId && nextInspectorId ? 'assigned' : 'pending';
+                        }
                     }
                     const keyChanged = (patch.task_date != null && String(patch.task_date) !== String(before.task_date || before.date || '')) ||
                         (patch.cleaner_id !== undefined && String((_g = patch.cleaner_id) !== null && _g !== void 0 ? _g : '') !== String((_j = (_h = before.cleaner_id) !== null && _h !== void 0 ? _h : before.assignee_id) !== null && _j !== void 0 ? _j : '')) ||
@@ -640,11 +767,17 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     task.scheduled_at = basePatch.scheduled_at;
                 if (basePatch.note !== undefined)
                     task.note = basePatch.note;
-                if (basePatch.status === undefined) {
-                    const cleaner = String(task.cleaner_id || task.assignee_id || '').trim();
-                    const inspector = String(task.inspector_id || '').trim();
-                    if (cleaner && inspector && String(task.status || 'pending') === 'pending')
-                        task.status = 'assigned';
+                {
+                    const beforeStatus = String(task.status || 'pending');
+                    const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned';
+                    const incomingStatus = basePatch.status;
+                    const incomingStatusEligible = incomingStatus === undefined || String(incomingStatus) === 'pending' || String(incomingStatus) === 'assigned';
+                    const touchingAssignees = basePatch.cleaner_id !== undefined || basePatch.inspector_id !== undefined || basePatch.assignee_id !== undefined;
+                    if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
+                        const cleaner = String(task.cleaner_id || task.assignee_id || '').trim();
+                        const inspector = String(task.inspector_id || '').trim();
+                        task.status = cleaner && inspector ? 'assigned' : 'pending';
+                    }
                 }
                 return task;
             })();
@@ -732,9 +865,9 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
             const r = await dbAdapter_1.pgPool.query(`SELECT
            t.id,
            t.order_id,
-           t.property_id,
-           (p.code::text) AS property_code,
-           (p.region::text) AS property_region,
+           COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
+           COALESCE(p_id.code::text, p_code.code::text) AS property_code,
+           COALESCE(p_id.region::text, p_code.region::text) AS property_region,
            t.task_type,
            COALESCE(t.task_date, t.date)::text AS task_date,
            t.status,
@@ -753,7 +886,8 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
            COALESCE(t.nights_override, o.nights) AS nights
          FROM cleaning_tasks t
          LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
-         LEFT JOIN properties p ON (p.id::text) = (t.property_id::text)
+         LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+         LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
          WHERE (COALESCE(task_date, date)::date) >= ($1::date) AND (COALESCE(task_date, date)::date) <= ($2::date)
            AND COALESCE(t.status,'') <> 'cancelled'
            AND (t.order_id IS NULL OR o.id IS NOT NULL)
@@ -765,13 +899,14 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                AND lower(COALESCE(o.status, '')) NOT LIKE '%cancel%'
              )
            )
-         ORDER BY COALESCE(task_date, date) ASC, property_id NULLS LAST, id`, [from, to]);
+         ORDER BY COALESCE(task_date, date) ASC, COALESCE(p_id.code, p_code.code) NULLS LAST, id`, [from, to]);
             for (const row of ((r === null || r === void 0 ? void 0 : r.rows) || [])) {
                 const d = String(row.task_date || '').slice(0, 10);
                 const rawType = row.task_type ? String(row.task_type) : 'cleaning_task';
                 const label = rawType === 'checkout_clean' ? '退房' :
                     rawType === 'checkin_clean' ? '入住' :
-                        rawType;
+                        rawType === 'stayover_clean' ? '入住中清洁' :
+                            rawType;
                 items.push({
                     source: 'cleaning_tasks',
                     entity_id: String(row.id),
@@ -836,7 +971,8 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
             const rawType = String(t.task_type || t.type || 'checkout_clean');
             const label = rawType === 'checkout_clean' ? '退房' :
                 rawType === 'checkin_clean' ? '入住' :
-                    rawType;
+                    rawType === 'stayover_clean' ? '入住中清洁' :
+                        rawType;
             const order = store_1.db.orders.find((o) => String(o.id) === String(t.order_id)) || null;
             const prop = store_1.db.properties.find((p) => String(p.id) === String(t.property_id)) || null;
             if (t.order_id && !order)

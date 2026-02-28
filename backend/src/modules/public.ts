@@ -28,7 +28,8 @@ router.get('/r2-image', async (req, res) => {
     if (!hasR2) return res.status(404).json({ message: 'r2_not_configured' })
     const key = r2KeyFromUrl(u)
     if (!key) return res.status(400).json({ message: 'invalid_r2_url' })
-    if (!key.startsWith('invoice-company-logos/')) return res.status(403).json({ message: 'forbidden_key' })
+    const allowedPrefixes = ['invoice-company-logos/', 'deep-cleaning/']
+    if (!allowedPrefixes.some(p => key.startsWith(p))) return res.status(403).json({ message: 'forbidden_key' })
     const obj = await r2GetObjectByKey(key)
     if (!obj || !obj.body?.length) return res.status(404).json({ message: 'not_found' })
     res.setHeader('Access-Control-Allow-Origin', '*')
@@ -478,6 +479,9 @@ async function ensurePropertyDeepCleaningShareColumns() {
   await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;`)
   await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS checklist jsonb;`)
   await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS consumables jsonb;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS pay_method text;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS gst_type text;`)
+  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS total_cost numeric;`)
   await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS review_status text;`)
   await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_by text;`)
   await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;`)
@@ -1563,6 +1567,7 @@ router.patch('/deep-cleaning-share/:token', async (req, res) => {
       'status','urgency','assignee_id','eta','completed_at',
       'details','notes','repair_notes','photo_urls','repair_photo_urls','attachment_urls',
       'checklist','consumables','labor_minutes','labor_cost',
+      'pay_method','gst_type',
     ]
     const payload: any = {}
     for (const k of allowed) {
@@ -1570,6 +1575,31 @@ router.patch('/deep-cleaning-share/:token', async (req, res) => {
     }
     const beforeRows = await pgSelect('property_deep_cleaning', '*', { id: deepCleaningId }) as any[]
     const before = beforeRows && beforeRows[0]
+    if (Object.prototype.hasOwnProperty.call(payload, 'pay_method')) {
+      const v2 = String(payload.pay_method || '').trim()
+      payload.pay_method = v2 ? v2 : null
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'gst_type')) {
+      const v2 = String(payload.gst_type || '').trim()
+      payload.gst_type = v2 ? v2 : null
+    }
+    const touchedCost = Object.prototype.hasOwnProperty.call(payload, 'labor_cost') || Object.prototype.hasOwnProperty.call(payload, 'consumables')
+    const touchedMeta = Object.prototype.hasOwnProperty.call(payload, 'pay_method') || Object.prototype.hasOwnProperty.call(payload, 'gst_type')
+    const needRecalc = before && (touchedCost || (touchedMeta && ((before as any).total_cost === null || (before as any).total_cost === undefined)))
+    if (needRecalc) {
+      const parseConsumables = (raw: any) => {
+        let v2: any = raw
+        if (typeof v2 === 'string') { try { v2 = JSON.parse(v2) } catch { v2 = [] } }
+        return Array.isArray(v2) ? v2 : []
+      }
+      const labor = Object.prototype.hasOwnProperty.call(payload, 'labor_cost') ? Number(payload.labor_cost || 0) : Number((before as any).labor_cost || 0)
+      const arr = parseConsumables(Object.prototype.hasOwnProperty.call(payload, 'consumables') ? payload.consumables : (before as any).consumables)
+      const sum = arr.reduce((s: number, x: any) => {
+        const n = Number(x?.cost || 0)
+        return s + (Number.isFinite(n) ? n : 0)
+      }, 0)
+      payload.total_cost = Math.round(((Number.isFinite(labor) ? labor : 0) + sum + Number.EPSILON) * 100) / 100
+    }
     const updated = await pgUpdate('property_deep_cleaning', deepCleaningId, payload)
     addAudit('property_deep_cleaning', deepCleaningId, 'update', before, updated)
     return res.json(updated || { ok: true })
