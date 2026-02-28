@@ -1987,17 +1987,101 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
       if (resource === 'recurring_payments') {
         const purge = String((req.query as any)?.purge || '') === '1'
         if (!purge) {
+          const parts = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit' }).formatToParts(new Date())
+          let y = '', m = ''
+          for (const p of parts) { if ((p as any).type === 'year') y = (p as any).value; if ((p as any).type === 'month') m = (p as any).value }
+          const currentMonthKey = `${y}-${m}`
+          const currentMonthStart = `${currentMonthKey}-01`
+          const nextMonthKey = (() => {
+            const yy = Number(y)
+            const mm = Number(m)
+            if (!Number.isFinite(yy) || !Number.isFinite(mm)) return ''
+            const nextM = mm >= 12 ? 1 : (mm + 1)
+            const nextY = mm >= 12 ? (yy + 1) : yy
+            return `${String(nextY)}-${String(nextM).padStart(2, '0')}`
+          })()
+          const nextMonthStart = nextMonthKey ? `${nextMonthKey}-01` : ''
           const result = await pgRunInTransaction(async (client) => {
+            try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;') } catch {}
+            try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;') } catch {}
+            try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
+            try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;') } catch {}
+            try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;') } catch {}
+            try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
+            try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;') } catch {}
+            try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;') } catch {}
+            try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
+            try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;') } catch {}
+            try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;') } catch {}
+            try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
+
             const beforeRes = await client.query(`SELECT * FROM recurring_payments WHERE id = $1`, [id])
             const before = beforeRes.rows?.[0] || null
             if (!before) return { before: null, after: null }
             const afterRes = await client.query(`UPDATE recurring_payments SET status='paused' WHERE id = $1 RETURNING *`, [id])
             const after = afterRes.rows?.[0] || null
-            return { before, after }
+            const guard = `(generated_from = 'recurring_payments' OR (coalesce(generated_from,'') = '' AND coalesce(note,'') ILIKE 'Fixed payment%'))`
+            const d1 = await client.query(
+              `DELETE FROM company_expenses
+               WHERE fixed_expense_id = $1
+                 AND ${guard}
+                 AND (
+                   (
+                     coalesce(month_key,'') <> ''
+                     AND (
+                       month_key > $2
+                       OR (month_key = $2 AND coalesce(status,'unpaid') <> 'paid')
+                     )
+                   )
+                   OR (
+                     (coalesce(month_key,'') = '')
+                     AND $4 <> ''
+                     AND (
+                       (COALESCE(paid_date, due_date, occurred_at::date) >= to_date($4,'YYYY-MM-DD'))
+                       OR (
+                         COALESCE(paid_date, due_date, occurred_at::date) >= to_date($3,'YYYY-MM-DD')
+                         AND COALESCE(paid_date, due_date, occurred_at::date) < to_date($4,'YYYY-MM-DD')
+                         AND coalesce(status,'unpaid') <> 'paid'
+                       )
+                     )
+                   )
+                 )
+               RETURNING id`,
+              [id, currentMonthKey, currentMonthStart, nextMonthStart]
+            )
+            const d2 = await client.query(
+              `DELETE FROM property_expenses
+               WHERE fixed_expense_id = $1
+                 AND ${guard}
+                 AND (
+                   (
+                     coalesce(month_key,'') <> ''
+                     AND (
+                       month_key > $2
+                       OR (month_key = $2 AND coalesce(status,'unpaid') <> 'paid')
+                     )
+                   )
+                   OR (
+                     (coalesce(month_key,'') = '')
+                     AND $4 <> ''
+                     AND (
+                       (COALESCE(paid_date, due_date, occurred_at::date) >= to_date($4,'YYYY-MM-DD'))
+                       OR (
+                         COALESCE(paid_date, due_date, occurred_at::date) >= to_date($3,'YYYY-MM-DD')
+                         AND COALESCE(paid_date, due_date, occurred_at::date) < to_date($4,'YYYY-MM-DD')
+                         AND coalesce(status,'unpaid') <> 'paid'
+                       )
+                     )
+                   )
+                 )
+               RETURNING id`,
+              [id, currentMonthKey, currentMonthStart, nextMonthStart]
+            )
+            return { before, after, cleared_company_expenses: Number(d1.rowCount || 0), cleared_property_expenses: Number(d2.rowCount || 0), from_month_key: currentMonthKey }
           })
           if (!result?.before) return res.status(404).json({ message: 'not found' })
           addAudit(resource, id, 'pause', (result as any).before, (result as any).after, (req as any).user?.sub)
-          return res.json({ ok: true, paused: true })
+          return res.json({ ok: true, paused: true, cleared_company_expenses: (result as any).cleared_company_expenses || 0, cleared_property_expenses: (result as any).cleared_property_expenses || 0, from_month_key: (result as any).from_month_key || null })
         }
         const result = await pgRunInTransaction(async (client) => {
           try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}

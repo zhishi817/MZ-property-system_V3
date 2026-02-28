@@ -1,10 +1,10 @@
 "use client"
-import { Card, Space, Button, Table, Tag, Drawer, Form, Input, InputNumber, Select, DatePicker, Statistic, App, Descriptions, Popconfirm, message as AntMessage, Row, Col, Divider } from 'antd'
+import { Card, Space, Button, Table, Tag, Drawer, Form, Input, InputNumber, Select, DatePicker, Statistic, App, Descriptions, Popconfirm, Row, Col, Divider } from 'antd'
 import dayjs from 'dayjs'
 import customParseFormat from 'dayjs/plugin/customParseFormat'
 import utc from 'dayjs/plugin/utc'
 import timezone from 'dayjs/plugin/timezone'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
 import { shouldAutoMarkPaidForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
@@ -20,7 +20,7 @@ dayjs.extend(timezone)
 dayjs.tz.setDefault('Australia/Melbourne')
 
 export default function RecurringPage() {
-  const { message } = App.useApp()
+  const { message, modal } = App.useApp()
   const [list, setList] = useState<Recurring[]>([])
   const [expenses, setExpenses] = useState<ExpenseRow[]>([])
   const [properties, setProperties] = useState<Property[]>([])
@@ -32,15 +32,34 @@ export default function RecurringPage() {
   const [viewOpen, setViewOpen] = useState(false)
   const [viewing, setViewing] = useState<Recurring | null>(null)
   const [searchText, setSearchText] = useState('')
-  const [rowMutating, setRowMutating] = useState<Record<string, 'pay' | 'unpay' | undefined>>({})
+  const [rowMutating, setRowMutating] = useState<Record<string, 'pay' | 'unpay' | 'pause' | 'resume' | undefined>>({})
+  const [pageLoading, setPageLoading] = useState(true)
+  const [snapLoading, setSnapLoading] = useState(false)
+  const [snapKey, setSnapKey] = useState<string>('')
+  const reloadSeq = useRef(0)
+  const lastLoadedAt = useRef(0)
 
-  async function load() {
-    const rows = await fetch(`${API_BASE}/crud/recurring_payments`, { headers: authHeaders() }).then(r=>r.json()).catch(()=>[])
-    setList(Array.isArray(rows)?rows:[])
-    const props = await getJSON<Property[]>('/properties?include_archived=true').catch(()=>[])
-    setProperties(Array.isArray(props)?props:[])
+  async function fetchRecurringPayments() {
+    const resp = await fetch(`${API_BASE}/crud/recurring_payments`, { headers: authHeaders(), cache: 'no-store' })
+    const rows = resp.ok ? await resp.json().catch(()=>[]) : []
+    return Array.isArray(rows) ? rows : []
   }
-  useEffect(()=>{ load() },[])
+  async function fetchProperties() {
+    const props = await getJSON<Property[]>('/properties?include_archived=true').catch(()=>[])
+    return Array.isArray(props) ? props : []
+  }
+  async function fetchMonthExpenses(mk: string) {
+    const [pe, ce] = await Promise.all([
+      fetch(`${API_BASE}/crud/property_expenses?month_key=${mk}`, { headers: authHeaders(), cache: 'no-store' }).then(r=>r.ok?r.json():[]).catch(()=>[]),
+      fetch(`${API_BASE}/crud/company_expenses?month_key=${mk}`, { headers: authHeaders(), cache: 'no-store' }).then(r=>r.ok?r.json():[]).catch(()=>[]),
+    ])
+    return ([...(Array.isArray(pe)?pe:[]), ...(Array.isArray(ce)?ce:[])] as any[]) as ExpenseRow[]
+  }
+  async function load() {
+    const [rows, props] = await Promise.all([fetchRecurringPayments(), fetchProperties()])
+    setList(rows)
+    setProperties(props)
+  }
 
   function parseAU(s?: string) {
     if (!s) return undefined as any
@@ -164,49 +183,85 @@ export default function RecurringPage() {
       <Space>
         <Button onClick={()=>{ setViewing(r); setViewOpen(true) }}>查看</Button>
         <Button onClick={()=>{ const sm = (r as any).start_month_key ? dayjs.tz(`${String((r as any).start_month_key)}-01`, 'YYYY-MM-DD', 'Australia/Melbourne') : nowAU().startOf('month'); setEditing(r); setOpen(true); form.setFieldsValue({ ...r, start_month: sm, frequency_months: r.frequency_months ?? 1 }) }}>编辑</Button>
-        {(r.payment_type === 'rent_deduction') ? null : (r.is_paid ? (
-          <Popconfirm
-            title="确认取消已付并标记为未付？"
-            okText="确认"
-            cancelText="取消"
-            onConfirm={async ()=>{
-              const id = String(r.id)
-              if (rowMutating[id]) return
-              const monthKey = m.format('YYYY-MM')
-              const fixedId = String((r as any).fixed_expense_id || r.id)
-              const prevExpenses = (expenses||[]).filter(e => String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId)
-              setRowMutating(s => ({ ...s, [id]: 'unpay' }))
-              const msgKey = `unpay-${id}-${monthKey}`
-              message.open({ type:'loading', content:'正在切换为未付…', key: msgKey, duration: 0 })
-              setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, status:'unpaid', paid_date: null } as any) : e))
-              try {
-                const resType = (r.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
-                const qs = new URLSearchParams({ fixed_expense_id: fixedId, month_key: monthKey })
-                const listRes = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
-                const arr = listRes.ok ? await listRes.json().catch(()=>[]) : []
-                const rows = Array.isArray(arr) ? arr : []
-                await Promise.all(rows.filter((it:any)=>it?.id).map((it:any)=> fetch(`${API_BASE}/crud/${resType}/${it.id}`, { method:'PATCH', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ status:'unpaid', paid_date: null }) })))
-                message.open({ type:'success', content:'已切换为未付', key: msgKey })
-                void refreshMonth()
-              } catch (e:any) {
-                setExpenses(prev => {
-                  const rest = prev.filter(e => !(String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId))
-                  return [...rest, ...prevExpenses]
-                })
-                message.open({ type:'error', content:(e?.message || '切换失败'), key: msgKey })
-              } finally {
-                setRowMutating(s => ({ ...s, [id]: undefined }))
-              }
-            }}
-          >
-            <Button loading={rowMutating[String(r.id)]==='unpay'} disabled={!!rowMutating[String(r.id)]}>取消已付</Button>
-          </Popconfirm>
+        {String(r.status || '') === 'paused' ? (
+          <>
+            <Button disabled>已停用</Button>
+            <Popconfirm
+              title="确认恢复该固定支出？恢复后将按规则重新生成本月/未来记录。"
+              okText="恢复"
+              cancelText="取消"
+              onConfirm={async()=>{
+                const id = String(r.id)
+                if (rowMutating[id]) return
+                setRowMutating(s => ({ ...s, [id]: 'resume' }))
+                try {
+                  const resp = await fetch(`${API_BASE}/crud/recurring_payments/${id}`, { method:'PATCH', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ status: 'active' }) })
+                  if (!resp.ok) {
+                    const txt = await resp.text().catch(()=> '')
+                    throw new Error(txt || `HTTP ${resp.status}`)
+                  }
+                  message.success('已恢复')
+                  await load()
+                  await refreshMonth()
+                } catch (e:any) {
+                  message.error(e?.message || '恢复失败')
+                } finally {
+                  setRowMutating(s => ({ ...s, [id]: undefined }))
+                }
+              }}
+            >
+              <Button type="primary" loading={rowMutating[String(r.id)]==='resume'} disabled={!!rowMutating[String(r.id)]}>恢复</Button>
+            </Popconfirm>
+          </>
         ) : (
-          <Popconfirm
-            title="确认已付款并标记为已付？"
-            okText="确认"
-            cancelText="取消"
-            onConfirm={async ()=>{
+          <>
+            {(r.payment_type === 'rent_deduction') ? null : (r.is_paid ? (
+              <Popconfirm
+                title="确认取消已付并标记为未付？"
+                okText="确认"
+                cancelText="取消"
+                onConfirm={()=>{
+                  modal.confirm({
+                    title: '再次确认取消已付？',
+                    content: '此操作会影响当月房源营收与报表。',
+                    okText: '确认取消已付',
+                    cancelText: '返回',
+                    onOk: async () => {
+                      const id = String(r.id)
+                      if (rowMutating[id]) return
+                      const monthKey = m.format('YYYY-MM')
+                      const fixedId = String((r as any).fixed_expense_id || r.id)
+                      const prevExpenses = (expenses||[]).filter(e => String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId)
+                      setRowMutating(s => ({ ...s, [id]: 'unpay' }))
+                      const msgKey = `unpay-${id}-${monthKey}`
+                      message.open({ type:'loading', content:'正在切换为未付…', key: msgKey, duration: 0 })
+                      setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, status:'unpaid', paid_date: null } as any) : e))
+                      try {
+                        const resType = (r.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
+                        const qs = new URLSearchParams({ fixed_expense_id: fixedId, month_key: monthKey })
+                        const listRes = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
+                        const arr = listRes.ok ? await listRes.json().catch(()=>[]) : []
+                        const rows = Array.isArray(arr) ? arr : []
+                        await Promise.all(rows.filter((it:any)=>it?.id).map((it:any)=> fetch(`${API_BASE}/crud/${resType}/${it.id}`, { method:'PATCH', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ status:'unpaid', paid_date: null }) })))
+                        message.open({ type:'success', content:'已切换为未付', key: msgKey })
+                        void refreshMonth()
+                      } catch (e:any) {
+                        setExpenses(prev => {
+                          const rest = prev.filter(e => !(String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId))
+                          return [...rest, ...prevExpenses]
+                        })
+                        message.open({ type:'error', content:(e?.message || '切换失败'), key: msgKey })
+                      } finally {
+                        setRowMutating(s => ({ ...s, [id]: undefined }))
+                      }
+                    },
+                  })
+                }}
+              >
+                <Button loading={rowMutating[String(r.id)]==='unpay'} disabled={!!rowMutating[String(r.id)]}>取消已付</Button>
+              </Popconfirm>
+            ) : (
+              <Button type="primary" loading={rowMutating[String(r.id)]==='pay'} disabled={!!rowMutating[String(r.id)]} onClick={async ()=>{
               const id = String(r.id)
               if (rowMutating[id]) return
               const todayISO = nowAU().format('YYYY-MM-DD')
@@ -307,14 +362,36 @@ export default function RecurringPage() {
               } finally {
                 setRowMutating(s => ({ ...s, [id]: undefined }))
               }
-            }}
-          >
-            <Button type="primary" loading={rowMutating[String(r.id)]==='pay'} disabled={!!rowMutating[String(r.id)]}>已付</Button>
-          </Popconfirm>
-        ))}
-        <Popconfirm title="确认停用该固定支出？停用后不再生成新记录，历史支出保留不受影响。" okText="停用" cancelText="取消" onConfirm={async()=>{ try { const resp = await fetch(`${API_BASE}/crud/recurring_payments/${r.id}`, { method:'DELETE', headers: authHeaders() }); if (!resp.ok) throw new Error(`HTTP ${resp.status}`); message.success('已停用'); await load(); await refreshMonth() } catch (e:any) { message.error(e?.message || '停用失败') } }}>
-          <Button danger>停用</Button>
-        </Popconfirm>
+            }}>已付</Button>
+            ))}
+            <Popconfirm
+              title="确认停用该固定支出？停用后不再生成新记录，历史支出保留不受影响。"
+              okText="停用"
+              cancelText="取消"
+              onConfirm={async()=>{
+            const id = String(r.id)
+            if (rowMutating[id]) return
+            setRowMutating(s => ({ ...s, [id]: 'pause' }))
+            try {
+              const resp = await fetch(`${API_BASE}/crud/recurring_payments/${r.id}`, { method:'DELETE', headers: authHeaders() })
+              if (!resp.ok) {
+                const txt = await resp.text().catch(()=> '')
+                throw new Error(txt || `HTTP ${resp.status}`)
+              }
+              message.success('已停用')
+              await load()
+              await refreshMonth()
+            } catch (e:any) {
+              message.error(e?.message || '停用失败')
+            } finally {
+              setRowMutating(s => ({ ...s, [id]: undefined }))
+            }
+          }}
+            >
+              <Button danger loading={rowMutating[String(r.id)]==='pause'} disabled={!!rowMutating[String(r.id)]}>停用</Button>
+            </Popconfirm>
+          </>
+        )}
       </Space>
     ) }
   ]
@@ -344,12 +421,44 @@ export default function RecurringPage() {
   const enhanced = list.map(r => ({ ...r, next_due_date: dueForSelectedMonth(r), is_paid: false }))
   const monthKey = m.format('YYYY-MM')
   async function refreshMonth() {
-    const pe = await fetch(`${API_BASE}/crud/property_expenses?month_key=${monthKey}`, { headers: authHeaders() }).then(r=>r.ok?r.json():[]).catch(()=>[])
-    const ce = await fetch(`${API_BASE}/crud/company_expenses?month_key=${monthKey}`, { headers: authHeaders() }).then(r=>r.ok?r.json():[]).catch(()=>[])
-    setExpenses([...(Array.isArray(pe)?pe:[]), ...(Array.isArray(ce)?ce:[])])
+    const rows = await fetchMonthExpenses(monthKey)
+    setExpenses(rows)
   }
-  useEffect(()=>{ refreshMonth() },[monthKey])
-  const tplById: Record<string, Recurring> = Object.fromEntries((list||[]).map(r=>[String(r.id), r]))
+  async function reloadAll() {
+    const seq = ++reloadSeq.current
+    setPageLoading(true)
+    try {
+      const [rows, monthRows] = await Promise.all([
+        fetchRecurringPayments(),
+        fetchMonthExpenses(monthKey),
+      ])
+      if (seq !== reloadSeq.current) return
+      setList(rows)
+      setExpenses(monthRows)
+      lastLoadedAt.current = Date.now()
+    } finally {
+      if (seq === reloadSeq.current) setPageLoading(false)
+    }
+    void (async () => {
+      const props = await fetchProperties()
+      if (seq !== reloadSeq.current) return
+      setProperties(props)
+    })()
+  }
+  useEffect(()=>{ void reloadAll() },[monthKey])
+  useEffect(()=>{
+    const onVisible = () => {
+      if (document.hidden) return
+      if (Date.now() - (lastLoadedAt.current || 0) < 1500) return
+      void reloadAll()
+    }
+    window.addEventListener('focus', onVisible)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('focus', onVisible)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  },[monthKey])
   const monthExpenses = (expenses||[]).filter(e=> String(e.month_key||'')===monthKey)
   const expByFixed: Record<string, ExpenseRow> = buildExpByFixed(monthExpenses)
   const templatesForMonth = enhanced.filter(t => {
@@ -363,10 +472,11 @@ export default function RecurringPage() {
       const e = expByFixed[String(t.id)]
       const amount = e ? Number(e.amount || 0) : Number(t.amount || 0)
       const category = e ? String(e.category || t.category || '') : t.category
-      const autoPaidInRent = isAutoPaidInRent({ ...t, category } as any)
+      const paused = String((t as any).status || '') === 'paused'
+      const autoPaidInRent = !paused && isAutoPaidInRent({ ...t, category } as any)
       const next_due_date = autoPaidInRent ? undefined : (e ? e.due_date : dueForSelectedMonth(t))
-      const is_paid = autoPaidInRent ? true : (e ? String(e.status||'')==='paid' : false)
-      return { ...t, amount, next_due_date, is_paid, status: is_paid ? 'paid' : (t.status||''), category }
+      const is_paid = paused ? false : (autoPaidInRent ? true : (e ? String(e.status||'')==='paid' : false))
+      return { ...t, amount, next_due_date, is_paid, status: (t.status||''), category }
     })
     .sort((a,b)=>{
       const aIsConsumables = String(a.category||'')==='消耗品费' || String(a.report_category||'')==='consumables'
@@ -388,19 +498,24 @@ export default function RecurringPage() {
     const label = getLabel(r.property_id)
     return String(label||'').toLowerCase().includes(q)
   })
-  const paidAmount = allRows.filter(r=>r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
-  const unpaidAmount = allRows.filter(r=>!r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
-  const paidCount = allRows.filter(r=>r.is_paid).length
-  const unpaidCount = allRows.filter(r=>!r.is_paid).length
-  const overdueCount = allRows.filter(r => { const nd = parseAU(r.next_due_date); return !r.is_paid && nd && nowAU().isAfter(nd, 'day') }).length
-  const soonCount = allRows.filter(r => { const nd = parseAU(r.next_due_date); const remind = Number((r.remind_days_before ?? 3)); const t = nowAU(); return !r.is_paid && nd && t.isBefore(nd, 'day') && nd.startOf('day').diff(t.startOf('day'), 'day') > 0 && nd.startOf('day').diff(t.startOf('day'), 'day') <= remind }).length
+  const activeRows = allRows.filter(r => String((r as any).status || '') !== 'paused')
+  const paidAmount = activeRows.filter(r=>r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
+  const unpaidAmount = activeRows.filter(r=>!r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
+  const paidCount = activeRows.filter(r=>r.is_paid).length
+  const unpaidCount = activeRows.filter(r=>!r.is_paid).length
+  const overdueCount = activeRows.filter(r => { const nd = parseAU(r.next_due_date); return !r.is_paid && nd && nowAU().isAfter(nd, 'day') }).length
+  const soonCount = activeRows.filter(r => { const nd = parseAU(r.next_due_date); const remind = Number((r.remind_days_before ?? 3)); const t = nowAU(); return !r.is_paid && nd && t.isBefore(nd, 'day') && nd.startOf('day').diff(t.startOf('day'), 'day') > 0 && nd.startOf('day').diff(t.startOf('day'), 'day') <= remind }).length
   useEffect(()=>{ if (soonCount>0) { message.warning(`本月有${soonCount}条固定支出即将到期`) } },[monthKey, soonCount])
 
-  const [snapKey, setSnapKey] = useState<string>('')
   useEffect(()=>{
     (async()=>{
+      if (pageLoading) return
       if (snapKey === monthKey) return
+      if (!templatesForMonth.length) return
+      setSnapKey(monthKey)
+      setSnapLoading(true)
       const tasks = templatesForMonth.map(async (t)=>{
+        if (String((t as any).status || '') === 'paused') return
         const e = expByFixed[String(t.id)]
         const startKey = String((t as any).start_month_key || '')
         const autoPaidInRent = isAutoPaidInRent(t)
@@ -427,11 +542,14 @@ export default function RecurringPage() {
           if (!resp.ok && resp.status !== 409) throw new Error(`HTTP ${resp.status}`)
         } catch {}
       })
-      await Promise.all(tasks)
-      setSnapKey(monthKey)
-      await refreshMonth()
+      try {
+        await Promise.all(tasks)
+        await refreshMonth()
+      } finally {
+        setSnapLoading(false)
+      }
     })()
-  },[monthKey, templatesForMonth.length])
+  },[monthKey, templatesForMonth.length, pageLoading])
 
   async function submit() {
     if (saving) return
@@ -469,15 +587,15 @@ export default function RecurringPage() {
   return (
     <Card title="固定支出" extra={<Space><DatePicker picker="month" value={month} onChange={(v)=> setMonth(v || dayjs())} /><Input allowClear placeholder="按房号搜索" value={searchText} onChange={(e)=> setSearchText(e.target.value)} style={{ width: 220 }} /><Button type="primary" onClick={()=>{ setEditing(null); form.resetFields(); form.setFieldsValue({ start_month: nowAU().startOf('month'), initial_mark: 'unpaid', frequency_months: 1, status: 'active', payment_type: 'bank_account' }); setOpen(true) }}>新增固定支出</Button></Space>}>
       <div className="stats-grid">
-        <Card><Statistic title="本月未付总额" value={unpaidAmount} prefix="$" precision={2} /></Card>
-        <Card><Statistic title="本月已付总额" value={paidAmount} prefix="$" precision={2} /></Card>
-        <Card><Statistic title="已付/未付数量" value={`${paidCount} / ${unpaidCount}`} /></Card>
-        <Card><Statistic title="逾期条数" value={overdueCount} valueStyle={{ color: overdueCount>0? 'red' : undefined }} /></Card>
-        <Card><Statistic title="即将到期条数" value={soonCount} valueStyle={{ color: soonCount>0? 'orange' : undefined }} /></Card>
+        <Card loading={pageLoading}><Statistic title="本月未付总额" value={unpaidAmount} prefix="$" precision={2} /></Card>
+        <Card loading={pageLoading}><Statistic title="本月已付总额" value={paidAmount} prefix="$" precision={2} /></Card>
+        <Card loading={pageLoading}><Statistic title="已付/未付数量" value={`${paidCount} / ${unpaidCount}`} /></Card>
+        <Card loading={pageLoading}><Statistic title="逾期条数" value={overdueCount} valueStyle={{ color: overdueCount>0? 'red' : undefined }} /></Card>
+        <Card loading={pageLoading}><Statistic title="即将到期条数" value={soonCount} valueStyle={{ color: soonCount>0? 'orange' : undefined }} /></Card>
       </div>
-      <Card title="固定支出" size="small" style={{ marginTop: 8 }}>
+      <Card title="固定支出" size="small" style={{ marginTop: 8 }} loading={pageLoading}>
         <div style={{ margin:'8px 0', color:'#888' }}>修改将从本月起生效，历史或已支付记录不会变化。</div>
-        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={allRows} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }}
+        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={(pageLoading ? [] : allRows)} loading={pageLoading || snapLoading} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }}
           rowClassName={(r)=>{
             const today = nowAU()
             const nd = parseAU(r.next_due_date)
@@ -493,7 +611,7 @@ export default function RecurringPage() {
             return ''
           }}
         />
-        {allRows.filter(r=>!r.is_paid).length === 0 ? <div style={{ margin:'8px 0', color:'#888' }}>本月无未支付固定支出</div> : null}
+        {(!pageLoading && allRows.filter(r=>!r.is_paid).length === 0) ? <div style={{ margin:'8px 0', color:'#888' }}>本月无未支付固定支出</div> : null}
       </Card>
       
       <Drawer open={open} onClose={()=>setOpen(false)} title={editing? '编辑固定支出':'新增固定支出'} width={720} footer={

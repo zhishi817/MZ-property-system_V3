@@ -7,12 +7,10 @@ import minMax from 'dayjs/plugin/minMax'
 import isSameOrAfter from 'dayjs/plugin/isSameOrAfter'
 dayjs.extend(minMax)
 dayjs.extend(isSameOrAfter)
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE, getJSON } from '../../lib/api'
 import { monthSegments, toDayStr, parseDateOnly } from '../../lib/orders'
 import { PieChart as RePieChart, Pie as RePie, Cell as ReCell, Tooltip as ReTooltip, Legend as ReLegend, ResponsiveContainer } from 'recharts'
-import { hasPerm, preloadRolePerms } from '../../lib/auth'
-import { pickHomeRoute } from '../../lib/homeRoute'
 
  type Property = { id: string; code?: string; address?: string; region?: string; biz_category?: 'leased'|'management_fee'; type?: string }
 type Order = { id: string; source?: string; property_id?: string; checkin?: string; checkout?: string; nights?: number; avg_nightly_price?: number; net_income?: number; price?: number }
@@ -27,21 +25,35 @@ export default function DashboardPage() {
   const [expenses, setExpenses] = useState<PropertyExpense[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
   const [orderSummary, setOrderSummary] = useState<{ total_orders: number; next7days: { date: string; checkin_count: number; checkout_count: number }[] }>({ total_orders: 0, next7days: [] })
+  const [pageLoading, setPageLoading] = useState(true)
+  const initialized = useRef(false)
   useEffect(() => {
+    if (initialized.current) return
+    initialized.current = true
     try {
       const role = localStorage.getItem('role') || ''
       if (role === 'maintenance_staff') { router.replace('/maintenance/overview'); return }
     } catch {}
-    ;(async () => {
-      try { await preloadRolePerms() } catch {}
-      if (!hasPerm('menu.dashboard')) { try { router.replace(pickHomeRoute()) } catch {} }
-    })()
-    getJSON<Property[]>('/properties').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([]))
-    getJSON<Order[]>('/orders').then((j) => setOrders(Array.isArray(j) ? j : [])).catch(() => setOrders([]))
-    getJSON<PropertyExpense[]>('/crud/property_expenses').then((j) => setExpenses(Array.isArray(j) ? j : [])).catch(() => setExpenses([]))
-    getJSON<Landlord[]>('/landlords').then((j) => setLandlords(Array.isArray(j) ? j : [])).catch(() => setLandlords([]))
     const loadSummary = () => getJSON<{ total_orders: number; next7days: { date: string; checkin_count: number; checkout_count: number }[] }>('/stats/orders-summary').then(setOrderSummary).catch(() => setOrderSummary({ total_orders: 0, next7days: [] }))
-    loadSummary()
+    ;(async () => {
+      setPageLoading(true)
+      try {
+        const [p, o, e, l, s] = await Promise.all([
+          getJSON<Property[]>('/properties').catch(() => []),
+          getJSON<Order[]>('/orders').catch(() => []),
+          getJSON<PropertyExpense[]>('/crud/property_expenses').catch(() => []),
+          getJSON<Landlord[]>('/landlords').catch(() => []),
+          getJSON<{ total_orders: number; next7days: { date: string; checkin_count: number; checkout_count: number }[] }>('/stats/orders-summary').catch(() => ({ total_orders: 0, next7days: [] })),
+        ])
+        setProperties(Array.isArray(p) ? p : [])
+        setOrders(Array.isArray(o) ? o : [])
+        setExpenses(Array.isArray(e) ? e : [])
+        setLandlords(Array.isArray(l) ? l : [])
+        setOrderSummary(s && typeof (s as any).total_orders === 'number' ? s : { total_orders: 0, next7days: [] })
+      } finally {
+        setPageLoading(false)
+      }
+    })()
     try {
       const es = new EventSource(`${API_BASE}/events/orders`)
       es.onmessage = () => { loadSummary() }
@@ -359,19 +371,19 @@ export default function DashboardPage() {
     <Space direction="vertical" style={{ width: '100%' }}>
       
       <Row gutter={[16, 16]}>
-        <Col xs={24} md={8}><Card style={{ height: 160 }}><Space direction="vertical" style={{ width:'100%', height:'100%', justifyContent:'center' }}><Statistic title="总房源数量" value={totalProps} valueStyle={{ fontSize: 26 }} /></Space></Card></Col>
-        <Col xs={24} md={8}><Card style={{ height: 160 }}><Space direction="vertical" style={{ width:'100%', height:'100%', justifyContent:'center' }}><Statistic title="房东数量" value={landlords.length} valueStyle={{ fontSize: 26 }} /></Space></Card></Col>
-        <Col xs={24} md={8}><Card title="订单总量" style={{ height: 160 }}><Space direction="vertical" style={{ width:'100%', height:'100%', justifyContent:'center' }}><Statistic title="总订单数" value={orderSummary.total_orders} valueStyle={{ fontSize: 26 }} /></Space></Card></Col>
+        <Col xs={24} md={8}><Card style={{ height: 160 }} loading={pageLoading}><Space direction="vertical" style={{ width:'100%', height:'100%', justifyContent:'center' }}><Statistic title="总房源数量" value={totalProps} valueStyle={{ fontSize: 26 }} /></Space></Card></Col>
+        <Col xs={24} md={8}><Card style={{ height: 160 }} loading={pageLoading}><Space direction="vertical" style={{ width:'100%', height:'100%', justifyContent:'center' }}><Statistic title="房东数量" value={landlords.length} valueStyle={{ fontSize: 26 }} /></Space></Card></Col>
+        <Col xs={24} md={8}><Card title="订单总量" style={{ height: 160 }} loading={pageLoading}><Space direction="vertical" style={{ width:'100%', height:'100%', justifyContent:'center' }}><Statistic title="总订单数" value={orderSummary.total_orders} valueStyle={{ fontSize: 26 }} /></Space></Card></Col>
       </Row>
 
       <Row gutter={[16,16]}>
-        <Col xs={24} md={12}><Card title="房源管理类型占比" style={{ height: 300 }}><ManagementTypePieChart /></Card></Col>
-        <Col xs={24} md={12}><Card title="各平台订单占比" style={{ height: 300, display:'flex', flexDirection:'column' }}>
-          <div style={{ display:'flex', gap:16, alignItems:'center' }}>
-            <div style={{ width: 180, height: 180, borderRadius: '50%', background: platformDonutGradient, position:'relative' }}>
-              <div style={{ position:'absolute', left:'50%', top:'50%', transform:'translate(-50%, -50%)', width: 100, height: 100, borderRadius: '50%', background:'#fff' }} />
+        <Col xs={24} md={12}><Card title="房源管理类型占比" style={{ height: 300 }} loading={pageLoading}><ManagementTypePieChart /></Card></Col>
+        <Col xs={24} md={12}><Card title="各平台订单占比" style={{ height: 300, display:'flex', flexDirection:'column' }} loading={pageLoading}>
+          <div style={{ display:'flex', gap:16, alignItems:'center', flexWrap:'wrap', justifyContent:'center' }}>
+            <div style={{ width: 'min(180px, 60vw)', height: 'min(180px, 60vw)', aspectRatio: '1 / 1', borderRadius: '50%', background: platformDonutGradient, position:'relative', flex: '0 0 auto' }}>
+              <div style={{ position:'absolute', left:'50%', top:'50%', transform:'translate(-50%, -50%)', width: '55%', height: '55%', borderRadius: '50%', background:'#fff' }} />
             </div>
-            <div style={{ display:'grid', gap:8 }}>
+            <div style={{ display:'grid', gap:8, minWidth: 220, flex: '1 1 220px' }}>
               {platformShare.map(r => (
                 <div key={r.key} style={{ display:'flex', alignItems:'center', gap:8 }}>
                   <span style={{ display:'inline-block', width:12, height:12, borderRadius:2, background: platformColors[r.key] || '#5B8FF9' }} />

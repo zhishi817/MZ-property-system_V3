@@ -1,5 +1,13 @@
 # Changelog
 
+## Dev (2026-03-01)
+
+- Finance recurring: Fix pause/resume lifecycle — pause keeps current-month paid records in revenue, removes current-month unpaid + future snapshots; prevent duplicate charges and add fixed_expense_id+month_key unique guard migration.
+- Finance recurring UI: Keep paused status stable across refresh; add “已停用/恢复”; “已付” no confirm, “取消已付” requires double confirm; speed up first load.
+- Dashboard: Reduce “multi-refresh” on login by deduping permission preload and initial data loads; add loading skeleton and improve responsiveness for platform share donut chart.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## Dev (2026-02-27)
 
 - Maintenance: Fix missing “after-repair” photos by persisting `repair_photo_urls` on create and adding a safe fallback parser on record view/edit.
