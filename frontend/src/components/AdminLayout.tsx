@@ -25,7 +25,14 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const [permTick, setPermTick] = useState(0)
-  async function preloadPerms() { try { await preloadRolePerms(); setPermTick((x)=>x+1) } catch {} }
+  const [permsLoaded, setPermsLoaded] = useState(false)
+  async function preloadPerms() {
+    try {
+      await preloadRolePerms()
+      setPermsLoaded(true)
+      setPermTick((x)=>x+1)
+    } catch {}
+  }
   function getCookie(name: string) {
     if (typeof document === 'undefined') return null
     const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()\[\]\\/+^])/g, '\\$1') + '=([^;]*)'))
@@ -42,6 +49,9 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   const authedRaw = (typeof document !== 'undefined') ? /(?:^|;\s*)auth=/.test(document.cookie || '') : false
   const authed = mounted ? authedRaw : false
   useEffect(() => {
+    if (!authed) setPermsLoaded(false)
+  }, [authed])
+  useEffect(() => {
     if (typeof document === 'undefined') return
     const m = document.cookie.match(/(?:^|;\s*)auth=([^;]*)/)
     const token = m ? decodeURIComponent(m[1]) : null
@@ -51,11 +61,8 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     } catch {}
   }, [pathname])
   useEffect(() => {
-    if (mounted && authed) { preloadPerms().catch(() => {}) }
-  }, [mounted, authed])
-  useEffect(() => {
-    if (mounted && authed) { preloadPerms().catch(() => {}) }
-  }, [mounted, authed, pathname])
+    if (mounted && authed && !permsLoaded) { preloadPerms().catch(() => {}) }
+  }, [mounted, authed, permsLoaded])
   useEffect(() => {
     if (!mounted || !authed) return
     ;(async () => {
@@ -80,10 +87,11 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!mounted || !authed) return
     if (isLogin || isPublic) return
+    if (!permsLoaded) return
     if (pathname.startsWith('/dashboard') && !hasPerm('menu.dashboard')) {
       try { router.replace(pickHomeRoute()) } catch {}
     }
-  }, [mounted, authed, isLogin, isPublic, pathname, permTick, router])
+  }, [mounted, authed, isLogin, isPublic, pathname, permTick, permsLoaded, router])
   const items: any[] = []
   if (hasPerm('menu.dashboard')) items.push({ key: 'dashboard', icon: <ProfileOutlined />, label: <Link href="/dashboard" prefetch={false}>总览</Link> })
   if (hasPerm('menu.landlords')) {
