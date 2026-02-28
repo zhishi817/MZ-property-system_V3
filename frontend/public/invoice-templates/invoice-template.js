@@ -274,7 +274,7 @@
       '</td>' +
       '</tr></table>' +
       (invType === 'invoice'
-        ? ('<div class="inv-card inv-payment-bottom"><h3>Payment&nbsp;Instructions</h3><div class="text">' + escapeHtml(payInst || '-') + '</div></div>')
+        ? ('<div class="inv-card inv-payment-bottom"><h3>Payment&nbsp;Instructions</h3><div class="text inv-lines" style="font-size:12px; color:rgba(17,24,39,0.75); white-space:normal; word-wrap:break-word;">' + renderLinesHtml(payInst || '-') + '</div></div>')
         : '') +
       (invType === 'quote' ? ('<div class="inv-disclaimer">本报价单仅供参考，具体以实际交易为准</div>') : '') +
       '</div>' +
@@ -373,7 +373,7 @@
       '</div>' +
       '</div>' +
       (invType === 'invoice'
-        ? ('<div class="inv-card inv-payment-bottom"><h3>Payment&nbsp;Instructions</h3><div class="text">' + escapeHtml(payInst || '-') + '</div></div>')
+        ? ('<div class="inv-card inv-payment-bottom"><h3>Payment&nbsp;Instructions</h3><div class="text inv-lines" style="font-size:12px; color:rgba(17,24,39,0.75); white-space:normal; word-wrap:break-word;">' + renderLinesHtml(payInst || '-') + '</div></div>')
         : '') +
       (invType === 'quote' ? ('<div class="inv-disclaimer">本报价单仅供参考，具体以实际交易为准</div>') : '') +
       '</div></div></div>'

@@ -39,6 +39,9 @@ type DeepCleaningRecord = {
   consumables?: any[]
   labor_minutes?: number
   labor_cost?: number
+  total_cost?: number
+  pay_method?: string
+  gst_type?: string
   review_status?: string
   review_notes?: string
   reviewed_by?: string
@@ -86,6 +89,49 @@ function fmtMinutes(m?: any): string {
   const mm = n % 60
   if (h <= 0) return `${mm} 分钟`
   return `${h} 小时 ${mm} 分钟`
+}
+
+function fmtAmount(a?: any) {
+  if (a === undefined || a === null || a === '') return '-'
+  const n = Number(a)
+  if (!Number.isFinite(n)) return String(a)
+  try {
+    return new Intl.NumberFormat('en-AU', { style: 'currency', currency: 'AUD' }).format(n).replace('A$', '$')
+  } catch {
+    return `$${n.toFixed(2)}`
+  }
+}
+
+function payMethodLabel(v?: string | null) {
+  const s = String(v || '')
+  if (!s) return '-'
+  if (s === 'rent_deduction') return '租金扣除'
+  if (s === 'tenant_pay') return '房客支付'
+  if (s === 'company_pay') return '公司承担'
+  if (s === 'landlord_pay') return '房东支付'
+  if (s === 'other_pay') return '其他人支付'
+  return s
+}
+
+function gstTypeLabel(v?: string | null) {
+  const s = String(v || '')
+  if (!s) return '-'
+  if (s === 'GST_INCLUDED_10') return '含GST'
+  if (s === 'GST_10') return '不含GST（另计）'
+  if (s === 'GST_FREE') return '免GST'
+  if (s === 'INPUT_TAXED') return 'INPUT_TAXED'
+  return s
+}
+
+function computeTotalCost(laborCostRaw: any, consumablesRaw: any) {
+  const labor = Number(laborCostRaw || 0)
+  const laborN = Number.isFinite(labor) ? labor : 0
+  const arr = Array.isArray(consumablesRaw) ? consumablesRaw : (safeJsonParse(consumablesRaw) || [])
+  const sum = (Array.isArray(arr) ? arr : []).reduce((s: number, x: any) => {
+    const n = Number(x?.cost || 0)
+    return s + (Number.isFinite(n) ? n : 0)
+  }, 0)
+  return Math.round(((laborN + sum) + Number.EPSILON) * 100) / 100
 }
 
 export default function DeepCleaningRecordsPage() {
@@ -137,6 +183,18 @@ export default function DeepCleaningRecordsPage() {
     { value: 'low', label: '低' },
     { value: 'normal', label: '中' },
     { value: 'high', label: '高' },
+  ]
+  const payMethodOptions = [
+    { value: 'rent_deduction', label: '租金扣除' },
+    { value: 'tenant_pay', label: '房客支付' },
+    { value: 'company_pay', label: '公司承担' },
+    { value: 'landlord_pay', label: '房东支付' },
+    { value: 'other_pay', label: '其他人支付' },
+  ]
+  const gstTypeOptions = [
+    { value: 'GST_INCLUDED_10', label: '含GST' },
+    { value: 'GST_10', label: '不含GST（另计）' },
+    { value: 'GST_FREE', label: '免GST' },
   ]
   const reviewOptions = [
     { value: 'pending', label: '待审核' },
@@ -278,6 +336,8 @@ export default function DeepCleaningRecordsPage() {
       consumables: [],
       labor_minutes: undefined,
       labor_cost: undefined,
+      pay_method: 'company_pay',
+      gst_type: 'GST_INCLUDED_10',
       review_status: 'pending',
     })
     setCreateOpen(true)
@@ -303,6 +363,8 @@ export default function DeepCleaningRecordsPage() {
       consumables: Array.isArray(v.consumables) ? v.consumables : [],
       labor_minutes: v.labor_minutes !== undefined ? Number(v.labor_minutes) : undefined,
       labor_cost: v.labor_cost !== undefined ? Number(v.labor_cost) : undefined,
+      pay_method: v.pay_method ? String(v.pay_method) : 'company_pay',
+      gst_type: v.gst_type ? String(v.gst_type) : 'GST_INCLUDED_10',
       review_status: 'pending',
     }
     try {
@@ -333,6 +395,8 @@ export default function DeepCleaningRecordsPage() {
       consumables,
       labor_minutes: (r as any).labor_minutes !== undefined ? Number((r as any).labor_minutes || 0) : undefined,
       labor_cost: (r as any).labor_cost !== undefined ? Number((r as any).labor_cost || 0) : undefined,
+      pay_method: r.pay_method || 'company_pay',
+      gst_type: r.gst_type || 'GST_INCLUDED_10',
       review_status: r.review_status || 'pending',
       review_notes: r.review_notes || '',
     })
@@ -372,6 +436,8 @@ export default function DeepCleaningRecordsPage() {
           consumables: Array.isArray(v.consumables) ? v.consumables : [],
           labor_minutes: v.labor_minutes !== undefined ? Number(v.labor_minutes) : null,
           labor_cost: v.labor_cost !== undefined ? Number(v.labor_cost) : null,
+          pay_method: v.pay_method ? String(v.pay_method) : 'company_pay',
+          gst_type: v.gst_type ? String(v.gst_type) : 'GST_INCLUDED_10',
         }
         await apiUpdate('property_deep_cleaning', String(editing.id), { ...payload })
       }
@@ -446,6 +512,11 @@ export default function DeepCleaningRecordsPage() {
     } },
     { title:'清洁人员', dataIndex:'worker_name', width: 140, ellipsis: true, render:(v:string)=> String(v || '-') },
     { title:'提交时间', dataIndex:'submitted_at', width: 160, render:(v:string, r: any)=> (v || (r as any)?.created_at) ? dayjs(v || (r as any)?.created_at).format('YYYY-MM-DD HH:mm') : '-' },
+    { title:'费用', dataIndex:'total_cost', width: 120, render: (_: any, r: any) => {
+      const v = (r as any)?.total_cost
+      const fallback = computeTotalCost((r as any)?.labor_cost, (r as any)?.consumables)
+      return fmtAmount(v !== undefined && v !== null ? v : fallback)
+    } },
     { title:'区域', dataIndex:'category', width: 120 },
     { title:'状态', dataIndex:'status', width: 120, render:(s:string)=> statusTag(s) },
     { title:'审核', dataIndex:'review_status', width: 120, render:(s:string)=> reviewTag(s) },
@@ -466,7 +537,17 @@ export default function DeepCleaningRecordsPage() {
         <Button type="primary" onClick={openCreate} disabled={!hasPerm('property_deep_cleaning.write')}>新增深度清洁</Button>
       }>
         <Space style={{ width:'100%', marginBottom: 12 }} wrap>
-          <Select placeholder="房号" allowClear options={propOptions} value={filterPropertyId} onChange={v=>setFilterPropertyId(v)} style={{ width: isMobile ? '100%' : 180 }} />
+          <Select
+            placeholder="房号"
+            allowClear
+            options={propOptions}
+            value={filterPropertyId}
+            onChange={v=>setFilterPropertyId(v)}
+            style={{ width: isMobile ? '100%' : 180 }}
+            showSearch
+            optionFilterProp="label"
+            filterOption={(input, option) => String((option as any)?.label ?? '').toLowerCase().includes(String(input || '').toLowerCase())}
+          />
           <Select placeholder="状态" allowClear options={statusOptions} value={filterStatus} onChange={v=>setFilterStatus(v)} style={{ width: isMobile ? '100%' : 160 }} />
           <Select placeholder="区域" allowClear options={catOptions} value={filterCat} onChange={v=>setFilterCat(v)} style={{ width: isMobile ? '100%' : 160 }} />
           <DatePicker.RangePicker value={dateRange as any} onChange={v=>setDateRange(v as any)} allowClear style={{ width: isMobile ? '100%' : undefined }} />
@@ -489,7 +570,7 @@ export default function DeepCleaningRecordsPage() {
               showSizeChanger: true,
               onChange: (p, ps) => { setPage(p); setPageSize(ps) }
             }}
-            scroll={{ x: 1200 }}
+            scroll={{ x: 1320 }}
             columns={columns as any}
           />
         </div>
@@ -556,6 +637,60 @@ export default function DeepCleaningRecordsPage() {
           <Form.Item name="notes" label="备注">
             <Input.TextArea rows={2} />
           </Form.Item>
+          <Card size="small" title="费用信息" style={{ marginBottom: 12 }}>
+            <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
+              <Form.Item name="labor_minutes" label="工时（分钟）">
+                <InputNumber min={0} style={{ width:'100%' }} />
+              </Form.Item>
+              <Form.Item name="labor_cost" label="人工费用（可选）">
+                <InputNumber min={0} style={{ width:'100%' }} />
+              </Form.Item>
+              <Form.Item name="pay_method" label="扣款方式">
+                <Select options={payMethodOptions} />
+              </Form.Item>
+              <Form.Item name="gst_type" label="GST">
+                <Select options={gstTypeOptions} />
+              </Form.Item>
+            </div>
+            <Form.Item label="总费用">
+              <Form.Item
+                noStyle
+                shouldUpdate={(p, c) => p.labor_cost !== c.labor_cost || p.consumables !== c.consumables}
+              >
+                {() => {
+                  const labor = createForm.getFieldValue('labor_cost')
+                  const cons = createForm.getFieldValue('consumables')
+                  return <span>{fmtAmount(computeTotalCost(labor, cons))}</span>
+                }}
+              </Form.Item>
+            </Form.Item>
+            <Form.Item name="consumables" label="耗材记录">
+              <Form.List name="consumables">
+                {(fields, { add, remove }) => (
+                  <Space direction="vertical" style={{ width:'100%' }}>
+                    {fields.map(f => (
+                      <div key={f.key} style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 120px 120px 120px 60px', gap: 8, alignItems:'center' }}>
+                        <Form.Item name={[f.name, 'name']} rules={[{ required: true, message:'名称必填' }]} style={{ marginBottom: 0 }}>
+                          <Input placeholder="耗材名称" />
+                        </Form.Item>
+                        <Form.Item name={[f.name, 'qty']} style={{ marginBottom: 0 }}>
+                          <InputNumber min={0} style={{ width:'100%' }} placeholder="数量" />
+                        </Form.Item>
+                        <Form.Item name={[f.name, 'unit']} style={{ marginBottom: 0 }}>
+                          <Input placeholder="单位" />
+                        </Form.Item>
+                        <Form.Item name={[f.name, 'cost']} style={{ marginBottom: 0 }}>
+                          <InputNumber min={0} style={{ width:'100%' }} placeholder="金额" />
+                        </Form.Item>
+                        <Button onClick={() => remove(f.name)}>删除</Button>
+                      </div>
+                    ))}
+                    <Button onClick={() => add({ name: '', qty: 1 })}>新增耗材</Button>
+                  </Space>
+                )}
+              </Form.List>
+            </Form.Item>
+          </Card>
         </Form>
       </Modal>
 
@@ -645,7 +780,25 @@ export default function DeepCleaningRecordsPage() {
               <Form.Item name="labor_cost" label="人工成本（可选）">
                 <InputNumber min={0} style={{ width:'100%' }} />
               </Form.Item>
+              <Form.Item name="pay_method" label="扣款方式">
+                <Select options={payMethodOptions} />
+              </Form.Item>
+              <Form.Item name="gst_type" label="GST">
+                <Select options={gstTypeOptions} />
+              </Form.Item>
             </div>
+            <Form.Item label="总费用">
+              <Form.Item
+                noStyle
+                shouldUpdate={(p, c) => p.labor_cost !== c.labor_cost || p.consumables !== c.consumables}
+              >
+                {() => {
+                  const labor = editForm.getFieldValue('labor_cost')
+                  const cons = editForm.getFieldValue('consumables')
+                  return <span>{fmtAmount(computeTotalCost(labor, cons))}</span>
+                }}
+              </Form.Item>
+            </Form.Item>
             <Form.Item name="consumables" label="耗材记录">
               <Form.List name="consumables">
                 {(fields, { add, remove }) => (
@@ -723,6 +876,18 @@ export default function DeepCleaningRecordsPage() {
               <div>
                 <Typography.Text type="secondary">提交时间</Typography.Text>
                 <div style={{ color:'#0b1738', marginTop:6 }}>{(viewing?.submitted_at || viewing?.created_at) ? dayjs(viewing?.submitted_at || viewing?.created_at).format('YYYY-MM-DD HH:mm') : '-'}</div>
+              </div>
+              <div>
+                <Typography.Text type="secondary">费用</Typography.Text>
+                <div style={{ color:'#0b1738', marginTop:6 }}>{fmtAmount(viewing?.total_cost !== undefined && viewing?.total_cost !== null ? viewing?.total_cost : computeTotalCost((viewing as any)?.labor_cost, (viewing as any)?.consumables))}</div>
+              </div>
+              <div>
+                <Typography.Text type="secondary">扣款方式</Typography.Text>
+                <div style={{ color:'#0b1738', marginTop:6 }}>{payMethodLabel((viewing as any)?.pay_method)}</div>
+              </div>
+              <div>
+                <Typography.Text type="secondary">GST</Typography.Text>
+                <div style={{ color:'#0b1738', marginTop:6 }}>{gstTypeLabel((viewing as any)?.gst_type)}</div>
               </div>
             </div>
           </div>

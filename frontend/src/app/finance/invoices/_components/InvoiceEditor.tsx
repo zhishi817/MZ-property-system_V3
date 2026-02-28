@@ -5,7 +5,7 @@ import { App, Button, Card, Checkbox, Col, Collapse, DatePicker, Divider, Form, 
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useRouter } from 'next/navigation'
-import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, DeleteOutlined, ArrowLeftOutlined } from '@ant-design/icons'
 import { API_BASE, authHeaders, getJSON, patchJSON, postJSON } from '../../../../lib/api'
 import { hasPerm } from '../../../../lib/auth'
 import { buildInvoicePayload } from '../../../../lib/invoicePayload'
@@ -724,6 +724,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
   const header = (
     <div className={styles.headerRow}>
       <div style={{ display:'flex', alignItems:'center', gap: 10 }}>
+        <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => router.push('/finance/invoices')} />
         <span className={styles.headerTitle}>{mode === 'new' ? '新建发票' : '编辑发票'}</span>
         {invoice ? statusTag(String(invoice.status || 'draft')) : null}
         {autosaving ? <span className={styles.muted}>自动保存中…</span> : null}

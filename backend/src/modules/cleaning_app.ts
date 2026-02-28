@@ -80,14 +80,15 @@ router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_
           t.status,
           t.assignee_id,
           t.inspector_id,
-          COALESCE(t.checkout_time, '10:00') as checkout_time,
-          COALESCE(t.checkin_time, '15:00') as checkin_time,
+          t.checkout_time as checkout_time,
+          t.checkin_time as checkin_time,
           t.old_code,
           t.new_code,
           COALESCE(p_id.id, p_code.id) as property_id,
           COALESCE(p_id.code, p_code.code) as property_code,
           COALESCE(p_id.address, p_code.address) as property_address,
           COALESCE(p_id.type, p_code.type) as property_unit_type,
+          COALESCE(p_id.region, p_code.region) as property_region,
           COALESCE(p_id.keybox_code, p_code.keybox_code) as property_keybox_code,
           COALESCE(p_id.access_guide_link, p_code.access_guide_link) as property_access_guide_link
         FROM cleaning_tasks t
@@ -111,12 +112,14 @@ router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_
           const propertyId = row.property_id === null || row.property_id === undefined ? null : String(row.property_id)
           const accessGuideLink =
             row.property_access_guide_link === null || row.property_access_guide_link === undefined ? null : String(row.property_access_guide_link)
+          const region = row.property_region === null || row.property_region === undefined ? null : String(row.property_region)
           const property = propertyId
             ? {
                 id: propertyId,
                 code: row.property_code === null || row.property_code === undefined ? '' : String(row.property_code),
                 address: row.property_address === null || row.property_address === undefined ? '' : String(row.property_address),
                 unit_type: row.property_unit_type === null || row.property_unit_type === undefined ? '' : String(row.property_unit_type),
+                region,
                 access_guide_link: accessGuideLink,
               }
             : null
@@ -128,8 +131,8 @@ router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_
             status: row.status === null || row.status === undefined ? '' : String(row.status),
             assignee_id: row.assignee_id === null || row.assignee_id === undefined ? null : String(row.assignee_id),
             inspector_id: row.inspector_id === null || row.inspector_id === undefined ? null : String(row.inspector_id),
-            checkout_time: row.checkout_time === null || row.checkout_time === undefined ? '10:00' : String(row.checkout_time),
-            checkin_time: row.checkin_time === null || row.checkin_time === undefined ? '15:00' : String(row.checkin_time),
+            checkout_time: row.checkout_time === null || row.checkout_time === undefined ? null : String(row.checkout_time),
+            checkin_time: row.checkin_time === null || row.checkin_time === undefined ? null : String(row.checkin_time),
             old_code: oldCode,
             new_code: newCode,
             access_code: accessCode,

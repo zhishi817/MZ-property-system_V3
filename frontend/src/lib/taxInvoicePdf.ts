@@ -267,7 +267,11 @@ export async function buildTaxInvoicePdf(params: { invoice: InvoicePdfData; comp
     if (company.bank_account_name) { doc.text(`Account Name: ${String(company.bank_account_name)}`, leftX, payY); payY += 16 }
     if (company.bank_bsb) { doc.text(`BSB: ${String(company.bank_bsb)}`, leftX, payY); payY += 16 }
     if (company.bank_account_no) { doc.text(`Account No.: ${String(company.bank_account_no)}`, leftX, payY); payY += 16 }
-    if (company.payment_note) { doc.text(String(company.payment_note), leftX, payY); payY += 16 }
+    if (company.payment_note) {
+      const lines = doc.splitTextToSize(String(company.payment_note), rightX - leftX)
+      doc.text(lines, leftX, payY)
+      payY += Math.max(16, lines.length * 16)
+    }
   }
 
   const filename = `tax_invoice_${invoiceNo || invoice.issue_date || invoice.due_date || 'draft'}.pdf`.replace(/[^\w\-\.]+/g, '_')

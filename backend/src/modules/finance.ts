@@ -10,6 +10,7 @@ import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } 
 import { requirePerm, requireAnyPerm } from '../auth'
 import { PDFDocument } from 'pdf-lib'
 import { pgInsertOnConflictDoNothing, pgPool } from '../dbAdapter'
+import { getChromiumBrowser } from '../lib/playwright'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -603,7 +604,7 @@ router.post(
         }
       } catch {}
     }
-    const out = await merged.save()
+    const out = await merged.save({ useObjectStreams: false })
     res.setHeader('Content-Type', 'application/pdf')
     res.setHeader('Content-Disposition', 'attachment; filename="statement-merged.pdf"')
     return res.status(200).send(Buffer.from(out))
@@ -620,6 +621,75 @@ router.post(
     return res.status(500).json({ message: err?.message || 'merge failed' })
   }
 )
+
+router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req: any, res: any) => {
+  try {
+    const { month, property_id, showChinese, includePhotosMode } = req.body || {}
+    const monthKey = String(month || '').trim()
+    const pid = String(property_id || '').trim()
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
+    if (!pid) return res.status(400).json({ message: 'missing property_id' })
+    const front = String(process.env.FRONTEND_BASE_URL || req.headers.origin || '').trim()
+    if (!front) return res.status(500).json({ message: 'missing FRONTEND_BASE_URL' })
+    const token = (() => {
+      const h = String(req.headers.authorization || '')
+      const m = h.match(/^Bearer\s+(.+)$/i)
+      if (m) return m[1].trim()
+      const c = String(req.headers.cookie || '')
+      const cm = c.match(/(?:^|;\s*)auth=([^;]+)/)
+      return cm ? decodeURIComponent(cm[1]) : ''
+    })()
+    if (!token) return res.status(401).json({ message: 'missing token' })
+    const photos = (() => {
+      const v = String(includePhotosMode || 'full')
+      if (v === 'thumbnail' || v === 'off') return v
+      return 'full'
+    })()
+    const url = (() => {
+      const u = new URL('/public/monthly-statement-print', front)
+      u.searchParams.set('pid', pid)
+      u.searchParams.set('month', monthKey)
+      u.searchParams.set('pdf', '1')
+      u.searchParams.set('showChinese', String(showChinese === false || showChinese === '0' ? '0' : '1'))
+      u.searchParams.set('photos', photos)
+      return u.toString()
+    })()
+    const browser = await getChromiumBrowser()
+    const context = await browser.newContext()
+    try {
+      await context.addCookies([{ name: 'auth', value: token, url: front } as any])
+      const page = await context.newPage()
+      await page.goto(url, { waitUntil: 'networkidle' })
+      await page.waitForFunction(() => {
+        const el = document.querySelector('[data-monthly-statement-root="1"]') as HTMLElement | null
+        if (!el) return false
+        const loaded = (el.getAttribute('data-deep-clean-loaded') || '') === '1'
+        return loaded
+      }, { timeout: 20000 })
+      await page.waitForFunction(async () => {
+        const imgs = Array.from(document.images || [])
+        await Promise.all(imgs.map(img => {
+          if ((img as any).complete) return Promise.resolve(null)
+          return new Promise((resolve) => {
+            img.addEventListener('load', resolve)
+            img.addEventListener('error', resolve)
+          })
+        }))
+        return true
+      }, { timeout: 20000 })
+      await page.waitForTimeout(200)
+      await page.emulateMedia({ media: 'print' } as any)
+      const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
+      res.setHeader('Content-Type', 'application/pdf')
+      res.setHeader('Content-Disposition', `attachment; filename="monthly-statement-${monthKey}.pdf"`)
+      return res.status(200).send(Buffer.from(pdf))
+    } finally {
+      try { await context.close() } catch {}
+    }
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'pdf failed' })
+  }
+})
 
 router.post('/send-monthly', requirePerm('finance.payout'), (req, res) => {
   const { landlord_id, month } = req.body || {}

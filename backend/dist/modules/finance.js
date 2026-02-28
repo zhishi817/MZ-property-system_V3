@@ -16,6 +16,7 @@ const fingerprint_1 = require("../fingerprint");
 const auth_1 = require("../auth");
 const pdf_lib_1 = require("pdf-lib");
 const dbAdapter_2 = require("../dbAdapter");
+const playwright_1 = require("../lib/playwright");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -651,7 +652,7 @@ exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 
             }
             catch (_b) { }
         }
-        const out = await merged.save();
+        const out = await merged.save({ useObjectStreams: false });
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', 'attachment; filename="statement-merged.pdf"');
         return res.status(200).send(Buffer.from(out));
@@ -667,6 +668,87 @@ exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 
     if (code)
         return res.status(400).json({ message: (err === null || err === void 0 ? void 0 : err.message) || `upload failed (${code})` });
     return res.status(500).json({ message: (err === null || err === void 0 ? void 0 : err.message) || 'merge failed' });
+});
+exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+    try {
+        const { month, property_id, showChinese, includePhotosMode } = req.body || {};
+        const monthKey = String(month || '').trim();
+        const pid = String(property_id || '').trim();
+        if (!/^\d{4}-\d{2}$/.test(monthKey))
+            return res.status(400).json({ message: 'invalid month' });
+        if (!pid)
+            return res.status(400).json({ message: 'missing property_id' });
+        const front = String(process.env.FRONTEND_BASE_URL || req.headers.origin || '').trim();
+        if (!front)
+            return res.status(500).json({ message: 'missing FRONTEND_BASE_URL' });
+        const token = (() => {
+            const h = String(req.headers.authorization || '');
+            const m = h.match(/^Bearer\s+(.+)$/i);
+            if (m)
+                return m[1].trim();
+            const c = String(req.headers.cookie || '');
+            const cm = c.match(/(?:^|;\s*)auth=([^;]+)/);
+            return cm ? decodeURIComponent(cm[1]) : '';
+        })();
+        if (!token)
+            return res.status(401).json({ message: 'missing token' });
+        const photos = (() => {
+            const v = String(includePhotosMode || 'full');
+            if (v === 'thumbnail' || v === 'off')
+                return v;
+            return 'full';
+        })();
+        const url = (() => {
+            const u = new URL('/public/monthly-statement-print', front);
+            u.searchParams.set('pid', pid);
+            u.searchParams.set('month', monthKey);
+            u.searchParams.set('pdf', '1');
+            u.searchParams.set('showChinese', String(showChinese === false || showChinese === '0' ? '0' : '1'));
+            u.searchParams.set('photos', photos);
+            return u.toString();
+        })();
+        const browser = await (0, playwright_1.getChromiumBrowser)();
+        const context = await browser.newContext();
+        try {
+            await context.addCookies([{ name: 'auth', value: token, url: front }]);
+            const page = await context.newPage();
+            await page.goto(url, { waitUntil: 'networkidle' });
+            await page.waitForFunction(() => {
+                const el = document.querySelector('[data-monthly-statement-root="1"]');
+                if (!el)
+                    return false;
+                const loaded = (el.getAttribute('data-deep-clean-loaded') || '') === '1';
+                return loaded;
+            }, { timeout: 20000 });
+            await page.waitForFunction(async () => {
+                const imgs = Array.from(document.images || []);
+                await Promise.all(imgs.map(img => {
+                    if (img.complete)
+                        return Promise.resolve(null);
+                    return new Promise((resolve) => {
+                        img.addEventListener('load', resolve);
+                        img.addEventListener('error', resolve);
+                    });
+                }));
+                return true;
+            }, { timeout: 20000 });
+            await page.waitForTimeout(200);
+            await page.emulateMedia({ media: 'print' });
+            const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true });
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="monthly-statement-${monthKey}.pdf"`);
+            return res.status(200).send(Buffer.from(pdf));
+        }
+        finally {
+            try {
+                await context.close();
+            }
+            catch (_a) { }
+        }
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'pdf failed' });
+    }
 });
 exports.router.post('/send-monthly', (0, auth_1.requirePerm)('finance.payout'), (req, res) => {
     const { landlord_id, month } = req.body || {};

@@ -19,6 +19,7 @@ import { exportElementToPdfBlob } from '../../../lib/pdfExport'
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; ref_type?: string; ref_id?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
+type DeepCleaning = { id: string; property_id?: string; property_code?: string; code?: string; occurred_at?: string; completed_at?: string; submitted_at?: string; created_at?: string; pay_method?: any; total_cost?: any; labor_cost?: any; consumables?: any; work_no?: string }
 type RevenueStatus = { scheduled_email_set: boolean; transferred: boolean }
 type PendingOps = Record<string, { scheduled?: boolean; transfer?: boolean }>
 type MergeUiStatus = 'active' | 'exception' | 'success'
@@ -27,6 +28,7 @@ export default function PropertyRevenuePage() {
   const [month, setMonth] = useState<any>(dayjs())
   const [orders, setOrders] = useState<Order[]>([])
   const [txs, setTxs] = useState<Tx[]>([])
+  const [deepCleaningExpenseTxs, setDeepCleaningExpenseTxs] = useState<Tx[]>([])
   const [excludeOrphanFixedSnapshots, setExcludeOrphanFixedSnapshots] = useState<boolean>(true)
   const [orphanFixedSnapshots, setOrphanFixedSnapshots] = useState<any[]>([])
   const [orphanOpen, setOrphanOpen] = useState(false)
@@ -35,6 +37,8 @@ export default function PropertyRevenuePage() {
   const [selectedPid, setSelectedPid] = useState<string | undefined>(undefined)
   const [previewPid, setPreviewPid] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [statementPdfMode, setStatementPdfMode] = useState(false)
+  const [exportQuality, setExportQuality] = useState<'standard' | 'high' | 'ultra'>('ultra')
   const [mergeUi, setMergeUi] = useState<{ open: boolean; percent: number; status: MergeUiStatus; stage: string; detail?: string }>({ open: false, percent: 0, status: 'active', stage: '', detail: '' })
   const [exportPreview, setExportPreview] = useState<{ open: boolean; url: string; pageCount: number; filename: string; loading: boolean }>({ open: false, url: '', pageCount: 0, filename: '', loading: false })
   const printRef = useRef<HTMLDivElement>(null)
@@ -51,6 +55,12 @@ export default function PropertyRevenuePage() {
       try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
       return { ...prev, open: false, url: '', loading: false }
     })
+  }
+
+  const pickExportParams = (mode: 'standard' | 'high' | 'ultra') => {
+    if (mode === 'standard') return { scale: 2, imageQuality: 0.82, imageType: 'jpeg' as const }
+    if (mode === 'high') return { scale: 3, imageQuality: 0.9, imageType: 'jpeg' as const }
+    return { scale: 4, imageQuality: 0.98, imageType: 'png' as const }
   }
   useEffect(() => {
     getJSON<Order[]>('/orders').then(setOrders).catch(()=>setOrders([]))
@@ -295,6 +305,81 @@ export default function PropertyRevenuePage() {
   }, [start, end])
 
   useEffect(() => {
+    ;(async () => {
+      try {
+        if (!start || !end) { setDeepCleaningExpenseTxs([]); return }
+        const normCode = (raw?: any) => {
+          const s0 = String(raw || '').trim()
+          if (!s0) return ''
+          const s = s0.split('(')[0].trim()
+          const t = s.split(/\s+/)[0].trim()
+          return t || s || s0
+        }
+        const isOwnerPay = (v: any) => {
+          const raw = String(v || '')
+          const s = raw.trim().toLowerCase()
+          if (!s) return false
+          if (s === 'landlord_pay') return true
+          if (s.includes('landlord') || s.includes('owner')) return true
+          if (raw.includes('房东')) return true
+          return false
+        }
+        const parseArr = (raw: any) => {
+          if (Array.isArray(raw)) return raw
+          if (typeof raw === 'string') { try { const j = JSON.parse(raw); return Array.isArray(j) ? j : [] } catch { return [] } }
+          return []
+        }
+        const from = start.startOf('month').format('YYYY-MM-DD')
+        const to = end.endOf('month').format('YYYY-MM-DD')
+        const list = await apiList<DeepCleaning[]>('property_deep_cleaning', { occurred_at_from: from, occurred_at_to: to, limit: 5000 } as any).catch(() => [])
+        const propsById = new Map((properties || []).map(p => [String(p.id), p]))
+        const propsByCode = new Map((properties || []).map(p => [normCode((p as any).code), p]))
+        const out: Tx[] = []
+        for (const d of (Array.isArray(list) ? list : [])) {
+          if (!isOwnerPay((d as any).pay_method)) continue
+          const pidRaw = String((d as any).property_id || '').trim()
+          const codeRaw = String((d as any).property_code || (d as any).code || '').trim()
+          const pid = pidRaw && propsById.has(pidRaw) ? pidRaw : (propsByCode.get(normCode(codeRaw))?.id || '')
+          if (!pid) continue
+          const labor = Number((d as any).labor_cost || 0)
+          const laborN = Number.isFinite(labor) ? labor : 0
+          const arr = parseArr((d as any).consumables)
+          const sum = arr.reduce((s: number, x: any) => {
+            const n = Number(x?.cost || 0)
+            return s + (Number.isFinite(n) ? n : 0)
+          }, 0)
+          const fallback = Math.round(((laborN + sum) + Number.EPSILON) * 100) / 100
+          const amount = Number(((d as any).total_cost !== undefined && (d as any).total_cost !== null) ? (d as any).total_cost : fallback) || 0
+          if (!(amount > 0)) continue
+          const dt = String((d as any).occurred_at || (d as any).completed_at || (d as any).created_at || '').slice(0, 10) || from
+          out.push({
+            id: `deep-cleaning-${String((d as any).id || '')}`,
+            kind: 'expense',
+            amount,
+            currency: 'AUD',
+            property_id: pid,
+            occurred_at: dt,
+            category: 'other',
+            category_detail: 'Deep cleaning maintenance',
+            ref_type: 'deep_cleaning',
+            ref_id: String((d as any).id || ''),
+          } as any)
+        }
+        setDeepCleaningExpenseTxs(out)
+      } catch {
+        setDeepCleaningExpenseTxs([])
+      }
+    })()
+  }, [start?.format('YYYY-MM'), end?.format('YYYY-MM'), properties])
+
+  const txsAll = useMemo(() => {
+    const base = Array.isArray(txs) ? txs : []
+    const extra = Array.isArray(deepCleaningExpenseTxs) ? deepCleaningExpenseTxs : []
+    if (!extra.length) return base
+    return base.concat(extra)
+  }, [txs, deepCleaningExpenseTxs])
+
+  useEffect(() => {
     if (!statusRange?.from || !statusRange?.to) return
     const qs = new URLSearchParams({ from: statusRange.from, to: statusRange.to, ...(selectedPid ? { property_id: selectedPid } : {}) }).toString()
     getJSON<any[]>(`/finance/property-revenue-status?${qs}`)
@@ -326,7 +411,7 @@ export default function PropertyRevenuePage() {
         const selectedPropertyCode = String(p.code || '')
         const selectedMonth = (month || dayjs()).format('YYYY-MM')
         const monthKey = (x: any) => dayjs(toDayStr((x as any).occurred_at)).format('YYYY-MM')
-        const expenses = (txs || []).filter(x => x.kind==='expense')
+        const expenses = (txsAll || []).filter(x => x.kind==='expense')
         console.log('expense candidates for code', selectedPropertyCode,
           expenses.filter(x => String((x as any).property_code || '').includes(selectedPropertyCode) || String((x as any).property_id || '').includes(String(p.id)))
         )
@@ -335,7 +420,7 @@ export default function PropertyRevenuePage() {
       for (const rm of rangeMonths) {
         const related = getMonthSegmentsForProperty(orders as any, rm.start, String(p.id))
         debugOnce(`REVENUE_DEBUG ${rm.label} ${String(p.id)}`, related.map(s => s.id))
-        const e = txs.filter(x => {
+        const e = txsAll.filter(x => {
           if (x.kind !== 'expense') return false
           if (!txMatchesProperty(x, p as any)) return false
           return txInMonth(x as any, rm.start)
@@ -348,7 +433,7 @@ export default function PropertyRevenuePage() {
           return Math.max(0, b.diff(a, 'day'))
         }
         const rentIncome = related.reduce((sum, seg) => sum + Number(((seg as any).visible_net_income ?? (seg as any).net_income ?? 0)), 0)
-        const otherIncomeTx = txs.filter(x => {
+        const otherIncomeTx = txsAll.filter(x => {
           if (x.kind !== 'income') return false
           if (x.property_id !== p.id) return false
           if (!dayjs(toDayStr(x.occurred_at)).isSame(rm.start, 'month')) return false
@@ -410,7 +495,7 @@ export default function PropertyRevenuePage() {
             propertyId: p.id,
             propertyCode: p.code || undefined,
             orders: orders as any,
-            txs: txs as any,
+            txs: txsAll as any,
             managementFeeRate: landlord?.management_fee_rate,
           })
           netFromBalance = Number(b.operating_net_income || 0)
@@ -427,7 +512,7 @@ export default function PropertyRevenuePage() {
       }
     }
     return out
-  }, [properties, orders, txs, landlords, start, end, selectedPid])
+  }, [properties, orders, txsAll, landlords, start, end, selectedPid])
 
   const totals = useMemo(() => {
     const sum = (arr: any[], key: string) => arr.reduce((s, x) => s + Number(x?.[key] || 0), 0)
@@ -691,9 +776,31 @@ export default function PropertyRevenuePage() {
         }}
       />
       </div>
-      <Modal title={period==='month' ? '月度报告' : (period==='year' ? '年度报告' : (period==='fiscal-year' ? '财年报告' : '半年报告'))} open={previewOpen} onCancel={() => setPreviewOpen(false)} footer={<>
+      <Modal title={period==='month' ? '月度报告' : (period==='year' ? '年度报告' : (period==='fiscal-year' ? '财年报告' : '半年报告'))} open={previewOpen} onCancel={() => { setPreviewOpen(false); setStatementPdfMode(false) }} footer={<>
         <Button onClick={async () => {
           if (!printRef.current) return
+          const waitMonthlyReady = async () => {
+            const el = printRef.current as HTMLElement
+            if (!el) return
+            if (String(el.getAttribute('data-monthly-statement-root') || '') !== '1') return
+            const t0 = Date.now()
+            while (Date.now() - t0 < 8000) {
+              const loaded = String(el.getAttribute('data-deep-clean-loaded') || '') === '1'
+              const pdfOk = String(el.getAttribute('data-pdf-mode') || '') === '1'
+              if (loaded && pdfOk) break
+              await new Promise(r => setTimeout(r, 80))
+            }
+            const cnt = Number(el.getAttribute('data-deep-clean-count') || 0)
+            if (Number.isFinite(cnt) && cnt > 0) {
+              while (Date.now() - t0 < 8000) {
+                if (el.querySelector('[data-deep-clean-section="1"]')) return
+                await new Promise(r => setTimeout(r, 80))
+              }
+            }
+          }
+          setStatementPdfMode(true)
+          await new Promise(r => setTimeout(r, 0))
+          await waitMonthlyReady()
           const style = `
             <style>
               html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -727,6 +834,7 @@ export default function PropertyRevenuePage() {
           await new Promise(r => setTimeout(r, 50))
           try { (iframe.contentWindow as any).focus(); (iframe.contentWindow as any).print() } catch {}
           setTimeout(() => { try { document.body.removeChild(iframe) } catch {} }, 500)
+          setTimeout(() => setStatementPdfMode(false), 800)
         }}>导出PDF</Button>
         <Button onClick={async () => {
           if (!printRef.current) return
@@ -745,13 +853,64 @@ export default function PropertyRevenuePage() {
                   ? `Fiscal Year Statement - ${month.format('YYYY-MM')}`
                   : `Statement - ${month.format('YYYY-MM')}`
             const filename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
+
+            if (period === 'month' && previewPid) {
+              const photosMode = exportQuality === 'standard' ? 'thumbnail' : 'full'
+              const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: photosMode }),
+              })
+              if (!resp.ok) {
+                let msg = `HTTP ${resp.status}`
+                try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
+                throw new Error(msg)
+              }
+              const blob = await resp.blob()
+              const url = URL.createObjectURL(blob)
+              setExportPreview((prev) => {
+                try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
+                return { ...prev, open: true, url, pageCount: 0, filename, loading: false }
+              })
+              return
+            }
+
+            const waitMonthlyReady = async () => {
+              const el = printRef.current as HTMLElement
+              if (!el) return
+              if (String(el.getAttribute('data-monthly-statement-root') || '') !== '1') return
+              const t0 = Date.now()
+              while (Date.now() - t0 < 8000) {
+                const loaded = String(el.getAttribute('data-deep-clean-loaded') || '') === '1'
+                const pdfOk = String(el.getAttribute('data-pdf-mode') || '') === '1'
+                if (loaded && pdfOk) break
+                await new Promise(r => setTimeout(r, 80))
+              }
+              const cnt = Number(el.getAttribute('data-deep-clean-count') || 0)
+              if (Number.isFinite(cnt) && cnt > 0) {
+                while (Date.now() - t0 < 8000) {
+                  if (el.querySelector('[data-deep-clean-section="1"]')) return
+                  await new Promise(r => setTimeout(r, 80))
+                }
+              }
+            }
+            setStatementPdfMode(true)
+            await new Promise(r => setTimeout(r, 0))
+            await waitMonthlyReady()
+            const imgCount = Number((printRef.current as any)?.getAttribute?.('data-deep-clean-count') || 0) || 0
+            const chosenQuality: 'standard' | 'high' | 'ultra' = (exportQuality === 'ultra' && imgCount > 12) ? 'high' : exportQuality
+            if (exportQuality === 'ultra' && chosenQuality !== 'ultra') {
+              message.warning('图片较多，已自动使用“高清（平衡）”以避免导出文件过大')
+            }
+            const exp = pickExportParams(chosenQuality)
             const { blob, pageCount } = await exportElementToPdfBlob({
               element: printRef.current as HTMLElement,
               orientation,
               rootWidthMm,
               marginMm: 10,
-              scale: 2,
-              imageQuality: 0.82,
+              scale: exp.scale,
+              imageQuality: exp.imageQuality,
+              imageType: exp.imageType,
               minSlicePx: 80,
               reservePx: 60,
               tailGapPx: 16,
@@ -777,11 +936,32 @@ export default function PropertyRevenuePage() {
           } catch (e: any) {
             message.error(String(e?.message || '生成导出预览失败'))
             setExportPreview((prev) => ({ ...prev, loading: false }))
+          } finally {
+            setStatementPdfMode(false)
           }
         }} loading={exportPreview.loading}>导出预览</Button>
         <Button type="primary" onClick={async () => {
           if (!printRef.current || !previewPid) return
           if (isMerging) return
+          const waitMonthlyReady = async () => {
+            const el = printRef.current as HTMLElement
+            if (!el) return
+            if (String(el.getAttribute('data-monthly-statement-root') || '') !== '1') return
+            const t0 = Date.now()
+            while (Date.now() - t0 < 8000) {
+              const loaded = String(el.getAttribute('data-deep-clean-loaded') || '') === '1'
+              const pdfOk = String(el.getAttribute('data-pdf-mode') || '') === '1'
+              if (loaded && pdfOk) break
+              await new Promise(r => setTimeout(r, 80))
+            }
+            const cnt = Number(el.getAttribute('data-deep-clean-count') || 0)
+            if (Number.isFinite(cnt) && cnt > 0) {
+              while (Date.now() - t0 < 8000) {
+                if (el.querySelector('[data-deep-clean-section="1"]')) return
+                await new Promise(r => setTimeout(r, 80))
+              }
+            }
+          }
           const updateMerge = (percent: number, stage: string, detail?: string) => {
             setMergeUi((prev) => ({ ...prev, open: true, percent: Math.max(0, Math.min(100, Math.round(percent))), status: 'active', stage, detail }))
           }
@@ -799,31 +979,12 @@ export default function PropertyRevenuePage() {
             updateMerge(20, '正在渲染页面...')
             const orientation = period === 'fiscal-year' ? 'l' : 'p'
             const rootWidthMm = period === 'fiscal-year' ? 277 : 190
-            const { blob: statementBlob, pageCount } = await exportElementToPdfBlob({
-              element: printRef.current as HTMLElement,
-              orientation,
-              rootWidthMm,
-              marginMm: 10,
-              scale: 2,
-              imageQuality: 0.82,
-              minSlicePx: 80,
-              reservePx: 60,
-              tailGapPx: 16,
-              cssText: `
-                html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; background:#ffffff; }
-                body { margin: 0; }
-                .__pdf_capture_root__ { padding: 0 2mm; }
-                table { width: 100%; border-collapse: collapse; }
-                th, td { border-bottom: 1px solid #ddd; }
-                .landlord-calendar .mz-booking { border-radius: 0; }
-                .landlord-calendar .fc-event-start .mz-booking { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
-                .landlord-calendar .fc-event-end .mz-booking { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
-                .landlord-calendar .mz-evt--airbnb .mz-booking { background-color: #FFE4E6 !important; border-color: #FB7185 !important; color: #881337 !important; }
-                .landlord-calendar .mz-evt--booking .mz-booking { background-color: #DBEAFE !important; border-color: #60A5FA !important; color: #1E3A8A !important; }
-                .landlord-calendar .mz-evt--other .mz-booking { background-color: #F3F4F6 !important; border-color: #9CA3AF !important; color: #111827 !important; }
-              `,
-            })
-            updateMerge(55, '正在准备合并附件...', `报表页数：${pageCount}`)
+            const imgCount = Number((printRef.current as any)?.getAttribute?.('data-deep-clean-count') || 0) || 0
+            const chosenQuality: 'standard' | 'high' | 'ultra' = (exportQuality === 'ultra' && imgCount > 12) ? 'high' : exportQuality
+            if (exportQuality === 'ultra' && chosenQuality !== 'ultra') {
+              message.warning('图片较多，已自动使用“高清（平衡）”以避免导出文件过大')
+            }
+            const exp = pickExportParams(chosenQuality)
             const prop = properties.find(p => String(p.id) === String(previewPid || ''))
             const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
             const prefix = period === 'month'
@@ -845,6 +1006,62 @@ export default function PropertyRevenuePage() {
                 document.body.removeChild(a)
                 URL.revokeObjectURL(url)
               } catch {}
+            }
+            let statementBlob: Blob
+            let pageCount = 0
+
+            if (period === 'month') {
+              updateMerge(26, '正在生成高清报表PDF...')
+              const photosMode = exportQuality === 'standard' ? 'thumbnail' : 'full'
+              const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: photosMode }),
+              })
+              if (!resp.ok) {
+                let msg = `HTTP ${resp.status}`
+                try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
+                throw new Error(msg)
+              }
+              statementBlob = await resp.blob()
+            } else {
+              updateMerge(26, '正在渲染页面...')
+              setStatementPdfMode(true)
+              await new Promise(r => setTimeout(r, 0))
+              await waitMonthlyReady()
+              const r = await exportElementToPdfBlob({
+                element: printRef.current as HTMLElement,
+                orientation,
+                rootWidthMm,
+                marginMm: 10,
+                scale: exp.scale,
+                imageQuality: exp.imageQuality,
+                imageType: exp.imageType,
+                minSlicePx: 80,
+                reservePx: 60,
+                tailGapPx: 16,
+                cssText: `
+                  html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; background:#ffffff; }
+                  body { margin: 0; }
+                  .__pdf_capture_root__ { padding: 0 2mm; }
+                  table { width: 100%; border-collapse: collapse; }
+                  th, td { border-bottom: 1px solid #ddd; }
+                  .landlord-calendar .mz-booking { border-radius: 0; }
+                  .landlord-calendar .fc-event-start .mz-booking { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
+                  .landlord-calendar .fc-event-end .mz-booking { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
+                  .landlord-calendar .mz-evt--airbnb .mz-booking { background-color: #FFE4E6 !important; border-color: #FB7185 !important; color: #881337 !important; }
+                  .landlord-calendar .mz-evt--booking .mz-booking { background-color: #DBEAFE !important; border-color: #60A5FA !important; color: #1E3A8A !important; }
+                  .landlord-calendar .mz-evt--other .mz-booking { background-color: #F3F4F6 !important; border-color: #9CA3AF !important; color: #111827 !important; }
+                `,
+              })
+              statementBlob = r.blob
+              pageCount = r.pageCount
+            }
+            updateMerge(55, '正在准备合并附件...', `报表页数：${pageCount}`)
+            if (statementBlob.size > 18 * 1024 * 1024) {
+              mergeFail(`报表PDF过大（${Math.round(statementBlob.size / 1024 / 1024)}MB），已回退仅下载报表。建议使用“标准/高清（平衡）”导出或拆分下载。`, true)
+              downloadBlob(statementBlob)
+              return
             }
             let invUrls: string[] = []
             try {
@@ -915,17 +1132,30 @@ export default function PropertyRevenuePage() {
             }
           } catch (e: any) {
             mergeFail(e?.message || '合并下载失败', false)
+          } finally {
+            setStatementPdfMode(false)
           }
         }} loading={isMerging} disabled={isMerging}>合并PDF下载</Button>
       </>} width={900}>
         {previewPid ? (
           period==='month' ? (
             <>
-              <div style={{ display:'flex', justifyContent:'flex-end', marginBottom: 8 }}>
-                <span style={{ marginRight: 8 }}>包含中文说明</span>
+              <div style={{ display:'flex', justifyContent:'flex-end', alignItems:'center', gap: 12, marginBottom: 8 }}>
+                <span>导出质量</span>
+                <Select
+                  value={exportQuality}
+                  onChange={setExportQuality as any}
+                  style={{ width: 180 }}
+                  options={[
+                    { value: 'standard', label: '标准（小文件）' },
+                    { value: 'high', label: '高清（平衡）' },
+                    { value: 'ultra', label: '超清（大文件）' },
+                  ]}
+                />
+                <span>包含中文说明</span>
                 <Switch checked={showChinese} onChange={setShowChinese as any} />
               </div>
-              <MonthlyStatementView ref={printRef} month={month.format('YYYY-MM')} propertyId={previewPid || undefined} orders={orders} txs={txs} properties={properties} landlords={landlords} showChinese={showChinese} showInvoices={false} />
+              <MonthlyStatementView ref={printRef} month={month.format('YYYY-MM')} propertyId={previewPid || undefined} orders={orders} txs={txs} properties={properties} landlords={landlords} showChinese={showChinese} showInvoices={false} pdfMode={statementPdfMode} />
             </>
           ) : period==='fiscal-year' ? (
             <FiscalYearStatement ref={printRef} baseMonth={month} propertyId={previewPid!} orders={orders} txs={txs} properties={properties} landlords={landlords} />

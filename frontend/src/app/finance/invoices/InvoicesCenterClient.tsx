@@ -332,9 +332,10 @@ export default function InvoicesCenterClient() {
   }, [])
 
   useEffect(() => {
+    if (activeTab !== 'records') return
     if (!companies.length) return
     loadInvoices().then(() => {})
-  }, [companies.length])
+  }, [activeTab, companies.length, filterCompany, filterStatus, filterRange])
 
   const columns: ColumnsType<Invoice> = [
     { title: '单号', dataIndex: 'invoice_no', width: 160, render: (v) => v || '-' },
