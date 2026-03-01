@@ -48,6 +48,158 @@ function computeDeepCleaningTotalCost(laborCostRaw: any, consumablesRaw: any) {
   return Math.round((total + Number.EPSILON) * 100) / 100
 }
 
+function toISODateOnly(v: any): string | null {
+  if (!v) return null
+  if (typeof v === 'string') {
+    const s = v.trim()
+    if (!s) return null
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
+    const d0 = new Date(s)
+    if (!isNaN(d0.getTime())) return d0.toISOString().slice(0, 10)
+    return null
+  }
+  if (v instanceof Date && !isNaN(v.getTime())) return v.toISOString().slice(0, 10)
+  try {
+    const d = new Date(v)
+    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10)
+  } catch {}
+  return null
+}
+
+function monthKeyFromDateOnly(d: string | null): string | null {
+  if (!d) return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null
+  return `${d.slice(0, 4)}-${d.slice(5, 7)}`
+}
+
+function normPayMethod(v: any): string {
+  return String(v || '').trim().toLowerCase()
+}
+
+function calcMaintenanceTotal(row: any): number {
+  const base = Number(row?.maintenance_amount || 0)
+  const baseN = Number.isFinite(base) ? base : 0
+  const hasParts = row?.has_parts === true
+  if (!hasParts) return Math.round((baseN + Number.EPSILON) * 100) / 100
+  const includesParts = row?.maintenance_amount_includes_parts === true
+  if (includesParts) return Math.round((baseN + Number.EPSILON) * 100) / 100
+  const parts = Number(row?.parts_amount || 0)
+  const partsN = Number.isFinite(parts) ? parts : 0
+  return Math.round(((baseN + partsN) + Number.EPSILON) * 100) / 100
+}
+
+async function upsertAutoPropertyExpense(client: any, input: { propertyId: string, occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string }) {
+  const { v4: uuid } = require('uuid')
+  const mk = monthKeyFromDateOnly(input.occurredAt)
+  await client.query(
+    `INSERT INTO property_expenses (id, property_id, occurred_at, amount, currency, category, category_detail, note, pay_method, generated_from, ref_type, ref_id, month_key, due_date)
+     VALUES ($1,$2,$3,$4,'AUD','other',$5,$6,'landlord_pay',$7,$8,$9,$10,$3)
+     ON CONFLICT (ref_type, ref_id) DO UPDATE
+     SET property_id=EXCLUDED.property_id, occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
+         note=EXCLUDED.note, pay_method=EXCLUDED.pay_method, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date`,
+    [uuid(), input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk]
+  )
+}
+
+async function upsertAutoCompanyExpense(client: any, input: { occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string }) {
+  const { v4: uuid } = require('uuid')
+  const mk = monthKeyFromDateOnly(input.occurredAt)
+  await client.query(
+    `INSERT INTO company_expenses (id, occurred_at, amount, currency, category, category_detail, note, generated_from, ref_type, ref_id, month_key, due_date)
+     VALUES ($1,$2,$3,'AUD','other',$4,$5,$6,$7,$8,$9,$2)
+     ON CONFLICT (ref_type, ref_id) DO UPDATE
+     SET occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
+         note=EXCLUDED.note, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date`,
+    [uuid(), input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk]
+  )
+}
+
+async function deleteAutoExpensesByRef(client: any, refType: string, refId: string) {
+  await client.query('DELETE FROM property_expenses WHERE ref_type=$1 AND ref_id=$2', [refType, refId])
+  await client.query('DELETE FROM company_expenses WHERE ref_type=$1 AND ref_id=$2', [refType, refId])
+}
+
+async function ensureAutoExpenseSchema(client: any) {
+  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_method text;') } catch {}
+  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
+  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_type text;') } catch {}
+  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_id text;') } catch {}
+  try { await client.query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;") } catch {}
+  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
+  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_type text;') } catch {}
+  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_id text;') } catch {}
+  try { await client.query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_ref ON company_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;") } catch {}
+}
+
+async function syncAutoExpensesFromDeepCleaningRow(row: any) {
+  if (!hasPg) return
+  const refType = 'deep_cleaning'
+  const refId = String(row?.id || '')
+  if (!refId) return
+  const propertyId = String(row?.property_id || '')
+  const status = String(row?.status || '')
+  const payMethod = normPayMethod(row?.pay_method)
+  const occurredAt = toISODateOnly(row?.completed_at) || toISODateOnly(row?.occurred_at) || toISODateOnly(row?.created_at)
+  const amtRaw = Number(row?.total_cost !== undefined && row?.total_cost !== null ? row.total_cost : computeDeepCleaningTotalCost(row?.labor_cost, row?.consumables))
+  const amount = Number.isFinite(amtRaw) ? Math.round((amtRaw + Number.EPSILON) * 100) / 100 : 0
+  const workNo = String(row?.work_no || refId)
+  const categoryDetail = `Deep cleaning - ${workNo}`
+  const generatedFrom = 'auto_deep_cleaning'
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool) return
+  await pgRunInTransaction(async (client) => {
+    await ensureAutoExpenseSchema(client)
+    const okStatus = status === 'completed'
+    const okAmount = amount > 0
+    if (!okStatus || !okAmount || (payMethod !== 'landlord_pay' && payMethod !== 'company_pay') || !occurredAt) {
+      await deleteAutoExpensesByRef(client, refType, refId)
+      return
+    }
+    if (payMethod === 'landlord_pay') {
+      if (!propertyId) { await deleteAutoExpensesByRef(client, refType, refId); return }
+      await client.query('DELETE FROM company_expenses WHERE ref_type=$1 AND ref_id=$2', [refType, refId])
+      await upsertAutoPropertyExpense(client, { propertyId, occurredAt, amount, categoryDetail, generatedFrom, refType, refId })
+      return
+    }
+    await client.query('DELETE FROM property_expenses WHERE ref_type=$1 AND ref_id=$2', [refType, refId])
+    await upsertAutoCompanyExpense(client, { occurredAt, amount, categoryDetail, generatedFrom, refType, refId })
+  })
+}
+
+async function syncAutoExpensesFromMaintenanceRow(row: any) {
+  if (!hasPg) return
+  const refType = 'maintenance'
+  const refId = String(row?.id || '')
+  if (!refId) return
+  const propertyId = String(row?.property_id || '')
+  const status = String(row?.status || '')
+  const payMethod = normPayMethod(row?.pay_method)
+  const occurredAt = toISODateOnly(row?.completed_at) || toISODateOnly(row?.occurred_at) || toISODateOnly(row?.created_at)
+  const amount = calcMaintenanceTotal(row)
+  const workNo = String(row?.work_no || refId)
+  const categoryDetail = `Maintenance - ${workNo}`
+  const generatedFrom = 'auto_maintenance'
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool) return
+  await pgRunInTransaction(async (client) => {
+    await ensureAutoExpenseSchema(client)
+    const okStatus = status === 'completed'
+    const okAmount = amount > 0
+    if (!okStatus || !okAmount || (payMethod !== 'landlord_pay' && payMethod !== 'company_pay') || !occurredAt) {
+      await deleteAutoExpensesByRef(client, refType, refId)
+      return
+    }
+    if (payMethod === 'landlord_pay') {
+      if (!propertyId) { await deleteAutoExpensesByRef(client, refType, refId); return }
+      await client.query('DELETE FROM company_expenses WHERE ref_type=$1 AND ref_id=$2', [refType, refId])
+      await upsertAutoPropertyExpense(client, { propertyId, occurredAt, amount, categoryDetail, generatedFrom, refType, refId })
+      return
+    }
+    await client.query('DELETE FROM property_expenses WHERE ref_type=$1 AND ref_id=$2', [refType, refId])
+    await upsertAutoCompanyExpense(client, { occurredAt, amount, categoryDetail, generatedFrom, refType, refId })
+  })
+}
+
 router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
   const { resource } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
@@ -1150,7 +1302,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
 
           let toInsert: any = payload
           if (resource === 'property_expenses') {
-            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status','generated_from']
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','pay_method','pay_other_note','ref_type','ref_id']
             const cleaned: any = { id: payload.id }
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -1168,7 +1320,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             } catch {}
             toInsert = cleaned
           } else if (resource === 'company_expenses') {
-            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status','generated_from']
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','ref_type','ref_id']
             const cleaned: any = { id: payload.id }
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -1258,7 +1410,11 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;')
               await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;')
               await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
-              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status','generated_from']
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_method text;')
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_other_note text;')
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','pay_method','pay_other_note','ref_type','ref_id']
               const cleaned: any = { id: payload.id }
               for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
               if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -1277,7 +1433,11 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             const { pgPool } = require('../dbAdapter')
             if (pgPool) {
               await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
-              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status','generated_from']
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_method text;')
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_other_note text;')
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
+              await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','pay_method','pay_other_note','ref_type','ref_id']
               const cleaned: any = { id: payload.id }
               for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
               if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -1301,7 +1461,9 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;')
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;')
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
-              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status','generated_from']
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','ref_type','ref_id']
               const cleaned: any = { id: payload.id }
               for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
               if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -1320,7 +1482,9 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             const { pgPool } = require('../dbAdapter')
             if (pgPool) {
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
-              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status','generated_from']
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','ref_type','ref_id']
               const cleaned: any = { id: payload.id }
               for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
               if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -1661,6 +1825,14 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
           return res.status(500).json({ message: msg || 'create failed' })
         }
       }
+      try {
+        if (resource === 'property_deep_cleaning') {
+          await syncAutoExpensesFromDeepCleaningRow(row)
+        } else if (resource === 'property_maintenance') {
+          const rows = Array.isArray(row) ? row : (row ? [row] : [])
+          for (const r of rows) await syncAutoExpensesFromMaintenanceRow(r)
+        }
+      } catch {}
       addAudit(resource, String((row as any)?.id || ''), 'create', null, row, (req as any).user?.sub)
       return res.status(201).json(row)
     }
@@ -1986,6 +2158,13 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
           throw e
         }
       }
+      try {
+        if (resource === 'property_deep_cleaning') {
+          await syncAutoExpensesFromDeepCleaningRow(row)
+        } else if (resource === 'property_maintenance') {
+          await syncAutoExpensesFromMaintenanceRow(row)
+        }
+      } catch {}
       addAudit(resource, id, 'update', null, row, (req as any).user?.sub)
       return res.json(row || { id, ...payload })
     }
@@ -2010,101 +2189,7 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
       if (resource === 'recurring_payments') {
         const purge = String((req.query as any)?.purge || '') === '1'
         if (!purge) {
-          const parts = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit' }).formatToParts(new Date())
-          let y = '', m = ''
-          for (const p of parts) { if ((p as any).type === 'year') y = (p as any).value; if ((p as any).type === 'month') m = (p as any).value }
-          const currentMonthKey = `${y}-${m}`
-          const currentMonthStart = `${currentMonthKey}-01`
-          const nextMonthKey = (() => {
-            const yy = Number(y)
-            const mm = Number(m)
-            if (!Number.isFinite(yy) || !Number.isFinite(mm)) return ''
-            const nextM = mm >= 12 ? 1 : (mm + 1)
-            const nextY = mm >= 12 ? (yy + 1) : yy
-            return `${String(nextY)}-${String(nextM).padStart(2, '0')}`
-          })()
-          const nextMonthStart = nextMonthKey ? `${nextMonthKey}-01` : ''
-          const result = await pgRunInTransaction(async (client) => {
-            try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;') } catch {}
-            try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;') } catch {}
-            try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
-            try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;') } catch {}
-            try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;') } catch {}
-            try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
-            try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;') } catch {}
-            try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;') } catch {}
-            try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
-            try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;') } catch {}
-            try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;') } catch {}
-            try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
-
-            const beforeRes = await client.query(`SELECT * FROM recurring_payments WHERE id = $1`, [id])
-            const before = beforeRes.rows?.[0] || null
-            if (!before) return { before: null, after: null }
-            const afterRes = await client.query(`UPDATE recurring_payments SET status='paused' WHERE id = $1 RETURNING *`, [id])
-            const after = afterRes.rows?.[0] || null
-            const guard = `(generated_from = 'recurring_payments' OR (coalesce(generated_from,'') = '' AND coalesce(note,'') ILIKE 'Fixed payment%'))`
-            const d1 = await client.query(
-              `DELETE FROM company_expenses
-               WHERE fixed_expense_id = $1
-                 AND ${guard}
-                 AND (
-                   (
-                     coalesce(month_key,'') <> ''
-                     AND (
-                       month_key > $2
-                       OR (month_key = $2 AND coalesce(status,'unpaid') <> 'paid')
-                     )
-                   )
-                   OR (
-                     (coalesce(month_key,'') = '')
-                     AND $4 <> ''
-                     AND (
-                       (COALESCE(paid_date, due_date, occurred_at::date) >= to_date($4,'YYYY-MM-DD'))
-                       OR (
-                         COALESCE(paid_date, due_date, occurred_at::date) >= to_date($3,'YYYY-MM-DD')
-                         AND COALESCE(paid_date, due_date, occurred_at::date) < to_date($4,'YYYY-MM-DD')
-                         AND coalesce(status,'unpaid') <> 'paid'
-                       )
-                     )
-                   )
-                 )
-               RETURNING id`,
-              [id, currentMonthKey, currentMonthStart, nextMonthStart]
-            )
-            const d2 = await client.query(
-              `DELETE FROM property_expenses
-               WHERE fixed_expense_id = $1
-                 AND ${guard}
-                 AND (
-                   (
-                     coalesce(month_key,'') <> ''
-                     AND (
-                       month_key > $2
-                       OR (month_key = $2 AND coalesce(status,'unpaid') <> 'paid')
-                     )
-                   )
-                   OR (
-                     (coalesce(month_key,'') = '')
-                     AND $4 <> ''
-                     AND (
-                       (COALESCE(paid_date, due_date, occurred_at::date) >= to_date($4,'YYYY-MM-DD'))
-                       OR (
-                         COALESCE(paid_date, due_date, occurred_at::date) >= to_date($3,'YYYY-MM-DD')
-                         AND COALESCE(paid_date, due_date, occurred_at::date) < to_date($4,'YYYY-MM-DD')
-                         AND coalesce(status,'unpaid') <> 'paid'
-                       )
-                     )
-                   )
-                 )
-               RETURNING id`,
-              [id, currentMonthKey, currentMonthStart, nextMonthStart]
-            )
-            return { before, after, cleared_company_expenses: Number(d1.rowCount || 0), cleared_property_expenses: Number(d2.rowCount || 0), from_month_key: currentMonthKey }
-          })
-          if (!result?.before) return res.status(404).json({ message: 'not found' })
-          addAudit(resource, id, 'pause', (result as any).before, (result as any).after, (req as any).user?.sub)
-          return res.json({ ok: true, paused: true, cleared_company_expenses: (result as any).cleared_company_expenses || 0, cleared_property_expenses: (result as any).cleared_property_expenses || 0, from_month_key: (result as any).from_month_key || null })
+          return res.status(405).json({ message: 'use /recurring/payments/:id/pause' })
         }
         const result = await pgRunInTransaction(async (client) => {
           try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}

@@ -36,6 +36,7 @@ export default function RecurringPage() {
   const [pageLoading, setPageLoading] = useState(true)
   const [snapLoading, setSnapLoading] = useState(false)
   const [snapKey, setSnapKey] = useState<string>('')
+  const [suppressSnapUntil, setSuppressSnapUntil] = useState(0)
   const reloadSeq = useRef(0)
   const lastLoadedAt = useRef(0)
 
@@ -194,8 +195,9 @@ export default function RecurringPage() {
                 const id = String(r.id)
                 if (rowMutating[id]) return
                 setRowMutating(s => ({ ...s, [id]: 'resume' }))
+                setSuppressSnapUntil(Date.now() + 4000)
                 try {
-                  const resp = await fetch(`${API_BASE}/crud/recurring_payments/${id}`, { method:'PATCH', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ status: 'active' }) })
+                  const resp = await fetch(`${API_BASE}/recurring/payments/${id}/resume`, { method:'POST', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ month_key: monthKey }) })
                   if (!resp.ok) {
                     const txt = await resp.text().catch(()=> '')
                     throw new Error(txt || `HTTP ${resp.status}`)
@@ -372,8 +374,9 @@ export default function RecurringPage() {
             const id = String(r.id)
             if (rowMutating[id]) return
             setRowMutating(s => ({ ...s, [id]: 'pause' }))
+            setSuppressSnapUntil(Date.now() + 4000)
             try {
-              const resp = await fetch(`${API_BASE}/crud/recurring_payments/${r.id}`, { method:'DELETE', headers: authHeaders() })
+              const resp = await fetch(`${API_BASE}/recurring/payments/${r.id}/pause`, { method:'POST', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: '{}' })
               if (!resp.ok) {
                 const txt = await resp.text().catch(()=> '')
                 throw new Error(txt || `HTTP ${resp.status}`)
@@ -510,6 +513,7 @@ export default function RecurringPage() {
   useEffect(()=>{
     (async()=>{
       if (pageLoading) return
+      if (Date.now() < suppressSnapUntil) return
       if (snapKey === monthKey) return
       if (!templatesForMonth.length) return
       setSnapKey(monthKey)
@@ -549,7 +553,7 @@ export default function RecurringPage() {
         setSnapLoading(false)
       }
     })()
-  },[monthKey, templatesForMonth.length, pageLoading])
+  },[monthKey, templatesForMonth.length, pageLoading, suppressSnapUntil])
 
   async function submit() {
     if (saving) return
