@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS company_expenses_dedup_backup_20260302 (LIKE company_
 
 WITH ranked AS (
   SELECT
-    p.*,
+    p.id,
     ROW_NUMBER() OVER (
       PARTITION BY fixed_expense_id, month_key
       ORDER BY
@@ -34,7 +34,11 @@ WITH ranked AS (
     AND month_key <> ''
 )
 INSERT INTO property_expenses_dedup_backup_20260302
-SELECT (ranked).* FROM ranked WHERE rn > 1;
+SELECT p.*
+FROM property_expenses p
+JOIN ranked r ON r.id = p.id
+WHERE r.rn > 1
+ON CONFLICT (id) DO NOTHING;
 
 WITH ranked AS (
   SELECT
@@ -60,7 +64,7 @@ WHERE p.id = r.id AND r.rn > 1;
 
 WITH ranked AS (
   SELECT
-    c.*,
+    c.id,
     ROW_NUMBER() OVER (
       PARTITION BY fixed_expense_id, month_key
       ORDER BY
@@ -77,7 +81,11 @@ WITH ranked AS (
     AND month_key <> ''
 )
 INSERT INTO company_expenses_dedup_backup_20260302
-SELECT (ranked).* FROM ranked WHERE rn > 1;
+SELECT c.*
+FROM company_expenses c
+JOIN ranked r ON r.id = c.id
+WHERE r.rn > 1
+ON CONFLICT (id) DO NOTHING;
 
 WITH ranked AS (
   SELECT
@@ -132,4 +140,3 @@ GROUP BY fixed_expense_id, month_key
 HAVING COUNT(*) > 1
 ORDER BY cnt DESC
 LIMIT 50;
-
