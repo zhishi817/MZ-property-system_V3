@@ -37,6 +37,7 @@ import { auth } from './auth'
 import publicRouter from './modules/public'
 import publicAdminRouter from './modules/public_admin'
 import { r2Status } from './r2'
+import { getPlaywrightDiagnostics } from './lib/playwright'
  
  
 // 环境保险锁（允许缺省采用智能默认，不再抛错）
@@ -158,6 +159,9 @@ app.get('/health/version', (_req, res) => {
   try { pkg = require('../package.json') } catch {}
   const build = process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown'
   res.json({ build, version: pkg.version || 'unknown', node_env: process.env.NODE_ENV || 'unknown', started_at: new Date().toISOString() })
+})
+app.get('/health/playwright', (_req, res) => {
+  try { return res.json(getPlaywrightDiagnostics()) } catch (e: any) { return res.status(500).json({ message: String(e?.message || '') }) }
 })
 app.post('/internal/trigger-email-sync', async (req, res) => {
   const h = String(req.headers.authorization || '')
