@@ -1,5 +1,14 @@
 # Changelog
 
+## Dev (2026-03-02)
+
+- Finance recurring: Fix duplicate fixed-expense snapshots triggered by pause/resume; introduce dedicated `POST /recurring/payments/:id/pause` and `POST /recurring/payments/:id/resume` with transaction-level locking and idempotent snapshot ensure.
+- Finance recurring UI: Switch Pause/Resume buttons to the new endpoints and suppress the auto-snapshot effect right after toggles to avoid repeated inserts on refresh/re-focus.
+- DB: Add a production-safe dedup + unique index migration with transaction + backup tables + post-check queries: `20260302_recurring_fixed_expense_month_unique_safe.sql` (fixed_expense_id + month_key).
+- Safety: Deprecate using `DELETE /crud/recurring_payments/:id` as “pause” (now returns 405 and points to the pause endpoint); keep `purge=1` for actual delete.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## Dev (2026-03-01)
 
 - Finance recurring: Fix pause/resume lifecycle — pause keeps current-month paid records in revenue, removes current-month unpaid + future snapshots; prevent duplicate charges and add fixed_expense_id+month_key unique guard migration.

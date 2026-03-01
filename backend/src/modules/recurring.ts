@@ -102,6 +102,7 @@ const createPaymentSchema = z.object({
   start_month_key: monthKeySchema,
   initial_mark: z.enum(['paid', 'unpaid']).optional().default('unpaid'),
 })
+const resumeSchema = z.object({ month_key: monthKeySchema.optional() })
 
 router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx.write']), async (req, res) => {
   if (!hasPg) return res.status(500).json({ message: 'pg not available' })
@@ -130,6 +131,7 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
     const result = await pgRunInTransaction(async (client) => {
       await ensureRecurringPaymentsSchema(client)
       await ensureExpensesSchema(client)
+      await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202603, String(payment.id)])
 
       const keys = Object.keys(payment)
       const cols = keys.map((k) => `"${k}"`).join(', ')
@@ -175,14 +177,15 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
             status: 'paid',
           }
           if (scope === 'property') payload.property_id = payment.property_id || null
-          await client.query(
+          const ins2 = await client.query(
             `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})`,
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})
+             ON CONFLICT DO NOTHING`,
             scope === 'property'
               ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
               : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
           )
-          inserted++
+          if (Number(ins2?.rowCount || 0) > 0) inserted++
         } else if (String((row as any).status || '') !== 'paid') {
           const nextPaid = toISODate((row as any).paid_date) || toISODate((row as any).due_date) || dueISO
           const nextDue = toISODate((row as any).due_date) || dueISO
@@ -214,14 +217,15 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
             status: wantPaid ? 'paid' : 'unpaid',
           }
           if (scope === 'property') payload.property_id = payment.property_id || null
-          await client.query(
+          const ins3 = await client.query(
             `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})`,
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})
+             ON CONFLICT DO NOTHING`,
             scope === 'property'
               ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
               : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
           )
-          inserted++
+          if (Number(ins3?.rowCount || 0) > 0) inserted++
         }
       }
 
@@ -231,6 +235,155 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
     return res.status(201).json({ ok: true, ...result })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'create failed' })
+  }
+})
+
+router.post('/payments/:id/pause', requireAnyPerm(['recurring_payments.write', 'finance.tx.write']), async (req, res) => {
+  if (!hasPg) return res.status(500).json({ message: 'pg not available' })
+  const { id } = req.params
+  const currentMonthKey = currentMonthKeyAU()
+  const curIdx = monthKeyToIndex(currentMonthKey)
+  const nextMonthKey = Number.isFinite(curIdx) ? indexToMonthKey(curIdx + 1) : ''
+  const currentMonthStart = `${currentMonthKey}-01`
+  const nextMonthStart = nextMonthKey ? `${nextMonthKey}-01` : ''
+  try {
+    const result = await pgRunInTransaction(async (client) => {
+      await ensureRecurringPaymentsSchema(client)
+      await ensureExpensesSchema(client)
+      await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202603, String(id)])
+      const beforeRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
+      const before = beforeRes.rows?.[0] || null
+      if (!before) return { notFound: true }
+      const afterRes = await client.query(`UPDATE recurring_payments SET status='paused', updated_at = now() WHERE id = $1 RETURNING *`, [id])
+      const after = afterRes.rows?.[0] || null
+      const guard = `(generated_from = 'recurring_payments' OR (coalesce(generated_from,'') = '' AND coalesce(note,'') ILIKE 'Fixed payment%'))`
+      const d1 = await client.query(
+        `DELETE FROM company_expenses
+         WHERE fixed_expense_id = $1
+           AND ${guard}
+           AND (
+             (
+               coalesce(month_key,'') <> ''
+               AND (
+                 month_key > $2
+                 OR (month_key = $2 AND coalesce(status,'unpaid') <> 'paid')
+               )
+             )
+             OR (
+               (coalesce(month_key,'') = '')
+               AND $4 <> ''
+               AND (
+                 (COALESCE(paid_date, due_date, occurred_at::date) >= to_date($4,'YYYY-MM-DD'))
+                 OR (
+                   COALESCE(paid_date, due_date, occurred_at::date) >= to_date($3,'YYYY-MM-DD')
+                   AND COALESCE(paid_date, due_date, occurred_at::date) < to_date($4,'YYYY-MM-DD')
+                   AND coalesce(status,'unpaid') <> 'paid'
+                 )
+               )
+             )
+           )
+         RETURNING id`,
+        [id, currentMonthKey, currentMonthStart, nextMonthStart]
+      )
+      const d2 = await client.query(
+        `DELETE FROM property_expenses
+         WHERE fixed_expense_id = $1
+           AND ${guard}
+           AND (
+             (
+               coalesce(month_key,'') <> ''
+               AND (
+                 month_key > $2
+                 OR (month_key = $2 AND coalesce(status,'unpaid') <> 'paid')
+               )
+             )
+             OR (
+               (coalesce(month_key,'') = '')
+               AND $4 <> ''
+               AND (
+                 (COALESCE(paid_date, due_date, occurred_at::date) >= to_date($4,'YYYY-MM-DD'))
+                 OR (
+                   COALESCE(paid_date, due_date, occurred_at::date) >= to_date($3,'YYYY-MM-DD')
+                   AND COALESCE(paid_date, due_date, occurred_at::date) < to_date($4,'YYYY-MM-DD')
+                   AND coalesce(status,'unpaid') <> 'paid'
+                 )
+               )
+             )
+           )
+         RETURNING id`,
+        [id, currentMonthKey, currentMonthStart, nextMonthStart]
+      )
+      return { before, after, cleared_company_expenses: Number(d1.rowCount || 0), cleared_property_expenses: Number(d2.rowCount || 0), from_month_key: currentMonthKey }
+    })
+    if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
+    addAudit('RecurringPayment', String(id), 'pause', (result as any).before, (result as any).after, (req as any).user?.sub)
+    return res.json({ ok: true, paused: true, cleared_company_expenses: (result as any).cleared_company_expenses || 0, cleared_property_expenses: (result as any).cleared_property_expenses || 0, from_month_key: (result as any).from_month_key || null })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'pause failed' })
+  }
+})
+
+router.post('/payments/:id/resume', requireAnyPerm(['recurring_payments.write', 'finance.tx.write']), async (req, res) => {
+  if (!hasPg) return res.status(500).json({ message: 'pg not available' })
+  const { id } = req.params
+  const parsed = resumeSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const monthKey = String(parsed.data.month_key || currentMonthKeyAU())
+  const currentMonthKey = currentMonthKeyAU()
+  const monthIdx = monthKeyToIndex(monthKey)
+  const curIdx = monthKeyToIndex(currentMonthKey)
+  if (!Number.isFinite(monthIdx) || !Number.isFinite(curIdx)) return res.status(400).json({ message: 'invalid month key' })
+  try {
+    const result = await pgRunInTransaction(async (client) => {
+      await ensureRecurringPaymentsSchema(client)
+      await ensureExpensesSchema(client)
+      await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202603, String(id)])
+      const beforeRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
+      const before = beforeRes.rows?.[0] || null
+      if (!before) return { notFound: true }
+      const afterRes = await client.query(`UPDATE recurring_payments SET status='active', updated_at = now() WHERE id = $1 RETURNING *`, [id])
+      const after = afterRes.rows?.[0] || before
+
+      const scope = String(after.scope || before.scope || 'company')
+      const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
+      const dueDay = Number(after.due_day_of_month || 1)
+      const dueISO = after.payment_type === 'rent_deduction' ? `${monthKey}-01` : computeDueISO(monthKey, dueDay)
+      const shouldPaid = after.payment_type === 'rent_deduction' || monthIdx < curIdx
+      const existing = await client.query(`SELECT id FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
+      if (!existing.rowCount) {
+        const { v4: uuid } = require('uuid')
+        const payload: any = {
+          id: uuid(),
+          occurred_at: dueISO,
+          amount: Number(after.amount || 0),
+          currency: 'AUD',
+          category: after.category || 'other',
+          category_detail: after.category_detail || null,
+          note: 'Fixed payment snapshot',
+          generated_from: 'recurring_payments',
+          fixed_expense_id: id,
+          month_key: monthKey,
+          due_date: dueISO,
+          paid_date: shouldPaid ? dueISO : null,
+          status: shouldPaid ? 'paid' : 'unpaid',
+        }
+        if (scope === 'property') payload.property_id = after.property_id || before.property_id || null
+        await client.query(
+          `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})
+           ON CONFLICT DO NOTHING`,
+          scope === 'property'
+            ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
+            : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
+        )
+      }
+      return { before, after, month_key: monthKey, ensured: true }
+    })
+    if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
+    addAudit('RecurringPayment', String(id), 'resume', (result as any).before, (result as any).after, (req as any).user?.sub)
+    return res.json({ ok: true, resumed: true, month_key: (result as any).month_key || monthKey })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'resume failed' })
   }
 })
 
@@ -246,6 +399,7 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
     const result = await pgRunInTransaction(async (client) => {
       await ensureRecurringPaymentsSchema(client)
       await ensureExpensesSchema(client)
+      await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202603, String(id)])
       const beforeRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
       const before = (beforeRes.rows?.[0]) || null
       if (!before) return { notFound: true }
@@ -323,11 +477,11 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
                 const extraCols = scope === 'property' ? ', property_id' : ''
                 const extraPlaceholder = scope === 'property' ? `,$${cols.length + 1}` : ''
                 const values = cols.map((k) => (payload2 as any)[k]).concat(scope === 'property' ? [payload2.property_id] : [])
-                await client.query(
+                const ins4 = await client.query(
                   `INSERT INTO ${table} (${cols.join(',')}${extraCols}) VALUES (${placeholders}${extraPlaceholder}) ON CONFLICT DO NOTHING`,
                   values
                 )
-                autoMarked++
+                if (Number(ins4?.rowCount || 0) > 0) autoMarked++
                 continue
               }
               if (String((row as any).status || '') === 'paid') continue
@@ -361,10 +515,11 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
               const extraCols = scope === 'property' ? ', property_id' : ''
               const extraPlaceholder = scope === 'property' ? `,$${cols.length + 1}` : ''
               const values = cols.map((k) => (payload3 as any)[k]).concat(scope === 'property' ? [payload3.property_id] : [])
-              await client.query(
+              const ins5 = await client.query(
                 `INSERT INTO ${table} (${cols.join(',')}${extraCols}) VALUES (${placeholders}${extraPlaceholder}) ON CONFLICT DO NOTHING`,
                 values
               )
+              void ins5
             }
           }
         }
