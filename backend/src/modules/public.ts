@@ -103,9 +103,11 @@ async function ensurePublicAccessTable() {
   await pgPool.query(`CREATE TABLE IF NOT EXISTS public_access (
     area text PRIMARY KEY,
     password_hash text NOT NULL,
+    password_enc text,
     password_updated_at timestamptz NOT NULL DEFAULT now(),
     created_at timestamptz DEFAULT now()
   );`)
+  try { await pgPool.query(`ALTER TABLE public_access ADD COLUMN IF NOT EXISTS password_enc text;`) } catch {}
 }
 
 async function ensureCmsPagesTable() {

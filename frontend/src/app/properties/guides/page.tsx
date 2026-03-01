@@ -68,6 +68,7 @@ export default function Page() {
   const [newToken, setNewToken] = useState<string>('')
 
   const [pwdInfo, setPwdInfo] = useState<{ configured: boolean; password_updated_at: string | null }>({ configured: false, password_updated_at: null })
+  const [pwdCurrent, setPwdCurrent] = useState<{ configured: boolean; password: string | null; password_updated_at: string | null; reason?: string } | null>(null)
 
   const propertyOptions = useMemo(
     () =>
@@ -115,9 +116,20 @@ export default function Page() {
     }
   }
 
+  async function loadPwdCurrent() {
+    if (!hasPerm('rbac.manage')) return
+    try {
+      const cur = await fetchJSON<any>('/public/property-guide/current-password')
+      setPwdCurrent(cur || null)
+    } catch {
+      setPwdCurrent(null)
+    }
+  }
+
   useEffect(() => {
     loadProperties()
     loadPwdInfo()
+    loadPwdCurrent()
   }, [])
 
   useEffect(() => {
@@ -337,6 +349,7 @@ export default function Page() {
           await fetchJSON('/public/property-guide/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ new_password: pwd }) })
           message.success('已重置')
           loadPwdInfo()
+          loadPwdCurrent()
         } catch (e: any) {
           message.error(`重置失败：${e?.message || ''}`)
         }
@@ -403,6 +416,16 @@ export default function Page() {
             <Space wrap>
               <span>外链验证密码：</span>
               <Tag color={pwdInfo.configured ? 'green' : 'default'}>{pwdInfo.configured ? '已配置' : '未配置'}</Tag>
+              {pwdCurrent?.password ? (
+                <Space.Compact style={{ width: isMobile ? '100%' : 240 }}>
+                  <Input.Password readOnly value={pwdCurrent.password} style={{ width: '100%' }} />
+                  <Button onClick={async () => {
+                    try { await navigator.clipboard?.writeText(String(pwdCurrent.password || '')); message.success('已复制') } catch { message.error('复制失败') }
+                  }}>复制</Button>
+                </Space.Compact>
+              ) : (
+                <span style={{ color: '#8c8c8c' }}>{pwdCurrent?.configured ? '未保存明文（需要重置一次后才能显示）' : ''}</span>
+              )}
               <span>最后更新：</span>
               <span>{pwdInfo.password_updated_at || '-'}</span>
               <Button onClick={resetPassword}>重置密码</Button>

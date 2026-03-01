@@ -86,7 +86,8 @@ const corsOpts = {
     },
     credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Guide-Session']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Guide-Session'],
+    exposedHeaders: ['X-Total-Count']
 };
 app.use((0, cors_1.default)(corsOpts));
 app.options('*', (0, cors_1.default)(corsOpts));
@@ -229,9 +230,8 @@ app.get('/__routes', (_req, res) => {
         res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'route list failed' });
     }
 });
-// Public endpoints (no auth)
+app.use('/public', auth_2.auth, public_admin_1.default);
 app.use('/public', public_1.default);
-// Auth middleware comes AFTER health routes
 app.use(auth_2.auth);
 const uploadDir = path_1.default.join(process.cwd(), 'uploads');
 if (!fs_1.default.existsSync(uploadDir))
@@ -266,7 +266,6 @@ app.use('/deep-cleaning', deep_cleaning_1.default);
 app.use('/property-guides', property_guides_1.router);
 app.use('/property-guide-link-sync', property_guide_link_sync_1.router);
 app.use('/jobs', jobs_1.router);
-app.use('/public', public_admin_1.default);
 app.use('/onboarding', propertyOnboarding_1.router);
 app.use('/invoices', invoices_1.router);
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001);
