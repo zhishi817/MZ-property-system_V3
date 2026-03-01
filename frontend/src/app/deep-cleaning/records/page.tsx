@@ -1,6 +1,6 @@
 "use client"
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { App, Button, Card, DatePicker, Drawer, Form, Grid, Image, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography, Upload } from 'antd'
+import { App, Button, Card, DatePicker, Drawer, Form, Grid, Image, Input, InputNumber, Modal, Select, Space, Table, Tag, TimePicker, Typography, Upload } from 'antd'
 import type { UploadFile, UploadProps } from 'antd'
 import dayjs from 'dayjs'
 import { CheckCircleOutlined, EnvironmentOutlined, InfoCircleOutlined, PictureOutlined, ShareAltOutlined } from '@ant-design/icons'
@@ -132,6 +132,14 @@ function computeTotalCost(laborCostRaw: any, consumablesRaw: any) {
     return s + (Number.isFinite(n) ? n : 0)
   }, 0)
   return Math.round(((laborN + sum) + Number.EPSILON) * 100) / 100
+}
+
+function combineDateAndTimeToIso(dateRaw: any, timeRaw: any): string | null {
+  if (!dateRaw || !timeRaw) return null
+  const d = dayjs(dateRaw)
+  const t = dayjs(timeRaw)
+  if (!d.isValid() || !t.isValid()) return null
+  return d.hour(t.hour()).minute(t.minute()).second(0).millisecond(0).toISOString()
 }
 
 export default function DeepCleaningRecordsPage() {
@@ -334,7 +342,6 @@ export default function DeepCleaningRecordsPage() {
       occurred_at: dayjs(),
       checklist: [{ item: '全屋表面除尘', done: false }, { item: '厨房油污清洁', done: false }, { item: '浴室除垢消毒', done: false }],
       consumables: [],
-      labor_minutes: undefined,
       labor_cost: undefined,
       pay_method: 'company_pay',
       gst_type: 'GST_INCLUDED_10',
@@ -361,7 +368,6 @@ export default function DeepCleaningRecordsPage() {
       attachment_urls: attachUrls,
       checklist: Array.isArray(v.checklist) ? v.checklist : [],
       consumables: Array.isArray(v.consumables) ? v.consumables : [],
-      labor_minutes: v.labor_minutes !== undefined ? Number(v.labor_minutes) : undefined,
       labor_cost: v.labor_cost !== undefined ? Number(v.labor_cost) : undefined,
       pay_method: v.pay_method ? String(v.pay_method) : 'company_pay',
       gst_type: v.gst_type ? String(v.gst_type) : 'GST_INCLUDED_10',
@@ -387,13 +393,15 @@ export default function DeepCleaningRecordsPage() {
       assignee_id: r.assignee_id || '',
       eta: r.eta ? dayjs(r.eta) : null,
       completed_at: r.completed_at ? dayjs(r.completed_at) : null,
+      started_time: r.started_at ? dayjs(r.started_at) : null,
+      ended_time: r.ended_at ? dayjs(r.ended_at) : null,
+      duration_minutes: (r as any).duration_minutes !== undefined ? Number((r as any).duration_minutes || 0) : undefined,
       category: r.category || '',
       details: typeof r.details === 'string' ? r.details : (r.details ? JSON.stringify(r.details) : ''),
       notes: r.notes || '',
       repair_notes: r.repair_notes || '',
       checklist,
       consumables,
-      labor_minutes: (r as any).labor_minutes !== undefined ? Number((r as any).labor_minutes || 0) : undefined,
       labor_cost: (r as any).labor_cost !== undefined ? Number((r as any).labor_cost || 0) : undefined,
       pay_method: r.pay_method || 'company_pay',
       gst_type: r.gst_type || 'GST_INCLUDED_10',
@@ -419,12 +427,22 @@ export default function DeepCleaningRecordsPage() {
         const beforeUrls = (editBeforeFiles || []).map(f => String((f as any).url || (f as any).response?.url || '')).filter(Boolean)
         const afterUrls = (editAfterFiles || []).map(f => String((f as any).url || (f as any).response?.url || '')).filter(Boolean)
         const attachUrls = (editAttachFiles || []).map(f => String((f as any).url || (f as any).response?.url || '')).filter(Boolean)
+        const baseDate = (editing as any)?.occurred_at || (editing as any)?.completed_at || dayjs().format('YYYY-MM-DD')
+        const startedIso = combineDateAndTimeToIso(baseDate, (v as any).started_time)
+        const endedIso = combineDateAndTimeToIso(baseDate, (v as any).ended_time)
+        const durationFromTimes = (startedIso && endedIso) ? Math.max(0, dayjs(endedIso).diff(dayjs(startedIso), 'minute')) : null
+        const durationValueRaw = (v as any).duration_minutes
+        const durationValue = durationValueRaw === undefined || durationValueRaw === null || durationValueRaw === '' ? null : Number(durationValueRaw)
+        const durationFinal = Number.isFinite(durationValue as any) ? Number(durationValue) : (durationFromTimes !== null ? durationFromTimes : null)
         const payload: any = {
           status: v.status,
           urgency: v.urgency,
           assignee_id: v.assignee_id || '',
           eta: v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : null,
           completed_at: v.completed_at ? dayjs(v.completed_at).toISOString() : null,
+          started_at: startedIso,
+          ended_at: endedIso,
+          duration_minutes: durationFinal,
           category: v.category || '',
           details: v.details ? String(v.details) : '[]',
           notes: v.notes ? String(v.notes) : '',
@@ -434,7 +452,6 @@ export default function DeepCleaningRecordsPage() {
           attachment_urls: attachUrls,
           checklist: Array.isArray(v.checklist) ? v.checklist : [],
           consumables: Array.isArray(v.consumables) ? v.consumables : [],
-          labor_minutes: v.labor_minutes !== undefined ? Number(v.labor_minutes) : null,
           labor_cost: v.labor_cost !== undefined ? Number(v.labor_cost) : null,
           pay_method: v.pay_method ? String(v.pay_method) : 'company_pay',
           gst_type: v.gst_type ? String(v.gst_type) : 'GST_INCLUDED_10',
@@ -512,11 +529,13 @@ export default function DeepCleaningRecordsPage() {
     } },
     { title:'清洁人员', dataIndex:'worker_name', width: 140, ellipsis: true, render:(v:string)=> String(v || '-') },
     { title:'提交时间', dataIndex:'submitted_at', width: 160, render:(v:string, r: any)=> (v || (r as any)?.created_at) ? dayjs(v || (r as any)?.created_at).format('YYYY-MM-DD HH:mm') : '-' },
-    { title:'费用', dataIndex:'total_cost', width: 120, render: (_: any, r: any) => {
+    { title:'总费用', dataIndex:'total_cost', width: 120, render: (_: any, r: any) => {
       const v = (r as any)?.total_cost
       const fallback = computeTotalCost((r as any)?.labor_cost, (r as any)?.consumables)
       return fmtAmount(v !== undefined && v !== null ? v : fallback)
     } },
+    { title:'扣款方式', dataIndex:'pay_method', width: 140, render: (v: any) => payMethodLabel(v) },
+    { title:'GST', dataIndex:'gst_type', width: 140, render: (v: any) => gstTypeLabel(v) },
     { title:'区域', dataIndex:'category', width: 120 },
     { title:'状态', dataIndex:'status', width: 120, render:(s:string)=> statusTag(s) },
     { title:'审核', dataIndex:'review_status', width: 120, render:(s:string)=> reviewTag(s) },
@@ -570,7 +589,7 @@ export default function DeepCleaningRecordsPage() {
               showSizeChanger: true,
               onChange: (p, ps) => { setPage(p); setPageSize(ps) }
             }}
-            scroll={{ x: 1320 }}
+            scroll={{ x: 1600 }}
             columns={columns as any}
           />
         </div>
@@ -639,9 +658,6 @@ export default function DeepCleaningRecordsPage() {
           </Form.Item>
           <Card size="small" title="费用信息" style={{ marginBottom: 12 }}>
             <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
-              <Form.Item name="labor_minutes" label="工时（分钟）">
-                <InputNumber min={0} style={{ width:'100%' }} />
-              </Form.Item>
               <Form.Item name="labor_cost" label="人工费用（可选）">
                 <InputNumber min={0} style={{ width:'100%' }} />
               </Form.Item>
@@ -772,11 +788,64 @@ export default function DeepCleaningRecordsPage() {
           <Form.Item name="repair_notes" label="执行说明（完成确认）">
             <Input.TextArea rows={3} placeholder="例如：已完成厨房重油污处理，浴室除垢消毒，已更换耗材…" />
           </Form.Item>
-          <Card size="small" title="耗材与工时" style={{ marginBottom: 12 }}>
+          <Card size="small" title="清洁时间" style={{ marginBottom: 12 }}>
             <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
-              <Form.Item name="labor_minutes" label="工时（分钟）">
-                <InputNumber min={0} style={{ width:'100%' }} />
+              <Form.Item name="started_time" label="开始时间">
+                <TimePicker
+                  format="HH:mm"
+                  style={{ width:'100%' }}
+                  minuteStep={5}
+                  onChange={(t) => {
+                    const end = editForm.getFieldValue('ended_time')
+                    const dur = editForm.getFieldValue('duration_minutes')
+                    if (t && end) {
+                      editForm.setFieldsValue({ duration_minutes: Math.max(0, dayjs(end).diff(dayjs(t), 'minute')) })
+                      return
+                    }
+                    if (t && dur !== undefined && dur !== null) {
+                      const nn = Number(dur)
+                      if (Number.isFinite(nn)) editForm.setFieldsValue({ ended_time: dayjs(t).add(nn, 'minute') })
+                    }
+                  }}
+                />
               </Form.Item>
+              <Form.Item name="ended_time" label="结束时间">
+                <TimePicker
+                  format="HH:mm"
+                  style={{ width:'100%' }}
+                  minuteStep={5}
+                  onChange={(t) => {
+                    const start = editForm.getFieldValue('started_time')
+                    if (start && t) {
+                      editForm.setFieldsValue({ duration_minutes: Math.max(0, dayjs(t).diff(dayjs(start), 'minute')) })
+                    }
+                  }}
+                />
+              </Form.Item>
+              <Form.Item name="duration_minutes" label="清洁时长（分钟）">
+                <InputNumber min={0} style={{ width:'100%' }} onChange={(n) => {
+                  const start = editForm.getFieldValue('started_time')
+                  if (start && n !== undefined && n !== null) {
+                    const nn = Number(n)
+                    if (Number.isFinite(nn)) editForm.setFieldsValue({ ended_time: dayjs(start).add(nn, 'minute') })
+                  }
+                }} />
+              </Form.Item>
+              <Form.Item label="时长预览">
+                <Form.Item noStyle shouldUpdate={(p, c) => p.started_time !== c.started_time || p.ended_time !== c.ended_time || p.duration_minutes !== c.duration_minutes}>
+                  {() => {
+                    const start = editForm.getFieldValue('started_time')
+                    const end = editForm.getFieldValue('ended_time')
+                    if (start && end) return <span>{fmtMinutes(dayjs(end).diff(dayjs(start), 'minute'))}</span>
+                    const dur = editForm.getFieldValue('duration_minutes')
+                    return <span>{fmtMinutes(dur)}</span>
+                  }}
+                </Form.Item>
+              </Form.Item>
+            </div>
+          </Card>
+          <Card size="small" title="费用信息" style={{ marginBottom: 12 }}>
+            <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
               <Form.Item name="labor_cost" label="人工成本（可选）">
                 <InputNumber min={0} style={{ width:'100%' }} />
               </Form.Item>
@@ -878,7 +947,7 @@ export default function DeepCleaningRecordsPage() {
                 <div style={{ color:'#0b1738', marginTop:6 }}>{(viewing?.submitted_at || viewing?.created_at) ? dayjs(viewing?.submitted_at || viewing?.created_at).format('YYYY-MM-DD HH:mm') : '-'}</div>
               </div>
               <div>
-                <Typography.Text type="secondary">费用</Typography.Text>
+                <Typography.Text type="secondary">总费用</Typography.Text>
                 <div style={{ color:'#0b1738', marginTop:6 }}>{fmtAmount(viewing?.total_cost !== undefined && viewing?.total_cost !== null ? viewing?.total_cost : computeTotalCost((viewing as any)?.labor_cost, (viewing as any)?.consumables))}</div>
               </div>
               <div>

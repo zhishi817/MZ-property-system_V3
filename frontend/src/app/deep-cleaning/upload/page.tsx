@@ -31,12 +31,24 @@ export default function DeepCleaningUploadPage() {
   const [sharePwdOpen, setSharePwdOpen] = useState(false as any)
   const [shareForm] = Form.useForm()
   const [sharePwdInfo, setSharePwdInfo] = useState<{ configured: boolean; password_updated_at: string | null } | null>(null)
+  const [sharePwdCurrent, setSharePwdCurrent] = useState<{ configured: boolean; password: string | null; password_updated_at: string | null; reason?: string } | null>(null)
   const [preFiles, setPreFiles] = useState<Record<number, UploadFile[]>>({})
   const [preUrls, setPreUrls] = useState<Record<number, string[]>>({})
   const [postFiles, setPostFiles] = useState<Record<number, UploadFile[]>>({})
   const [postUrls, setPostUrls] = useState<Record<number, string[]>>({})
 
   const canSetSharePwd = hasPerm('rbac.manage') && String(getRole() || '') !== 'maintenance_staff'
+
+  async function safeAdminGet<T>(path: string): Promise<T | null> {
+    try {
+      const res = await fetch(`${API_BASE}${path}`, { cache: 'no-store', headers: authHeaders() })
+      if (res.status === 401) return null
+      if (!res.ok) return null
+      return (await res.json().catch(() => null)) as T
+    } catch {
+      return null
+    }
+  }
 
   useEffect(() => {
     ;(async () => {
@@ -48,12 +60,16 @@ export default function DeepCleaningUploadPage() {
   }, [])
 
   useEffect(() => {
-    if (!sharePwdOpen || !canSetSharePwd) return
+    if (!canSetSharePwd) return
     ;(async () => {
-      try {
-        const info = await getJSON<{ configured: boolean; password_updated_at: string | null }>('/public/deep-cleaning-upload/password-info')
-        setSharePwdInfo(info || null)
-      } catch { setSharePwdInfo(null) }
+      const info = await safeAdminGet<{ configured: boolean; password_updated_at: string | null }>('/public/deep-cleaning-upload/password-info')
+      setSharePwdInfo(info || null)
+      const cur = await safeAdminGet<{ configured: boolean; password: string | null; password_updated_at: string | null; reason?: string }>('/public/deep-cleaning-upload/current-password')
+      setSharePwdCurrent((prev) => {
+        if (cur?.password) return cur
+        if (prev?.password) return prev
+        return cur || null
+      })
     })()
   }, [sharePwdOpen, canSetSharePwd])
 
@@ -164,6 +180,28 @@ export default function DeepCleaningUploadPage() {
         {canSetSharePwd ? <Button icon={<LockOutlined />} onClick={() => setSharePwdOpen(true)}>设置上传表密码</Button> : null}
       </Space>
 
+      {canSetSharePwd ? (
+        <Card size="small" title="外部链接密码" style={{ marginTop: 12 }}>
+          <Space direction="vertical" style={{ width:'100%' }}>
+            <Typography.Text type="secondary">
+              最后更新时间：{sharePwdInfo?.password_updated_at ? new Date(sharePwdInfo.password_updated_at).toLocaleString() : '未知'}
+            </Typography.Text>
+            {sharePwdCurrent?.password ? (
+              <Space.Compact style={{ width:'100%' }}>
+                <Input.Password readOnly value={sharePwdCurrent.password} style={{ width:'100%' }} />
+                <Button onClick={async () => {
+                  try { await navigator.clipboard?.writeText(String(sharePwdCurrent.password || '')); message.success('已复制') } catch { message.error('复制失败') }
+                }}>复制</Button>
+              </Space.Compact>
+            ) : (
+              <Typography.Text type="secondary">
+                {sharePwdCurrent?.configured ? (sharePwdCurrent?.reason === 'missing_key' ? '服务器未配置加密密钥（刷新后无法显示），请配置 PUBLIC_ACCESS_PASSWORD_ENC_KEY' : '未保存明文（需要重置一次后才能显示）') : '未配置'}
+              </Typography.Text>
+            )}
+          </Space>
+        </Card>
+      ) : null}
+
       <Card title="深度清洁上传表" style={{ marginTop: 24 }}>
         <Form form={form} layout="vertical" initialValues={{ occurred_at: dayjs(), details: [{ project_desc: '', started_at: null, ended_at: null, note: '' }] }}>
           <div style={{ borderBottom: '1px solid #e6f4ff', paddingBottom: 8, marginBottom: 16, display:'flex', alignItems:'center', gap:8 }}>
@@ -270,7 +308,9 @@ export default function DeepCleaningUploadPage() {
           })
           if (res.ok) {
             message.success('已更新上传表密码'); setSharePwdOpen(false); shareForm.resetFields()
-            setSharePwdInfo({ configured: true, password_updated_at: new Date().toISOString() })
+            const nowIso = new Date().toISOString()
+            setSharePwdInfo({ configured: true, password_updated_at: nowIso })
+            setSharePwdCurrent({ configured: true, password: pass, password_updated_at: nowIso })
           } else {
             const j = await res.json().catch(()=>null); message.error(j?.message || '更新失败')
           }

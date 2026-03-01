@@ -80,7 +80,8 @@ const corsOpts: cors.CorsOptions = {
   },
   credentials: true,
   methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization','X-Guide-Session']
+  allowedHeaders: ['Content-Type','Authorization','X-Guide-Session'],
+  exposedHeaders: ['X-Total-Count']
 }
 app.use(cors(corsOpts))
 app.options('*', cors(corsOpts))
@@ -203,9 +204,8 @@ app.get('/__routes', (_req, res) => {
     res.status(500).json({ message: e?.message || 'route list failed' })
   }
 })
-// Public endpoints (no auth)
+app.use('/public', auth, publicAdminRouter)
 app.use('/public', publicRouter)
-// Auth middleware comes AFTER health routes
 app.use(auth)
 const uploadDir = path.join(process.cwd(), 'uploads')
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir)
@@ -241,7 +241,6 @@ app.use('/deep-cleaning', deepCleaningRouter)
 app.use('/property-guides', propertyGuidesRouter)
 app.use('/property-guide-link-sync', propertyGuideLinkSyncRouter)
 app.use('/jobs', jobsRouter)
-app.use('/public', publicAdminRouter)
 app.use('/onboarding', propertyOnboardingRouter)
 app.use('/invoices', invoicesRouter)
 
