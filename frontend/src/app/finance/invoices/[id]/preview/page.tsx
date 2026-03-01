@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { App, Button, Card, Col, Grid, Row, Space } from 'antd'
+import { ArrowLeftOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useRouter } from 'next/navigation'
 import html2canvas from 'html2canvas'
@@ -215,6 +216,7 @@ export default function InvoicePreviewPage({ params }: { params: { id: string } 
         title="发票预览"
         extra={(
           <Space wrap style={{ justifyContent: isMobile ? 'flex-start' : 'flex-end' }}>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => { try { router.push('/finance/invoices') } catch {} }}>返回开票记录</Button>
             <Button onClick={doPrint} disabled={!srcDoc}>打印</Button>
             <Button onClick={exportPdf} disabled={!srcDoc}>导出 PDF</Button>
             <Button type="primary" onClick={() => router.back()}>返回编辑</Button>

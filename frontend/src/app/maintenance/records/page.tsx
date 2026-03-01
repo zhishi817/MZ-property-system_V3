@@ -33,6 +33,9 @@ type RepairOrder = {
   maintenance_amount?: number | string | null
   has_parts?: boolean | null
   parts_amount?: number | string | null
+  maintenance_amount_includes_parts?: boolean | null
+  has_gst?: boolean | null
+  maintenance_amount_includes_gst?: boolean | null
   pay_method?: string | null
   pay_other_note?: string | null
 }
@@ -75,6 +78,7 @@ export default function MaintenanceRecordsUnified() {
   const [captureEnabled, setCaptureEnabled] = useState(false)
   const maintenanceAbortRef = useRef<AbortController | null>(null)
   const skipInitialFilterEffectRef = useRef(true)
+  const skipInitialPageEffectRef = useRef(true)
   const propsLoadingRef = useRef<Promise<void> | null>(null)
   const usersLoadingRef = useRef<Promise<void> | null>(null)
 
@@ -170,9 +174,10 @@ export default function MaintenanceRecordsUnified() {
       page: 1,
     })
   }
-  async function loadMaintenance(reset?: boolean, opts?: { silent?: boolean }) {
+  async function loadMaintenance(reset?: boolean, opts?: { silent?: boolean; page?: number }) {
     const showLoading = !opts?.silent || !list?.length
     if (showLoading) setLoading(true)
+    const effectivePage = Number.isFinite(Number(opts?.page)) ? Number(opts?.page) : (reset ? 1 : page)
     try {
       try { maintenanceAbortRef.current?.abort() } catch {}
       const controller = new AbortController()
@@ -180,7 +185,7 @@ export default function MaintenanceRecordsUnified() {
       const params: Record<string, any> = {
         withTotal: '1',
         limit: String(pageSize),
-        offset: String(Math.max(0, (page - 1) * pageSize)),
+        offset: String(Math.max(0, (effectivePage - 1) * pageSize)),
       }
       if (filterStatus) params.status = filterStatus
       if (filterCat) params.category = filterCat
@@ -197,7 +202,7 @@ export default function MaintenanceRecordsUnified() {
       const tot = Number(res.headers.get('x-total-count') || 0)
       if (Number.isFinite(tot) && tot >= 0) setTotal(tot)
       if (isMobile) {
-        if (reset || page === 1) setList(items)
+        if (reset || effectivePage === 1) setList(items)
         else {
           setList(prev => {
             const seen = new Set(prev.map(x => String(x.id)))
@@ -211,13 +216,13 @@ export default function MaintenanceRecordsUnified() {
       } else {
         setList(items)
       }
-      if (typeof window !== 'undefined' && (reset || page === 1)) {
+      if (typeof window !== 'undefined' && (reset || effectivePage === 1)) {
         try {
           sessionStorage.setItem('mz_cache_maintenance_records_v1', JSON.stringify({ ts: Date.now(), key: maintenanceQueryKey(), list: items, total: tot }))
         } catch {}
       }
     } catch {
-      if (reset || page === 1 || !isMobile) setList([])
+      if (reset || effectivePage === 1 || !isMobile) setList([])
       setTotal(0)
     } finally {
       if (showLoading) setLoading(false)
@@ -240,16 +245,19 @@ export default function MaintenanceRecordsUnified() {
         }
       } catch {}
     }
-    loadMaintenance(true, { silent: true })
+    loadMaintenance(true, { silent: true, page: 1 })
     const t = setTimeout(() => { ensurePropsLoaded().catch(()=>{}) }, 1200)
     return () => { clearTimeout(t); try { maintenanceAbortRef.current?.abort() } catch {} }
   }, [])
   useEffect(() => {
     if (skipInitialFilterEffectRef.current) { skipInitialFilterEffectRef.current = false; return }
-    const t = setTimeout(() => { setPage(1); loadMaintenance(true) }, 250)
+    const t = setTimeout(() => { setPage(1); loadMaintenance(true, { page: 1 }) }, 250)
     return () => clearTimeout(t)
   }, [filterCode, filterPropertyId, filterWorkNo, filterSubmitter, filterKeyword, filterStatus, filterCat, dateRange, pageSize])
-  useEffect(() => { if (page > 1) loadMaintenance(false) }, [page])
+  useEffect(() => {
+    if (skipInitialPageEffectRef.current) { skipInitialPageEffectRef.current = false; return }
+    loadMaintenance(page === 1, { page })
+  }, [page])
 
   const rows = useMemo(() => {
     const byId: Record<string, any> = Object.fromEntries(props.map(p => [String(p.id), p]))
@@ -268,16 +276,21 @@ export default function MaintenanceRecordsUnified() {
     ensureUserOptionsLoaded().catch(()=>{})
     setEditing(row)
     form.setFieldsValue({
+      property_id: row.property_id || '',
       status: row.status || 'pending',
       assignee_id: row.assignee_id || '',
       eta: row.eta ? dayjs(row.eta) : null,
       notes: (row as any).notes || (row as any).remark || '',
       urgency: row.urgency || 'normal',
       details: summaryFromDetails(row.details),
+      submitter_name: String((row as any)?.submitter_name || (row as any)?.worker_name || (row as any)?.created_by || ''),
       completed_at: row.completed_at ? dayjs(row.completed_at) : null,
       maintenance_amount: (row as any)?.maintenance_amount !== undefined ? Number((row as any)?.maintenance_amount || 0) : undefined,
       has_parts: (row as any)?.has_parts ?? undefined,
       parts_amount: (row as any)?.parts_amount !== undefined ? Number((row as any)?.parts_amount || 0) : undefined,
+      maintenance_amount_includes_parts: (row as any)?.maintenance_amount_includes_parts ?? undefined,
+      has_gst: (row as any)?.has_gst ?? undefined,
+      maintenance_amount_includes_gst: (row as any)?.maintenance_amount_includes_gst ?? undefined,
       pay_method: (row as any)?.pay_method ?? undefined,
       pay_other_note: (row as any)?.pay_other_note ?? undefined,
     })
@@ -300,6 +313,8 @@ export default function MaintenanceRecordsUnified() {
   async function save() {
     const v = await form.validateFields()
     const payload: any = {
+      property_id: v.property_id || undefined,
+      submitter_name: v.submitter_name || undefined,
       status: v.status,
       assignee_id: v.assignee_id || undefined,
       eta: v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : undefined,
@@ -323,15 +338,32 @@ export default function MaintenanceRecordsUnified() {
       const existing = (editing as any)?.completed_at
       payload.completed_at = v.completed_at ? dayjs(v.completed_at).toDate().toISOString() : (existing ? String(existing) : new Date().toISOString())
       if (v.maintenance_amount !== undefined) payload.maintenance_amount = Number(v.maintenance_amount || 0)
-      if (v.has_parts !== undefined) payload.has_parts = !!v.has_parts
-      if (v.parts_amount !== undefined) payload.parts_amount = Number(v.parts_amount || 0)
+      if (v.has_parts === true) {
+        payload.has_parts = true
+        if (v.parts_amount !== undefined) payload.parts_amount = Number(v.parts_amount || 0)
+        if (v.maintenance_amount_includes_parts !== undefined) payload.maintenance_amount_includes_parts = !!v.maintenance_amount_includes_parts
+      } else if (v.has_parts === false) {
+        payload.has_parts = false
+        payload.parts_amount = null
+        payload.maintenance_amount_includes_parts = null
+      }
+      if (v.has_gst === true) {
+        payload.has_gst = true
+        if (v.maintenance_amount_includes_gst !== undefined) payload.maintenance_amount_includes_gst = !!v.maintenance_amount_includes_gst
+      } else if (v.has_gst === false) {
+        payload.has_gst = false
+        payload.maintenance_amount_includes_gst = null
+      }
       if (v.pay_method) payload.pay_method = String(v.pay_method)
       if (String(v.pay_method || '') === 'other_pay' && v.pay_other_note) payload.pay_other_note = String(v.pay_other_note)
       if (String(v.pay_method || '') !== 'other_pay') payload.pay_other_note = undefined
     }
     try {
       if (editing) await apiUpdate('property_maintenance', editing.id, payload)
-      message.success('已更新记录'); setOpen(false); setEditing(null); setPage(1); loadMaintenance(true)
+      message.success('已更新记录')
+      setOpen(false)
+      setEditing(null)
+      loadMaintenance(page === 1, { silent: true, page })
     } catch (e: any) {
       message.error(e?.message || '保存失败')
     }
@@ -339,6 +371,7 @@ export default function MaintenanceRecordsUnified() {
 
   const statusWatch = Form.useWatch('status', form)
   const hasPartsWatch = Form.useWatch('has_parts', form)
+  const hasGstWatch = Form.useWatch('has_gst', form)
   const payMethodWatch = Form.useWatch('pay_method', form)
 
   const catOptions = ['水电','家具','家电','墙面','其他'].map(x => ({ value: x, label: x }))
@@ -598,8 +631,8 @@ export default function MaintenanceRecordsUnified() {
                           <div>紧急：{urgencyTag(r.urgency)}</div>
                           <div>问题区域：{issueAreaLabel(r) || '-'}</div>
                           <div>提交人：{String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '-')}</div>
-                          <div style={{ gridColumn:'1 / span 2' }}>提交时间：{(r.submitted_at || (r as any).occurred_at || (r as any).created_at) ? dayjs(r.submitted_at || (r as any).occurred_at || (r as any).created_at).format('YYYY-MM-DD') : '-'}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>完成日期：{(r as any)?.completed_at ? dayjs((r as any).completed_at).format('YYYY-MM-DD') : '-'}</div>
+                          <div style={{ gridColumn:'1 / span 2' }}>提交时间：{(r.submitted_at || (r as any).occurred_at || (r as any).created_at) ? dayjs(r.submitted_at || (r as any).occurred_at || (r as any).created_at).format('YYYY-MM-DD') : '-'}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>问题摘要：{summaryFromDetails(r.details)}</div>
                           <div>维修金额：{fmtAmount((r as any).maintenance_amount)}</div>
                           <div>是否有配件费：{(r as any).has_parts === true ? '是' : (r as any).has_parts === false ? '否' : '-'}</div>
@@ -625,12 +658,13 @@ export default function MaintenanceRecordsUnified() {
               )
             }
             const columns = [
-              { title:'房号', dataIndex:'code', width: 120, ellipsis: true },
+              { title:'房号', dataIndex:'code', width: 120, ellipsis: true, fixed: 'left' },
               { title:'工单号', dataIndex:'work_no', width: 160, render: (_: any, r: any) => String((r as any)?.work_no || (r as any)?.id || '') },
               { title:'紧急程度', dataIndex:'urgency', width: 120, render:(u:string)=> urgencyTag(u) },
               { title:'问题区域', dataIndex:'category', width: 120, render: (_: any, r: any) => issueAreaLabel(r) },
               { title:'问题摘要', dataIndex:'details', ellipsis: true, width: 280, render:(d:string)=> summaryFromDetails(d) },
               { title:'提交人', dataIndex:'submitter_name', width: 120, render: (_: any, r: any) => String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '') },
+              { title:'完成时间', dataIndex:'completed_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD') : '-' },
               { title:'提交时间', dataIndex:'submitted_at', width: 180, render: (_: any, r: any) => {
                 const v = (r as any)?.submitted_at || (r as any)?.occurred_at || (r as any)?.created_at
                 return v ? dayjs(v).format('YYYY-MM-DD') : '-'
@@ -641,7 +675,6 @@ export default function MaintenanceRecordsUnified() {
               { title:'扣款方式', dataIndex:'pay_method', width: 140, render:(v:string)=> payMethodLabel(v) },
               { title:'其他人备注', dataIndex:'pay_other_note', width: 160 },
               { title:'状态', dataIndex:'status', width: 120, render:(s:string)=> statusTag(s) },
-              { title:'完成时间', dataIndex:'completed_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD') : '-' },
               { title:'分配人员', dataIndex:'assignee_id', width: 140 },
               { title:'操作', width: 320, render: (_:any, r:RepairOrder) => (
                 <Space wrap>
@@ -703,17 +736,17 @@ export default function MaintenanceRecordsUnified() {
               </div>
               <div style={{ gridColumn:'1 / span 2' }}>
                 <Space>
-                  <InfoCircleOutlined style={{ color:'#1677ff' }} />
-                  <Typography.Text type="secondary">提交时间</Typography.Text>
-                </Space>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at) ? dayjs((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at).format('YYYY-MM-DD') : '-'}</div>
-              </div>
-              <div style={{ gridColumn:'1 / span 2' }}>
-                <Space>
                   <CheckCircleOutlined style={{ color:'#52c41a' }} />
                   <Typography.Text type="secondary">完成日期</Typography.Text>
                 </Space>
                 <div style={{ color:'#0b1738', marginTop:6 }}>{(viewRow as any)?.completed_at ? dayjs((viewRow as any).completed_at).format('YYYY-MM-DD') : '-'}</div>
+              </div>
+              <div style={{ gridColumn:'1 / span 2' }}>
+                <Space>
+                  <InfoCircleOutlined style={{ color:'#1677ff' }} />
+                  <Typography.Text type="secondary">提交时间</Typography.Text>
+                </Space>
+                <div style={{ color:'#0b1738', marginTop:6 }}>{((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at) ? dayjs((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at).format('YYYY-MM-DD') : '-'}</div>
               </div>
             </div>
           </div>
@@ -931,6 +964,16 @@ export default function MaintenanceRecordsUnified() {
           <Divider orientation="left">基础信息</Divider>
           <Row gutter={16}>
             <Col span={12}>
+              <Form.Item name="property_id" label="房号">
+                <Select allowClear showSearch optionFilterProp="label" options={propOptions} placeholder="请选择房号" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="submitter_name" label="提交人">
+                <Input placeholder="提交人" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
               <Form.Item name="status" label="状态" rules={[{ required: true }]}>
                 <Select options={statusOptions} />
               </Form.Item>
@@ -1085,15 +1128,36 @@ export default function MaintenanceRecordsUnified() {
                   </Form.Item>
                 </Col>
                 <Col span={8}>
-                  <Form.Item name="has_parts" label="是否包含配件费" valuePropName="checked">
-                    <Switch />
+                  <Form.Item name="has_parts" label="是否有配件费" valuePropName="checked">
+                    <Switch onChange={(checked) => { if (!checked) form.setFieldsValue({ parts_amount: undefined, maintenance_amount_includes_parts: undefined }) }} />
                   </Form.Item>
                 </Col>
-                <Col span={16}>
-                  <Form.Item name="parts_amount" label="配件费金额（AUD）" style={{ display: hasPartsWatch ? 'block' : 'none' }}>
-                    <InputNumber min={0} step={1} style={{ width:'100%' }} />
+                {hasPartsWatch ? (
+                  <>
+                    <Col span={8}>
+                      <Form.Item name="maintenance_amount_includes_parts" label="维修金额是否包含配件费" valuePropName="checked" preserve={false}>
+                        <Switch />
+                      </Form.Item>
+                    </Col>
+                    <Col span={8}>
+                      <Form.Item name="parts_amount" label="配件费金额（AUD）" preserve={false}>
+                        <InputNumber min={0} step={1} style={{ width:'100%' }} />
+                      </Form.Item>
+                    </Col>
+                  </>
+                ) : null}
+                <Col span={8}>
+                  <Form.Item name="has_gst" label="是否有GST" valuePropName="checked">
+                    <Switch onChange={(checked) => { if (!checked) form.setFieldsValue({ maintenance_amount_includes_gst: undefined }) }} />
                   </Form.Item>
                 </Col>
+                {hasGstWatch ? (
+                  <Col span={8}>
+                    <Form.Item name="maintenance_amount_includes_gst" label="是否包含GST" valuePropName="checked" preserve={false}>
+                      <Switch />
+                    </Form.Item>
+                  </Col>
+                ) : null}
                 <Col span={12}>
                   <Form.Item name="pay_method" label="扣款方式">
                     <Select

@@ -543,6 +543,63 @@ router.get('/customers', requireAnyPerm(['invoice.view','invoice.draft.create','
   }
 })
 
+router.get('/landlord-options', requireAnyPerm(['invoice.view','invoice.draft.create','invoice.issue']), async (req, res) => {
+  try {
+    const q = String((req.query as any)?.q || '').trim().toLowerCase()
+    const landlordsRaw: any[] = hasPg ? (await pgSelect('landlords', '*') as any[]) : ((db as any).landlords || [])
+    const propsRaw: any[] = hasPg ? (await pgSelect('properties', '*') as any[]) : ((db as any).properties || [])
+    const landlords = Array.isArray(landlordsRaw) ? landlordsRaw : []
+    const props = Array.isArray(propsRaw) ? propsRaw : []
+
+    const landlordById: Record<string, string> = {}
+    const fallbackLandlordIdByProperty: Record<string, string> = {}
+    for (const l of landlords) {
+      const landlordId = String((l as any)?.id || '').trim()
+      const landlordName = String((l as any)?.name || '').trim()
+      if (landlordId && landlordName) landlordById[landlordId] = landlordName
+      const rawIds = (l as any)?.property_ids
+      const ids = Array.isArray(rawIds)
+        ? rawIds
+        : (typeof rawIds === 'string'
+            ? (() => { try { const j = JSON.parse(rawIds); return Array.isArray(j) ? j : [] } catch { return [] } })()
+            : [])
+      for (const pid0 of ids) {
+        const pid = String(pid0 || '').trim()
+        if (pid && landlordId && !fallbackLandlordIdByProperty[pid]) fallbackLandlordIdByProperty[pid] = landlordId
+      }
+    }
+
+    const out = props
+      .filter((p: any) => (p as any)?.archived === true ? false : true)
+      .map((p: any) => {
+      const propertyId = String(p?.id || '').trim()
+      const propertyCode = String(p?.code || propertyId).trim()
+      const propertyAddress = String(p?.address || '').trim()
+      const landlordId = String(p?.landlord_id || '').trim() || fallbackLandlordIdByProperty[propertyId] || ''
+      const landlordName = landlordId ? (landlordById[landlordId] || '') : ''
+      return {
+        property_id: propertyId,
+        property_code: propertyCode,
+        property_address: propertyAddress,
+        landlord_id: landlordId || null,
+        landlord_name: landlordName || null,
+      }
+    }).filter((x: any) => x.property_id && x.property_code)
+
+    const filtered = q
+      ? out.filter((x: any) => {
+          const label = `${x.property_code} ${x.property_address || ''} ${x.landlord_name || ''}`.toLowerCase()
+          return label.includes(q)
+        })
+      : out
+
+    filtered.sort((a: any, b: any) => String(a.property_code || '').localeCompare(String(b.property_code || ''), 'en', { numeric: true, sensitivity: 'base' }))
+    return res.json(filtered.slice(0, 500))
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'list_failed' })
+  }
+})
+
 router.post('/customers', requireAnyPerm(['invoice.company.manage','invoice.draft.create','invoice.issue']), async (req, res) => {
   try {
     await ensureInvoiceTables()
@@ -761,6 +818,58 @@ router.get('/:id', requirePerm('invoice.view'), async (req, res) => {
   try {
     await ensureInvoiceTables()
     const { id } = req.params
+    if (id === 'landlord-options') {
+      const q = String((req.query as any)?.q || '').trim().toLowerCase()
+      const landlordsRaw: any[] = hasPg ? (await pgSelect('landlords', '*') as any[]) : ((db as any).landlords || [])
+      const propsRaw: any[] = hasPg ? (await pgSelect('properties', '*') as any[]) : ((db as any).properties || [])
+      const landlords = Array.isArray(landlordsRaw) ? landlordsRaw : []
+      const props = Array.isArray(propsRaw) ? propsRaw : []
+
+      const landlordById: Record<string, string> = {}
+      const fallbackLandlordIdByProperty: Record<string, string> = {}
+      for (const l of landlords) {
+        const landlordId = String((l as any)?.id || '').trim()
+        const landlordName = String((l as any)?.name || '').trim()
+        if (landlordId && landlordName) landlordById[landlordId] = landlordName
+        const rawIds = (l as any)?.property_ids
+        const ids = Array.isArray(rawIds)
+          ? rawIds
+          : (typeof rawIds === 'string'
+              ? (() => { try { const j = JSON.parse(rawIds); return Array.isArray(j) ? j : [] } catch { return [] } })()
+              : [])
+        for (const pid0 of ids) {
+          const pid = String(pid0 || '').trim()
+          if (pid && landlordId && !fallbackLandlordIdByProperty[pid]) fallbackLandlordIdByProperty[pid] = landlordId
+        }
+      }
+
+      const out = props
+        .filter((p: any) => (p as any)?.archived === true ? false : true)
+        .map((p: any) => {
+          const propertyId = String(p?.id || '').trim()
+          const propertyCode = String(p?.code || propertyId).trim()
+          const propertyAddress = String(p?.address || '').trim()
+          const landlordId = String(p?.landlord_id || '').trim() || fallbackLandlordIdByProperty[propertyId] || ''
+          const landlordName = landlordId ? (landlordById[landlordId] || '') : ''
+          return {
+            property_id: propertyId,
+            property_code: propertyCode,
+            property_address: propertyAddress,
+            landlord_id: landlordId || null,
+            landlord_name: landlordName || null,
+          }
+        }).filter((x: any) => x.property_id && x.property_code)
+
+      const filtered = q
+        ? out.filter((x: any) => {
+            const label = `${x.property_code} ${x.property_address || ''} ${x.landlord_name || ''}`.toLowerCase()
+            return label.includes(q)
+          })
+        : out
+
+      filtered.sort((a: any, b: any) => String(a.property_code || '').localeCompare(String(b.property_code || ''), 'en', { numeric: true, sensitivity: 'base' }))
+      return res.json(filtered.slice(0, 500))
+    }
     const inv = await pgSelect('invoices', '*', { id })
     const invoice = Array.isArray(inv) ? inv[0] : null
     if (!invoice) return res.status(404).json({ message: 'not_found' })
