@@ -11,6 +11,8 @@ dotenv_1.default.config();
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const morgan_1 = __importDefault(require("morgan"));
+const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const uuid_1 = require("uuid");
 const landlords_1 = require("./modules/landlords");
 const properties_1 = require("./modules/properties");
 const keys_1 = require("./modules/keys");
@@ -185,6 +187,48 @@ app.get('/health/playwright', (_req, res) => {
     }
     catch (e) {
         return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || '') });
+    }
+});
+app.post('/internal/bootstrap-admin', async (req, res) => {
+    var _a;
+    const token = String(process.env.ADMIN_BOOTSTRAP_TOKEN || '');
+    if (!token)
+        return res.status(401).json({ message: 'unauthorized' });
+    const h = String(req.headers.authorization || '');
+    if (!h.startsWith('Bearer ') || h.slice(7) !== token)
+        return res.status(401).json({ message: 'unauthorized' });
+    if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
+        return res.status(400).json({ message: 'pg_not_configured' });
+    const body = req.body || {};
+    const username = String(body.username || process.env.ADMIN_USERNAME || 'admin').trim();
+    const email = String(body.email || process.env.ADMIN_EMAIL || 'admin@example.com').trim();
+    const role = String(body.role || process.env.ADMIN_ROLE || 'admin').trim() || 'admin';
+    const password = String(body.password || process.env.ADMIN_PASSWORD || '').trim();
+    if (!username)
+        return res.status(400).json({ message: 'missing_username' });
+    if (!email)
+        return res.status(400).json({ message: 'missing_email' });
+    if (!password)
+        return res.status(400).json({ message: 'missing_password' });
+    try {
+        const hash = await bcryptjs_1.default.hash(password, 10);
+        const r = await dbAdapter_1.pgPool.query('SELECT id, username, email FROM users WHERE username=$1 OR email=$2 LIMIT 1', [username, email]);
+        const existing = ((_a = r === null || r === void 0 ? void 0 : r.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
+        if (!existing) {
+            const id = (0, uuid_1.v4)();
+            await dbAdapter_1.pgPool.query('INSERT INTO users(id, username, email, password_hash, role) VALUES ($1,$2,$3,$4,$5)', [id, username, email, hash, role]);
+            return res.json({ ok: true, action: 'created', id, username, email, role });
+        }
+        const id = String(existing.id);
+        await dbAdapter_1.pgPool.query('UPDATE users SET password_hash=$1, role=$2 WHERE id=$3', [hash, role, id]);
+        try {
+            await dbAdapter_1.pgPool.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [id]);
+        }
+        catch (_b) { }
+        return res.json({ ok: true, action: 'reset', id, username: existing.username, email: existing.email, role });
+    }
+    catch (e) {
+        return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || 'bootstrap_failed') });
     }
 });
 app.post('/internal/trigger-email-sync', async (req, res) => {
