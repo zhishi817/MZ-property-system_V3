@@ -42,6 +42,7 @@ const auth_2 = require("./auth");
 const public_1 = __importDefault(require("./modules/public"));
 const public_admin_1 = __importDefault(require("./modules/public_admin"));
 const r2_1 = require("./r2");
+const playwright_1 = require("./lib/playwright");
 // 环境保险锁（允许缺省采用智能默认，不再抛错）
 let appEnv = process.env.APP_ENV;
 let dbRole = process.env.DATABASE_ROLE;
@@ -177,6 +178,14 @@ app.get('/health/version', (_req, res) => {
     catch (_a) { }
     const build = process.env.GIT_SHA || process.env.RENDER_GIT_COMMIT || 'unknown';
     res.json({ build, version: pkg.version || 'unknown', node_env: process.env.NODE_ENV || 'unknown', started_at: new Date().toISOString() });
+});
+app.get('/health/playwright', (_req, res) => {
+    try {
+        return res.json((0, playwright_1.getPlaywrightDiagnostics)());
+    }
+    catch (e) {
+        return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || '') });
+    }
 });
 app.post('/internal/trigger-email-sync', async (req, res) => {
     const h = String(req.headers.authorization || '');
