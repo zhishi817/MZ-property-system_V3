@@ -5,7 +5,7 @@ import { App, Button, Card, Checkbox, Col, Collapse, DatePicker, Divider, Form, 
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useRouter } from 'next/navigation'
-import { PlusOutlined, EditOutlined, DeleteOutlined, ArrowLeftOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, DeleteOutlined, ArrowLeftOutlined, SettingOutlined, InfoCircleOutlined } from '@ant-design/icons'
 import { API_BASE, authHeaders, getJSON, patchJSON, postJSON } from '../../../../lib/api'
 import { hasPerm } from '../../../../lib/auth'
 import { buildInvoicePayload } from '../../../../lib/invoicePayload'
@@ -132,11 +132,15 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
   const [discountAmount, setDiscountAmount] = useState<number>(0)
   const [savedCustomers, setSavedCustomers] = useState<Array<{ id: string; name?: string; email?: string; phone?: string; abn?: string; address?: string }>>([])
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | undefined>(undefined)
+  const [propertyOptions, setPropertyOptions] = useState<Array<{ property_id: string; property_code: string; property_address: string; landlord_name: string }>>([])
+  const [propertyOptionsLoading, setPropertyOptionsLoading] = useState(false)
+  const [selectedPropertyId, setSelectedPropertyId] = useState<string | undefined>(undefined)
   const [saveAsCommonCustomer, setSaveAsCommonCustomer] = useState(false)
   const [auditRows, setAuditRows] = useState<any[]>([])
   const [sendLogs, setSendLogs] = useState<any[]>([])
   const [paymentEvents, setPaymentEvents] = useState<any[]>([])
   const [formVersion, setFormVersion] = useState(0)
+  const propertySearchTimerRef = useRef<any>(null)
 
   const [form] = Form.useForm()
   const lastSavedHashRef = useRef<string>('')
@@ -185,6 +189,68 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
     }
   }
 
+  async function loadPropertyOptions(q?: string) {
+    async function buildFromSystem(qs: string) {
+      const props = await getJSON<any[]>('/properties')
+      const landlords = await getJSON<any[]>('/landlords')
+      const landlordById: Record<string, string> = {}
+      const fallbackLandlordIdByProperty: Record<string, string> = {}
+      for (const l of (Array.isArray(landlords) ? landlords : [])) {
+        const landlordId = String(l?.id || '').trim()
+        const landlordName = String(l?.name || '').trim()
+        if (landlordId && landlordName) landlordById[landlordId] = landlordName
+        const ids = Array.isArray(l?.property_ids) ? l.property_ids : []
+        for (const pid0 of ids) {
+          const pid = String(pid0 || '').trim()
+          if (pid && landlordId && !fallbackLandlordIdByProperty[pid]) fallbackLandlordIdByProperty[pid] = landlordId
+        }
+      }
+      const qLower = qs.toLowerCase()
+      const out = (Array.isArray(props) ? props : [])
+        .filter((p: any) => p?.archived === true ? false : true)
+        .map((p: any) => {
+          const propertyId = String(p?.id || '').trim()
+          const propertyCode = String(p?.code || propertyId).trim()
+          const propertyAddress = String(p?.address || '').trim()
+          const landlordId = String(p?.landlord_id || '').trim() || fallbackLandlordIdByProperty[propertyId] || ''
+          const landlordName = landlordId ? (landlordById[landlordId] || '') : ''
+          return { property_id: propertyId, property_code: propertyCode, property_address: propertyAddress, landlord_name: landlordName }
+        })
+        .filter((x: any) => x.property_id && x.property_code)
+        .filter((x: any) => {
+          if (!qLower) return true
+          const label = `${x.property_code} ${x.property_address || ''} ${x.landlord_name || ''}`.toLowerCase()
+          return label.includes(qLower)
+        })
+      out.sort((a: any, b: any) => String(a.property_code || '').localeCompare(String(b.property_code || ''), 'en', { numeric: true, sensitivity: 'base' }))
+      return out.slice(0, 500)
+    }
+
+    setPropertyOptionsLoading(true)
+    const qs = String(q || '').trim()
+    try {
+      const path = qs ? `/invoices/landlord-options?q=${encodeURIComponent(qs)}` : '/invoices/landlord-options'
+      const rows = await getJSON<any[]>(path)
+      const list = Array.isArray(rows) ? rows : []
+      setPropertyOptions(list.map((x: any) => ({
+        property_id: String(x?.property_id || '').trim(),
+        property_code: String(x?.property_code || '').trim(),
+        property_address: String(x?.property_address || '').trim(),
+        landlord_name: String(x?.landlord_name || '').trim(),
+      })).filter((x: any) => x.property_id && x.property_code))
+    } catch {
+      try {
+        const list = await buildFromSystem(qs)
+        setPropertyOptions(list)
+      } catch {
+        setPropertyOptions([])
+        message.error('房号数据加载失败，请检查权限/接口')
+      }
+    } finally {
+      setPropertyOptionsLoading(false)
+    }
+  }
+
   async function loadInvoice(id: string) {
     setLoading(true)
     try {
@@ -228,21 +294,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
           const draftAt = Number(parsed?.updatedAt || 0)
           const serverAt = j?.updated_at ? new Date(String(j.updated_at)).getTime() : 0
           if (draftAt && draftAt > serverAt + 30000 && parsed?.values) {
-            Modal.confirm({
-              title: '发现未保存的草稿',
-              content: '检测到本地有更新的草稿内容，是否恢复？',
-              okText: '恢复',
-              cancelText: '忽略',
-              onOk() {
-                try {
-                  form.setFieldsValue(normalizeDraftDates(parsed.values))
-                  if (parsed.discountAmount != null) setDiscountAmount(Number(parsed.discountAmount || 0))
-                  setFormVersion(v => v + 1)
-                  message.success('已恢复草稿')
-                } catch {
-                }
-              }
-            })
+            try { window.localStorage.removeItem(`invoice:draft:${id}`) } catch {}
           }
         }
       } catch {
@@ -383,7 +435,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
     } catch (e: any) {
       const msg = String(e?.message || '')
       if (!params?.silent) {
-        if (msg === 'duplicate_invoice') message.error('该记录已存在，请勿重复录入')
+        if (msg === 'duplicate_invoice') message.error('发票重复，不可提交')
         else message.error(msg || '保存失败')
       }
       return invoiceId
@@ -409,7 +461,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       try { router.push(`/finance/invoices/${id}/preview`) } catch {}
     } catch (e: any) {
       const msg = String(e?.message || '')
-      if (msg === 'duplicate_invoice') message.error('该记录已存在，请勿重复录入')
+      if (msg === 'duplicate_invoice') message.error('发票重复，不可提交')
       else message.error(msg || '提交失败')
     } finally {
       setSaving(false)
@@ -507,21 +559,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
           const parsed = JSON.parse(raw)
           const draftAt = Number(parsed?.updatedAt || 0)
           if (draftAt && parsed?.values) {
-            Modal.confirm({
-              title: '恢复上次未完成的发票？',
-              content: '检测到本地有未完成的草稿内容，是否恢复？',
-              okText: '恢复',
-              cancelText: '忽略',
-              onOk() {
-                try {
-                  form.setFieldsValue(normalizeDraftDates(parsed.values))
-                  if (parsed.discountAmount != null) setDiscountAmount(Number(parsed.discountAmount || 0))
-                  setFormVersion(v => v + 1)
-                  message.success('已恢复草稿')
-                } catch {
-                }
-              }
-            })
+            try { window.localStorage.removeItem('invoice:draft:new') } catch {}
           }
         }
       } catch {
@@ -808,44 +846,88 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                 ) : null}
               </Card>
 
-              <Card className={styles.sectionCard} title={<div className={styles.sectionTitle}><span>客户信息</span><span className={styles.muted}>选填</span></div>} style={{ marginBottom: 12 }}>
-                <div style={{ display:'flex', gap: 10, alignItems:'center', flexWrap:'wrap', marginBottom: 10 }}>
-                  <Select
-                    style={{ minWidth: 260 }}
-                    placeholder="选择常用客户"
-                    value={selectedCustomerId}
-                    options={savedCustomers.map((c) => ({
-                      value: c.id,
-                      label: `${c.name || '-'}${c.email ? ` · ${c.email}` : ''}`,
-                    }))}
-                    onChange={(v) => {
-                      if (!v) {
-                        setSelectedCustomerId(undefined)
-                        form.setFieldsValue({ customer_id: '' })
-                        setFormVersion(x => x + 1)
-                        return
-                      }
-                      setSelectedCustomerId(v)
-                      const c = savedCustomers.find(x => x.id === v)
-                      if (!c) return
-                      form.setFieldsValue({
-                        customer_id: c.id,
-                        bill_to_name: c.name || '',
-                        bill_to_email: c.email || '',
-                        bill_to_phone: c.phone || '',
-                        bill_to_abn: c.abn || '',
-                        bill_to_address: c.address || '',
-                      })
-                      setFormVersion(x => x + 1)
-                    }}
-                    allowClear
-                  />
-                  <Checkbox checked={saveAsCommonCustomer} onChange={(e) => setSaveAsCommonCustomer(e.target.checked)}>保存为常用客户</Checkbox>
-                  <Button onClick={() => { try { router.push('/finance/invoices?tab=customers') } catch {} }}>管理常用客户</Button>
-                </div>
+              <Card
+                className={styles.sectionCard}
+                title={<div className={styles.sectionTitle}><span>客户信息</span><span className={styles.muted}>选填</span></div>}
+                extra={<Button type="link" icon={<SettingOutlined />} onClick={() => { try { router.push('/finance/invoices?tab=customers') } catch {} }}>管理常用客户</Button>}
+                style={{ marginBottom: 12 }}
+              >
                 <Form.Item name="customer_id" hidden>
                   <Input />
                 </Form.Item>
+                <Row gutter={16} style={{ marginBottom: 6 }}>
+                  <Col xs={24} md={12}>
+                    <Select
+                      style={{ width: '100%' }}
+                      placeholder="选择常用客户"
+                      value={selectedCustomerId}
+                      options={savedCustomers.map((c) => ({
+                        value: c.id,
+                        label: `${c.name || '-'}${c.email ? ` · ${c.email}` : ''}`,
+                      }))}
+                      onChange={(v) => {
+                        if (!v) {
+                          setSelectedCustomerId(undefined)
+                          form.setFieldsValue({ customer_id: '' })
+                          setFormVersion(x => x + 1)
+                          return
+                        }
+                        setSelectedPropertyId(undefined)
+                        setSelectedCustomerId(v)
+                        const c = savedCustomers.find(x => x.id === v)
+                        if (!c) return
+                        form.setFieldsValue({
+                          customer_id: c.id,
+                          bill_to_name: c.name || '',
+                          bill_to_email: c.email || '',
+                          bill_to_phone: c.phone || '',
+                          bill_to_abn: c.abn || '',
+                          bill_to_address: c.address || '',
+                        })
+                        setFormVersion(x => x + 1)
+                      }}
+                      allowClear
+                    />
+                  </Col>
+                  <Col xs={24} md={12}>
+                    <Select
+                      style={{ width: '100%' }}
+                      placeholder="选择房号"
+                      value={selectedPropertyId}
+                      options={propertyOptions.map((x) => ({
+                        value: x.property_id,
+                        label: `${x.property_code}${x.landlord_name ? ` · ${x.landlord_name}` : ''}${x.property_address ? ` · ${x.property_address}` : ''}`,
+                      }))}
+                      loading={propertyOptionsLoading}
+                      onChange={(v) => {
+                        if (!v) { setSelectedPropertyId(undefined); return }
+                        setSelectedPropertyId(v)
+                        setSelectedCustomerId(undefined)
+                        form.setFieldsValue({ customer_id: '' })
+                        const opt = propertyOptions.find(x => x.property_id === v)
+                        if (!opt) return
+                        form.setFieldsValue({
+                          bill_to_name: opt.landlord_name || '',
+                          bill_to_email: '',
+                          bill_to_phone: '',
+                          bill_to_abn: '',
+                          bill_to_address: opt.property_address || '',
+                        })
+                        setFormVersion(x => x + 1)
+                      }}
+                      allowClear
+                      showSearch
+                      optionFilterProp="label"
+                      filterOption={false}
+                      onDropdownVisibleChange={(open) => { if (open && !propertyOptions.length) loadPropertyOptions().then(() => {}) }}
+                      onSearch={(text) => {
+                        try { if (propertySearchTimerRef.current) clearTimeout(propertySearchTimerRef.current) } catch {}
+                        propertySearchTimerRef.current = setTimeout(() => { loadPropertyOptions(text).then(() => {}) }, 250)
+                      }}
+                    />
+                  </Col>
+                </Row>
+                <Divider style={{ margin: '12px 0' }} />
                 <Row gutter={16}>
                   <Col xs={24} md={8}>
                     <Form.Item name="bill_to_name" label="姓名">
@@ -857,20 +939,13 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                       <Input placeholder="name@example.com" />
                     </Form.Item>
                   </Col>
-                  {invoiceType !== 'receipt' ? (
-                    <Col xs={24} md={8}>
-                      <Form.Item name="bill_to_address" label="地址">
-                        <Input placeholder="地址" />
-                      </Form.Item>
-                    </Col>
-                  ) : null}
-                </Row>
-                <Row gutter={16}>
                   <Col xs={24} md={8}>
                     <Form.Item name="bill_to_phone" label="电话">
                       <Input placeholder="联系电话" />
                     </Form.Item>
                   </Col>
+                </Row>
+                <Row gutter={16}>
                   {invoiceType === 'invoice' ? (
                     <Col xs={24} md={8}>
                       <Form.Item name="bill_to_abn" label="税号">
@@ -878,7 +953,22 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                       </Form.Item>
                     </Col>
                   ) : null}
+                  {invoiceType !== 'receipt' ? (
+                    <Col xs={24} md={invoiceType === 'invoice' ? 16 : 24}>
+                      <Form.Item name="bill_to_address" label="地址">
+                        <Input placeholder="详细地址" />
+                      </Form.Item>
+                    </Col>
+                  ) : null}
                 </Row>
+                <div style={{ marginTop: 4 }}>
+                  <Checkbox checked={saveAsCommonCustomer} onChange={(e) => setSaveAsCommonCustomer(e.target.checked)}>
+                    <Space size={6}>
+                      <span>保存为常用客户</span>
+                      <InfoCircleOutlined className={styles.muted} />
+                    </Space>
+                  </Checkbox>
+                </div>
               </Card>
 
               <Card

@@ -138,6 +138,9 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
                 await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount numeric;`)
                 await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_parts boolean;`)
                 await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS parts_amount numeric;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_parts boolean;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_gst boolean;`)
+                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_gst boolean;`)
                 await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
                 await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
                 await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;`)
@@ -857,6 +860,9 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount numeric(12,2);`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_parts boolean;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS parts_amount numeric(12,2);`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_parts boolean;`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_gst boolean;`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_gst boolean;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
@@ -891,8 +897,16 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
             }
           } catch {}
-          const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, repair_photo_urls, property_code, work_no, category, status, urgency, submitted_at, submitter_name, completed_at, maintenance_amount, has_parts, parts_amount, pay_method, pay_other_note)
-            VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::text[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`
+          const sql = `INSERT INTO property_maintenance (
+            id, property_id, occurred_at, worker_name,
+            details, notes, created_by, photo_urls, repair_photo_urls,
+            property_code, work_no, category, status, urgency,
+            submitted_at, submitter_name, completed_at,
+            maintenance_amount, has_parts, parts_amount,
+            maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst,
+            pay_method, pay_other_note
+          )
+            VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::text[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25) RETURNING *`
           const detailsArr = Array.isArray(detailsRaw) ? detailsRaw : []
           let photoUrlsArr: any = (payload as any).photo_urls
           if (typeof photoUrlsArr === 'string') {
@@ -939,6 +953,9 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 (d && (d as any).maintenance_amount !== undefined) ? Number((d as any).maintenance_amount || 0) : null,
                 (d && (d as any).has_parts !== undefined) ? !!(d as any).has_parts : null,
                 (d && (d as any).parts_amount !== undefined) ? Number((d as any).parts_amount || 0) : null,
+                (d && (d as any).maintenance_amount_includes_parts !== undefined) ? !!(d as any).maintenance_amount_includes_parts : null,
+                (d && (d as any).has_gst !== undefined) ? !!(d as any).has_gst : null,
+                (d && (d as any).maintenance_amount_includes_gst !== undefined) ? !!(d as any).maintenance_amount_includes_gst : null,
                 (d && (d as any).pay_method !== undefined) ? String((d as any).pay_method || '') : null,
                 (d && (d as any).pay_other_note !== undefined) ? String((d as any).pay_other_note || '') : null
               ]
@@ -968,6 +985,9 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               payload.maintenance_amount !== undefined ? Number(payload.maintenance_amount || 0) : null,
               payload.has_parts !== undefined ? !!payload.has_parts : null,
               payload.parts_amount !== undefined ? Number(payload.parts_amount || 0) : null,
+              payload.maintenance_amount_includes_parts !== undefined ? !!payload.maintenance_amount_includes_parts : null,
+              payload.has_gst !== undefined ? !!payload.has_gst : null,
+              payload.maintenance_amount_includes_gst !== undefined ? !!payload.maintenance_amount_includes_gst : null,
               payload.pay_method !== undefined ? String(payload.pay_method || '') : null,
               payload.pay_other_note !== undefined ? String(payload.pay_other_note || '') : null
             ]
@@ -1713,6 +1733,9 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
             await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;`)
             await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
             await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_parts boolean;`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_gst boolean;`)
+            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_gst boolean;`)
             try {
               const c = await pgPool.query(
                 `SELECT data_type, udt_name
