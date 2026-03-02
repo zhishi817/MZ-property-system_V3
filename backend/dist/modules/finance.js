@@ -74,6 +74,47 @@ function isPlaywrightClosedError(e) {
     const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
     return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg);
 }
+function monthRangeISO(monthKey) {
+    const m = String(monthKey || '').trim();
+    const mm = m.match(/^(\d{4})-(\d{2})$/);
+    if (!mm)
+        return null;
+    const y = Number(mm[1]);
+    const mo = Number(mm[2]);
+    if (!Number.isFinite(y) || !Number.isFinite(mo) || mo < 1 || mo > 12)
+        return null;
+    const start = new Date(Date.UTC(y, mo - 1, 1));
+    const end = new Date(Date.UTC(y, mo, 1));
+    return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+}
+function countUrlList(v) {
+    if (!v)
+        return 0;
+    if (Array.isArray(v))
+        return v.map(x => String(x || '').trim()).filter(Boolean).length;
+    if (typeof v === 'string') {
+        const s = v.trim();
+        if (!s)
+            return 0;
+        try {
+            const j = JSON.parse(s);
+            if (Array.isArray(j))
+                return j.map(x => String(x || '').trim()).filter(Boolean).length;
+        }
+        catch (_a) { }
+    }
+    if (typeof v === 'object') {
+        const anyV = v;
+        if (Array.isArray(anyV.urls))
+            return anyV.urls.map((x) => String(x || '').trim()).filter(Boolean).length;
+    }
+    return 0;
+}
+function allowPhotosInReportOfRecord(r) {
+    const st = String((r === null || r === void 0 ? void 0 : r.status) || '').trim().toLowerCase();
+    const rv = String((r === null || r === void 0 ? void 0 : r.review_status) || (r === null || r === void 0 ? void 0 : r.reviewStatus) || '').trim().toLowerCase();
+    return st === 'completed' || st === 'approved' || rv === 'approved';
+}
 exports.router.get('/', async (_req, res) => {
     try {
         if (dbAdapter_1.hasPg) {
@@ -1054,6 +1095,111 @@ exports.router.get('/expense-invoices/search', (0, auth_1.requireAnyPerm)(['prop
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'search failed' });
     }
 });
+exports.router.get('/monthly-statement-photo-stats', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
+    try {
+        const pid = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.pid) || ((_b = req.query) === null || _b === void 0 ? void 0 : _b.property_id) || '').trim();
+        const monthKey = String(((_c = req.query) === null || _c === void 0 ? void 0 : _c.month) || '').trim();
+        if (!pid)
+            return res.status(400).json({ message: 'missing pid' });
+        const range = monthRangeISO(monthKey);
+        if (!range)
+            return res.status(400).json({ message: 'invalid month' });
+        const threshold = Math.max(1, Number(process.env.STATEMENT_PHOTO_SPLIT_THRESHOLD || 40));
+        const hardThreshold = Math.max(threshold, Number(process.env.STATEMENT_PHOTO_SPLIT_HARD_THRESHOLD || 80));
+        let propertyCodeRaw = '';
+        if (dbAdapter_1.hasPg && dbAdapter_2.pgPool) {
+            try {
+                const r = await dbAdapter_2.pgPool.query('SELECT code FROM properties WHERE id=$1 LIMIT 1', [pid]);
+                propertyCodeRaw = String(((_e = (_d = r.rows) === null || _d === void 0 ? void 0 : _d[0]) === null || _e === void 0 ? void 0 : _e.code) || '').trim();
+            }
+            catch (_j) { }
+        }
+        else {
+            propertyCodeRaw = String(((_h = (_g = (_f = store_1.db.properties) === null || _f === void 0 ? void 0 : _f.find) === null || _g === void 0 ? void 0 : _g.call(_f, (p) => String(p.id) === pid)) === null || _h === void 0 ? void 0 : _h.code) || '').trim();
+        }
+        const propertyCode = (() => {
+            if (!propertyCodeRaw)
+                return '';
+            const s = propertyCodeRaw.split('(')[0].trim();
+            const t = s.split(/\s+/)[0].trim();
+            return t || s || propertyCodeRaw;
+        })();
+        const loadRowsPg = async (table) => {
+            if (!dbAdapter_2.pgPool)
+                return [];
+            const cols = await dbAdapter_2.pgPool.query(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`, [table]);
+            const colSet = new Set((cols.rows || []).map((r) => String(r.column_name || '').toLowerCase()));
+            const hasPropCode = colSet.has('property_code');
+            const hasOccur = colSet.has('occurred_at');
+            if (!hasOccur)
+                return [];
+            const parts = [];
+            const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND t.occurred_at >= $2 AND t.occurred_at < $3`;
+            const r1 = await dbAdapter_2.pgPool.query(q1, [pid, range.start, range.end]);
+            parts.push(...(r1.rows || []).map((x) => x.row));
+            if (hasPropCode && (propertyCode || propertyCodeRaw)) {
+                const codes = Array.from(new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean)));
+                if (codes.length) {
+                    const q2 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_code = ANY($1::text[]) AND t.occurred_at >= $2 AND t.occurred_at < $3`;
+                    const r2 = await dbAdapter_2.pgPool.query(q2, [codes, range.start, range.end]);
+                    parts.push(...(r2.rows || []).map((x) => x.row));
+                }
+            }
+            const map = new Map();
+            for (const rr of parts) {
+                const id = String((rr === null || rr === void 0 ? void 0 : rr.id) || '');
+                if (id)
+                    map.set(id, rr);
+            }
+            return Array.from(map.values());
+        };
+        const loadRowsMem = (table) => {
+            const list = Array.isArray(store_1.db[table]) ? store_1.db[table] : [];
+            const codes = new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean));
+            const inRange = (r) => {
+                const d = String((r === null || r === void 0 ? void 0 : r.occurred_at) || '').slice(0, 10);
+                return d >= range.start && d < range.end;
+            };
+            const map = new Map();
+            for (const r of list) {
+                const pidOk = String((r === null || r === void 0 ? void 0 : r.property_id) || '') === pid;
+                const codeOk = codes.size ? codes.has(String((r === null || r === void 0 ? void 0 : r.property_code) || '').trim()) : false;
+                if ((pidOk || codeOk) && inRange(r)) {
+                    const id = String((r === null || r === void 0 ? void 0 : r.id) || '');
+                    if (id)
+                        map.set(id, r);
+                }
+            }
+            return Array.from(map.values());
+        };
+        const maint = dbAdapter_1.hasPg ? await loadRowsPg('property_maintenance') : loadRowsMem('property_maintenance');
+        const deep = dbAdapter_1.hasPg ? await loadRowsPg('property_deep_cleaning') : loadRowsMem('property_deep_cleaning');
+        const maintenancePhotoCount = maint.reduce((n, r) => {
+            if (!allowPhotosInReportOfRecord(r))
+                return n;
+            return n + countUrlList(r === null || r === void 0 ? void 0 : r.photo_urls) + countUrlList(r === null || r === void 0 ? void 0 : r.repair_photo_urls);
+        }, 0);
+        const deepCleaningPhotoCount = deep.reduce((n, r) => {
+            if (!allowPhotosInReportOfRecord(r))
+                return n;
+            return n + countUrlList(r === null || r === void 0 ? void 0 : r.photo_urls) + countUrlList(r === null || r === void 0 ? void 0 : r.repair_photo_urls);
+        }, 0);
+        const totalPhotoCount = maintenancePhotoCount + deepCleaningPhotoCount;
+        return res.json({
+            maintenancePhotoCount,
+            deepCleaningPhotoCount,
+            totalPhotoCount,
+            shouldSplit: totalPhotoCount >= threshold,
+            hardSplit: totalPhotoCount >= hardThreshold,
+            threshold,
+            hardThreshold,
+        });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'stats failed' });
+    }
+});
 // Merge monthly statement PDF with multiple invoice PDFs and return a single PDF
 exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), pdfLimiter, mergeUpload.single('statement'), async (req, res) => {
     try {
@@ -1210,7 +1356,7 @@ exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 
 });
 exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req, res) => {
     try {
-        const { month, property_id, showChinese, includePhotosMode } = req.body || {};
+        const { month, property_id, showChinese, includePhotosMode, includePhotos, sections } = req.body || {};
         const monthKey = String(month || '').trim();
         const pid = String(property_id || '').trim();
         if (!/^\d{4}-\d{2}$/.test(monthKey))
@@ -1232,10 +1378,19 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
         if (!token)
             return res.status(401).json({ message: 'missing token' });
         const photos = (() => {
+            if (includePhotos === 0 || includePhotos === '0' || includePhotos === false)
+                return 'off';
             const v = String(includePhotosMode || 'full');
             if (v === 'thumbnail' || v === 'off')
                 return v;
             return 'full';
+        })();
+        const sec = (() => {
+            if (Array.isArray(sections))
+                return sections.map((x) => String(x || '').trim()).filter(Boolean).join(',');
+            if (typeof sections === 'string')
+                return sections.split(',').map(s => s.trim()).filter(Boolean).join(',');
+            return 'all';
         })();
         const url = (() => {
             const u = new URL('/public/monthly-statement-print', front);
@@ -1244,6 +1399,7 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             u.searchParams.set('pdf', '1');
             u.searchParams.set('showChinese', String(showChinese === false || showChinese === '0' ? '0' : '1'));
             u.searchParams.set('photos', photos);
+            u.searchParams.set('sections', sec || 'all');
             return u.toString();
         })();
         let browser = await (0, playwright_1.getChromiumBrowser)();
@@ -1266,13 +1422,9 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             page.setDefaultTimeout(waitTimeoutMs);
             page.setDefaultNavigationTimeout(navTimeoutMs);
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
-            await page.waitForFunction(() => {
-                const el = document.querySelector('[data-monthly-statement-root="1"]');
-                if (!el)
-                    return false;
-                const loaded = (el.getAttribute('data-deep-clean-loaded') || '') === '1';
-                return loaded;
-            }, { timeout: waitTimeoutMs });
+            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => { });
+            await page.evaluate(() => { var _a; return (_a = document.fonts) === null || _a === void 0 ? void 0 : _a.ready; }).catch(() => { });
+            await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs });
             await page.waitForFunction(async () => {
                 const imgs = Array.from(document.images || []);
                 await Promise.all(imgs.map(img => {
@@ -1284,7 +1436,7 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
                     });
                 }));
                 return true;
-            }, { timeout: waitTimeoutMs });
+            }, { timeout: Math.min(waitTimeoutMs, 30000) }).catch(() => { });
             await page.waitForTimeout(200);
             await page.emulateMedia({ media: 'print' });
             const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true });

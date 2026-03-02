@@ -57,6 +57,42 @@ function isPlaywrightClosedError(e: any) {
   return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg)
 }
 
+function monthRangeISO(monthKey: string): { start: string; end: string } | null {
+  const m = String(monthKey || '').trim()
+  const mm = m.match(/^(\d{4})-(\d{2})$/)
+  if (!mm) return null
+  const y = Number(mm[1])
+  const mo = Number(mm[2])
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || mo < 1 || mo > 12) return null
+  const start = new Date(Date.UTC(y, mo - 1, 1))
+  const end = new Date(Date.UTC(y, mo, 1))
+  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) }
+}
+
+function countUrlList(v: any): number {
+  if (!v) return 0
+  if (Array.isArray(v)) return v.map(x => String(x || '').trim()).filter(Boolean).length
+  if (typeof v === 'string') {
+    const s = v.trim()
+    if (!s) return 0
+    try {
+      const j = JSON.parse(s)
+      if (Array.isArray(j)) return j.map(x => String(x || '').trim()).filter(Boolean).length
+    } catch {}
+  }
+  if (typeof v === 'object') {
+    const anyV: any = v as any
+    if (Array.isArray(anyV.urls)) return anyV.urls.map((x: any) => String(x || '').trim()).filter(Boolean).length
+  }
+  return 0
+}
+
+function allowPhotosInReportOfRecord(r: any): boolean {
+  const st = String(r?.status || '').trim().toLowerCase()
+  const rv = String(r?.review_status || r?.reviewStatus || '').trim().toLowerCase()
+  return st === 'completed' || st === 'approved' || rv === 'approved'
+}
+
 router.get('/', async (_req, res) => {
   try {
     
@@ -997,6 +1033,108 @@ router.get('/expense-invoices/search', requireAnyPerm(['property_expenses.view',
   }
 })
 
+router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+  try {
+    const pid = String((req.query as any)?.pid || (req.query as any)?.property_id || '').trim()
+    const monthKey = String((req.query as any)?.month || '').trim()
+    if (!pid) return res.status(400).json({ message: 'missing pid' })
+    const range = monthRangeISO(monthKey)
+    if (!range) return res.status(400).json({ message: 'invalid month' })
+    const threshold = Math.max(1, Number(process.env.STATEMENT_PHOTO_SPLIT_THRESHOLD || 40))
+    const hardThreshold = Math.max(threshold, Number(process.env.STATEMENT_PHOTO_SPLIT_HARD_THRESHOLD || 80))
+
+    let propertyCodeRaw = ''
+    if (hasPg && pgPool) {
+      try {
+        const r = await pgPool.query('SELECT code FROM properties WHERE id=$1 LIMIT 1', [pid])
+        propertyCodeRaw = String(r.rows?.[0]?.code || '').trim()
+      } catch {}
+    } else {
+      propertyCodeRaw = String((db as any).properties?.find?.((p: any) => String(p.id) === pid)?.code || '').trim()
+    }
+    const propertyCode = (() => {
+      if (!propertyCodeRaw) return ''
+      const s = propertyCodeRaw.split('(')[0].trim()
+      const t = s.split(/\s+/)[0].trim()
+      return t || s || propertyCodeRaw
+    })()
+
+    const loadRowsPg = async (table: string): Promise<any[]> => {
+      if (!pgPool) return []
+      const cols = await pgPool.query(
+        `SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,
+        [table]
+      )
+      const colSet = new Set((cols.rows || []).map((r: any) => String(r.column_name || '').toLowerCase()))
+      const hasPropCode = colSet.has('property_code')
+      const hasOccur = colSet.has('occurred_at')
+      if (!hasOccur) return []
+      const parts: any[] = []
+      const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND t.occurred_at >= $2 AND t.occurred_at < $3`
+      const r1 = await pgPool.query(q1, [pid, range.start, range.end])
+      parts.push(...(r1.rows || []).map((x: any) => x.row))
+      if (hasPropCode && (propertyCode || propertyCodeRaw)) {
+        const codes = Array.from(new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean)))
+        if (codes.length) {
+          const q2 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_code = ANY($1::text[]) AND t.occurred_at >= $2 AND t.occurred_at < $3`
+          const r2 = await pgPool.query(q2, [codes, range.start, range.end])
+          parts.push(...(r2.rows || []).map((x: any) => x.row))
+        }
+      }
+      const map = new Map<string, any>()
+      for (const rr of parts) {
+        const id = String(rr?.id || '')
+        if (id) map.set(id, rr)
+      }
+      return Array.from(map.values())
+    }
+
+    const loadRowsMem = (table: string): any[] => {
+      const list = Array.isArray((db as any)[table]) ? (db as any)[table] : []
+      const codes = new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean))
+      const inRange = (r: any) => {
+        const d = String(r?.occurred_at || '').slice(0, 10)
+        return d >= range.start && d < range.end
+      }
+      const map = new Map<string, any>()
+      for (const r of list) {
+        const pidOk = String(r?.property_id || '') === pid
+        const codeOk = codes.size ? codes.has(String(r?.property_code || '').trim()) : false
+        if ((pidOk || codeOk) && inRange(r)) {
+          const id = String(r?.id || '')
+          if (id) map.set(id, r)
+        }
+      }
+      return Array.from(map.values())
+    }
+
+    const maint = hasPg ? await loadRowsPg('property_maintenance') : loadRowsMem('property_maintenance')
+    const deep = hasPg ? await loadRowsPg('property_deep_cleaning') : loadRowsMem('property_deep_cleaning')
+
+    const maintenancePhotoCount = maint.reduce((n, r) => {
+      if (!allowPhotosInReportOfRecord(r)) return n
+      return n + countUrlList((r as any)?.photo_urls) + countUrlList((r as any)?.repair_photo_urls)
+    }, 0)
+    const deepCleaningPhotoCount = deep.reduce((n, r) => {
+      if (!allowPhotosInReportOfRecord(r)) return n
+      return n + countUrlList((r as any)?.photo_urls) + countUrlList((r as any)?.repair_photo_urls)
+    }, 0)
+    const totalPhotoCount = maintenancePhotoCount + deepCleaningPhotoCount
+
+    return res.json({
+      maintenancePhotoCount,
+      deepCleaningPhotoCount,
+      totalPhotoCount,
+      shouldSplit: totalPhotoCount >= threshold,
+      hardSplit: totalPhotoCount >= hardThreshold,
+      threshold,
+      hardThreshold,
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'stats failed' })
+  }
+})
+
 // Merge monthly statement PDF with multiple invoice PDFs and return a single PDF
 router.post(
   '/merge-pdf',
@@ -1136,7 +1274,7 @@ router.post(
 
 router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req: any, res: any) => {
   try {
-    const { month, property_id, showChinese, includePhotosMode } = req.body || {}
+    const { month, property_id, showChinese, includePhotosMode, includePhotos, sections } = req.body || {}
     const monthKey = String(month || '').trim()
     const pid = String(property_id || '').trim()
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
@@ -1153,9 +1291,15 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
     })()
     if (!token) return res.status(401).json({ message: 'missing token' })
     const photos = (() => {
+      if (includePhotos === 0 || includePhotos === '0' || includePhotos === false) return 'off'
       const v = String(includePhotosMode || 'full')
       if (v === 'thumbnail' || v === 'off') return v
       return 'full'
+    })()
+    const sec = (() => {
+      if (Array.isArray(sections)) return sections.map((x: any) => String(x || '').trim()).filter(Boolean).join(',')
+      if (typeof sections === 'string') return sections.split(',').map(s => s.trim()).filter(Boolean).join(',')
+      return 'all'
     })()
     const url = (() => {
       const u = new URL('/public/monthly-statement-print', front)
@@ -1164,6 +1308,7 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
       u.searchParams.set('pdf', '1')
       u.searchParams.set('showChinese', String(showChinese === false || showChinese === '0' ? '0' : '1'))
       u.searchParams.set('photos', photos)
+      u.searchParams.set('sections', sec || 'all')
       return u.toString()
     })()
     let browser = await getChromiumBrowser()
@@ -1182,12 +1327,9 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
       page.setDefaultTimeout(waitTimeoutMs)
       page.setDefaultNavigationTimeout(navTimeoutMs)
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
-      await page.waitForFunction(() => {
-        const el = document.querySelector('[data-monthly-statement-root="1"]') as HTMLElement | null
-        if (!el) return false
-        const loaded = (el.getAttribute('data-deep-clean-loaded') || '') === '1'
-        return loaded
-      }, { timeout: waitTimeoutMs })
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+      await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
+      await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs })
       await page.waitForFunction(async () => {
         const imgs = Array.from(document.images || [])
         await Promise.all(imgs.map(img => {
@@ -1198,7 +1340,7 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
           })
         }))
         return true
-      }, { timeout: waitTimeoutMs })
+      }, { timeout: Math.min(waitTimeoutMs, 30000) }).catch(() => {})
       await page.waitForTimeout(200)
       await page.emulateMedia({ media: 'print' } as any)
       const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
