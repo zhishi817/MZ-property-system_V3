@@ -14,6 +14,7 @@ import { getRole, hasPerm } from '../../../lib/auth'
    const [props, setProps] = useState<Property[]>([])
    const [form] = Form.useForm()
    const { message } = App.useApp()
+  const [submitting, setSubmitting] = useState(false)
   const [sharePwdOpen, setSharePwdOpen] = useState(false)
   const [shareForm] = Form.useForm()
   const [sharePwdInfo, setSharePwdInfo] = useState<{ configured: boolean; password_updated_at: string | null } | null>(null)
@@ -62,21 +63,23 @@ import { getRole, hasPerm } from '../../../lib/auth'
    const options = useMemo(() => sortProperties(props).map(p => ({ value: p.id, label: p.code || p.address || p.id })), [props])
  
   async function submit() {
-    const v = await form.validateFields()
-    const occurredDay = v.occurred_at ? dayjs(v.occurred_at) : dayjs()
-    const base = {
-      property_id: v.property_id,
-      occurred_at: occurredDay.format('YYYY-MM-DD'),
-      worker_name: v.worker_name || '',
-      submitter_name: v.worker_name || '',
-      notes: v.notes || '',
-      status: 'completed',
-      submitted_at: new Date().toISOString()
-    }
-    const completedAtIso = occurredDay.hour(12).minute(0).second(0).millisecond(0).toISOString()
-    const detailsArr: any[] = Array.isArray(v.details) ? v.details : []
-    if (!detailsArr.length) { message.error('请至少添加一条维修详情'); return }
+    if (submitting) return
+    setSubmitting(true)
     try {
+      const v = await form.validateFields()
+      const occurredDay = v.occurred_at ? dayjs(v.occurred_at) : dayjs()
+      const base = {
+        property_id: v.property_id,
+        occurred_at: occurredDay.format('YYYY-MM-DD'),
+        worker_name: v.worker_name || '',
+        submitter_name: v.worker_name || '',
+        notes: v.notes || '',
+        status: 'completed',
+        submitted_at: new Date().toISOString()
+      }
+      const completedAtIso = occurredDay.hour(12).minute(0).second(0).millisecond(0).toISOString()
+      const detailsArr: any[] = Array.isArray(v.details) ? v.details : []
+      if (!detailsArr.length) { message.error('请至少添加一条维修详情'); return }
       let okCount = 0
       for (let i = 0; i < detailsArr.length; i++) {
         const d = detailsArr[i] || {}
@@ -105,6 +108,8 @@ import { getRole, hasPerm } from '../../../lib/auth'
       setPostFiles({}); setPostUrls({})
     } catch (e: any) {
       message.error(e?.message || '提交失败')
+    } finally {
+      setSubmitting(false)
     }
   }
  
@@ -374,7 +379,7 @@ import { getRole, hasPerm } from '../../../lib/auth'
              <Input.TextArea rows={3} placeholder="可填写其他说明" />
            </Form.Item>
            <div style={{ display:'flex', justifyContent:'flex-end' }}>
-             <Button type="primary" onClick={submit}>提交进度</Button>
+            <Button type="primary" onClick={submit} loading={submitting} disabled={submitting}>提交进度</Button>
            </div>
          </Form>
        </Card>

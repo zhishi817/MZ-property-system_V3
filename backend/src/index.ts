@@ -84,7 +84,7 @@ const corsOpts: cors.CorsOptions = {
   credentials: true,
   methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization','X-Guide-Session'],
-  exposedHeaders: ['X-Total-Count']
+  exposedHeaders: ['X-Total-Count','x-auto-expense-sync','x-auto-expense-reason','x-auto-expense-error']
 }
 app.use(cors(corsOpts))
 app.options('*', cors(corsOpts))

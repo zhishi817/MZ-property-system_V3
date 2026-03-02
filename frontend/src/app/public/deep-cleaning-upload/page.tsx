@@ -33,6 +33,7 @@ export default function PublicDeepCleaningUploadPage() {
   const [pwd, setPwd] = useState('')
   const [token, setToken] = useState<string>('')
   const [loggingIn, setLoggingIn] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
   const [preFiles, setPreFiles] = useState<Record<number, UploadFile[]>>({})
   const [preUrls, setPreUrls] = useState<Record<number, string[]>>({})
   const [postFiles, setPostFiles] = useState<Record<number, UploadFile[]>>({})
@@ -145,27 +146,29 @@ export default function PublicDeepCleaningUploadPage() {
   }
 
   async function submit() {
-    const v = await form.validateFields()
-    const tk = await ensureToken()
-    if (!tk) return
-    const detailsArr: DetailItem[] = Array.isArray(v.details) ? v.details : []
-    if (!detailsArr.length) { message.error('请至少添加一条清洁项目'); return }
-    const baseDate = v.occurred_at ? dayjs(v.occurred_at) : dayjs()
-    const payload = {
-      property_id: v.property_id,
-      occurred_at: baseDate.format('YYYY-MM-DD'),
-      worker_name: String(v.worker_name || '').trim(),
-      notes: String(v.notes || '').trim(),
-      details: detailsArr.map((d, idx) => ({
-        project_desc: String(d?.project_desc || '').trim(),
-        started_at: combineDateAndTimeToIso(baseDate, d?.started_at),
-        ended_at: combineDateAndTimeToIso(baseDate, d?.ended_at),
-        note: d?.note ? String(d.note) : undefined,
-        pre_photo_urls: preUrls[idx] || [],
-        post_photo_urls: postUrls[idx] || [],
-      })),
-    }
     try {
+      if (submitting) return
+      setSubmitting(true)
+      const v = await form.validateFields()
+      const tk = await ensureToken()
+      if (!tk) return
+      const detailsArr: DetailItem[] = Array.isArray(v.details) ? v.details : []
+      if (!detailsArr.length) { message.error('请至少添加一条清洁项目'); return }
+      const baseDate = v.occurred_at ? dayjs(v.occurred_at) : dayjs()
+      const payload = {
+        property_id: v.property_id,
+        occurred_at: baseDate.format('YYYY-MM-DD'),
+        worker_name: String(v.worker_name || '').trim(),
+        notes: String(v.notes || '').trim(),
+        details: detailsArr.map((d, idx) => ({
+          project_desc: String(d?.project_desc || '').trim(),
+          started_at: combineDateAndTimeToIso(baseDate, d?.started_at),
+          ended_at: combineDateAndTimeToIso(baseDate, d?.ended_at),
+          note: d?.note ? String(d.note) : undefined,
+          pre_photo_urls: preUrls[idx] || [],
+          post_photo_urls: postUrls[idx] || [],
+        })),
+      }
       const res = await fetch(`${API_BASE}/public/deep-cleaning-upload/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk}` },
@@ -179,6 +182,8 @@ export default function PublicDeepCleaningUploadPage() {
       setPostFiles({}); setPostUrls({})
     } catch {
       message.error('提交失败')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -295,7 +300,7 @@ export default function PublicDeepCleaningUploadPage() {
             <Input.TextArea rows={2} placeholder="可选" />
           </Form.Item>
 
-          <Button type="primary" onClick={submit} loading={loggingIn} disabled={loggingIn}>提交</Button>
+          <Button type="primary" onClick={submit} loading={loggingIn || submitting} disabled={loggingIn || submitting}>提交</Button>
         </Form>
       </Card>
     </div>

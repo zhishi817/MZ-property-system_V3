@@ -59,6 +59,517 @@ exports.router.get('/', async (_req, res) => {
         return res.json(store_1.db.financeTransactions);
     }
 });
+function autoToISODateOnly(v) {
+    if (!v)
+        return null;
+    if (typeof v === 'string') {
+        const s = v.trim();
+        if (!s)
+            return null;
+        if (/^\d{4}-\d{2}-\d{2}/.test(s))
+            return s.slice(0, 10);
+        const d0 = new Date(s);
+        if (!isNaN(d0.getTime()))
+            return d0.toISOString().slice(0, 10);
+        return null;
+    }
+    if (v instanceof Date && !isNaN(v.getTime()))
+        return v.toISOString().slice(0, 10);
+    try {
+        const d = new Date(v);
+        if (!isNaN(d.getTime()))
+            return d.toISOString().slice(0, 10);
+    }
+    catch (_a) { }
+    return null;
+}
+function autoMonthKey(d) {
+    if (!d)
+        return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d))
+        return null;
+    return `${d.slice(0, 4)}-${d.slice(5, 7)}`;
+}
+function autoToNum(v) {
+    if (v === null || v === undefined || v === '')
+        return 0;
+    const n0 = Number(v);
+    if (Number.isFinite(n0))
+        return n0;
+    const s = String(v || '').replace(/[^0-9.\-]/g, '');
+    const n1 = Number(s);
+    return Number.isFinite(n1) ? n1 : 0;
+}
+function autoNormPayMethod(v) {
+    const s = String(v || '').trim();
+    const low = s.toLowerCase();
+    if (!low)
+        return '';
+    if (low === 'landlord_pay' || s.includes('房东'))
+        return 'landlord_pay';
+    if (low === 'company_pay' || s.includes('公司'))
+        return 'company_pay';
+    if (low === 'rent_deduction' || s.includes('租金'))
+        return 'rent_deduction';
+    if (low === 'tenant_pay' || s.includes('房客'))
+        return 'tenant_pay';
+    if (low === 'other_pay' || s.includes('其他'))
+        return 'other_pay';
+    return low;
+}
+function autoNormStatus(v) {
+    const s = String(v || '').trim();
+    const low = s.toLowerCase();
+    if (!low)
+        return '';
+    if (low === 'completed' || s.includes('已完成') || s === '完成')
+        return 'completed';
+    if (low === 'canceled' || s.includes('取消'))
+        return 'canceled';
+    return low;
+}
+function autoCalcMaintenanceTotal(row) {
+    const base = autoToNum(row === null || row === void 0 ? void 0 : row.maintenance_amount);
+    const baseN = Number.isFinite(base) ? base : 0;
+    const hasParts = (row === null || row === void 0 ? void 0 : row.has_parts) === true;
+    if (!hasParts)
+        return Math.round((baseN + Number.EPSILON) * 100) / 100;
+    const includesParts = (row === null || row === void 0 ? void 0 : row.maintenance_amount_includes_parts) === true;
+    if (includesParts)
+        return Math.round((baseN + Number.EPSILON) * 100) / 100;
+    const parts = autoToNum(row === null || row === void 0 ? void 0 : row.parts_amount);
+    const partsN = Number.isFinite(parts) ? parts : 0;
+    return Math.round(((baseN + partsN) + Number.EPSILON) * 100) / 100;
+}
+function autoComputeDeepCleaningTotalCost(laborCostRaw, consumablesRaw) {
+    const labor = autoToNum(laborCostRaw);
+    let arr = [];
+    let raw = consumablesRaw;
+    if (typeof raw === 'string') {
+        try {
+            raw = JSON.parse(raw);
+        }
+        catch (_a) {
+            raw = [];
+        }
+    }
+    if (Array.isArray(raw))
+        arr = raw;
+    const sum = arr.reduce((s, x) => {
+        const n = autoToNum(x === null || x === void 0 ? void 0 : x.cost);
+        return s + (Number.isFinite(n) ? n : 0);
+    }, 0);
+    const total = labor + sum;
+    return Math.round((total + Number.EPSILON) * 100) / 100;
+}
+function autoToSummaryText(v, maxLen = 260) {
+    try {
+        if (v === null || v === undefined)
+            return '';
+        const s = typeof v === 'string' ? v.trim() : JSON.stringify(v);
+        return String(s || '').trim().slice(0, maxLen);
+    }
+    catch (_a) {
+        return String(v || '').trim().slice(0, maxLen);
+    }
+}
+function autoParseMaybeJson(v) {
+    if (typeof v !== 'string')
+        return v;
+    const s = v.trim();
+    if (!s)
+        return '';
+    const head = s[0];
+    if (head !== '{' && head !== '[')
+        return s;
+    try {
+        return JSON.parse(s);
+    }
+    catch (_a) {
+        return s;
+    }
+}
+function autoPickSummaryFromDetails(detailsRaw) {
+    const v = autoParseMaybeJson(detailsRaw);
+    if (!v)
+        return '';
+    if (Array.isArray(v)) {
+        for (const it of v) {
+            const c = autoToSummaryText(it === null || it === void 0 ? void 0 : it.content);
+            if (c)
+                return c;
+            const i = autoToSummaryText(it === null || it === void 0 ? void 0 : it.item);
+            if (i)
+                return i;
+            const s = autoToSummaryText(it);
+            if (s)
+                return s;
+        }
+        return '';
+    }
+    if (typeof v === 'object') {
+        const c = autoToSummaryText(v === null || v === void 0 ? void 0 : v.content);
+        if (c)
+            return c;
+        const i = autoToSummaryText(v === null || v === void 0 ? void 0 : v.item);
+        if (i)
+            return i;
+    }
+    return autoToSummaryText(v);
+}
+function autoMaintenanceIssueSummary(row) {
+    const a = autoPickSummaryFromDetails(row === null || row === void 0 ? void 0 : row.details);
+    if (a)
+        return a;
+    const b = autoToSummaryText(row === null || row === void 0 ? void 0 : row.repair_notes);
+    if (b)
+        return b;
+    return autoToSummaryText(row === null || row === void 0 ? void 0 : row.category);
+}
+function autoDeepCleaningProjectSummary(row) {
+    const a = autoToSummaryText(row === null || row === void 0 ? void 0 : row.project_desc);
+    if (a)
+        return a;
+    const b = autoPickSummaryFromDetails(row === null || row === void 0 ? void 0 : row.details);
+    if (b)
+        return b;
+    return autoToSummaryText(row === null || row === void 0 ? void 0 : row.notes);
+}
+async function autoHasManualOverrideForRef(executor, refType, refId) {
+    var _a, _b;
+    try {
+        const r = await executor.query(`SELECT (
+         EXISTS (SELECT 1 FROM property_expenses WHERE ref_type=$1 AND ref_id=$2 AND manual_override=true)
+         OR
+         EXISTS (SELECT 1 FROM company_expenses WHERE ref_type=$1 AND ref_id=$2 AND manual_override=true)
+       ) AS ok`, [refType, refId]);
+        return !!((_b = (_a = r === null || r === void 0 ? void 0 : r.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
+    }
+    catch (_c) {
+        return false;
+    }
+}
+async function ensureAutoExpenseSchema(client) {
+    let sp = 0;
+    const safeQuery = async (sql) => {
+        const name = `s${sp++}`;
+        await client.query(`SAVEPOINT ${name}`);
+        try {
+            await client.query(sql);
+            await client.query(`RELEASE SAVEPOINT ${name}`);
+            return { ok: true, error: '' };
+        }
+        catch (e) {
+            try {
+                await client.query(`ROLLBACK TO SAVEPOINT ${name}`);
+            }
+            catch (_a) { }
+            try {
+                await client.query(`RELEASE SAVEPOINT ${name}`);
+            }
+            catch (_b) { }
+            return { ok: false, error: String((e === null || e === void 0 ? void 0 : e.message) || e || '') };
+        }
+    };
+    const must = async (sql) => {
+        const r = await safeQuery(sql);
+        if (!r.ok)
+            throw new Error(r.error || 'schema ensure failed');
+    };
+    await must(`CREATE TABLE IF NOT EXISTS company_expenses (
+    id text PRIMARY KEY,
+    occurred_at date NOT NULL,
+    amount numeric NOT NULL,
+    currency text NOT NULL DEFAULT 'AUD',
+    category text,
+    category_detail text,
+    note text,
+    invoice_url text,
+    created_at timestamptz DEFAULT now(),
+    created_by text,
+    fixed_expense_id text,
+    month_key text,
+    due_date date,
+    paid_date date,
+    status text,
+    generated_from text,
+    ref_type text,
+    ref_id text,
+    is_auto boolean DEFAULT false,
+    manual_override boolean DEFAULT false,
+    source_title text,
+    source_summary text
+  );`);
+    await must(`CREATE TABLE IF NOT EXISTS property_expenses (
+    id text PRIMARY KEY,
+    property_id text,
+    occurred_at date NOT NULL,
+    amount numeric NOT NULL,
+    currency text NOT NULL DEFAULT 'AUD',
+    category text,
+    category_detail text,
+    note text,
+    invoice_url text,
+    created_at timestamptz DEFAULT now(),
+    created_by text,
+    fixed_expense_id text,
+    month_key text,
+    due_date date,
+    paid_date date,
+    status text,
+    pay_method text,
+    pay_other_note text,
+    generated_from text,
+    ref_type text,
+    ref_id text,
+    is_auto boolean DEFAULT false,
+    manual_override boolean DEFAULT false,
+    source_title text,
+    source_summary text
+  );`);
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS category_detail text;');
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS note text;');
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;');
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;');
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_method text;');
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_other_note text;');
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;');
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_type text;');
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_id text;');
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS is_auto boolean DEFAULT false;');
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false;');
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_title text;');
+    await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_summary text;');
+    await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;");
+    await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;');
+    await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;');
+    await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;');
+    await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;');
+    await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;');
+    await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_type text;');
+    await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_id text;');
+    await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS is_auto boolean DEFAULT false;');
+    await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false;');
+    await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_title text;');
+    await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_summary text;');
+    await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_ref ON company_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;");
+}
+async function autoUpsertPropertyExpenseByRef(client, input) {
+    var _a, _b;
+    const { v4: uuid } = require('uuid');
+    const mk = autoMonthKey(input.occurredAt);
+    try {
+        await client.query(`INSERT INTO property_expenses (id, property_id, occurred_at, amount, currency, category, category_detail, note, pay_method, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
+       VALUES ($1,$2,$3,$4,'AUD','other',$5,$6,'landlord_pay',$7,$8,$9,$10,$3,true,$11,$12)
+       ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
+       SET property_id=EXCLUDED.property_id, occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
+           note=EXCLUDED.note, pay_method=EXCLUDED.pay_method, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto,
+           source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`, [uuid(), input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]);
+    }
+    catch (e) {
+        const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+        if (/no\s+unique\s+constraint\s+matching\s+ON\s+CONFLICT/i.test(msg) || /there\s+is\s+no\s+unique\s+or\s+exclusion\s+constraint/i.test(msg)) {
+            const existing = await client.query('SELECT id FROM property_expenses WHERE ref_type=$1 AND ref_id=$2 LIMIT 1', [input.refType, input.refId]);
+            const existingId = String(((_b = (_a = existing === null || existing === void 0 ? void 0 : existing.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.id) || '');
+            if (existingId) {
+                await client.query(`UPDATE property_expenses
+           SET property_id=$1, occurred_at=$2, amount=$3, currency='AUD', category='other', category_detail=$4, note=$5,
+               pay_method='landlord_pay', generated_from=$6, month_key=$7, due_date=$2, is_auto=true, source_title=$9, source_summary=$10
+           WHERE id=$8`, [input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, mk, existingId, input.sourceTitle || null, input.sourceSummary || null]);
+                return;
+            }
+            await client.query(`INSERT INTO property_expenses (id, property_id, occurred_at, amount, currency, category, category_detail, note, pay_method, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
+         VALUES ($1,$2,$3,$4,'AUD','other',$5,$6,'landlord_pay',$7,$8,$9,$10,$3,true,$11,$12)`, [uuid(), input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]);
+            return;
+        }
+        throw e;
+    }
+}
+async function autoUpsertCompanyExpenseByRef(client, input) {
+    var _a, _b;
+    const { v4: uuid } = require('uuid');
+    const mk = autoMonthKey(input.occurredAt);
+    try {
+        await client.query(`INSERT INTO company_expenses (id, occurred_at, amount, currency, category, category_detail, note, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
+       VALUES ($1,$2,$3,'AUD','other',$4,$5,$6,$7,$8,$9,$2,true,$10,$11)
+       ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
+       SET occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
+           note=EXCLUDED.note, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto,
+           source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`, [uuid(), input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]);
+    }
+    catch (e) {
+        const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+        if (/no\s+unique\s+constraint\s+matching\s+ON\s+CONFLICT/i.test(msg) || /there\s+is\s+no\s+unique\s+or\s+exclusion\s+constraint/i.test(msg)) {
+            const existing = await client.query('SELECT id FROM company_expenses WHERE ref_type=$1 AND ref_id=$2 LIMIT 1', [input.refType, input.refId]);
+            const existingId = String(((_b = (_a = existing === null || existing === void 0 ? void 0 : existing.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.id) || '');
+            if (existingId) {
+                await client.query(`UPDATE company_expenses
+           SET occurred_at=$1, amount=$2, currency='AUD', category='other', category_detail=$3, note=$4, generated_from=$5, month_key=$6, due_date=$1, is_auto=true, source_title=$8, source_summary=$9
+           WHERE id=$7`, [input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, mk, existingId, input.sourceTitle || null, input.sourceSummary || null]);
+                return;
+            }
+            await client.query(`INSERT INTO company_expenses (id, occurred_at, amount, currency, category, category_detail, note, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
+         VALUES ($1,$2,$3,'AUD','other',$4,$5,$6,$7,$8,$9,$2,true,$10,$11)`, [uuid(), input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]);
+            return;
+        }
+        throw e;
+    }
+}
+const autoExpensesBackfillSchema = zod_1.z.object({
+    from: zod_1.z.string().optional(),
+    to: zod_1.z.string().optional(),
+    dry_run: zod_1.z.boolean().optional().default(true),
+    limit: zod_1.z.coerce.number().optional().default(5000),
+    type: zod_1.z.enum(['maintenance', 'deep_cleaning', 'all']).optional().default('all'),
+    property_id: zod_1.z.string().optional(),
+});
+exports.router.post('/auto-expenses/backfill', (0, auth_1.requireAnyPerm)(['finance.tx.write', 'property_expenses.write', 'company_expenses.write']), async (req, res) => {
+    if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
+        return res.status(400).json({ message: 'pg required' });
+    const parsed = autoExpensesBackfillSchema.safeParse(req.body || {});
+    if (!parsed.success)
+        return res.status(400).json(parsed.error.format());
+    const from = parsed.data.from ? String(parsed.data.from).slice(0, 10) : '2000-01-01';
+    const to = parsed.data.to ? String(parsed.data.to).slice(0, 10) : '2100-01-01';
+    const dryRun = !!parsed.data.dry_run;
+    const limit = Math.max(1, Math.min(20000, Number(parsed.data.limit || 5000)));
+    const type = String(parsed.data.type || 'all');
+    const propertyIdFilter = parsed.data.property_id ? String(parsed.data.property_id || '').trim() : '';
+    try {
+        const items = [];
+        if (type === 'all' || type === 'maintenance') {
+            const mt = await dbAdapter_2.pgPool.query(`SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, completed_at, occurred_at, created_at, details, repair_notes, category
+         FROM property_maintenance
+         WHERE coalesce(completed_at::date, occurred_at, created_at::date) BETWEEN $1::date AND $2::date
+           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
+         ORDER BY coalesce(completed_at::date, occurred_at, created_at::date) ASC
+         LIMIT $3`, [from, to, limit, propertyIdFilter]);
+            for (const r of (mt.rows || []))
+                items.push({ kind: 'maintenance', row: r });
+        }
+        if (type === 'all' || type === 'deep_cleaning') {
+            const dc = await dbAdapter_2.pgPool.query(`SELECT id, property_id, status, pay_method, work_no, total_cost, labor_cost, consumables, completed_at, occurred_at, created_at, project_desc, details, notes
+         FROM property_deep_cleaning
+         WHERE coalesce(completed_at::date, occurred_at, created_at::date) BETWEEN $1::date AND $2::date
+           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
+         ORDER BY coalesce(completed_at::date, occurred_at, created_at::date) ASC
+         LIMIT $3`, [from, to, limit, propertyIdFilter]);
+            for (const r of (dc.rows || []))
+                items.push({ kind: 'deep_cleaning', row: r });
+        }
+        const scanned = items.length;
+        if (dryRun) {
+            let would_property = 0, would_company = 0, would_void = 0, skipped_manual_override = 0, would_cleaned_opposite = 0;
+            for (const it of items) {
+                const refType = it.kind === 'maintenance' ? 'maintenance' : 'deep_cleaning';
+                const r = it.row || {};
+                const refId = String((r === null || r === void 0 ? void 0 : r.id) || '');
+                if (!refId)
+                    continue;
+                if (await autoHasManualOverrideForRef(dbAdapter_2.pgPool, refType, refId)) {
+                    skipped_manual_override++;
+                    continue;
+                }
+                const st = autoNormStatus(r === null || r === void 0 ? void 0 : r.status);
+                const pm = autoNormPayMethod(r === null || r === void 0 ? void 0 : r.pay_method);
+                const occurredAt = autoToISODateOnly(r === null || r === void 0 ? void 0 : r.completed_at) || autoToISODateOnly(r === null || r === void 0 ? void 0 : r.occurred_at) || autoToISODateOnly(r === null || r === void 0 ? void 0 : r.created_at);
+                const amount = it.kind === 'maintenance'
+                    ? autoCalcMaintenanceTotal(r)
+                    : (() => {
+                        const raw = (r === null || r === void 0 ? void 0 : r.total_cost) !== undefined && (r === null || r === void 0 ? void 0 : r.total_cost) !== null ? r.total_cost : autoComputeDeepCleaningTotalCost(r === null || r === void 0 ? void 0 : r.labor_cost, r === null || r === void 0 ? void 0 : r.consumables);
+                        return autoToNum(raw);
+                    })();
+                if (st !== 'completed' || !(amount > 0) || !occurredAt) {
+                    would_void++;
+                    continue;
+                }
+                if (pm === 'landlord_pay') {
+                    would_property++;
+                    would_cleaned_opposite++;
+                    continue;
+                }
+                if (pm === 'company_pay') {
+                    would_company++;
+                    would_cleaned_opposite++;
+                    continue;
+                }
+                would_void++;
+            }
+            return res.json({ dry_run: true, range: { from, to }, scanned, would_property, would_company, would_void, would_cleaned_opposite, skipped_manual_override });
+        }
+        const result = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+            await ensureAutoExpenseSchema(client);
+            let upserted_property = 0, upserted_company = 0, voided = 0, cleaned_opposite = 0, skipped_manual_override = 0;
+            for (const it of items) {
+                const refType = it.kind === 'maintenance' ? 'maintenance' : 'deep_cleaning';
+                const r = it.row || {};
+                const refId = String((r === null || r === void 0 ? void 0 : r.id) || '');
+                if (!refId)
+                    continue;
+                if (await autoHasManualOverrideForRef(client, refType, refId)) {
+                    skipped_manual_override++;
+                    continue;
+                }
+                const st = autoNormStatus(r === null || r === void 0 ? void 0 : r.status);
+                const pm = autoNormPayMethod(r === null || r === void 0 ? void 0 : r.pay_method);
+                const occurredAt = autoToISODateOnly(r === null || r === void 0 ? void 0 : r.completed_at) || autoToISODateOnly(r === null || r === void 0 ? void 0 : r.occurred_at) || autoToISODateOnly(r === null || r === void 0 ? void 0 : r.created_at);
+                const amount = it.kind === 'maintenance'
+                    ? autoCalcMaintenanceTotal(r)
+                    : (() => {
+                        const raw = (r === null || r === void 0 ? void 0 : r.total_cost) !== undefined && (r === null || r === void 0 ? void 0 : r.total_cost) !== null ? r.total_cost : autoComputeDeepCleaningTotalCost(r === null || r === void 0 ? void 0 : r.labor_cost, r === null || r === void 0 ? void 0 : r.consumables);
+                        return autoToNum(raw);
+                    })();
+                const propertyId = String((r === null || r === void 0 ? void 0 : r.property_id) || '');
+                const categoryDetail = it.kind === 'maintenance' ? '维修' : '深度清洁';
+                const generatedFrom = refId;
+                const sourceTitle = (() => {
+                    if (it.kind !== 'deep_cleaning')
+                        return categoryDetail;
+                    const workNo = String((r === null || r === void 0 ? void 0 : r.work_no) || refId);
+                    return workNo ? `深度清洁 ${workNo}` : categoryDetail;
+                })();
+                const sourceSummary = it.kind === 'maintenance' ? autoMaintenanceIssueSummary(r) : autoDeepCleaningProjectSummary(r);
+                const voidBothAuto = async () => {
+                    const v1 = await client.query(`UPDATE property_expenses SET status='void'
+             WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`, [refType, refId]);
+                    const v2 = await client.query(`UPDATE company_expenses SET status='void'
+             WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`, [refType, refId]);
+                    voided += Number(v1.rowCount || 0) + Number(v2.rowCount || 0);
+                };
+                if (st !== 'completed' || !(amount > 0) || !occurredAt) {
+                    await voidBothAuto();
+                    continue;
+                }
+                if (pm === 'landlord_pay') {
+                    if (!propertyId) {
+                        await voidBothAuto();
+                        continue;
+                    }
+                    const v2 = await client.query(`UPDATE company_expenses SET status='void'
+             WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`, [refType, refId]);
+                    cleaned_opposite += Number(v2.rowCount || 0);
+                    await autoUpsertPropertyExpenseByRef(client, { propertyId, occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary });
+                    upserted_property++;
+                    continue;
+                }
+                if (pm === 'company_pay') {
+                    const v1 = await client.query(`UPDATE property_expenses SET status='void'
+             WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`, [refType, refId]);
+                    cleaned_opposite += Number(v1.rowCount || 0);
+                    await autoUpsertCompanyExpenseByRef(client, { occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary });
+                    upserted_company++;
+                    continue;
+                }
+                await voidBothAuto();
+            }
+            return { scanned, upserted_property, upserted_company, voided, cleaned_opposite, skipped_manual_override };
+        });
+        return res.json({ dry_run: false, range: { from, to }, ...result });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'backfill_failed' });
+    }
+});
 const txSchema = zod_1.z.object({ kind: zod_1.z.enum(['income', 'expense']), amount: zod_1.z.coerce.number().min(0), currency: zod_1.z.string(), ref_type: zod_1.z.string().optional(), ref_id: zod_1.z.string().optional(), occurred_at: zod_1.z.string().optional(), note: zod_1.z.string().optional(), category: zod_1.z.string().optional(), property_id: zod_1.z.string().optional(), invoice_url: zod_1.z.string().optional(), category_detail: zod_1.z.string().optional() });
 exports.router.post('/', (0, auth_1.requirePerm)('finance.tx.write'), async (req, res) => {
     const parsed = txSchema.safeParse(req.body);

@@ -19,6 +19,7 @@ export default function RepairReportPage() {
   const [token, setToken] = useState<string | null>(null)
   const [pwd, setPwd] = useState('')
   const [loggingIn, setLoggingIn] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
     fetch(`${API_BASE}/public/properties`).then(r => r.json()).then(setProps).catch(() => setProps([]))
@@ -83,23 +84,25 @@ export default function RepairReportPage() {
   }
 
   async function submit() {
-    const v = await form.validateFields()
-    const tk = await ensureToken()
-    if (!tk) return
-    if (String(v.item_type || '') === 'appliance' && (!labelUrls || labelUrls.length === 0)) {
-      message.error('电器问题需上传品牌/型号照片')
-      return
-    }
-    const payload = {
-      property_id: v.property_id,
-      category: v.category,
-      detail: v.detail,
-      attachment_urls: urls,
-      item_type: v.item_type || 'other',
-      label_photo_urls: labelUrls,
-      submitter_name: v.submitter_name || '',
-    }
     try {
+      if (submitting) return
+      setSubmitting(true)
+      const v = await form.validateFields()
+      const tk = await ensureToken()
+      if (!tk) return
+      if (String(v.item_type || '') === 'appliance' && (!labelUrls || labelUrls.length === 0)) {
+        message.error('电器问题需上传品牌/型号照片')
+        return
+      }
+      const payload = {
+        property_id: v.property_id,
+        category: v.category,
+        detail: v.detail,
+        attachment_urls: urls,
+        item_type: v.item_type || 'other',
+        label_photo_urls: labelUrls,
+        submitter_name: v.submitter_name || '',
+      }
       const res = await fetch(`${API_BASE}/public/repair/report`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk}` }, body: JSON.stringify(payload)
       })
@@ -107,6 +110,7 @@ export default function RepairReportPage() {
       if (res.ok) { message.success('已提交维修工单'); form.resetFields(); setFiles([]); setUrls([]); setLabelFiles([]); setLabelUrls([]); setItemType('other') }
       else { message.error(j?.message || '提交失败') }
     } catch { message.error('提交失败') }
+    finally { setSubmitting(false) }
   }
 
   return (
@@ -169,7 +173,7 @@ export default function RepairReportPage() {
             )}
             <Form.Item name="submitter_name" label="提交人姓名" rules={[{ required: true }]}><Input placeholder="如系统未登录，请填写姓名" /></Form.Item>
             <Form.Item>
-              <Button type="primary" onClick={submit}>提交工单</Button>
+              <Button type="primary" onClick={submit} loading={loggingIn || submitting} disabled={loggingIn || submitting}>提交工单</Button>
             </Form.Item>
           </Form>
         </Space>

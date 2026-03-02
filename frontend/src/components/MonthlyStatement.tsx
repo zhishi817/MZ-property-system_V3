@@ -13,6 +13,27 @@ type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: stri
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
 type DeepCleaning = { id: string; work_no?: string; property_id?: string; occurred_at?: string; completed_at?: string; started_at?: string; ended_at?: string; category?: string; photo_urls?: any; repair_photo_urls?: any; pay_method?: string; total_cost?: any }
+type Maintenance = { id: string; work_no?: string; property_id?: string; occurred_at?: string; completed_at?: string; started_at?: string; ended_at?: string; category?: string; details?: any; repair_notes?: string; photo_urls?: any; repair_photo_urls?: any }
+
+function safeJsonParse(v: any) {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'object') return v
+  const s = String(v || '').trim()
+  if (!s) return null
+  try { return JSON.parse(s) } catch { return null }
+}
+
+function summaryFromDetails(details: any): string {
+  const v = safeJsonParse(details)
+  if (!v) return ''
+  if (typeof v === 'string') return v
+  if (Array.isArray(v)) {
+    const parts = v.map((x: any) => String(x?.item || x?.content || x?.desc || '').trim()).filter(Boolean)
+    return parts.join('\n')
+  }
+  const one = String((v as any)?.item || (v as any)?.content || '').trim()
+  return one
+}
 
 export default forwardRef<HTMLDivElement, {
   month: string
@@ -67,8 +88,12 @@ export default forwardRef<HTMLDivElement, {
   const [invoiceMap, setInvoiceMap] = useState<Record<string, ExpenseInvoice[]>>({})
   const [deepCleanings, setDeepCleanings] = useState<DeepCleaning[]>([])
   const [deepCleaningsLoaded, setDeepCleaningsLoaded] = useState(false)
+  const [maintenances, setMaintenances] = useState<Maintenance[]>([])
+  const [maintenancesLoaded, setMaintenancesLoaded] = useState(false)
   const [expandAllDeepClean, setExpandAllDeepClean] = useState(false)
   const [expandedDeepClean, setExpandedDeepClean] = useState<Record<string, boolean>>({})
+  const [expandAllMaintenance, setExpandAllMaintenance] = useState(false)
+  const [expandedMaintenance, setExpandedMaintenance] = useState<Record<string, boolean>>({})
   useEffect(() => {
     (async () => {
       try {
@@ -153,6 +178,55 @@ export default forwardRef<HTMLDivElement, {
         setDeepCleanings([])
       } finally {
         setDeepCleaningsLoaded(true)
+      }
+    })()
+  }, [propertyId, month])
+  useEffect(() => {
+    ;(async () => {
+      try {
+        setMaintenancesLoaded(false)
+        if (!propertyId) { setMaintenances([]); setMaintenancesLoaded(true); return }
+        const codeRaw = String(property?.code || '').trim()
+        const code = (() => {
+          if (!codeRaw) return ''
+          const s = codeRaw.split('(')[0].trim()
+          const t = s.split(/\s+/)[0].trim()
+          return t || s || codeRaw
+        })()
+        const buildUrl = (params: Record<string, string>) => {
+          const qs = new URLSearchParams({ ...params, limit: '5000' })
+          return `${API_BASE}/crud/property_maintenance?${qs.toString()}`
+        }
+        const urls = [
+          buildUrl({ property_id: propertyId }),
+          ...(code ? [buildUrl({ property_code: code })] : []),
+          ...(codeRaw && codeRaw !== code ? [buildUrl({ property_code: codeRaw })] : []),
+        ]
+        const rs = await Promise.all(urls.map(async (u) => {
+          try {
+            const res = await fetch(u, { headers: authHeaders() })
+            return res.ok ? await res.json() : []
+          } catch {
+            return []
+          }
+        }))
+        const merged = ([] as any[]).concat(...rs)
+        const map = new Map<string, any>()
+        for (const r of merged) {
+          const id = String(r?.id || '')
+          if (id) map.set(id, r)
+        }
+        const list = Array.from(map.values())
+        const inMonth = list.filter((d: any) => {
+          const raw: any = d?.occurred_at || d?.completed_at || d?.started_at || d?.submitted_at || d?.created_at
+          const day = toDayStr(raw)
+          return day ? dayjs(day).isSame(start, 'month') : false
+        })
+        setMaintenances(inMonth as any)
+      } catch {
+        setMaintenances([])
+      } finally {
+        setMaintenancesLoaded(true)
       }
     })()
   }, [propertyId, month])
@@ -340,24 +414,43 @@ export default forwardRef<HTMLDivElement, {
       data-pdf-mode={pdfMode ? '1' : '0'}
       data-deep-clean-loaded={deepCleaningsLoaded ? '1' : '0'}
       data-deep-clean-count={String((deepCleanings || []).length)}
+      data-maint-loaded={maintenancesLoaded ? '1' : '0'}
+      data-maint-count={String((maintenances || []).length)}
       style={{ padding: 24, fontFamily: 'Times New Roman, Times, serif' }}
     >
+      <style>{`
+        [data-monthly-statement-root="1"] table { width: 100%; border-collapse: collapse; }
+        [data-monthly-statement-root="1"] table tr > * { border-bottom: 1px solid #ddd; }
+        [data-monthly-statement-root="1"] [data-statement-row="1"] { border-bottom: 1px solid #ddd; }
+        @media print {
+          @page { size: A4; margin: 12mm; }
+          html, body { margin: 0; padding: 0; }
+          [data-monthly-statement-root="1"] [data-keep-with-next="true"] { break-after: avoid; page-break-after: avoid; }
+          [data-monthly-statement-root="1"] [data-pdf-break-before="true"] { break-before: page; page-break-before: always; }
+          [data-monthly-statement-root="1"] [data-pdf-avoid-cut="true"] { break-inside: avoid; page-break-inside: avoid; }
+          [data-monthly-statement-root="1"] tr { break-inside: avoid; page-break-inside: avoid; }
+        }
+      `}</style>
       <div className="print-header" style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
         <img src="/mz-logo.png" alt="Company Logo" style={{ height: 64 }} />
         <div style={{ flex: 1, marginLeft: 12 }}></div>
         <div style={{ textAlign:'right', minWidth: 420 }}>
-          <div style={{ fontSize: 34, fontWeight: 700, letterSpacing: 1 }}>MONTHLY STATEMENT</div>
+          <div style={{ fontSize: 34, fontWeight: 700, letterSpacing: 1, display:'flex', justifyContent:'flex-end', alignItems:'baseline', gap: 10 }}>
+            <span>MONTHLY STATEMENT</span>
+          </div>
           <div style={{ borderTop: '2px solid #000', marginTop: 6 }}></div>
           <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', marginTop: 6 }}>
             <div style={{ fontSize: 22, fontWeight: 700 }}>{dayjs(`${month}-01`).format('MM/YYYY')}</div>
           <div style={{ fontSize: 16, marginTop: 4 }}>{landlord?.name || ''}</div>
-          <div style={{ fontSize: 14 }}>{property?.code || ''}</div>
-          <div style={{ fontSize: 14 }}>{property?.address || ''}</div>
+          <div style={{ fontSize: 14 }}>
+            {String(property?.code || '').trim() ? `${String(property?.code || '').trim()} / ` : ''}
+            {property?.address || ''}
+          </div>
           </div>
         </div>
       </div>
       <div style={{ borderTop: '2px solid transparent', margin: '8px 0' }}></div>
-      <div data-keep-with-next="true" style={{ fontWeight: 600, marginTop: 8, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Monthly Overview Data' : 'Monthly Overview Data'}</div>
+      <div data-keep-with-next="true" style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Monthly Overview Data 月度概览数据' : 'Monthly Overview Data'}</div>
       <table style={{ width: '100%', borderCollapse:'collapse' }}>
         <tbody>
           <tr><td style={{ padding:6 }}>{showChinese ? 'Total rent income 总租金' : 'Total rent income'}</td><td style={{ textAlign:'right', padding:6 }}>${fmt(totalIncome)}</td></tr>
@@ -366,8 +459,8 @@ export default forwardRef<HTMLDivElement, {
         </tbody>
       </table>
 
-      <div data-keep-with-next="true" style={{ fontWeight: 600, marginTop: 16, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rental Details' : 'Rental Details'}</div>
-      <div style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px' }}>
+      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rental Details 租赁明细' : 'Rental Details'}</div>
+      <div data-statement-row="1" style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px' }}>
         <span>{showChinese ? 'Total Income 总收入' : 'Total Income'}</span><span>${fmt(totalIncome)}</span>
       </div>
       <table style={{ width:'100%' }}>
@@ -390,7 +483,7 @@ export default forwardRef<HTMLDivElement, {
 
       {!simpleMode && (
         <>
-          <div style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px', marginTop: 8 }}>
+          <div data-statement-row="1" style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px', marginTop: 8 }}>
             <span>{showChinese ? 'Total Expense 总支出' : 'Total Expense'}</span><span>${fmt(totalExpense)}</span>
           </div>
           <table style={{ width:'100%' }}>
@@ -419,7 +512,7 @@ export default forwardRef<HTMLDivElement, {
         </>
       )}
 
-      <div style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px', marginTop: 8 }}>
+      <div data-statement-row="1" style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px', marginTop: 8 }}>
         <span>{showChinese ? 'Net Income 净收入' : 'Net Income'}</span><span>${fmt(netIncome)}</span>
       </div>
 
@@ -476,13 +569,13 @@ export default forwardRef<HTMLDivElement, {
               ) : null}
             </tbody>
           </table>
-          <div style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px', marginTop: 8 }}>
+          <div data-statement-row="1" style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px', marginTop: 8 }}>
             <span>{showChinese ? 'Amount payable to owner 本月应付房东' : 'Amount payable to owner'}</span><span>${fmt(balance.payable_to_owner)}</span>
           </div>
         </>
       )}
 
-      <div data-keep-with-next="true" style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rent Records' : 'Rent Records'}</div>
+      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rent Records 租金记录' : 'Rent Records'}</div>
       <table style={{ width:'100%', borderCollapse:'collapse' }}>
         <thead>
           <tr>
@@ -505,7 +598,7 @@ export default forwardRef<HTMLDivElement, {
       </table>
 
 
-      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Order Calendar' : 'Order Calendar'}</div>
+      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Order Calendar 订单日历' : 'Order Calendar'}</div>
       {(() => {
         const weeks: Array<{ ws: any; we: any }> = []
         let cur = weekStart.clone()
@@ -700,6 +793,143 @@ export default forwardRef<HTMLDivElement, {
                             <button
                               type="button"
                               onClick={() => setExpandedDeepClean(m => ({ ...m, [did]: true }))}
+                              style={{ border:'1px solid #e5e7eb', background:'#fff', borderRadius: 8, padding:'6px 10px', fontSize: 12, cursor:'pointer' }}
+                            >
+                              展开本条照片
+                            </button>
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                )
+              })}
+          </div>
+        </div>
+      ) : null}
+
+      {(maintenances && maintenances.length) ? (
+        <div data-maint-section="1" data-pdf-break-before={pdfMode ? 'true' : undefined}>
+          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>
+            {showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'}
+          </div>
+          {!pdfMode ? (
+            <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 8 }}>
+              <button
+                type="button"
+                onClick={() => setExpandAllMaintenance(v => !v)}
+                style={{ border:'1px solid #e5e7eb', background:'#fff', borderRadius: 8, padding:'6px 10px', fontSize: 12, cursor:'pointer' }}
+              >
+                {expandAllMaintenance ? '收起全部照片' : '展开全部照片'}
+              </button>
+            </div>
+          ) : null}
+          <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
+            {maintenances
+              .slice()
+              .sort((a: any, b: any) => String(a?.occurred_at || '').localeCompare(String(b?.occurred_at || '')))
+              .map((m: any) => {
+                const date = String(m?.completed_at || m?.occurred_at || '').slice(0, 10)
+                const startTime = m?.started_at ? dayjs(String(m.started_at)).format('HH:mm') : ''
+                const endTime = m?.ended_at ? dayjs(String(m.ended_at)).format('HH:mm') : ''
+                const timeLabel = [date, (startTime || endTime) ? `${startTime || '-'}~${endTime || '-'}` : ''].filter(Boolean).join(' ')
+                const mid = String(m?.id || '')
+                const summaryRaw = (summaryFromDetails((m as any)?.details) || '').split('\n').map((x: any) => String(x || '').trim()).filter(Boolean)[0] || ''
+                const summary = summaryRaw || String((m as any)?.repair_notes || '').trim() || String(m?.category || '').trim()
+                const urlArr = (raw: any) => {
+                  if (Array.isArray(raw)) return raw
+                  if (typeof raw === 'string') { try { const j = JSON.parse(raw); return Array.isArray(j) ? j : [] } catch { return [] } }
+                  return []
+                }
+                const beforeArr = urlArr((m as any)?.photo_urls).map((u: any) => String(u || '')).filter(Boolean)
+                const afterArr = urlArr((m as any)?.repair_photo_urls).map((u: any) => String(u || '')).filter(Boolean)
+                const expanded = !!pdfMode || !!expandAllMaintenance || !!expandedMaintenance[mid]
+                const beforeShow = expanded ? beforeArr : beforeArr.slice(0, 2)
+                const afterShow = expanded ? afterArr : afterArr.slice(0, 2)
+                const pairRows = (() => {
+                  const n = Math.max(beforeArr.length, afterArr.length)
+                  const rows: Array<{ b?: string; a?: string; idx: number }> = []
+                  for (let i = 0; i < n; i++) rows.push({ b: beforeArr[i], a: afterArr[i], idx: i })
+                  return rows
+                })()
+                return (
+                  <div
+                    key={mid || String(m?.work_no || '')}
+                    data-pdf-avoid-cut={pdfMode ? 'true' : undefined}
+                    data-pdf-break-before={(pdfMode && pairRows.length > 2) ? 'true' : undefined}
+                    style={{ border:'1px solid #eaeef5', borderRadius: 12, padding: 12 }}
+                  >
+                    <div style={{ display:'flex', justifyContent:'space-between', gap: 12, flexWrap:'wrap' }}>
+                      <div style={{ fontWeight: 700 }}>{String(m?.work_no || m?.id || '')}</div>
+                      <div style={{ color:'#111' }}>{timeLabel || '-'}</div>
+                      <div style={{ color:'#111' }}>{showChinese ? `区域：${String(m?.category || '-')}` : `Area: ${String(m?.category || '-')}`}</div>
+                    </div>
+                    {summary ? <div style={{ marginTop: 8, whiteSpace:'pre-wrap' }}>{summary}</div> : null}
+                    {pdfMode ? (
+                      <div style={{ display:'flex', flexDirection:'column', gap: 10, marginTop: 10 }}>
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, fontWeight: 600 }}>
+                          <div>Before</div>
+                          <div>After</div>
+                        </div>
+                        {(pairRows.length ? pairRows : [{ idx: 0 }]).map((r) => (
+                          <div
+                            key={r.idx}
+                            data-pdf-avoid-cut="true"
+                            data-pdf-break-before={(r.idx > 0 && r.idx % 2 === 0) ? 'true' : undefined}
+                            style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, alignItems:'start' }}
+                          >
+                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: 240 }}>
+                              {r.b ? (isImg(r.b) ? (
+                                renderEngine === 'print'
+                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.b)} style={{ width:'100%', height: 360, objectFit:'contain', borderRadius: 8 }} />
+                                  : <div style={{ width:'100%', height: 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.b)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                              ) : (
+                                <a href={resolveUrl(r.b)} target="_blank" rel="noreferrer">{String(r.b).split('/').pop() || 'file'}</a>
+                              )) : <div style={{ color:'#999' }}>-</div>}
+                            </div>
+                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: 240 }}>
+                              {r.a ? (isImg(r.a) ? (
+                                renderEngine === 'print'
+                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.a)} style={{ width:'100%', height: 360, objectFit:'contain', borderRadius: 8 }} />
+                                  : <div style={{ width:'100%', height: 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.a)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                              ) : (
+                                <a href={resolveUrl(r.a)} target="_blank" rel="noreferrer">{String(r.a).split('/').pop() || 'file'}</a>
+                              )) : <div style={{ color:'#999' }}>-</div>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, marginTop: 10 }}>
+                          <div>
+                            <div style={{ fontWeight: 600, marginBottom: 6 }}>Before</div>
+                            <div style={{ display:'grid', gridTemplateColumns: expanded ? 'repeat(2, 1fr)' : '1fr', gap: 10 }}>
+                              {beforeShow.length ? beforeShow.map((u: string, idx: number) => (
+                                <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
+                                  {isImg(u) ? <img crossOrigin="anonymous" loading="lazy" decoding="async" src={resolveUrl(u)} style={{ width:'100%', height: expanded ? 140 : 170, objectFit:'contain', borderRadius: 8 }} /> : <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>}
+                                </div>
+                              )) : <div style={{ color:'#999' }}>-</div>}
+                            </div>
+                            {!expanded && beforeArr.length > beforeShow.length ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${beforeArr.length - beforeShow.length}`}</div> : null}
+                          </div>
+                          <div>
+                            <div style={{ fontWeight: 600, marginBottom: 6 }}>After</div>
+                            <div style={{ display:'grid', gridTemplateColumns: expanded ? 'repeat(2, 1fr)' : '1fr', gap: 10 }}>
+                              {afterShow.length ? afterShow.map((u: string, idx: number) => (
+                                <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
+                                  {isImg(u) ? <img crossOrigin="anonymous" loading="lazy" decoding="async" src={resolveUrl(u)} style={{ width:'100%', height: expanded ? 140 : 170, objectFit:'contain', borderRadius: 8 }} /> : <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>}
+                                </div>
+                              )) : <div style={{ color:'#999' }}>-</div>}
+                            </div>
+                            {!expanded && afterArr.length > afterShow.length ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${afterArr.length - afterShow.length}`}</div> : null}
+                          </div>
+                        </div>
+                        {(!expanded && (beforeArr.length > 2 || afterArr.length > 2)) ? (
+                          <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 10 }}>
+                            <button
+                              type="button"
+                              onClick={() => setExpandedMaintenance(mm => ({ ...mm, [mid]: true }))}
                               style={{ border:'1px solid #e5e7eb', background:'#fff', borderRadius: 8, padding:'6px 10px', fontSize: 12, cursor:'pointer' }}
                             >
                               展开本条照片

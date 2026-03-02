@@ -29,6 +29,7 @@ export default function PublicMaintenanceProgressPage() {
   const [pwd, setPwd] = useState('')
   const [token, setToken] = useState<string>('')
   const [loggingIn, setLoggingIn] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
   const [preFiles, setPreFiles] = useState<Record<number, UploadFile[]>>({})
   const [preUrls, setPreUrls] = useState<Record<number, string[]>>({})
   const [postFiles, setPostFiles] = useState<Record<number, UploadFile[]>>({})
@@ -141,29 +142,31 @@ export default function PublicMaintenanceProgressPage() {
   }
 
   async function submit() {
-    const v = await form.validateFields()
-    const tk = await ensureToken()
-    if (!tk) return
-    const detailsArr: DetailItem[] = Array.isArray(v.details) ? v.details : []
-    if (!detailsArr.length) { message.error('请至少添加一条维修详情'); return }
-    const payload = {
-      property_id: v.property_id,
-      occurred_at: v.occurred_at ? dayjs(v.occurred_at).format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD'),
-      worker_name: String(v.worker_name || '').trim(),
-      notes: String(v.notes || '').trim(),
-      details: detailsArr.map((d, idx) => ({
-        category: String(d?.content || '').trim(),
-        item: String(d?.item || '').trim(),
-        maintenance_amount: d?.maintenance_amount !== undefined ? Number(d.maintenance_amount || 0) : undefined,
-        has_parts: d?.has_parts === true,
-        parts_amount: d?.parts_amount !== undefined ? Number(d.parts_amount || 0) : undefined,
-        pay_method: d?.pay_method ? String(d.pay_method) : undefined,
-        pay_other_note: d?.pay_other_note ? String(d.pay_other_note) : undefined,
-        pre_photo_urls: preUrls[idx] || [],
-        post_photo_urls: postUrls[idx] || [],
-      }))
-    }
     try {
+      if (submitting) return
+      setSubmitting(true)
+      const v = await form.validateFields()
+      const tk = await ensureToken()
+      if (!tk) return
+      const detailsArr: DetailItem[] = Array.isArray(v.details) ? v.details : []
+      if (!detailsArr.length) { message.error('请至少添加一条维修详情'); return }
+      const payload = {
+        property_id: v.property_id,
+        occurred_at: v.occurred_at ? dayjs(v.occurred_at).format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD'),
+        worker_name: String(v.worker_name || '').trim(),
+        notes: String(v.notes || '').trim(),
+        details: detailsArr.map((d, idx) => ({
+          category: String(d?.content || '').trim(),
+          item: String(d?.item || '').trim(),
+          maintenance_amount: d?.maintenance_amount !== undefined ? Number(d.maintenance_amount || 0) : undefined,
+          has_parts: d?.has_parts === true,
+          parts_amount: d?.parts_amount !== undefined ? Number(d.parts_amount || 0) : undefined,
+          pay_method: d?.pay_method ? String(d.pay_method) : undefined,
+          pay_other_note: d?.pay_other_note ? String(d.pay_other_note) : undefined,
+          pre_photo_urls: preUrls[idx] || [],
+          post_photo_urls: postUrls[idx] || [],
+        }))
+      }
       const res = await fetch(`${API_BASE}/public/maintenance-progress/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk}` },
@@ -177,6 +180,8 @@ export default function PublicMaintenanceProgressPage() {
       setPostFiles({}); setPostUrls({})
     } catch {
       message.error('提交失败')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -310,11 +315,10 @@ export default function PublicMaintenanceProgressPage() {
           </Form.List>
           <Form.Item name="notes" label="备注"><Input.TextArea rows={3} /></Form.Item>
           <Form.Item>
-            <Button type="primary" onClick={submit} loading={loggingIn}>提交</Button>
+            <Button type="primary" onClick={submit} loading={loggingIn || submitting} disabled={loggingIn || submitting}>提交</Button>
           </Form.Item>
         </Form>
       </Card>
     </div>
   )
 }
-

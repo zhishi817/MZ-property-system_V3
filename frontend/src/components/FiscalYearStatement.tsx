@@ -16,7 +16,8 @@ export default forwardRef<HTMLDivElement, {
   txs: Tx[]
   properties: { id: string; code?: string; address?: string }[]
   landlords: Landlord[]
-}>(function FiscalYearStatement({ baseMonth, propertyId, orders, txs, properties, landlords }, ref) {
+  showChinese?: boolean
+}>(function FiscalYearStatement({ baseMonth, propertyId, orders, txs, properties, landlords, showChinese = true }, ref) {
   const base = baseMonth || dayjs()
   const fyStartYear = base.month() >= 6 ? base.year() : base.year() - 1
   const start = dayjs(`${fyStartYear}-07-01`)
@@ -76,17 +77,33 @@ export default forwardRef<HTMLDivElement, {
   }), { rentIncome:0, otherIncome:0, mgmt:0, consumable:0, electricity:0, gas:0, water:0, internet:0, carpark:0, council:0, bodycorp:0, otherExp:0, netIncome:0 })
 
   return (
-    <div ref={ref as any} style={{ padding: 16, fontFamily: 'Times New Roman, Times, serif' }}>
+    <div ref={ref as any} data-fy-statement-root="1" style={{ padding: 16, fontFamily: 'Times New Roman, Times, serif' }}>
+      <style>{`
+        [data-fy-statement-root="1"] table { width: 100%; border-collapse: collapse; }
+        [data-fy-statement-root="1"] table tr > * { border-bottom: 1px solid #ddd; }
+        @media print {
+          @page { size: A4 landscape; margin: 12mm; }
+          html, body { margin: 0; padding: 0; }
+          [data-fy-statement-root="1"] [data-keep-with-next="true"] { break-after: avoid; page-break-after: avoid; }
+          [data-fy-statement-root="1"] [data-pdf-break-before="true"] { break-before: page; page-break-before: always; }
+          [data-fy-statement-root="1"] [data-pdf-avoid-cut="true"] { break-inside: avoid; page-break-inside: avoid; }
+          [data-fy-statement-root="1"] tr { break-inside: avoid; page-break-inside: avoid; }
+        }
+      `}</style>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr 1.4fr', alignItems:'center', columnGap: 16 }}>
         <div style={{ display:'flex', alignItems:'center' }}>
           <img src="/mz-logo.png" alt="Company Logo" style={{ height: 70 }} />
         </div>
         <div style={{ textAlign:'center' }}>
-          <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: 1 }}>MONTHLY INCOME AND EXPENDITURE SUMMARY</div>
-          <div style={{ fontSize: 14, marginTop: 6 }}>FINANCIAL YEAR {start.format('MMMM YYYY')} TO {start.add(11,'month').endOf('month').format('MMMM YYYY')}</div>
+          <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: 1 }}>{showChinese ? 'MONTHLY INCOME AND EXPENDITURE SUMMARY 月度收支汇总' : 'MONTHLY INCOME AND EXPENDITURE SUMMARY'}</div>
+          <div style={{ fontSize: 14, marginTop: 6 }}>
+            {showChinese
+              ? `FINANCIAL YEAR ${start.format('MMMM YYYY')} TO ${start.add(11,'month').endOf('month').format('MMMM YYYY')} 财年：${start.format('YYYY-MM')} 至 ${start.add(11,'month').endOf('month').format('YYYY-MM')}`
+              : `FINANCIAL YEAR ${start.format('MMMM YYYY')} TO ${start.add(11,'month').endOf('month').format('MMMM YYYY')}`}
+          </div>
         </div>
         <div>
-          <div style={{ background:'#e6ecf6', padding:'6px 8px', fontWeight:700, textAlign:'right', border:'1px solid #dfe6f1' }}>Customer Details</div>
+          <div style={{ background:'#e6ecf6', padding:'6px 8px', fontWeight:700, textAlign:'right', border:'1px solid #dfe6f1' }}>{showChinese ? 'Customer Details 客户信息' : 'Customer Details'}</div>
           <div style={{ border:'1px solid #dfe6f1', borderTop:0, padding:8, textAlign:'right' }}>
             <div>{landlord?.name || ''}</div>
             <div style={{ fontSize:12 }}>{property?.address || ''}</div>
@@ -99,77 +116,77 @@ export default forwardRef<HTMLDivElement, {
           <tr>
             <th style={{ textAlign:'left', padding:6 }}></th>
             {monthRanges.map(m => (<th key={m.label} style={{ padding:6, background:'#e6ecf6' }}>{m.label}</th>))}
-            <th style={{ padding:6, background:'#e6ecf6' }}>Year Total</th>
+              <th style={{ padding:6, background:'#e6ecf6' }}>{showChinese ? 'Year Total 全年合计' : 'Year Total'}</th>
           </tr>
         </thead>
         <tbody>
-          <tr><td style={{ padding:6, fontWeight:700 }}>Income</td><td colSpan={13}></td></tr>
+          <tr><td style={{ padding:6, fontWeight:700 }}>{showChinese ? 'Income 收入' : 'Income'}</td><td colSpan={13}></td></tr>
           <tr>
-            <td style={{ padding:6 }}>Rent Income</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Rent Income 租金收入' : 'Rent Income'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>${fmt(v.rentIncome)}</td>))}
             <td style={{ padding:6, textAlign:'right' }}>${fmt(yearTotals.rentIncome)}</td>
           </tr>
           <tr>
-            <td style={{ padding:6 }}>Other Income</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Other Income 其他收入' : 'Other Income'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>${fmt(v.otherIncome)}</td>))}
             <td style={{ padding:6, textAlign:'right' }}>${fmt(yearTotals.otherIncome)}</td>
           </tr>
 
-          <tr><td style={{ padding:6, fontWeight:700 }}>Expenses</td><td colSpan={13}></td></tr>
+          <tr><td style={{ padding:6, fontWeight:700 }}>{showChinese ? 'Expenses 支出' : 'Expenses'}</td><td colSpan={13}></td></tr>
           <tr>
-            <td style={{ padding:6 }}>Agency Fees</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Agency Fees 管理费' : 'Agency Fees'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.mgmt)}</td>))}
             <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.mgmt)}</td>
           </tr>
           <tr>
-            <td style={{ padding:6 }}>Consumables Cost</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Consumables Cost 耗材费用' : 'Consumables Cost'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.consumable)}</td>))}
             <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.consumable)}</td>
           </tr>
           <tr>
-            <td style={{ padding:6 }}>Electricity</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Electricity 电费' : 'Electricity'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.electricity)}</td>))}
             <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.electricity)}</td>
           </tr>
           <tr>
-            <td style={{ padding:6 }}>Gas and Hot water</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Gas and Hot water 燃气/热水' : 'Gas and Hot water'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.gas)}</td>))}
             <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.gas)}</td>
           </tr>
           <tr>
-            <td style={{ padding:6 }}>Water</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Water 水费' : 'Water'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.water)}</td>))}
             <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.water)}</td>
           </tr>
           <tr>
-            <td style={{ padding:6 }}>Internet</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Internet 网络费' : 'Internet'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.internet)}</td>))}
             <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.internet)}</td>
           </tr>
           <tr>
-            <td style={{ padding:6 }}>Carpark Rent</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Carpark Rent 车位租金' : 'Carpark Rent'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.carpark)}</td>))}
             <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.carpark)}</td>
           </tr>
           <tr>
-            <td style={{ padding:6 }}>Council Rate</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Council Rate 市政费' : 'Council Rate'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.council)}</td>))}
             <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.council)}</td>
           </tr>
           <tr>
-            <td style={{ padding:6 }}>Body Corporation</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Body Corporation 物业费' : 'Body Corporation'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.bodycorp)}</td>))}
             <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.bodycorp)}</td>
           </tr>
           <tr>
-            <td style={{ padding:6 }}>Other Expenses</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Other Expenses 其他支出' : 'Other Expenses'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>-${fmt(v.otherExp)}</td>))}
             <td style={{ padding:6, textAlign:'right' }}>-${fmt(yearTotals.otherExp)}</td>
           </tr>
 
-          <tr><td style={{ padding:6, fontWeight:700 }}>Net Income</td><td colSpan={13}></td></tr>
+          <tr><td style={{ padding:6, fontWeight:700 }}>{showChinese ? 'Net Income 净收入' : 'Net Income'}</td><td colSpan={13}></td></tr>
           <tr>
-            <td style={{ padding:6 }}>Owner Received</td>
+            <td style={{ padding:6 }}>{showChinese ? 'Owner Received 业主实收' : 'Owner Received'}</td>
             {monthValues.map((v,i)=>(<td key={i} style={{ padding:6, textAlign:'right' }}>${fmt(v.netIncome)}</td>))}
             <td style={{ padding:6, textAlign:'right', fontWeight:700 }}>${fmt(yearTotals.netIncome)}</td>
           </tr>

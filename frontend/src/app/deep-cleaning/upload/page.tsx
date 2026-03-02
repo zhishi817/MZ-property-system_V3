@@ -28,6 +28,7 @@ export default function DeepCleaningUploadPage() {
   const { message } = App.useApp()
   const [props, setProps] = useState<Property[]>([])
   const [form] = Form.useForm()
+  const [submitting, setSubmitting] = useState(false)
   const [sharePwdOpen, setSharePwdOpen] = useState(false as any)
   const [shareForm] = Form.useForm()
   const [sharePwdInfo, setSharePwdInfo] = useState<{ configured: boolean; password_updated_at: string | null } | null>(null)
@@ -112,20 +113,22 @@ export default function DeepCleaningUploadPage() {
   }
 
   async function submit() {
-    const v = await form.validateFields()
-    const detailsArr: DetailItem[] = Array.isArray(v.details) ? v.details : []
-    if (!detailsArr.length) { message.error('请至少添加一条清洁项目'); return }
-    const base = {
-      property_id: v.property_id,
-      occurred_at: v.occurred_at ? dayjs(v.occurred_at).format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD'),
-      worker_name: String(v.worker_name || '').trim(),
-      submitter_name: String(v.worker_name || '').trim(),
-      notes: String(v.notes || '').trim(),
-      status: 'completed',
-      submitted_at: new Date().toISOString(),
-      review_status: 'pending',
-    }
     try {
+      if (submitting) return
+      setSubmitting(true)
+      const v = await form.validateFields()
+      const detailsArr: DetailItem[] = Array.isArray(v.details) ? v.details : []
+      if (!detailsArr.length) { message.error('请至少添加一条清洁项目'); return }
+      const base = {
+        property_id: v.property_id,
+        occurred_at: v.occurred_at ? dayjs(v.occurred_at).format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD'),
+        worker_name: String(v.worker_name || '').trim(),
+        submitter_name: String(v.worker_name || '').trim(),
+        notes: String(v.notes || '').trim(),
+        status: 'completed',
+        submitted_at: new Date().toISOString(),
+        review_status: 'pending',
+      }
       let okCount = 0
       for (let i = 0; i < detailsArr.length; i++) {
         const d = detailsArr[i] || {}
@@ -163,6 +166,8 @@ export default function DeepCleaningUploadPage() {
       setPostFiles({}); setPostUrls({})
     } catch (e: any) {
       message.error(e?.message || '提交失败')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -293,7 +298,7 @@ export default function DeepCleaningUploadPage() {
             <Input.TextArea rows={2} placeholder="可选" />
           </Form.Item>
 
-          <Button type="primary" onClick={submit}>提交</Button>
+          <Button type="primary" onClick={submit} loading={submitting} disabled={submitting}>提交</Button>
         </Form>
       </Card>
 
