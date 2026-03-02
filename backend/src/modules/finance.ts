@@ -93,6 +93,11 @@ function allowPhotosInReportOfRecord(r: any): boolean {
   return st === 'completed' || st === 'approved' || rv === 'approved'
 }
 
+function recordMonthKey(r: any): string {
+  const raw: any = (r as any)?.occurred_at || (r as any)?.completed_at || (r as any)?.started_at || (r as any)?.submitted_at || (r as any)?.created_at
+  return String(raw || '').slice(0, 7)
+}
+
 router.get('/', async (_req, res) => {
   try {
     
@@ -1067,16 +1072,18 @@ router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', '
       )
       const colSet = new Set((cols.rows || []).map((r: any) => String(r.column_name || '').toLowerCase()))
       const hasPropCode = colSet.has('property_code')
-      const hasOccur = colSet.has('occurred_at')
-      if (!hasOccur) return []
+      const dateCols = ['occurred_at', 'completed_at', 'started_at', 'submitted_at', 'created_at'].filter(c => colSet.has(c))
+      if (!dateCols.length) return []
+      const dateExpr = (c: string) => `substring(t.${c}::text, 1, 10)`
+      const dateCond = `(${dateCols.map(c => `(${dateExpr(c)} >= $2 AND ${dateExpr(c)} < $3)`).join(' OR ')})`
       const parts: any[] = []
-      const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND t.occurred_at >= $2 AND t.occurred_at < $3`
+      const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND ${dateCond} LIMIT 8000`
       const r1 = await pgPool.query(q1, [pid, range.start, range.end])
       parts.push(...(r1.rows || []).map((x: any) => x.row))
       if (hasPropCode && (propertyCode || propertyCodeRaw)) {
         const codes = Array.from(new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean)))
         if (codes.length) {
-          const q2 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_code = ANY($1::text[]) AND t.occurred_at >= $2 AND t.occurred_at < $3`
+          const q2 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_code = ANY($1::text[]) AND ${dateCond} LIMIT 8000`
           const r2 = await pgPool.query(q2, [codes, range.start, range.end])
           parts.push(...(r2.rows || []).map((x: any) => x.row))
         }
@@ -1093,8 +1100,8 @@ router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', '
       const list = Array.isArray((db as any)[table]) ? (db as any)[table] : []
       const codes = new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean))
       const inRange = (r: any) => {
-        const d = String(r?.occurred_at || '').slice(0, 10)
-        return d >= range.start && d < range.end
+        const m = recordMonthKey(r)
+        return m === monthKey
       }
       const map = new Map<string, any>()
       for (const r of list) {

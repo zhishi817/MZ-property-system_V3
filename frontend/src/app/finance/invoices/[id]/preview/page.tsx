@@ -5,9 +5,7 @@ import { App, Button, Card, Col, Grid, Row, Space } from 'antd'
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useRouter } from 'next/navigation'
-import html2canvas from 'html2canvas'
-import { jsPDF } from 'jspdf'
-import { getJSON } from '../../../../../lib/api'
+import { API_BASE, authHeaders, getJSON } from '../../../../../lib/api'
 import { buildInvoiceTemplateHtml, normalizeAssetUrl } from '../../../../../lib/invoiceTemplateHtml'
 
 export default function InvoicePreviewPage({ params }: { params: { id: string } }) {
@@ -144,68 +142,29 @@ export default function InvoicePreviewPage({ params }: { params: { id: string } 
     const key = 'invoice-export-pdf'
     message.loading({ content: '正在生成 PDF…', key, duration: 0 })
     try {
-      const doc = iframeRef.current?.contentDocument
-      if (!doc) throw new Error('missing_iframe')
-      const target = (doc.querySelector('.inv-sheet') as HTMLElement | null) || doc.body
-      const exportCss = `
-        html, body { background: #ffffff !important; }
-        .inv-preview-wrap { padding: 0 !important; text-align: left !important; }
-        .inv-sheet { border: none !important; border-radius: 0 !important; box-shadow: none !important; width: 794px !important; height: 1123px !important; min-height: 0 !important; overflow: hidden !important; }
-        .inv-page { padding: 76px !important; height: 1123px !important; min-height: 0 !important; box-sizing: border-box !important; }
-      `
-      const canvas = await withTempStyle(doc, 'inv-export-style', exportCss, async () => {
-        await new Promise(r => setTimeout(r, 60))
-        await waitForIframeAssets(doc)
-        return await html2canvas(target, {
-          scale: 2,
-          backgroundColor: '#ffffff',
-          useCORS: true,
-          allowTaint: false,
-          imageTimeout: 15000,
-          scrollX: 0,
-          scrollY: 0,
-          windowWidth: Math.max(target.scrollWidth || 0, target.clientWidth || 0),
-          windowHeight: Math.max(target.scrollHeight || 0, target.clientHeight || 0),
-        })
+      const resp = await fetch(`${API_BASE}/invoices/invoice-pdf`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ invoice_id: id }),
       })
-      const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4', compress: true })
-      const pageW = pdf.internal.pageSize.getWidth()
-      const pageH = pdf.internal.pageSize.getHeight()
-      const pxPerMm = canvas.width / pageW
-      const pagePxH = Math.floor(pageH * pxPerMm)
-      let yPx = 0
-      let pageIndex = 0
-      while (yPx < canvas.height) {
-        const remaining = canvas.height - yPx
-        if (pageIndex > 0 && remaining < Math.ceil(pxPerMm * 2)) break
-        if (pageIndex > 0) pdf.addPage()
-        const sliceH = Math.min(pagePxH, remaining)
-        const pageCanvas = document.createElement('canvas')
-        pageCanvas.width = canvas.width
-        pageCanvas.height = sliceH
-        const ctx = pageCanvas.getContext('2d')
-        if (!ctx) throw new Error('canvas_ctx_failed')
-        ctx.fillStyle = '#ffffff'
-        ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height)
-        ctx.drawImage(canvas, 0, yPx, canvas.width, sliceH, 0, 0, canvas.width, sliceH)
-        const imgData = pageCanvas.toDataURL('image/png')
-        const imgH = pageW * (sliceH / canvas.width)
-        pdf.addImage(imgData, 'PNG', 0, 0, pageW, imgH)
-        yPx += sliceH
-        pageIndex += 1
+      if (!resp.ok) {
+        let msg = `HTTP ${resp.status}`
+        try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
+        throw new Error(msg)
       }
+      const blob = await resp.blob()
       const name = `invoice_${invoice?.invoice_no || id}_${dayjs().format('YYYYMMDD_HHmm')}.pdf`.replace(/[^\w\-\.]+/g, '_')
-      pdf.save(name)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = name
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
       message.success({ content: 'PDF 已导出', key })
     } catch (e: any) {
-      const msg = String(e?.message || '')
-      if (msg.includes('missing_iframe')) {
-        message.error({ content: '导出失败：预览未加载完成，请稍后重试', key })
-      } else if (msg.includes('SecurityError') || msg.toLowerCase().includes('taint')) {
-        message.error({ content: '导出失败：存在跨域图片导致截图受限（请检查公司 Logo 链接/权限）', key })
-      } else {
-        message.error({ content: msg || '导出失败', key })
-      }
+      message.error({ content: String(e?.message || '导出失败'), key })
     }
   }
 

@@ -19,6 +19,7 @@ export default function PublicMonthlyStatementPrintPage() {
   const [pdfMode, setPdfMode] = useState<boolean>(true)
   const [sections, setSections] = useState<string[]>(['all'])
   const [includeJobPhotos, setIncludeJobPhotos] = useState<boolean>(true)
+  const [photosMode, setPhotosMode] = useState<'full' | 'thumbnail' | 'off'>('full')
   const ref = useRef<HTMLDivElement>(null)
   const inited = useRef<boolean>(false)
 
@@ -47,6 +48,12 @@ export default function PublicMonthlyStatementPrintPage() {
         setIncludeJobPhotos(includePhotos === '1')
       } else if (photosMode) {
         setIncludeJobPhotos(String(photosMode).toLowerCase() !== 'off')
+      }
+      if (photosMode) {
+        const pm = String(photosMode).toLowerCase()
+        if (pm === 'off') setPhotosMode('off')
+        else if (pm === 'thumbnail') setPhotosMode('thumbnail')
+        else setPhotosMode('full')
       }
     } catch {}
   }, [])
@@ -81,6 +88,7 @@ export default function PublicMonthlyStatementPrintPage() {
       showInvoices={false}
       sections={sections}
       includeJobPhotos={includeJobPhotos}
+      photosMode={photosMode}
       mode="pdf"
       pdfMode={pdfMode}
       renderEngine="print"
