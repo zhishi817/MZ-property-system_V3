@@ -28,7 +28,7 @@ router.get('/r2-image', async (req, res) => {
     if (!hasR2) return res.status(404).json({ message: 'r2_not_configured' })
     const key = r2KeyFromUrl(u)
     if (!key) return res.status(400).json({ message: 'invalid_r2_url' })
-    const allowedPrefixes = ['invoice-company-logos/', 'deep-cleaning/']
+    const allowedPrefixes = ['invoice-company-logos/', 'deep-cleaning/', 'maintenance/']
     if (!allowedPrefixes.some(p => key.startsWith(p))) return res.status(403).json({ message: 'forbidden_key' })
     const obj = await r2GetObjectByKey(key)
     if (!obj || !obj.body?.length) return res.status(404).json({ message: 'not_found' })

@@ -1,5 +1,5 @@
 "use client"
-import { Card, Form, Input, InputNumber, DatePicker, Select, Upload, Button, Table, Space, App, Modal, Alert, Radio, Drawer, AutoComplete, Typography } from 'antd'
+import { Card, Form, Input, InputNumber, DatePicker, Select, Upload, Button, Table, Space, App, Modal, Alert, Radio, Drawer, AutoComplete, Typography, Divider, Descriptions } from 'antd'
 import { UploadOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import dayjs from 'dayjs'
@@ -8,11 +8,12 @@ import { sortProperties } from '../../../lib/properties'
 import { hasPerm } from '../../../lib/auth'
 import { getExpenseDateForDisplay } from '../../../lib/expenseDate'
 
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; fixed_expense_id?: string; occurred_at: string; due_date?: string; paid_date?: string; created_at?: string; note?: string }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; fixed_expense_id?: string; occurred_at: string; due_date?: string; paid_date?: string; created_at?: string; note?: string; ref_type?: string; ref_id?: string; generated_from?: string; is_auto?: boolean; source_title?: string; source_summary?: string }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
 
 export default function ExpensesPage() {
   const [form] = Form.useForm()
+  const [backfillForm] = Form.useForm()
   const { message, modal } = App.useApp()
   const now = dayjs()
   const [list, setList] = useState<Tx[]>([])
@@ -38,8 +39,14 @@ export default function ExpensesPage() {
   const [sharePwdValue, setSharePwdValue] = useState('')
   const [sharePwdLoading, setSharePwdLoading] = useState(false)
   const [sharePwdSaving, setSharePwdSaving] = useState(false)
+  const [backfillOpen, setBackfillOpen] = useState(false)
+  const [backfillLoading, setBackfillLoading] = useState(false)
+  const [backfillResult, setBackfillResult] = useState<any | null>(null)
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [detailRecord, setDetailRecord] = useState<Tx | null>(null)
   const role = (typeof window !== 'undefined') ? (localStorage.getItem('role') || sessionStorage.getItem('role')) : null
   const canViewList = (role === 'admin') || hasPerm('menu.finance') || hasPerm('property_expenses.view') || role === 'customer_service' || hasPerm('finance.tx.write')
+  const canBackfill = hasPerm('finance.tx.write') || hasPerm('property_expenses.write') || hasPerm('company_expenses.write') || role === 'admin'
   async function loadSharePasswordInfo() {
     setSharePwdLoading(true)
     try {
@@ -82,7 +89,28 @@ export default function ExpensesPage() {
     const resource = 'property_expenses'
     if (canViewList) {
       const rows: any[] = await apiList<any[]>(resource)
-      const mapped: Tx[] = (rows || []).map((r: any) => ({ id: r.id, kind: 'expense', amount: Number(r.amount || 0), currency: r.currency || 'AUD', category: r.category, category_detail: r.category_detail, property_id: r.property_id || undefined, property_code: r.property_code || undefined, fixed_expense_id: r.fixed_expense_id || undefined, occurred_at: r.occurred_at, due_date: r.due_date, paid_date: r.paid_date, created_at: r.created_at, note: r.note }))
+      const mapped: Tx[] = (rows || []).map((r: any) => ({
+        id: r.id,
+        kind: 'expense',
+        amount: Number(r.amount || 0),
+        currency: r.currency || 'AUD',
+        category: r.category,
+        category_detail: r.category_detail,
+        property_id: r.property_id || undefined,
+        property_code: r.property_code || undefined,
+        fixed_expense_id: r.fixed_expense_id || undefined,
+        occurred_at: r.occurred_at,
+        due_date: r.due_date,
+        paid_date: r.paid_date,
+        created_at: r.created_at,
+        note: r.note,
+        ref_type: r.ref_type || undefined,
+        ref_id: r.ref_id || undefined,
+        generated_from: r.generated_from || undefined,
+        is_auto: r.is_auto === true,
+        source_title: r.source_title || undefined,
+        source_summary: r.source_summary || undefined,
+      }))
       const sorted = mapped.sort((a, b) => {
         const ad = getExpenseDateForDisplay(a, now)
         const bd = getExpenseDateForDisplay(b, now)
@@ -96,6 +124,39 @@ export default function ExpensesPage() {
     }
   }
   useEffect(() => { load(); getJSON<any>('/properties?include_archived=true').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([])) }, [mode])
+
+  async function runAutoExpensesBackfill(dryRun: boolean) {
+    if (backfillLoading) return
+    setBackfillLoading(true)
+    try {
+      const v = await backfillForm.validateFields()
+      const range = v.range as any[] | undefined
+      const from = range && range[0] ? dayjs(range[0]).format('YYYY-MM-DD') : undefined
+      const to = range && range[1] ? dayjs(range[1]).format('YYYY-MM-DD') : undefined
+      const payload: any = {
+        from,
+        to,
+        dry_run: dryRun,
+        limit: Number(v.limit || 5000),
+        type: v.type || 'all',
+      }
+      if (v.property_id) payload.property_id = v.property_id
+      const res = await fetch(`${API_BASE}/finance/auto-expenses/backfill`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(payload),
+      })
+      const j = await res.json().catch(() => null)
+      if (!res.ok) throw new Error(j?.message || `HTTP ${res.status}`)
+      setBackfillResult(j)
+      message.success(dryRun ? '干跑完成' : '回填完成')
+      if (!dryRun) load()
+    } catch (e: any) {
+      message.error(`回填失败：${e?.message || ''}`)
+    } finally {
+      setBackfillLoading(false)
+    }
+  }
   async function submit() {
     if (saving) return
     setSaving(true)
@@ -211,6 +272,38 @@ export default function ExpensesPage() {
       return `${D}/${M}/${Y}`
     } catch { return s ? dayjs(s).format('DD/MM/YYYY') : '-' }
   }
+  function sourceLabel(refType?: string): string {
+    const v = String(refType || '').trim().toLowerCase()
+    if (!v) return '手动输入'
+    if (v === 'maintenance') return '维修'
+    if (v === 'deep_cleaning') return '深度清洁'
+    return v
+  }
+  function summaryText(raw?: any): string {
+    const s0 = String(raw || '').trim()
+    if (!s0) return ''
+    const head = s0[0]
+    if (head !== '{' && head !== '[') return s0
+    try {
+      const j = JSON.parse(s0)
+      if (Array.isArray(j)) {
+        for (const it of j) {
+          const c = String((it as any)?.content || '').trim()
+          if (c) return c
+          const i = String((it as any)?.item || '').trim()
+          if (i) return i
+        }
+      } else if (j && typeof j === 'object') {
+        const c = String((j as any)?.content || '').trim()
+        if (c) return c
+        const i = String((j as any)?.item || '').trim()
+        if (i) return i
+      }
+      return s0
+    } catch {
+      return s0
+    }
+  }
   const columns = [
     { title: '日期', dataIndex: 'occurred_at', render: (_: any, r: Tx) => {
       const d = getExpenseDateForDisplay(r, now)
@@ -219,33 +312,53 @@ export default function ExpensesPage() {
     { title: '房号', dataIndex: 'property_code', render: (v: string, r: any) => (v || (()=>{ const p = properties.find(x => x.id === r.property_id); return p?.code || r.property_id || '-' })()) },
     { title: '类别', dataIndex: 'category', render: (_: any, r: Tx) => {
       if (!r?.category) return '-'
-      return r.category === 'other' ? `其他: ${r.category_detail || ''}` : catLabel(r.category)
+      if (r.category === 'other') return r.category_detail ? `其他；${r.category_detail || ''}` : '其他'
+      return catLabel(r.category)
+    } },
+    { title: '来源', dataIndex: 'ref_type', render: (_: any, r: Tx) => sourceLabel(r.ref_type) },
+    { title: '来源摘要', dataIndex: 'source_summary', ellipsis: true, render: (_: any, r: Tx) => {
+      const s = summaryText(r.source_summary)
+      if (!s) return '-'
+      return <Typography.Text title={s}>{s}</Typography.Text>
     } },
     { title: '金额', dataIndex: 'amount', render: (v: number) => `$${fmt(Number(v || 0))}` },
     { title: '发票', key: 'invoices', render: (_: any, r: Tx) => (
       <Button type="link" onClick={() => openInvoices(r.id)}>管理发票</Button>
     ) },
-    { title: '备注', dataIndex: 'note' },
-    { title: '操作', render: (_: any, r: Tx) => (hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) ? (
+    { title: '操作', render: (_: any, r: Tx) => (
       <Space>
-        <Button onClick={() => { setEditing(r); setOpen(true); form.setFieldsValue({
-          paid_date: dayjs(r.paid_date || r.occurred_at), property_id: r.property_id, category: r.category,
-          other_detail: r.category === 'other' ? r.category_detail : undefined,
-          amount: r.amount, currency: r.currency, note: r.note,
-        }) }}>编辑</Button>
-        {hasPerm('property_expenses.delete') && (
-        <Button danger onClick={() => {
-          modal.confirm({ title: '确认删除支出', okType: 'danger', onOk: async () => {
-            const resource = 'property_expenses'
-            try { await apiDelete(resource, r.id); message.success('已删除'); load() } catch (e: any) { message.error(e?.message || '删除失败') }
-          } })
-        }}>删除</Button>
-        )}
+        <Button onClick={() => { setDetailRecord(r); setDetailOpen(true) }}>详情</Button>
+        {(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) ? (
+          <Button onClick={() => { setEditing(r); setOpen(true); form.setFieldsValue({
+            paid_date: dayjs(r.paid_date || r.occurred_at), property_id: r.property_id, category: r.category,
+            other_detail: r.category === 'other' ? r.category_detail : undefined,
+            amount: r.amount, currency: r.currency, note: r.note,
+          }) }}>编辑</Button>
+        ) : null}
+        {(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) && hasPerm('property_expenses.delete') ? (
+          <Button danger onClick={() => {
+            modal.confirm({ title: '确认删除支出', okType: 'danger', onOk: async () => {
+              const resource = 'property_expenses'
+              try { await apiDelete(resource, r.id); message.success('已删除'); load() } catch (e: any) { message.error(e?.message || '删除失败') }
+            } })
+          }}>删除</Button>
+        ) : null}
       </Space>
-    ) : null },
+    ) },
   ]
   return (
     <Card title="房源支出" extra={<Space>
+      {canBackfill ? (
+        <Button onClick={() => {
+          setBackfillResult(null)
+          backfillForm.setFieldsValue({
+            type: 'all',
+            limit: 5000,
+            range: [dayjs().subtract(365, 'day'), dayjs()],
+          })
+          setBackfillOpen(true)
+        }}>批量回填自动支出</Button>
+      ) : null}
       <Button onClick={() => {
         try {
           const origin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -437,6 +550,48 @@ export default function ExpensesPage() {
           </>
         ) : null}
       </Modal>
+      <Drawer
+        open={detailOpen}
+        onClose={() => { setDetailOpen(false); setDetailRecord(null) }}
+        title="支出详情"
+        width={720}
+        placement="right"
+        footer={
+          <div style={{ textAlign: 'right' }}>
+            <Button onClick={() => { setDetailOpen(false); setDetailRecord(null) }}>关闭</Button>
+          </div>
+        }
+      >
+        {detailRecord ? (
+          <>
+            <Divider orientation="left">支出基础信息</Divider>
+            <Descriptions bordered column={2} labelStyle={{ width: 120 }}>
+              <Descriptions.Item label="日期">{melDay(getExpenseDateForDisplay(detailRecord, now))}</Descriptions.Item>
+              <Descriptions.Item label="类别">{detailRecord.category ? (detailRecord.category === 'other' ? (detailRecord.category_detail ? `其他；${detailRecord.category_detail}` : '其他') : catLabel(detailRecord.category)) : '-'}</Descriptions.Item>
+              <Descriptions.Item label="房号">{detailRecord.property_code || (()=>{ const p = properties.find(x => x.id === detailRecord.property_id); return p?.code || detailRecord.property_id || '-' })()}</Descriptions.Item>
+              <Descriptions.Item label="金额">{`$${fmt(Number(detailRecord.amount || 0))}`}</Descriptions.Item>
+              <Descriptions.Item label="发票" span={2}>
+                <Button type="link" onClick={() => openInvoices(detailRecord.id)}>查看/管理发票</Button>
+              </Descriptions.Item>
+            </Descriptions>
+            {(detailRecord.ref_type || detailRecord.ref_id || detailRecord.generated_from || detailRecord.is_auto || detailRecord.source_summary || detailRecord.source_title) ? (
+              <>
+                <Divider orientation="left">来源信息</Divider>
+                <Descriptions bordered column={2} labelStyle={{ width: 120 }}>
+                  <Descriptions.Item label="来源">{sourceLabel(detailRecord.ref_type)}</Descriptions.Item>
+                  <Descriptions.Item label="来源标题">{detailRecord.source_title ? String(detailRecord.source_title) : '-'}</Descriptions.Item>
+                  <Descriptions.Item label="来源摘要" span={2}>
+                    {summaryText(detailRecord.source_summary) ? summaryText(detailRecord.source_summary) : '-'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="来源标识" span={2}>
+                    {`ref_type=${String(detailRecord.ref_type || '-')}, ref_id=${String(detailRecord.ref_id || '-')}, generated_from=${String(detailRecord.generated_from || '-')}, is_auto=${detailRecord.is_auto ? 'true' : 'false'}`}
+                  </Descriptions.Item>
+                </Descriptions>
+              </>
+            ) : null}
+          </>
+        ) : null}
+      </Drawer>
       <Modal open={!!invoiceOpen} onCancel={() => { setInvoiceOpen(null); setInvoices([]) }} footer={null} width={1350} title="发票管理">
         {invoiceOpen ? (
           <>
@@ -481,6 +636,64 @@ export default function ExpensesPage() {
           ) : (
             <img src={previewUrl} style={{ maxWidth:'100%' }} key={previewUrl} />
           ))
+        ) : null}
+      </Modal>
+      <Modal
+        open={backfillOpen}
+        onCancel={() => setBackfillOpen(false)}
+        title="批量回填自动支出"
+        width={860}
+        footer={
+          <Space>
+            <Button onClick={() => setBackfillOpen(false)}>关闭</Button>
+            <Button loading={backfillLoading} onClick={() => runAutoExpensesBackfill(true)}>先干跑</Button>
+            <Button type="primary" loading={backfillLoading} onClick={() => {
+              modal.confirm({
+                title: '确认执行回填',
+                content: '将根据 pay_method 生成/更新自动支出，仅互斥侧 auto 记录会被置为 void；manual_override=true 的记录会跳过。',
+                okText: '执行',
+                cancelText: '取消',
+                onOk: async () => runAutoExpensesBackfill(false),
+              })
+            }}>执行回填</Button>
+          </Space>
+        }
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="回填规则：只写入/修改 is_auto=true 的记录；manual_override=true 不删不改；互斥侧 auto 记录仅置 void，不会删除历史账。"
+          style={{ marginBottom: 12 }}
+        />
+        <Form form={backfillForm} layout="vertical">
+          <Form.Item name="range" label="日期范围（按 completed/occurred/created 取日期）" rules={[{ required: true, message: '请选择日期范围' }]}>
+            <DatePicker.RangePicker style={{ width: '100%' }} format="DD/MM/YYYY" />
+          </Form.Item>
+          <Form.Item name="type" label="回填类型" initialValue="all">
+            <Select options={[
+              { value: 'all', label: '维修 + 深度清洁' },
+              { value: 'maintenance', label: '仅维修' },
+              { value: 'deep_cleaning', label: '仅深度清洁' },
+            ]} />
+          </Form.Item>
+          <Form.Item name="property_id" label="仅回填某个房源（可选）">
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              filterOption={(input, option) => String((option as any)?.label || '').toLowerCase().includes(String(input || '').toLowerCase())}
+              options={sortProperties(properties).map(p => ({ value: p.id, label: `${p.code || p.id}${p.address ? ` - ${p.address}` : ''}` }))}
+            />
+          </Form.Item>
+          <Form.Item name="limit" label="最大扫描条数" initialValue={5000} rules={[{ required: true }]}>
+            <InputNumber min={1} max={20000} step={100} style={{ width: '100%' }} />
+          </Form.Item>
+        </Form>
+        {backfillResult ? (
+          <>
+            <Typography.Text strong>结果</Typography.Text>
+            <Input.TextArea value={JSON.stringify(backfillResult, null, 2)} readOnly autoSize={{ minRows: 8, maxRows: 18 }} style={{ marginTop: 8 }} />
+          </>
         ) : null}
       </Modal>
     </Card>

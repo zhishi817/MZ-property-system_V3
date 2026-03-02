@@ -1,16 +1,15 @@
 "use client"
-import { Card, DatePicker, Table, Select, Button, Modal, message, Switch, Progress } from 'antd'
+import { Card, DatePicker, Table, Select, Button, Modal, message, Switch, Progress, Spin } from 'antd'
 import styles from './ExpandedRow.module.css'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getJSON, apiList, API_BASE, authHeaders, patchJSON } from '../../../lib/api'
 import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/properties'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
-import { monthSegments, toDayStr, getMonthSegmentsForProperty, parseDateOnly } from '../../../lib/orders'
-import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../../../lib/financeTx'
-import { computeMonthlyStatementBalance, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
+import { monthSegments, toDayStr, getMonthSegmentsForProperty } from '../../../lib/orders'
+import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome } from '../../../lib/financeTx'
+import { isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
 import { formatStatementDesc } from '../../../lib/statementDesc'
-const debugOnce = (..._args: any[]) => {}
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
 import { MailOutlined, CreditCardOutlined, CheckOutlined } from '@ant-design/icons'
 import { nextToggleValue } from '../../../lib/toggleStatus'
@@ -25,10 +24,13 @@ type PendingOps = Record<string, { scheduled?: boolean; transfer?: boolean }>
 type MergeUiStatus = 'active' | 'exception' | 'success'
 
 export default function PropertyRevenuePage() {
-  const [month, setMonth] = useState<any>(dayjs())
+  const getDefaultRevenueMonth = (now = dayjs()) => (now.date() < 6 ? now.subtract(1, 'month') : now)
+  const [month, setMonth] = useState<any>(getDefaultRevenueMonth())
   const [orders, setOrders] = useState<Order[]>([])
   const [txs, setTxs] = useState<Tx[]>([])
   const [deepCleaningExpenseTxs, setDeepCleaningExpenseTxs] = useState<Tx[]>([])
+  const [pageLoading, setPageLoading] = useState<boolean>(true)
+  const [rangeLoading, setRangeLoading] = useState<boolean>(false)
   const [excludeOrphanFixedSnapshots, setExcludeOrphanFixedSnapshots] = useState<boolean>(true)
   const [orphanFixedSnapshots, setOrphanFixedSnapshots] = useState<any[]>([])
   const [orphanOpen, setOrphanOpen] = useState(false)
@@ -37,19 +39,22 @@ export default function PropertyRevenuePage() {
   const [selectedPid, setSelectedPid] = useState<string | undefined>(undefined)
   const [previewPid, setPreviewPid] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewReady, setPreviewReady] = useState(false)
   const [statementPdfMode, setStatementPdfMode] = useState(false)
   const [exportQuality, setExportQuality] = useState<'standard' | 'high' | 'ultra'>('ultra')
   const [mergeUi, setMergeUi] = useState<{ open: boolean; percent: number; status: MergeUiStatus; stage: string; detail?: string }>({ open: false, percent: 0, status: 'active', stage: '', detail: '' })
   const [exportPreview, setExportPreview] = useState<{ open: boolean; url: string; pageCount: number; filename: string; loading: boolean }>({ open: false, url: '', pageCount: 0, filename: '', loading: false })
   const printRef = useRef<HTMLDivElement>(null)
   const [period, setPeriod] = useState<'month'|'year'|'half-year'|'fiscal-year'>('month')
-  const [startMonth, setStartMonth] = useState<any>(dayjs())
+  const [startMonth, setStartMonth] = useState<any>(getDefaultRevenueMonth())
   const [showChinese, setShowChinese] = useState<boolean>(true)
   const [revenueStatusByKey, setRevenueStatusByKey] = useState<Record<string, RevenueStatus>>({})
   const [baselineStatusByKey, setBaselineStatusByKey] = useState<Record<string, Partial<RevenueStatus>>>({})
   const [pendingOps, setPendingOps] = useState<PendingOps>({})
   const statusKeyOf = (pid: string, monthKey: string) => `${String(pid)}__${String(monthKey)}`
   const isMerging = mergeUi.open && mergeUi.status === 'active'
+  const rawRef = useRef<{ fin: any[]; pexp: any[]; recurs: any[] } | null>(null)
+  const deepCleaningCacheRef = useRef<Map<string, Tx[]>>(new Map())
   const closeExportPreview = () => {
     setExportPreview((prev) => {
       try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
@@ -62,210 +67,126 @@ export default function PropertyRevenuePage() {
     if (mode === 'high') return { scale: 3, imageQuality: 0.9, imageType: 'jpeg' as const }
     return { scale: 4, imageQuality: 0.98, imageType: 'png' as const }
   }
-  useEffect(() => {
-    getJSON<Order[]>('/orders').then(setOrders).catch(()=>setOrders([]))
-    ;(async () => {
-      try {
-        const fin: any[] = await getJSON<Tx[]>('/finance')
-        const pexp: any[] = await apiList<any[]>('property_expenses')
-        const recurs: any[] = await apiList<any[]>('recurring_payments')
-        const mapCat = (c?: string) => {
-          const v = String(c || '')
-          if (v === 'gas_hot_water') return 'gas'
-          if (v === 'consumables') return 'consumable'
-          if (v === 'owners_corp') return 'property_fee'
-          if (v === 'council_rate') return 'council'
-          if (v.toLowerCase() === 'nbn' || v.toLowerCase() === 'internet' || v.includes('网')) return 'internet'
-          return v
-        }
-        const recurringArr = Array.isArray(recurs) ? recurs : []
-        const recurringIdSet = new Set(recurringArr.map((r: any) => String(r.id)))
-        const mapReport: Record<string, string> = Object.fromEntries(recurringArr.map((r:any)=>[String(r.id), String(r.report_category||'')]))
-        const mapVendor: Record<string, string> = Object.fromEntries(recurringArr.map((r:any)=>[String(r.id), String(r.vendor||'')]))
-        const toReportCat = (raw?: string) => {
-          const v = String(raw||'').toLowerCase()
-          if (v.includes('management_fee') || v.includes('管理费')) return 'management_fee'
-          if (v.includes('carpark') || v.includes('车位')) return 'parking_fee'
-          if (v.includes('owners') || v.includes('body') || v.includes('物业')) return 'body_corp'
-          if (v.includes('internet') || v.includes('nbn') || v.includes('网')) return 'internet'
-          if (v.includes('electric') || v.includes('电')) return 'electricity'
-          if ((v.includes('water') || v.includes('水')) && !v.includes('hot') && !v.includes('热')) return 'water'
-          if (v.includes('gas') || v.includes('hot') || v.includes('热水') || v.includes('煤气')) return 'gas'
-          if (v.includes('consumable') || v.includes('消耗')) return 'consumables'
-          if (v.includes('council') || v.includes('市政')) return 'council'
-          return 'other'
-        }
-        let orphanCount = 0
-        let orphanTotal = 0
-        const orphanRows: any[] = []
-        const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).flatMap((r: any) => {
-          const code = String(r.property_code || '').trim()
-          const pidRaw = r.property_id || undefined
-          const match = properties.find(pp => (pp.code || '') === code)
-          const pidNorm = (pidRaw && properties.some(pp => pp.id === pidRaw)) ? pidRaw : (match ? match.id : pidRaw)
-          const fid = String(r.fixed_expense_id || '')
-          const genFrom = String(r.generated_from || '')
-          const note = String(r.note || '')
-          const isSnapshot = genFrom === 'recurring_payments' || /^fixed payment/i.test(note)
-          const isOrphanSnapshot = !!(fid && isSnapshot && !recurringIdSet.has(fid))
-          if (isOrphanSnapshot) {
-            orphanCount += 1
-            orphanTotal += Number(r.amount || 0)
-            if (orphanRows.length < 50) orphanRows.push(r)
-            if (excludeOrphanFixedSnapshots) return []
-          }
-          const vendor = fid ? String(mapVendor[fid] || '') : ''
-          const baseDetail = String(r.category_detail || '').trim()
-          const injectedDetail = (!baseDetail && vendor) ? vendor : baseDetail
-          return [{
-            id: r.id,
-            kind: 'expense',
-            amount: Number(r.amount || 0),
-            currency: r.currency || 'AUD',
-            property_id: pidNorm,
-            occurred_at: r.occurred_at,
-            category: mapCat(r.category),
-            // 其他支出描述
-            ...(r.property_code ? { property_code: r.property_code } : {}),
-            ...(injectedDetail ? { category_detail: injectedDetail } : {}),
-            ...(r.note ? { note: r.note } : {}),
-            ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
-            ...(r.month_key ? { month_key: r.month_key } : {}),
-            ...(r.due_date ? { due_date: r.due_date } : {}),
-            ...(r.status ? { status: r.status } : {}),
-            report_category: normalizeReportCategory((r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail))
-          }]
-        })
-        const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
-          id: t.id,
-          kind: t.kind,
-          amount: Number(t.amount || 0),
-          currency: t.currency || 'AUD',
-          property_id: t.property_id || undefined,
-          occurred_at: t.occurred_at,
-          category: mapCat(t.category),
-          ...(t.category_detail ? { category_detail: t.category_detail } : {}),
-          ...(t.note ? { note: t.note } : {}),
-          ...(t.ref_type ? { ref_type: t.ref_type } : {}),
-          ...(t.ref_id ? { ref_id: t.ref_id } : {}),
-          ...(t.invoice_url ? { invoice_url: t.invoice_url } : {})
-        }))
-        setOrphanFixedSnapshots(orphanRows)
-        if (orphanCount > 0) {
-          const amt = (orphanTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-          message.warning({
-            key: 'orphanFixedExpenseSnapshots',
-            content: (
-              <span>
-                检测到 {orphanCount} 条孤儿固定支出快照（合计 ${amt}）。当前{excludeOrphanFixedSnapshots ? '已排除' : '仍计入'}房源营收统计。
-                <Button type="link" style={{ padding: 0, marginLeft: 8 }} onClick={() => setOrphanOpen(true)}>查看明细</Button>
-              </span>
-            ),
-            duration: 8
-          })
-        } else {
-          message.destroy('orphanFixedExpenseSnapshots')
-        }
-        setTxs([...finMapped, ...peMapped])
-      } catch { setTxs([]) }
-    })()
-    getJSON<any>('/properties').then((j)=>setProperties(j||[])).catch(()=>setProperties([]))
-    getJSON<Landlord[]>('/landlords').then(setLandlords).catch(()=>setLandlords([]))
-  }, [excludeOrphanFixedSnapshots])
+  const buildTxsFromRaw = (fin: any[], pexp: any[], recurs: any[], props: any[], excludeOrphans: boolean) => {
+    const mapCat = (c?: string) => {
+      const v = String(c || '')
+      if (v === 'gas_hot_water') return 'gas'
+      if (v === 'consumables') return 'consumable'
+      if (v === 'owners_corp') return 'property_fee'
+      if (v === 'council_rate') return 'council'
+      if (v.toLowerCase() === 'nbn' || v.toLowerCase() === 'internet' || v.includes('网')) return 'internet'
+      return v
+    }
+    const recurringArr = Array.isArray(recurs) ? recurs : []
+    const recurringIdSet = new Set(recurringArr.map((r: any) => String(r.id)))
+    const mapReport: Record<string, string> = Object.fromEntries(recurringArr.map((r:any)=>[String(r.id), String(r.report_category||'')]))
+    const mapVendor: Record<string, string> = Object.fromEntries(recurringArr.map((r:any)=>[String(r.id), String(r.vendor||'')]))
+    const toReportCat = (raw?: string) => {
+      const v = String(raw||'').toLowerCase()
+      if (v.includes('management_fee') || v.includes('管理费')) return 'management_fee'
+      if (v.includes('carpark') || v.includes('车位')) return 'parking_fee'
+      if (v.includes('owners') || v.includes('body') || v.includes('物业')) return 'body_corp'
+      if (v.includes('internet') || v.includes('nbn') || v.includes('网')) return 'internet'
+      if (v.includes('electric') || v.includes('电')) return 'electricity'
+      if ((v.includes('water') || v.includes('水')) && !v.includes('hot') && !v.includes('热')) return 'water'
+      if (v.includes('gas') || v.includes('hot') || v.includes('热水') || v.includes('煤气')) return 'gas'
+      if (v.includes('consumable') || v.includes('消耗')) return 'consumables'
+      if (v.includes('council') || v.includes('市政')) return 'council'
+      return 'other'
+    }
+    const propsArr = Array.isArray(props) ? props : []
+    const propsById = new Set(propsArr.map((p: any) => String(p.id)))
+    const propsByCode = new Map(propsArr.map((p: any) => [String(p.code || '').trim(), String(p.id)]))
+    let orphanCount = 0
+    let orphanTotal = 0
+    const orphanRows: any[] = []
+    const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).flatMap((r: any) => {
+      const code = String(r.property_code || '').trim()
+      const pidRaw = r.property_id || undefined
+      const pidNorm = (pidRaw && propsById.has(String(pidRaw))) ? pidRaw : (propsByCode.get(code) || pidRaw)
+      const fid = String(r.fixed_expense_id || '')
+      const genFrom = String(r.generated_from || '')
+      const note = String(r.note || '')
+      const isSnapshot = genFrom === 'recurring_payments' || /^fixed payment/i.test(note)
+      const isOrphanSnapshot = !!(fid && isSnapshot && !recurringIdSet.has(fid))
+      if (isOrphanSnapshot) {
+        orphanCount += 1
+        orphanTotal += Number(r.amount || 0)
+        if (orphanRows.length < 50) orphanRows.push(r)
+        if (excludeOrphans) return []
+      }
+      const vendor = fid ? String(mapVendor[fid] || '') : ''
+      const baseDetail = String(r.category_detail || '').trim()
+      const injectedDetail = (!baseDetail && vendor) ? vendor : baseDetail
+      return [{
+        id: r.id,
+        kind: 'expense',
+        amount: Number(r.amount || 0),
+        currency: r.currency || 'AUD',
+        property_id: pidNorm,
+        occurred_at: r.occurred_at,
+        category: mapCat(r.category),
+        ...(r.property_code ? { property_code: r.property_code } : {}),
+        ...(injectedDetail ? { category_detail: injectedDetail } : {}),
+        ...(r.note ? { note: r.note } : {}),
+        ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
+        ...(r.month_key ? { month_key: r.month_key } : {}),
+        ...(r.due_date ? { due_date: r.due_date } : {}),
+        ...(r.status ? { status: r.status } : {}),
+        ...(r.ref_type ? { ref_type: r.ref_type } : {}),
+        ...(r.ref_id ? { ref_id: r.ref_id } : {}),
+        ...(r.source_title ? { source_title: r.source_title } : {}),
+        ...(r.source_summary ? { source_summary: r.source_summary } : {}),
+        report_category: normalizeReportCategory((r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail))
+      } as any]
+    })
+    const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
+      id: t.id,
+      kind: t.kind,
+      amount: Number(t.amount || 0),
+      currency: t.currency || 'AUD',
+      property_id: t.property_id || undefined,
+      occurred_at: t.occurred_at,
+      category: mapCat(t.category),
+      ...(t.category_detail ? { category_detail: t.category_detail } : {}),
+      ...(t.note ? { note: t.note } : {}),
+      ...(t.ref_type ? { ref_type: t.ref_type } : {}),
+      ...(t.ref_id ? { ref_id: t.ref_id } : {}),
+      ...(t.source_title ? { source_title: t.source_title } : {}),
+      ...(t.source_summary ? { source_summary: t.source_summary } : {}),
+      ...(t.invoice_url ? { invoice_url: t.invoice_url } : {})
+    } as any))
+    return { txs: [...finMapped, ...peMapped], orphanRows, orphanCount, orphanTotal }
+  }
 
   useEffect(() => {
+    let alive = true
     ;(async () => {
+      setPageLoading(true)
       try {
-        const fin: any[] = await getJSON<Tx[]>('/finance')
-        const pexp: any[] = await apiList<any[]>('property_expenses')
-        const recurs: any[] = await apiList<any[]>('recurring_payments')
-        const mapCat = (c?: string) => {
-          const v = String(c || '')
-          if (v === 'gas_hot_water') return 'gas'
-          if (v === 'consumables') return 'consumable'
-          if (v === 'owners_corp') return 'property_fee'
-          if (v === 'council_rate') return 'council'
-          if (v.toLowerCase() === 'nbn' || v.toLowerCase() === 'internet' || v.includes('网')) return 'internet'
-          return v
-        }
-        const recurringArr = Array.isArray(recurs) ? recurs : []
-        const recurringIdSet = new Set(recurringArr.map((r: any) => String(r.id)))
-        const mapReport: Record<string, string> = Object.fromEntries(recurringArr.map((r:any)=>[String(r.id), String(r.report_category||'')]))
-        const mapVendor: Record<string, string> = Object.fromEntries(recurringArr.map((r:any)=>[String(r.id), String(r.vendor||'')]))
-        const toReportCat = (raw?: string) => {
-          const v = String(raw||'').toLowerCase()
-          if (v.includes('management_fee') || v.includes('管理费')) return 'management_fee'
-          if (v.includes('carpark') || v.includes('车位')) return 'parking_fee'
-          if (v.includes('owners') || v.includes('body') || v.includes('物业')) return 'body_corp'
-          if (v.includes('internet') || v.includes('nbn') || v.includes('网')) return 'internet'
-          if (v.includes('electric') || v.includes('电')) return 'electricity'
-          if ((v.includes('water') || v.includes('水')) && !v.includes('hot')) return 'water'
-          if (v.includes('gas') || v.includes('hot') || v.includes('热水')) return 'gas'
-          if (v.includes('consumable') || v.includes('消耗')) return 'consumables'
-          if (v.includes('council') || v.includes('市政')) return 'council'
-          return 'other'
-        }
-        let orphanCount = 0
-        let orphanTotal = 0
-        const orphanRows: any[] = []
-        const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).flatMap((r: any) => {
-          const code = String(r.property_code || '').trim()
-          const pidRaw = r.property_id || undefined
-          const match = properties.find(pp => (pp.code || '') === code)
-          const pidNorm = (pidRaw && properties.some(pp => pp.id === pidRaw)) ? pidRaw : (match ? match.id : pidRaw)
-          const fid = String(r.fixed_expense_id || '')
-          const genFrom = String(r.generated_from || '')
-          const note = String(r.note || '')
-          const isSnapshot = genFrom === 'recurring_payments' || /^fixed payment/i.test(note)
-          const isOrphanSnapshot = !!(fid && isSnapshot && !recurringIdSet.has(fid))
-          if (isOrphanSnapshot) {
-            orphanCount += 1
-            orphanTotal += Number(r.amount || 0)
-            if (orphanRows.length < 50) orphanRows.push(r)
-            if (excludeOrphanFixedSnapshots) return []
-          }
-          const vendor = fid ? String(mapVendor[fid] || '') : ''
-          const baseDetail = String(r.category_detail || '').trim()
-          const injectedDetail = (!baseDetail && vendor) ? vendor : baseDetail
-          return [{
-            id: r.id,
-            kind: 'expense',
-            amount: Number(r.amount || 0),
-            currency: r.currency || 'AUD',
-            property_id: pidNorm,
-            occurred_at: r.occurred_at,
-            category: mapCat(r.category),
-            ...(r.property_code ? { property_code: r.property_code } : {}),
-            ...(injectedDetail ? { category_detail: injectedDetail } : {}),
-            ...(r.note ? { note: r.note } : {}),
-            ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
-            ...(r.month_key ? { month_key: r.month_key } : {}),
-            ...(r.due_date ? { due_date: r.due_date } : {}),
-            ...(r.status ? { status: r.status } : {}),
-            report_category: normalizeReportCategory((r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail))
-          }]
-        })
-        const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
-          id: t.id,
-          kind: t.kind,
-          amount: Number(t.amount || 0),
-          currency: t.currency || 'AUD',
-          property_id: t.property_id || undefined,
-          occurred_at: t.occurred_at,
-          category: mapCat(t.category),
-          ...(t.category_detail ? { category_detail: t.category_detail } : {}),
-          ...(t.note ? { note: t.note } : {}),
-          ...(t.ref_type ? { ref_type: t.ref_type } : {}),
-          ...(t.ref_id ? { ref_id: t.ref_id } : {})
-        }))
-        setOrphanFixedSnapshots(orphanRows)
-        if (orphanCount > 0) {
-          const amt = (orphanTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        const [ordersRes, propsRes, landlordsRes, finRes, pexpRes, recursRes] = await Promise.all([
+          getJSON<Order[]>('/orders').catch(() => [] as any[]),
+          getJSON<any>('/properties').catch(() => [] as any[]),
+          getJSON<Landlord[]>('/landlords').catch(() => [] as any[]),
+          getJSON<Tx[]>('/finance').catch(() => [] as any[]),
+          apiList<any[]>('property_expenses').catch(() => [] as any[]),
+          apiList<any[]>('recurring_payments').catch(() => [] as any[]),
+        ])
+        if (!alive) return
+        const propsArr = Array.isArray(propsRes) ? propsRes : []
+        setOrders(Array.isArray(ordersRes) ? ordersRes : [])
+        setProperties(propsArr)
+        setLandlords(Array.isArray(landlordsRes) ? landlordsRes : [])
+        rawRef.current = { fin: Array.isArray(finRes) ? finRes : [], pexp: Array.isArray(pexpRes) ? pexpRes : [], recurs: Array.isArray(recursRes) ? recursRes : [] }
+        const built = buildTxsFromRaw(rawRef.current.fin, rawRef.current.pexp, rawRef.current.recurs, propsArr, excludeOrphanFixedSnapshots)
+        setOrphanFixedSnapshots(built.orphanRows)
+        if (built.orphanCount > 0) {
+          const amt = (built.orphanTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           message.warning({
             key: 'orphanFixedExpenseSnapshots',
             content: (
               <span>
-                检测到 {orphanCount} 条孤儿固定支出快照（合计 ${amt}）。当前{excludeOrphanFixedSnapshots ? '已排除' : '仍计入'}房源营收统计。
+                检测到 {built.orphanCount} 条孤儿固定支出快照（合计 ${amt}）。当前{excludeOrphanFixedSnapshots ? '已排除' : '仍计入'}房源营收统计。
                 <Button type="link" style={{ padding: 0, marginLeft: 8 }} onClick={() => setOrphanOpen(true)}>查看明细</Button>
               </span>
             ),
@@ -274,10 +195,37 @@ export default function PropertyRevenuePage() {
         } else {
           message.destroy('orphanFixedExpenseSnapshots')
         }
-        setTxs([...finMapped, ...peMapped])
-      } catch {}
+        setTxs(built.txs)
+      } finally {
+        if (alive) setPageLoading(false)
+      }
     })()
-  }, [month, excludeOrphanFixedSnapshots])
+    return () => { alive = false }
+  }, [])
+
+  useEffect(() => {
+    const raw = rawRef.current
+    if (!raw) return
+    if (!properties.length) return
+    const built = buildTxsFromRaw(raw.fin, raw.pexp, raw.recurs, properties as any, excludeOrphanFixedSnapshots)
+    setOrphanFixedSnapshots(built.orphanRows)
+    if (built.orphanCount > 0) {
+      const amt = (built.orphanTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      message.warning({
+        key: 'orphanFixedExpenseSnapshots',
+        content: (
+          <span>
+            检测到 {built.orphanCount} 条孤儿固定支出快照（合计 ${amt}）。当前{excludeOrphanFixedSnapshots ? '已排除' : '仍计入'}房源营收统计。
+            <Button type="link" style={{ padding: 0, marginLeft: 8 }} onClick={() => setOrphanOpen(true)}>查看明细</Button>
+          </span>
+        ),
+        duration: 8
+      })
+    } else {
+      message.destroy('orphanFixedExpenseSnapshots')
+    }
+    setTxs(built.txs)
+  }, [excludeOrphanFixedSnapshots, properties])
   const start = useMemo(() => {
     const base = month || dayjs()
     if (period === 'fiscal-year') {
@@ -308,6 +256,7 @@ export default function PropertyRevenuePage() {
     ;(async () => {
       try {
         if (!start || !end) { setDeepCleaningExpenseTxs([]); return }
+        if (pageLoading) return
         const normCode = (raw?: any) => {
           const s0 = String(raw || '').trim()
           if (!s0) return ''
@@ -331,6 +280,10 @@ export default function PropertyRevenuePage() {
         }
         const from = start.startOf('month').format('YYYY-MM-DD')
         const to = end.endOf('month').format('YYYY-MM-DD')
+        const cacheKey = `${start.format('YYYY-MM')}|${end.format('YYYY-MM')}`
+        const cached = deepCleaningCacheRef.current.get(cacheKey)
+        if (cached) { setDeepCleaningExpenseTxs(cached); return }
+        setRangeLoading(true)
         const list = await apiList<DeepCleaning[]>('property_deep_cleaning', { occurred_at_from: from, occurred_at_to: to, limit: 5000 } as any).catch(() => [])
         const propsById = new Map((properties || []).map(p => [String(p.id), p]))
         const propsByCode = new Map((properties || []).map(p => [normCode((p as any).code), p]))
@@ -365,12 +318,15 @@ export default function PropertyRevenuePage() {
             ref_id: String((d as any).id || ''),
           } as any)
         }
+        deepCleaningCacheRef.current.set(cacheKey, out)
         setDeepCleaningExpenseTxs(out)
       } catch {
-        setDeepCleaningExpenseTxs([])
+        setDeepCleaningExpenseTxs((prev) => prev)
+      } finally {
+        setRangeLoading(false)
       }
     })()
-  }, [start?.format('YYYY-MM'), end?.format('YYYY-MM'), properties])
+  }, [start?.format('YYYY-MM'), end?.format('YYYY-MM'), properties, pageLoading])
 
   const txsAll = useMemo(() => {
     const base = Array.isArray(txs) ? txs : []
@@ -394,10 +350,176 @@ export default function PropertyRevenuePage() {
       .catch(() => setRevenueStatusByKey({}))
   }, [statusRange?.from, statusRange?.to, selectedPid])
 
+  useEffect(() => {
+    if (!previewOpen || !previewPid || period !== 'month') { setPreviewReady(true); return }
+    let cancelled = false
+    setPreviewReady(false)
+    ;(async () => {
+      const el = printRef.current as HTMLElement | null
+      if (!el) return
+      const t0 = Date.now()
+      while (Date.now() - t0 < 12000) {
+        if (cancelled) return
+        if (String(el.getAttribute('data-monthly-statement-root') || '') !== '1') { await new Promise(r => setTimeout(r, 80)); continue }
+        const deepLoaded = String(el.getAttribute('data-deep-clean-loaded') || '') === '1'
+        const maintLoaded = String(el.getAttribute('data-maint-loaded') || '') === '1'
+        if (deepLoaded && maintLoaded) break
+        await new Promise(r => setTimeout(r, 80))
+      }
+      const deepCnt = Number(el.getAttribute('data-deep-clean-count') || 0)
+      if (Number.isFinite(deepCnt) && deepCnt > 0) {
+        while (Date.now() - t0 < 12000) {
+          if (cancelled) return
+          if (el.querySelector('[data-deep-clean-section="1"]')) break
+          await new Promise(r => setTimeout(r, 80))
+        }
+      }
+      const maintCnt = Number(el.getAttribute('data-maint-count') || 0)
+      if (Number.isFinite(maintCnt) && maintCnt > 0) {
+        while (Date.now() - t0 < 12000) {
+          if (cancelled) return
+          if (el.querySelector('[data-maint-section="1"]')) break
+          await new Promise(r => setTimeout(r, 80))
+        }
+      }
+      const imgs = Array.from(el.querySelectorAll('img')) as HTMLImageElement[]
+      await Promise.all(imgs.map((img) => img.complete ? Promise.resolve(null) : new Promise((resolve) => {
+        img.addEventListener('load', resolve, { once: true } as any)
+        img.addEventListener('error', resolve, { once: true } as any)
+      })))
+      if (!cancelled) setPreviewReady(true)
+    })()
+    return () => { cancelled = true }
+  }, [previewOpen, previewPid, period, month?.format?.('YYYY-MM'), showChinese])
+
+  const orderById = useMemo(() => new Map((orders || []).map(o => [String(o.id), o])), [orders])
+  const txBucketIndex = useMemo(() => {
+    const txMonthKey = (tx: any): string => {
+      const mk = String(tx?.month_key || '')
+      if (/^\d{4}-\d{2}$/.test(mk)) return mk
+      const raw: any = tx?.paid_date || tx?.occurred_at || tx?.due_date || tx?.created_at
+      const d = toDayStr(raw)
+      if (!d) return ''
+      return dayjs(d).format('YYYY-MM')
+    }
+    const mapIncomeCatLabel = (c?: string) => {
+      const v = String(c || '')
+      if (v === 'late_checkout') return '晚退房费'
+      if (v === 'cancel_fee') return '取消费'
+      return v || '-'
+    }
+    const parseMaybeJson = (raw: any): any => {
+      if (raw === null || raw === undefined) return raw
+      if (typeof raw !== 'string') return raw
+      const s = raw.trim()
+      if (!s) return ''
+      const head = s[0]
+      if (head !== '{' && head !== '[') return s
+      try { return JSON.parse(s) } catch { return s }
+    }
+    const extractHumanText = (raw: any): string => {
+      const v = parseMaybeJson(raw)
+      if (!v) return ''
+      if (Array.isArray(v)) {
+        for (const it of v) {
+          const i = String((it as any)?.item || '').trim()
+          if (i) return i
+          const c = String((it as any)?.content || '').trim()
+          if (c) return c
+          const s = String(it || '').trim()
+          if (s) return s
+        }
+        return ''
+      }
+      if (typeof v === 'object') {
+        const i = String((v as any)?.item || '').trim()
+        if (i) return i
+        const c = String((v as any)?.content || '').trim()
+        if (c) return c
+      }
+      return String(v || '').trim()
+    }
+    const squeezeInstruction = (s: string): string => {
+      const m = s.match(/只(?:要)?显示[:：]?\s*([^，,。]+)\s*/i)
+      if (m?.[1]) return String(m[1]).trim()
+      return s
+    }
+    const cleanOtherDesc = (raw?: any): string => {
+      let s = String(raw || '').trim()
+      if (!s) return ''
+      s = s.replace(/^other\s*,\s*/i, '')
+      s = s.replace(/^其他\s*[，,]\s*/i, '')
+      if (/^(other|其他)$/i.test(s)) return ''
+      if (/^fixed\s*payment$/i.test(s)) return ''
+      s = squeezeInstruction(s)
+      return s
+    }
+    const otherDescOfTx = (t: any): string => {
+      const rt = String((t as any)?.ref_type || '').trim().toLowerCase()
+      if (rt === 'maintenance' || rt === 'deep_cleaning') return cleanOtherDesc(extractHumanText((t as any)?.source_summary || ''))
+      return cleanOtherDesc(extractHumanText((t as any)?.category_detail || (t as any)?.note || ''))
+    }
+    const propsArr = Array.isArray(properties) ? properties : []
+    const codeToId = new Map(propsArr.map(p => [String((p as any).code || '').trim().toLowerCase(), String((p as any).id || '')]))
+    const idx = new Map<string, Map<string, any>>()
+    for (const t of (Array.isArray(txsAll) ? txsAll : [])) {
+      const kind = String((t as any).kind || '')
+      if (kind !== 'income' && kind !== 'expense') continue
+      let pid = String((t as any).property_id || '').trim()
+      if (!pid) {
+        const code = String((t as any).property_code || '').trim().toLowerCase()
+        pid = code ? (codeToId.get(code) || '') : ''
+      }
+      if (!pid) continue
+      const mk = txMonthKey(t)
+      if (!/^\d{4}-\d{2}$/.test(mk)) continue
+      let byMonth = idx.get(pid)
+      if (!byMonth) { byMonth = new Map(); idx.set(pid, byMonth) }
+      let b = byMonth.get(mk)
+      if (!b) {
+        b = { expSums: {}, otherItems: [], otherFmt: { text: '-', full: '-' }, otherIncome: 0, otherIncomeCats: new Set(), furnitureCharge: 0, furnitureOwnerPaid: 0 }
+        byMonth.set(mk, b)
+      }
+      if (kind === 'expense') {
+        const amt = Number((t as any).amount || 0)
+        if (!Number.isFinite(amt) || !(amt > 0)) continue
+        if (isFurnitureRecoverableCharge(t as any)) {
+          b.furnitureCharge += amt
+          continue
+        }
+        const cat = normalizeReportCategory((t as any).report_category || (t as any).category)
+        b.expSums[cat] = Number(b.expSums[cat] || 0) + amt
+        if (cat === 'other') {
+          const d = otherDescOfTx(t)
+          if (d) b.otherItems.push(d)
+        }
+        continue
+      }
+      const amt = Number((t as any).amount || 0)
+      if (!Number.isFinite(amt) || !(amt > 0)) continue
+      if (isFurnitureOwnerPayment(t as any)) {
+        b.furnitureOwnerPaid += amt
+        continue
+      }
+      if (String((t as any).category || '').toLowerCase() === 'late_checkout') continue
+      if (!shouldIncludeIncomeTxInPropertyOtherIncome(t as any, orderById as any)) continue
+      b.otherIncome += amt
+      b.otherIncomeCats.add(mapIncomeCatLabel((t as any).category))
+    }
+    for (const [, byMonth] of idx) {
+      for (const [, b] of byMonth) {
+        const items = Array.from(new Set<string>((b.otherItems || []).map((x: any) => String(x || '').trim()).filter((x: string) => !!x)))
+        const fmt0 = formatStatementDesc({ items, lang: 'en' })
+        b.otherFmt = fmt0
+        b.otherItems = items
+      }
+    }
+    return idx
+  }, [txsAll, properties, orderById])
+
   const rows = useMemo(() => {
     if (!start || !end) return [] as any[]
     const list = selectedPid ? properties.filter(pp => pp.id === selectedPid) : sortPropertiesByRegionThenCode(properties as any)
-    const orderById = new Map((orders || []).map(o => [String(o.id), o]))
     const out: any[] = []
     const rangeMonths: { start: any, end: any, label: string }[] = []
     let cur = start.startOf('month')
@@ -407,48 +529,13 @@ export default function PropertyRevenuePage() {
       cur = cur.add(1,'month')
     }
     for (const p of list) {
-      if (process.env.NODE_ENV === 'development') {
-        const selectedPropertyCode = String(p.code || '')
-        const selectedMonth = (month || dayjs()).format('YYYY-MM')
-        const monthKey = (x: any) => dayjs(toDayStr((x as any).occurred_at)).format('YYYY-MM')
-        const expenses = (txsAll || []).filter(x => x.kind==='expense')
-        console.log('expense candidates for code', selectedPropertyCode,
-          expenses.filter(x => String((x as any).property_code || '').includes(selectedPropertyCode) || String((x as any).property_id || '').includes(String(p.id)))
-        )
-        console.log('expense after month filter', expenses.filter(x => monthKey(x) === selectedMonth))
-      }
       for (const rm of rangeMonths) {
         const related = getMonthSegmentsForProperty(orders as any, rm.start, String(p.id))
-        debugOnce(`REVENUE_DEBUG ${rm.label} ${String(p.id)}`, related.map(s => s.id))
-        const e = txsAll.filter(x => {
-          if (x.kind !== 'expense') return false
-          if (!txMatchesProperty(x, p as any)) return false
-          return txInMonth(x as any, rm.start)
-        }).filter(x => !isFurnitureRecoverableCharge(x as any))
-        function overlap(s: any) {
-          const ci = parseDateOnly(toDayStr(s.checkin))
-          const co = parseDateOnly(toDayStr(s.checkout))
-          const a = ci.isAfter(rm.start) ? ci : rm.start
-          const b = co.isBefore(rm.end) ? co : rm.end
-          return Math.max(0, b.diff(a, 'day'))
-        }
         const rentIncome = related.reduce((sum, seg) => sum + Number(((seg as any).visible_net_income ?? (seg as any).net_income ?? 0)), 0)
-        const otherIncomeTx = txsAll.filter(x => {
-          if (x.kind !== 'income') return false
-          if (x.property_id !== p.id) return false
-          if (!dayjs(toDayStr(x.occurred_at)).isSame(rm.start, 'month')) return false
-          if (isFurnitureOwnerPayment(x as any)) return false
-          if (String(x.category || '').toLowerCase() === 'late_checkout') return false
-          return shouldIncludeIncomeTxInPropertyOtherIncome(x, orderById)
-        })
-        const otherIncome = otherIncomeTx.reduce((s,x)=> s + Number(x.amount||0), 0)
-        const mapIncomeCatLabel = (c?: string) => {
-          const v = String(c || '')
-          if (v === 'late_checkout') return '晚退房费'
-          if (v === 'cancel_fee') return '取消费'
-          return v || '-'
-        }
-        const otherIncomeDesc = Array.from(new Set(otherIncomeTx.map(t => mapIncomeCatLabel(t.category)))).filter(Boolean).join('、') || '-'
+        const mk = rm.start.format('YYYY-MM')
+        const b = txBucketIndex.get(String(p.id))?.get(mk)
+        const otherIncome = Number(b?.otherIncome || 0)
+        const otherIncomeDesc = b?.otherIncomeCats ? Array.from(b.otherIncomeCats).filter(Boolean).join('、') || '-' : '-'
         const totalIncome = rentIncome + otherIncome
         const nights = related.reduce((s,x)=> s + Number(x.nights || 0), 0)
         const daysInMonth = rm.end.diff(rm.start,'day')
@@ -457,71 +544,28 @@ export default function PropertyRevenuePage() {
         const landlordByList = landlords.find(l => (l.property_ids||[]).includes(p.id))
         const landlordByLink = landlords.find(l => String((l as any).id||'') === String((p as any).landlord_id||''))
         const rate = landlordByList?.management_fee_rate ?? landlordByLink?.management_fee_rate ?? 0
-        const mgmtRecorded = e.filter(xx=> String((xx as any).report_category||'')==='management_fee').reduce((s,x)=> s + Number(x.amount||0), 0)
+        const sums = (b?.expSums || {}) as any
+        const mgmtRecorded = Number(sums.management_fee || 0)
         const mgmt = mgmtRecorded ? mgmtRecorded : (rate ? Math.round(((rentIncome * rate) + Number.EPSILON)*100)/100 : 0)
-        const byReport = (key: string) => e.filter(xx => normalizeReportCategory((xx as any).report_category || (xx as any).category) === key).reduce((s,x)=> s + Number(x.amount||0), 0)
-        const carpark = byReport('parking_fee')
-        const electricity = byReport('electricity')
-        const water = byReport('water')
-        const gas = byReport('gas')
-        const internet = byReport('internet')
-        const consumable = byReport('consumables')
-        const ownercorp = byReport('body_corp')
-        const council = byReport('council')
-        const other = byReport('other')
-        function cleanOtherDesc(raw?: any): string {
-          let s = String(raw || '').trim()
-          if (!s) return ''
-          s = s.replace(/^other\s*,\s*/i, '')
-          s = s.replace(/^其他\s*[，,]\s*/i, '')
-          if (/^(other|其他)$/i.test(s)) return ''
-          if (/^fixed\s*payment$/i.test(s)) return ''
-          return s
-        }
-        const otherItems = e
-          .filter(xx => normalizeReportCategory((xx as any).report_category || (xx as any).category) === 'other')
-          .map(xx => cleanOtherDesc((xx as any).category_detail || (xx as any).note || ''))
-          .filter(Boolean)
-        const otherExpenseDescFmt = formatStatementDesc({ items: otherItems, lang: 'en' })
+        const carpark = Number(sums.parking_fee || 0)
+        const electricity = Number(sums.electricity || 0)
+        const water = Number(sums.water || 0)
+        const gas = Number(sums.gas || 0)
+        const internet = Number(sums.internet || 0)
+        const consumable = Number(sums.consumables || 0)
+        const ownercorp = Number(sums.body_corp || 0)
+        const council = Number(sums.council || 0)
+        const other = Number(sums.other || 0)
+        const otherExpenseDescFmt = b?.otherFmt || { text: '-', full: '-' }
         const totalExp = mgmt + electricity + water + gas + internet + consumable + carpark + ownercorp + council + other
         const net = Math.round(((totalIncome - totalExp) + Number.EPSILON)*100)/100
         const monthKey = rm.start.format('YYYY-MM')
-        const landlord = landlords.find(l => (l.property_ids || []).includes(p.id))
-        let payableToOwner = 0
-        let netFromBalance: number | null = null
-        try {
-          const b = computeMonthlyStatementBalance({
-            month: monthKey,
-            propertyId: p.id,
-            propertyCode: p.code || undefined,
-            orders: orders as any,
-            txs: txsAll as any,
-            managementFeeRate: landlord?.management_fee_rate,
-          })
-          netFromBalance = Number(b.operating_net_income || 0)
-          payableToOwner = Math.max(0, Number(b.payable_to_owner || 0))
-          if (!Number.isFinite(payableToOwner)) payableToOwner = 0
-        } catch {
-          payableToOwner = Math.max(0, Number(net || 0))
-        }
-        if (process.env.NODE_ENV === 'development' && netFromBalance != null) {
-          const diff = Math.abs(Number(netFromBalance) - Number(net || 0))
-          if (diff > 0.02) console.warn('payableToOwner: net mismatch', { property: p.code || p.id, month: monthKey, net, netFromBalance })
-        }
+        const payableToOwner = Math.max(0, Number(net || 0))
         out.push({ key: `${p.id}-${rm.label}`, pid: p.id, month: rm.label, monthKey, code: p.code || p.id, address: p.address, occRate, avg, totalIncome, rentIncome, otherIncome, otherIncomeDesc, mgmt, electricity, water, gas, internet, consumable, carpark, ownercorp, council, other, otherExpenseDesc: otherExpenseDescFmt.text, otherExpenseDescFull: otherExpenseDescFmt.full, totalExp, net, payableToOwner })
       }
     }
     return out
-  }, [properties, orders, txsAll, landlords, start, end, selectedPid])
-
-  const totals = useMemo(() => {
-    const sum = (arr: any[], key: string) => arr.reduce((s, x) => s + Number(x?.[key] || 0), 0)
-    const income = sum(rows, 'totalIncome')
-    const expense = sum(rows, 'totalExp')
-    const net = income - expense
-    const fmt2 = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    return { income: fmt2(income), expense: fmt2(expense), net: fmt2(net) }
-  }, [rows])
+  }, [properties, orders, txBucketIndex, landlords, start, end, selectedPid])
 
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const formatMoney = (n?: number) => `$${fmt(Number(n || 0))}`
@@ -667,22 +711,23 @@ export default function PropertyRevenuePage() {
   ]
 
   return (
-    <Card title="房源营收">
+    <Card title="房源营收" loading={pageLoading}>
       <div style={{ marginBottom: 12, display:'flex', gap:8, alignItems:'center' }}>
-        <DatePicker picker="month" value={month} onChange={setMonth as any} />
+        <DatePicker picker="month" value={month} onChange={setMonth as any} disabled={pageLoading || rangeLoading} />
         <Select
           allowClear
           placeholder="选择范围(年/半年/财年)"
           value={period==='month' ? undefined : period}
           onChange={(v) => setPeriod((v as any) || 'month')}
           style={{ width: 220 }}
+          disabled={pageLoading || rangeLoading}
           options={[{value:'year',label:'全年(自然年)'},{value:'half-year',label:'半年'},{value:'fiscal-year',label:'财年(7月至次年6月)'}]}
         />
-        {period==='half-year' ? <DatePicker picker="month" value={startMonth} onChange={setStartMonth as any} /> : null}
-        <Select allowClear showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="按房号筛选" style={{ width: 240 }} options={sortProperties(properties).map(p=>({ value:p.id, label:p.code || p.address || p.id }))} value={selectedPid} onChange={setSelectedPid} />
-        <Button type="primary" onClick={() => { if (!selectedPid) { message.warning('请先选择房号'); return } setPreviewPid(selectedPid); setPreviewOpen(true) }}>生成报表</Button>
+        {period==='half-year' ? <DatePicker picker="month" value={startMonth} onChange={setStartMonth as any} disabled={pageLoading || rangeLoading} /> : null}
+        <Select allowClear showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="按房号筛选" style={{ width: 240 }} options={sortProperties(properties).map(p=>({ value:p.id, label:p.code || p.address || p.id }))} value={selectedPid} onChange={setSelectedPid} disabled={pageLoading || rangeLoading} />
+        <Button type="primary" onClick={() => { if (!selectedPid) { message.warning('请先选择房号'); return } setPreviewPid(selectedPid); setPreviewOpen(true) }} disabled={pageLoading || rangeLoading}>生成报表</Button>
         <span style={{ marginLeft: 8 }}>排除孤儿快照</span>
-        <Switch checked={excludeOrphanFixedSnapshots} onChange={setExcludeOrphanFixedSnapshots as any} />
+        <Switch checked={excludeOrphanFixedSnapshots} onChange={setExcludeOrphanFixedSnapshots as any} disabled={pageLoading || rangeLoading} />
       </div>
       <Modal
         open={orphanOpen}
@@ -717,6 +762,7 @@ export default function PropertyRevenuePage() {
         rowKey={(r)=>r.key}
         columns={columns as any}
         dataSource={rows}
+        loading={pageLoading || rangeLoading}
         scroll={{ x: 'max-content' }}
         pagination={{ pageSize: 20 }}
         size="small"
@@ -776,7 +822,7 @@ export default function PropertyRevenuePage() {
         }}
       />
       </div>
-      <Modal title={period==='month' ? '月度报告' : (period==='year' ? '年度报告' : (period==='fiscal-year' ? '财年报告' : '半年报告'))} open={previewOpen} onCancel={() => { setPreviewOpen(false); setStatementPdfMode(false) }} footer={<>
+      <Modal title={period==='month' ? '月度报告' : (period==='year' ? '年度报告' : (period==='fiscal-year' ? '财年报告' : '半年报告'))} open={previewOpen} onCancel={() => { setPreviewOpen(false); setPreviewReady(false); setStatementPdfMode(false) }} footer={<>
         <Button onClick={async () => {
           if (!printRef.current) return
           const waitMonthlyReady = async () => {
@@ -786,14 +832,22 @@ export default function PropertyRevenuePage() {
             const t0 = Date.now()
             while (Date.now() - t0 < 8000) {
               const loaded = String(el.getAttribute('data-deep-clean-loaded') || '') === '1'
+              const maintLoaded = String(el.getAttribute('data-maint-loaded') || '') === '1'
               const pdfOk = String(el.getAttribute('data-pdf-mode') || '') === '1'
-              if (loaded && pdfOk) break
+              if (loaded && maintLoaded && pdfOk) break
               await new Promise(r => setTimeout(r, 80))
             }
             const cnt = Number(el.getAttribute('data-deep-clean-count') || 0)
             if (Number.isFinite(cnt) && cnt > 0) {
               while (Date.now() - t0 < 8000) {
-                if (el.querySelector('[data-deep-clean-section="1"]')) return
+                if (el.querySelector('[data-deep-clean-section="1"]')) break
+                await new Promise(r => setTimeout(r, 80))
+              }
+            }
+            const mcnt = Number(el.getAttribute('data-maint-count') || 0)
+            if (Number.isFinite(mcnt) && mcnt > 0) {
+              while (Date.now() - t0 < 8000) {
+                if (el.querySelector('[data-maint-section="1"]')) break
                 await new Promise(r => setTimeout(r, 80))
               }
             }
@@ -882,17 +936,25 @@ export default function PropertyRevenuePage() {
               const t0 = Date.now()
               while (Date.now() - t0 < 8000) {
                 const loaded = String(el.getAttribute('data-deep-clean-loaded') || '') === '1'
+              const maintLoaded = String(el.getAttribute('data-maint-loaded') || '') === '1'
                 const pdfOk = String(el.getAttribute('data-pdf-mode') || '') === '1'
-                if (loaded && pdfOk) break
+              if (loaded && maintLoaded && pdfOk) break
                 await new Promise(r => setTimeout(r, 80))
               }
               const cnt = Number(el.getAttribute('data-deep-clean-count') || 0)
               if (Number.isFinite(cnt) && cnt > 0) {
                 while (Date.now() - t0 < 8000) {
-                  if (el.querySelector('[data-deep-clean-section="1"]')) return
+                  if (el.querySelector('[data-deep-clean-section="1"]')) break
                   await new Promise(r => setTimeout(r, 80))
                 }
               }
+            const mcnt = Number(el.getAttribute('data-maint-count') || 0)
+            if (Number.isFinite(mcnt) && mcnt > 0) {
+              while (Date.now() - t0 < 8000) {
+                  if (el.querySelector('[data-maint-section="1"]')) break
+                await new Promise(r => setTimeout(r, 80))
+              }
+            }
             }
             setStatementPdfMode(true)
             await new Promise(r => setTimeout(r, 0))
@@ -907,7 +969,7 @@ export default function PropertyRevenuePage() {
               element: printRef.current as HTMLElement,
               orientation,
               rootWidthMm,
-              marginMm: 10,
+              marginMm: 12,
               scale: exp.scale,
               imageQuality: exp.imageQuality,
               imageType: exp.imageType,
@@ -917,7 +979,7 @@ export default function PropertyRevenuePage() {
               cssText: `
                 html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; background:#ffffff; }
                 body { margin: 0; }
-                .__pdf_capture_root__ { padding: 0 2mm; }
+                .__pdf_capture_root__ { padding: 0 4mm; }
                 table { width: 100%; border-collapse: collapse; }
                 th, td { border-bottom: 1px solid #ddd; }
                 .landlord-calendar .mz-booking { border-radius: 0; }
@@ -950,14 +1012,22 @@ export default function PropertyRevenuePage() {
             const t0 = Date.now()
             while (Date.now() - t0 < 8000) {
               const loaded = String(el.getAttribute('data-deep-clean-loaded') || '') === '1'
+              const maintLoaded = String(el.getAttribute('data-maint-loaded') || '') === '1'
               const pdfOk = String(el.getAttribute('data-pdf-mode') || '') === '1'
-              if (loaded && pdfOk) break
+              if (loaded && maintLoaded && pdfOk) break
               await new Promise(r => setTimeout(r, 80))
             }
             const cnt = Number(el.getAttribute('data-deep-clean-count') || 0)
             if (Number.isFinite(cnt) && cnt > 0) {
               while (Date.now() - t0 < 8000) {
-                if (el.querySelector('[data-deep-clean-section="1"]')) return
+                if (el.querySelector('[data-deep-clean-section="1"]')) break
+                await new Promise(r => setTimeout(r, 80))
+              }
+            }
+            const mcnt = Number(el.getAttribute('data-maint-count') || 0)
+            if (Number.isFinite(mcnt) && mcnt > 0) {
+              while (Date.now() - t0 < 8000) {
+                if (el.querySelector('[data-maint-section="1"]')) break
                 await new Promise(r => setTimeout(r, 80))
               }
             }
@@ -1033,7 +1103,7 @@ export default function PropertyRevenuePage() {
                 element: printRef.current as HTMLElement,
                 orientation,
                 rootWidthMm,
-                marginMm: 10,
+                marginMm: 12,
                 scale: exp.scale,
                 imageQuality: exp.imageQuality,
                 imageType: exp.imageType,
@@ -1043,7 +1113,7 @@ export default function PropertyRevenuePage() {
                 cssText: `
                   html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; background:#ffffff; }
                   body { margin: 0; }
-                  .__pdf_capture_root__ { padding: 0 2mm; }
+                  .__pdf_capture_root__ { padding: 0 4mm; }
                   table { width: 100%; border-collapse: collapse; }
                   th, td { border-bottom: 1px solid #ddd; }
                   .landlord-calendar .mz-booking { border-radius: 0; }
@@ -1155,10 +1225,19 @@ export default function PropertyRevenuePage() {
                 <span>包含中文说明</span>
                 <Switch checked={showChinese} onChange={setShowChinese as any} />
               </div>
-              <MonthlyStatementView ref={printRef} month={month.format('YYYY-MM')} propertyId={previewPid || undefined} orders={orders} txs={txs} properties={properties} landlords={landlords} showChinese={showChinese} showInvoices={false} pdfMode={statementPdfMode} />
+              <div style={{ position:'relative' }}>
+                {!previewReady ? (
+                  <div style={{ position:'absolute', inset: 0, display:'flex', alignItems:'center', justifyContent:'center', background:'#fff', zIndex: 2 }}>
+                    <Spin />
+                  </div>
+                ) : null}
+                <div style={{ visibility: previewReady ? 'visible' : 'hidden' }}>
+                  <MonthlyStatementView ref={printRef} month={month.format('YYYY-MM')} propertyId={previewPid || undefined} orders={orders} txs={txs} properties={properties} landlords={landlords} showChinese={showChinese} showInvoices={false} pdfMode={statementPdfMode} />
+                </div>
+              </div>
             </>
           ) : period==='fiscal-year' ? (
-            <FiscalYearStatement ref={printRef} baseMonth={month} propertyId={previewPid!} orders={orders} txs={txs} properties={properties} landlords={landlords} />
+            <FiscalYearStatement ref={printRef} baseMonth={month} propertyId={previewPid!} orders={orders} txs={txs} properties={properties} landlords={landlords} showChinese={showChinese} />
           ) : (
             <div ref={printRef as any}>
               {(() => {

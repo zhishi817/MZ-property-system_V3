@@ -161,11 +161,12 @@ export default function DeepCleaningRecordsPage() {
   const [filterPropertyId, setFilterPropertyId] = useState<string | undefined>(undefined)
   const [filterStatus, setFilterStatus] = useState<string | undefined>(undefined)
   const [filterCat, setFilterCat] = useState<string | undefined>(undefined)
-  const [filterKeyword, setFilterKeyword] = useState('')
+  const [filterPayMethod, setFilterPayMethod] = useState<string | undefined>(undefined)
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
 
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<DeepCleaningRecord | null>(null)
+  const [savingEdit, setSavingEdit] = useState(false)
   const [viewing, setViewing] = useState<DeepCleaningRecord | null>(null)
 
   const [createForm] = Form.useForm()
@@ -230,7 +231,17 @@ export default function DeepCleaningRecordsPage() {
   }
 
   const propOptions = useMemo(() => sortProperties(props).map(p => ({ value: p.id, label: p.code || p.id })), [props])
-  const userLabelMap = useMemo(() => Object.fromEntries(userOptions.map(x => [x.value, x.label])), [userOptions])
+  const submitterOptions = useMemo(() => {
+    const seen = new Set<string>()
+    const out: { value: string; label: string }[] = []
+    for (const u of (userOptions || [])) {
+      const v = String((u as any)?.label || '').trim()
+      if (!v || seen.has(v)) continue
+      seen.add(v)
+      out.push({ value: v, label: v })
+    }
+    return out
+  }, [userOptions])
 
   async function uploadFile(file: File) {
     const fd = new FormData()
@@ -296,9 +307,9 @@ export default function DeepCleaningRecordsPage() {
       if (filterPropertyId) params.property_id = filterPropertyId
       if (filterStatus) params.status = filterStatus
       if (filterCat) params.category = filterCat
+      if (filterPayMethod) params.pay_method = filterPayMethod
       if (dateRange?.[0]) params.completed_at_from = dayjs(dateRange[0]).startOf('day').toISOString()
       if (dateRange?.[1]) params.completed_at_to = dayjs(dateRange[1]).endOf('day').toISOString()
-      if (filterKeyword.trim()) params.q = filterKeyword.trim()
       const qs = new URLSearchParams(params as any).toString()
       const res = await fetch(`${API_BASE}/crud/property_deep_cleaning?${qs}`, { cache: 'no-store', headers: authHeaders(), signal: controller.signal })
       if (res.status === 401) { window.location.href = '/login'; return }
@@ -320,7 +331,7 @@ export default function DeepCleaningRecordsPage() {
   useEffect(() => {
     const t = setTimeout(() => { setPage(1); loadList(true) }, 250)
     return () => clearTimeout(t)
-  }, [filterPropertyId, filterStatus, filterCat, filterKeyword, dateRange, pageSize])
+  }, [filterPropertyId, filterStatus, filterCat, filterPayMethod, dateRange, pageSize])
   useEffect(() => { loadList(false) }, [page])
 
   const rows = useMemo(() => {
@@ -354,13 +365,28 @@ export default function DeepCleaningRecordsPage() {
     const v = await createForm.validateFields()
     const beforeUrls = (createBeforeFiles || []).map(f => String((f as any).url || (f as any).response?.url || '')).filter(Boolean)
     const attachUrls = (createAttachFiles || []).map(f => String((f as any).url || (f as any).response?.url || '')).filter(Boolean)
+    const baseDate = v.occurred_at ? dayjs(v.occurred_at) : dayjs()
+    const startedIso = combineDateAndTimeToIso(baseDate, (v as any).started_time)
+    const endedIso = combineDateAndTimeToIso(baseDate, (v as any).ended_time)
+    const durationFromTimes = (startedIso && endedIso) ? Math.max(0, dayjs(endedIso).diff(dayjs(startedIso), 'minute')) : null
+    const durationValueRaw = (v as any).duration_minutes
+    const durationValue = durationValueRaw === undefined || durationValueRaw === null || durationValueRaw === '' ? null : Number(durationValueRaw)
+    const durationFinal = Number.isFinite(durationValue as any) ? Number(durationValue) : (durationFromTimes !== null ? durationFromTimes : null)
+    const status = String(v.status || 'pending')
+    const completedAtIso = v.completed_at ? dayjs(v.completed_at).toISOString() : (status === 'completed' ? (endedIso || null) : null)
     const payload: any = {
       property_id: v.property_id,
-      occurred_at: v.occurred_at ? dayjs(v.occurred_at).format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD'),
+      occurred_at: baseDate.format('YYYY-MM-DD'),
       category: v.category,
-      status: v.status || 'pending',
+      status,
       urgency: v.urgency || 'normal',
-      assignee_id: v.assignee_id || '',
+      worker_name: String(v.worker_name || '').trim(),
+      submitter_name: String(v.submitter_name || '').trim(),
+      submitted_at: new Date().toISOString(),
+      completed_at: completedAtIso,
+      started_at: startedIso,
+      ended_at: endedIso,
+      duration_minutes: durationFinal,
       eta: v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : null,
       details: v.details ? String(v.details) : '[]',
       notes: v.notes ? String(v.notes) : '',
@@ -390,7 +416,8 @@ export default function DeepCleaningRecordsPage() {
     editForm.setFieldsValue({
       status: r.status || 'pending',
       urgency: r.urgency || 'normal',
-      assignee_id: r.assignee_id || '',
+      worker_name: r.worker_name || '',
+      submitter_name: r.submitter_name || r.created_by || '',
       eta: r.eta ? dayjs(r.eta) : null,
       completed_at: r.completed_at ? dayjs(r.completed_at) : null,
       started_time: r.started_at ? dayjs(r.started_at) : null,
@@ -415,6 +442,8 @@ export default function DeepCleaningRecordsPage() {
 
   async function saveEdit() {
     if (!editing) return
+    if (savingEdit) return
+    setSavingEdit(true)
     try {
       const v = (canWrite || canAudit) ? await editForm.validateFields() : await editForm.validateFields()
       const reviewPayload: any = {}
@@ -437,7 +466,8 @@ export default function DeepCleaningRecordsPage() {
         const payload: any = {
           status: v.status,
           urgency: v.urgency,
-          assignee_id: v.assignee_id || '',
+          worker_name: String(v.worker_name || '').trim(),
+          submitter_name: String(v.submitter_name || '').trim(),
           eta: v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : null,
           completed_at: v.completed_at ? dayjs(v.completed_at).toISOString() : null,
           started_at: startedIso,
@@ -456,7 +486,39 @@ export default function DeepCleaningRecordsPage() {
           pay_method: v.pay_method ? String(v.pay_method) : 'company_pay',
           gst_type: v.gst_type ? String(v.gst_type) : 'GST_INCLUDED_10',
         }
-        await apiUpdate('property_deep_cleaning', String(editing.id), { ...payload })
+        const writePromise = apiUpdate('property_deep_cleaning', String(editing.id), { ...payload })
+        const reviewPromise = (async () => {
+          if (!canAudit) return
+          const nextStatus = String(reviewPayload.review_status || 'pending')
+          const nextNotes = String(reviewPayload.review_notes || '')
+          const prevStatus = String(editing.review_status || 'pending')
+          const prevNotes = String(editing.review_notes || '')
+          const changed = nextStatus !== prevStatus || nextNotes !== prevNotes
+          if (!changed) return
+          const res = await fetch(`${API_BASE}/deep-cleaning/review/${String(editing.id)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify(reviewPayload),
+          })
+          if (!res.ok) {
+            const j = await res.json().catch(() => null)
+            throw new Error(j?.message || `HTTP ${res.status}`)
+          }
+          await res.json().catch(() => null)
+        })()
+        await Promise.all([writePromise, reviewPromise])
+        setList(prev => (prev || []).map((x: any) => {
+          if (String(x?.id || '') !== String(editing.id)) return x
+          return {
+            ...x,
+            ...payload,
+            ...(canAudit ? { review_status: reviewPayload.review_status, review_notes: reviewPayload.review_notes } : null),
+          }
+        }))
+        message.success('已保存')
+        setEditing(null)
+        loadList(false)
+        return
       }
 
       if (canAudit) {
@@ -476,6 +538,10 @@ export default function DeepCleaningRecordsPage() {
             throw new Error(j?.message || `HTTP ${res.status}`)
           }
           await res.json().catch(() => null)
+          setList(prev => (prev || []).map((x: any) => {
+            if (String(x?.id || '') !== String(editing.id)) return x
+            return { ...x, review_status: reviewPayload.review_status, review_notes: reviewPayload.review_notes }
+          }))
         }
       }
 
@@ -484,6 +550,8 @@ export default function DeepCleaningRecordsPage() {
       loadList(false)
     } catch (e: any) {
       message.error(e?.message || '保存失败')
+    } finally {
+      setSavingEdit(false)
     }
   }
 
@@ -539,7 +607,7 @@ export default function DeepCleaningRecordsPage() {
     { title:'区域', dataIndex:'category', width: 120 },
     { title:'状态', dataIndex:'status', width: 120, render:(s:string)=> statusTag(s) },
     { title:'审核', dataIndex:'review_status', width: 120, render:(s:string)=> reviewTag(s) },
-    { title:'分配人员', dataIndex:'assignee_id', width: 160, render:(v:string)=> userLabelMap[String(v||'')] || String(v||'-') },
+    { title:'提交人员', dataIndex:'submitter_name', width: 160, ellipsis: true, render:(v:string, r:any)=> String(v || (r as any)?.created_by || '-') },
     { title:'操作', width: 320, render: (_:any, r:DeepCleaningRecord) => (
       <Space wrap>
         <Button onClick={()=>setViewing(r)}>详情</Button>
@@ -569,10 +637,23 @@ export default function DeepCleaningRecordsPage() {
           />
           <Select placeholder="状态" allowClear options={statusOptions} value={filterStatus} onChange={v=>setFilterStatus(v)} style={{ width: isMobile ? '100%' : 160 }} />
           <Select placeholder="区域" allowClear options={catOptions} value={filterCat} onChange={v=>setFilterCat(v)} style={{ width: isMobile ? '100%' : 160 }} />
+          <Select
+            placeholder="扣款方式"
+            allowClear
+            value={filterPayMethod}
+            onChange={v => setFilterPayMethod(v)}
+            style={{ width: isMobile ? '100%' : 180 }}
+            options={[
+              { value: 'rent_deduction', label: payMethodLabel('rent_deduction') },
+              { value: 'tenant_pay', label: payMethodLabel('tenant_pay') },
+              { value: 'company_pay', label: payMethodLabel('company_pay') },
+              { value: 'landlord_pay', label: payMethodLabel('landlord_pay') },
+              { value: 'other_pay', label: payMethodLabel('other_pay') },
+            ]}
+          />
           <DatePicker.RangePicker value={dateRange as any} onChange={v=>setDateRange(v as any)} allowClear style={{ width: isMobile ? '100%' : undefined }} />
-          <Input placeholder="关键词（工单/摘要/人员）" value={filterKeyword} onChange={e=>setFilterKeyword(e.target.value)} style={{ width: isMobile ? '100%' : 240 }} />
           <Button onClick={()=>{
-            setFilterPropertyId(undefined); setFilterStatus(undefined); setFilterCat(undefined); setFilterKeyword(''); setDateRange(null)
+            setFilterPropertyId(undefined); setFilterStatus(undefined); setFilterCat(undefined); setFilterPayMethod(undefined); setDateRange(null)
             setPage(1)
             setTimeout(()=>loadList(true), 0)
           }}>重置</Button>
@@ -607,14 +688,23 @@ export default function DeepCleaningRecordsPage() {
             <Form.Item name="category" label="区域" rules={[{ required: true, message:'请选择区域' }]}>
               <Select options={catOptions} />
             </Form.Item>
+            <Form.Item name="status" label="状态" rules={[{ required: true }]}>
+              <Select options={statusOptions} />
+            </Form.Item>
+            <Form.Item name="worker_name" label="清洁人员" rules={[{ required: true, message:'请输入清洁人员' }]}>
+              <Input placeholder="例如：Jack / 清洁团队名" />
+            </Form.Item>
+            <Form.Item name="submitter_name" label="提交人员">
+              <Select allowClear showSearch optionFilterProp="label" options={submitterOptions} />
+            </Form.Item>
             <Form.Item name="urgency" label="紧急程度">
               <Select options={urgencyOptions} />
             </Form.Item>
-            <Form.Item name="assignee_id" label="分配人员">
-              <Select allowClear options={userOptions} showSearch optionFilterProp="label" />
-            </Form.Item>
             <Form.Item name="eta" label="预计完成日期">
               <DatePicker style={{ width:'100%' }} />
+            </Form.Item>
+            <Form.Item name="completed_at" label="完成时间">
+              <DatePicker showTime style={{ width:'100%' }} />
             </Form.Item>
           </div>
           <Form.Item name="details" label="清洁摘要（可写清洁重点）">
@@ -656,6 +746,62 @@ export default function DeepCleaningRecordsPage() {
           <Form.Item name="notes" label="备注">
             <Input.TextArea rows={2} />
           </Form.Item>
+          <Card size="small" title="清洁时间" style={{ marginBottom: 12 }}>
+            <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
+              <Form.Item name="started_time" label="开始时间">
+                <TimePicker
+                  format="HH:mm"
+                  style={{ width:'100%' }}
+                  minuteStep={5}
+                  onChange={(t) => {
+                    const end = createForm.getFieldValue('ended_time')
+                    const dur = createForm.getFieldValue('duration_minutes')
+                    if (t && end) {
+                      createForm.setFieldsValue({ duration_minutes: Math.max(0, dayjs(end).diff(dayjs(t), 'minute')) })
+                      return
+                    }
+                    if (t && dur !== undefined && dur !== null) {
+                      const nn = Number(dur)
+                      if (Number.isFinite(nn)) createForm.setFieldsValue({ ended_time: dayjs(t).add(nn, 'minute') })
+                    }
+                  }}
+                />
+              </Form.Item>
+              <Form.Item name="ended_time" label="结束时间">
+                <TimePicker
+                  format="HH:mm"
+                  style={{ width:'100%' }}
+                  minuteStep={5}
+                  onChange={(t) => {
+                    const start = createForm.getFieldValue('started_time')
+                    if (start && t) {
+                      createForm.setFieldsValue({ duration_minutes: Math.max(0, dayjs(t).diff(dayjs(start), 'minute')) })
+                    }
+                  }}
+                />
+              </Form.Item>
+              <Form.Item name="duration_minutes" label="清洁时长（分钟）">
+                <InputNumber min={0} style={{ width:'100%' }} onChange={(n) => {
+                  const start = createForm.getFieldValue('started_time')
+                  if (start && n !== undefined && n !== null) {
+                    const nn = Number(n)
+                    if (Number.isFinite(nn)) createForm.setFieldsValue({ ended_time: dayjs(start).add(nn, 'minute') })
+                  }
+                }} />
+              </Form.Item>
+              <Form.Item label="时长预览">
+                <Form.Item noStyle shouldUpdate={(p, c) => p.started_time !== c.started_time || p.ended_time !== c.ended_time || p.duration_minutes !== c.duration_minutes}>
+                  {() => {
+                    const start = createForm.getFieldValue('started_time')
+                    const end = createForm.getFieldValue('ended_time')
+                    if (start && end) return <span>{fmtMinutes(dayjs(end).diff(dayjs(start), 'minute'))}</span>
+                    const dur = createForm.getFieldValue('duration_minutes')
+                    return <span>{fmtMinutes(dur)}</span>
+                  }}
+                </Form.Item>
+              </Form.Item>
+            </div>
+          </Card>
           <Card size="small" title="费用信息" style={{ marginBottom: 12 }}>
             <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
               <Form.Item name="labor_cost" label="人工费用（可选）">
@@ -710,9 +856,20 @@ export default function DeepCleaningRecordsPage() {
         </Form>
       </Modal>
 
-      <Drawer open={!!editing} onClose={()=>setEditing(null)} title="编辑深度清洁" width={isMobile ? '100%' : 860} extra={
-        <Button type="primary" onClick={saveEdit} disabled={!(canWrite || canAudit)}>保存</Button>
-      }>
+      <Drawer
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        title="编辑深度清洁"
+        width={isMobile ? '100%' : 860}
+        footer={
+          <div style={{ textAlign:'right' }}>
+            <Space>
+              <Button onClick={() => setEditing(null)} disabled={savingEdit}>取消</Button>
+              <Button type="primary" onClick={saveEdit} loading={savingEdit} disabled={!(canWrite || canAudit) || savingEdit}>保存</Button>
+            </Space>
+          </div>
+        }
+      >
         <Form form={editForm} layout="vertical">
           <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
             <Form.Item name="status" label="状态" rules={[{ required: true }]}>
@@ -721,8 +878,11 @@ export default function DeepCleaningRecordsPage() {
             <Form.Item name="urgency" label="紧急程度">
               <Select options={urgencyOptions} />
             </Form.Item>
-            <Form.Item name="assignee_id" label="分配人员">
-              <Select allowClear options={userOptions} showSearch optionFilterProp="label" />
+            <Form.Item name="worker_name" label="清洁人员" rules={[{ required: true, message:'请输入清洁人员' }]}>
+              <Input placeholder="例如：Jack / 清洁团队名" />
+            </Form.Item>
+            <Form.Item name="submitter_name" label="提交人员">
+              <Select allowClear showSearch optionFilterProp="label" options={submitterOptions} />
             </Form.Item>
             <Form.Item name="eta" label="预计完成日期">
               <DatePicker style={{ width:'100%' }} />

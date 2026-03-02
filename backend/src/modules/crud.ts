@@ -72,46 +72,209 @@ function monthKeyFromDateOnly(d: string | null): string | null {
   return `${d.slice(0, 4)}-${d.slice(5, 7)}`
 }
 
+function toSummaryText(v: any, maxLen = 260): string {
+  try {
+    if (v === null || v === undefined) return ''
+    const s = typeof v === 'string' ? v.trim() : JSON.stringify(v)
+    return String(s || '').trim().slice(0, maxLen)
+  } catch {
+    return String(v || '').trim().slice(0, maxLen)
+  }
+}
+
+function parseMaybeJson(v: any): any {
+  if (typeof v !== 'string') return v
+  const s = v.trim()
+  if (!s) return ''
+  const head = s[0]
+  if (head !== '{' && head !== '[') return s
+  try { return JSON.parse(s) } catch { return s }
+}
+
+function pickSummaryFromDetails(detailsRaw: any): string {
+  const v = parseMaybeJson(detailsRaw)
+  if (!v) return ''
+  if (Array.isArray(v)) {
+    for (const it of v) {
+      const c = toSummaryText((it as any)?.content)
+      if (c) return c
+      const i = toSummaryText((it as any)?.item)
+      if (i) return i
+      const s = toSummaryText(it)
+      if (s) return s
+    }
+    return ''
+  }
+  if (typeof v === 'object') {
+    const c = toSummaryText((v as any)?.content)
+    if (c) return c
+    const i = toSummaryText((v as any)?.item)
+    if (i) return i
+  }
+  return toSummaryText(v)
+}
+
+function maintenanceIssueSummary(row: any): string {
+  const a = pickSummaryFromDetails(row?.details)
+  if (a) return a
+  const b = toSummaryText(row?.repair_notes)
+  if (b) return b
+  return toSummaryText(row?.category)
+}
+
+function deepCleaningProjectSummary(row: any): string {
+  const a = toSummaryText(row?.project_desc)
+  if (a) return a
+  const b = pickSummaryFromDetails(row?.details)
+  if (b) return b
+  return toSummaryText(row?.notes)
+}
+
+function toNum(v: any): number {
+  if (v === null || v === undefined || v === '') return 0
+  const n0 = Number(v)
+  if (Number.isFinite(n0)) return n0
+  const s = String(v || '').replace(/[^0-9.\-]/g, '')
+  const n1 = Number(s)
+  return Number.isFinite(n1) ? n1 : 0
+}
+
 function normPayMethod(v: any): string {
-  return String(v || '').trim().toLowerCase()
+  const s = String(v || '').trim()
+  const low = s.toLowerCase()
+  if (!low) return ''
+  if (low === 'landlord_pay' || s.includes('房东')) return 'landlord_pay'
+  if (low === 'company_pay' || s.includes('公司')) return 'company_pay'
+  if (low === 'rent_deduction' || s.includes('租金')) return 'rent_deduction'
+  if (low === 'tenant_pay' || s.includes('房客')) return 'tenant_pay'
+  if (low === 'other_pay' || s.includes('其他')) return 'other_pay'
+  return low
+}
+
+function normStatus(v: any): string {
+  const s = String(v || '').trim()
+  const low = s.toLowerCase()
+  if (!low) return ''
+  if (low === 'completed' || s.includes('已完成') || s === '完成') return 'completed'
+  if (low === 'canceled' || s.includes('取消')) return 'canceled'
+  if (low === 'in_progress' || s.includes('维修中') || s.includes('进行')) return 'in_progress'
+  if (low === 'assigned' || s.includes('已分配')) return 'assigned'
+  if (low === 'pending' || s.includes('待')) return 'pending'
+  return low
+}
+
+function autoExpenseReasonFromError(e: any): string {
+  const msg = String(e?.message || e || '').toLowerCase()
+  if (!msg) return 'unknown'
+  if (msg.includes('no unique constraint matching on conflict') || msg.includes('there is no unique or exclusion constraint')) return 'missing_unique'
+  if (msg.includes('column') && msg.includes('does not exist')) return 'missing_column'
+  if (msg.includes('permission denied')) return 'permission'
+  if (msg.includes('relation') && msg.includes('does not exist')) return 'missing_table'
+  if (msg.includes('invalid input syntax') && msg.includes('date')) return 'invalid_date'
+  if (msg.includes('invalid input syntax') && (msg.includes('numeric') || msg.includes('decimal'))) return 'invalid_number'
+  if (msg.includes('current transaction is aborted')) return 'tx_aborted'
+  return 'other'
 }
 
 function calcMaintenanceTotal(row: any): number {
-  const base = Number(row?.maintenance_amount || 0)
+  const base = toNum(row?.maintenance_amount)
   const baseN = Number.isFinite(base) ? base : 0
   const hasParts = row?.has_parts === true
   if (!hasParts) return Math.round((baseN + Number.EPSILON) * 100) / 100
   const includesParts = row?.maintenance_amount_includes_parts === true
   if (includesParts) return Math.round((baseN + Number.EPSILON) * 100) / 100
-  const parts = Number(row?.parts_amount || 0)
+  const parts = toNum(row?.parts_amount)
   const partsN = Number.isFinite(parts) ? parts : 0
   return Math.round(((baseN + partsN) + Number.EPSILON) * 100) / 100
 }
 
-async function upsertAutoPropertyExpense(client: any, input: { propertyId: string, occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string }) {
+async function upsertFallbackPropertyExpense(client: any, input: { propertyId: string, occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string, sourceTitle?: string, sourceSummary?: string }) {
   const { v4: uuid } = require('uuid')
   const mk = monthKeyFromDateOnly(input.occurredAt)
+  const existing = await client.query('SELECT id FROM property_expenses WHERE ref_type=$1 AND ref_id=$2 LIMIT 1', [input.refType, input.refId])
+  const existingId = String(existing?.rows?.[0]?.id || '')
+  if (existingId) {
+    await client.query(
+      `UPDATE property_expenses
+       SET property_id=$1, occurred_at=$2, amount=$3, currency='AUD', category='other', category_detail=$4, note=$5,
+           pay_method='landlord_pay', generated_from=$6, month_key=$7, due_date=$2, is_auto=true, source_title=$9, source_summary=$10
+       WHERE id=$8`,
+      [input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, mk, existingId, input.sourceTitle || null, input.sourceSummary || null]
+    )
+    return
+  }
   await client.query(
-    `INSERT INTO property_expenses (id, property_id, occurred_at, amount, currency, category, category_detail, note, pay_method, generated_from, ref_type, ref_id, month_key, due_date)
-     VALUES ($1,$2,$3,$4,'AUD','other',$5,$6,'landlord_pay',$7,$8,$9,$10,$3)
-     ON CONFLICT (ref_type, ref_id) DO UPDATE
-     SET property_id=EXCLUDED.property_id, occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
-         note=EXCLUDED.note, pay_method=EXCLUDED.pay_method, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date`,
-    [uuid(), input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk]
+    `INSERT INTO property_expenses (id, property_id, occurred_at, amount, currency, category, category_detail, note, pay_method, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
+     VALUES ($1,$2,$3,$4,'AUD','other',$5,$6,'landlord_pay',$7,$8,$9,$10,$3,true,$11,$12)`,
+    [uuid(), input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]
   )
 }
 
-async function upsertAutoCompanyExpense(client: any, input: { occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string }) {
+async function upsertFallbackCompanyExpense(client: any, input: { occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string, sourceTitle?: string, sourceSummary?: string }) {
   const { v4: uuid } = require('uuid')
   const mk = monthKeyFromDateOnly(input.occurredAt)
+  const existing = await client.query('SELECT id FROM company_expenses WHERE ref_type=$1 AND ref_id=$2 LIMIT 1', [input.refType, input.refId])
+  const existingId = String(existing?.rows?.[0]?.id || '')
+  if (existingId) {
+    await client.query(
+      `UPDATE company_expenses
+       SET occurred_at=$1, amount=$2, currency='AUD', category='other', category_detail=$3, note=$4, generated_from=$5, month_key=$6, due_date=$1, is_auto=true, source_title=$8, source_summary=$9
+       WHERE id=$7`,
+      [input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, mk, existingId, input.sourceTitle || null, input.sourceSummary || null]
+    )
+    return
+  }
   await client.query(
-    `INSERT INTO company_expenses (id, occurred_at, amount, currency, category, category_detail, note, generated_from, ref_type, ref_id, month_key, due_date)
-     VALUES ($1,$2,$3,'AUD','other',$4,$5,$6,$7,$8,$9,$2)
-     ON CONFLICT (ref_type, ref_id) DO UPDATE
-     SET occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
-         note=EXCLUDED.note, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date`,
-    [uuid(), input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk]
+    `INSERT INTO company_expenses (id, occurred_at, amount, currency, category, category_detail, note, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
+     VALUES ($1,$2,$3,'AUD','other',$4,$5,$6,$7,$8,$9,$2,true,$10,$11)`,
+    [uuid(), input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]
   )
+}
+
+async function upsertAutoPropertyExpense(client: any, input: { propertyId: string, occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string, sourceTitle?: string, sourceSummary?: string }) {
+  const { v4: uuid } = require('uuid')
+  const mk = monthKeyFromDateOnly(input.occurredAt)
+  try {
+    await client.query(
+      `INSERT INTO property_expenses (id, property_id, occurred_at, amount, currency, category, category_detail, note, pay_method, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
+       VALUES ($1,$2,$3,$4,'AUD','other',$5,$6,'landlord_pay',$7,$8,$9,$10,$3,true,$11,$12)
+       ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
+       SET property_id=EXCLUDED.property_id, occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
+           note=EXCLUDED.note, pay_method=EXCLUDED.pay_method, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto,
+           source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`,
+      [uuid(), input.propertyId, input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]
+    )
+  } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (/no\s+unique\s+constraint\s+matching\s+ON\s+CONFLICT/i.test(msg) || /there\s+is\s+no\s+unique\s+or\s+exclusion\s+constraint/i.test(msg)) {
+      await upsertFallbackPropertyExpense(client, input)
+      return
+    }
+    throw e
+  }
+}
+
+async function upsertAutoCompanyExpense(client: any, input: { occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string, sourceTitle?: string, sourceSummary?: string }) {
+  const { v4: uuid } = require('uuid')
+  const mk = monthKeyFromDateOnly(input.occurredAt)
+  try {
+    await client.query(
+      `INSERT INTO company_expenses (id, occurred_at, amount, currency, category, category_detail, note, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
+       VALUES ($1,$2,$3,'AUD','other',$4,$5,$6,$7,$8,$9,$2,true,$10,$11)
+       ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
+       SET occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
+           note=EXCLUDED.note, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto,
+           source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`,
+      [uuid(), input.occurredAt, input.amount, input.categoryDetail, `AUTO ${input.refType} ${input.refId}`, input.generatedFrom, input.refType, input.refId, mk, input.sourceTitle || null, input.sourceSummary || null]
+    )
+  } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (/no\s+unique\s+constraint\s+matching\s+ON\s+CONFLICT/i.test(msg) || /there\s+is\s+no\s+unique\s+or\s+exclusion\s+constraint/i.test(msg)) {
+      await upsertFallbackCompanyExpense(client, input)
+      return
+    }
+    throw e
+  }
 }
 
 async function deleteAutoExpensesByRef(client: any, refType: string, refId: string) {
@@ -119,16 +282,114 @@ async function deleteAutoExpensesByRef(client: any, refType: string, refId: stri
   await client.query('DELETE FROM company_expenses WHERE ref_type=$1 AND ref_id=$2', [refType, refId])
 }
 
+async function hasManualOverrideForRef(client: any, refType: string, refId: string): Promise<boolean> {
+  const r = await client.query(
+    `SELECT (
+       EXISTS (SELECT 1 FROM property_expenses WHERE ref_type=$1 AND ref_id=$2 AND manual_override=true)
+       OR
+       EXISTS (SELECT 1 FROM company_expenses WHERE ref_type=$1 AND ref_id=$2 AND manual_override=true)
+     ) AS ok`,
+    [refType, refId]
+  )
+  return !!(r?.rows?.[0]?.ok)
+}
+
 async function ensureAutoExpenseSchema(client: any) {
-  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_method text;') } catch {}
-  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
-  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_type text;') } catch {}
-  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_id text;') } catch {}
-  try { await client.query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;") } catch {}
-  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
-  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_type text;') } catch {}
-  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_id text;') } catch {}
-  try { await client.query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_ref ON company_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;") } catch {}
+  let sp = 0
+  const safeQuery = async (sql: string) => {
+    const name = `s${sp++}`
+    await client.query(`SAVEPOINT ${name}`)
+    try {
+      await client.query(sql)
+      await client.query(`RELEASE SAVEPOINT ${name}`)
+      return { ok: true as const, error: '' }
+    } catch (e: any) {
+      try { await client.query(`ROLLBACK TO SAVEPOINT ${name}`) } catch {}
+      try { await client.query(`RELEASE SAVEPOINT ${name}`) } catch {}
+      return { ok: false as const, error: String(e?.message || e || '') }
+    }
+  }
+  const must = async (sql: string) => {
+    const r = await safeQuery(sql)
+    if (!r.ok) throw new Error(r.error || 'schema ensure failed')
+  }
+  await must(`CREATE TABLE IF NOT EXISTS company_expenses (
+    id text PRIMARY KEY,
+    occurred_at date NOT NULL,
+    amount numeric NOT NULL,
+    currency text NOT NULL DEFAULT 'AUD',
+    category text,
+    category_detail text,
+    note text,
+    invoice_url text,
+    created_at timestamptz DEFAULT now(),
+    created_by text,
+    fixed_expense_id text,
+    month_key text,
+    due_date date,
+    paid_date date,
+    status text,
+    generated_from text,
+    ref_type text,
+    ref_id text,
+    is_auto boolean DEFAULT false,
+    manual_override boolean DEFAULT false,
+    source_title text,
+    source_summary text
+  );`)
+  await must(`CREATE TABLE IF NOT EXISTS property_expenses (
+    id text PRIMARY KEY,
+    property_id text,
+    occurred_at date NOT NULL,
+    amount numeric NOT NULL,
+    currency text NOT NULL DEFAULT 'AUD',
+    category text,
+    category_detail text,
+    note text,
+    invoice_url text,
+    created_at timestamptz DEFAULT now(),
+    created_by text,
+    fixed_expense_id text,
+    month_key text,
+    due_date date,
+    paid_date date,
+    status text,
+    pay_method text,
+    pay_other_note text,
+    generated_from text,
+    ref_type text,
+    ref_id text,
+    is_auto boolean DEFAULT false,
+    manual_override boolean DEFAULT false,
+    source_title text,
+    source_summary text
+  );`)
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS note text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_method text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_other_note text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS is_auto boolean DEFAULT false;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_title text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_summary text;')
+  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS is_auto boolean DEFAULT false;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_title text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_summary text;')
+  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_ref ON company_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
 }
 
 async function syncAutoExpensesFromDeepCleaningRow(row: any) {
@@ -137,32 +398,52 @@ async function syncAutoExpensesFromDeepCleaningRow(row: any) {
   const refId = String(row?.id || '')
   if (!refId) return
   const propertyId = String(row?.property_id || '')
-  const status = String(row?.status || '')
+  const status = normStatus(row?.status)
   const payMethod = normPayMethod(row?.pay_method)
   const occurredAt = toISODateOnly(row?.completed_at) || toISODateOnly(row?.occurred_at) || toISODateOnly(row?.created_at)
   const amtRaw = Number(row?.total_cost !== undefined && row?.total_cost !== null ? row.total_cost : computeDeepCleaningTotalCost(row?.labor_cost, row?.consumables))
   const amount = Number.isFinite(amtRaw) ? Math.round((amtRaw + Number.EPSILON) * 100) / 100 : 0
+  const categoryDetail = '深度清洁'
   const workNo = String(row?.work_no || refId)
-  const categoryDetail = `Deep cleaning - ${workNo}`
-  const generatedFrom = 'auto_deep_cleaning'
+  const sourceTitle = workNo ? `深度清洁 ${workNo}` : '深度清洁'
+  const sourceSummary = deepCleaningProjectSummary(row)
+  const generatedFrom = refId
   const { pgPool } = require('../dbAdapter')
   if (!pgPool) return
   await pgRunInTransaction(async (client) => {
     await ensureAutoExpenseSchema(client)
-    const okStatus = status === 'completed'
-    const okAmount = amount > 0
-    if (!okStatus || !okAmount || (payMethod !== 'landlord_pay' && payMethod !== 'company_pay') || !occurredAt) {
-      await deleteAutoExpensesByRef(client, refType, refId)
+    if (await hasManualOverrideForRef(client, refType, refId)) return
+    if (status !== 'completed' || !(amount > 0) || !occurredAt) {
+      await client.query(
+        `UPDATE property_expenses SET status='void'
+         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+        [refType, refId]
+      )
+      await client.query(
+        `UPDATE company_expenses SET status='void'
+         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+        [refType, refId]
+      )
       return
     }
     if (payMethod === 'landlord_pay') {
-      if (!propertyId) { await deleteAutoExpensesByRef(client, refType, refId); return }
-      await client.query('DELETE FROM company_expenses WHERE ref_type=$1 AND ref_id=$2', [refType, refId])
-      await upsertAutoPropertyExpense(client, { propertyId, occurredAt, amount, categoryDetail, generatedFrom, refType, refId })
+      if (!propertyId) return
+      await client.query(
+        `UPDATE company_expenses SET status='void'
+         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+        [refType, refId]
+      )
+      await upsertAutoPropertyExpense(client, { propertyId, occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
       return
     }
-    await client.query('DELETE FROM property_expenses WHERE ref_type=$1 AND ref_id=$2', [refType, refId])
-    await upsertAutoCompanyExpense(client, { occurredAt, amount, categoryDetail, generatedFrom, refType, refId })
+    if (payMethod === 'company_pay') {
+      await client.query(
+        `UPDATE property_expenses SET status='void'
+         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+        [refType, refId]
+      )
+      await upsertAutoCompanyExpense(client, { occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
+    }
   })
 }
 
@@ -172,32 +453,138 @@ async function syncAutoExpensesFromMaintenanceRow(row: any) {
   const refId = String(row?.id || '')
   if (!refId) return
   const propertyId = String(row?.property_id || '')
-  const status = String(row?.status || '')
+  const status = normStatus(row?.status)
   const payMethod = normPayMethod(row?.pay_method)
   const occurredAt = toISODateOnly(row?.completed_at) || toISODateOnly(row?.occurred_at) || toISODateOnly(row?.created_at)
   const amount = calcMaintenanceTotal(row)
-  const workNo = String(row?.work_no || refId)
-  const categoryDetail = `Maintenance - ${workNo}`
-  const generatedFrom = 'auto_maintenance'
+  const categoryDetail = '维修'
+  const sourceTitle = '维修'
+  const sourceSummary = maintenanceIssueSummary(row)
+  const generatedFrom = refId
   const { pgPool } = require('../dbAdapter')
   if (!pgPool) return
   await pgRunInTransaction(async (client) => {
     await ensureAutoExpenseSchema(client)
-    const okStatus = status === 'completed'
-    const okAmount = amount > 0
-    if (!okStatus || !okAmount || (payMethod !== 'landlord_pay' && payMethod !== 'company_pay') || !occurredAt) {
-      await deleteAutoExpensesByRef(client, refType, refId)
+    if (await hasManualOverrideForRef(client, refType, refId)) return
+    if (status !== 'completed' || !(amount > 0) || !occurredAt) {
+      await client.query(
+        `UPDATE property_expenses SET status='void'
+         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+        [refType, refId]
+      )
+      await client.query(
+        `UPDATE company_expenses SET status='void'
+         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+        [refType, refId]
+      )
       return
     }
     if (payMethod === 'landlord_pay') {
-      if (!propertyId) { await deleteAutoExpensesByRef(client, refType, refId); return }
-      await client.query('DELETE FROM company_expenses WHERE ref_type=$1 AND ref_id=$2', [refType, refId])
-      await upsertAutoPropertyExpense(client, { propertyId, occurredAt, amount, categoryDetail, generatedFrom, refType, refId })
+      if (!propertyId) return
+      await client.query(
+        `UPDATE company_expenses SET status='void'
+         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+        [refType, refId]
+      )
+      await upsertAutoPropertyExpense(client, { propertyId, occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
       return
     }
-    await client.query('DELETE FROM property_expenses WHERE ref_type=$1 AND ref_id=$2', [refType, refId])
-    await upsertAutoCompanyExpense(client, { occurredAt, amount, categoryDetail, generatedFrom, refType, refId })
+    if (payMethod === 'company_pay') {
+      await client.query(
+        `UPDATE property_expenses SET status='void'
+         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+        [refType, refId]
+      )
+      await upsertAutoCompanyExpense(client, { occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
+    }
   })
+}
+
+async function upsertMaintenancePropertyExpenseInSavepoint(client: any, row: any) {
+  const refType = 'maintenance'
+  const refId = String(row?.id || '')
+  const status = normStatus(row?.status)
+  const payMethod = normPayMethod(row?.pay_method)
+  const occurredAt = toISODateOnly(row?.completed_at) || toISODateOnly(row?.occurred_at) || toISODateOnly(row?.created_at)
+  const propertyId = String(row?.property_id || '')
+  const base = toNum(row?.maintenance_amount)
+  const amount = calcMaintenanceTotal(row)
+  const categoryDetail = '维修'
+  const sourceTitle = '维修'
+  const sourceSummary = maintenanceIssueSummary(row)
+
+  let ok = true
+  let errMsg = ''
+  await client.query('SAVEPOINT auto_expense')
+  try {
+    if (!refId) { await client.query('RELEASE SAVEPOINT auto_expense'); return { ok: true, error: '', skipped: true } }
+    await ensureAutoExpenseSchema(client)
+    if (await hasManualOverrideForRef(client, refType, refId)) { await client.query('RELEASE SAVEPOINT auto_expense'); return { ok: true, error: 'manual_override', skipped: true } }
+
+    if (status !== 'completed' || !occurredAt || !(amount > 0)) {
+      await client.query(
+        `UPDATE property_expenses SET status='void'
+         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+        [refType, refId]
+      )
+      await client.query(
+        `UPDATE company_expenses SET status='void'
+         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+        [refType, refId]
+      )
+      await client.query('RELEASE SAVEPOINT auto_expense')
+      return { ok: true, error: '', skipped: true }
+    }
+
+    if (payMethod !== 'landlord_pay' && payMethod !== 'company_pay') {
+      await client.query('RELEASE SAVEPOINT auto_expense')
+      return { ok: true, error: '', skipped: true }
+    }
+
+    if (payMethod === 'landlord_pay') {
+      if (!propertyId || !(base > 0)) { await client.query('RELEASE SAVEPOINT auto_expense'); return { ok: true, error: '', skipped: true } }
+      await client.query(
+        `UPDATE company_expenses SET status='void'
+         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+        [refType, refId]
+      )
+      await client.query(
+        `INSERT INTO property_expenses (id, property_id, occurred_at, amount, currency, category, category_detail, note, pay_method, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
+         VALUES ($1,$2,$3,$4,'AUD','other',$5,$6,'landlord_pay',$7,$8,$9,$10,$3,true,$11,$12)
+         ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
+         SET property_id=EXCLUDED.property_id, occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
+             note=EXCLUDED.note, pay_method=EXCLUDED.pay_method, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto,
+             source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`,
+        [require('uuid').v4(), propertyId, occurredAt, amount, categoryDetail, `AUTO maintenance ${refId}`, refId, refType, refId, monthKeyFromDateOnly(occurredAt), sourceTitle, sourceSummary || null]
+      )
+      await client.query('RELEASE SAVEPOINT auto_expense')
+      return { ok: true, error: '', skipped: false }
+    }
+
+    await client.query(
+      `UPDATE property_expenses SET status='void'
+       WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+      [refType, refId]
+    )
+    await client.query(
+      `INSERT INTO company_expenses (id, occurred_at, amount, currency, category, category_detail, note, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
+       VALUES ($1,$2,$3,'AUD','other',$4,$5,$6,$7,$8,$9,$2,true,$10,$11)
+       ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
+       SET occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
+           note=EXCLUDED.note, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto,
+           source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`,
+      [require('uuid').v4(), occurredAt, amount, categoryDetail, `AUTO maintenance ${refId}`, refId, refType, refId, monthKeyFromDateOnly(occurredAt), sourceTitle, sourceSummary || null]
+    )
+    await client.query('RELEASE SAVEPOINT auto_expense')
+    return { ok: true, error: '', skipped: false }
+
+  } catch (e: any) {
+    ok = false
+    errMsg = String(e?.message || '')
+    try { await client.query('ROLLBACK TO SAVEPOINT auto_expense') } catch {}
+    try { await client.query('RELEASE SAVEPOINT auto_expense') } catch {}
+    return { ok, error: errMsg, skipped: false }
+  }
 }
 
 router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
@@ -1825,14 +2212,29 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
           return res.status(500).json({ message: msg || 'create failed' })
         }
       }
-      try {
-        if (resource === 'property_deep_cleaning') {
-          await syncAutoExpensesFromDeepCleaningRow(row)
-        } else if (resource === 'property_maintenance') {
-          const rows = Array.isArray(row) ? row : (row ? [row] : [])
-          for (const r of rows) await syncAutoExpensesFromMaintenanceRow(r)
+      if (resource === 'property_deep_cleaning' || resource === 'property_maintenance') {
+        let ok = true
+        let reason = ''
+        let errMsg = ''
+        try {
+          if (resource === 'property_deep_cleaning') {
+            await syncAutoExpensesFromDeepCleaningRow(row)
+          } else {
+            const rows = Array.isArray(row) ? row : (row ? [row] : [])
+            for (const r of rows) await syncAutoExpensesFromMaintenanceRow(r)
+          }
+        } catch (e: any) {
+          ok = false
+          reason = autoExpenseReasonFromError(e)
+          errMsg = String(e?.message || '')
+          try { console.error('[auto-expense-sync:create]', resource, String((row as any)?.id || ''), reason, errMsg) } catch {}
         }
-      } catch {}
+        try {
+          res.setHeader('x-auto-expense-sync', ok ? 'ok' : 'failed')
+          if (!ok) res.setHeader('x-auto-expense-reason', reason || 'other')
+          if (!ok && errMsg && process.env.NODE_ENV !== 'production') res.setHeader('x-auto-expense-error', errMsg.slice(0, 180))
+        } catch {}
+      }
       addAudit(resource, String((row as any)?.id || ''), 'create', null, row, (req as any).user?.sub)
       return res.status(201).json(row)
     }
@@ -2105,10 +2507,10 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         toUpdate = cleaned
       }
       let row
+      let autoExpenseSync: any = undefined
       try {
         if (resource === 'property_maintenance') {
-          const { pgPool } = require('../dbAdapter')
-          if (pgPool) {
+          const result: any = await pgRunInTransaction(async (client) => {
             const keys = Object.keys(toUpdate).filter(k => toUpdate[k] !== undefined)
             const set = keys.map((k, i) => {
               if (k === 'repair_photo_urls') return `"${k}" = $${i + 1}::jsonb`
@@ -2121,11 +2523,13 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
               return toUpdate[k]
             })
             const sql = `UPDATE property_maintenance SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
-            const res2 = await pgPool.query(sql, [...values, id])
-            row = res2.rows && res2.rows[0]
-          } else {
-            row = await pgUpdate(resource, id, toUpdate)
-          }
+            const res2 = await client.query(sql, [...values, id])
+            const updated = res2.rows && res2.rows[0]
+            const sync = await upsertMaintenancePropertyExpenseInSavepoint(client, updated)
+            return { row: updated, autoExpenseSync: sync }
+          })
+          row = result?.row
+          autoExpenseSync = result?.autoExpenseSync
         } else if (resource === 'property_deep_cleaning') {
           const { pgPool } = require('../dbAdapter')
           if (pgPool) {
@@ -2158,14 +2562,44 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
           throw e
         }
       }
-      try {
-        if (resource === 'property_deep_cleaning') {
-          await syncAutoExpensesFromDeepCleaningRow(row)
-        } else if (resource === 'property_maintenance') {
-          await syncAutoExpensesFromMaintenanceRow(row)
+      if (resource === 'property_deep_cleaning') {
+        let ok = true
+        let reason = ''
+        let errMsg = ''
+        try {
+          if (resource === 'property_deep_cleaning') {
+            await syncAutoExpensesFromDeepCleaningRow(row)
+          }
+        } catch (e: any) {
+          ok = false
+          reason = autoExpenseReasonFromError(e)
+          errMsg = String(e?.message || '')
+          try { console.error('[auto-expense-sync:update]', resource, String(id || ''), reason, errMsg) } catch {}
         }
-      } catch {}
+        try {
+          res.setHeader('x-auto-expense-sync', ok ? 'ok' : 'failed')
+          if (!ok) res.setHeader('x-auto-expense-reason', reason || 'other')
+          if (!ok && errMsg && process.env.NODE_ENV !== 'production') res.setHeader('x-auto-expense-error', errMsg.slice(0, 180))
+        } catch {}
+      }
       addAudit(resource, id, 'update', null, row, (req as any).user?.sub)
+      if (resource === 'property_maintenance') {
+        const syncOk = autoExpenseSync?.ok === true
+        const syncSkipped = autoExpenseSync?.skipped === true
+        const body: any = row || { id, ...payload }
+        body.auto_expense_sync = syncSkipped ? 'skipped' : (syncOk ? 'ok' : 'failed')
+        const syncErr = String(autoExpenseSync?.error || '')
+        if (!syncOk && !syncSkipped) body.auto_expense_error = syncErr
+        if (syncSkipped && syncErr) body.auto_expense_error = syncErr
+        try {
+          res.setHeader('x-auto-expense-sync', body.auto_expense_sync)
+          if (body.auto_expense_sync === 'failed') {
+            res.setHeader('x-auto-expense-reason', autoExpenseReasonFromError(body.auto_expense_error))
+            if (body.auto_expense_error && process.env.NODE_ENV !== 'production') res.setHeader('x-auto-expense-error', String(body.auto_expense_error).slice(0, 180))
+          }
+        } catch {}
+        return res.json(body)
+      }
       return res.json(row || { id, ...payload })
     }
     // Supabase branch removed

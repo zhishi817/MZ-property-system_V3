@@ -47,7 +47,7 @@ export default function MaintenanceRecordsUnified() {
   const [filterPropertyId, setFilterPropertyId] = useState<string | undefined>(undefined)
   const [filterWorkNo, setFilterWorkNo] = useState('')
   const [filterSubmitter, setFilterSubmitter] = useState('')
-  const [filterKeyword, setFilterKeyword] = useState('')
+  const [filterPayMethod, setFilterPayMethod] = useState<string | undefined>(undefined)
   const [filterStatus, setFilterStatus] = useState<string | undefined>(undefined)
   const [filterCat, setFilterCat] = useState<string | undefined>(undefined)
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
@@ -166,7 +166,7 @@ export default function MaintenanceRecordsUnified() {
       filterPropertyId: String(filterPropertyId || ''),
       filterWorkNo: String(filterWorkNo || ''),
       filterSubmitter: String(filterSubmitter || ''),
-      filterKeyword: String(filterKeyword || ''),
+      filterPayMethod: String(filterPayMethod || ''),
       filterStatus: String(filterStatus || ''),
       filterCat: String(filterCat || ''),
       dateRange: [dr0, dr1],
@@ -190,9 +190,10 @@ export default function MaintenanceRecordsUnified() {
       if (filterStatus) params.status = filterStatus
       if (filterCat) params.category = filterCat
       if (filterPropertyId) params.property_id = filterPropertyId
+      if (filterPayMethod) params.pay_method = filterPayMethod
       if (dateRange?.[0]) params.submitted_at_from = dayjs(dateRange[0]).startOf('day').toISOString()
       if (dateRange?.[1]) params.submitted_at_to = dayjs(dateRange[1]).endOf('day').toISOString()
-      const q = [filterKeyword, filterWorkNo, filterSubmitter, filterCode].map(s => String(s || '').trim()).filter(Boolean).join(' ')
+      const q = [filterWorkNo, filterSubmitter, filterCode].map(s => String(s || '').trim()).filter(Boolean).join(' ')
       if (q) params.q = q
       const qs = new URLSearchParams(params as any).toString()
       const res = await fetch(`${API_BASE}/crud/property_maintenance?${qs}`, { cache: 'no-store', headers: authHeaders(), signal: controller.signal })
@@ -253,7 +254,7 @@ export default function MaintenanceRecordsUnified() {
     if (skipInitialFilterEffectRef.current) { skipInitialFilterEffectRef.current = false; return }
     const t = setTimeout(() => { setPage(1); loadMaintenance(true, { page: 1 }) }, 250)
     return () => clearTimeout(t)
-  }, [filterCode, filterPropertyId, filterWorkNo, filterSubmitter, filterKeyword, filterStatus, filterCat, dateRange, pageSize])
+  }, [filterCode, filterPropertyId, filterWorkNo, filterSubmitter, filterPayMethod, filterStatus, filterCat, dateRange, pageSize])
   useEffect(() => {
     if (skipInitialPageEffectRef.current) { skipInitialPageEffectRef.current = false; return }
     loadMaintenance(page === 1, { page })
@@ -505,9 +506,10 @@ export default function MaintenanceRecordsUnified() {
       if (filterStatus) params.status = filterStatus
       if (filterCat) params.category = filterCat
       if (filterPropertyId) params.property_id = filterPropertyId
+      if (filterPayMethod) params.pay_method = filterPayMethod
       if (dateRange?.[0]) params.submitted_at_from = dayjs(dateRange[0]).startOf('day').toISOString()
       if (dateRange?.[1]) params.submitted_at_to = dayjs(dateRange[1]).endOf('day').toISOString()
-      const q = [filterKeyword, filterWorkNo, filterSubmitter, filterCode].map(s => String(s || '').trim()).filter(Boolean).join(' ')
+      const q = [filterWorkNo, filterSubmitter, filterCode].map(s => String(s || '').trim()).filter(Boolean).join(' ')
       if (q) params.q = q
       const qs = new URLSearchParams(params as any).toString()
       const res = await fetch(`${API_BASE}/crud/property_maintenance?${qs}`, { cache: 'no-store', headers: authHeaders() })
@@ -582,7 +584,20 @@ export default function MaintenanceRecordsUnified() {
           <Select placeholder="房号搜索" allowClear options={propOptions} value={filterPropertyId} onChange={v=>setFilterPropertyId(v)} style={{ width: isMobile ? '100%' : 220 }} showSearch optionFilterProp="label" filterOption={(input, option) => String(option?.label || '').toLowerCase().includes(input.toLowerCase())} />
           <Input placeholder="按工单号搜索" value={filterWorkNo} onChange={e=>setFilterWorkNo(e.target.value)} style={{ width: isMobile ? '100%' : 180 }} />
           <Input placeholder="按提交人搜索" value={filterSubmitter} onChange={e=>setFilterSubmitter(e.target.value)} style={{ width: isMobile ? '100%' : 180 }} />
-          <Input placeholder="关键词搜索（区域/摘要/人员等）" value={filterKeyword} onChange={e=>setFilterKeyword(e.target.value)} style={{ width: isMobile ? '100%' : 240 }} />
+          <Select
+            placeholder="扣款方式"
+            allowClear
+            value={filterPayMethod}
+            onChange={v => setFilterPayMethod(v)}
+            style={{ width: isMobile ? '100%' : 180 }}
+            options={[
+              { value: 'rent_deduction', label: payMethodLabel('rent_deduction') },
+              { value: 'tenant_pay', label: payMethodLabel('tenant_pay') },
+              { value: 'company_pay', label: payMethodLabel('company_pay') },
+              { value: 'landlord_pay', label: payMethodLabel('landlord_pay') },
+              { value: 'other_pay', label: payMethodLabel('other_pay') },
+            ]}
+          />
           <Select placeholder="按状态" allowClear options={statusOptions} value={filterStatus} onChange={v=>setFilterStatus(v)} style={{ width: isMobile ? '100%' : 160 }} />
           <DatePicker
             placeholder="选择日期"
@@ -595,7 +610,7 @@ export default function MaintenanceRecordsUnified() {
             setFilterCode('')
             setFilterWorkNo('')
             setFilterSubmitter('')
-            setFilterKeyword('')
+            setFilterPayMethod(undefined)
             setFilterStatus(undefined)
             setFilterCat(undefined)
             setDateRange(null)
