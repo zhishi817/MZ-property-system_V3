@@ -317,6 +317,42 @@ export default forwardRef<HTMLDivElement, {
   const catOwnerCorp = sumByCat('property_fee')
   const catCouncil = sumByCat('council')
   const catOther = sumByCat('other')
+  const parseMaybeJson = (raw: any): any => {
+    if (raw === null || raw === undefined) return raw
+    if (typeof raw !== 'string') return raw
+    const s = raw.trim()
+    if (!s) return ''
+    const head = s[0]
+    if (head !== '{' && head !== '[') return s
+    try { return JSON.parse(s) } catch { return s }
+  }
+  const extractHumanText = (raw: any): string => {
+    const v = parseMaybeJson(raw)
+    if (!v) return ''
+    if (Array.isArray(v)) {
+      for (const it of v) {
+        const i = String((it as any)?.item || '').trim()
+        if (i) return i
+        const c = String((it as any)?.content || '').trim()
+        if (c) return c
+        const s = String(it || '').trim()
+        if (s) return s
+      }
+      return ''
+    }
+    if (typeof v === 'object') {
+      const i = String((v as any)?.item || '').trim()
+      if (i) return i
+      const c = String((v as any)?.content || '').trim()
+      if (c) return c
+    }
+    return String(v || '').trim()
+  }
+  const squeezeInstruction = (s: string): string => {
+    const m = s.match(/只(?:要)?显示[:：]?\s*([^，,。]+)\s*/i)
+    if (m?.[1]) return String(m[1]).trim()
+    return s
+  }
   function cleanOtherDesc(raw?: any): string {
     let s = String(raw || '').trim()
     if (!s) return ''
@@ -324,16 +360,36 @@ export default forwardRef<HTMLDivElement, {
     s = s.replace(/^其他\s*[，,]\s*/i, '')
     if (/^(other|其他)$/i.test(s)) return ''
     if (/^fixed\s*payment$/i.test(s)) return ''
+    s = squeezeInstruction(s)
+    return s
+  }
+  const otherDescOfTx = (t: any): string => {
+    const rt = String((t as any)?.ref_type || '').trim().toLowerCase()
+    if (rt === 'maintenance' || rt === 'deep_cleaning') return cleanOtherDesc(extractHumanText((t as any)?.source_summary || ''))
+    return cleanOtherDesc(extractHumanText((t as any)?.category_detail || (t as any)?.note || ''))
+  }
+  const areaToEn = (raw: any): string => {
+    const s = String(raw || '').trim()
+    if (!s) return '-'
+    const k = s.toLowerCase()
+    if (k === 'bedroom' || s === '卧室') return 'Bedroom'
+    if (k === 'living room' || k === 'livingroom' || s === '客厅') return 'Living room'
+    if (k === 'kitchen' || s === '厨房') return 'Kitchen'
+    if (k === 'bathroom' || s === '浴室' || s === '卫生间') return 'Bathroom'
+    if (k === 'balcony' || s === '阳台') return 'Balcony'
+    if (k === 'hallway' || s === '走廊' || s === '入户走廊') return 'Hallway'
+    if (k === 'common area' || k === 'common' || s === '公共区域') return 'Common area'
+    if (k === 'whole house' || k === 'all' || s === '全屋') return 'Whole house'
+    if (k === 'other' || s === '其他') return 'Other'
     return s
   }
   const otherItems = expensesInMonthForReportAll
     .filter(e => catKey(e) === 'other')
-    .map(e => cleanOtherDesc((e as any).category_detail || (e as any).note || ''))
+    .map(e => otherDescOfTx(e))
     .filter(Boolean)
   const otherExpenseDescFmt = formatStatementDesc({
     items: otherItems,
-    lang: showChinese ? 'zh' : 'en',
-    ...(showChinese ? { joiner: '/' } : {}),
+    lang: 'en',
   })
   const totalExpense = (managementFee + catElectricity + catWater + catGas + catInternet + catConsumable + catCarpark + catOwnerCorp + catCouncil + catOther)
   const balance = (propertyId ? computeMonthlyStatementBalance({
@@ -416,7 +472,7 @@ export default forwardRef<HTMLDivElement, {
       data-deep-clean-count={String((deepCleanings || []).length)}
       data-maint-loaded={maintenancesLoaded ? '1' : '0'}
       data-maint-count={String((maintenances || []).length)}
-      style={{ padding: 24, fontFamily: 'Times New Roman, Times, serif' }}
+      style={{ padding: 24, fontFamily: "Times New Roman, Times, serif, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, Noto Sans SC, Arial Unicode MS, sans-serif" }}
     >
       <style>{`
         [data-monthly-statement-root="1"] table { width: 100%; border-collapse: collapse; }
@@ -424,9 +480,9 @@ export default forwardRef<HTMLDivElement, {
         [data-monthly-statement-root="1"] [data-statement-row="1"] { border-bottom: 1px solid #ddd; }
         @media print {
           @page { size: A4; margin: 12mm; }
-          html, body { margin: 0; padding: 0; }
+          html, body { margin: 0; padding: 0; font-family: 'Times New Roman', Times, serif, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', 'Arial Unicode MS', sans-serif; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
           [data-monthly-statement-root="1"] [data-keep-with-next="true"] { break-after: avoid; page-break-after: avoid; }
-          [data-monthly-statement-root="1"] [data-pdf-break-before="true"] { break-before: page; page-break-before: always; }
+          [data-monthly-statement-root="1"] [data-print-break-before="true"] { break-before: page; page-break-before: always; }
           [data-monthly-statement-root="1"] [data-pdf-avoid-cut="true"] { break-inside: avoid; page-break-inside: avoid; }
           [data-monthly-statement-root="1"] tr { break-inside: avoid; page-break-inside: avoid; }
         }
@@ -731,7 +787,7 @@ export default forwardRef<HTMLDivElement, {
                     <div style={{ display:'flex', justifyContent:'space-between', gap: 12, flexWrap:'wrap' }}>
                       <div style={{ fontWeight: 700 }}>{String(d?.work_no || d?.id || '')}</div>
                       <div style={{ color:'#111' }}>{timeLabel || '-'}</div>
-                      <div style={{ color:'#111' }}>{showChinese ? `区域：${String(d?.category || '-')}` : `Area: ${String(d?.category || '-')}`}</div>
+                      <div style={{ color:'#111' }}>{(pdfMode || renderEngine === 'print') ? `Area: ${areaToEn(d?.category)}` : (showChinese ? `区域：${String(d?.category || '-')}` : `Area: ${String(d?.category || '-')}`)}</div>
                     </div>
                     {pdfMode ? (
                       <div style={{ display:'flex', flexDirection:'column', gap: 10, marginTop: 10 }}>
@@ -862,7 +918,7 @@ export default forwardRef<HTMLDivElement, {
                     <div style={{ display:'flex', justifyContent:'space-between', gap: 12, flexWrap:'wrap' }}>
                       <div style={{ fontWeight: 700 }}>{String(m?.work_no || m?.id || '')}</div>
                       <div style={{ color:'#111' }}>{timeLabel || '-'}</div>
-                      <div style={{ color:'#111' }}>{showChinese ? `区域：${String(m?.category || '-')}` : `Area: ${String(m?.category || '-')}`}</div>
+                      <div style={{ color:'#111' }}>{(pdfMode || renderEngine === 'print') ? `Area: ${areaToEn(m?.category)}` : (showChinese ? `区域：${String(m?.category || '-')}` : `Area: ${String(m?.category || '-')}`)}</div>
                     </div>
                     {summary ? <div style={{ marginTop: 8, whiteSpace:'pre-wrap' }}>{summary}</div> : null}
                     {pdfMode ? (

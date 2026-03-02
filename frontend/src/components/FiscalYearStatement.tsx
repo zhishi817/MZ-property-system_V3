@@ -77,13 +77,13 @@ export default forwardRef<HTMLDivElement, {
   }), { rentIncome:0, otherIncome:0, mgmt:0, consumable:0, electricity:0, gas:0, water:0, internet:0, carpark:0, council:0, bodycorp:0, otherExp:0, netIncome:0 })
 
   return (
-    <div ref={ref as any} data-fy-statement-root="1" style={{ padding: 16, fontFamily: 'Times New Roman, Times, serif' }}>
+    <div ref={ref as any} data-fy-statement-root="1" style={{ padding: 16, fontFamily: "Times New Roman, Times, serif, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, Noto Sans SC, Arial Unicode MS, sans-serif" }}>
       <style>{`
         [data-fy-statement-root="1"] table { width: 100%; border-collapse: collapse; }
         [data-fy-statement-root="1"] table tr > * { border-bottom: 1px solid #ddd; }
         @media print {
           @page { size: A4 landscape; margin: 12mm; }
-          html, body { margin: 0; padding: 0; }
+          html, body { margin: 0; padding: 0; font-family: 'Times New Roman', Times, serif, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', 'Arial Unicode MS', sans-serif; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
           [data-fy-statement-root="1"] [data-keep-with-next="true"] { break-after: avoid; page-break-after: avoid; }
           [data-fy-statement-root="1"] [data-pdf-break-before="true"] { break-before: page; page-break-before: always; }
           [data-fy-statement-root="1"] [data-pdf-avoid-cut="true"] { break-inside: avoid; page-break-inside: avoid; }
