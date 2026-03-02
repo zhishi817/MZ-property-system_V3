@@ -18,6 +18,7 @@ yarn-error.log*
 frontend/.next/
 frontend/trace/
 frontend/out/
+frontend/coverage/
 
 # TypeScript build caches
 frontend/*.tsbuildinfo

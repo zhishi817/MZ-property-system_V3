@@ -10,7 +10,8 @@ import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } 
 import { requirePerm, requireAnyPerm } from '../auth'
 import { PDFDocument } from 'pdf-lib'
 import { pgInsertOnConflictDoNothing, pgPool } from '../dbAdapter'
-import { getChromiumBrowser } from '../lib/playwright'
+import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
+import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -32,6 +33,28 @@ function toReportCat(raw?: string, detail?: string): string {
   if (['council_rate','council'].includes(v) || s.includes('council') || s.includes('市政')) return 'council'
   if (s.includes('management_fee') || s.includes('管理费')) return 'management_fee'
   return 'other'
+}
+
+function pdfLimiter(req: any, res: any, next: any) {
+  pdfTaskLimiter.acquire().then((release) => {
+    let done = false
+    const once = () => {
+      if (done) return
+      done = true
+      try { release() } catch {}
+    }
+    res.on('finish', once)
+    res.on('close', once)
+    try { res.on('error', once) } catch {}
+    next()
+  }).catch(() => {
+    return res.status(429).json({ message: 'PDF任务繁忙，请稍后重试' })
+  })
+}
+
+function isPlaywrightClosedError(e: any) {
+  const msg = String(e?.message || '')
+  return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg)
 }
 
 router.get('/', async (_req, res) => {
@@ -978,6 +1001,7 @@ router.get('/expense-invoices/search', requireAnyPerm(['property_expenses.view',
 router.post(
   '/merge-pdf',
   requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']),
+  pdfLimiter,
   mergeUpload.single('statement'),
   async (req: any, res: any) => {
   try {
@@ -1110,7 +1134,7 @@ router.post(
   }
 )
 
-router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req: any, res: any) => {
+router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req: any, res: any) => {
   try {
     const { month, property_id, showChinese, includePhotosMode } = req.body || {}
     const monthKey = String(month || '').trim()
@@ -1142,18 +1166,28 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
       u.searchParams.set('photos', photos)
       return u.toString()
     })()
-    const browser = await getChromiumBrowser()
-    const context = await browser.newContext()
+    let browser = await getChromiumBrowser()
+    let context: any = null
+    try { context = await browser.newContext() } catch (e: any) {
+      if (!isPlaywrightClosedError(e)) throw e
+      await resetChromiumBrowser()
+      browser = await getChromiumBrowser()
+      context = await browser.newContext()
+    }
     try {
       await context.addCookies([{ name: 'auth', value: token, url: front } as any])
       const page = await context.newPage()
-      await page.goto(url, { waitUntil: 'networkidle' })
+      const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)))
+      const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
+      page.setDefaultTimeout(waitTimeoutMs)
+      page.setDefaultNavigationTimeout(navTimeoutMs)
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
       await page.waitForFunction(() => {
         const el = document.querySelector('[data-monthly-statement-root="1"]') as HTMLElement | null
         if (!el) return false
         const loaded = (el.getAttribute('data-deep-clean-loaded') || '') === '1'
         return loaded
-      }, { timeout: 20000 })
+      }, { timeout: waitTimeoutMs })
       await page.waitForFunction(async () => {
         const imgs = Array.from(document.images || [])
         await Promise.all(imgs.map(img => {
@@ -1164,7 +1198,7 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
           })
         }))
         return true
-      }, { timeout: 20000 })
+      }, { timeout: waitTimeoutMs })
       await page.waitForTimeout(200)
       await page.emulateMedia({ media: 'print' } as any)
       const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })

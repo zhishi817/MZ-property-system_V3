@@ -17,6 +17,7 @@ const auth_1 = require("../auth");
 const pdf_lib_1 = require("pdf-lib");
 const dbAdapter_2 = require("../dbAdapter");
 const playwright_1 = require("../lib/playwright");
+const pdfTaskLimiter_1 = require("../lib/pdfTaskLimiter");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -45,6 +46,33 @@ function toReportCat(raw, detail) {
     if (s.includes('management_fee') || s.includes('管理费'))
         return 'management_fee';
     return 'other';
+}
+function pdfLimiter(req, res, next) {
+    pdfTaskLimiter_1.pdfTaskLimiter.acquire().then((release) => {
+        let done = false;
+        const once = () => {
+            if (done)
+                return;
+            done = true;
+            try {
+                release();
+            }
+            catch (_a) { }
+        };
+        res.on('finish', once);
+        res.on('close', once);
+        try {
+            res.on('error', once);
+        }
+        catch (_a) { }
+        next();
+    }).catch(() => {
+        return res.status(429).json({ message: 'PDF任务繁忙，请稍后重试' });
+    });
+}
+function isPlaywrightClosedError(e) {
+    const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+    return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg);
 }
 exports.router.get('/', async (_req, res) => {
     try {
@@ -1027,7 +1055,7 @@ exports.router.get('/expense-invoices/search', (0, auth_1.requireAnyPerm)(['prop
     }
 });
 // Merge monthly statement PDF with multiple invoice PDFs and return a single PDF
-exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), mergeUpload.single('statement'), async (req, res) => {
+exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), pdfLimiter, mergeUpload.single('statement'), async (req, res) => {
     try {
         const { statement_pdf_base64, statement_pdf_url, invoice_urls } = req.body || {};
         const statementFile = req.file;
@@ -1180,7 +1208,7 @@ exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 
         return res.status(400).json({ message: (err === null || err === void 0 ? void 0 : err.message) || `upload failed (${code})` });
     return res.status(500).json({ message: (err === null || err === void 0 ? void 0 : err.message) || 'merge failed' });
 });
-exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req, res) => {
     try {
         const { month, property_id, showChinese, includePhotosMode } = req.body || {};
         const monthKey = String(month || '').trim();
@@ -1218,19 +1246,33 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             u.searchParams.set('photos', photos);
             return u.toString();
         })();
-        const browser = await (0, playwright_1.getChromiumBrowser)();
-        const context = await browser.newContext();
+        let browser = await (0, playwright_1.getChromiumBrowser)();
+        let context = null;
+        try {
+            context = await browser.newContext();
+        }
+        catch (e) {
+            if (!isPlaywrightClosedError(e))
+                throw e;
+            await (0, playwright_1.resetChromiumBrowser)();
+            browser = await (0, playwright_1.getChromiumBrowser)();
+            context = await browser.newContext();
+        }
         try {
             await context.addCookies([{ name: 'auth', value: token, url: front }]);
             const page = await context.newPage();
-            await page.goto(url, { waitUntil: 'networkidle' });
+            const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)));
+            const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)));
+            page.setDefaultTimeout(waitTimeoutMs);
+            page.setDefaultNavigationTimeout(navTimeoutMs);
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
             await page.waitForFunction(() => {
                 const el = document.querySelector('[data-monthly-statement-root="1"]');
                 if (!el)
                     return false;
                 const loaded = (el.getAttribute('data-deep-clean-loaded') || '') === '1';
                 return loaded;
-            }, { timeout: 20000 });
+            }, { timeout: waitTimeoutMs });
             await page.waitForFunction(async () => {
                 const imgs = Array.from(document.images || []);
                 await Promise.all(imgs.map(img => {
@@ -1242,7 +1284,7 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
                     });
                 }));
                 return true;
-            }, { timeout: 20000 });
+            }, { timeout: waitTimeoutMs });
             await page.waitForTimeout(200);
             await page.emulateMedia({ media: 'print' });
             const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true });
