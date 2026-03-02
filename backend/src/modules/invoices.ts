@@ -10,10 +10,34 @@ import { hasPg, pgDelete, pgInsert, pgPool, pgRunInTransaction, pgSelect, pgUpda
 import { hasR2, r2Upload } from '../r2'
 import { addAudit, db, roleHasPermission } from '../store'
 import { v4 as uuid } from 'uuid'
+import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
+import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
  
 export const router = Router()
  
 const memUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } })
+
+function pdfLimiter(req: any, res: any, next: any) {
+  pdfTaskLimiter.acquire().then((release) => {
+    let done = false
+    const once = () => {
+      if (done) return
+      done = true
+      try { release() } catch {}
+    }
+    res.on('finish', once)
+    res.on('close', once)
+    try { res.on('error', once) } catch {}
+    next()
+  }).catch(() => {
+    return res.status(429).json({ message: 'PDF任务繁忙，请稍后重试' })
+  })
+}
+
+function isPlaywrightClosedError(e: any) {
+  const msg = String(e?.message || '')
+  return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg)
+}
  
 let invoiceSchemaReady: Promise<void> | null = null
 async function ensureInvoiceTables() {
@@ -1583,6 +1607,62 @@ router.post('/merge-pdf', requirePerm('invoice.view'), async (req, res) => {
     return res.status(200).send(Buffer.from(out))
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'merge_failed' })
+  }
+})
+
+router.post('/invoice-pdf', requirePerm('invoice.view'), pdfLimiter, async (req: any, res: any) => {
+  try {
+    const invoiceId = String((req.body || {})?.invoice_id || '').trim()
+    if (!invoiceId) return res.status(400).json({ message: 'missing invoice_id' })
+    const front = String(process.env.FRONTEND_BASE_URL || req.headers.origin || '').trim()
+    if (!front) return res.status(500).json({ message: 'missing FRONTEND_BASE_URL' })
+    const token = (() => {
+      const h = String(req.headers.authorization || '')
+      const m = h.match(/^Bearer\s+(.+)$/i)
+      if (m) return m[1].trim()
+      const c = String(req.headers.cookie || '')
+      const cm = c.match(/(?:^|;\s*)auth=([^;]+)/)
+      return cm ? decodeURIComponent(cm[1]) : ''
+    })()
+    if (!token) return res.status(401).json({ message: 'missing token' })
+
+    const url = (() => {
+      const u = new URL('/public/invoice-print', front)
+      u.searchParams.set('invoice_id', invoiceId)
+      return u.toString()
+    })()
+
+    let browser = await getChromiumBrowser()
+    let context: any = null
+    try { context = await browser.newContext() } catch (e: any) {
+      if (!isPlaywrightClosedError(e)) throw e
+      await resetChromiumBrowser()
+      browser = await getChromiumBrowser()
+      context = await browser.newContext()
+    }
+    try {
+      await context.addCookies([{ name: 'auth', value: token, url: front } as any])
+      const page = await context.newPage()
+      const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)))
+      const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
+      page.setDefaultTimeout(waitTimeoutMs)
+      page.setDefaultNavigationTimeout(navTimeoutMs)
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {})
+      await page.waitForSelector('[data-invoice-ready="1"]', { timeout: waitTimeoutMs })
+      await page.waitForTimeout(200)
+      await page.emulateMedia({ media: 'print' } as any)
+      const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
+      res.setHeader('Content-Type', 'application/pdf')
+      res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoiceId}.pdf"`)
+      return res.status(200).send(Buffer.from(pdf))
+    } finally {
+      try { await context.close() } catch {}
+    }
+  } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (isPlaywrightClosedError(e)) return res.status(500).json({ message: 'playwright_closed' })
+    return res.status(500).json({ message: msg || 'invoice_pdf_failed' })
   }
 })
  

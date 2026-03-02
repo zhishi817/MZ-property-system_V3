@@ -115,6 +115,10 @@ function allowPhotosInReportOfRecord(r) {
     const rv = String((r === null || r === void 0 ? void 0 : r.review_status) || (r === null || r === void 0 ? void 0 : r.reviewStatus) || '').trim().toLowerCase();
     return st === 'completed' || st === 'approved' || rv === 'approved';
 }
+function recordMonthKey(r) {
+    const raw = (r === null || r === void 0 ? void 0 : r.occurred_at) || (r === null || r === void 0 ? void 0 : r.completed_at) || (r === null || r === void 0 ? void 0 : r.started_at) || (r === null || r === void 0 ? void 0 : r.submitted_at) || (r === null || r === void 0 ? void 0 : r.created_at);
+    return String(raw || '').slice(0, 7);
+}
 exports.router.get('/', async (_req, res) => {
     try {
         if (dbAdapter_1.hasPg) {
@@ -1131,17 +1135,19 @@ exports.router.get('/monthly-statement-photo-stats', (0, auth_1.requireAnyPerm)(
             const cols = await dbAdapter_2.pgPool.query(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`, [table]);
             const colSet = new Set((cols.rows || []).map((r) => String(r.column_name || '').toLowerCase()));
             const hasPropCode = colSet.has('property_code');
-            const hasOccur = colSet.has('occurred_at');
-            if (!hasOccur)
+            const dateCols = ['occurred_at', 'completed_at', 'started_at', 'submitted_at', 'created_at'].filter(c => colSet.has(c));
+            if (!dateCols.length)
                 return [];
+            const dateExpr = (c) => `substring(t.${c}::text, 1, 10)`;
+            const dateCond = `(${dateCols.map(c => `(${dateExpr(c)} >= $2 AND ${dateExpr(c)} < $3)`).join(' OR ')})`;
             const parts = [];
-            const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND t.occurred_at >= $2 AND t.occurred_at < $3`;
+            const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND ${dateCond} LIMIT 8000`;
             const r1 = await dbAdapter_2.pgPool.query(q1, [pid, range.start, range.end]);
             parts.push(...(r1.rows || []).map((x) => x.row));
             if (hasPropCode && (propertyCode || propertyCodeRaw)) {
                 const codes = Array.from(new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean)));
                 if (codes.length) {
-                    const q2 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_code = ANY($1::text[]) AND t.occurred_at >= $2 AND t.occurred_at < $3`;
+                    const q2 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_code = ANY($1::text[]) AND ${dateCond} LIMIT 8000`;
                     const r2 = await dbAdapter_2.pgPool.query(q2, [codes, range.start, range.end]);
                     parts.push(...(r2.rows || []).map((x) => x.row));
                 }
@@ -1158,8 +1164,8 @@ exports.router.get('/monthly-statement-photo-stats', (0, auth_1.requireAnyPerm)(
             const list = Array.isArray(store_1.db[table]) ? store_1.db[table] : [];
             const codes = new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean));
             const inRange = (r) => {
-                const d = String((r === null || r === void 0 ? void 0 : r.occurred_at) || '').slice(0, 10);
-                return d >= range.start && d < range.end;
+                const m = recordMonthKey(r);
+                return m === monthKey;
             };
             const map = new Map();
             for (const r of list) {

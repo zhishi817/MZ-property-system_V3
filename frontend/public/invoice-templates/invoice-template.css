@@ -423,12 +423,12 @@ body{
 @media print{
   @page{ size:A4; margin:0; }
   html,body{
-    width:794px;
-    height:1123px;
+    width:auto;
+    height:auto;
     margin:0;
     padding:0;
     background:#fff;
-    overflow:hidden;
+    overflow:visible;
   }
   .inv-preview-wrap{
     padding:0 !important;
@@ -437,22 +437,23 @@ body{
   }
   .inv-sheet{
     width:794px;
-    height:1123px;
+    height:auto;
     min-height:0;
     border:none;
     border-radius:0;
     box-shadow:none;
-    overflow:hidden;
-    page-break-after:avoid;
-    page-break-inside:avoid;
+    overflow:visible;
   }
   .inv-page{
-    height:1123px;
+    height:auto;
     min-height:0;
     padding:var(--inv-margin);
     box-sizing:border-box;
+    break-inside:avoid;
+    page-break-inside:avoid;
   }
   .inv-card{ break-inside: avoid; page-break-inside: avoid; }
+  .inv-row, .inv-table tr{ break-inside: avoid; page-break-inside: avoid; }
   .inv-logo-box{ height:auto; overflow:visible; }
   .inv-logo-box img{ width:140px; height:auto !important; }
   *{

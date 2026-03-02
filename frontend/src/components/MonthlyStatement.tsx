@@ -46,10 +46,11 @@ export default forwardRef<HTMLDivElement, {
   showInvoices?: boolean
   sections?: string[]
   includeJobPhotos?: boolean
+  photosMode?: 'full' | 'thumbnail' | 'off'
   mode?: 'preview' | 'pdf'
   pdfMode?: boolean
   renderEngine?: 'canvas' | 'print'
-}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords, showChinese = true, showInvoices = false, sections, includeJobPhotos = true, mode, pdfMode = false, renderEngine = 'canvas' }, ref) {
+}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords, showChinese = true, showInvoices = false, sections, includeJobPhotos = true, photosMode = 'full', mode, pdfMode = false, renderEngine = 'canvas' }, ref) {
   const resolvedMode: 'preview' | 'pdf' = mode || ((pdfMode || renderEngine === 'print') ? 'pdf' : 'preview')
   const isPdfMode = resolvedMode === 'pdf'
   const sectionSet = new Set((Array.isArray(sections) ? sections : []).map(s => String(s || '').trim().toLowerCase()).filter(Boolean))
@@ -57,7 +58,14 @@ export default forwardRef<HTMLDivElement, {
   const showBaseSections = showAllSections || sectionSet.has('base')
   const showDeepSection = showAllSections || sectionSet.has('deep_cleaning') || sectionSet.has('deepcleaning')
   const showMaintSection = showAllSections || sectionSet.has('maintenance')
-  const canIncludeJobPhotos = includeJobPhotos !== false
+  const photosModeNorm: 'full' | 'thumbnail' | 'off' = (() => {
+    const v = String(photosMode || 'full').toLowerCase()
+    if (v === 'off') return 'off'
+    if (v === 'thumbnail') return 'thumbnail'
+    return 'full'
+  })()
+  const canIncludeJobPhotos = includeJobPhotos !== false && photosModeNorm !== 'off'
+  const isThumbPhotos = isPdfMode && photosModeNorm === 'thumbnail'
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
   const relatedOrdersRaw = monthSegments(
@@ -454,6 +462,8 @@ export default forwardRef<HTMLDivElement, {
     const rv = String((r as any)?.review_status || (r as any)?.reviewStatus || '').trim().toLowerCase()
     return st === 'completed' || st === 'approved' || rv === 'approved'
   }
+  const deepCleaningsForReport = (deepCleanings || []).filter(allowPhotosInReportOfRecord)
+  const maintenancesForReport = (maintenances || []).filter(allowPhotosInReportOfRecord)
   const otherItems = expensesInMonthForReportAll
     .filter(e => catKey(e) === 'other')
     .map(e => otherDescOfTx(e))
@@ -850,7 +860,7 @@ export default forwardRef<HTMLDivElement, {
         </>
       ) : null}
 
-      {(showDeepSection && deepCleanings && deepCleanings.length) ? (
+      {(showDeepSection && deepCleaningsForReport.length) ? (
         <div data-deep-clean-section="1" data-pdf-break-before={isPdfMode ? 'true' : undefined}>
           <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'}</div>
           {!isPdfMode ? (
@@ -865,7 +875,7 @@ export default forwardRef<HTMLDivElement, {
             </div>
           ) : null}
           <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
-            {deepCleanings
+            {deepCleaningsForReport
               .slice()
               .sort((a: any, b: any) => String(a?.occurred_at || '').localeCompare(String(b?.occurred_at || '')))
               .map((d: any) => {
@@ -890,10 +900,12 @@ export default forwardRef<HTMLDivElement, {
                 const expanded = !!isPdfMode || !!expandAllDeepClean || !!expandedDeepClean[did]
                 const beforeShow = expanded ? beforeArr : beforeArr.slice(0, 2)
                 const afterShow = expanded ? afterArr : afterArr.slice(0, 2)
+                const beforePdfArr = isThumbPhotos ? beforeArr.slice(0, 1) : beforeArr
+                const afterPdfArr = isThumbPhotos ? afterArr.slice(0, 1) : afterArr
                 const pairRows = (() => {
-                  const n = Math.max(beforeArr.length, afterArr.length)
+                  const n = Math.max(beforePdfArr.length, afterPdfArr.length)
                   const rows: Array<{ b?: string; a?: string; idx: number }> = []
-                  for (let i = 0; i < n; i++) rows.push({ b: beforeArr[i], a: afterArr[i], idx: i })
+                  for (let i = 0; i < n; i++) rows.push({ b: beforePdfArr[i], a: afterPdfArr[i], idx: i })
                   return rows
                 })()
                 return (
@@ -917,20 +929,20 @@ export default forwardRef<HTMLDivElement, {
                         </div>
                         {(pairRows.length ? pairRows : [{ idx: 0 }]).map((r) => (
                           <div key={r.idx} data-pdf-avoid-cut="true" style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, alignItems:'start' }}>
-                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: 240 }}>
+                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: isThumbPhotos ? 160 : 240 }}>
                               {r.b ? (isImg(r.b) ? (
                                 renderEngine === 'print'
-                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.b)} style={{ width:'100%', height: 360, objectFit:'contain', borderRadius: 8 }} />
-                                  : <div style={{ width:'100%', height: 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.b)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.b)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
+                                  : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.b)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
                               ) : (
                                 <a href={resolveUrl(r.b)} target="_blank" rel="noreferrer">{String(r.b).split('/').pop() || 'file'}</a>
                               )) : <div style={{ color:'#999' }}>-</div>}
                             </div>
-                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: 240 }}>
+                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: isThumbPhotos ? 160 : 240 }}>
                               {r.a ? (isImg(r.a) ? (
                                 renderEngine === 'print'
-                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.a)} style={{ width:'100%', height: 360, objectFit:'contain', borderRadius: 8 }} />
-                                  : <div style={{ width:'100%', height: 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.a)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.a)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
+                                  : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.a)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
                               ) : (
                                 <a href={resolveUrl(r.a)} target="_blank" rel="noreferrer">{String(r.a).split('/').pop() || 'file'}</a>
                               )) : <div style={{ color:'#999' }}>-</div>}
@@ -985,7 +997,7 @@ export default forwardRef<HTMLDivElement, {
         </div>
       ) : null}
 
-      {(showMaintSection && maintenances && maintenances.length) ? (
+      {(showMaintSection && maintenancesForReport.length) ? (
         <div data-maint-section="1" data-pdf-break-before={isPdfMode ? 'true' : undefined}>
           <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>
             {showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'}
@@ -1002,7 +1014,7 @@ export default forwardRef<HTMLDivElement, {
             </div>
           ) : null}
           <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
-            {maintenances
+            {maintenancesForReport
               .slice()
               .sort((a: any, b: any) => String(a?.occurred_at || '').localeCompare(String(b?.occurred_at || '')))
               .map((m: any) => {
@@ -1024,10 +1036,12 @@ export default forwardRef<HTMLDivElement, {
                 const expanded = !!isPdfMode || !!expandAllMaintenance || !!expandedMaintenance[mid]
                 const beforeShow = expanded ? beforeArr : beforeArr.slice(0, 2)
                 const afterShow = expanded ? afterArr : afterArr.slice(0, 2)
+                const beforePdfArr = isThumbPhotos ? beforeArr.slice(0, 1) : beforeArr
+                const afterPdfArr = isThumbPhotos ? afterArr.slice(0, 1) : afterArr
                 const pairRows = (() => {
-                  const n = Math.max(beforeArr.length, afterArr.length)
+                  const n = Math.max(beforePdfArr.length, afterPdfArr.length)
                   const rows: Array<{ b?: string; a?: string; idx: number }> = []
-                  for (let i = 0; i < n; i++) rows.push({ b: beforeArr[i], a: afterArr[i], idx: i })
+                  for (let i = 0; i < n; i++) rows.push({ b: beforePdfArr[i], a: afterPdfArr[i], idx: i })
                   return rows
                 })()
                 return (
@@ -1057,20 +1071,20 @@ export default forwardRef<HTMLDivElement, {
                             data-pdf-break-before={(r.idx > 0 && r.idx % 2 === 0) ? 'true' : undefined}
                             style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, alignItems:'start' }}
                           >
-                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: 240 }}>
+                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: isThumbPhotos ? 160 : 240 }}>
                               {r.b ? (isImg(r.b) ? (
                                 renderEngine === 'print'
-                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.b)} style={{ width:'100%', height: 360, objectFit:'contain', borderRadius: 8 }} />
-                                  : <div style={{ width:'100%', height: 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.b)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.b)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
+                                  : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.b)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
                               ) : (
                                 <a href={resolveUrl(r.b)} target="_blank" rel="noreferrer">{String(r.b).split('/').pop() || 'file'}</a>
                               )) : <div style={{ color:'#999' }}>-</div>}
                             </div>
-                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: 240 }}>
+                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: isThumbPhotos ? 160 : 240 }}>
                               {r.a ? (isImg(r.a) ? (
                                 renderEngine === 'print'
-                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.a)} style={{ width:'100%', height: 360, objectFit:'contain', borderRadius: 8 }} />
-                                  : <div style={{ width:'100%', height: 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.a)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.a)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
+                                  : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.a)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
                               ) : (
                                 <a href={resolveUrl(r.a)} target="_blank" rel="noreferrer">{String(r.a).split('/').pop() || 'file'}</a>
                               )) : <div style={{ color:'#999' }}>-</div>}

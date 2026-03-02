@@ -1040,9 +1040,23 @@ export default function PropertyRevenuePage() {
             let statementBlob: Blob
             let pageCount = 0
             let splitInfo: any = null
+            let monthPhotosMode: 'full' | 'thumbnail' | 'off' = 'full'
 
             if (period === 'month') {
               setMergeSplit(null)
+              const genMonthly = async (photosMode: 'full' | 'thumbnail' | 'off') => {
+                const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                  body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: photosMode, sections: 'all' }),
+                })
+                if (!resp.ok) {
+                  let msg = `HTTP ${resp.status}`
+                  try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
+                  throw new Error(msg)
+                }
+                return await resp.blob()
+              }
               updateMerge(22, '正在检查照片体积...')
               try {
                 const stats = await fetch(`${API_BASE}/finance/monthly-statement-photo-stats?pid=${encodeURIComponent(previewPid!)}&month=${encodeURIComponent(month.format('YYYY-MM'))}`, { headers: authHeaders() })
@@ -1055,19 +1069,9 @@ export default function PropertyRevenuePage() {
                   }
                 }
               } catch {}
-              updateMerge(26, '正在生成高清报表PDF...')
-              const photosMode = splitInfo?.shouldSplit ? 'off' : (exportQuality === 'standard' ? 'thumbnail' : 'full')
-              const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: photosMode, sections: 'all' }),
-              })
-              if (!resp.ok) {
-                let msg = `HTTP ${resp.status}`
-                try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
-                throw new Error(msg)
-              }
-              statementBlob = await resp.blob()
+              updateMerge(26, '正在生成报表PDF...')
+              monthPhotosMode = splitInfo?.shouldSplit ? 'off' : (exportQuality === 'standard' ? 'thumbnail' : 'full')
+              statementBlob = await genMonthly(monthPhotosMode)
             } else {
               updateMerge(26, '正在渲染页面...')
               setStatementPdfMode(true)
@@ -1103,9 +1107,31 @@ export default function PropertyRevenuePage() {
             }
             updateMerge(55, '正在准备合并附件...', `报表页数：${pageCount}`)
             if (statementBlob.size > 18 * 1024 * 1024) {
-              mergeFail(`报表PDF过大（${Math.round(statementBlob.size / 1024 / 1024)}MB），已回退仅下载报表。建议使用“标准/高清（平衡）”导出或拆分下载。`, true)
-              downloadBlob(statementBlob)
-              return
+              if (period === 'month' && monthPhotosMode !== 'off') {
+                try {
+                  updateMerge(58, '报表过大，正在生成无照片版...')
+                  const forced = { shouldSplit: true, hardSplit: true, totalPhotoCount: 0, maintenancePhotoCount: 0, deepCleaningPhotoCount: 0, threshold: 0, hardThreshold: 0, forced: true }
+                  splitInfo = splitInfo || forced
+                  setMergeSplit((prev) => prev || forced as any)
+                  monthPhotosMode = 'off'
+                  const resp2 = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                    body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: 'off', sections: 'all' }),
+                  })
+                  if (!resp2.ok) {
+                    let msg = `HTTP ${resp2.status}`
+                    try { const j = await resp2.json() as any; msg = String(j?.message || msg) } catch {}
+                    throw new Error(msg)
+                  }
+                  statementBlob = await resp2.blob()
+                } catch {}
+              }
+              if (statementBlob.size > 18 * 1024 * 1024) {
+                mergeFail(`报表PDF过大（${Math.round(statementBlob.size / 1024 / 1024)}MB），已回退仅下载报表。建议使用“标准/高清（平衡）”导出或拆分下载。`, true)
+                downloadBlob(statementBlob)
+                return
+              }
             }
             let invUrls: string[] = []
             try {
