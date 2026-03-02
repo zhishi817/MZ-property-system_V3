@@ -14,9 +14,10 @@ import FiscalYearStatement from '../../../components/FiscalYearStatement'
 import { MailOutlined, CreditCardOutlined, CheckOutlined } from '@ant-design/icons'
 import { nextToggleValue } from '../../../lib/toggleStatus'
 import { exportElementToPdfBlob } from '../../../lib/pdfExport'
+import { buildStatementTxs, type StatementTx } from '../../../lib/statementTx'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; ref_type?: string; ref_id?: string }
+type Tx = StatementTx
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 type DeepCleaning = { id: string; property_id?: string; property_code?: string; code?: string; occurred_at?: string; completed_at?: string; submitted_at?: string; created_at?: string; pay_method?: any; total_cost?: any; labor_cost?: any; consumables?: any; work_no?: string }
 type RevenueStatus = { scheduled_email_set: boolean; transferred: boolean }
@@ -40,9 +41,11 @@ export default function PropertyRevenuePage() {
   const [previewPid, setPreviewPid] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewReady, setPreviewReady] = useState(false)
-  const [statementPdfMode, setStatementPdfMode] = useState(false)
+  const [, setStatementPdfMode] = useState(false)
   const [exportQuality, setExportQuality] = useState<'standard' | 'high' | 'ultra'>('ultra')
   const [mergeUi, setMergeUi] = useState<{ open: boolean; percent: number; status: MergeUiStatus; stage: string; detail?: string }>({ open: false, percent: 0, status: 'active', stage: '', detail: '' })
+  const [mergeSplit, setMergeSplit] = useState<null | { maintenancePhotoCount: number; deepCleaningPhotoCount: number; totalPhotoCount: number; shouldSplit: boolean; hardSplit: boolean; threshold: number; hardThreshold: number }>(null)
+  const [splitDl, setSplitDl] = useState<{ maintenance: boolean; deepCleaning: boolean }>({ maintenance: false, deepCleaning: false })
   const [exportPreview, setExportPreview] = useState<{ open: boolean; url: string; pageCount: number; filename: string; loading: boolean }>({ open: false, url: '', pageCount: 0, filename: '', loading: false })
   const printRef = useRef<HTMLDivElement>(null)
   const [period, setPeriod] = useState<'month'|'year'|'half-year'|'fiscal-year'>('month')
@@ -61,6 +64,46 @@ export default function PropertyRevenuePage() {
       return { ...prev, open: false, url: '', loading: false }
     })
   }
+  const downloadNamedBlob = (blob: Blob, filename: string) => {
+    try {
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch {}
+  }
+  const downloadSplitPart = async (kind: 'maintenance' | 'deep_cleaning') => {
+    if (!previewPid) return
+    const key = kind === 'maintenance' ? 'maintenance' : 'deepCleaning'
+    setSplitDl((prev) => ({ ...prev, [key]: true }))
+    try {
+      const prop = properties.find(p => String(p.id) === String(previewPid || ''))
+      const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
+      const prefix = `Monthly Statement - ${month.format('YYYY-MM')}`
+      const label = kind === 'maintenance' ? 'Maintenance Photos' : 'Deep Cleaning Photos'
+      const filename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''} - ${label}.pdf`
+      const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: 'full', sections: kind }),
+      })
+      if (!resp.ok) {
+        let msg = `HTTP ${resp.status}`
+        try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
+        throw new Error(msg)
+      }
+      const blob = await resp.blob()
+      downloadNamedBlob(blob, filename)
+    } catch (e: any) {
+      message.error(e?.message || '下载失败')
+    } finally {
+      setSplitDl((prev) => ({ ...prev, [key]: false }))
+    }
+  }
 
   const pickExportParams = (mode: 'standard' | 'high' | 'ultra') => {
     if (mode === 'standard') return { scale: 2, imageQuality: 0.82, imageType: 'jpeg' as const }
@@ -68,95 +111,12 @@ export default function PropertyRevenuePage() {
     return { scale: 4, imageQuality: 0.98, imageType: 'png' as const }
   }
   const buildTxsFromRaw = (fin: any[], pexp: any[], recurs: any[], props: any[], excludeOrphans: boolean) => {
-    const mapCat = (c?: string) => {
-      const v = String(c || '')
-      if (v === 'gas_hot_water') return 'gas'
-      if (v === 'consumables') return 'consumable'
-      if (v === 'owners_corp') return 'property_fee'
-      if (v === 'council_rate') return 'council'
-      if (v.toLowerCase() === 'nbn' || v.toLowerCase() === 'internet' || v.includes('网')) return 'internet'
-      return v
-    }
-    const recurringArr = Array.isArray(recurs) ? recurs : []
-    const recurringIdSet = new Set(recurringArr.map((r: any) => String(r.id)))
-    const mapReport: Record<string, string> = Object.fromEntries(recurringArr.map((r:any)=>[String(r.id), String(r.report_category||'')]))
-    const mapVendor: Record<string, string> = Object.fromEntries(recurringArr.map((r:any)=>[String(r.id), String(r.vendor||'')]))
-    const toReportCat = (raw?: string) => {
-      const v = String(raw||'').toLowerCase()
-      if (v.includes('management_fee') || v.includes('管理费')) return 'management_fee'
-      if (v.includes('carpark') || v.includes('车位')) return 'parking_fee'
-      if (v.includes('owners') || v.includes('body') || v.includes('物业')) return 'body_corp'
-      if (v.includes('internet') || v.includes('nbn') || v.includes('网')) return 'internet'
-      if (v.includes('electric') || v.includes('电')) return 'electricity'
-      if ((v.includes('water') || v.includes('水')) && !v.includes('hot') && !v.includes('热')) return 'water'
-      if (v.includes('gas') || v.includes('hot') || v.includes('热水') || v.includes('煤气')) return 'gas'
-      if (v.includes('consumable') || v.includes('消耗')) return 'consumables'
-      if (v.includes('council') || v.includes('市政')) return 'council'
-      return 'other'
-    }
     const propsArr = Array.isArray(props) ? props : []
-    const propsById = new Set(propsArr.map((p: any) => String(p.id)))
-    const propsByCode = new Map(propsArr.map((p: any) => [String(p.code || '').trim(), String(p.id)]))
-    let orphanCount = 0
-    let orphanTotal = 0
-    const orphanRows: any[] = []
-    const peMapped: Tx[] = (Array.isArray(pexp) ? pexp : []).flatMap((r: any) => {
-      const code = String(r.property_code || '').trim()
-      const pidRaw = r.property_id || undefined
-      const pidNorm = (pidRaw && propsById.has(String(pidRaw))) ? pidRaw : (propsByCode.get(code) || pidRaw)
-      const fid = String(r.fixed_expense_id || '')
-      const genFrom = String(r.generated_from || '')
-      const note = String(r.note || '')
-      const isSnapshot = genFrom === 'recurring_payments' || /^fixed payment/i.test(note)
-      const isOrphanSnapshot = !!(fid && isSnapshot && !recurringIdSet.has(fid))
-      if (isOrphanSnapshot) {
-        orphanCount += 1
-        orphanTotal += Number(r.amount || 0)
-        if (orphanRows.length < 50) orphanRows.push(r)
-        if (excludeOrphans) return []
-      }
-      const vendor = fid ? String(mapVendor[fid] || '') : ''
-      const baseDetail = String(r.category_detail || '').trim()
-      const injectedDetail = (!baseDetail && vendor) ? vendor : baseDetail
-      return [{
-        id: r.id,
-        kind: 'expense',
-        amount: Number(r.amount || 0),
-        currency: r.currency || 'AUD',
-        property_id: pidNorm,
-        occurred_at: r.occurred_at,
-        category: mapCat(r.category),
-        ...(r.property_code ? { property_code: r.property_code } : {}),
-        ...(injectedDetail ? { category_detail: injectedDetail } : {}),
-        ...(r.note ? { note: r.note } : {}),
-        ...(r.fixed_expense_id ? { fixed_expense_id: r.fixed_expense_id } : {}),
-        ...(r.month_key ? { month_key: r.month_key } : {}),
-        ...(r.due_date ? { due_date: r.due_date } : {}),
-        ...(r.status ? { status: r.status } : {}),
-        ...(r.ref_type ? { ref_type: r.ref_type } : {}),
-        ...(r.ref_id ? { ref_id: r.ref_id } : {}),
-        ...(r.source_title ? { source_title: r.source_title } : {}),
-        ...(r.source_summary ? { source_summary: r.source_summary } : {}),
-        report_category: normalizeReportCategory((r.fixed_expense_id ? (mapReport[String(r.fixed_expense_id)] || '') : '') || toReportCat(r.category || r.category_detail))
-      } as any]
+    return buildStatementTxs(Array.isArray(fin) ? fin : [], Array.isArray(pexp) ? pexp : [], {
+      properties: propsArr,
+      recurring_payments: Array.isArray(recurs) ? recurs : [],
+      excludeOrphanFixedSnapshots: excludeOrphans,
     })
-    const finMapped: Tx[] = (Array.isArray(fin) ? fin : []).map((t: any) => ({
-      id: t.id,
-      kind: t.kind,
-      amount: Number(t.amount || 0),
-      currency: t.currency || 'AUD',
-      property_id: t.property_id || undefined,
-      occurred_at: t.occurred_at,
-      category: mapCat(t.category),
-      ...(t.category_detail ? { category_detail: t.category_detail } : {}),
-      ...(t.note ? { note: t.note } : {}),
-      ...(t.ref_type ? { ref_type: t.ref_type } : {}),
-      ...(t.ref_id ? { ref_id: t.ref_id } : {}),
-      ...(t.source_title ? { source_title: t.source_title } : {}),
-      ...(t.source_summary ? { source_summary: t.source_summary } : {}),
-      ...(t.invoice_url ? { invoice_url: t.invoice_url } : {})
-    } as any))
-    return { txs: [...finMapped, ...peMapped], orphanRows, orphanCount, orphanTotal }
   }
 
   useEffect(() => {
@@ -1040,9 +1000,9 @@ export default function PropertyRevenuePage() {
             setMergeUi((prev) => ({ ...prev, open: true, percent: 100, status: 'exception', stage: fallback ? '合并失败，已回退下载原报表' : '合并失败', detail: text }))
             message.error(text)
           }
-          const mergeSuccess = (detail?: string) => {
+          const mergeSuccess = (detail?: string, keepOpen?: boolean) => {
             setMergeUi((prev) => ({ ...prev, open: true, percent: 100, status: 'success', stage: '合并完成，开始下载', detail: detail || prev.detail }))
-            setTimeout(() => setMergeUi((prev) => ({ ...prev, open: false })), 1200)
+            if (!keepOpen) setTimeout(() => setMergeUi((prev) => ({ ...prev, open: false })), 1200)
           }
           updateMerge(5, '正在生成报表PDF...')
           try {
@@ -1065,12 +1025,12 @@ export default function PropertyRevenuePage() {
                   ? `Fiscal Year Statement - ${month.format('YYYY-MM')}`
                   : `Statement - ${month.format('YYYY-MM')}`
             const filename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
-            const downloadBlob = (blob: Blob) => {
+            const downloadBlob = (blob: Blob, forcedName?: string) => {
               try {
                 const url = URL.createObjectURL(blob)
                 const a = document.createElement('a')
                 a.href = url
-                a.download = filename
+                a.download = forcedName || filename
                 document.body.appendChild(a)
                 a.click()
                 document.body.removeChild(a)
@@ -1079,14 +1039,28 @@ export default function PropertyRevenuePage() {
             }
             let statementBlob: Blob
             let pageCount = 0
+            let splitInfo: any = null
 
             if (period === 'month') {
+              setMergeSplit(null)
+              updateMerge(22, '正在检查照片体积...')
+              try {
+                const stats = await fetch(`${API_BASE}/finance/monthly-statement-photo-stats?pid=${encodeURIComponent(previewPid!)}&month=${encodeURIComponent(month.format('YYYY-MM'))}`, { headers: authHeaders() })
+                if (stats.ok) {
+                  const j = await stats.json() as any
+                  if (j?.shouldSplit) {
+                    splitInfo = j
+                    setMergeSplit(j)
+                    updateMerge(24, '照片较多，将自动拆分下载', `照片数：${Number(j.totalPhotoCount || 0)}（维修 ${Number(j.maintenancePhotoCount || 0)} / 深清 ${Number(j.deepCleaningPhotoCount || 0)}）`)
+                  }
+                }
+              } catch {}
               updateMerge(26, '正在生成高清报表PDF...')
-              const photosMode = exportQuality === 'standard' ? 'thumbnail' : 'full'
+              const photosMode = splitInfo?.shouldSplit ? 'off' : (exportQuality === 'standard' ? 'thumbnail' : 'full')
               const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: photosMode }),
+                body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: photosMode, sections: 'all' }),
               })
               if (!resp.ok) {
                 let msg = `HTTP ${resp.status}`
@@ -1194,8 +1168,9 @@ export default function PropertyRevenuePage() {
               }
               updateMerge(95, '正在下载合并后的PDF...')
               const blob = await resp.blob()
-              downloadBlob(blob)
-              mergeSuccess(`附件数：${invUrls.length}`)
+              const mergedFilename = splitInfo?.shouldSplit ? filename.replace(/\.pdf$/i, ' - no photos.pdf') : filename
+              downloadBlob(blob, mergedFilename)
+              mergeSuccess(`附件数：${invUrls.length}${splitInfo?.shouldSplit ? '（已拆分照片）' : ''}`, !!splitInfo?.shouldSplit)
             } catch (e: any) {
               mergeFail(e?.message || '合并下载失败', true)
               downloadBlob(statementBlob)
@@ -1232,7 +1207,20 @@ export default function PropertyRevenuePage() {
                   </div>
                 ) : null}
                 <div style={{ visibility: previewReady ? 'visible' : 'hidden' }}>
-                  <MonthlyStatementView ref={printRef} month={month.format('YYYY-MM')} propertyId={previewPid || undefined} orders={orders} txs={txs} properties={properties} landlords={landlords} showChinese={showChinese} showInvoices={false} pdfMode={statementPdfMode} />
+                  <MonthlyStatementView
+                    ref={printRef}
+                    month={month.format('YYYY-MM')}
+                    propertyId={previewPid || undefined}
+                    orders={orders}
+                    txs={txs}
+                    properties={properties}
+                    landlords={landlords}
+                    showChinese={showChinese}
+                    showInvoices={false}
+                    mode="pdf"
+                    pdfMode
+                    renderEngine="print"
+                  />
                 </div>
               </div>
             </>
@@ -1312,6 +1300,12 @@ export default function PropertyRevenuePage() {
         <Progress percent={mergeUi.percent || 0} status={mergeUi.status === 'active' ? 'active' : (mergeUi.status === 'success' ? 'success' : 'exception')} />
         {mergeUi.detail ? <div style={{ marginTop: 8, color: mergeUi.status === 'exception' ? '#cf1322' : 'rgba(0,0,0,0.65)' }}>{mergeUi.detail}</div> : null}
         {mergeUi.status === 'active' ? <div style={{ marginTop: 8, color: 'rgba(0,0,0,0.45)' }}>请勿关闭页面，合并完成后会自动触发下载。</div> : null}
+        {(mergeSplit?.shouldSplit && mergeUi.status !== 'active') ? (
+          <div style={{ marginTop: 12, display:'flex', flexWrap:'wrap', gap: 10 }}>
+            <Button onClick={() => downloadSplitPart('maintenance')} loading={splitDl.maintenance}>下载维修照片PDF</Button>
+            <Button onClick={() => downloadSplitPart('deep_cleaning')} loading={splitDl.deepCleaning}>下载深清照片PDF</Button>
+          </div>
+        ) : null}
       </Modal>
     </Card>
   )

@@ -2,10 +2,19 @@
 
 ## Dev (2026-03-02)
 
+- Version: `0.2.7-statement-pdf.20260302+build.1`
 - Finance recurring: Fix duplicate fixed-expense snapshots triggered by pause/resume; introduce dedicated `POST /recurring/payments/:id/pause` and `POST /recurring/payments/:id/resume` with transaction-level locking and idempotent snapshot ensure.
 - Finance recurring UI: Switch Pause/Resume buttons to the new endpoints and suppress the auto-snapshot effect right after toggles to avoid repeated inserts on refresh/re-focus.
 - DB: Add a production-safe dedup + unique index migration with transaction + backup tables + post-check queries: `20260302_recurring_fixed_expense_month_unique_safe.sql` (fixed_expense_id + month_key).
 - Safety: Deprecate using `DELETE /crud/recurring_payments/:id` as “pause” (now returns 405 and points to the pause endpoint); keep `purge=1` for actual delete.
+- Finance PDF: Add global concurrency limiter for `/finance/monthly-statement-pdf` and `/finance/merge-pdf` (queue + 429 when busy) to reduce OOM risk.
+- Finance PDF: Harden Playwright rendering — short-lived context/page, container-friendly Chromium args, and strict timeouts to avoid hangs.
+- Finance PDF: Only retry once for “browser/context/target closed” class errors (reset browser cache and retry).
+- Finance PDF: Preview renders in the same mode as download (no toggle), and download/preview share a single statement tx mapping layer.
+- Finance PDF: Only include maintenance/deep-cleaning photos when status is completed or reviewed approved.
+- Finance PDF: Normalize typography (Times New Roman for Latin, PingFang SC for CJK) and bolden section headers/photo labels.
+- Finance PDF: Reduce calendar page splitting by compact layout + dynamic zoom to fit the remaining page.
+- Finance PDF: When photos are too many, auto-split download — merged statement excludes photos and provides separate Maintenance/Deep Cleaning photo PDFs.
 
 Author: MZ System Bot <dev@mzpropertygroup.com>
 

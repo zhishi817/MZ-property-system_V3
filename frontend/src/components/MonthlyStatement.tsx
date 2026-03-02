@@ -5,15 +5,15 @@ import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, tx
 import { computeMonthlyStatementBalance, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../lib/statementBalances'
 import { formatStatementDesc } from '../lib/statementDesc'
 import { Table } from 'antd'
-import { forwardRef, useEffect, useState } from 'react'
+import { forwardRef, useEffect, useRef, useState } from 'react'
 import { API_BASE, authHeaders } from '../lib/api'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; invoice_url?: string; ref_type?: string; ref_id?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
-type DeepCleaning = { id: string; work_no?: string; property_id?: string; occurred_at?: string; completed_at?: string; started_at?: string; ended_at?: string; category?: string; photo_urls?: any; repair_photo_urls?: any; pay_method?: string; total_cost?: any }
-type Maintenance = { id: string; work_no?: string; property_id?: string; occurred_at?: string; completed_at?: string; started_at?: string; ended_at?: string; category?: string; details?: any; repair_notes?: string; photo_urls?: any; repair_photo_urls?: any }
+type DeepCleaning = { id: string; work_no?: string; property_id?: string; occurred_at?: string; completed_at?: string; started_at?: string; ended_at?: string; category?: string; status?: string; review_status?: string; photo_urls?: any; repair_photo_urls?: any; pay_method?: string; total_cost?: any }
+type Maintenance = { id: string; work_no?: string; property_id?: string; occurred_at?: string; completed_at?: string; started_at?: string; ended_at?: string; category?: string; status?: string; review_status?: string; details?: any; repair_notes?: string; photo_urls?: any; repair_photo_urls?: any }
 
 function safeJsonParse(v: any) {
   if (v === null || v === undefined) return null
@@ -44,9 +44,20 @@ export default forwardRef<HTMLDivElement, {
   landlords: Landlord[]
   showChinese?: boolean
   showInvoices?: boolean
+  sections?: string[]
+  includeJobPhotos?: boolean
+  mode?: 'preview' | 'pdf'
   pdfMode?: boolean
   renderEngine?: 'canvas' | 'print'
-}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords, showChinese = true, showInvoices = false, pdfMode = false, renderEngine = 'canvas' }, ref) {
+}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords, showChinese = true, showInvoices = false, sections, includeJobPhotos = true, mode, pdfMode = false, renderEngine = 'canvas' }, ref) {
+  const resolvedMode: 'preview' | 'pdf' = mode || ((pdfMode || renderEngine === 'print') ? 'pdf' : 'preview')
+  const isPdfMode = resolvedMode === 'pdf'
+  const sectionSet = new Set((Array.isArray(sections) ? sections : []).map(s => String(s || '').trim().toLowerCase()).filter(Boolean))
+  const showAllSections = sectionSet.size === 0 || sectionSet.has('all')
+  const showBaseSections = showAllSections || sectionSet.has('base')
+  const showDeepSection = showAllSections || sectionSet.has('deep_cleaning') || sectionSet.has('deepcleaning')
+  const showMaintSection = showAllSections || sectionSet.has('maintenance')
+  const canIncludeJobPhotos = includeJobPhotos !== false
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
   const relatedOrdersRaw = monthSegments(
@@ -94,9 +105,64 @@ export default forwardRef<HTMLDivElement, {
   const [expandedDeepClean, setExpandedDeepClean] = useState<Record<string, boolean>>({})
   const [expandAllMaintenance, setExpandAllMaintenance] = useState(false)
   const [expandedMaintenance, setExpandedMaintenance] = useState<Record<string, boolean>>({})
+  const calendarRef = useRef<HTMLDivElement>(null)
+  const [calendarZoom, setCalendarZoom] = useState(1)
+  const calendarAdjustCountRef = useRef(0)
+  const calendarSigRef = useRef('')
+  useEffect(() => {
+    if (!isPdfMode || renderEngine !== 'print') {
+      calendarAdjustCountRef.current = 0
+      calendarSigRef.current = ''
+      if (calendarZoom !== 1) setCalendarZoom(1)
+      return
+    }
+    const el = calendarRef.current
+    if (!el) return
+
+    const sig = `${month}__${propertyId || ''}__${relatedOrdersSorted.length}`
+    if (calendarSigRef.current !== sig) {
+      calendarSigRef.current = sig
+      calendarAdjustCountRef.current = 0
+      if (calendarZoom !== 1) setCalendarZoom(1)
+    }
+    if (calendarAdjustCountRef.current >= 4) return
+
+    const raf = requestAnimationFrame(() => {
+      const probe = document.createElement('div')
+      probe.style.position = 'absolute'
+      probe.style.visibility = 'hidden'
+      probe.style.height = '273mm'
+      probe.style.width = '0'
+      document.body.appendChild(probe)
+      const pageContentHeightPx = probe.getBoundingClientRect().height
+      probe.remove()
+      if (!pageContentHeightPx || !Number.isFinite(pageContentHeightPx)) return
+
+      const rect = el.getBoundingClientRect()
+      const top = rect.top + window.scrollY
+      const height = rect.height
+      if (!height || !Number.isFinite(height)) return
+
+      const startPage = Math.floor(top / pageContentHeightPx)
+      const endPage = Math.floor((top + height) / pageContentHeightPx)
+      const safetyPadding = 8
+      if (endPage <= startPage) {
+        if (calendarZoom !== 1) setCalendarZoom(1)
+        return
+      }
+      const pageBottom = (startPage + 1) * pageContentHeightPx - safetyPadding
+      const desired = (pageBottom - top) / height
+      const clamped = Math.max(0.9, Math.min(1, desired))
+      const next = Number(clamped.toFixed(3))
+      calendarAdjustCountRef.current += 1
+      if (Math.abs(next - calendarZoom) > 0.002) setCalendarZoom(next)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [isPdfMode, renderEngine, month, propertyId, relatedOrdersSorted.length, calendarZoom])
   useEffect(() => {
     (async () => {
       try {
+        if (!showInvoices || !showBaseSections) { setInvoiceMap({}); return }
         if (!propertyId) { setInvoiceMap({}); return }
         const from = start.format('YYYY-MM-DD')
         const to = endNext.subtract(1,'day').format('YYYY-MM-DD')
@@ -131,12 +197,12 @@ export default forwardRef<HTMLDivElement, {
         setInvoiceMap(map)
       } catch { setInvoiceMap({}) }
     })()
-  }, [propertyId, month, expensesInMonthAll.length])
+  }, [propertyId, month, expensesInMonthAll.length, showInvoices, showBaseSections])
   useEffect(() => {
     (async () => {
       try {
         setDeepCleaningsLoaded(false)
-        if (!propertyId) { setDeepCleanings([]); setDeepCleaningsLoaded(true); return }
+        if (!propertyId || !showDeepSection) { setDeepCleanings([]); setDeepCleaningsLoaded(true); return }
         const codeRaw = String(property?.code || '').trim()
         const code = (() => {
           if (!codeRaw) return ''
@@ -180,12 +246,12 @@ export default forwardRef<HTMLDivElement, {
         setDeepCleaningsLoaded(true)
       }
     })()
-  }, [propertyId, month])
+  }, [propertyId, month, showDeepSection])
   useEffect(() => {
     ;(async () => {
       try {
         setMaintenancesLoaded(false)
-        if (!propertyId) { setMaintenances([]); setMaintenancesLoaded(true); return }
+        if (!propertyId || !showMaintSection) { setMaintenances([]); setMaintenancesLoaded(true); return }
         const codeRaw = String(property?.code || '').trim()
         const code = (() => {
           if (!codeRaw) return ''
@@ -229,7 +295,7 @@ export default forwardRef<HTMLDivElement, {
         setMaintenancesLoaded(true)
       }
     })()
-  }, [propertyId, month])
+  }, [propertyId, month, showMaintSection])
   const orderIncomeShare = relatedOrders.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
   const rentIncome = orderIncomeShare
   const orderById = new Map((orders || []).map(o => [String(o.id), o]))
@@ -383,6 +449,11 @@ export default forwardRef<HTMLDivElement, {
     if (k === 'other' || s === '其他') return 'Other'
     return s
   }
+  const allowPhotosInReportOfRecord = (r: any): boolean => {
+    const st = String((r as any)?.status || '').trim().toLowerCase()
+    const rv = String((r as any)?.review_status || (r as any)?.reviewStatus || '').trim().toLowerCase()
+    return st === 'completed' || st === 'approved' || rv === 'approved'
+  }
   const otherItems = expensesInMonthForReportAll
     .filter(e => catKey(e) === 'other')
     .map(e => otherDescOfTx(e))
@@ -462,25 +533,52 @@ export default forwardRef<HTMLDivElement, {
     return { segs, laneMap, laneCount: lanesEnd.length }
   }
   const sourceColor: Record<string, string> = { airbnb: '#FF9F97', booking: '#98B6EC', offline: '#DC8C03', other: '#98B6EC' }
+  const monthlyStatementReady = !!propertyId && (showDeepSection ? deepCleaningsLoaded : true) && (showMaintSection ? maintenancesLoaded : true)
 
   return (
     <div
       ref={ref as any}
       data-monthly-statement-root="1"
-      data-pdf-mode={pdfMode ? '1' : '0'}
+      data-monthly-statement-ready={monthlyStatementReady ? '1' : '0'}
+      data-mode={resolvedMode}
+      data-pdf-mode={isPdfMode ? '1' : '0'}
       data-deep-clean-loaded={deepCleaningsLoaded ? '1' : '0'}
       data-deep-clean-count={String((deepCleanings || []).length)}
       data-maint-loaded={maintenancesLoaded ? '1' : '0'}
       data-maint-count={String((maintenances || []).length)}
-      style={{ padding: 24, fontFamily: "Times New Roman, Times, serif, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, Noto Sans SC, Arial Unicode MS, sans-serif" }}
+      style={{ padding: 24, fontFamily: "StatementFont, serif" }}
     >
       <style>{`
+        @font-face {
+          font-family: 'StatementFont';
+          src: local('Times New Roman'), local('Times');
+          font-weight: 400;
+          unicode-range: U+0000-00FF, U+0100-024F, U+1E00-1EFF;
+        }
+        @font-face {
+          font-family: 'StatementFont';
+          src: local('PingFang SC'), local('PingFangSC-Regular'), local('Noto Sans CJK SC'), local('Noto Sans SC'), local('Microsoft YaHei');
+          font-weight: 400;
+          unicode-range: U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FF00-FFEF;
+        }
+        @font-face {
+          font-family: 'StatementFont';
+          src: local('Times New Roman Bold'), local('TimesNewRomanPS-BoldMT'), local('Times Bold');
+          font-weight: 700;
+          unicode-range: U+0000-00FF, U+0100-024F, U+1E00-1EFF;
+        }
+        @font-face {
+          font-family: 'StatementFont';
+          src: local('PingFang SC Semibold'), local('PingFangSC-Semibold'), local('PingFang SC Medium'), local('PingFangSC-Medium'), local('Noto Sans CJK SC'), local('Noto Sans SC'), local('Microsoft YaHei');
+          font-weight: 700;
+          unicode-range: U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FF00-FFEF;
+        }
         [data-monthly-statement-root="1"] table { width: 100%; border-collapse: collapse; }
         [data-monthly-statement-root="1"] table tr > * { border-bottom: 1px solid #ddd; }
         [data-monthly-statement-root="1"] [data-statement-row="1"] { border-bottom: 1px solid #ddd; }
         @media print {
           @page { size: A4; margin: 12mm; }
-          html, body { margin: 0; padding: 0; font-family: 'Times New Roman', Times, serif, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', 'Arial Unicode MS', sans-serif; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
+          html, body { margin: 0; padding: 0; font-family: StatementFont, serif; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
           [data-monthly-statement-root="1"] [data-keep-with-next="true"] { break-after: avoid; page-break-after: avoid; }
           [data-monthly-statement-root="1"] [data-print-break-before="true"] { break-before: page; page-break-before: always; }
           [data-monthly-statement-root="1"] [data-pdf-avoid-cut="true"] { break-inside: avoid; page-break-inside: avoid; }
@@ -506,7 +604,9 @@ export default forwardRef<HTMLDivElement, {
         </div>
       </div>
       <div style={{ borderTop: '2px solid transparent', margin: '8px 0' }}></div>
-      <div data-keep-with-next="true" style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Monthly Overview Data 月度概览数据' : 'Monthly Overview Data'}</div>
+      {showBaseSections ? (
+        <>
+      <div data-keep-with-next="true" style={{ marginTop: 24, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Monthly Overview Data 月度概览数据' : 'Monthly Overview Data'}</div>
       <table style={{ width: '100%', borderCollapse:'collapse' }}>
         <tbody>
           <tr><td style={{ padding:6 }}>{showChinese ? 'Total rent income 总租金' : 'Total rent income'}</td><td style={{ textAlign:'right', padding:6 }}>${fmt(totalIncome)}</td></tr>
@@ -515,7 +615,7 @@ export default forwardRef<HTMLDivElement, {
         </tbody>
       </table>
 
-      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rental Details 租赁明细' : 'Rental Details'}</div>
+      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rental Details 租赁明细' : 'Rental Details'}</div>
       <div data-statement-row="1" style={{ fontWeight: 700, display:'flex', justifyContent:'space-between', padding:'6px 8px' }}>
         <span>{showChinese ? 'Total Income 总收入' : 'Total Income'}</span><span>${fmt(totalIncome)}</span>
       </div>
@@ -574,7 +674,7 @@ export default forwardRef<HTMLDivElement, {
 
       {showBalance && balance && (
         <>
-          <div data-keep-with-next="true" style={{ fontWeight: 600, marginTop: 16, background:'#eef3fb', padding:'6px 8px' }}>
+          <div data-keep-with-next="true" style={{ fontWeight: 700, marginTop: 16, background:'#eef3fb', padding:'6px 8px' }}>
             {hasFurniture ? (showChinese ? 'Furniture cost & carry-over 家具费用与结转' : 'Furniture cost & carry-over') : (showChinese ? 'Carry-over 结转' : 'Carry-over')}
           </div>
           <table style={{ width:'100%' }}>
@@ -631,14 +731,14 @@ export default forwardRef<HTMLDivElement, {
         </>
       )}
 
-      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rent Records 租金记录' : 'Rent Records'}</div>
+      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Rent Records 租金记录' : 'Rent Records'}</div>
       <table style={{ width:'100%', borderCollapse:'collapse' }}>
         <thead>
           <tr>
-            <th style={{ textAlign:'left', padding:6, borderBottom:'1px solid #ddd' }}>{showChinese ? '入住' : 'Check-in'}</th>
-            <th style={{ textAlign:'left', padding:6, borderBottom:'1px solid #ddd' }}>{showChinese ? '退房' : 'Check-out'}</th>
-            <th style={{ textAlign:'right', padding:6, borderBottom:'1px solid #ddd' }}>{showChinese ? '晚数' : 'Nights'}</th>
-            <th style={{ textAlign:'right', padding:6, borderBottom:'1px solid #ddd' }}>{showChinese ? '金额' : 'Amount'}</th>
+            <th style={{ textAlign:'left', padding:6, borderBottom:'1px solid #ddd', fontWeight: 700 }}>{showChinese ? '入住' : 'Check-in'}</th>
+            <th style={{ textAlign:'left', padding:6, borderBottom:'1px solid #ddd', fontWeight: 700 }}>{showChinese ? '退房' : 'Check-out'}</th>
+            <th style={{ textAlign:'right', padding:6, borderBottom:'1px solid #ddd', fontWeight: 700 }}>{showChinese ? '晚数' : 'Nights'}</th>
+            <th style={{ textAlign:'right', padding:6, borderBottom:'1px solid #ddd', fontWeight: 700 }}>{showChinese ? '金额' : 'Amount'}</th>
           </tr>
         </thead>
         <tbody>
@@ -654,25 +754,41 @@ export default forwardRef<HTMLDivElement, {
       </table>
 
 
-      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Order Calendar 订单日历' : 'Order Calendar'}</div>
+      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Order Calendar 订单日历' : 'Order Calendar'}</div>
       {(() => {
         const weeks: Array<{ ws: any; we: any }> = []
         let cur = weekStart.clone()
         while (cur.isBefore(weekEnd.add(1,'day'))) { const ws = cur.clone(); const we = cur.clone().endOf('week'); weeks.push({ ws, we }); cur = cur.add(1,'week') }
+        const calendarPadding = isPdfMode ? 6 : 8
+        const weekMargin = isPdfMode ? '4px 0' : '6px 0'
+        const weekMinBase = isPdfMode ? 110 : 120
+        const laneRowHeight = isPdfMode ? 30 : 36
+        const weekExtra = isPdfMode ? 40 : 48
+        const daysFontSize = isPdfMode ? 10 : 11
+        const daysPadding = isPdfMode ? '1px 0' : '2px 0'
+        const gridTop = isPdfMode ? 20 : 22
+        const eventTopBase = isPdfMode ? 26 : 28
+        const eventHeight = isPdfMode ? 24 : 28
+        const eventFontSize = isPdfMode ? 11 : 12
+        const eventPadX = isPdfMode ? 6 : 8
         return (
-          <div className="landlord-calendar" style={{ background:'#fff', border:'1px solid #eef2f7', borderRadius:12, padding:8 }}>
+          <div
+            ref={calendarRef}
+            className="landlord-calendar"
+            style={{ background:'#fff', border:'1px solid #eef2f7', borderRadius:12, padding: calendarPadding, ...(isPdfMode && renderEngine === 'print' ? ({ zoom: calendarZoom } as any) : {}) }}
+          >
             {weeks.map(({ ws, we }, idx) => {
               const { segs, laneMap, laneCount } = buildWeekSegments(ws, we)
               const daysRow = Array.from({ length: 7 }).map((_, i) => ws.startOf('day').add(i, 'day'))
               const hasMonthDay = daysRow.some(d => d.isSame(start, 'month'))
               if (!hasMonthDay && segs.length === 0) return null
               return (
-                <div key={idx} data-pdf-avoid-cut="true" style={{ position:'relative', minHeight: Math.max(120, laneCount * 36 + 48), margin:'6px 0' }}>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:0, padding:'2px 0', fontSize:11 }}>
+                <div key={idx} data-pdf-avoid-cut="true" style={{ position:'relative', minHeight: Math.max(weekMinBase, laneCount * laneRowHeight + weekExtra), margin: weekMargin }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:0, padding: daysPadding, fontSize: daysFontSize }}>
                     {daysRow.map((d, i) => {
                       const inMonth = d.isSame(start, 'month')
                       return (
-                        <div key={i} style={{ textAlign:'center', color: inMonth ? '#4b5563' : '#bfbfbf', fontWeight: inMonth ? 600 : 400 }}>
+                        <div key={i} style={{ textAlign:'center', color: inMonth ? '#4b5563' : '#bfbfbf', fontWeight: inMonth ? 700 : 400 }}>
                           {d.format('DD/MM')}
                         </div>
                       )
@@ -681,7 +797,7 @@ export default forwardRef<HTMLDivElement, {
                   {daysRow.map((d, dIdx) => {
                     const inMonth = d.isSame(start, 'month')
                     return (
-                      <div key={dIdx} style={{ position:'absolute', left: `${(dIdx * 100) / 7}%`, width: `${100/7}%`, top: 22, bottom:0 }}>
+                      <div key={dIdx} style={{ position:'absolute', left: `${(dIdx * 100) / 7}%`, width: `${100/7}%`, top: gridTop, bottom:0 }}>
                         {!inMonth ? <div style={{ position:'absolute', inset:0, background:'#f9fafb', opacity:0.7, pointerEvents:'none', zIndex:0 }} /> : null}
                         <div style={{ position:'absolute', right:0, top:0, bottom:0, width:1, borderRight:'1px dashed #eee' }} />
                       </div>
@@ -705,16 +821,16 @@ export default forwardRef<HTMLDivElement, {
                       <div
                         key={seg.id}
                         className={`mz-evt mz-evt--${platform} mz-lane-${lane} ${isStart ? 'fc-event-start' : ''} ${isEnd ? 'fc-event-end' : ''}`}
-                        style={{ position:'absolute', left: `${leftPct}%`, right: `${rightPct}%`, top: 28 + lane * 36, height: 28, zIndex: 1 }}
+                        style={{ position:'absolute', left: `${leftPct}%`, right: `${rightPct}%`, top: eventTopBase + lane * laneRowHeight, height: eventHeight, zIndex: 1 }}
                       >
                         <div
                           className="mz-booking"
-                          style={{ borderWidth: 2, borderStyle:'solid', width:'100%', height:'100%', padding:'0 8px', boxSizing:'border-box', display:'flex', alignItems:'center', justifyContent:'space-between', fontSize:12 }}
+                          style={{ borderWidth: 2, borderStyle:'solid', width:'100%', height:'100%', padding:`0 ${eventPadX}px`, boxSizing:'border-box', display:'flex', alignItems:'center', justifyContent:'space-between', fontSize: eventFontSize }}
                         >
                           <span className="bar-left" style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontWeight:500 }}>
                             {String(o.guest_name || '')}
                           </span>
-                          <span className="bar-right" style={{ fontWeight:600 }}>
+                          <span className="bar-right" style={{ fontWeight:700 }}>
                             {(() => {
                               const v = Number((o as any).visible_net_income ?? (o as any).net_income ?? 0)
                               const visibleNet = Math.max(0, Number(v.toFixed(2)))
@@ -731,11 +847,13 @@ export default forwardRef<HTMLDivElement, {
           </div>
         )
       })()}
+        </>
+      ) : null}
 
-      {(deepCleanings && deepCleanings.length) ? (
-        <div data-deep-clean-section="1" data-pdf-break-before={pdfMode ? 'true' : undefined}>
-          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'}</div>
-          {!pdfMode ? (
+      {(showDeepSection && deepCleanings && deepCleanings.length) ? (
+        <div data-deep-clean-section="1" data-pdf-break-before={isPdfMode ? 'true' : undefined}>
+          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'}</div>
+          {!isPdfMode ? (
             <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 8 }}>
               <button
                 type="button"
@@ -768,7 +886,8 @@ export default forwardRef<HTMLDivElement, {
                   if (typeof raw === 'string') { try { const j = JSON.parse(raw); return Array.isArray(j) ? j : [] } catch { return [] } }
                   return []
                 })().map((u: any) => String(u || '')).filter(Boolean)
-                const expanded = !!pdfMode || !!expandAllDeepClean || !!expandedDeepClean[did]
+                const allowPhotosInPdf = allowPhotosInReportOfRecord(d)
+                const expanded = !!isPdfMode || !!expandAllDeepClean || !!expandedDeepClean[did]
                 const beforeShow = expanded ? beforeArr : beforeArr.slice(0, 2)
                 const afterShow = expanded ? afterArr : afterArr.slice(0, 2)
                 const pairRows = (() => {
@@ -780,18 +899,19 @@ export default forwardRef<HTMLDivElement, {
                 return (
                   <div
                     key={did || String(d?.work_no || '')}
-                    data-pdf-avoid-cut={pdfMode ? 'true' : undefined}
-                    data-pdf-break-before={(pdfMode && pairRows.length > 6) ? 'true' : undefined}
+                    data-pdf-avoid-cut={isPdfMode ? 'true' : undefined}
+                    data-pdf-break-before={(isPdfMode && pairRows.length > 6) ? 'true' : undefined}
                     style={{ border:'1px solid #eaeef5', borderRadius: 12, padding: 12 }}
                   >
                     <div style={{ display:'flex', justifyContent:'space-between', gap: 12, flexWrap:'wrap' }}>
-                      <div style={{ fontWeight: 700 }}>{String(d?.work_no || d?.id || '')}</div>
-                      <div style={{ color:'#111' }}>{timeLabel || '-'}</div>
-                      <div style={{ color:'#111' }}>{(pdfMode || renderEngine === 'print') ? `Area: ${areaToEn(d?.category)}` : (showChinese ? `区域：${String(d?.category || '-')}` : `Area: ${String(d?.category || '-')}`)}</div>
+                      <div style={{ fontWeight: 700 }}>{`Job Number: ${String(d?.work_no || d?.id || '')}`}</div>
+                      <div style={{ color:'#111' }}>{`Completion Date: ${timeLabel || '-'}`}</div>
+                      <div style={{ color:'#111' }}>{isPdfMode ? `Area: ${areaToEn(d?.category)}` : (showChinese ? `区域：${String(d?.category || '-')}` : `Area: ${String(d?.category || '-')}`)}</div>
                     </div>
-                    {pdfMode ? (
+                    {isPdfMode ? (
+                      (allowPhotosInPdf && canIncludeJobPhotos) ? (
                       <div style={{ display:'flex', flexDirection:'column', gap: 10, marginTop: 10 }}>
-                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, fontWeight: 600 }}>
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, fontWeight: 700 }}>
                           <div>Before</div>
                           <div>After</div>
                         </div>
@@ -818,11 +938,12 @@ export default forwardRef<HTMLDivElement, {
                           </div>
                         ))}
                       </div>
+                      ) : null
                     ) : (
                       <>
                         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, marginTop: 10 }}>
                       <div>
-                            <div style={{ fontWeight: 600, marginBottom: 6 }}>Before</div>
+                            <div style={{ fontWeight: 700, marginBottom: 6 }}>Before</div>
                             <div style={{ display:'grid', gridTemplateColumns: expanded ? 'repeat(2, 1fr)' : '1fr', gap: 10 }}>
                               {beforeShow.length ? beforeShow.map((u: string, idx: number) => (
                                 <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
@@ -833,7 +954,7 @@ export default forwardRef<HTMLDivElement, {
                             {!expanded && beforeArr.length > beforeShow.length ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${beforeArr.length - beforeShow.length}`}</div> : null}
                           </div>
                           <div>
-                            <div style={{ fontWeight: 600, marginBottom: 6 }}>After</div>
+                            <div style={{ fontWeight: 700, marginBottom: 6 }}>After</div>
                             <div style={{ display:'grid', gridTemplateColumns: expanded ? 'repeat(2, 1fr)' : '1fr', gap: 10 }}>
                               {afterShow.length ? afterShow.map((u: string, idx: number) => (
                                 <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
@@ -864,12 +985,12 @@ export default forwardRef<HTMLDivElement, {
         </div>
       ) : null}
 
-      {(maintenances && maintenances.length) ? (
-        <div data-maint-section="1" data-pdf-break-before={pdfMode ? 'true' : undefined}>
-          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>
+      {(showMaintSection && maintenances && maintenances.length) ? (
+        <div data-maint-section="1" data-pdf-break-before={isPdfMode ? 'true' : undefined}>
+          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>
             {showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'}
           </div>
-          {!pdfMode ? (
+          {!isPdfMode ? (
             <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 8 }}>
               <button
                 type="button"
@@ -899,7 +1020,8 @@ export default forwardRef<HTMLDivElement, {
                 }
                 const beforeArr = urlArr((m as any)?.photo_urls).map((u: any) => String(u || '')).filter(Boolean)
                 const afterArr = urlArr((m as any)?.repair_photo_urls).map((u: any) => String(u || '')).filter(Boolean)
-                const expanded = !!pdfMode || !!expandAllMaintenance || !!expandedMaintenance[mid]
+                const allowPhotosInPdf = allowPhotosInReportOfRecord(m)
+                const expanded = !!isPdfMode || !!expandAllMaintenance || !!expandedMaintenance[mid]
                 const beforeShow = expanded ? beforeArr : beforeArr.slice(0, 2)
                 const afterShow = expanded ? afterArr : afterArr.slice(0, 2)
                 const pairRows = (() => {
@@ -911,19 +1033,20 @@ export default forwardRef<HTMLDivElement, {
                 return (
                   <div
                     key={mid || String(m?.work_no || '')}
-                    data-pdf-avoid-cut={pdfMode ? 'true' : undefined}
-                    data-pdf-break-before={(pdfMode && pairRows.length > 2) ? 'true' : undefined}
+                    data-pdf-avoid-cut={isPdfMode ? 'true' : undefined}
+                    data-pdf-break-before={(isPdfMode && pairRows.length > 2) ? 'true' : undefined}
                     style={{ border:'1px solid #eaeef5', borderRadius: 12, padding: 12 }}
                   >
                     <div style={{ display:'flex', justifyContent:'space-between', gap: 12, flexWrap:'wrap' }}>
-                      <div style={{ fontWeight: 700 }}>{String(m?.work_no || m?.id || '')}</div>
-                      <div style={{ color:'#111' }}>{timeLabel || '-'}</div>
-                      <div style={{ color:'#111' }}>{(pdfMode || renderEngine === 'print') ? `Area: ${areaToEn(m?.category)}` : (showChinese ? `区域：${String(m?.category || '-')}` : `Area: ${String(m?.category || '-')}`)}</div>
+                      <div style={{ fontWeight: 700 }}>{`Job Number: ${String(m?.work_no || m?.id || '')}`}</div>
+                      <div style={{ color:'#111' }}>{`Completion Date: ${timeLabel || '-'}`}</div>
+                      <div style={{ color:'#111' }}>{isPdfMode ? `Area: ${areaToEn(m?.category)}` : (showChinese ? `区域：${String(m?.category || '-')}` : `Area: ${String(m?.category || '-')}`)}</div>
                     </div>
-                    {summary ? <div style={{ marginTop: 8, whiteSpace:'pre-wrap' }}>{summary}</div> : null}
-                    {pdfMode ? (
+                    {summary ? <div style={{ marginTop: 8, whiteSpace:'pre-wrap', wordBreak:'break-word' }}>{`Job Description: ${summary}`}</div> : null}
+                    {isPdfMode ? (
+                      (allowPhotosInPdf && canIncludeJobPhotos) ? (
                       <div style={{ display:'flex', flexDirection:'column', gap: 10, marginTop: 10 }}>
-                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, fontWeight: 600 }}>
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, fontWeight: 700 }}>
                           <div>Before</div>
                           <div>After</div>
                         </div>
@@ -955,11 +1078,12 @@ export default forwardRef<HTMLDivElement, {
                           </div>
                         ))}
                       </div>
+                      ) : null
                     ) : (
                       <>
                         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, marginTop: 10 }}>
                           <div>
-                            <div style={{ fontWeight: 600, marginBottom: 6 }}>Before</div>
+                            <div style={{ fontWeight: 700, marginBottom: 6 }}>Before</div>
                             <div style={{ display:'grid', gridTemplateColumns: expanded ? 'repeat(2, 1fr)' : '1fr', gap: 10 }}>
                               {beforeShow.length ? beforeShow.map((u: string, idx: number) => (
                                 <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
@@ -970,7 +1094,7 @@ export default forwardRef<HTMLDivElement, {
                             {!expanded && beforeArr.length > beforeShow.length ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${beforeArr.length - beforeShow.length}`}</div> : null}
                           </div>
                           <div>
-                            <div style={{ fontWeight: 600, marginBottom: 6 }}>After</div>
+                            <div style={{ fontWeight: 700, marginBottom: 6 }}>After</div>
                             <div style={{ display:'grid', gridTemplateColumns: expanded ? 'repeat(2, 1fr)' : '1fr', gap: 10 }}>
                               {afterShow.length ? afterShow.map((u: string, idx: number) => (
                                 <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
@@ -1001,9 +1125,9 @@ export default forwardRef<HTMLDivElement, {
         </div>
       ) : null}
 
-      {showInvoices && (
+      {(showBaseSections && showInvoices) && (
       <>
-      <div data-keep-with-next="true" style={{ marginTop: 24, fontWeight: 600, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Expense Invoices 支出发票' : 'Expense Invoices'}</div>
+      <div data-keep-with-next="true" style={{ marginTop: 24, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Expense Invoices 支出发票' : 'Expense Invoices'}</div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap: 12 }}>
         {expensesInMonthAll.map(e => {
           const eid = String((e as any).id)

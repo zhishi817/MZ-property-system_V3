@@ -18,8 +18,27 @@ export function getPlaywrightDiagnostics() {
   return { pwVersion, browsersPath, skip, executablePath, executableExists }
 }
 
+export async function resetChromiumBrowser() {
+  const b = browser
+  browser = null
+  launching = null
+  if (b) {
+    try { await b.close() } catch {}
+  }
+}
+
 export async function getChromiumBrowser(): Promise<Browser> {
-  if (browser) return browser
+  if (browser) {
+    try {
+      if ((browser as any).isConnected?.() === false) {
+        await resetChromiumBrowser()
+      } else {
+        return browser
+      }
+    } catch {
+      await resetChromiumBrowser()
+    }
+  }
   if (launching) return launching
   launching = (async () => {
     const prefer = '/ms-playwright'
@@ -30,9 +49,15 @@ export async function getChromiumBrowser(): Promise<Browser> {
     } catch {}
     try {
       const b = await chromium.launch({
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
       })
       browser = b
+      try {
+        b.on('disconnected', () => {
+          browser = null
+          launching = null
+        })
+      } catch {}
       launching = null
       return b
     } catch (e: any) {
