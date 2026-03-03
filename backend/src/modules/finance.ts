@@ -1201,7 +1201,15 @@ router.post(
     async function fetchBytes(u: string): Promise<Uint8Array> {
       const url = normalizeFetchUrl(u)
       assertAllowed(url)
-      const r = await fetch(url)
+      const timeoutMs = Math.max(1000, Math.min(120000, Number(process.env.MERGE_FETCH_TIMEOUT_MS || 20000)))
+      const ac = new AbortController()
+      const t = setTimeout(() => { try { ac.abort() } catch {} }, timeoutMs)
+      let r: any
+      try {
+        r = await fetch(url, { signal: ac.signal } as any)
+      } finally {
+        clearTimeout(t)
+      }
       if (!r.ok) throw new Error(`fetch failed: ${r.status}`)
       const ab = await r.arrayBuffer()
       return new Uint8Array(ab)
@@ -1340,6 +1348,27 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
     try {
       await context.addCookies([{ name: 'auth', value: token, url: front } as any])
       const page = await context.newPage()
+      const pushCap = (arr: string[], s: string, cap = 30) => {
+        const v = String(s || '').slice(0, 500)
+        if (!v) return
+        arr.push(v)
+        if (arr.length > cap) arr.splice(0, arr.length - cap)
+      }
+      const consoleNotes: string[] = []
+      const pageErrors: string[] = []
+      const requestFails: string[] = []
+      try {
+        page.on('console', (msg: any) => {
+          const t = String(msg?.type?.() || '')
+          if (t === 'error' || t === 'warning') pushCap(consoleNotes, `${t}: ${String(msg?.text?.() || '')}`)
+        })
+        page.on('pageerror', (err: any) => pushCap(pageErrors, String(err?.message || err || 'pageerror')))
+        page.on('requestfailed', (req: any) => {
+          const u = String(req?.url?.() || '')
+          const ft = String(req?.failure?.()?.errorText || '')
+          pushCap(requestFails, ft ? `${u} (${ft})` : u)
+        })
+      } catch {}
       const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)))
       const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
       page.setDefaultTimeout(waitTimeoutMs)
@@ -1347,7 +1376,33 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
       await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
       await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
-      await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs })
+      try {
+        await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs })
+      } catch (e: any) {
+        const diag = await page.evaluate(() => {
+          const root = document.querySelector('[data-monthly-statement-root="1"]') as any
+          const getA = (k: string) => (root && root.getAttribute) ? (root.getAttribute(k) || '') : ''
+          return {
+            href: String(location.href || ''),
+            ready: getA('data-monthly-statement-ready'),
+            deep_loaded: getA('data-deep-clean-loaded'),
+            maint_loaded: getA('data-maint-loaded'),
+            has_root: !!root,
+            title: String(document.title || ''),
+          }
+        }).catch(() => null as any)
+        const parts = [
+          `wait ready timeout: ${String(e?.message || e || 'timeout')}`,
+          diag ? `root=${diag.has_root ? '1' : '0'} ready=${diag.ready || ''} deep=${diag.deep_loaded || ''} maint=${diag.maint_loaded || ''}` : '',
+          diag?.title ? `title=${diag.title}` : '',
+          diag?.href ? `href=${diag.href}` : '',
+          consoleNotes.length ? `console=${consoleNotes.slice(-8).join(' | ')}` : '',
+          pageErrors.length ? `pageerror=${pageErrors.slice(-6).join(' | ')}` : '',
+          requestFails.length ? `requestfailed=${requestFails.slice(-10).join(' | ')}` : '',
+        ].filter(Boolean)
+        try { console.error('[monthly-statement-pdf][ready-timeout]', parts.join(' ; ')) } catch {}
+        throw new Error(parts.join(' ; '))
+      }
       await page.waitForFunction(async () => {
         const imgs = Array.from(document.images || [])
         await Promise.all(imgs.map(img => {

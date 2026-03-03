@@ -101,6 +101,17 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS avg_nightly_price numeric;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS nights integer;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS note text;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS stay_type text NOT NULL DEFAULT 'guest';
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'orders_stay_type_check'
+  ) THEN
+    ALTER TABLE orders
+      ADD CONSTRAINT orders_stay_type_check
+      CHECK (stay_type IN ('guest', 'owner'));
+  END IF;
+END $$;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS raw_checkin_text text;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS raw_checkout_text text;
 

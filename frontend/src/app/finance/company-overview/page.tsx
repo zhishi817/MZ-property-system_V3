@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getJSON, apiList, API_BASE, authHeaders, patchJSON } from '../../../lib/api'
 import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/properties'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
-import { monthSegments, toDayStr, getMonthSegmentsForProperty } from '../../../lib/orders'
+import { monthSegments, toDayStr, getMonthSegmentsForProperty, isOwnerStay } from '../../../lib/orders'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome } from '../../../lib/financeTx'
 import { isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
 import { formatStatementDesc } from '../../../lib/statementDesc'
@@ -16,7 +16,7 @@ import { nextToggleValue } from '../../../lib/toggleStatus'
 import { exportElementToPdfBlob } from '../../../lib/pdfExport'
 import { buildStatementTxs, type StatementTx } from '../../../lib/statementTx'
 
-type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
+type Order = { id: string; property_id?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = StatementTx
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 type DeepCleaning = { id: string; property_id?: string; property_code?: string; code?: string; occurred_at?: string; completed_at?: string; submitted_at?: string; created_at?: string; pay_method?: any; total_cost?: any; labor_cost?: any; consumables?: any; work_no?: string }
@@ -521,10 +521,12 @@ export default function PropertyRevenuePage() {
         const otherIncome = Number(b?.otherIncome || 0)
         const otherIncomeDesc = b?.otherIncomeCats ? Array.from(b.otherIncomeCats).filter(Boolean).join('、') || '-' : '-'
         const totalIncome = rentIncome + otherIncome
-        const nights = related.reduce((s,x)=> s + Number(x.nights || 0), 0)
+        const ownerNights = related.reduce((s, x) => s + (isOwnerStay(x) ? Number(x.nights || 0) : 0), 0)
+        const guestNights = related.reduce((s, x) => s + (!isOwnerStay(x) ? Number(x.nights || 0) : 0), 0)
         const daysInMonth = rm.end.diff(rm.start,'day')
-        const occRate = daysInMonth ? Math.round(((nights / daysInMonth)*100 + Number.EPSILON)*100)/100 : 0
-        const avg = nights ? Math.round(((rentIncome / nights) + Number.EPSILON)*100)/100 : 0
+        const availableDays = Math.max(0, daysInMonth - ownerNights)
+        const occRate = availableDays ? Math.round(((guestNights / availableDays)*100 + Number.EPSILON)*100)/100 : 0
+        const avg = guestNights ? Math.round(((rentIncome / guestNights) + Number.EPSILON)*100)/100 : 0
         const landlordByList = landlords.find(l => (l.property_ids||[]).includes(p.id))
         const landlordByLink = landlords.find(l => String((l as any).id||'') === String((p as any).landlord_id||''))
         const rate = landlordByList?.management_fee_rate ?? landlordByLink?.management_fee_rate ?? 0

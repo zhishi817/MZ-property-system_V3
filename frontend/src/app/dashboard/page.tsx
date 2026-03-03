@@ -9,11 +9,11 @@ dayjs.extend(minMax)
 dayjs.extend(isSameOrAfter)
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE, getJSON } from '../../lib/api'
-import { monthSegments, toDayStr, parseDateOnly } from '../../lib/orders'
+import { monthSegments, toDayStr, parseDateOnly, isOwnerStay } from '../../lib/orders'
 import { PieChart as RePieChart, Pie as RePie, Cell as ReCell, Tooltip as ReTooltip, Legend as ReLegend, ResponsiveContainer } from 'recharts'
 
  type Property = { id: string; code?: string; address?: string; region?: string; biz_category?: 'leased'|'management_fee'; type?: string }
-type Order = { id: string; source?: string; property_id?: string; checkin?: string; checkout?: string; nights?: number; avg_nightly_price?: number; net_income?: number; price?: number }
+type Order = { id: string; source?: string; stay_type?: 'guest' | 'owner'; property_id?: string; checkin?: string; checkout?: string; nights?: number; avg_nightly_price?: number; net_income?: number; price?: number }
 type PropertyExpense = { id: string; property_id?: string; amount?: number; occurred_at?: string }
 type Landlord = { id: string; name: string }
 
@@ -134,8 +134,10 @@ export default function DashboardPage() {
   const daysInMonth = monthEndNext.diff(monthStart, 'day')
   const monthOrders = useMemo(() => monthSegments(orders, monthStart) as any[], [orders, monthStart])
   const occupancyOverall = useMemo(() => {
-    const nights = monthOrders.reduce((sum, o) => sum + Number(o.nights || 0), 0)
-    const occ = totalProps ? (nights / (totalProps * daysInMonth)) * 100 : 0
+    const ownerNights = monthOrders.reduce((sum, o) => sum + (isOwnerStay(o) ? Number(o.nights || 0) : 0), 0)
+    const guestNights = monthOrders.reduce((sum, o) => sum + (!isOwnerStay(o) ? Number(o.nights || 0) : 0), 0)
+    const available = Math.max(0, (totalProps * daysInMonth) - ownerNights)
+    const occ = available ? (guestNights / available) * 100 : 0
     return Math.round(occ * 100) / 100
   }, [monthOrders, totalProps, daysInMonth])
   const prevMonthStart = useMemo(() => dayjs(monthStart).subtract(1, 'month').startOf('month'), [monthStart])
@@ -150,15 +152,19 @@ export default function DashboardPage() {
   const prevDaysInMonth = prevMonthEndNext.diff(prevMonthStart, 'day')
   const occupancyOverallPrev = useMemo(() => {
     const prevSegs = monthSegments(orders, prevMonthStart) as any[]
-    const nights = prevSegs.reduce((sum, o) => sum + Number(o.nights || 0), 0)
-    const occ = totalProps ? (nights / (totalProps * prevDaysInMonth)) * 100 : 0
+    const ownerNights = prevSegs.reduce((sum, o) => sum + (isOwnerStay(o) ? Number(o.nights || 0) : 0), 0)
+    const guestNights = prevSegs.reduce((sum, o) => sum + (!isOwnerStay(o) ? Number(o.nights || 0) : 0), 0)
+    const available = Math.max(0, (totalProps * prevDaysInMonth) - ownerNights)
+    const occ = available ? (guestNights / available) * 100 : 0
     return Math.round(occ * 100) / 100
   }, [orders, totalProps, prevDaysInMonth, prevMonthStart])
   const occupancyByRegion = regions.map(reg => {
     const propIds = properties.filter(p => displayRegion(p.region) === reg).map(p => p.id)
     const regOrders = monthOrders.filter(o => propIds.includes(String(o.property_id)))
-    const nights = regOrders.reduce((sum, o) => sum + Number(o.nights || 0), 0)
-    const occ = propIds.length ? (nights / (propIds.length * daysInMonth)) * 100 : 0
+    const ownerNights = regOrders.reduce((sum, o) => sum + (isOwnerStay(o) ? Number(o.nights || 0) : 0), 0)
+    const guestNights = regOrders.reduce((sum, o) => sum + (!isOwnerStay(o) ? Number(o.nights || 0) : 0), 0)
+    const available = Math.max(0, (propIds.length * daysInMonth) - ownerNights)
+    const occ = available ? (guestNights / available) * 100 : 0
     return { region: reg, occ: Math.round(occ * 100) / 100 }
   })
 

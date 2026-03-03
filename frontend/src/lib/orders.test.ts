@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import dayjs from 'dayjs'
-import { calcOrderMonthAmounts, toDayStr } from './orders'
+import { calcOrderMonthAmounts, toDayStr, isOwnerStay, normalizeStayType } from './orders'
 import { execFileSync } from 'node:child_process'
 
 describe('calcOrderMonthAmounts', () => {
@@ -86,5 +86,22 @@ describe('toDayStr', () => {
       .trim()
     expect(la).toBe('2026-03-07')
     expect(toDayStr('2026-03-08T00:30:00Z')).toBe('2026-03-08')
+  })
+})
+
+describe('stay_type', () => {
+  it('defaults to guest for missing/unknown values', () => {
+    expect(normalizeStayType(undefined)).toBe('guest')
+    expect(normalizeStayType(null)).toBe('guest')
+    expect(normalizeStayType('')).toBe('guest')
+    expect(normalizeStayType('random')).toBe('guest')
+  })
+
+  it('treats owner stay as owner', () => {
+    expect(normalizeStayType('owner')).toBe('owner')
+    expect(normalizeStayType(' OWNER ')).toBe('owner')
+    expect(isOwnerStay({ stay_type: 'owner' })).toBe(true)
+    expect(isOwnerStay({ stay_type: 'guest' })).toBe(false)
+    expect(isOwnerStay({})).toBe(false)
   })
 })

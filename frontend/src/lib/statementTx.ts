@@ -114,7 +114,8 @@ export function mapTxForStatement(rawTx: any, ctx: BuildStatementTxContext): Sta
   const kind = kindRaw as StatementTxKind
   const id = String(rawTx.id || '').trim()
   if (!id) return null
-  const amount = Number(rawTx.amount || 0)
+  const amount0 = Number(rawTx.amount || 0)
+  const amount = Number.isFinite(amount0) ? amount0 : 0
   const currency = String(rawTx.currency || 'AUD')
   const occurred_at = String(rawTx.occurred_at || '').trim()
   if (!occurred_at) return null
@@ -169,7 +170,8 @@ export function buildStatementTxs(fin: any[], pexp: any[], ctx: BuildStatementTx
     const isOrphanSnapshot = !!(fid && isSnapshot && !recurringIdSet.has(fid))
     if (isOrphanSnapshot) {
       orphanCount += 1
-      orphanTotal += Number((r as any)?.amount || 0)
+      const a0 = Number((r as any)?.amount || 0)
+      orphanTotal += Number.isFinite(a0) ? a0 : 0
       if (orphanRows.length < 50) orphanRows.push(r)
       if (excludeOrphans) continue
     }
@@ -185,4 +187,3 @@ export function buildStatementTxs(fin: any[], pexp: any[], ctx: BuildStatementTx
 
   return { txs: [...finOut, ...peOut], orphanRows, orphanCount, orphanTotal }
 }
-

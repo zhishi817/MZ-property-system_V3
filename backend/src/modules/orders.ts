@@ -277,6 +277,7 @@ const createOrderSchema = z.object({
   guest_name: z.string().optional(),
   guest_phone: z.string().optional(),
   note: z.coerce.string().optional(),
+  stay_type: z.enum(['guest', 'owner']).optional(),
   checkin: z.coerce.string().optional(),
   checkout: z.coerce.string().optional(),
   price: z.coerce.number().optional(),
@@ -349,8 +350,14 @@ async function ensureOrdersColumns() {
     const { pgPool } = require('../dbAdapter')
     await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
     await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS note text')
+    await pgPool?.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS stay_type text NOT NULL DEFAULT 'guest'`)
     await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric')
     await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text')
+    await pgPool?.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_stay_type_check') THEN
+        ALTER TABLE orders ADD CONSTRAINT orders_stay_type_check CHECK (stay_type IN ('guest','owner'));
+      END IF;
+    END $$;`)
   } catch {}
 }
 async function ensureOrdersIndexes() {
@@ -471,7 +478,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
       if (Array.isArray(dup) && dup[0]) {
         if (force) {
           try {
-              const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code','payment_currency','payment_received','total_payment_raw','processed_status']
+              const allow = ['source','external_id','property_id','guest_name','guest_phone','note','stay_type','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code','payment_currency','payment_received','total_payment_raw','processed_status']
             const payload: any = {}
             for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
             const row = await pgRunInTransaction(async (client: any) => {
@@ -637,7 +644,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
 
   if (hasPg) {
     try {
-      const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+      const allow = ['source','external_id','property_id','guest_name','guest_phone','note','stay_type','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
       const allowExtra = ['payment_currency','payment_received']
       const allowAll = [...allow, ...allowExtra]
       const payload: any = {}
@@ -686,7 +693,7 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
           await pgPool?.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text')
           await pgPool?.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = \"idx_orders_confirmation_code_unique\") THEN BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;')
           await pgPool?.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_confirmation_code_unique ON orders(source, confirmation_code) WHERE confirmation_code IS NOT NULL')
-          const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+          const allow = ['source','external_id','property_id','guest_name','guest_phone','note','stay_type','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
           const allowExtra2 = ['payment_currency','payment_received']
           const payload2: any = {}
           for (const k of [...allow, ...allowExtra2]) { if ((updated as any)[k] !== undefined) payload2[k] = (updated as any)[k] }
@@ -1055,7 +1062,7 @@ router.post('/import', requirePerm('order.manage'), text({ type: ['text/csv','te
               const cc = (newOrder as any).confirmation_code
               const dup: any[] = (await pgSelect('orders', 'id', { confirmation_code: cc })) || []
               if (Array.isArray(dup) && dup[0]) {
-                const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+                const allow = ['source','external_id','property_id','guest_name','guest_phone','note','stay_type','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
                 const payload: any = {}
                 for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
                 await pgUpdate('orders', String(dup[0].id), payload)
@@ -1180,7 +1187,7 @@ router.post('/import/resolve/:id', requirePerm('order.manage'), async (req, res)
         const dup: any[] = (await pgSelect('orders', 'id', { confirmation_code: (newOrder as any).confirmation_code })) || []
         if (Array.isArray(dup) && dup[0]) {
           try {
-            const allow = ['source','external_id','property_id','guest_name','guest_phone','note','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
+            const allow = ['source','external_id','property_id','guest_name','guest_phone','note','stay_type','checkin','checkout','price','cleaning_fee','net_income','avg_nightly_price','nights','currency','status','confirmation_code']
             const payload: any = {}
             for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
             const row = await pgUpdate('orders', String(dup[0].id), payload)

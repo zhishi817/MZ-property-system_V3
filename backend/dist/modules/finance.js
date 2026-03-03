@@ -1275,7 +1275,19 @@ exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 
         async function fetchBytes(u) {
             const url = normalizeFetchUrl(u);
             assertAllowed(url);
-            const r = await fetch(url);
+            const timeoutMs = Math.max(1000, Math.min(120000, Number(process.env.MERGE_FETCH_TIMEOUT_MS || 20000)));
+            const ac = new AbortController();
+            const t = setTimeout(() => { try {
+                ac.abort();
+            }
+            catch (_a) { } }, timeoutMs);
+            let r;
+            try {
+                r = await fetch(url, { signal: ac.signal });
+            }
+            finally {
+                clearTimeout(t);
+            }
             if (!r.ok)
                 throw new Error(`fetch failed: ${r.status}`);
             const ab = await r.arrayBuffer();
@@ -1436,6 +1448,33 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
         try {
             await context.addCookies([{ name: 'auth', value: token, url: front }]);
             const page = await context.newPage();
+            const pushCap = (arr, s, cap = 30) => {
+                const v = String(s || '').slice(0, 500);
+                if (!v)
+                    return;
+                arr.push(v);
+                if (arr.length > cap)
+                    arr.splice(0, arr.length - cap);
+            };
+            const consoleNotes = [];
+            const pageErrors = [];
+            const requestFails = [];
+            try {
+                page.on('console', (msg) => {
+                    var _a, _b;
+                    const t = String(((_a = msg === null || msg === void 0 ? void 0 : msg.type) === null || _a === void 0 ? void 0 : _a.call(msg)) || '');
+                    if (t === 'error' || t === 'warning')
+                        pushCap(consoleNotes, `${t}: ${String(((_b = msg === null || msg === void 0 ? void 0 : msg.text) === null || _b === void 0 ? void 0 : _b.call(msg)) || '')}`);
+                });
+                page.on('pageerror', (err) => pushCap(pageErrors, String((err === null || err === void 0 ? void 0 : err.message) || err || 'pageerror')));
+                page.on('requestfailed', (req) => {
+                    var _a, _b, _c;
+                    const u = String(((_a = req === null || req === void 0 ? void 0 : req.url) === null || _a === void 0 ? void 0 : _a.call(req)) || '');
+                    const ft = String(((_c = (_b = req === null || req === void 0 ? void 0 : req.failure) === null || _b === void 0 ? void 0 : _b.call(req)) === null || _c === void 0 ? void 0 : _c.errorText) || '');
+                    pushCap(requestFails, ft ? `${u} (${ft})` : u);
+                });
+            }
+            catch (_a) { }
             const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)));
             const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)));
             page.setDefaultTimeout(waitTimeoutMs);
@@ -1443,7 +1482,37 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
             await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => { });
             await page.evaluate(() => { var _a; return (_a = document.fonts) === null || _a === void 0 ? void 0 : _a.ready; }).catch(() => { });
-            await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs });
+            try {
+                await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs });
+            }
+            catch (e) {
+                const diag = await page.evaluate(() => {
+                    const root = document.querySelector('[data-monthly-statement-root="1"]');
+                    const getA = (k) => (root && root.getAttribute) ? (root.getAttribute(k) || '') : '';
+                    return {
+                        href: String(location.href || ''),
+                        ready: getA('data-monthly-statement-ready'),
+                        deep_loaded: getA('data-deep-clean-loaded'),
+                        maint_loaded: getA('data-maint-loaded'),
+                        has_root: !!root,
+                        title: String(document.title || ''),
+                    };
+                }).catch(() => null);
+                const parts = [
+                    `wait ready timeout: ${String((e === null || e === void 0 ? void 0 : e.message) || e || 'timeout')}`,
+                    diag ? `root=${diag.has_root ? '1' : '0'} ready=${diag.ready || ''} deep=${diag.deep_loaded || ''} maint=${diag.maint_loaded || ''}` : '',
+                    (diag === null || diag === void 0 ? void 0 : diag.title) ? `title=${diag.title}` : '',
+                    (diag === null || diag === void 0 ? void 0 : diag.href) ? `href=${diag.href}` : '',
+                    consoleNotes.length ? `console=${consoleNotes.slice(-8).join(' | ')}` : '',
+                    pageErrors.length ? `pageerror=${pageErrors.slice(-6).join(' | ')}` : '',
+                    requestFails.length ? `requestfailed=${requestFails.slice(-10).join(' | ')}` : '',
+                ].filter(Boolean);
+                try {
+                    console.error('[monthly-statement-pdf][ready-timeout]', parts.join(' ; '));
+                }
+                catch (_b) { }
+                throw new Error(parts.join(' ; '));
+            }
             await page.waitForFunction(async () => {
                 const imgs = Array.from(document.images || []);
                 await Promise.all(imgs.map(img => {
@@ -1467,7 +1536,7 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             try {
                 await context.close();
             }
-            catch (_a) { }
+            catch (_c) { }
         }
     }
     catch (e) {

@@ -24,6 +24,7 @@ export default function PublicMonthlyStatementPrintPage() {
   const [photoQ, setPhotoQ] = useState<number | undefined>(undefined)
   const ref = useRef<HTMLDivElement>(null)
   const inited = useRef<boolean>(false)
+  const fetchTimeoutMs = 25000
 
   useEffect(() => {
     if (inited.current) return
@@ -71,19 +72,19 @@ export default function PublicMonthlyStatementPrintPage() {
     } catch {}
   }, [])
 
-  useEffect(() => { getJSON<any>('/properties').then(j => setProperties(j || [])).catch(() => setProperties([])) }, [])
+  useEffect(() => { getJSON<any>('/properties', { timeoutMs: fetchTimeoutMs }).then(j => setProperties(j || [])).catch(() => setProperties([])) }, [])
   useEffect(() => {
-    getJSON<Order[]>('/orders').then(setOrders).catch(() => setOrders([]))
+    getJSON<Order[]>('/orders', { timeoutMs: fetchTimeoutMs }).then(setOrders).catch(() => setOrders([]))
     ;(async () => {
       try {
-        const fin: any[] = await getJSON<any[]>('/finance')
-        const pexp: any[] = await apiList<any[]>('property_expenses')
-        const recurs: any[] = await apiList<any[]>('recurring_payments')
+        const fin: any[] = await getJSON<any[]>('/finance', { timeoutMs: fetchTimeoutMs })
+        const pexp: any[] = await apiList<any[]>('property_expenses', undefined, { timeoutMs: fetchTimeoutMs })
+        const recurs: any[] = await apiList<any[]>('recurring_payments', undefined, { timeoutMs: fetchTimeoutMs })
         const built = buildStatementTxs(fin, pexp, { properties, recurring_payments: recurs, excludeOrphanFixedSnapshots: false })
         setTxs(built.txs as any)
       } catch { setTxs([]) }
     })()
-    getJSON<Landlord[]>('/landlords').then(setLandlords).catch(() => setLandlords([]))
+    getJSON<Landlord[]>('/landlords', { timeoutMs: fetchTimeoutMs }).then(setLandlords).catch(() => setLandlords([]))
   }, [properties])
 
   if (!propertyId) return <div />
