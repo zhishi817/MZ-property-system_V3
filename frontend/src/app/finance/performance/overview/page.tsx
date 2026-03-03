@@ -5,10 +5,10 @@ import minMax from 'dayjs/plugin/minMax'
 dayjs.extend(minMax)
 import { useEffect, useMemo, useState } from 'react'
 import { getJSON } from '../../../../lib/api'
-import { monthSegments } from '../../../../lib/orders'
+import { monthSegments, isOwnerStay } from '../../../../lib/orders'
 import { sortPropertiesByRegionThenCode } from '../../../../lib/properties'
 
-type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number }
+type Order = { id: string; property_id?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number }
 type Property = { id: string; code?: string; address?: string }
 
 export default function PerformanceOverviewPage() {
@@ -39,13 +39,15 @@ export default function PerformanceOverviewPage() {
       const segsAll = monthSegments(orders, mStart)
       // 仅显示有订单的月份
       if (!segsAll.length) return null
-      const occNights = segsAll.reduce((sum, o) => sum + Number(o.nights || 0), 0)
+      const ownerNights = segsAll.reduce((sum, o) => sum + (isOwnerStay(o) ? Number(o.nights || 0) : 0), 0)
+      const guestNights = segsAll.reduce((sum, o) => sum + (!isOwnerStay(o) ? Number(o.nights || 0) : 0), 0)
       const rentIncome = segsAll.reduce((sum, o) => sum + Number(((o as any).visible_net_income ?? (o as any).net_income ?? 0)), 0)
       const cleaningCount = segsAll.filter(o => Number(o.cleaning_fee || 0) > 0).length
       const cleaningFee = segsAll.reduce((s,o)=> s + Number(o.cleaning_fee || 0), 0)
-      const vacancyNights = Math.max(0, (properties.length * daysInMonth) - occNights)
-      const occRate = properties.length ? Math.round(((occNights / (properties.length * daysInMonth)) * 100) * 100) / 100 : 0
-      const adr = occNights ? Math.round(((rentIncome / occNights) + Number.EPSILON) * 100) / 100 : 0
+      const availableNights = Math.max(0, (properties.length * daysInMonth) - ownerNights)
+      const vacancyNights = Math.max(0, availableNights - guestNights)
+      const occRate = availableNights ? Math.round(((guestNights / availableNights) * 100) * 100) / 100 : 0
+      const adr = guestNights ? Math.round(((rentIncome / guestNights) + Number.EPSILON) * 100) / 100 : 0
       return { key: mStart.format('YYYY-MM'), label: mStart.format('YYYY-MM'), start: mStart, end: mEndNext, daysInMonth, rentIncome: Math.round(rentIncome * 100) / 100, vacancy: vacancyNights, occRate, adr, cleaningFee: Math.round(cleaningFee * 100) / 100, cleaningCount }
     }).filter(Boolean) as any[]
     return defs
@@ -54,12 +56,14 @@ export default function PerformanceOverviewPage() {
   const propRows = useMemo(() => {
     function propMonthStats(pid: string, start: any, end: any, dim: number) {
       const segs = monthSegments(orders.filter(o => String(o.property_id) === pid), start)
-      const occNights = segs.reduce((sum, o) => sum + Number(o.nights || 0), 0)
+      const ownerNights = segs.reduce((sum, o) => sum + (isOwnerStay(o) ? Number(o.nights || 0) : 0), 0)
+      const guestNights = segs.reduce((sum, o) => sum + (!isOwnerStay(o) ? Number(o.nights || 0) : 0), 0)
       const rentIncome = segs.reduce((sum, o) => sum + Number(((o as any).visible_net_income ?? (o as any).net_income ?? 0)), 0)
       const cleaningFee = segs.reduce((s,o)=> s + Number(o.cleaning_fee || 0), 0)
       const cleaningCount = segs.filter(o => Number(o.cleaning_fee || 0) > 0).length
-      const occRate = dim ? Math.round(((occNights / dim) * 100) * 100) / 100 : 0
-      const adr = occNights ? Math.round(((rentIncome / occNights) + Number.EPSILON) * 100) / 100 : 0
+      const availableDays = Math.max(0, dim - ownerNights)
+      const occRate = availableDays ? Math.round(((guestNights / availableDays) * 100) * 100) / 100 : 0
+      const adr = guestNights ? Math.round(((rentIncome / guestNights) + Number.EPSILON) * 100) / 100 : 0
       const seen = new Set<string>()
       segs.forEach(s => {
         const ci = dayjs(s.checkin).startOf('day')
@@ -74,7 +78,7 @@ export default function PerformanceOverviewPage() {
         const ds = start.startOf('day').add(i,'day').format('YYYY-MM-DD')
         if (!seen.has(ds)) vacantDays.push(ds)
       }
-      return { rentIncome: Math.round(rentIncome * 100) / 100, vacancy: Math.max(0, dim - occNights), occRate, adr, cleaningFee: Math.round(cleaningFee * 100) / 100, cleaningCount, vacantDays }
+      return { rentIncome: Math.round(rentIncome * 100) / 100, vacancy: Math.max(0, availableDays - guestNights), occRate, adr, cleaningFee: Math.round(cleaningFee * 100) / 100, cleaningCount, vacantDays }
     }
     const plist = selectedPid ? (properties || []).filter(p => p.id === selectedPid) : sortPropertiesByRegionThenCode(properties as any)
     const out: any[] = []

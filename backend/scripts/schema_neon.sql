@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS orders (
   guest_name text,
   guest_phone text,
   note text,
+  stay_type text NOT NULL DEFAULT 'guest',
   checkin date,
   checkout date,
   price numeric,
@@ -102,6 +103,16 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 CREATE INDEX IF NOT EXISTS idx_orders_property ON orders(property_id);
 CREATE INDEX IF NOT EXISTS idx_orders_checkout ON orders(checkout);
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'orders_stay_type_check'
+  ) THEN
+    ALTER TABLE orders
+      ADD CONSTRAINT orders_stay_type_check
+      CHECK (stay_type IN ('guest', 'owner'));
+  END IF;
+END $$;
 
 -- Email sync state for IMAP incremental/backfill
 CREATE TABLE IF NOT EXISTS email_sync_state (

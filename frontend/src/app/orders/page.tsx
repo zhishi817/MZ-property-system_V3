@@ -15,7 +15,7 @@ import { sortProperties } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 import { buildSegments, placeIntoLanes } from '../../lib/calendarTimeline'
 
-type Order = { id: string; source?: string; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; note?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number; email_header_at?: string; total_payment_raw?: number; processed_status?: string }
+type Order = { id: string; source?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; note?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number; email_header_at?: string; total_payment_raw?: number; processed_status?: string }
 // guest_phone 在后端已支持，这里表单也支持录入
 type CleaningTask = { id: string; status: 'pending'|'scheduled'|'done' }
 const debugOnce = (..._args: any[]) => {}
@@ -700,6 +700,7 @@ export default function OrdersPage() {
     const p0 = (Array.isArray(properties) ? properties : []).find(x => x.id === pid0)
     editForm.setFieldsValue({
       ...o,
+      stay_type: (o as any).stay_type || 'guest',
       confirmation_code: o.confirmation_code || '',
       property_id: pid0,
       property_code: p0 ? (p0.code || p0.address || pid0) : o.property_code,
@@ -721,6 +722,7 @@ export default function OrdersPage() {
       const p = (Array.isArray(properties) ? properties : []).find(x => x.id === pid)
       editForm.setFieldsValue({
         ...full,
+        stay_type: (full as any).stay_type || 'guest',
         confirmation_code: (full as any).confirmation_code || '',
         property_id: pid,
         property_code: p ? (p.code || p.address || pid) : full.property_code,
@@ -861,12 +863,14 @@ export default function OrdersPage() {
     const selectedNew = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
     const payload = {
       source: v.source,
+      stay_type: v.stay_type || 'guest',
       status: v.status || 'confirmed',
       property_id: v.property_id,
       property_code: v.property_code || selectedNew?.code || selectedNew?.address || v.property_id,
       confirmation_code: v.confirmation_code,
       guest_name: v.guest_name,
       guest_phone: v.guest_phone,
+      note: v.note,
       checkin: v.checkin.format('YYYY-MM-DD') + 'T12:00:00',
       checkout: v.checkout.format('YYYY-MM-DD') + 'T11:59:59',
       price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price,
@@ -1478,6 +1482,9 @@ export default function OrdersPage() {
         <Form.Item name="status" label="状态" initialValue="confirmed"> 
           <Select options={[{ value: 'confirmed', label: '已确认' }, { value: 'canceled', label: '已取消' }]} />
         </Form.Item>
+        <Form.Item name="stay_type" label="入住类型" initialValue="guest" extra="房东自住不会计入入住率与日均指标">
+          <Select options={[{ value: 'guest', label: '住客入住' }, { value: 'owner', label: '房东自住' }]} />
+        </Form.Item>
         <Form.Item noStyle shouldUpdate>
           {() => {
             const st = form.getFieldValue('status')
@@ -1803,6 +1810,11 @@ export default function OrdersPage() {
             <Col span={8}>
               <Form.Item name="status" label="状态" initialValue="confirmed"> 
                 <Select options={[{ value: 'confirmed', label: '已确认' }, { value: 'canceled', label: '已取消' }]} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="stay_type" label="入住类型" initialValue="guest" extra="房东自住不会计入入住率与日均指标">
+                <Select options={[{ value: 'guest', label: '住客入住' }, { value: 'owner', label: '房东自住' }]} />
               </Form.Item>
             </Col>
             <Col span={8}>

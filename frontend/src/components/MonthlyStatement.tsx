@@ -1,12 +1,12 @@
 "use client"
 import dayjs from 'dayjs'
-import { monthSegments, toDayStr, parseDateOnly } from '../lib/orders'
+import { monthSegments, toDayStr, parseDateOnly, isOwnerStay } from '../lib/orders'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../lib/financeTx'
 import { computeMonthlyStatementBalance, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../lib/statementBalances'
 import { formatStatementDesc } from '../lib/statementDesc'
 import { Table } from 'antd'
 import { forwardRef, useEffect, useRef, useState } from 'react'
-import { API_BASE, authHeaders } from '../lib/api'
+import { API_BASE, authHeaders, fetchWithTimeout } from '../lib/api'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; invoice_url?: string; ref_type?: string; ref_id?: string }
@@ -74,6 +74,7 @@ export default forwardRef<HTMLDivElement, {
   const showMaintSectionFinal = showMaintSection && !(isPdfMode && photosModeNorm === 'off')
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
+  const fetchTimeoutMs = isPdfMode ? 20000 : 30000
   const relatedOrdersRaw = monthSegments(
     orders.filter(o => {
       if (propertyId && o.property_id !== propertyId) return false
@@ -235,7 +236,7 @@ export default forwardRef<HTMLDivElement, {
         ]
         const rs = await Promise.all(urls.map(async (u) => {
           try {
-            const res = await fetch(u, { headers: authHeaders() })
+            const res = await fetchWithTimeout(u, { headers: authHeaders() }, { timeoutMs: fetchTimeoutMs })
             return res.ok ? await res.json() : []
           } catch {
             return []
@@ -284,7 +285,7 @@ export default forwardRef<HTMLDivElement, {
         ]
         const rs = await Promise.all(urls.map(async (u) => {
           try {
-            const res = await fetch(u, { headers: authHeaders() })
+            const res = await fetchWithTimeout(u, { headers: authHeaders() }, { timeoutMs: fetchTimeoutMs })
             return res.ok ? await res.json() : []
           } catch {
             return []
@@ -333,10 +334,12 @@ export default forwardRef<HTMLDivElement, {
     lang: showChinese ? 'zh' : 'en',
   })
   const totalIncome = rentIncome + otherIncome
-  const occupiedNights = relatedOrders.reduce((s, x) => s + Number(x.nights || 0), 0)
+  const ownerNights = relatedOrders.reduce((s, x) => s + (isOwnerStay(x) ? Number(x.nights || 0) : 0), 0)
+  const guestNights = relatedOrders.reduce((s, x) => s + (!isOwnerStay(x) ? Number(x.nights || 0) : 0), 0)
   const daysInMonth = endNext.diff(start, 'day')
-  const occupancyRate = daysInMonth ? Math.round(((occupiedNights / daysInMonth) * 100 + Number.EPSILON) * 100) / 100 : 0
-  const dailyAverage = occupiedNights ? Math.round(((totalIncome / occupiedNights) + Number.EPSILON) * 100) / 100 : 0
+  const availableDays = Math.max(0, daysInMonth - ownerNights)
+  const occupancyRate = availableDays ? Math.round(((guestNights / availableDays) * 100 + Number.EPSILON) * 100) / 100 : 0
+  const dailyAverage = guestNights ? Math.round(((totalIncome / guestNights) + Number.EPSILON) * 100) / 100 : 0
   const landlord = landlords.find(l => (l.property_ids || []).includes(propertyId || ''))
   const managementFee = (landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON) * 100) / 100 : 0)
   function catKey(e: any): string {

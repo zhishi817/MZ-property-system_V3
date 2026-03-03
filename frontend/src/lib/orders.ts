@@ -11,7 +11,17 @@ export function parseDateOnly(raw?: any): any {
   return dayjs(d, 'YYYY-MM-DD', true).startOf('day')
 }
 
-export type OrderLike = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; source?: string; guest_name?: string; net_income?: number; avg_nightly_price?: number }
+export type OrderLike = { id: string; property_id?: string; stay_type?: 'guest' | 'owner' | string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; source?: string; guest_name?: string; net_income?: number; avg_nightly_price?: number }
+
+export function normalizeStayType(raw?: any): 'guest' | 'owner' {
+  const s = String(raw || '').trim().toLowerCase()
+  if (s === 'owner') return 'owner'
+  return 'guest'
+}
+
+export function isOwnerStay(o: any): boolean {
+  return normalizeStayType((o as any)?.stay_type) === 'owner'
+}
 
 export function toDayStr(raw?: any): string {
   const str = String(raw || '')

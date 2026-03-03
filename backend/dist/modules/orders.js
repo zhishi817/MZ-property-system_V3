@@ -315,6 +315,7 @@ const createOrderSchema = zod_1.z.object({
     guest_name: zod_1.z.string().optional(),
     guest_phone: zod_1.z.string().optional(),
     note: zod_1.z.coerce.string().optional(),
+    stay_type: zod_1.z.enum(['guest', 'owner']).optional(),
     checkin: zod_1.z.coerce.string().optional(),
     checkout: zod_1.z.coerce.string().optional(),
     price: zod_1.z.coerce.number().optional(),
@@ -404,8 +405,14 @@ async function ensureOrdersColumns() {
         const { pgPool } = require('../dbAdapter');
         await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text'));
         await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS note text'));
+        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS stay_type text NOT NULL DEFAULT 'guest'`));
         await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_payment_raw numeric'));
         await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_status text'));
+        await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_stay_type_check') THEN
+        ALTER TABLE orders ADD CONSTRAINT orders_stay_type_check CHECK (stay_type IN ('guest','owner'));
+      END IF;
+    END $$;`));
     }
     catch (_a) { }
 }
@@ -551,7 +558,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
             if (Array.isArray(dup) && dup[0]) {
                 if (force) {
                     try {
-                        const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code', 'payment_currency', 'payment_received', 'total_payment_raw', 'processed_status'];
+                        const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'stay_type', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code', 'payment_currency', 'payment_received', 'total_payment_raw', 'processed_status'];
                         const payload = {};
                         for (const k of allow) {
                             if (newOrder[k] !== undefined)
@@ -749,7 +756,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
     // 保留内部工具函数供日志或后续使用，但不阻塞响应
     if (dbAdapter_1.hasPg) {
         try {
-            const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
+            const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'stay_type', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
             const allowExtra = ['payment_currency', 'payment_received'];
             const allowAll = [...allow, ...allowExtra];
             const payload = {};
@@ -820,7 +827,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_code text'));
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = \"idx_orders_confirmation_code_unique\") THEN BEGIN DROP INDEX IF EXISTS idx_orders_confirmation_code_unique; EXCEPTION WHEN others THEN NULL; END; END IF; END $$;'));
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_confirmation_code_unique ON orders(source, confirmation_code) WHERE confirmation_code IS NOT NULL'));
-                    const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
+                    const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'stay_type', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
                     const allowExtra2 = ['payment_currency', 'payment_received'];
                     const payload2 = {};
                     for (const k of [...allow, ...allowExtra2]) {
@@ -1300,7 +1307,7 @@ exports.router.post('/import', (0, auth_1.requirePerm)('order.manage'), (0, expr
                             const cc = newOrder.confirmation_code;
                             const dup = (await (0, dbAdapter_1.pgSelect)('orders', 'id', { confirmation_code: cc })) || [];
                             if (Array.isArray(dup) && dup[0]) {
-                                const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
+                                const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'stay_type', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
                                 const payload = {};
                                 for (const k of allow) {
                                     if (newOrder[k] !== undefined)
@@ -1461,7 +1468,7 @@ exports.router.post('/import/resolve/:id', (0, auth_1.requirePerm)('order.manage
                 const dup = (await (0, dbAdapter_1.pgSelect)('orders', 'id', { confirmation_code: newOrder.confirmation_code })) || [];
                 if (Array.isArray(dup) && dup[0]) {
                     try {
-                        const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
+                        const allow = ['source', 'external_id', 'property_id', 'guest_name', 'guest_phone', 'note', 'stay_type', 'checkin', 'checkout', 'price', 'cleaning_fee', 'net_income', 'avg_nightly_price', 'nights', 'currency', 'status', 'confirmation_code'];
                         const payload = {};
                         for (const k of allow) {
                             if (newOrder[k] !== undefined)
