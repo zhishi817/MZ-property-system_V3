@@ -421,7 +421,7 @@ body{
 }
 
 @media print{
-  @page{ size:A4; margin:0; }
+  @page{ size:A4; margin:20mm; }
   html,body{
     width:auto;
     height:auto;
@@ -436,7 +436,7 @@ body{
     background:#fff !important;
   }
   .inv-sheet{
-    width:794px;
+    width:100%;
     height:auto;
     min-height:0;
     border:none;
@@ -447,10 +447,10 @@ body{
   .inv-page{
     height:auto;
     min-height:0;
-    padding:var(--inv-margin);
+    padding:0;
     box-sizing:border-box;
-    break-inside:avoid;
-    page-break-inside:avoid;
+    break-inside:auto;
+    page-break-inside:auto;
   }
   .inv-card{ break-inside: avoid; page-break-inside: avoid; }
   .inv-row, .inv-table tr{ break-inside: avoid; page-break-inside: avoid; }

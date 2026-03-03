@@ -7,10 +7,10 @@ import timezone from 'dayjs/plugin/timezone'
 import { useEffect, useRef, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
-import { shouldAutoMarkPaidForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
+import { isDueForMonth, shouldAutoMarkPaidForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
 import { isAutoPaidInRent } from '../../../lib/recurringPaymentRules'
 
-type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; is_paid?: boolean; created_at?: string }
+type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; is_paid?: boolean; is_due_month?: boolean; created_at?: string }
 type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
 type Property = { id: string; code?: string; address?: string; region?: string }
 
@@ -113,6 +113,7 @@ export default function RecurringPage() {
   function statusTag(r: Recurring & { is_paid?: boolean }) {
     const today = nowAU()
     if ((r.status||'')==='paused') return <Tag color="default">暂停</Tag>
+    if ((r as any).is_due_month === false) return <Tag color="default">非到期</Tag>
     if (isAutoPaidInRent(r)) return <Tag color="green">已付款</Tag>
     if (r.is_paid) return <Tag color="green">已付款</Tag>
     const nd = parseAU(r.next_due_date)
@@ -136,6 +137,7 @@ export default function RecurringPage() {
     { title:'金额', dataIndex:'amount', render:(v:number)=> v!=null?`$${Number(v).toFixed(2)}`:'-' },
     { title:'到期日', key:'due', render:(_:any,r:any)=> {
       if ((r as Recurring).payment_type === 'rent_deduction') return '-'
+      if ((r as any).is_due_month === false) return '-'
       const dueDay = Number(r.due_day_of_month || 1)
       const dim = m.endOf('month').date()
       const iso = m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
@@ -146,12 +148,7 @@ export default function RecurringPage() {
     { title:'上次付款', key:'paid', render:(_:any,r:any)=> fmt(r.last_paid_date || r.paid_date) },
     { title:'下次到期', key:'next', render:(_:any,r:any)=> {
       if ((r as Recurring).payment_type === 'rent_deduction') return '-'
-      const dueDay = Number(r.due_day_of_month || 1)
-      const freq = Number(r.frequency_months || 1)
-      const base = r.is_paid ? m.add(freq,'month') : m
-      const dim = base.endOf('month').date()
-      const iso = base.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
-      return fmt(iso)
+      return fmt(nextDueISOForRow(r))
     } },
     { title:'付款账户', key:'acct', width: 280, render:(_:any,r:Recurring & any)=> {
       const type = r.payment_type
@@ -217,7 +214,7 @@ export default function RecurringPage() {
           </>
         ) : (
           <>
-            {(r.payment_type === 'rent_deduction') ? null : (r.is_paid ? (
+            {((r.payment_type === 'rent_deduction') || (r as any).is_due_month === false) ? null : (r.is_paid ? (
               <Popconfirm
                 title="确认取消已付并标记为未付？"
                 okText="确认"
@@ -401,6 +398,18 @@ export default function RecurringPage() {
 
   const m = month || nowAU()
   const currentMonthKey = nowAU().format('YYYY-MM')
+  function monthKeyToIndex(monthKey: string): number {
+    const [ys, ms] = String(monthKey || '').split('-')
+    const y = Number(ys)
+    const mm = Number(ms)
+    if (!Number.isFinite(y) || !Number.isFinite(mm) || mm < 1 || mm > 12) return NaN
+    return y * 12 + (mm - 1)
+  }
+  function indexToMonthKey(idx: number): string {
+    const y = Math.floor(idx / 12)
+    const mm = (idx % 12) + 1
+    return `${String(y)}-${String(mm).padStart(2, '0')}`
+  }
   function computeNextDue(r: Recurring): string | undefined {
     if (r.payment_type === 'rent_deduction') return undefined
     if (r.next_due_date) return r.next_due_date
@@ -420,6 +429,30 @@ export default function RecurringPage() {
     const dim = m.endOf('month').date()
     const day = Math.min(due, dim)
     return m.startOf('month').date(day).format('DD/MM/YYYY')
+  }
+  function nextDueISOForRow(r: Recurring): string | undefined {
+    if (r.payment_type === 'rent_deduction') return undefined
+    const startKey = String((r as any).start_month_key || '')
+    const freq = Math.max(1, Math.min(24, Number(r.frequency_months || 1)))
+    const dueDay = Number(r.due_day_of_month || 1)
+    const selKey = m.format('YYYY-MM')
+    if (!startKey || !/^\d{4}-\d{2}$/.test(startKey) || !/^\d{4}-\d{2}$/.test(selKey)) {
+      const dim = m.endOf('month').date()
+      return m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
+    }
+    const sIdx = monthKeyToIndex(startKey)
+    const selIdx = monthKeyToIndex(selKey)
+    if (!Number.isFinite(sIdx) || !Number.isFinite(selIdx)) return undefined
+    const isDue = isDueForMonth(startKey, selKey, freq)
+    const nextIdx = (() => {
+      if (selIdx < sIdx) return sIdx
+      if (!isDue) return sIdx + (Math.floor((selIdx - sIdx) / freq) + 1) * freq
+      return selIdx + ((r.is_paid ? freq : 0))
+    })()
+    const mk = indexToMonthKey(nextIdx)
+    const mm = dayjs.tz(`${mk}-01`, 'YYYY-MM-DD', 'Australia/Melbourne')
+    const dim = mm.endOf('month').date()
+    return mm.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
   }
   const enhanced = list.map(r => ({ ...r, next_due_date: dueForSelectedMonth(r), is_paid: false }))
   const monthKey = m.format('YYYY-MM')
@@ -465,21 +498,22 @@ export default function RecurringPage() {
   const monthExpenses = (expenses||[]).filter(e=> String(e.month_key||'')===monthKey)
   const expByFixed: Record<string, ExpenseRow> = buildExpByFixed(monthExpenses)
   const templatesForMonth = enhanced.filter(t => {
-    const inMonth = inSelectedMonth(dueForSelectedMonth(t))
-    const include = (t as any).payment_type === 'rent_deduction' ? true : inMonth
     const startKey = String((t as any).start_month_key || '')
-    return include && shouldIncludeForMonth(startKey || undefined, monthKey)
+    return shouldIncludeForMonth(startKey || undefined, monthKey)
   })
   const allRowsBase = templatesForMonth
     .map(t => {
-      const e = expByFixed[String(t.id)]
-      const amount = e ? Number(e.amount || 0) : Number(t.amount || 0)
-      const category = e ? String(e.category || t.category || '') : t.category
+      const startKey = String((t as any).start_month_key || '')
+      const is_due_month = isDueForMonth(startKey || undefined, monthKey, Number((t as any).frequency_months || 1))
+      const eRaw = expByFixed[String(t.id)]
+      const e = is_due_month ? eRaw : undefined
+      const amount = (is_due_month && e) ? Number(e.amount || 0) : Number(t.amount || 0)
+      const category = (is_due_month && e) ? String(e.category || t.category || '') : t.category
       const paused = String((t as any).status || '') === 'paused'
       const autoPaidInRent = !paused && isAutoPaidInRent({ ...t, category } as any)
-      const next_due_date = autoPaidInRent ? undefined : (e ? e.due_date : dueForSelectedMonth(t))
-      const is_paid = paused ? false : (autoPaidInRent ? true : (e ? String(e.status||'')==='paid' : false))
-      return { ...t, amount, next_due_date, is_paid, status: (t.status||''), category }
+      const next_due_date = (!is_due_month || autoPaidInRent) ? undefined : (e ? e.due_date : dueForSelectedMonth(t))
+      const is_paid = paused ? false : (!is_due_month ? true : (autoPaidInRent ? true : (e ? String(e.status||'')==='paid' : false)))
+      return { ...t, amount, next_due_date, is_paid, is_due_month, status: (t.status||''), category }
     })
     .sort((a,b)=>{
       const aIsConsumables = String(a.category||'')==='消耗品费' || String(a.report_category||'')==='consumables'
@@ -501,7 +535,7 @@ export default function RecurringPage() {
     const label = getLabel(r.property_id)
     return String(label||'').toLowerCase().includes(q)
   })
-  const activeRows = allRows.filter(r => String((r as any).status || '') !== 'paused')
+  const activeRows = allRows.filter(r => String((r as any).status || '') !== 'paused' && (r as any).is_due_month !== false)
   const paidAmount = activeRows.filter(r=>r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
   const unpaidAmount = activeRows.filter(r=>!r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
   const paidCount = activeRows.filter(r=>r.is_paid).length
@@ -520,8 +554,10 @@ export default function RecurringPage() {
       setSnapLoading(true)
       const tasks = templatesForMonth.map(async (t)=>{
         if (String((t as any).status || '') === 'paused') return
-        const e = expByFixed[String(t.id)]
         const startKey = String((t as any).start_month_key || '')
+        const isDue = isDueForMonth(startKey || undefined, monthKey, Number((t as any).frequency_months || 1))
+        if (!isDue) return
+        const e = expByFixed[String(t.id)]
         const autoPaidInRent = isAutoPaidInRent(t)
         if (e) {
           if ((autoPaidInRent || shouldAutoMarkPaidForMonth(startKey || undefined, monthKey, currentMonthKey)) && String(e.status || '') !== 'paid') {
@@ -605,6 +641,7 @@ export default function RecurringPage() {
             const nd = parseAU(r.next_due_date)
             const isPaid = !!(r as any).is_paid
             if ((r.status||'')==='paused') return ''
+            if ((r as any).is_due_month === false) return ''
             if (!isPaid && nd && nd.isSame(today, 'day')) return 'row-due-today'
             if (!isPaid && nd && today.isAfter(nd, 'day')) return 'row-overdue'
             if (!isPaid && nd && today.isBefore(nd, 'day')) {

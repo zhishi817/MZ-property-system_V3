@@ -1652,7 +1652,12 @@ router.post('/invoice-pdf', requirePerm('invoice.view'), pdfLimiter, async (req:
       await page.waitForSelector('[data-invoice-ready="1"]', { timeout: waitTimeoutMs })
       await page.waitForTimeout(200)
       await page.emulateMedia({ media: 'print' } as any)
-      const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
+      const pdf = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        preferCSSPageSize: false,
+        margin: { top: '20mm', right: '20mm', bottom: '20mm', left: '20mm' },
+      })
       res.setHeader('Content-Type', 'application/pdf')
       res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoiceId}.pdf"`)
       return res.status(200).send(Buffer.from(pdf))

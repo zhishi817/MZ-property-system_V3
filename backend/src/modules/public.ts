@@ -8,6 +8,7 @@ import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
 import { addAudit } from '../store'
 import crypto from 'crypto'
+import sharp from 'sharp'
 
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
 const DEFAULT_PUBLIC_CLEANING_PASSWORD = process.env.PUBLIC_CLEANING_PASSWORD || 'mz-cleaning'
@@ -30,9 +31,36 @@ router.get('/r2-image', async (req, res) => {
     if (!key) return res.status(400).json({ message: 'invalid_r2_url' })
     const allowedPrefixes = ['invoice-company-logos/', 'deep-cleaning/', 'maintenance/']
     if (!allowedPrefixes.some(p => key.startsWith(p))) return res.status(403).json({ message: 'forbidden_key' })
+
+    const qW = Number((req.query as any)?.w || 0)
+    const qQ = Number((req.query as any)?.q || 0)
+    const qFmt = String((req.query as any)?.fmt || '').trim().toLowerCase()
+    const wantsJpeg = qFmt === 'jpeg' || qFmt === 'jpg'
+    const w = Math.max(600, Math.min(2400, Number.isFinite(qW) && qW > 0 ? qW : 1400))
+    const q = Math.max(40, Math.min(85, Number.isFinite(qQ) && qQ > 0 ? qQ : 72))
     const obj = await r2GetObjectByKey(key)
     if (!obj || !obj.body?.length) return res.status(404).json({ message: 'not_found' })
     res.setHeader('Access-Control-Allow-Origin', '*')
+    const isImage = String(obj.contentType || '').toLowerCase().startsWith('image/')
+    const shouldTransform = isImage && (wantsJpeg || (Number.isFinite(qW) && qW > 0) || (Number.isFinite(qQ) && qQ > 0))
+
+    if (shouldTransform) {
+      try {
+        const maxInputBytes = 15 * 1024 * 1024
+        if (obj.body.length > maxInputBytes) throw new Error('image_too_large')
+        const out = await sharp(obj.body)
+          .rotate()
+          .resize({ width: w, fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: q, mozjpeg: true })
+          .toBuffer()
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+        res.setHeader('Content-Type', 'image/jpeg')
+        res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800')
+        return res.status(200).send(out)
+      } catch {}
+    }
+
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
     res.setHeader('Content-Type', obj.contentType || 'application/octet-stream')
     res.setHeader('Cache-Control', obj.cacheControl || 'public, max-age=86400, stale-while-revalidate=604800')

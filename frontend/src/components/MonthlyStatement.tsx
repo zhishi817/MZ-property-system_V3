@@ -46,11 +46,13 @@ export default forwardRef<HTMLDivElement, {
   showInvoices?: boolean
   sections?: string[]
   includeJobPhotos?: boolean
-  photosMode?: 'full' | 'thumbnail' | 'off'
+  photosMode?: 'full' | 'compressed' | 'thumbnail' | 'off'
+  photoW?: number
+  photoQ?: number
   mode?: 'preview' | 'pdf'
   pdfMode?: boolean
   renderEngine?: 'canvas' | 'print'
-}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords, showChinese = true, showInvoices = false, sections, includeJobPhotos = true, photosMode = 'full', mode, pdfMode = false, renderEngine = 'canvas' }, ref) {
+}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords, showChinese = true, showInvoices = false, sections, includeJobPhotos = true, photosMode = 'full', photoW, photoQ, mode, pdfMode = false, renderEngine = 'canvas' }, ref) {
   const resolvedMode: 'preview' | 'pdf' = mode || ((pdfMode || renderEngine === 'print') ? 'pdf' : 'preview')
   const isPdfMode = resolvedMode === 'pdf'
   const sectionSet = new Set((Array.isArray(sections) ? sections : []).map(s => String(s || '').trim().toLowerCase()).filter(Boolean))
@@ -58,14 +60,18 @@ export default forwardRef<HTMLDivElement, {
   const showBaseSections = showAllSections || sectionSet.has('base')
   const showDeepSection = showAllSections || sectionSet.has('deep_cleaning') || sectionSet.has('deepcleaning')
   const showMaintSection = showAllSections || sectionSet.has('maintenance')
-  const photosModeNorm: 'full' | 'thumbnail' | 'off' = (() => {
+  const photosModeNorm: 'full' | 'compressed' | 'thumbnail' | 'off' = (() => {
     const v = String(photosMode || 'full').toLowerCase()
     if (v === 'off') return 'off'
+    if (v === 'compressed') return 'compressed'
     if (v === 'thumbnail') return 'thumbnail'
     return 'full'
   })()
   const canIncludeJobPhotos = includeJobPhotos !== false && photosModeNorm !== 'off'
   const isThumbPhotos = isPdfMode && photosModeNorm === 'thumbnail'
+  const hideReportHeader = isPdfMode && !showBaseSections && (showDeepSection || showMaintSection)
+  const showDeepSectionFinal = showDeepSection && !(isPdfMode && photosModeNorm === 'off')
+  const showMaintSectionFinal = showMaintSection && !(isPdfMode && photosModeNorm === 'off')
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
   const relatedOrdersRaw = monthSegments(
@@ -210,7 +216,7 @@ export default forwardRef<HTMLDivElement, {
     (async () => {
       try {
         setDeepCleaningsLoaded(false)
-        if (!propertyId || !showDeepSection) { setDeepCleanings([]); setDeepCleaningsLoaded(true); return }
+        if (!propertyId || !showDeepSectionFinal) { setDeepCleanings([]); setDeepCleaningsLoaded(true); return }
         const codeRaw = String(property?.code || '').trim()
         const code = (() => {
           if (!codeRaw) return ''
@@ -254,12 +260,12 @@ export default forwardRef<HTMLDivElement, {
         setDeepCleaningsLoaded(true)
       }
     })()
-  }, [propertyId, month, showDeepSection])
+  }, [propertyId, month, showDeepSectionFinal])
   useEffect(() => {
     ;(async () => {
       try {
         setMaintenancesLoaded(false)
-        if (!propertyId || !showMaintSection) { setMaintenances([]); setMaintenancesLoaded(true); return }
+        if (!propertyId || !showMaintSectionFinal) { setMaintenances([]); setMaintenancesLoaded(true); return }
         const codeRaw = String(property?.code || '').trim()
         const code = (() => {
           if (!codeRaw) return ''
@@ -303,7 +309,7 @@ export default forwardRef<HTMLDivElement, {
         setMaintenancesLoaded(true)
       }
     })()
-  }, [propertyId, month, showMaintSection])
+  }, [propertyId, month, showMaintSectionFinal])
   const orderIncomeShare = relatedOrders.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
   const rentIncome = orderIncomeShare
   const orderById = new Map((orders || []).map(o => [String(o.id), o]))
@@ -496,10 +502,19 @@ export default forwardRef<HTMLDivElement, {
   const showBalance = !!balance && (hasCarry || hasFurniture)
   const isImg = (u?: string) => !!u && /\.(png|jpg|jpeg|gif)$/i.test(u)
   const isPdf = (u?: string) => !!u && /\.pdf$/i.test(u)
+  const compressCfg = (() => {
+    const w = Math.max(600, Math.min(2400, Number.isFinite(Number(photoW)) && Number(photoW) > 0 ? Number(photoW) : 1400))
+    const q = Math.max(40, Math.min(85, Number.isFinite(Number(photoQ)) && Number(photoQ) > 0 ? Number(photoQ) : 72))
+    return { w, q }
+  })()
   const resolveUrl = (u?: string) => {
     if (!u) return ''
     if (/^https?:\/\//.test(u)) {
-      if (u.includes('.r2.dev/')) return `${API_BASE}/public/r2-image?url=${encodeURIComponent(u)}`
+      if (u.includes('.r2.dev/') || u.includes('r2.cloudflarestorage.com')) {
+        const base = `${API_BASE}/public/r2-image?url=${encodeURIComponent(u)}`
+        if (photosModeNorm === 'compressed') return `${base}&fmt=jpeg&w=${compressCfg.w}&q=${compressCfg.q}`
+        return base
+      }
       return u
     }
     return `${API_BASE}${u}`
@@ -543,7 +558,7 @@ export default forwardRef<HTMLDivElement, {
     return { segs, laneMap, laneCount: lanesEnd.length }
   }
   const sourceColor: Record<string, string> = { airbnb: '#FF9F97', booking: '#98B6EC', offline: '#DC8C03', other: '#98B6EC' }
-  const monthlyStatementReady = !!propertyId && (showDeepSection ? deepCleaningsLoaded : true) && (showMaintSection ? maintenancesLoaded : true)
+  const monthlyStatementReady = !!propertyId && (showDeepSectionFinal ? deepCleaningsLoaded : true) && (showMaintSectionFinal ? maintenancesLoaded : true)
 
   return (
     <div
@@ -595,25 +610,29 @@ export default forwardRef<HTMLDivElement, {
           [data-monthly-statement-root="1"] tr { break-inside: avoid; page-break-inside: avoid; }
         }
       `}</style>
-      <div className="print-header" style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-        <img src="/mz-logo.png" alt="Company Logo" style={{ height: 64 }} />
-        <div style={{ flex: 1, marginLeft: 12 }}></div>
-        <div style={{ textAlign:'right', minWidth: 420 }}>
-          <div style={{ fontSize: 34, fontWeight: 700, letterSpacing: 1, display:'flex', justifyContent:'flex-end', alignItems:'baseline', gap: 10 }}>
-            <span>MONTHLY STATEMENT</span>
+      {!hideReportHeader ? (
+        <>
+          <div className="print-header" style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <img src="/mz-logo.png" alt="Company Logo" style={{ height: 64 }} />
+            <div style={{ flex: 1, marginLeft: 12 }}></div>
+            <div style={{ textAlign:'right', minWidth: 420 }}>
+              <div style={{ fontSize: 34, fontWeight: 700, letterSpacing: 1, display:'flex', justifyContent:'flex-end', alignItems:'baseline', gap: 10 }}>
+                <span>MONTHLY STATEMENT</span>
+              </div>
+              <div style={{ borderTop: '2px solid #000', marginTop: 6 }}></div>
+              <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', marginTop: 6 }}>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>{dayjs(`${month}-01`).format('MM/YYYY')}</div>
+              <div style={{ fontSize: 16, marginTop: 4 }}>{landlord?.name || ''}</div>
+              <div style={{ fontSize: 14 }}>
+                {String(property?.code || '').trim() ? `${String(property?.code || '').trim()} / ` : ''}
+                {property?.address || ''}
+              </div>
+              </div>
+            </div>
           </div>
-          <div style={{ borderTop: '2px solid #000', marginTop: 6 }}></div>
-          <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', marginTop: 6 }}>
-            <div style={{ fontSize: 22, fontWeight: 700 }}>{dayjs(`${month}-01`).format('MM/YYYY')}</div>
-          <div style={{ fontSize: 16, marginTop: 4 }}>{landlord?.name || ''}</div>
-          <div style={{ fontSize: 14 }}>
-            {String(property?.code || '').trim() ? `${String(property?.code || '').trim()} / ` : ''}
-            {property?.address || ''}
-          </div>
-          </div>
-        </div>
-      </div>
-      <div style={{ borderTop: '2px solid transparent', margin: '8px 0' }}></div>
+          <div style={{ borderTop: '2px solid transparent', margin: '8px 0' }}></div>
+        </>
+      ) : null}
       {showBaseSections ? (
         <>
       <div data-keep-with-next="true" style={{ marginTop: 24, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Monthly Overview Data 月度概览数据' : 'Monthly Overview Data'}</div>
@@ -860,7 +879,7 @@ export default forwardRef<HTMLDivElement, {
         </>
       ) : null}
 
-      {(showDeepSection && deepCleaningsForReport.length) ? (
+      {(showDeepSectionFinal && deepCleaningsForReport.length) ? (
         <div data-deep-clean-section="1" data-pdf-break-before={isPdfMode ? 'true' : undefined}>
           <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'}</div>
           {!isPdfMode ? (
@@ -997,7 +1016,7 @@ export default forwardRef<HTMLDivElement, {
         </div>
       ) : null}
 
-      {(showMaintSection && maintenancesForReport.length) ? (
+      {(showMaintSectionFinal && maintenancesForReport.length) ? (
         <div data-maint-section="1" data-pdf-break-before={isPdfMode ? 'true' : undefined}>
           <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>
             {showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'}

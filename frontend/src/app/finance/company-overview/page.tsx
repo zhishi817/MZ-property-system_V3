@@ -35,9 +35,10 @@ export default function PropertyRevenuePage() {
   const [excludeOrphanFixedSnapshots, setExcludeOrphanFixedSnapshots] = useState<boolean>(true)
   const [orphanFixedSnapshots, setOrphanFixedSnapshots] = useState<any[]>([])
   const [orphanOpen, setOrphanOpen] = useState(false)
-  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
+  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string; region?: string }[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
   const [selectedPid, setSelectedPid] = useState<string | undefined>(undefined)
+  const [selectedRegion, setSelectedRegion] = useState<string | undefined>(undefined)
   const [previewPid, setPreviewPid] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewReady, setPreviewReady] = useState(false)
@@ -86,10 +87,12 @@ export default function PropertyRevenuePage() {
       const prefix = `Monthly Statement - ${month.format('YYYY-MM')}`
       const label = kind === 'maintenance' ? 'Maintenance Photos' : 'Deep Cleaning Photos'
       const filename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''} - ${label}.pdf`
+      const mode = exportQuality === 'ultra' ? 'full' : 'compressed'
+      const cfg = exportQuality === 'standard' ? { photo_w: 1200, photo_q: 65 } : { photo_w: 1600, photo_q: 72 }
       const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: 'full', sections: kind }),
+        body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: mode, sections: kind, ...(mode === 'compressed' ? cfg : {}) }),
       })
       if (!resp.ok) {
         let msg = `HTTP ${resp.status}`
@@ -477,9 +480,30 @@ export default function PropertyRevenuePage() {
     return idx
   }, [txsAll, properties, orderById])
 
+  const regionOptions = useMemo(() => {
+    const sorted = sortPropertiesByRegionThenCode(properties as any)
+    const seen = new Set<string>()
+    const opts: { value: string; label: string }[] = []
+    for (const p of sorted) {
+      const r = String((p as any)?.region || '').trim()
+      if (!r || seen.has(r)) continue
+      seen.add(r)
+      opts.push({ value: r, label: r })
+    }
+    return opts
+  }, [properties])
+
+  const filteredProperties = useMemo(() => {
+    const arr = Array.isArray(properties) ? properties : []
+    if (!selectedRegion) return arr
+    return arr.filter(p => String((p as any)?.region || '') === String(selectedRegion))
+  }, [properties, selectedRegion])
+
   const rows = useMemo(() => {
     if (!start || !end) return [] as any[]
-    const list = selectedPid ? properties.filter(pp => pp.id === selectedPid) : sortPropertiesByRegionThenCode(properties as any)
+    const list = selectedPid
+      ? properties.filter(pp => pp.id === selectedPid)
+      : (selectedRegion ? sortProperties(filteredProperties as any) : sortPropertiesByRegionThenCode(properties as any))
     const out: any[] = []
     const rangeMonths: { start: any, end: any, label: string }[] = []
     let cur = start.startOf('month')
@@ -525,7 +549,7 @@ export default function PropertyRevenuePage() {
       }
     }
     return out
-  }, [properties, orders, txBucketIndex, landlords, start, end, selectedPid])
+  }, [properties, filteredProperties, orders, txBucketIndex, landlords, start, end, selectedPid, selectedRegion])
 
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const formatMoney = (n?: number) => `$${fmt(Number(n || 0))}`
@@ -684,7 +708,24 @@ export default function PropertyRevenuePage() {
           options={[{value:'year',label:'全年(自然年)'},{value:'half-year',label:'半年'},{value:'fiscal-year',label:'财年(7月至次年6月)'}]}
         />
         {period==='half-year' ? <DatePicker picker="month" value={startMonth} onChange={setStartMonth as any} disabled={pageLoading || rangeLoading} /> : null}
-        <Select allowClear showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="按房号筛选" style={{ width: 240 }} options={sortProperties(properties).map(p=>({ value:p.id, label:p.code || p.address || p.id }))} value={selectedPid} onChange={setSelectedPid} disabled={pageLoading || rangeLoading} />
+        <Select
+          allowClear
+          placeholder="按区域筛选"
+          style={{ width: 180 }}
+          options={regionOptions}
+          value={selectedRegion}
+          onChange={(v) => {
+            const next = (v as any) || undefined
+            setSelectedRegion(next)
+            if (!next) return
+            if (!selectedPid) return
+            const p = properties.find(pp => String(pp.id) === String(selectedPid))
+            const r = String((p as any)?.region || '').trim()
+            if (r && r !== String(next)) setSelectedPid(undefined)
+          }}
+          disabled={pageLoading || rangeLoading}
+        />
+        <Select allowClear showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="按房号筛选" style={{ width: 240 }} options={sortProperties(filteredProperties).map(p=>({ value:p.id, label:p.code || p.address || p.id }))} value={selectedPid} onChange={setSelectedPid} disabled={pageLoading || rangeLoading} />
         <Button type="primary" onClick={() => { if (!selectedPid) { message.warning('请先选择房号'); return } setPreviewPid(selectedPid); setPreviewOpen(true) }} disabled={pageLoading || rangeLoading}>生成报表</Button>
         <span style={{ marginLeft: 8 }}>排除孤儿快照</span>
         <Switch checked={excludeOrphanFixedSnapshots} onChange={setExcludeOrphanFixedSnapshots as any} disabled={pageLoading || rangeLoading} />
@@ -1040,23 +1081,29 @@ export default function PropertyRevenuePage() {
             let statementBlob: Blob
             let pageCount = 0
             let splitInfo: any = null
-            let monthPhotosMode: 'full' | 'thumbnail' | 'off' = 'full'
+            let monthPhotosMode: 'full' | 'compressed' | 'thumbnail' | 'off' = 'full'
+            let monthPhotoCfg: null | { photo_w: number; photo_q: number } = null
+            const pickPhotoCfg = (level: 'normal' | 'low') => {
+              if (exportQuality === 'standard') return level === 'low' ? { photo_w: 1000, photo_q: 55 } : { photo_w: 1200, photo_q: 65 }
+              return level === 'low' ? { photo_w: 1200, photo_q: 60 } : { photo_w: 1600, photo_q: 72 }
+            }
+            const genMonthly = async (photosMode: 'full' | 'compressed' | 'thumbnail' | 'off', photoCfg?: { photo_w: number; photo_q: number } | null) => {
+              const sections = photosMode === 'off' ? 'base' : 'all'
+              const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: photosMode, sections, ...(photoCfg || {}) }),
+              })
+              if (!resp.ok) {
+                let msg = `HTTP ${resp.status}`
+                try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
+                throw new Error(msg)
+              }
+              return await resp.blob()
+            }
 
             if (period === 'month') {
               setMergeSplit(null)
-              const genMonthly = async (photosMode: 'full' | 'thumbnail' | 'off') => {
-                const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                  body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: photosMode, sections: 'all' }),
-                })
-                if (!resp.ok) {
-                  let msg = `HTTP ${resp.status}`
-                  try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
-                  throw new Error(msg)
-                }
-                return await resp.blob()
-              }
               updateMerge(22, '正在检查照片体积...')
               try {
                 const stats = await fetch(`${API_BASE}/finance/monthly-statement-photo-stats?pid=${encodeURIComponent(previewPid!)}&month=${encodeURIComponent(month.format('YYYY-MM'))}`, { headers: authHeaders() })
@@ -1070,8 +1117,9 @@ export default function PropertyRevenuePage() {
                 }
               } catch {}
               updateMerge(26, '正在生成报表PDF...')
-              monthPhotosMode = splitInfo?.shouldSplit ? 'off' : (exportQuality === 'standard' ? 'thumbnail' : 'full')
-              statementBlob = await genMonthly(monthPhotosMode)
+              monthPhotosMode = splitInfo?.hardSplit ? 'off' : (exportQuality === 'ultra' ? (splitInfo?.shouldSplit ? 'off' : 'full') : 'compressed')
+              monthPhotoCfg = monthPhotosMode === 'compressed' ? pickPhotoCfg('normal') : null
+              statementBlob = await genMonthly(monthPhotosMode, monthPhotoCfg)
             } else {
               updateMerge(26, '正在渲染页面...')
               setStatementPdfMode(true)
@@ -1109,25 +1157,23 @@ export default function PropertyRevenuePage() {
             if (statementBlob.size > 18 * 1024 * 1024) {
               if (period === 'month' && monthPhotosMode !== 'off') {
                 try {
-                  updateMerge(58, '报表过大，正在生成无照片版...')
-                  const forced = { shouldSplit: true, hardSplit: true, totalPhotoCount: 0, maintenancePhotoCount: 0, deepCleaningPhotoCount: 0, threshold: 0, hardThreshold: 0, forced: true }
-                  splitInfo = splitInfo || forced
-                  setMergeSplit((prev) => prev || forced as any)
-                  monthPhotosMode = 'off'
-                  const resp2 = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                    body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: 'off', sections: 'all' }),
-                  })
-                  if (!resp2.ok) {
-                    let msg = `HTTP ${resp2.status}`
-                    try { const j = await resp2.json() as any; msg = String(j?.message || msg) } catch {}
-                    throw new Error(msg)
-                  }
-                  statementBlob = await resp2.blob()
+                  updateMerge(58, '报表过大，正在压缩照片...')
+                  monthPhotosMode = 'compressed'
+                  monthPhotoCfg = pickPhotoCfg('low')
+                  statementBlob = await genMonthly(monthPhotosMode, monthPhotoCfg)
                 } catch {}
               }
               if (statementBlob.size > 18 * 1024 * 1024) {
+                if (period === 'month' && monthPhotosMode !== 'off') {
+                  try {
+                    updateMerge(62, '压缩后仍过大，正在生成无照片版...')
+                    const forced = { shouldSplit: true, hardSplit: true, totalPhotoCount: 0, maintenancePhotoCount: 0, deepCleaningPhotoCount: 0, threshold: 0, hardThreshold: 0, forced: true }
+                    splitInfo = splitInfo || forced
+                    setMergeSplit((prev) => prev || forced as any)
+                    monthPhotosMode = 'off'
+                    statementBlob = await genMonthly('off', null)
+                  } catch {}
+                }
                 mergeFail(`报表PDF过大（${Math.round(statementBlob.size / 1024 / 1024)}MB），已回退仅下载报表。建议使用“标准/高清（平衡）”导出或拆分下载。`, true)
                 downloadBlob(statementBlob)
                 return

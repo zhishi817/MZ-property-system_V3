@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compareMonthKey, shouldAutoMarkPaidForMonth, shouldIncludeForMonth } from './recurringStartMonth'
+import { compareMonthKey, isDueForMonth, shouldAutoMarkPaidForMonth, shouldIncludeForMonth } from './recurringStartMonth'
 
 describe('recurringStartMonth', () => {
   it('compareMonthKey', () => {
@@ -23,5 +23,13 @@ describe('recurringStartMonth', () => {
     expect(shouldAutoMarkPaidForMonth(start, '2026-02', current)).toBe(false)
     expect(shouldAutoMarkPaidForMonth(start, '2026-03', current)).toBe(false)
   })
-})
 
+  it('isDueForMonth respects frequency', () => {
+    const start = '2026-01'
+    expect(isDueForMonth(start, '2025-12', 3)).toBe(false)
+    expect(isDueForMonth(start, '2026-01', 3)).toBe(true)
+    expect(isDueForMonth(start, '2026-02', 3)).toBe(false)
+    expect(isDueForMonth(start, '2026-03', 3)).toBe(false)
+    expect(isDueForMonth(start, '2026-04', 3)).toBe(true)
+  })
+})

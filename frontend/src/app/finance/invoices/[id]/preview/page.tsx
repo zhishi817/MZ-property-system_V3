@@ -106,6 +106,7 @@ export default function InvoicePreviewPage({ params }: { params: { id: string } 
       if (!doc) { message.error('打印失败'); return }
       const printCss = `
         @media print {
+          @page { size: A4; margin: 20mm; }
           .inv-header { grid-template-columns: 1fr 1fr !important; gap: 16px !important; }
           .inv-title { text-align: right !important; }
           .inv-band { grid-template-columns: 1fr 1fr !important; }

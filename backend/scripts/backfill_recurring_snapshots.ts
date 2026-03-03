@@ -39,6 +39,17 @@ function monthKeysBetween(start: string, end: string): string[] {
   return out
 }
 
+function dueMonthKeysBetween(start: string, end: string, freqMonths: number): string[] {
+  const freq = Math.max(1, Math.min(24, Number(freqMonths || 1)))
+  const a = monthKeyToIndex(start)
+  const b = monthKeyToIndex(end)
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return []
+  if (a > b) return []
+  const out: string[] = []
+  for (let i = a; i <= b; i += freq) out.push(indexToMonthKey(i))
+  return out
+}
+
 function computeDueISO(monthKey: string, dueDay: number): string {
   const [ys, ms] = String(monthKey).split('-')
   const y = Number(ys)
@@ -71,6 +82,7 @@ async function run() {
   const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
   const startMonthKey = String(tpl.start_month_key || '')
   const dueDay = Number(tpl.due_day_of_month || 1)
+  const freq = Number(tpl.frequency_months || 1)
   const currentMonthKey = monthKeyAU()
 
   if (!/^\d{4}-\d{2}$/.test(startMonthKey)) {
@@ -95,7 +107,7 @@ async function run() {
   )
   const existing = new Set<string>((listRes.rows || []).map((r: any) => String(r.month_key || '')).filter(Boolean))
 
-  const allMonths = monthKeysBetween(startMonthKey, currentMonthKey)
+  const allMonths = dueMonthKeysBetween(startMonthKey, currentMonthKey, freq)
   const { v4: uuid } = require('uuid')
   let inserted = 0
 

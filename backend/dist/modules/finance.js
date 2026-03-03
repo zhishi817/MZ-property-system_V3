@@ -1362,7 +1362,7 @@ exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 
 });
 exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req, res) => {
     try {
-        const { month, property_id, showChinese, includePhotosMode, includePhotos, sections } = req.body || {};
+        const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q } = req.body || {};
         const monthKey = String(month || '').trim();
         const pid = String(property_id || '').trim();
         if (!/^\d{4}-\d{2}$/.test(monthKey))
@@ -1387,7 +1387,7 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             if (includePhotos === 0 || includePhotos === '0' || includePhotos === false)
                 return 'off';
             const v = String(includePhotosMode || 'full');
-            if (v === 'thumbnail' || v === 'off')
+            if (v === 'thumbnail' || v === 'compressed' || v === 'off')
                 return v;
             return 'full';
         })();
@@ -1398,6 +1398,13 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
                 return sections.split(',').map(s => s.trim()).filter(Boolean).join(',');
             return 'all';
         })();
+        const compress = (() => {
+            const w0 = Number(photo_w || 0);
+            const q0 = Number(photo_q || 0);
+            const w = Math.max(600, Math.min(2400, Number.isFinite(w0) && w0 > 0 ? w0 : 0));
+            const q = Math.max(40, Math.min(85, Number.isFinite(q0) && q0 > 0 ? q0 : 0));
+            return { w: w || undefined, q: q || undefined };
+        })();
         const url = (() => {
             const u = new URL('/public/monthly-statement-print', front);
             u.searchParams.set('pid', pid);
@@ -1406,6 +1413,12 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             u.searchParams.set('showChinese', String(showChinese === false || showChinese === '0' ? '0' : '1'));
             u.searchParams.set('photos', photos);
             u.searchParams.set('sections', sec || 'all');
+            if (photos === 'compressed') {
+                if (compress.w)
+                    u.searchParams.set('photo_w', String(compress.w));
+                if (compress.q)
+                    u.searchParams.set('photo_q', String(compress.q));
+            }
             return u.toString();
         })();
         let browser = await (0, playwright_1.getChromiumBrowser)();
