@@ -18,6 +18,7 @@ const pdf_lib_1 = require("pdf-lib");
 const dbAdapter_2 = require("../dbAdapter");
 const playwright_1 = require("../lib/playwright");
 const pdfTaskLimiter_1 = require("../lib/pdfTaskLimiter");
+const monthlyStatementPdfTemplate_1 = require("../lib/monthlyStatementPdfTemplate");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -1374,7 +1375,7 @@ exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 
 });
 exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req, res) => {
     try {
-        const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q } = req.body || {};
+        const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q, excludeOrphanFixedSnapshots } = req.body || {};
         const monthKey = String(month || '').trim();
         const pid = String(property_id || '').trim();
         if (!/^\d{4}-\d{2}$/.test(monthKey))
@@ -1417,6 +1418,13 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             const q = Math.max(40, Math.min(85, Number.isFinite(q0) && q0 > 0 ? q0 : 0));
             return { w: w || undefined, q: q || undefined };
         })();
+        const excludeOrphans = (() => {
+            if (excludeOrphanFixedSnapshots === true || excludeOrphanFixedSnapshots === 1 || excludeOrphanFixedSnapshots === '1')
+                return true;
+            if (excludeOrphanFixedSnapshots === false || excludeOrphanFixedSnapshots === 0 || excludeOrphanFixedSnapshots === '0')
+                return false;
+            return false;
+        })();
         const url = (() => {
             const u = new URL('/public/monthly-statement-print', front);
             u.searchParams.set('pid', pid);
@@ -1425,6 +1433,7 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             u.searchParams.set('showChinese', String(showChinese === false || showChinese === '0' ? '0' : '1'));
             u.searchParams.set('photos', photos);
             u.searchParams.set('sections', sec || 'all');
+            u.searchParams.set('exclude_orphan_fixed', excludeOrphans ? '1' : '0');
             if (photos === 'compressed') {
                 if (compress.w)
                     u.searchParams.set('photo_w', String(compress.w));
@@ -1482,54 +1491,176 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
             await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => { });
             await page.evaluate(() => { var _a; return (_a = document.fonts) === null || _a === void 0 ? void 0 : _a.ready; }).catch(() => { });
-            try {
-                await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs });
-            }
-            catch (e) {
-                const diag = await page.evaluate(() => {
-                    const root = document.querySelector('[data-monthly-statement-root="1"]');
-                    const getA = (k) => (root && root.getAttribute) ? (root.getAttribute(k) || '') : '';
-                    return {
-                        href: String(location.href || ''),
-                        ready: getA('data-monthly-statement-ready'),
-                        deep_loaded: getA('data-deep-clean-loaded'),
-                        maint_loaded: getA('data-maint-loaded'),
-                        has_root: !!root,
-                        title: String(document.title || ''),
-                    };
-                }).catch(() => null);
-                const parts = [
-                    `wait ready timeout: ${String((e === null || e === void 0 ? void 0 : e.message) || e || 'timeout')}`,
-                    diag ? `root=${diag.has_root ? '1' : '0'} ready=${diag.ready || ''} deep=${diag.deep_loaded || ''} maint=${diag.maint_loaded || ''}` : '',
-                    (diag === null || diag === void 0 ? void 0 : diag.title) ? `title=${diag.title}` : '',
-                    (diag === null || diag === void 0 ? void 0 : diag.href) ? `href=${diag.href}` : '',
-                    consoleNotes.length ? `console=${consoleNotes.slice(-8).join(' | ')}` : '',
-                    pageErrors.length ? `pageerror=${pageErrors.slice(-6).join(' | ')}` : '',
-                    requestFails.length ? `requestfailed=${requestFails.slice(-10).join(' | ')}` : '',
-                ].filter(Boolean);
+            await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs }).catch((e) => {
                 try {
-                    console.error('[monthly-statement-pdf][ready-timeout]', parts.join(' ; '));
+                    const msg = String((e === null || e === void 0 ? void 0 : e.message) || e || 'timeout');
+                    console.error(`[monthly-statement-pdf][ready-timeout] month=${monthKey} pid=${pid} ${msg}`);
                 }
-                catch (_b) { }
-                throw new Error(parts.join(' ; '));
-            }
-            await page.waitForFunction(async () => {
+                catch (_a) { }
+            });
+            const imgStats = await page.evaluate(async (timeoutMs) => {
+                const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
                 const imgs = Array.from(document.images || []);
-                await Promise.all(imgs.map(img => {
+                const all = Promise.all(imgs.map((img) => {
                     if (img.complete)
                         return Promise.resolve(null);
                     return new Promise((resolve) => {
-                        img.addEventListener('load', resolve);
-                        img.addEventListener('error', resolve);
+                        img.addEventListener('load', resolve, { once: true });
+                        img.addEventListener('error', resolve, { once: true });
                     });
                 }));
-                return true;
-            }, { timeout: Math.min(waitTimeoutMs, 30000) }).catch(() => { });
+                await Promise.race([all, sleep(timeoutMs)]);
+                const notLoaded = imgs.filter((img) => !img.complete || (img.naturalWidth || 0) === 0).length;
+                return { total: imgs.length, notLoaded };
+            }, 20000).catch(() => ({ total: 0, notLoaded: 0 }));
+            try {
+                if (Number((imgStats === null || imgStats === void 0 ? void 0 : imgStats.notLoaded) || 0) > 0) {
+                    console.error(`[monthly-statement-pdf][img-timeout] month=${monthKey} pid=${pid} total=${imgStats.total} notLoaded=${imgStats.notLoaded}`);
+                }
+            }
+            catch (_b) { }
             await page.waitForTimeout(200);
             await page.emulateMedia({ media: 'print' });
             const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true });
             res.setHeader('Content-Type', 'application/pdf');
             res.setHeader('Content-Disposition', `attachment; filename="monthly-statement-${monthKey}.pdf"`);
+            return res.status(200).send(Buffer.from(pdf));
+        }
+        finally {
+            try {
+                await context.close();
+            }
+            catch (_c) { }
+        }
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'pdf failed' });
+    }
+});
+exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req, res) => {
+    var _a;
+    try {
+        const { month, property_id, showChinese, includePhotosMode, includePhotos, sections } = req.body || {};
+        const monthKey = String(month || '').trim();
+        const pid = String(property_id || '').trim();
+        if (!/^\d{4}-\d{2}$/.test(monthKey))
+            return res.status(400).json({ message: 'invalid month' });
+        if (!pid)
+            return res.status(400).json({ message: 'missing property_id' });
+        if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
+            return res.status(500).json({ message: 'no database configured' });
+        const photosMode = (() => {
+            if (includePhotos === 0 || includePhotos === '0' || includePhotos === false)
+                return 'off';
+            const v = String(includePhotosMode || 'full');
+            if (v === 'thumbnail' || v === 'off')
+                return v;
+            if (v === 'compressed')
+                return 'thumbnail';
+            return 'full';
+        })();
+        const sec = (() => {
+            if (Array.isArray(sections))
+                return sections.map((x) => String(x || '').trim()).filter(Boolean).join(',');
+            if (typeof sections === 'string')
+                return sections.split(',').map(s => s.trim()).filter(Boolean).join(',');
+            return 'all';
+        })();
+        const range = monthRangeISO(monthKey);
+        if (!range)
+            return res.status(400).json({ message: 'invalid month' });
+        const propR = await dbAdapter_2.pgPool.query('SELECT id, code, address, landlord_id FROM properties WHERE id = $1 LIMIT 1', [pid]);
+        const prop = (((_a = propR.rows) === null || _a === void 0 ? void 0 : _a[0]) || null);
+        if (!prop)
+            return res.status(404).json({ message: 'property not found' });
+        const landlordName = (() => {
+            const lid = String((prop === null || prop === void 0 ? void 0 : prop.landlord_id) || '').trim();
+            if (!lid)
+                return Promise.resolve('');
+            return dbAdapter_2.pgPool.query('SELECT name FROM landlords WHERE id = $1 LIMIT 1', [lid])
+                .then((r) => { var _a, _b; return String(((_b = (_a = r.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.name) || '').trim(); })
+                .catch(() => '');
+        })();
+        const codeRaw = String((prop === null || prop === void 0 ? void 0 : prop.code) || '').trim();
+        const codeNorm = (() => {
+            if (!codeRaw)
+                return '';
+            const s = codeRaw.split('(')[0].trim();
+            const t = s.split(/\s+/)[0].trim();
+            return t || s || codeRaw;
+        })();
+        const codes = Array.from(new Set([codeNorm, codeRaw].map(s => String(s || '').trim()).filter(Boolean)));
+        const wantDeep = photosMode !== 'off' && /(all|deep_cleaning|deepcleaning)/i.test(sec || 'all');
+        const wantMaint = photosMode !== 'off' && /(all|maintenance)/i.test(sec || 'all');
+        const qDeep = wantDeep ? dbAdapter_2.pgPool.query(`SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
+       FROM property_deep_cleaning
+       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND property_code = ANY($2::text[])))
+         AND occurred_at >= $3::date AND occurred_at < $4::date
+       ORDER BY occurred_at ASC, created_at ASC
+       LIMIT 5000`, [pid, codes, range.start, range.end]).then(r => r.rows || []).catch(() => []) : Promise.resolve([]);
+        const qMaint = wantMaint ? dbAdapter_2.pgPool.query(`SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
+       FROM property_maintenance
+       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND property_code = ANY($2::text[])))
+         AND occurred_at >= $3::date AND occurred_at < $4::date
+       ORDER BY occurred_at ASC, created_at ASC
+       LIMIT 5000`, [pid, codes, range.start, range.end]).then(r => r.rows || []).catch(() => []) : Promise.resolve([]);
+        const [deepRows, maintRows, llName] = await Promise.all([qDeep, qMaint, landlordName]);
+        const tpl = (0, monthlyStatementPdfTemplate_1.renderMonthlyStatementPdfHtml)({
+            month: monthKey,
+            property: { id: String(prop.id), code: prop.code || '', address: prop.address || '' },
+            landlordName: llName || '',
+            sections: sec || 'all',
+            showChinese: !(showChinese === false || showChinese === '0'),
+            includePhotosMode: photosMode,
+            deepCleanings: deepRows,
+            maintenances: maintRows,
+        });
+        let browser = await (0, playwright_1.getChromiumBrowser)();
+        let context = null;
+        try {
+            context = await browser.newContext();
+        }
+        catch (e) {
+            if (!isPlaywrightClosedError(e))
+                throw e;
+            await (0, playwright_1.resetChromiumBrowser)();
+            browser = await (0, playwright_1.getChromiumBrowser)();
+            context = await browser.newContext();
+        }
+        try {
+            const page = await context.newPage();
+            const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)));
+            const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)));
+            page.setDefaultTimeout(waitTimeoutMs);
+            page.setDefaultNavigationTimeout(navTimeoutMs);
+            await page.setContent(tpl.html, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
+            await page.evaluate(() => { var _a; return (_a = document.fonts) === null || _a === void 0 ? void 0 : _a.ready; }).catch(() => { });
+            const imgStats = await page.evaluate(async (timeoutMs) => {
+                const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+                const imgs = Array.from(document.images || []);
+                const all = Promise.all(imgs.map((img) => {
+                    if (img.complete)
+                        return Promise.resolve(null);
+                    return new Promise((resolve) => {
+                        img.addEventListener('load', resolve, { once: true });
+                        img.addEventListener('error', resolve, { once: true });
+                    });
+                }));
+                await Promise.race([all, sleep(timeoutMs)]);
+                const notLoaded = imgs.filter((img) => !img.complete || (img.naturalWidth || 0) === 0).length;
+                return { total: imgs.length, notLoaded };
+            }, 20000).catch(() => ({ total: 0, notLoaded: 0 }));
+            try {
+                if (Number((imgStats === null || imgStats === void 0 ? void 0 : imgStats.notLoaded) || 0) > 0) {
+                    console.error(`[monthly-statement-photos-pdf][img-timeout] month=${monthKey} pid=${pid} total=${imgStats.total} notLoaded=${imgStats.notLoaded}`);
+                }
+            }
+            catch (_b) { }
+            await page.waitForTimeout(200);
+            await page.emulateMedia({ media: 'print' });
+            const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true });
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="monthly-statement-photos-${monthKey}.pdf"`);
             return res.status(200).send(Buffer.from(pdf));
         }
         finally {

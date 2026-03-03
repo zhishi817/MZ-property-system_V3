@@ -22,6 +22,7 @@ export default function PublicMonthlyStatementPrintPage() {
   const [photosMode, setPhotosMode] = useState<'full' | 'compressed' | 'thumbnail' | 'off'>('full')
   const [photoW, setPhotoW] = useState<number | undefined>(undefined)
   const [photoQ, setPhotoQ] = useState<number | undefined>(undefined)
+  const [excludeOrphanFixedSnapshots, setExcludeOrphanFixedSnapshots] = useState<boolean>(false)
   const ref = useRef<HTMLDivElement>(null)
   const inited = useRef<boolean>(false)
   const fetchTimeoutMs = 25000
@@ -41,6 +42,7 @@ export default function PublicMonthlyStatementPrintPage() {
       const photosMode = sp.get('photos')
       const photoW = sp.get('photo_w') || sp.get('photoW')
       const photoQ = sp.get('photo_q') || sp.get('photoQ')
+      const excludeOrphans = sp.get('exclude_orphan_fixed') || sp.get('excludeOrphanFixedSnapshots')
       if (sc === '0' || sc === '1') setShowChinese(sc === '1')
       if (pdf === '0' || pdf === '1') setPdfMode(pdf === '1')
       if (m) setMonth(dayjs(m))
@@ -69,6 +71,9 @@ export default function PublicMonthlyStatementPrintPage() {
         const n = Number(photoQ)
         if (Number.isFinite(n) && n > 0) setPhotoQ(n)
       }
+      if (excludeOrphans === '0' || excludeOrphans === '1') {
+        setExcludeOrphanFixedSnapshots(excludeOrphans === '1')
+      }
     } catch {}
   }, [])
 
@@ -80,12 +85,12 @@ export default function PublicMonthlyStatementPrintPage() {
         const fin: any[] = await getJSON<any[]>('/finance', { timeoutMs: fetchTimeoutMs })
         const pexp: any[] = await apiList<any[]>('property_expenses', undefined, { timeoutMs: fetchTimeoutMs })
         const recurs: any[] = await apiList<any[]>('recurring_payments', undefined, { timeoutMs: fetchTimeoutMs })
-        const built = buildStatementTxs(fin, pexp, { properties, recurring_payments: recurs, excludeOrphanFixedSnapshots: false })
+        const built = buildStatementTxs(fin, pexp, { properties, recurring_payments: recurs, excludeOrphanFixedSnapshots })
         setTxs(built.txs as any)
       } catch { setTxs([]) }
     })()
     getJSON<Landlord[]>('/landlords', { timeoutMs: fetchTimeoutMs }).then(setLandlords).catch(() => setLandlords([]))
-  }, [properties])
+  }, [properties, excludeOrphanFixedSnapshots])
 
   if (!propertyId) return <div />
 
