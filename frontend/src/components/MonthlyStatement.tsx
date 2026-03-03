@@ -70,8 +70,8 @@ export default forwardRef<HTMLDivElement, {
   const canIncludeJobPhotos = includeJobPhotos !== false && photosModeNorm !== 'off'
   const isThumbPhotos = isPdfMode && photosModeNorm === 'thumbnail'
   const hideReportHeader = isPdfMode && !showBaseSections && (showDeepSection || showMaintSection)
-  const showDeepSectionFinal = showDeepSection && !(isPdfMode && photosModeNorm === 'off')
-  const showMaintSectionFinal = showMaintSection && !(isPdfMode && photosModeNorm === 'off')
+  const showDeepSectionFinal = showDeepSection
+  const showMaintSectionFinal = showMaintSection
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
   const fetchTimeoutMs = isPdfMode ? 20000 : 30000

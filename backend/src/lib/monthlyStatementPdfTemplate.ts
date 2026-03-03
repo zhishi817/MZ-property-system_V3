@@ -102,27 +102,33 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
   const deep = Array.isArray(input.deepCleanings) ? input.deepCleanings : []
   const maint = Array.isArray(input.maintenances) ? input.maintenances : []
 
-  const buildPhotoItems = (rows: any[], kind: 'deep_cleaning' | 'maintenance') => {
+  const buildPhotoItems = (rows: any[], kind: 'deep_cleaning' | 'maintenance', phase: 'before' | 'after') => {
     const items: Array<{ src: string; fallback: string; caption: string }> = []
     for (const r of rows) {
       const workNo = String(r?.work_no || r?.workNo || '').trim()
       const dt = pickDate(r)
-      const before = asUrlStrings(r?.photo_urls)
-      const after = asUrlStrings(r?.repair_photo_urls)
-      const urls = before.concat(after).filter(u => /^https?:\/\//i.test(u))
+      const urls = (phase === 'before' ? asUrlStrings(r?.photo_urls) : asUrlStrings(r?.repair_photo_urls))
+        .filter(u => /^https?:\/\//i.test(u))
       for (const u of urls) {
         const fallback = u
         const thumb = deriveThumbUrl(u)
-        const caption = `${kind === 'deep_cleaning' ? 'DC' : 'R'}${workNo ? ` ${workNo}` : ''}${dt ? ` • ${dt}` : ''}`
+        const phaseLabel = phase === 'before'
+          ? (showChinese ? 'Before（前）' : 'Before')
+          : (showChinese ? 'After（后）' : 'After')
+        const caption = `${kind === 'deep_cleaning' ? 'DC' : 'R'}${workNo ? ` ${workNo}` : ''}${dt ? ` • ${dt}` : ''}${` • ${phaseLabel}`}`
         items.push({ src: thumb, fallback, caption })
       }
     }
     return items
   }
 
-  const deepItems = buildPhotoItems(deep, 'deep_cleaning')
-  const maintItems = buildPhotoItems(maint, 'maintenance')
-  const totalPhotos = (photosMode === 'off') ? 0 : (deepItems.length + maintItems.length)
+  const deepBeforeItems = buildPhotoItems(deep, 'deep_cleaning', 'before')
+  const deepAfterItems = buildPhotoItems(deep, 'deep_cleaning', 'after')
+  const maintBeforeItems = buildPhotoItems(maint, 'maintenance', 'before')
+  const maintAfterItems = buildPhotoItems(maint, 'maintenance', 'after')
+  const totalPhotos = (photosMode === 'off')
+    ? 0
+    : (deepBeforeItems.length + deepAfterItems.length + maintBeforeItems.length + maintAfterItems.length)
   const effectivePhotosMode: PhotosMode = (photosMode !== 'off' && totalPhotos > 80) ? 'thumbnail' : photosMode
 
   const pickSrc = (it: { src: string; fallback: string }) => {
@@ -181,8 +187,10 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
   ` : ''
 
   const photosHtml = (effectivePhotosMode === 'off') ? '' : `
-    ${includeDeep ? renderPhotoPages(showChinese ? '深度清洁照片' : 'Deep Cleaning Photos', deepItems, 12, true) : ''}
-    ${includeMaint ? renderPhotoPages(showChinese ? '维修照片' : 'Maintenance Photos', maintItems, 12, false) : ''}
+    ${includeDeep ? renderPhotoPages(showChinese ? '深度清洁照片 - Before（前）' : 'Deep Cleaning Photos - Before', deepBeforeItems, 12, true) : ''}
+    ${includeDeep ? renderPhotoPages(showChinese ? '深度清洁照片 - After（后）' : 'Deep Cleaning Photos - After', deepAfterItems, 12, true) : ''}
+    ${includeMaint ? renderPhotoPages(showChinese ? '维修照片 - Before（前）' : 'Maintenance Photos - Before', maintBeforeItems, 12, true) : ''}
+    ${includeMaint ? renderPhotoPages(showChinese ? '维修照片 - After（后）' : 'Maintenance Photos - After', maintAfterItems, 12, true) : ''}
   `
 
   const html = `
@@ -230,4 +238,3 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
   `
   return { html, imageCount: totalPhotos }
 }
-

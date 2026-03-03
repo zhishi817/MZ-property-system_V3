@@ -1,5 +1,14 @@
 # Changelog
 
+## Dev (2026-03-04)
+
+- Version: `0.2.7-statement-pdf.20260304+build.1`
+- Finance PDF: Fix merge download “no photos” statement swallowing expenses — keep deep-cleaning/maintenance sections enabled in PDF mode so deep-clean owner costs remain in totals.
+- Finance PDF: Restore Deep Cleaning / Maintenance section titles in “no photos” statement (photos remain excluded from the statement PDF).
+- Finance PDF: Photo-only PDFs (deep cleaning / maintenance) now split photos into Before/After groups with separate section titles and pagination.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## Dev (2026-03-03)
 
 - Version: `0.2.7-statement-pdf.20260303+build.7`
