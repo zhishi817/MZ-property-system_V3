@@ -1,6 +1,10 @@
 {
   "name": "mz-property-frontend",
+<<<<<<< HEAD
   "version": "0.2.7-statement-pdf.20260303+build.7",
+=======
+  "version": "0.2.7-statement-pdf.20260303+build.5",
+>>>>>>> origin/main
   "private": true,
   "scripts": {
     "clean:next": "node scripts/clean-next-cache.mjs",

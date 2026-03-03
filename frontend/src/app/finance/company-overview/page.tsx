@@ -392,6 +392,11 @@ export default function PropertyRevenuePage() {
           await new Promise(r => setTimeout(r, 80))
         }
       }
+      const imgs = Array.from(el.querySelectorAll('img')) as HTMLImageElement[]
+      await Promise.all(imgs.map((img) => img.complete ? Promise.resolve(null) : new Promise((resolve) => {
+        img.addEventListener('load', resolve, { once: true } as any)
+        img.addEventListener('error', resolve, { once: true } as any)
+      })))
       if (!cancelled) setPreviewReady(true)
     })()
     return () => { cancelled = true }
