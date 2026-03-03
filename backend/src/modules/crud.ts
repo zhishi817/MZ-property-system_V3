@@ -180,18 +180,12 @@ function calcMaintenanceTotal(row: any): number {
   const base = toNum(row?.maintenance_amount)
   const baseN = Number.isFinite(base) ? base : 0
   const hasParts = row?.has_parts === true
-  const withParts = (() => {
-    if (!hasParts) return Math.round((baseN + Number.EPSILON) * 100) / 100
-    const includesParts = row?.maintenance_amount_includes_parts === true
-    if (includesParts) return Math.round((baseN + Number.EPSILON) * 100) / 100
-    const parts = toNum(row?.parts_amount)
-    const partsN = Number.isFinite(parts) ? parts : 0
-    return Math.round(((baseN + partsN) + Number.EPSILON) * 100) / 100
-  })()
-  const hasGst = row?.has_gst === true
-  const includesGst = row?.maintenance_amount_includes_gst === true
-  if (!hasGst || includesGst) return withParts
-  return Math.round(((withParts * 1.1) + Number.EPSILON) * 100) / 100
+  if (!hasParts) return Math.round((baseN + Number.EPSILON) * 100) / 100
+  const includesParts = row?.maintenance_amount_includes_parts === true
+  if (includesParts) return Math.round((baseN + Number.EPSILON) * 100) / 100
+  const parts = toNum(row?.parts_amount)
+  const partsN = Number.isFinite(parts) ? parts : 0
+  return Math.round(((baseN + partsN) + Number.EPSILON) * 100) / 100
 }
 
 async function upsertFallbackPropertyExpense(client: any, input: { propertyId: string, occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string, sourceTitle?: string, sourceSummary?: string }) {

@@ -2,7 +2,7 @@
 
 ## Dev (2026-03-03)
 
-- Version: `0.2.7-statement-pdf.20260303+build.4`
+- Version: `0.2.7-statement-pdf.20260303+build.5`
 - Invoice PDF: Remove country line (e.g., Australia) from the header address and render the company address as a single line.
 - Invoice PDF: Fix pagination margins by printing the top-level invoice-print page and forcing A4 + 20mm Playwright margins (preferCSSPageSize=false).
 - Invoice PDF: Render invoice-print without iframe to prevent footer blocks (e.g., Payment Instructions) from being clipped.
@@ -16,7 +16,6 @@
 - DB: Add migration `20260303_orders_stay_type.sql` and provide manual backfill script for historical self-stays.
 - Finance PDF: Fix merge/download failures caused by Playwright waiting for monthly-statement ready forever — add request timeouts + safe fallback on print rendering, plus backend timeout diagnostics.
 - Finance PDF: Add per-attachment fetch timeout in `/finance/merge-pdf` to avoid hanging on slow invoice URLs.
-- Maintenance/Expenses: When `has_gst=true` and `maintenance_amount_includes_gst=false`, auto expense sync writes GST-included amounts for landlord/company paid maintenance.
 
 Author: MZ System Bot <dev@mzpropertygroup.com>
 

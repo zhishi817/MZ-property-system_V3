@@ -205,21 +205,14 @@ function autoCalcMaintenanceTotal(row) {
     const base = autoToNum(row === null || row === void 0 ? void 0 : row.maintenance_amount);
     const baseN = Number.isFinite(base) ? base : 0;
     const hasParts = (row === null || row === void 0 ? void 0 : row.has_parts) === true;
-    const withParts = (() => {
-        if (!hasParts)
-            return Math.round((baseN + Number.EPSILON) * 100) / 100;
-        const includesParts = (row === null || row === void 0 ? void 0 : row.maintenance_amount_includes_parts) === true;
-        if (includesParts)
-            return Math.round((baseN + Number.EPSILON) * 100) / 100;
-        const parts = autoToNum(row === null || row === void 0 ? void 0 : row.parts_amount);
-        const partsN = Number.isFinite(parts) ? parts : 0;
-        return Math.round(((baseN + partsN) + Number.EPSILON) * 100) / 100;
-    })();
-    const hasGst = (row === null || row === void 0 ? void 0 : row.has_gst) === true;
-    const includesGst = (row === null || row === void 0 ? void 0 : row.maintenance_amount_includes_gst) === true;
-    if (!hasGst || includesGst)
-        return withParts;
-    return Math.round(((withParts * 1.1) + Number.EPSILON) * 100) / 100;
+    if (!hasParts)
+        return Math.round((baseN + Number.EPSILON) * 100) / 100;
+    const includesParts = (row === null || row === void 0 ? void 0 : row.maintenance_amount_includes_parts) === true;
+    if (includesParts)
+        return Math.round((baseN + Number.EPSILON) * 100) / 100;
+    const parts = autoToNum(row === null || row === void 0 ? void 0 : row.parts_amount);
+    const partsN = Number.isFinite(parts) ? parts : 0;
+    return Math.round(((baseN + partsN) + Number.EPSILON) * 100) / 100;
 }
 function autoComputeDeepCleaningTotalCost(laborCostRaw, consumablesRaw) {
     const labor = autoToNum(laborCostRaw);
