@@ -5,6 +5,7 @@ import { hasR2, r2Upload } from '../r2'
 import { requireAnyPerm } from '../auth'
 import { hasPg, pgPool } from '../dbAdapter'
 import crypto from 'crypto'
+import sharp from 'sharp'
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
@@ -39,8 +40,25 @@ router.post('/upload', requireAnyPerm(['property_maintenance.write','property.wr
     }
     const ext = path.extname(req.file.originalname) || ''
     const key = `maintenance/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
-    return res.status(201).json({ url })
+    const buf = (req.file as any).buffer as Buffer
+    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', buf)
+    const mime = String(req.file.mimetype || '').toLowerCase()
+    const isImg = mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(ext || '')
+    let thumb_url = ''
+    if (isImg) {
+      try {
+        const w = 1200
+        const q = 65
+        const thumbKey = `${key}.thumb.jpg`
+        const out = await sharp(buf)
+          .rotate()
+          .resize({ width: w, fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: q, mozjpeg: true })
+          .toBuffer()
+        thumb_url = await r2Upload(thumbKey, 'image/jpeg', out)
+      } catch {}
+    }
+    return res.status(201).json({ url, ...(thumb_url ? { thumb_url } : {}) })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'upload failed' })
   }

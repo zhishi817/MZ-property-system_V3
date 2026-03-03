@@ -1,0 +1,233 @@
+type SectionMode = 'all' | 'base' | 'deep_cleaning' | 'maintenance'
+type PhotosMode = 'full' | 'thumbnail' | 'compressed' | 'off'
+
+export type MonthlyStatementPdfTemplateInput = {
+  month: string
+  property: { id: string; code?: string; address?: string } | null
+  landlordName?: string
+  sections?: string[] | string
+  showChinese?: boolean
+  includePhotosMode?: PhotosMode
+  deepCleanings?: Array<{
+    id: string
+    work_no?: string
+    occurred_at?: string
+    completed_at?: string
+    started_at?: string
+    created_at?: string
+    photo_urls?: any
+    repair_photo_urls?: any
+  }>
+  maintenances?: Array<{
+    id: string
+    work_no?: string
+    occurred_at?: string
+    completed_at?: string
+    started_at?: string
+    created_at?: string
+    photo_urls?: any
+    repair_photo_urls?: any
+  }>
+}
+
+export function deriveThumbUrl(u: string): string {
+  return `${u}.thumb.jpg`
+}
+
+function normSections(sections?: string[] | string): Set<SectionMode> {
+  const arr = Array.isArray(sections) ? sections : (sections ? String(sections).split(',') : [])
+  const set = new Set(arr.map(s => String(s || '').trim().toLowerCase()).filter(Boolean) as any)
+  if (!set.size || set.has('all')) return new Set(['all'])
+  const out = new Set<SectionMode>()
+  if (set.has('base')) out.add('base')
+  if (set.has('maintenance')) out.add('maintenance')
+  if (set.has('deep_cleaning') || set.has('deepcleaning')) out.add('deep_cleaning')
+  return out.size ? out : new Set(['all'])
+}
+
+function safeArr(v: any): any[] {
+  if (!v) return []
+  if (Array.isArray(v)) return v
+  if (typeof v === 'string') {
+    const s = v.trim()
+    if (!s) return []
+    try {
+      const j = JSON.parse(s)
+      return Array.isArray(j) ? j : []
+    } catch {
+      return []
+    }
+  }
+  if (typeof v === 'object') return []
+  return []
+}
+
+function asUrlStrings(v: any): string[] {
+  return safeArr(v).map(x => String(x || '').trim()).filter(Boolean)
+}
+
+function pickDate(x: any): string {
+  const raw = String(x?.occurred_at || x?.completed_at || x?.started_at || x?.created_at || '').slice(0, 10)
+  return raw
+}
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+  return out
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplateInput): { html: string; imageCount: number } {
+  const month = String(input.month || '').trim()
+  const showChinese = input.showChinese !== false
+  const sec = normSections(input.sections)
+  const photosModeRaw = String(input.includePhotosMode || 'full').toLowerCase()
+  const photosMode: PhotosMode =
+    photosModeRaw === 'off' ? 'off' :
+    photosModeRaw === 'thumbnail' ? 'thumbnail' :
+    photosModeRaw === 'compressed' ? 'compressed' : 'full'
+  const propCode = String(input.property?.code || '').trim()
+  const propAddr = String(input.property?.address || '').trim()
+  const landlord = String(input.landlordName || '').trim()
+
+  const deep = Array.isArray(input.deepCleanings) ? input.deepCleanings : []
+  const maint = Array.isArray(input.maintenances) ? input.maintenances : []
+
+  const buildPhotoItems = (rows: any[], kind: 'deep_cleaning' | 'maintenance') => {
+    const items: Array<{ src: string; fallback: string; caption: string }> = []
+    for (const r of rows) {
+      const workNo = String(r?.work_no || r?.workNo || '').trim()
+      const dt = pickDate(r)
+      const before = asUrlStrings(r?.photo_urls)
+      const after = asUrlStrings(r?.repair_photo_urls)
+      const urls = before.concat(after).filter(u => /^https?:\/\//i.test(u))
+      for (const u of urls) {
+        const fallback = u
+        const thumb = deriveThumbUrl(u)
+        const caption = `${kind === 'deep_cleaning' ? 'DC' : 'R'}${workNo ? ` ${workNo}` : ''}${dt ? ` • ${dt}` : ''}`
+        items.push({ src: thumb, fallback, caption })
+      }
+    }
+    return items
+  }
+
+  const deepItems = buildPhotoItems(deep, 'deep_cleaning')
+  const maintItems = buildPhotoItems(maint, 'maintenance')
+  const totalPhotos = (photosMode === 'off') ? 0 : (deepItems.length + maintItems.length)
+  const effectivePhotosMode: PhotosMode = (photosMode !== 'off' && totalPhotos > 80) ? 'thumbnail' : photosMode
+
+  const pickSrc = (it: { src: string; fallback: string }) => {
+    if (photosMode === 'off') return ''
+    if (effectivePhotosMode === 'thumbnail') return it.src
+    return it.fallback
+  }
+
+  const renderPhotoPages = (title: string, items: Array<{ src: string; fallback: string; caption: string }>, perPage: number, enforcePaging: boolean) => {
+    if (!items.length) return ''
+    const pages = enforcePaging ? chunk(items, perPage) : [items]
+    let out = ''
+    pages.forEach((page, idx) => {
+      const pageNo = idx + 1
+      out += `
+        <section class="page break-before">
+          <div class="section-title">${escapeHtml(title)}${pages.length > 1 ? ` <span class="muted">(${pageNo}/${pages.length})</span>` : ''}</div>
+          <div class="grid">
+            ${page.map((it) => {
+              const src = pickSrc(it)
+              const fb = it.fallback
+              const cap = it.caption
+              return `
+                <figure class="cell">
+                  <img src="${escapeHtml(src)}" data-fallback="${escapeHtml(fb)}" alt="" />
+                  <figcaption>${escapeHtml(cap)}</figcaption>
+                </figure>
+              `
+            }).join('')}
+          </div>
+        </section>
+      `
+    })
+    return out
+  }
+
+  const includeAll = sec.has('all')
+  const includeBase = includeAll || sec.has('base')
+  const includeDeep = includeAll || sec.has('deep_cleaning')
+  const includeMaint = includeAll || sec.has('maintenance')
+
+  const baseHtml = includeBase ? `
+    <section class="page">
+      <div class="header">
+        <div class="title">${showChinese ? '月结单' : 'MONTHLY STATEMENT'}</div>
+        <div class="meta">
+          <div>${escapeHtml(month)}</div>
+          <div>${escapeHtml([propCode, propAddr].filter(Boolean).join(' / '))}</div>
+          ${landlord ? `<div>${escapeHtml(landlord)}</div>` : ''}
+        </div>
+      </div>
+      <div class="note">
+        ${showChinese ? '本 PDF 为稳定下载版本（模板渲染）。如需明细口径请以系统数据为准。' : 'This PDF is generated by a stable template renderer. Please refer to system data for exact figures.'}
+      </div>
+    </section>
+  ` : ''
+
+  const photosHtml = (effectivePhotosMode === 'off') ? '' : `
+    ${includeDeep ? renderPhotoPages(showChinese ? '深度清洁照片' : 'Deep Cleaning Photos', deepItems, 12, true) : ''}
+    ${includeMaint ? renderPhotoPages(showChinese ? '维修照片' : 'Maintenance Photos', maintItems, 12, false) : ''}
+  `
+
+  const html = `
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Monthly Statement ${escapeHtml(month)}</title>
+        <style>
+          @page { size: A4; margin: 12mm; }
+          html, body { margin: 0; padding: 0; background: #fff; color: #000; font-family: "Times New Roman", Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .page { break-inside: avoid; page-break-inside: avoid; }
+          .break-before { break-before: page; page-break-before: always; }
+          .header { display: flex; align-items: flex-end; justify-content: space-between; border-bottom: 2px solid #000; padding-bottom: 8px; }
+          .title { font-size: 32px; font-weight: 700; letter-spacing: 1px; }
+          .meta { text-align: right; font-size: 13px; line-height: 1.4; }
+          .note { margin-top: 10mm; font-size: 13px; color: #333; }
+          .section-title { margin: 6mm 0 4mm; font-size: 18px; font-weight: 700; }
+          .muted { color: #666; font-weight: 400; font-size: 12px; }
+          .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+          .cell { margin: 0; border: 1px solid #eee; border-radius: 8px; padding: 6px; }
+          .cell img { width: 100%; height: 55mm; object-fit: contain; display: block; background: #fafafa; border-radius: 6px; }
+          .cell figcaption { margin-top: 6px; font-size: 11px; color: #333; word-break: break-word; }
+        </style>
+      </head>
+      <body>
+        ${baseHtml}
+        ${photosHtml}
+        <script>
+          (function () {
+            var imgs = Array.prototype.slice.call(document.images || [])
+            imgs.forEach(function (img) {
+              img.addEventListener('error', function () {
+                try {
+                  var fb = img.getAttribute('data-fallback') || ''
+                  if (fb && img.src !== fb) img.src = fb
+                } catch {}
+              }, { once: true })
+            })
+          })()
+        </script>
+      </body>
+    </html>
+  `
+  return { html, imageCount: totalPhotos }
+}
+

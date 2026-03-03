@@ -91,12 +91,36 @@ function buildRecurringMaps(recurs: any[] | undefined): {
   return { reportById, vendorById, recurringIdSet }
 }
 
+function normCode(raw?: any): string {
+  const s0 = String(raw || '').trim()
+  if (!s0) return ''
+  const s1 = s0.split('(')[0].trim()
+  const s2 = s1.split(/\s+/)[0].trim()
+  return (s2 || s1 || s0).toUpperCase()
+}
+
+function deriveOccurredAt(rawTx: any): string {
+  const v = (x: any) => String(x || '').trim()
+  const occ = v(rawTx?.occurred_at)
+  if (occ) return occ
+  const paid = v(rawTx?.paid_date)
+  if (paid) return paid
+  const due = v(rawTx?.due_date)
+  if (due) return due
+  const mk = v(rawTx?.month_key)
+  if (/^\d{4}-\d{2}$/.test(mk)) return `${mk}-01`
+  const created = v(rawTx?.created_at)
+  if (created) return created.slice(0, 10)
+  return ''
+}
+
 function normalizePropertyId(raw: any, properties: { id: string; code?: string }[]): { property_id?: string; property_code?: string } {
   const pidRaw = raw?.property_id ? String(raw.property_id) : ''
   if (pidRaw && properties.some(pp => pp.id === pidRaw)) return { property_id: pidRaw }
   const code = String(raw?.property_code || '').trim()
   if (!code) return pidRaw ? { property_id: pidRaw } : {}
-  const match = properties.find(pp => String(pp.code || '').trim() === code)
+  const codeN = normCode(code)
+  const match = properties.find(pp => normCode(pp.code) === codeN)
   if (match?.id) return { property_id: match.id, property_code: code }
   return pidRaw ? { property_id: pidRaw, property_code: code } : { property_code: code }
 }
@@ -117,7 +141,7 @@ export function mapTxForStatement(rawTx: any, ctx: BuildStatementTxContext): Sta
   const amount0 = Number(rawTx.amount || 0)
   const amount = Number.isFinite(amount0) ? amount0 : 0
   const currency = String(rawTx.currency || 'AUD')
-  const occurred_at = String(rawTx.occurred_at || '').trim()
+  const occurred_at = deriveOccurredAt(rawTx)
   if (!occurred_at) return null
   const category = normalizeStatementCategory(rawTx.category)
   const { reportById, vendorById } = buildRecurringMaps(ctx.recurring_payments)
