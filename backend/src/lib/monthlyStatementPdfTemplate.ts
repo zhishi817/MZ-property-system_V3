@@ -31,7 +31,21 @@ export type MonthlyStatementPdfTemplateInput = {
 }
 
 export function deriveThumbUrl(u: string): string {
-  return `${u}.thumb.jpg`
+  const s = String(u || '').trim()
+  if (!s) return ''
+  if (/\.thumb\.jpg($|\?)/i.test(s)) return s
+  try {
+    const uu = new URL(s)
+    const p = String(uu.pathname || '')
+    if (p.endsWith('/public/r2-image') || p.endsWith('/r2-image')) {
+      const inner = String(uu.searchParams.get('url') || '').trim()
+      if (inner && !/\.thumb\.jpg$/i.test(inner)) uu.searchParams.set('url', `${inner}.thumb.jpg`)
+      return uu.toString()
+    }
+  } catch {}
+  const q = s.indexOf('?')
+  if (q >= 0) return `${s.slice(0, q)}.thumb.jpg${s.slice(q)}`
+  return `${s}.thumb.jpg`
 }
 
 function normSections(sections?: string[] | string): Set<SectionMode> {
@@ -137,7 +151,7 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
     return it.fallback
   }
 
-  const renderPhotoPages = (title: string, items: Array<{ src: string; fallback: string; caption: string }>, perPage: number, enforcePaging: boolean, breakFirst: boolean) => {
+  const renderPhotoPages = (titleMain: string, titlePhase: string, items: Array<{ src: string; fallback: string; caption: string }>, perPage: number, enforcePaging: boolean, breakFirst: boolean) => {
     if (!items.length) return { html: '', rendered: false }
     const pages = enforcePaging ? chunk(items, perPage) : [items]
     let out = ''
@@ -146,7 +160,13 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
       const needBreak = (idx === 0) ? breakFirst : true
       out += `
         <section class="page${needBreak ? ' break-before' : ''}">
-          <div class="section-title">${escapeHtml(title)}${pages.length > 1 ? ` <span class="muted">(${pageNo}/${pages.length})</span>` : ''}</div>
+          <div class="section-title">
+            <span class="section-title-main">${escapeHtml(titleMain)}</span>
+            <span class="section-title-right">
+              <span class="section-title-phase">${escapeHtml(titlePhase)}</span>
+              ${pages.length > 1 ? `<span class="muted">(${pageNo}/${pages.length})</span>` : ''}
+            </span>
+          </div>
           <div class="grid">
             ${page.map((it) => {
               const src = pickSrc(it)
@@ -192,9 +212,14 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
     ${(() => {
       let hasPrev = !!includeBase
       let out = ''
+      const titleDeep = showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'
+      const titleMaint = showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'
+      const phaseBefore = showChinese ? 'Before（前）' : 'Before'
+      const phaseAfter = showChinese ? 'After（后）' : 'After'
       if (includeDeep) {
         const r1 = renderPhotoPages(
-          showChinese ? 'Deep Cleaning Maintenance 深度清洁维护 - Before（前）' : 'Deep Cleaning Maintenance - Before',
+          titleDeep,
+          phaseBefore,
           deepBeforeItems,
           12,
           true,
@@ -203,7 +228,8 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
         out += r1.html
         if (r1.rendered) hasPrev = true
         const r2 = renderPhotoPages(
-          showChinese ? 'Deep Cleaning Maintenance 深度清洁维护 - After（后）' : 'Deep Cleaning Maintenance - After',
+          titleDeep,
+          phaseAfter,
           deepAfterItems,
           12,
           true,
@@ -214,7 +240,8 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
       }
       if (includeMaint) {
         const r3 = renderPhotoPages(
-          showChinese ? 'Maintenance Repairs 维修记录 - Before（前）' : 'Maintenance Repairs - Before',
+          titleMaint,
+          phaseBefore,
           maintBeforeItems,
           12,
           true,
@@ -223,7 +250,8 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
         out += r3.html
         if (r3.rendered) hasPrev = true
         const r4 = renderPhotoPages(
-          showChinese ? 'Maintenance Repairs 维修记录 - After（后）' : 'Maintenance Repairs - After',
+          titleMaint,
+          phaseAfter,
           maintAfterItems,
           12,
           true,
@@ -252,7 +280,9 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
           .title { font-size: 32px; font-weight: 700; letter-spacing: 1px; }
           .meta { text-align: right; font-size: 13px; line-height: 1.4; }
           .note { margin-top: 10mm; font-size: 13px; color: #333; }
-          .section-title { margin-top: 16px; font-weight: 700; background: #eef3fb; padding: 6px 8px; font-size: 18px; }
+          .section-title { margin-top: 16px; font-weight: 700; background: #eef3fb; padding: 6px 8px; font-size: 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+          .section-title-right { display: inline-flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+          .section-title-phase { font-size: 13px; font-weight: 700; color: #111; }
           .muted { color: #666; font-weight: 400; font-size: 12px; }
           .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
           .cell { margin: 0; border: 1px solid #eee; border-radius: 8px; padding: 6px; }

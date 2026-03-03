@@ -2,11 +2,12 @@
 
 ## Dev (2026-03-04)
 
-- Version: `0.2.7-statement-pdf.20260304+build.2`
+- Version: `0.2.7-statement-pdf.20260304+build.3`
 - Finance PDF: Fix merge download “no photos” statement swallowing expenses — deep-clean owner costs are counted even when deep/maint sections are not rendered.
 - Finance PDF: When photos are split into separate PDFs, main report exports base statement only (no job record pages).
 - Finance PDF: Photo-only PDFs (deep cleaning / maintenance) now split photos into Before/After groups, use the correct section title style, and paginate cleanly.
-- Finance PDF: Fix photo-only PDFs rendering blank pages/images — compressed mode no longer forces thumbnail-only, avoid leading blank page, and normalize R2 image loading via proxy.
+- Finance PDF: Fix photo-only PDFs rendering blank pages/images — improve Playwright image waiting (eager + scroll + fallback-aware) and make photo URL normalization more robust (relative paths + object arrays).
+- Finance PDF: Align photo section title bar layout (main title + phase) and match print page header sizing.
 
 Author: MZ System Bot <dev@mzpropertygroup.com>
 

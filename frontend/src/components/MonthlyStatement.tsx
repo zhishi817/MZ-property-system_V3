@@ -885,7 +885,7 @@ export default forwardRef<HTMLDivElement, {
 
       {(showDeepSectionFinal && deepCleaningsForReport.length) ? (
         <div data-deep-clean-section="1" data-pdf-break-before={isPdfMode ? 'true' : undefined}>
-          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'}</div>
+          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, fontSize: 18, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'}</div>
           {!isPdfMode ? (
             <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 8 }}>
               <button
@@ -1028,7 +1028,7 @@ export default forwardRef<HTMLDivElement, {
 
       {(showMaintSectionFinal && maintenancesForReport.length) ? (
         <div data-maint-section="1" data-pdf-break-before={isPdfMode ? 'true' : undefined}>
-          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>
+          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, fontSize: 18, background:'#eef3fb', padding:'6px 8px' }}>
             {showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'}
           </div>
           {!isPdfMode ? (
