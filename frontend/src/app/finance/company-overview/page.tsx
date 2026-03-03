@@ -122,14 +122,12 @@ export default function PropertyRevenuePage() {
   const resolveMonthPdfCfg = (splitInfo: any | null) => {
     const shouldSplit = !!splitInfo?.shouldSplit
     const hardSplit = !!splitInfo?.hardSplit
-    const photosMode: 'full' | 'compressed' | 'off' = hardSplit
+    const photosMode: 'full' | 'compressed' | 'off' = (shouldSplit || hardSplit)
       ? 'off'
-      : (exportQuality === 'ultra'
-          ? (shouldSplit ? 'off' : 'full')
-          : 'compressed')
+      : (exportQuality === 'ultra' ? 'full' : 'compressed')
     const photoCfg = photosMode === 'compressed' ? pickMonthPhotoCfg('normal') : null
-    const sectionsApi = 'all'
-    const sectionsView = ['all']
+    const sectionsApi = shouldSplit ? 'base' : 'all'
+    const sectionsView = shouldSplit ? ['base'] : ['all']
     return { shouldSplit, hardSplit, photosMode, photoCfg, sectionsApi, sectionsView }
   }
   const buildTxsFromRaw = (fin: any[], pexp: any[], recurs: any[], props: any[], excludeOrphans: boolean) => {
@@ -1127,8 +1125,7 @@ export default function PropertyRevenuePage() {
             let splitInfo: any = null
             let monthPhotosMode: 'full' | 'compressed' | 'thumbnail' | 'off' = 'full'
             let monthPhotoCfg: null | { photo_w: number; photo_q: number } = null
-            const genMonthly = async (photosMode: 'full' | 'compressed' | 'thumbnail' | 'off', photoCfg?: { photo_w: number; photo_q: number } | null) => {
-              const sections = 'all'
+            const genMonthly = async (photosMode: 'full' | 'compressed' | 'thumbnail' | 'off', sections: string, photoCfg?: { photo_w: number; photo_q: number } | null) => {
               const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -1165,7 +1162,7 @@ export default function PropertyRevenuePage() {
               const cfg = resolveMonthPdfCfg(splitInfo)
               monthPhotosMode = cfg.photosMode
               monthPhotoCfg = cfg.photoCfg
-              statementBlob = await genMonthly(monthPhotosMode, monthPhotoCfg)
+              statementBlob = await genMonthly(monthPhotosMode, cfg.sectionsApi, monthPhotoCfg)
             } else {
               updateMerge(26, '正在渲染页面...')
               setStatementPdfMode(true)
@@ -1206,7 +1203,7 @@ export default function PropertyRevenuePage() {
                   updateMerge(58, '报表过大，正在压缩照片...')
                   monthPhotosMode = 'compressed'
                   monthPhotoCfg = pickMonthPhotoCfg('low')
-                  statementBlob = await genMonthly(monthPhotosMode, monthPhotoCfg)
+                  statementBlob = await genMonthly(monthPhotosMode, (resolveMonthPdfCfg(splitInfo).sectionsApi || 'all'), monthPhotoCfg)
                 } catch {}
               }
               if (statementBlob.size > 18 * 1024 * 1024) {
@@ -1217,7 +1214,7 @@ export default function PropertyRevenuePage() {
                     splitInfo = splitInfo || forced
                     setMergeSplit((prev) => prev || forced as any)
                     monthPhotosMode = 'off'
-                    statementBlob = await genMonthly('off', null)
+                    statementBlob = await genMonthly('off', (resolveMonthPdfCfg(splitInfo).sectionsApi || 'base'), null)
                   } catch {}
                 }
                 mergeFail(`报表PDF过大（${Math.round(statementBlob.size / 1024 / 1024)}MB），已回退仅下载报表。建议使用“标准/高清（平衡）”导出或拆分下载。`, true)

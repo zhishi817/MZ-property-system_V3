@@ -1540,7 +1540,7 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
 exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req, res) => {
     var _a;
     try {
-        const { month, property_id, showChinese, includePhotosMode, includePhotos, sections } = req.body || {};
+        const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q } = req.body || {};
         const monthKey = String(month || '').trim();
         const pid = String(property_id || '').trim();
         if (!/^\d{4}-\d{2}$/.test(monthKey))
@@ -1553,10 +1553,8 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
             if (includePhotos === 0 || includePhotos === '0' || includePhotos === false)
                 return 'off';
             const v = String(includePhotosMode || 'full');
-            if (v === 'thumbnail' || v === 'off')
+            if (v === 'thumbnail' || v === 'off' || v === 'compressed')
                 return v;
-            if (v === 'compressed')
-                return 'thumbnail';
             return 'full';
         })();
         const sec = (() => {
@@ -1604,7 +1602,71 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
          AND occurred_at >= $3::date AND occurred_at < $4::date
        ORDER BY occurred_at ASC, created_at ASC
        LIMIT 5000`, [pid, codes, range.start, range.end]).then(r => r.rows || []).catch(() => []) : Promise.resolve([]);
-        const [deepRows, maintRows, llName] = await Promise.all([qDeep, qMaint, landlordName]);
+        const [deepRows0, maintRows0, llName] = await Promise.all([qDeep, qMaint, landlordName]);
+        const apiBase = (() => {
+            const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+            const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+            return host ? `${proto}://${host}` : '';
+        })();
+        const compress = (() => {
+            const w0 = Number(photo_w || 0);
+            const q0 = Number(photo_q || 0);
+            const w = Math.max(600, Math.min(2400, Number.isFinite(w0) && w0 > 0 ? w0 : 1400));
+            const q = Math.max(40, Math.min(85, Number.isFinite(q0) && q0 > 0 ? q0 : 72));
+            return { w, q };
+        })();
+        const normUrlList = (raw) => {
+            if (!raw)
+                return [];
+            let arr = [];
+            if (Array.isArray(raw))
+                arr = raw;
+            else if (typeof raw === 'string') {
+                try {
+                    const j = JSON.parse(raw);
+                    arr = Array.isArray(j) ? j : [];
+                }
+                catch (_a) {
+                    arr = [];
+                }
+            }
+            return arr
+                .map((x) => {
+                if (!x)
+                    return '';
+                if (typeof x === 'string')
+                    return x;
+                if (typeof x === 'object')
+                    return String(x.url || x.src || x.path || '');
+                return String(x || '');
+            })
+                .map((s) => String(s || '').trim())
+                .filter(Boolean);
+        };
+        const isR2 = (u) => u.includes('.r2.dev/') || u.includes('r2.cloudflarestorage.com/');
+        const proxyR2 = (u) => {
+            if (!apiBase)
+                return u;
+            const base = `${apiBase}/public/r2-image?url=${encodeURIComponent(u)}`;
+            if (photosMode === 'compressed' || photosMode === 'thumbnail')
+                return `${base}&fmt=jpeg&w=${compress.w}&q=${compress.q}`;
+            return base;
+        };
+        const normalizePhotoUrl = (u) => {
+            const s = String(u || '').trim();
+            if (!s)
+                return '';
+            if (!/^https?:\/\//i.test(s))
+                return '';
+            return isR2(s) ? proxyR2(s) : s;
+        };
+        const mapRowUrls = (r) => {
+            const before = normUrlList(r === null || r === void 0 ? void 0 : r.photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u));
+            const after = normUrlList(r === null || r === void 0 ? void 0 : r.repair_photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u));
+            return { ...r, photo_urls: before, repair_photo_urls: after };
+        };
+        const deepRows = Array.isArray(deepRows0) ? deepRows0.map(mapRowUrls) : [];
+        const maintRows = Array.isArray(maintRows0) ? maintRows0.map(mapRowUrls) : [];
         const tpl = (0, monthlyStatementPdfTemplate_1.renderMonthlyStatementPdfHtml)({
             month: monthKey,
             property: { id: String(prop.id), code: prop.code || '', address: prop.address || '' },
