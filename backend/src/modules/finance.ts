@@ -13,6 +13,7 @@ import { pgInsertOnConflictDoNothing, pgPool } from '../dbAdapter'
 import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
 import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
 import { renderMonthlyStatementPdfHtml } from '../lib/monthlyStatementPdfTemplate'
+import { waitForImages } from '../lib/waitForImages'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -1389,23 +1390,11 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
           console.error(`[monthly-statement-pdf][ready-timeout] month=${monthKey} pid=${pid} ${msg}`)
         } catch {}
       })
-      const imgStats = await page.evaluate(async (timeoutMs: number) => {
-        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-        const imgs = Array.from(document.images || []) as HTMLImageElement[]
-        const all = Promise.all(imgs.map((img) => {
-          if ((img as any).complete) return Promise.resolve(null)
-          return new Promise((resolve) => {
-            img.addEventListener('load', resolve, { once: true } as any)
-            img.addEventListener('error', resolve, { once: true } as any)
-          })
-        }))
-        await Promise.race([all, sleep(timeoutMs)])
-        const notLoaded = imgs.filter((img) => !(img as any).complete || ((img as any).naturalWidth || 0) === 0).length
-        return { total: imgs.length, notLoaded }
-      }, 20000).catch(() => ({ total: 0, notLoaded: 0 }))
+      const imgStats = await waitForImages(page, { timeoutMs: 20000, scroll: true, maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
       try {
         if (Number(imgStats?.notLoaded || 0) > 0) {
-          console.error(`[monthly-statement-pdf][img-timeout] month=${monthKey} pid=${pid} total=${imgStats.total} notLoaded=${imgStats.notLoaded}`)
+          const sample = (imgStats as any)?.failedUrls?.length ? ` sample=${(imgStats as any).failedUrls.join(' | ')}` : ''
+          console.error(`[monthly-statement-pdf][img-timeout] month=${monthKey} pid=${pid} total=${imgStats.total} notLoaded=${imgStats.notLoaded}${sample}`)
         }
       } catch {}
       await page.waitForTimeout(200)
@@ -1523,8 +1512,13 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
     const normalizePhotoUrl = (u: string) => {
       const s = String(u || '').trim()
       if (!s) return ''
-      if (!/^https?:\/\//i.test(s)) return ''
-      return isR2(s) ? proxyR2(s) : s
+      if (/^https?:\/\//i.test(s)) return isR2(s) ? proxyR2(s) : s
+      if (s.startsWith('//')) {
+        const abs = `https:${s}`
+        return isR2(abs) ? proxyR2(abs) : abs
+      }
+      if (s.startsWith('/')) return apiBase ? `${apiBase}${s}` : ''
+      return ''
     }
     const mapRowUrls = (r: any) => {
       const before = normUrlList(r?.photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
@@ -1559,23 +1553,11 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       page.setDefaultNavigationTimeout(navTimeoutMs)
       await page.setContent(tpl.html, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs } as any)
       await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
-      const imgStats = await page.evaluate(async (timeoutMs: number) => {
-        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-        const imgs = Array.from(document.images || []) as HTMLImageElement[]
-        const all = Promise.all(imgs.map((img) => {
-          if ((img as any).complete) return Promise.resolve(null)
-          return new Promise((resolve) => {
-            img.addEventListener('load', resolve, { once: true } as any)
-            img.addEventListener('error', resolve, { once: true } as any)
-          })
-        }))
-        await Promise.race([all, sleep(timeoutMs)])
-        const notLoaded = imgs.filter((img) => !(img as any).complete || ((img as any).naturalWidth || 0) === 0).length
-        return { total: imgs.length, notLoaded }
-      }, 20000).catch(() => ({ total: 0, notLoaded: 0 }))
+      const imgStats = await waitForImages(page, { timeoutMs: 20000, scroll: true, tryFallbackAttr: 'data-fallback', maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
       try {
         if (Number(imgStats?.notLoaded || 0) > 0) {
-          console.error(`[monthly-statement-photos-pdf][img-timeout] month=${monthKey} pid=${pid} total=${imgStats.total} notLoaded=${imgStats.notLoaded}`)
+          const sample = (imgStats as any)?.failedUrls?.length ? ` sample=${(imgStats as any).failedUrls.join(' | ')}` : ''
+          console.error(`[monthly-statement-photos-pdf][img-timeout] month=${monthKey} pid=${pid} total=${imgStats.total} notLoaded=${imgStats.notLoaded}${sample}`)
         }
       } catch {}
       await page.waitForTimeout(200)
