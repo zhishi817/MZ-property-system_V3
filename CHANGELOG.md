@@ -1,5 +1,19 @@
 # Changelog
 
+## Dev (2026-03-03)
+
+- Version: `0.2.7-statement-pdf.20260303+build.1`
+- Invoice PDF: Remove country line (e.g., Australia) from the header address and render the company address as a single line.
+- Invoice PDF: Fix pagination margins by printing the top-level invoice-print page and forcing A4 + 20mm Playwright margins (preferCSSPageSize=false).
+- Invoice PDF: Render invoice-print without iframe to prevent footer blocks (e.g., Payment Instructions) from being clipped.
+- Finance: Add region filter to the Property Revenue (房源营收) page.
+- Finance PDF: Split download polish — main “no photos” PDF uses base sections only; module PDFs hide the MONTHLY STATEMENT header for manual merging.
+- Finance PDF: Add compressed photo mode (JPEG resize/quality) to keep all photos but reduce PDF size for merging.
+- Finance recurring: Respect frequency_months; only generate fixed-expense snapshots on due months (e.g., quarterly), preventing monthly over-deduction in Property Revenue.
+- DB: Add a production-safe cleanup migration to remove future non-due recurring snapshots: `20260303_recurring_frequency_months_cleanup_future.sql`.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## Dev (2026-03-02)
 
 - Version: `0.2.7-statement-pdf.20260302+build.1`

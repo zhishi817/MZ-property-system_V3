@@ -19,7 +19,9 @@ export default function PublicMonthlyStatementPrintPage() {
   const [pdfMode, setPdfMode] = useState<boolean>(true)
   const [sections, setSections] = useState<string[]>(['all'])
   const [includeJobPhotos, setIncludeJobPhotos] = useState<boolean>(true)
-  const [photosMode, setPhotosMode] = useState<'full' | 'thumbnail' | 'off'>('full')
+  const [photosMode, setPhotosMode] = useState<'full' | 'compressed' | 'thumbnail' | 'off'>('full')
+  const [photoW, setPhotoW] = useState<number | undefined>(undefined)
+  const [photoQ, setPhotoQ] = useState<number | undefined>(undefined)
   const ref = useRef<HTMLDivElement>(null)
   const inited = useRef<boolean>(false)
 
@@ -36,6 +38,8 @@ export default function PublicMonthlyStatementPrintPage() {
       const sec = sp.get('sections')
       const includePhotos = sp.get('includePhotos')
       const photosMode = sp.get('photos')
+      const photoW = sp.get('photo_w') || sp.get('photoW')
+      const photoQ = sp.get('photo_q') || sp.get('photoQ')
       if (sc === '0' || sc === '1') setShowChinese(sc === '1')
       if (pdf === '0' || pdf === '1') setPdfMode(pdf === '1')
       if (m) setMonth(dayjs(m))
@@ -52,8 +56,17 @@ export default function PublicMonthlyStatementPrintPage() {
       if (photosMode) {
         const pm = String(photosMode).toLowerCase()
         if (pm === 'off') setPhotosMode('off')
+        else if (pm === 'compressed') setPhotosMode('compressed')
         else if (pm === 'thumbnail') setPhotosMode('thumbnail')
         else setPhotosMode('full')
+      }
+      if (photoW) {
+        const n = Number(photoW)
+        if (Number.isFinite(n) && n > 0) setPhotoW(n)
+      }
+      if (photoQ) {
+        const n = Number(photoQ)
+        if (Number.isFinite(n) && n > 0) setPhotoQ(n)
       }
     } catch {}
   }, [])
@@ -89,6 +102,8 @@ export default function PublicMonthlyStatementPrintPage() {
       sections={sections}
       includeJobPhotos={includeJobPhotos}
       photosMode={photosMode}
+      photoW={photoW}
+      photoQ={photoQ}
       mode="pdf"
       pdfMode={pdfMode}
       renderEngine="print"

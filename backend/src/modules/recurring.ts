@@ -56,6 +56,26 @@ function monthKeysBetween(start: string, end: string): string[] {
   return out
 }
 
+function isDueMonthKey(start: string, monthKey: string, freqMonths: number): boolean {
+  const freq = Math.max(1, Math.min(24, Number(freqMonths || 1)))
+  const s = monthKeyToIndex(start)
+  const m = monthKeyToIndex(monthKey)
+  if (!Number.isFinite(s) || !Number.isFinite(m)) return false
+  if (m < s) return false
+  return ((m - s) % freq) === 0
+}
+
+function dueMonthKeysBetween(start: string, end: string, freqMonths: number): string[] {
+  const freq = Math.max(1, Math.min(24, Number(freqMonths || 1)))
+  const a = monthKeyToIndex(start)
+  const b = monthKeyToIndex(end)
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return []
+  if (a > b) return []
+  const out: string[] = []
+  for (let i = a; i <= b; i += freq) out.push(indexToMonthKey(i))
+  return out
+}
+
 async function ensureRecurringPaymentsSchema(client: any) {
   await client.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS start_month_key text;')
   try { await client.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS report_category text;') } catch {}
@@ -115,8 +135,6 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
   const curIdx = monthKeyToIndex(currentMonth)
   if (!Number.isFinite(startIdx) || !Number.isFinite(curIdx)) return res.status(400).json({ message: 'invalid month key' })
   const pastEndIdx = curIdx - 1
-  const pastMonths = startIdx <= pastEndIdx ? monthKeysBetween(startMonth, indexToMonthKey(pastEndIdx)) : []
-  if (pastMonths.length > 240) return res.status(400).json({ message: '起始月份过早，历史月份过多（最多 240 个月）' })
 
   const { initial_mark, ...payment } = parsed.data
   const freq = Number(payment.frequency_months || 1)
@@ -126,6 +144,9 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
   }
   if (!Number.isFinite(freq) || freq < 1 || freq > 24) return res.status(400).json({ message: 'frequency_months invalid' })
   if (payment.scope === 'property' && !payment.property_id) return res.status(400).json({ message: 'property_id required' })
+  const pastEndMonthKey = startIdx <= pastEndIdx ? indexToMonthKey(pastEndIdx) : ''
+  const pastDueMonths = pastEndMonthKey ? dueMonthKeysBetween(startMonth, pastEndMonthKey, freq) : []
+  if (pastDueMonths.length > 240) return res.status(400).json({ message: '起始月份过早，历史月份过多（最多 240 个月）' })
 
   try {
     const result = await pgRunInTransaction(async (client) => {
@@ -156,7 +177,7 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
       let updated = 0
       const { v4: uuid } = require('uuid')
 
-      for (const mk of pastMonths) {
+      for (const mk of pastDueMonths) {
         const dueISO = payment.payment_type === 'rent_deduction' ? `${mk}-01` : computeDueISO(mk, dueDay)
         const row = byMonth[mk]
         if (!row) {
@@ -194,7 +215,7 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
         }
       }
 
-      if (startIdx <= curIdx) {
+      if (startIdx <= curIdx && isDueMonthKey(startMonth, currentMonth, freq)) {
         const mk = currentMonth
         const dueISO = payment.payment_type === 'rent_deduction' ? `${mk}-01` : computeDueISO(mk, dueDay)
         const row = byMonth[mk]
@@ -347,6 +368,10 @@ router.post('/payments/:id/resume', requireAnyPerm(['recurring_payments.write', 
       const scope = String(after.scope || before.scope || 'company')
       const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
       const dueDay = Number(after.due_day_of_month || 1)
+      const startMonth = String((after as any).start_month_key || (before as any).start_month_key || '')
+      const freq = Number((after as any).frequency_months || (before as any).frequency_months || 1)
+      const isDue = startMonth ? isDueMonthKey(startMonth, monthKey, freq) : true
+      if (!isDue) return { before, after, month_key: monthKey, ensured: false }
       const dueISO = after.payment_type === 'rent_deduction' ? `${monthKey}-01` : computeDueISO(monthKey, dueDay)
       const shouldPaid = after.payment_type === 'rent_deduction' || monthIdx < curIdx
       const existing = await client.query(`SELECT id FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
@@ -381,7 +406,7 @@ router.post('/payments/:id/resume', requireAnyPerm(['recurring_payments.write', 
     })
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
     addAudit('RecurringPayment', String(id), 'resume', (result as any).before, (result as any).after, (req as any).user?.sub)
-    return res.json({ ok: true, resumed: true, month_key: (result as any).month_key || monthKey })
+    return res.json({ ok: true, resumed: true, month_key: (result as any).month_key || monthKey, ensured: (result as any).ensured !== false })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'resume failed' })
   }
@@ -433,13 +458,17 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
       }
 
       let autoMarked = 0
+      const startMonthForRule = String((Object.prototype.hasOwnProperty.call(payload, 'start_month_key') ? payload.start_month_key : (updated as any).start_month_key) || (before as any).start_month_key || '')
+      const freqForRule = Number((Object.prototype.hasOwnProperty.call(payload, 'frequency_months') ? payload.frequency_months : (updated as any).frequency_months) || (before as any).frequency_months || 1)
+
       if (Object.prototype.hasOwnProperty.call(payload, 'start_month_key')) {
         const startMonth = String(payload.start_month_key || '')
         const startIdx = monthKeyToIndex(startMonth)
         const curIdx = monthKeyToIndex(currentMonth)
         if (Number.isFinite(startIdx) && Number.isFinite(curIdx)) {
           const pastEndIdx = curIdx - 1
-          const pastMonths = startIdx <= pastEndIdx ? monthKeysBetween(startMonth, indexToMonthKey(pastEndIdx)) : []
+          const pastEndMonthKey = startIdx <= pastEndIdx ? indexToMonthKey(pastEndIdx) : ''
+          const pastMonths = pastEndMonthKey ? dueMonthKeysBetween(startMonth, pastEndMonthKey, freqForRule) : []
           if (pastMonths.length <= 240) {
             const dueDay = Number(updated.due_day_of_month || 1)
             const existingRes = await client.query(
@@ -491,7 +520,7 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
               autoMarked++
             }
 
-            if (startIdx <= curIdx && !byMonth[currentMonth]) {
+            if (startIdx <= curIdx && isDueMonthKey(startMonth, currentMonth, freqForRule) && !byMonth[currentMonth]) {
               const mk = currentMonth
               const dueISO = updated.payment_type === 'rent_deduction' ? `${mk}-01` : computeDueISO(mk, dueDay)
               const payload3: any = {
@@ -520,6 +549,18 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
                 values
               )
               void ins5
+            }
+          }
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(payload, 'start_month_key') || Object.prototype.hasOwnProperty.call(payload, 'frequency_months')) {
+        if (startMonthForRule) {
+          const existingUnpaid = await client.query(`SELECT id, month_key FROM ${table} WHERE fixed_expense_id = $1 AND month_key >= $2 AND status = 'unpaid'`, [id, currentMonth])
+          const rows2: Array<{ id: string; month_key: string }> = Array.isArray(existingUnpaid.rows) ? existingUnpaid.rows.map((r: any) => ({ id: String(r.id), month_key: String(r.month_key || '') })) : []
+          for (const r of rows2) {
+            if (!isDueMonthKey(startMonthForRule, r.month_key, freqForRule)) {
+              await client.query(`DELETE FROM ${table} WHERE id = $1`, [r.id])
             }
           }
         }

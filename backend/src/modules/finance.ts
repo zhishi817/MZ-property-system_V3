@@ -1281,7 +1281,7 @@ router.post(
 
 router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req: any, res: any) => {
   try {
-    const { month, property_id, showChinese, includePhotosMode, includePhotos, sections } = req.body || {}
+    const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q } = req.body || {}
     const monthKey = String(month || '').trim()
     const pid = String(property_id || '').trim()
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
@@ -1300,13 +1300,20 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
     const photos = (() => {
       if (includePhotos === 0 || includePhotos === '0' || includePhotos === false) return 'off'
       const v = String(includePhotosMode || 'full')
-      if (v === 'thumbnail' || v === 'off') return v
+      if (v === 'thumbnail' || v === 'compressed' || v === 'off') return v
       return 'full'
     })()
     const sec = (() => {
       if (Array.isArray(sections)) return sections.map((x: any) => String(x || '').trim()).filter(Boolean).join(',')
       if (typeof sections === 'string') return sections.split(',').map(s => s.trim()).filter(Boolean).join(',')
       return 'all'
+    })()
+    const compress = (() => {
+      const w0 = Number(photo_w || 0)
+      const q0 = Number(photo_q || 0)
+      const w = Math.max(600, Math.min(2400, Number.isFinite(w0) && w0 > 0 ? w0 : 0))
+      const q = Math.max(40, Math.min(85, Number.isFinite(q0) && q0 > 0 ? q0 : 0))
+      return { w: w || undefined, q: q || undefined }
     })()
     const url = (() => {
       const u = new URL('/public/monthly-statement-print', front)
@@ -1316,6 +1323,10 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
       u.searchParams.set('showChinese', String(showChinese === false || showChinese === '0' ? '0' : '1'))
       u.searchParams.set('photos', photos)
       u.searchParams.set('sections', sec || 'all')
+      if (photos === 'compressed') {
+        if (compress.w) u.searchParams.set('photo_w', String(compress.w))
+        if (compress.q) u.searchParams.set('photo_q', String(compress.q))
+      }
       return u.toString()
     })()
     let browser = await getChromiumBrowser()

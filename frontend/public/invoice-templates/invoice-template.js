@@ -150,19 +150,16 @@
     var amountLabel = invType === 'receipt' ? 'Amount Received' : (invType === 'quote' ? 'Total' : 'Amount Due')
     var amountValue = invType === 'invoice' ? totals.amount_due : totals.total
 
-    var addr = [
-      company.address_line1,
-      company.address_line2,
-      [company.address_city, company.address_state, company.address_postcode].filter(Boolean).join(' '),
-      company.address_country
-    ].filter(Boolean).join('\n')
+    var addrParts = []
+    if (company.address_line1) addrParts.push(String(company.address_line1).trim())
+    if (company.address_line2) addrParts.push(String(company.address_line2).trim())
+    var cityLine = [company.address_city, company.address_state, company.address_postcode].filter(Boolean).join(' ')
+    if (cityLine) addrParts.push(String(cityLine).trim())
+    var addr = addrParts.filter(Boolean).join(', ')
 
     var companyLines = []
     if (company.legal_name) companyLines.push(String(company.legal_name))
-    if (addr) {
-      var addrLines = String(addr).split('\n').map(function (s) { return String(s || '').trim() }).filter(Boolean)
-      companyLines = companyLines.concat(addrLines)
-    }
+    if (addr) companyLines.push(String(addr))
     if (company.phone) companyLines.push(String(company.phone))
     if (company.email) companyLines.push(String(company.email))
     if (company.abn) companyLines.push('ABN: ' + String(company.abn))

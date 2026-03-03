@@ -11,4 +11,11 @@ describe('invoice-template runtime', () => {
     expect(s).toContain('RECEIPT')
     expect(s).toContain('本报价单仅供参考，具体以实际交易为准')
   })
+
+  it('renders company address without country and in single line', () => {
+    const p = path.join(process.cwd(), 'public', 'invoice-templates', 'invoice-template.js')
+    const s = fs.readFileSync(p, 'utf8')
+    expect(s).not.toContain('address_country')
+    expect(s).toContain("join(', ')")
+  })
 })

@@ -1,14 +1,14 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { getJSON } from '../../../lib/api'
-import { buildInvoiceTemplateHtml, normalizeAssetUrl } from '../../../lib/invoiceTemplateHtml'
+import { normalizeAssetUrl } from '../../../lib/invoiceTemplateHtml'
 
 export default function PublicInvoicePrintPage() {
   const [invoiceId, setInvoiceId] = useState<string>('')
   const [invoice, setInvoice] = useState<any>(null)
   const [ready, setReady] = useState(false)
-  const iframeRef = useRef<HTMLIFrameElement | null>(null)
+  const loadSeqRef = useRef(0)
 
   function isR2Url(u: string) {
     try {
@@ -41,7 +41,7 @@ export default function PublicInvoicePrintPage() {
     }
   }
 
-  async function waitForIframeAssets(doc: Document) {
+  async function waitForAssets(doc: Document) {
     try {
       const fonts: any = (doc as any).fonts
       if (fonts?.ready) {
@@ -64,6 +64,44 @@ export default function PublicInvoicePrintPage() {
       })
       await Promise.race([Promise.all(loaders), new Promise((r) => setTimeout(r, 8000))])
     } catch {}
+  }
+
+  async function loadTemplateIntoPage(inv: any) {
+    const seq = ++loadSeqRef.current
+    setReady(false)
+    try {
+      const root = document.getElementById('invoice-root')
+      if (root) root.innerHTML = ''
+      ;(window as any).__INVOICE_TEMPLATE__ = 'classic'
+      ;(window as any).__INVOICE_DATA__ = { invoice: inv, company: inv?.company || {} }
+
+      const cssId = 'invoice-template-css'
+      if (!document.getElementById(cssId)) {
+        const link = document.createElement('link')
+        link.id = cssId
+        link.rel = 'stylesheet'
+        link.href = '/invoice-templates/invoice-template.css'
+        document.head.appendChild(link)
+      }
+
+      const jsId = 'invoice-template-js'
+      const prev = document.getElementById(jsId)
+      if (prev) prev.remove()
+      await new Promise<void>((resolve, reject) => {
+        const s = document.createElement('script')
+        s.id = jsId
+        s.src = '/invoice-templates/invoice-template.js'
+        s.async = true
+        s.onload = () => resolve()
+        s.onerror = () => reject(new Error('load_template_failed'))
+        document.body.appendChild(s)
+      })
+
+      await waitForAssets(document)
+      if (loadSeqRef.current === seq) setReady(true)
+    } catch {
+      if (loadSeqRef.current === seq) setReady(true)
+    }
   }
 
   useEffect(() => {
@@ -99,46 +137,29 @@ export default function PublicInvoicePrintPage() {
     return () => { alive = false }
   }, [invoiceId])
 
-  const srcDoc = useMemo(() => {
-    if (!invoice) return ''
-    const data = { invoice: invoice, company: invoice.company || {} }
-    return buildInvoiceTemplateHtml({ template: 'classic', data })
-  }, [invoice])
-
   useEffect(() => {
-    if (!invoice || !srcDoc) return
+    if (!invoice) return
     let cancelled = false
     setReady(false)
     const t = window.setTimeout(() => {
       if (cancelled) return
       setReady(true)
     }, 12000)
-    const onLoad = async () => {
-      try {
-        const doc = iframeRef.current?.contentDocument
-        if (!doc) return
-        await waitForIframeAssets(doc)
-        if (!cancelled) setReady(true)
-      } catch {}
-    }
-    const iframe = iframeRef.current
-    if (iframe) iframe.addEventListener('load', onLoad)
+    loadTemplateIntoPage(invoice)
     return () => {
       cancelled = true
       window.clearTimeout(t)
-      try { if (iframe) iframe.removeEventListener('load', onLoad) } catch {}
     }
-  }, [invoice, srcDoc])
+  }, [invoice])
 
   return (
     <div data-invoice-ready={ready ? '1' : '0'} style={{ background: '#fff' }}>
-      <iframe
-        ref={iframeRef}
-        title="invoice-print"
-        style={{ width: '100%', minHeight: '100vh', border: 'none', background: '#fff' }}
-        srcDoc={srcDoc}
-      />
+      <style>{`
+        @media print {
+          @page { size: A4; margin: 20mm; }
+        }
+      `}</style>
+      <div id="invoice-root" />
     </div>
   )
 }
-
