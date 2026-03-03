@@ -1374,6 +1374,170 @@ exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 
     return res.status(500).json({ message: (err === null || err === void 0 ? void 0 : err.message) || 'merge failed' });
 });
 exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req, res) => {
+    try {
+        const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q, excludeOrphanFixedSnapshots } = req.body || {};
+        const monthKey = String(month || '').trim();
+        const pid = String(property_id || '').trim();
+        if (!/^\d{4}-\d{2}$/.test(monthKey))
+            return res.status(400).json({ message: 'invalid month' });
+        if (!pid)
+            return res.status(400).json({ message: 'missing property_id' });
+        const front = String(process.env.FRONTEND_BASE_URL || req.headers.origin || '').trim();
+        if (!front)
+            return res.status(500).json({ message: 'missing FRONTEND_BASE_URL' });
+        const token = (() => {
+            const h = String(req.headers.authorization || '');
+            const m = h.match(/^Bearer\s+(.+)$/i);
+            if (m)
+                return m[1].trim();
+            const c = String(req.headers.cookie || '');
+            const cm = c.match(/(?:^|;\s*)auth=([^;]+)/);
+            return cm ? decodeURIComponent(cm[1]) : '';
+        })();
+        if (!token)
+            return res.status(401).json({ message: 'missing token' });
+        const photos = (() => {
+            if (includePhotos === 0 || includePhotos === '0' || includePhotos === false)
+                return 'off';
+            const v = String(includePhotosMode || 'full');
+            if (v === 'thumbnail' || v === 'compressed' || v === 'off')
+                return v;
+            return 'full';
+        })();
+        const sec = (() => {
+            if (Array.isArray(sections))
+                return sections.map((x) => String(x || '').trim()).filter(Boolean).join(',');
+            if (typeof sections === 'string')
+                return sections.split(',').map(s => s.trim()).filter(Boolean).join(',');
+            return 'all';
+        })();
+        const compress = (() => {
+            const w0 = Number(photo_w || 0);
+            const q0 = Number(photo_q || 0);
+            const w = Math.max(600, Math.min(2400, Number.isFinite(w0) && w0 > 0 ? w0 : 0));
+            const q = Math.max(40, Math.min(85, Number.isFinite(q0) && q0 > 0 ? q0 : 0));
+            return { w: w || undefined, q: q || undefined };
+        })();
+        const excludeOrphans = (() => {
+            if (excludeOrphanFixedSnapshots === true || excludeOrphanFixedSnapshots === 1 || excludeOrphanFixedSnapshots === '1')
+                return true;
+            if (excludeOrphanFixedSnapshots === false || excludeOrphanFixedSnapshots === 0 || excludeOrphanFixedSnapshots === '0')
+                return false;
+            return false;
+        })();
+        const url = (() => {
+            const u = new URL('/public/monthly-statement-print', front);
+            u.searchParams.set('pid', pid);
+            u.searchParams.set('month', monthKey);
+            u.searchParams.set('pdf', '1');
+            u.searchParams.set('showChinese', String(showChinese === false || showChinese === '0' ? '0' : '1'));
+            u.searchParams.set('photos', photos);
+            u.searchParams.set('sections', sec || 'all');
+            u.searchParams.set('exclude_orphan_fixed', excludeOrphans ? '1' : '0');
+            if (photos === 'compressed') {
+                if (compress.w)
+                    u.searchParams.set('photo_w', String(compress.w));
+                if (compress.q)
+                    u.searchParams.set('photo_q', String(compress.q));
+            }
+            return u.toString();
+        })();
+        let browser = await (0, playwright_1.getChromiumBrowser)();
+        let context = null;
+        try {
+            context = await browser.newContext();
+        }
+        catch (e) {
+            if (!isPlaywrightClosedError(e))
+                throw e;
+            await (0, playwright_1.resetChromiumBrowser)();
+            browser = await (0, playwright_1.getChromiumBrowser)();
+            context = await browser.newContext();
+        }
+        try {
+            await context.addCookies([{ name: 'auth', value: token, url: front }]);
+            const page = await context.newPage();
+            const pushCap = (arr, s, cap = 30) => {
+                const v = String(s || '').slice(0, 500);
+                if (!v)
+                    return;
+                arr.push(v);
+                if (arr.length > cap)
+                    arr.splice(0, arr.length - cap);
+            };
+            const consoleNotes = [];
+            const pageErrors = [];
+            const requestFails = [];
+            try {
+                page.on('console', (msg) => {
+                    var _a, _b;
+                    const t = String(((_a = msg === null || msg === void 0 ? void 0 : msg.type) === null || _a === void 0 ? void 0 : _a.call(msg)) || '');
+                    if (t === 'error' || t === 'warning')
+                        pushCap(consoleNotes, `${t}: ${String(((_b = msg === null || msg === void 0 ? void 0 : msg.text) === null || _b === void 0 ? void 0 : _b.call(msg)) || '')}`);
+                });
+                page.on('pageerror', (err) => pushCap(pageErrors, String((err === null || err === void 0 ? void 0 : err.message) || err || 'pageerror')));
+                page.on('requestfailed', (req) => {
+                    var _a, _b, _c;
+                    const u = String(((_a = req === null || req === void 0 ? void 0 : req.url) === null || _a === void 0 ? void 0 : _a.call(req)) || '');
+                    const ft = String(((_c = (_b = req === null || req === void 0 ? void 0 : req.failure) === null || _b === void 0 ? void 0 : _b.call(req)) === null || _c === void 0 ? void 0 : _c.errorText) || '');
+                    pushCap(requestFails, ft ? `${u} (${ft})` : u);
+                });
+            }
+            catch (_a) { }
+            const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)));
+            const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)));
+            page.setDefaultTimeout(waitTimeoutMs);
+            page.setDefaultNavigationTimeout(navTimeoutMs);
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
+            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => { });
+            await page.evaluate(() => { var _a; return (_a = document.fonts) === null || _a === void 0 ? void 0 : _a.ready; }).catch(() => { });
+            await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs }).catch((e) => {
+                try {
+                    const msg = String((e === null || e === void 0 ? void 0 : e.message) || e || 'timeout');
+                    console.error(`[monthly-statement-pdf][ready-timeout] month=${monthKey} pid=${pid} ${msg}`);
+                }
+                catch (_a) { }
+            });
+            const imgStats = await page.evaluate(async (timeoutMs) => {
+                const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+                const imgs = Array.from(document.images || []);
+                const all = Promise.all(imgs.map((img) => {
+                    if (img.complete)
+                        return Promise.resolve(null);
+                    return new Promise((resolve) => {
+                        img.addEventListener('load', resolve, { once: true });
+                        img.addEventListener('error', resolve, { once: true });
+                    });
+                }));
+                await Promise.race([all, sleep(timeoutMs)]);
+                const notLoaded = imgs.filter((img) => !img.complete || (img.naturalWidth || 0) === 0).length;
+                return { total: imgs.length, notLoaded };
+            }, 20000).catch(() => ({ total: 0, notLoaded: 0 }));
+            try {
+                if (Number((imgStats === null || imgStats === void 0 ? void 0 : imgStats.notLoaded) || 0) > 0) {
+                    console.error(`[monthly-statement-pdf][img-timeout] month=${monthKey} pid=${pid} total=${imgStats.total} notLoaded=${imgStats.notLoaded}`);
+                }
+            }
+            catch (_b) { }
+            await page.waitForTimeout(200);
+            await page.emulateMedia({ media: 'print' });
+            const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true });
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="monthly-statement-${monthKey}.pdf"`);
+            return res.status(200).send(Buffer.from(pdf));
+        }
+        finally {
+            try {
+                await context.close();
+            }
+            catch (_c) { }
+        }
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'pdf failed' });
+    }
+});
+exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req, res) => {
     var _a;
     try {
         const { month, property_id, showChinese, includePhotosMode, includePhotos, sections } = req.body || {};
@@ -1465,33 +1629,6 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
         }
         try {
             const page = await context.newPage();
-            const pushCap = (arr, s, cap = 30) => {
-                const v = String(s || '').slice(0, 500);
-                if (!v)
-                    return;
-                arr.push(v);
-                if (arr.length > cap)
-                    arr.splice(0, arr.length - cap);
-            };
-            const consoleNotes = [];
-            const pageErrors = [];
-            const requestFails = [];
-            try {
-                page.on('console', (msg) => {
-                    var _a, _b;
-                    const t = String(((_a = msg === null || msg === void 0 ? void 0 : msg.type) === null || _a === void 0 ? void 0 : _a.call(msg)) || '');
-                    if (t === 'error' || t === 'warning')
-                        pushCap(consoleNotes, `${t}: ${String(((_b = msg === null || msg === void 0 ? void 0 : msg.text) === null || _b === void 0 ? void 0 : _b.call(msg)) || '')}`);
-                });
-                page.on('pageerror', (err) => pushCap(pageErrors, String((err === null || err === void 0 ? void 0 : err.message) || err || 'pageerror')));
-                page.on('requestfailed', (req) => {
-                    var _a, _b, _c;
-                    const u = String(((_a = req === null || req === void 0 ? void 0 : req.url) === null || _a === void 0 ? void 0 : _a.call(req)) || '');
-                    const ft = String(((_c = (_b = req === null || req === void 0 ? void 0 : req.failure) === null || _b === void 0 ? void 0 : _b.call(req)) === null || _c === void 0 ? void 0 : _c.errorText) || '');
-                    pushCap(requestFails, ft ? `${u} (${ft})` : u);
-                });
-            }
-            catch (_b) { }
             const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)));
             const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)));
             page.setDefaultTimeout(waitTimeoutMs);
@@ -1515,22 +1652,22 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             }, 20000).catch(() => ({ total: 0, notLoaded: 0 }));
             try {
                 if (Number((imgStats === null || imgStats === void 0 ? void 0 : imgStats.notLoaded) || 0) > 0) {
-                    console.error(`[monthly-statement-pdf][img-timeout] month=${monthKey} pid=${pid} total=${imgStats.total} notLoaded=${imgStats.notLoaded}`);
+                    console.error(`[monthly-statement-photos-pdf][img-timeout] month=${monthKey} pid=${pid} total=${imgStats.total} notLoaded=${imgStats.notLoaded}`);
                 }
             }
-            catch (_c) { }
+            catch (_b) { }
             await page.waitForTimeout(200);
             await page.emulateMedia({ media: 'print' });
             const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true });
             res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Disposition', `attachment; filename="monthly-statement-${monthKey}.pdf"`);
+            res.setHeader('Content-Disposition', `attachment; filename="monthly-statement-photos-${monthKey}.pdf"`);
             return res.status(200).send(Buffer.from(pdf));
         }
         finally {
             try {
                 await context.close();
             }
-            catch (_d) { }
+            catch (_c) { }
         }
     }
     catch (e) {
