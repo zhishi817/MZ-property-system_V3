@@ -72,6 +72,7 @@ export default forwardRef<HTMLDivElement, {
   const hideReportHeader = isPdfMode && !showBaseSections && (showDeepSection || showMaintSection)
   const showDeepSectionFinal = showDeepSection
   const showMaintSectionFinal = showMaintSection
+  const needDeepData = showDeepSectionFinal || (isPdfMode && showBaseSections)
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
   const fetchTimeoutMs = isPdfMode ? 20000 : 30000
@@ -217,7 +218,7 @@ export default forwardRef<HTMLDivElement, {
     (async () => {
       try {
         setDeepCleaningsLoaded(false)
-        if (!propertyId || !showDeepSectionFinal) { setDeepCleanings([]); setDeepCleaningsLoaded(true); return }
+        if (!propertyId || !needDeepData) { setDeepCleanings([]); setDeepCleaningsLoaded(true); return }
         const codeRaw = String(property?.code || '').trim()
         const code = (() => {
           if (!codeRaw) return ''
@@ -261,7 +262,7 @@ export default forwardRef<HTMLDivElement, {
         setDeepCleaningsLoaded(true)
       }
     })()
-  }, [propertyId, month, showDeepSectionFinal])
+  }, [propertyId, month, needDeepData])
   useEffect(() => {
     ;(async () => {
       try {
@@ -561,7 +562,7 @@ export default forwardRef<HTMLDivElement, {
     return { segs, laneMap, laneCount: lanesEnd.length }
   }
   const sourceColor: Record<string, string> = { airbnb: '#FF9F97', booking: '#98B6EC', offline: '#DC8C03', other: '#98B6EC' }
-  const monthlyStatementReady = !!propertyId && (showDeepSectionFinal ? deepCleaningsLoaded : true) && (showMaintSectionFinal ? maintenancesLoaded : true)
+  const monthlyStatementReady = !!propertyId && (needDeepData ? deepCleaningsLoaded : true) && (showMaintSectionFinal ? maintenancesLoaded : true)
 
   return (
     <div
@@ -944,33 +945,39 @@ export default forwardRef<HTMLDivElement, {
                     </div>
                     {isPdfMode ? (
                       (allowPhotosInPdf && canIncludeJobPhotos) ? (
-                      <div style={{ display:'flex', flexDirection:'column', gap: 10, marginTop: 10 }}>
-                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, fontWeight: 700 }}>
-                          <div>Before</div>
-                          <div>After</div>
-                        </div>
-                        {(pairRows.length ? pairRows : [{ idx: 0 }]).map((r) => (
-                          <div key={r.idx} data-pdf-avoid-cut="true" style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, alignItems:'start' }}>
-                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: isThumbPhotos ? 160 : 240 }}>
-                              {r.b ? (isImg(r.b) ? (
-                                renderEngine === 'print'
-                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.b)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
-                                  : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.b)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
-                              ) : (
-                                <a href={resolveUrl(r.b)} target="_blank" rel="noreferrer">{String(r.b).split('/').pop() || 'file'}</a>
-                              )) : <div style={{ color:'#999' }}>-</div>}
-                            </div>
-                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: isThumbPhotos ? 160 : 240 }}>
-                              {r.a ? (isImg(r.a) ? (
-                                renderEngine === 'print'
-                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.a)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
-                                  : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.a)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
-                              ) : (
-                                <a href={resolveUrl(r.a)} target="_blank" rel="noreferrer">{String(r.a).split('/').pop() || 'file'}</a>
-                              )) : <div style={{ color:'#999' }}>-</div>}
-                            </div>
+                      <div style={{ display:'flex', flexDirection:'column', gap: 12, marginTop: 10 }}>
+                        <div data-pdf-avoid-cut="true">
+                          <div style={{ fontWeight: 700, marginBottom: 6 }}>Before</div>
+                          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
+                            {beforePdfArr.length ? beforePdfArr.map((u: any, idx: number) => (
+                              <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
+                                {isImg(u) ? (
+                                  renderEngine === 'print'
+                                    ? <img crossOrigin="anonymous" src={resolveUrl(u)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
+                                    : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(u)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                                ) : (
+                                  <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
+                                )}
+                              </div>
+                            )) : <div style={{ color:'#999' }}>-</div>}
                           </div>
-                        ))}
+                        </div>
+                        <div data-pdf-avoid-cut="true">
+                          <div style={{ fontWeight: 700, marginBottom: 6 }}>After</div>
+                          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
+                            {afterPdfArr.length ? afterPdfArr.map((u: any, idx: number) => (
+                              <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
+                                {isImg(u) ? (
+                                  renderEngine === 'print'
+                                    ? <img crossOrigin="anonymous" src={resolveUrl(u)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
+                                    : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(u)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                                ) : (
+                                  <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
+                                )}
+                              </div>
+                            )) : <div style={{ color:'#999' }}>-</div>}
+                          </div>
+                        </div>
                       </div>
                       ) : null
                     ) : (
@@ -1081,38 +1088,39 @@ export default forwardRef<HTMLDivElement, {
                     {summary ? <div style={{ marginTop: 8, whiteSpace:'pre-wrap', wordBreak:'break-word' }}>{`Job Description: ${summary}`}</div> : null}
                     {isPdfMode ? (
                       (allowPhotosInPdf && canIncludeJobPhotos) ? (
-                      <div style={{ display:'flex', flexDirection:'column', gap: 10, marginTop: 10 }}>
-                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, fontWeight: 700 }}>
-                          <div>Before</div>
-                          <div>After</div>
-                        </div>
-                        {(pairRows.length ? pairRows : [{ idx: 0 }]).map((r) => (
-                          <div
-                            key={r.idx}
-                            data-pdf-avoid-cut="true"
-                            data-pdf-break-before={(r.idx > 0 && r.idx % 2 === 0) ? 'true' : undefined}
-                            style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, alignItems:'start' }}
-                          >
-                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: isThumbPhotos ? 160 : 240 }}>
-                              {r.b ? (isImg(r.b) ? (
-                                renderEngine === 'print'
-                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.b)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
-                                  : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.b)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
-                              ) : (
-                                <a href={resolveUrl(r.b)} target="_blank" rel="noreferrer">{String(r.b).split('/').pop() || 'file'}</a>
-                              )) : <div style={{ color:'#999' }}>-</div>}
-                            </div>
-                            <div style={{ border:'1px solid #eee', borderRadius: 10, padding: 8, minHeight: isThumbPhotos ? 160 : 240 }}>
-                              {r.a ? (isImg(r.a) ? (
-                                renderEngine === 'print'
-                                  ? <img crossOrigin="anonymous" src={resolveUrl(r.a)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
-                                  : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(r.a)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
-                              ) : (
-                                <a href={resolveUrl(r.a)} target="_blank" rel="noreferrer">{String(r.a).split('/').pop() || 'file'}</a>
-                              )) : <div style={{ color:'#999' }}>-</div>}
-                            </div>
+                      <div style={{ display:'flex', flexDirection:'column', gap: 12, marginTop: 10 }}>
+                        <div data-pdf-avoid-cut="true">
+                          <div style={{ fontWeight: 700, marginBottom: 6 }}>Before</div>
+                          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
+                            {beforePdfArr.length ? beforePdfArr.map((u: any, idx: number) => (
+                              <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
+                                {isImg(u) ? (
+                                  renderEngine === 'print'
+                                    ? <img crossOrigin="anonymous" src={resolveUrl(u)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
+                                    : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(u)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                                ) : (
+                                  <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
+                                )}
+                              </div>
+                            )) : <div style={{ color:'#999' }}>-</div>}
                           </div>
-                        ))}
+                        </div>
+                        <div data-pdf-avoid-cut="true">
+                          <div style={{ fontWeight: 700, marginBottom: 6 }}>After</div>
+                          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
+                            {afterPdfArr.length ? afterPdfArr.map((u: any, idx: number) => (
+                              <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
+                                {isImg(u) ? (
+                                  renderEngine === 'print'
+                                    ? <img crossOrigin="anonymous" src={resolveUrl(u)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
+                                    : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(u)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                                ) : (
+                                  <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
+                                )}
+                              </div>
+                            )) : <div style={{ color:'#999' }}>-</div>}
+                          </div>
+                        </div>
                       </div>
                       ) : null
                     ) : (

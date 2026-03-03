@@ -129,7 +129,7 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
   const totalPhotos = (photosMode === 'off')
     ? 0
     : (deepBeforeItems.length + deepAfterItems.length + maintBeforeItems.length + maintAfterItems.length)
-  const effectivePhotosMode: PhotosMode = (photosMode !== 'off' && totalPhotos > 80) ? 'thumbnail' : photosMode
+  const effectivePhotosMode: PhotosMode = photosMode
 
   const pickSrc = (it: { src: string; fallback: string }) => {
     if (photosMode === 'off') return ''
@@ -137,23 +137,25 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
     return it.fallback
   }
 
-  const renderPhotoPages = (title: string, items: Array<{ src: string; fallback: string; caption: string }>, perPage: number, enforcePaging: boolean) => {
-    if (!items.length) return ''
+  const renderPhotoPages = (title: string, items: Array<{ src: string; fallback: string; caption: string }>, perPage: number, enforcePaging: boolean, breakFirst: boolean) => {
+    if (!items.length) return { html: '', rendered: false }
     const pages = enforcePaging ? chunk(items, perPage) : [items]
     let out = ''
     pages.forEach((page, idx) => {
       const pageNo = idx + 1
+      const needBreak = (idx === 0) ? breakFirst : true
       out += `
-        <section class="page break-before">
+        <section class="page${needBreak ? ' break-before' : ''}">
           <div class="section-title">${escapeHtml(title)}${pages.length > 1 ? ` <span class="muted">(${pageNo}/${pages.length})</span>` : ''}</div>
           <div class="grid">
             ${page.map((it) => {
               const src = pickSrc(it)
               const fb = it.fallback
               const cap = it.caption
+              const onerr = `try{var fb=this.getAttribute('data-fallback')||'';if(fb&&this.src!==fb){this.onerror=null;this.src=fb}}catch(e){}`
               return `
                 <figure class="cell">
-                  <img src="${escapeHtml(src)}" data-fallback="${escapeHtml(fb)}" alt="" />
+                  <img crossorigin="anonymous" referrerpolicy="no-referrer" src="${escapeHtml(src)}" data-fallback="${escapeHtml(fb)}" alt="" onerror="${escapeHtml(onerr)}" />
                   <figcaption>${escapeHtml(cap)}</figcaption>
                 </figure>
               `
@@ -162,7 +164,7 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
         </section>
       `
     })
-    return out
+    return { html: out, rendered: true }
   }
 
   const includeAll = sec.has('all')
@@ -187,10 +189,51 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
   ` : ''
 
   const photosHtml = (effectivePhotosMode === 'off') ? '' : `
-    ${includeDeep ? renderPhotoPages(showChinese ? '深度清洁照片 - Before（前）' : 'Deep Cleaning Photos - Before', deepBeforeItems, 12, true) : ''}
-    ${includeDeep ? renderPhotoPages(showChinese ? '深度清洁照片 - After（后）' : 'Deep Cleaning Photos - After', deepAfterItems, 12, true) : ''}
-    ${includeMaint ? renderPhotoPages(showChinese ? '维修照片 - Before（前）' : 'Maintenance Photos - Before', maintBeforeItems, 12, true) : ''}
-    ${includeMaint ? renderPhotoPages(showChinese ? '维修照片 - After（后）' : 'Maintenance Photos - After', maintAfterItems, 12, true) : ''}
+    ${(() => {
+      let hasPrev = !!includeBase
+      let out = ''
+      if (includeDeep) {
+        const r1 = renderPhotoPages(
+          showChinese ? 'Deep Cleaning Maintenance 深度清洁维护 - Before（前）' : 'Deep Cleaning Maintenance - Before',
+          deepBeforeItems,
+          12,
+          true,
+          hasPrev
+        )
+        out += r1.html
+        if (r1.rendered) hasPrev = true
+        const r2 = renderPhotoPages(
+          showChinese ? 'Deep Cleaning Maintenance 深度清洁维护 - After（后）' : 'Deep Cleaning Maintenance - After',
+          deepAfterItems,
+          12,
+          true,
+          hasPrev
+        )
+        out += r2.html
+        if (r2.rendered) hasPrev = true
+      }
+      if (includeMaint) {
+        const r3 = renderPhotoPages(
+          showChinese ? 'Maintenance Repairs 维修记录 - Before（前）' : 'Maintenance Repairs - Before',
+          maintBeforeItems,
+          12,
+          true,
+          hasPrev
+        )
+        out += r3.html
+        if (r3.rendered) hasPrev = true
+        const r4 = renderPhotoPages(
+          showChinese ? 'Maintenance Repairs 维修记录 - After（后）' : 'Maintenance Repairs - After',
+          maintAfterItems,
+          12,
+          true,
+          hasPrev
+        )
+        out += r4.html
+        if (r4.rendered) hasPrev = true
+      }
+      return out
+    })()}
   `
 
   const html = `
@@ -209,7 +252,7 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
           .title { font-size: 32px; font-weight: 700; letter-spacing: 1px; }
           .meta { text-align: right; font-size: 13px; line-height: 1.4; }
           .note { margin-top: 10mm; font-size: 13px; color: #333; }
-          .section-title { margin: 6mm 0 4mm; font-size: 18px; font-weight: 700; }
+          .section-title { margin-top: 16px; font-weight: 700; background: #eef3fb; padding: 6px 8px; font-size: 18px; }
           .muted { color: #666; font-weight: 400; font-size: 12px; }
           .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
           .cell { margin: 0; border: 1px solid #eee; border-radius: 8px; padding: 6px; }
@@ -220,19 +263,6 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
       <body>
         ${baseHtml}
         ${photosHtml}
-        <script>
-          (function () {
-            var imgs = Array.prototype.slice.call(document.images || [])
-            imgs.forEach(function (img) {
-              img.addEventListener('error', function () {
-                try {
-                  var fb = img.getAttribute('data-fallback') || ''
-                  if (fb && img.src !== fb) img.src = fb
-                } catch {}
-              }, { once: true })
-            })
-          })()
-        </script>
       </body>
     </html>
   `

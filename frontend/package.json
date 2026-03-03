@@ -1,6 +1,6 @@
 {
   "name": "mz-property-frontend",
-  "version": "0.2.7-statement-pdf.20260304+build.1",
+  "version": "0.2.7-statement-pdf.20260304+build.2",
   "private": true,
   "scripts": {
     "clean:next": "node scripts/clean-next-cache.mjs",
