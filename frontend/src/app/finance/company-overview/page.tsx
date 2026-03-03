@@ -128,8 +128,8 @@ export default function PropertyRevenuePage() {
           ? (shouldSplit ? 'off' : 'full')
           : 'compressed')
     const photoCfg = photosMode === 'compressed' ? pickMonthPhotoCfg('normal') : null
-    const sectionsApi = photosMode === 'off' ? 'base' : 'all'
-    const sectionsView = photosMode === 'off' ? ['base'] : ['all']
+    const sectionsApi = 'all'
+    const sectionsView = ['all']
     return { shouldSplit, hardSplit, photosMode, photoCfg, sectionsApi, sectionsView }
   }
   const buildTxsFromRaw = (fin: any[], pexp: any[], recurs: any[], props: any[], excludeOrphans: boolean) => {
@@ -1128,7 +1128,7 @@ export default function PropertyRevenuePage() {
             let monthPhotosMode: 'full' | 'compressed' | 'thumbnail' | 'off' = 'full'
             let monthPhotoCfg: null | { photo_w: number; photo_q: number } = null
             const genMonthly = async (photosMode: 'full' | 'compressed' | 'thumbnail' | 'off', photoCfg?: { photo_w: number; photo_q: number } | null) => {
-              const sections = photosMode === 'off' ? 'base' : 'all'
+              const sections = 'all'
               const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...authHeaders() },
