@@ -12,6 +12,7 @@ import { PDFDocument } from 'pdf-lib'
 import { pgInsertOnConflictDoNothing, pgPool } from '../dbAdapter'
 import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
 import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
+import { renderMonthlyStatementPdfHtml } from '../lib/monthlyStatementPdfTemplate'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -1289,7 +1290,6 @@ router.post(
 
 router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req: any, res: any) => {
   try {
-<<<<<<< HEAD
     const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q, excludeOrphanFixedSnapshots } = req.body || {}
     const monthKey = String(month || '').trim()
     const pid = String(property_id || '').trim()
@@ -1425,28 +1425,16 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
 router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req: any, res: any) => {
   try {
     const { month, property_id, showChinese, includePhotosMode, includePhotos, sections } = req.body || {}
-=======
-    const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q } = req.body || {}
->>>>>>> origin/main
     const monthKey = String(month || '').trim()
     const pid = String(property_id || '').trim()
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
     if (!pid) return res.status(400).json({ message: 'missing property_id' })
-    const front = String(process.env.FRONTEND_BASE_URL || req.headers.origin || '').trim()
-    if (!front) return res.status(500).json({ message: 'missing FRONTEND_BASE_URL' })
-    const token = (() => {
-      const h = String(req.headers.authorization || '')
-      const m = h.match(/^Bearer\s+(.+)$/i)
-      if (m) return m[1].trim()
-      const c = String(req.headers.cookie || '')
-      const cm = c.match(/(?:^|;\s*)auth=([^;]+)/)
-      return cm ? decodeURIComponent(cm[1]) : ''
-    })()
-    if (!token) return res.status(401).json({ message: 'missing token' })
-    const photos = (() => {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    const photosMode = (() => {
       if (includePhotos === 0 || includePhotos === '0' || includePhotos === false) return 'off'
       const v = String(includePhotosMode || 'full')
-      if (v === 'thumbnail' || v === 'compressed' || v === 'off') return v
+      if (v === 'thumbnail' || v === 'off') return v
+      if (v === 'compressed') return 'thumbnail'
       return 'full'
     })()
     const sec = (() => {
@@ -1454,27 +1442,61 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       if (typeof sections === 'string') return sections.split(',').map(s => s.trim()).filter(Boolean).join(',')
       return 'all'
     })()
-    const compress = (() => {
-      const w0 = Number(photo_w || 0)
-      const q0 = Number(photo_q || 0)
-      const w = Math.max(600, Math.min(2400, Number.isFinite(w0) && w0 > 0 ? w0 : 0))
-      const q = Math.max(40, Math.min(85, Number.isFinite(q0) && q0 > 0 ? q0 : 0))
-      return { w: w || undefined, q: q || undefined }
+    const range = monthRangeISO(monthKey)
+    if (!range) return res.status(400).json({ message: 'invalid month' })
+    const propR = await pgPool.query('SELECT id, code, address, landlord_id FROM properties WHERE id = $1 LIMIT 1', [pid])
+    const prop = (propR.rows?.[0] || null) as any
+    if (!prop) return res.status(404).json({ message: 'property not found' })
+    const landlordName = (() => {
+      const lid = String(prop?.landlord_id || '').trim()
+      if (!lid) return Promise.resolve('')
+      return pgPool.query('SELECT name FROM landlords WHERE id = $1 LIMIT 1', [lid])
+        .then((r) => String(r.rows?.[0]?.name || '').trim())
+        .catch(() => '')
     })()
-    const url = (() => {
-      const u = new URL('/public/monthly-statement-print', front)
-      u.searchParams.set('pid', pid)
-      u.searchParams.set('month', monthKey)
-      u.searchParams.set('pdf', '1')
-      u.searchParams.set('showChinese', String(showChinese === false || showChinese === '0' ? '0' : '1'))
-      u.searchParams.set('photos', photos)
-      u.searchParams.set('sections', sec || 'all')
-      if (photos === 'compressed') {
-        if (compress.w) u.searchParams.set('photo_w', String(compress.w))
-        if (compress.q) u.searchParams.set('photo_q', String(compress.q))
-      }
-      return u.toString()
+    const codeRaw = String(prop?.code || '').trim()
+    const codeNorm = (() => {
+      if (!codeRaw) return ''
+      const s = codeRaw.split('(')[0].trim()
+      const t = s.split(/\s+/)[0].trim()
+      return t || s || codeRaw
     })()
+    const codes = Array.from(new Set([codeNorm, codeRaw].map(s => String(s || '').trim()).filter(Boolean)))
+
+    const wantDeep = photosMode !== 'off' && /(all|deep_cleaning|deepcleaning)/i.test(sec || 'all')
+    const wantMaint = photosMode !== 'off' && /(all|maintenance)/i.test(sec || 'all')
+
+    const qDeep = wantDeep ? pgPool.query(
+      `SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
+       FROM property_deep_cleaning
+       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND property_code = ANY($2::text[])))
+         AND occurred_at >= $3::date AND occurred_at < $4::date
+       ORDER BY occurred_at ASC, created_at ASC
+       LIMIT 5000`,
+      [pid, codes, range.start, range.end]
+    ).then(r => r.rows || []).catch(() => []) : Promise.resolve([] as any[])
+
+    const qMaint = wantMaint ? pgPool.query(
+      `SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
+       FROM property_maintenance
+       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND property_code = ANY($2::text[])))
+         AND occurred_at >= $3::date AND occurred_at < $4::date
+       ORDER BY occurred_at ASC, created_at ASC
+       LIMIT 5000`,
+      [pid, codes, range.start, range.end]
+    ).then(r => r.rows || []).catch(() => []) : Promise.resolve([] as any[])
+
+    const [deepRows, maintRows, llName] = await Promise.all([qDeep, qMaint, landlordName])
+    const tpl = renderMonthlyStatementPdfHtml({
+      month: monthKey,
+      property: { id: String(prop.id), code: prop.code || '', address: prop.address || '' },
+      landlordName: llName || '',
+      sections: sec || 'all',
+      showChinese: !(showChinese === false || showChinese === '0'),
+      includePhotosMode: photosMode as any,
+      deepCleanings: deepRows as any,
+      maintenances: maintRows as any,
+    } as any)
     let browser = await getChromiumBrowser()
     let context: any = null
     try { context = await browser.newContext() } catch (e: any) {
@@ -1484,52 +1506,23 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       context = await browser.newContext()
     }
     try {
-      await context.addCookies([{ name: 'auth', value: token, url: front } as any])
       const page = await context.newPage()
       const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)))
       const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
       page.setDefaultTimeout(waitTimeoutMs)
       page.setDefaultNavigationTimeout(navTimeoutMs)
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
-      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+      await page.setContent(tpl.html, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs } as any)
       await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
-      try {
-        await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs })
-      } catch (e: any) {
-        const diag = await page.evaluate(() => {
-          const root = document.querySelector('[data-monthly-statement-root="1"]') as any
-          const getA = (k: string) => (root && root.getAttribute) ? (root.getAttribute(k) || '') : ''
-          return {
-            href: String(location.href || ''),
-            ready: getA('data-monthly-statement-ready'),
-            deep_loaded: getA('data-deep-clean-loaded'),
-            maint_loaded: getA('data-maint-loaded'),
-            has_root: !!root,
-            title: String(document.title || ''),
-          }
-        }).catch(() => null as any)
-        const parts = [
-          `wait ready timeout: ${String(e?.message || e || 'timeout')}`,
-          diag ? `root=${diag.has_root ? '1' : '0'} ready=${diag.ready || ''} deep=${diag.deep_loaded || ''} maint=${diag.maint_loaded || ''}` : '',
-          diag?.title ? `title=${diag.title}` : '',
-          diag?.href ? `href=${diag.href}` : '',
-          consoleNotes.length ? `console=${consoleNotes.slice(-8).join(' | ')}` : '',
-          pageErrors.length ? `pageerror=${pageErrors.slice(-6).join(' | ')}` : '',
-          requestFails.length ? `requestfailed=${requestFails.slice(-10).join(' | ')}` : '',
-        ].filter(Boolean)
-        try { console.error('[monthly-statement-pdf][ready-timeout]', parts.join(' ; ')) } catch {}
-        throw new Error(parts.join(' ; '))
-      }
-      await page.waitForFunction(async () => {
-        const imgs = Array.from(document.images || [])
-        await Promise.all(imgs.map(img => {
+      const imgStats = await page.evaluate(async (timeoutMs: number) => {
+        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+        const imgs = Array.from(document.images || []) as HTMLImageElement[]
+        const all = Promise.all(imgs.map((img) => {
           if ((img as any).complete) return Promise.resolve(null)
           return new Promise((resolve) => {
-            img.addEventListener('load', resolve)
-            img.addEventListener('error', resolve)
+            img.addEventListener('load', resolve, { once: true } as any)
+            img.addEventListener('error', resolve, { once: true } as any)
           })
         }))
-<<<<<<< HEAD
         await Promise.race([all, sleep(timeoutMs)])
         const notLoaded = imgs.filter((img) => !(img as any).complete || ((img as any).naturalWidth || 0) === 0).length
         return { total: imgs.length, notLoaded }
@@ -1539,10 +1532,6 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
           console.error(`[monthly-statement-photos-pdf][img-timeout] month=${monthKey} pid=${pid} total=${imgStats.total} notLoaded=${imgStats.notLoaded}`)
         }
       } catch {}
-=======
-        return true
-      }, { timeout: Math.min(waitTimeoutMs, 30000) }).catch(() => {})
->>>>>>> origin/main
       await page.waitForTimeout(200)
       await page.emulateMedia({ media: 'print' } as any)
       const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
