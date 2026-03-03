@@ -7,6 +7,7 @@
 - Finance PDF: When photos are split into separate PDFs, main report exports base statement only (no job record pages).
 - Finance PDF: Photo-only PDFs (deep cleaning / maintenance) now split photos into Before/After groups, use the correct section title style, and paginate cleanly.
 - Finance PDF: Fix photo-only PDFs rendering blank pages/images — improve Playwright image waiting (eager + scroll + fallback-aware) and make photo URL normalization more robust (relative paths + object arrays).
+- Finance PDF: Fix photo-only PDFs returning tiny blank PDFs when `occurred_at` is missing (fallback to completed/started/created dates) and add request-level debug headers/metrics for production verification.
 - Finance PDF: Align photo section title bar layout (main title + phase) and match print page header sizing.
 
 Author: MZ System Bot <dev@mzpropertygroup.com>
