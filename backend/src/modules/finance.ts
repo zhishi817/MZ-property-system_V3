@@ -1416,6 +1416,13 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
     const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q } = req.body || {}
     const monthKey = String(month || '').trim()
     const pid = String(property_id || '').trim()
+    const reqId = (() => {
+      const h =
+        String(req.headers['x-request-id'] || req.headers['x-amzn-trace-id'] || req.headers['cf-ray'] || '')
+          .split(',')[0]
+          .trim()
+      return h || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+    })()
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
     if (!pid) return res.status(400).json({ message: 'missing property_id' })
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
@@ -1458,7 +1465,12 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       `SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
        FROM property_deep_cleaning
        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND property_code = ANY($2::text[])))
-         AND occurred_at >= $3::date AND occurred_at < $4::date
+         AND (
+           (occurred_at >= $3::date AND occurred_at < $4::date)
+           OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
+           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
+           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
+         )
        ORDER BY occurred_at ASC, created_at ASC
        LIMIT 5000`,
       [pid, codes, range.start, range.end]
@@ -1468,7 +1480,12 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       `SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
        FROM property_maintenance
        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND property_code = ANY($2::text[])))
-         AND occurred_at >= $3::date AND occurred_at < $4::date
+         AND (
+           (occurred_at >= $3::date AND occurred_at < $4::date)
+           OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
+           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
+           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
+         )
        ORDER BY occurred_at ASC, created_at ASC
        LIMIT 5000`,
       [pid, codes, range.start, range.end]
@@ -1502,6 +1519,14 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
         .map((s) => String(s || '').trim())
         .filter(Boolean)
     }
+    const countRawUrls = (rows: any[]) => {
+      let n = 0
+      for (const r of rows || []) {
+        n += normUrlList(r?.photo_urls).length
+        n += normUrlList(r?.repair_photo_urls).length
+      }
+      return n
+    }
     const isR2 = (u: string) => u.includes('.r2.dev/') || u.includes('r2.cloudflarestorage.com/')
     const proxyR2 = (u: string) => {
       if (!apiBase) return u
@@ -1527,6 +1552,18 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
     }
     const deepRows = Array.isArray(deepRows0) ? deepRows0.map(mapRowUrls) : []
     const maintRows = Array.isArray(maintRows0) ? maintRows0.map(mapRowUrls) : []
+    const rawUrls = countRawUrls(deepRows0) + countRawUrls(maintRows0)
+    const cleanedUrls = (() => {
+      const countClean = (rows: any[]) => {
+        let n = 0
+        for (const r of rows || []) {
+          n += Array.isArray(r?.photo_urls) ? r.photo_urls.length : 0
+          n += Array.isArray(r?.repair_photo_urls) ? r.repair_photo_urls.length : 0
+        }
+        return n
+      }
+      return countClean(deepRows) + countClean(maintRows)
+    })()
     const tpl = renderMonthlyStatementPdfHtml({
       month: monthKey,
       property: { id: String(prop.id), code: prop.code || '', address: prop.address || '' },
@@ -1537,6 +1574,43 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       deepCleanings: deepRows as any,
       maintenances: maintRows as any,
     } as any)
+    const tplImageCount = Number(tpl?.imageCount || 0)
+    try {
+      console.log(
+        `[monthly-statement-photos-pdf][stats] reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec || 'all'} photosMode=${photosMode}` +
+          ` deepRows=${Array.isArray(deepRows0) ? deepRows0.length : 0} maintRows=${Array.isArray(maintRows0) ? maintRows0.length : 0}` +
+          ` rawUrls=${rawUrls} cleanedUrls=${cleanedUrls} tplImageCount=${tplImageCount}`
+      )
+    } catch {}
+    const wantsBase = /(all|base)/i.test(sec || 'all')
+    if (photosMode !== 'off' && tplImageCount === 0 && !wantsBase) {
+      try {
+        console.error(
+          `[monthly-statement-photos-pdf][no-images] reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec || 'all'} photosMode=${photosMode}` +
+            ` deepRows=${Array.isArray(deepRows0) ? deepRows0.length : 0} maintRows=${Array.isArray(maintRows0) ? maintRows0.length : 0}` +
+            ` rawUrls=${rawUrls} cleanedUrls=${cleanedUrls}`
+        )
+      } catch {}
+      res.setHeader('X-MSP-ReqId', reqId)
+      res.setHeader('X-MSP-DeepRows', String(Array.isArray(deepRows0) ? deepRows0.length : 0))
+      res.setHeader('X-MSP-MaintRows', String(Array.isArray(maintRows0) ? maintRows0.length : 0))
+      res.setHeader('X-MSP-RawUrls', String(rawUrls))
+      res.setHeader('X-MSP-UrlCleaned', String(cleanedUrls))
+      res.setHeader('X-MSP-ImageCount', String(tplImageCount))
+      return res.status(422).json({
+        message: 'no photos to render for requested sections',
+        reqId,
+        month: monthKey,
+        property_id: pid,
+        sections: sec || 'all',
+        photosMode,
+        deepRows: Array.isArray(deepRows0) ? deepRows0.length : 0,
+        maintRows: Array.isArray(maintRows0) ? maintRows0.length : 0,
+        rawUrls,
+        cleanedUrls,
+        imageCount: tplImageCount,
+      })
+    }
     let browser = await getChromiumBrowser()
     let context: any = null
     try { context = await browser.newContext() } catch (e: any) {
@@ -1563,9 +1637,24 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       await page.waitForTimeout(200)
       await page.emulateMedia({ media: 'print' } as any)
       const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
+      const pdfBuf = Buffer.from(pdf)
+      try {
+        const total = Number((imgStats as any)?.total || 0)
+        const notLoaded = Number((imgStats as any)?.notLoaded || 0)
+        const failedSample = Array.isArray((imgStats as any)?.failedUrls) ? (imgStats as any).failedUrls.slice(0, 2).join(' | ') : ''
+        console.log(`[monthly-statement-photos-pdf][pdf] reqId=${reqId} bytes=${pdfBuf.length} imgTotal=${total} imgNotLoaded=${notLoaded}${failedSample ? ` failedSample=${failedSample}` : ''}`)
+      } catch {}
       res.setHeader('Content-Type', 'application/pdf')
       res.setHeader('Content-Disposition', `attachment; filename="monthly-statement-photos-${monthKey}.pdf"`)
-      return res.status(200).send(Buffer.from(pdf))
+      res.setHeader('X-MSP-ReqId', reqId)
+      res.setHeader('X-MSP-DeepRows', String(Array.isArray(deepRows0) ? deepRows0.length : 0))
+      res.setHeader('X-MSP-MaintRows', String(Array.isArray(maintRows0) ? maintRows0.length : 0))
+      res.setHeader('X-MSP-RawUrls', String(rawUrls))
+      res.setHeader('X-MSP-UrlCleaned', String(cleanedUrls))
+      res.setHeader('X-MSP-ImageCount', String(Number(tpl?.imageCount || 0)))
+      res.setHeader('X-MSP-ImgNotLoaded', String(Number((imgStats as any)?.notLoaded || 0)))
+      res.setHeader('X-MSP-PdfBytes', String(pdfBuf.length))
+      return res.status(200).send(pdfBuf)
     } finally {
       try { await context.close() } catch {}
     }
