@@ -637,7 +637,11 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
               continue
             }
             values.push((filters as any)[k])
-            parts.push(`"${k}" = $${values.length}`)
+            if ((resource === 'property_maintenance' || resource === 'property_deep_cleaning') && k === 'property_code') {
+              parts.push(`("${k}" = $${values.length} OR EXISTS (SELECT 1 FROM properties p WHERE p.id = ${resource}.property_id AND p.code = $${values.length}))`)
+            } else {
+              parts.push(`"${k}" = $${values.length}`)
+            }
           }
           if (!parts.length) return { clause: '', values: [] as any[] }
           return { clause: ` WHERE ${parts.join(' AND ')}`, values }

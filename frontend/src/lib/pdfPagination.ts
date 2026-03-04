@@ -42,8 +42,15 @@ export function paginateVertical(opts: {
     let end = desiredEnd
 
     if (reserve > 0 && anchors.length) {
-      const near = anchors.find((pos) => pos > y + minSlice && pos <= desiredEnd && (desiredEnd - pos) < reserve)
-      if (near && near - y >= minSlice) end = Math.min(end, near)
+      for (let i = anchors.length - 1; i >= 0; i--) {
+        const pos = anchors[i]
+        if (pos <= y + minSlice) continue
+        if (pos > desiredEnd) continue
+        if ((desiredEnd - pos) < reserve && (pos - y) >= minSlice) {
+          end = Math.min(end, pos)
+          break
+        }
+      }
     }
 
     if (breaks.length) {
@@ -60,7 +67,11 @@ export function paginateVertical(opts: {
       const hit = avoidRanges.find((r) => end > r.top && end < r.bottom)
       if (hit) {
         const adjusted = hit.top
-        if (adjusted - y >= minSlice) end = adjusted
+        const hitHeight = hit.bottom - hit.top
+        const wouldWaste = end - adjusted
+        const isHugeBlock = hitHeight > pageHeight * 0.9
+        const wastesTooMuch = wouldWaste > pageHeight * 0.35
+        if (!isHugeBlock && !wastesTooMuch && adjusted - y >= minSlice) end = adjusted
       }
     }
 
@@ -81,4 +92,3 @@ export function paginateVertical(opts: {
 
   return slices
 }
-

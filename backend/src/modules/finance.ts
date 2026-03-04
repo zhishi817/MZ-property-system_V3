@@ -90,9 +90,7 @@ function countUrlList(v: any): number {
 }
 
 function allowPhotosInReportOfRecord(r: any): boolean {
-  const st = String(r?.status || '').trim().toLowerCase()
-  const rv = String(r?.review_status || r?.reviewStatus || '').trim().toLowerCase()
-  return st === 'completed' || st === 'approved' || rv === 'approved'
+  return (countUrlList(r?.photo_urls) + countUrlList(r?.repair_photo_urls)) > 0
 }
 
 function recordMonthKey(r: any): string {
@@ -1082,12 +1080,17 @@ router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', '
       const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND ${dateCond} LIMIT 8000`
       const r1 = await pgPool.query(q1, [pid, range.start, range.end])
       parts.push(...(r1.rows || []).map((x: any) => x.row))
-      if (hasPropCode && (propertyCode || propertyCodeRaw)) {
+      if (propertyCode || propertyCodeRaw) {
         const codes = Array.from(new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean)))
         if (codes.length) {
-          const q2 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_code = ANY($1::text[]) AND ${dateCond} LIMIT 8000`
-          const r2 = await pgPool.query(q2, [codes, range.start, range.end])
-          parts.push(...(r2.rows || []).map((x: any) => x.row))
+          if (hasPropCode) {
+            const q2 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_code = ANY($1::text[]) AND ${dateCond} LIMIT 8000`
+            const r2 = await pgPool.query(q2, [codes, range.start, range.end])
+            parts.push(...(r2.rows || []).map((x: any) => x.row))
+          }
+          const q3 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id = ANY($1::text[]) AND ${dateCond} LIMIT 8000`
+          const r3 = await pgPool.query(q3, [codes, range.start, range.end])
+          parts.push(...(r3.rows || []).map((x: any) => x.row))
         }
       }
       const map = new Map<string, any>()
@@ -1109,7 +1112,8 @@ router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', '
       for (const r of list) {
         const pidOk = String(r?.property_id || '') === pid
         const codeOk = codes.size ? codes.has(String(r?.property_code || '').trim()) : false
-        if ((pidOk || codeOk) && inRange(r)) {
+        const legacyOk = codes.size ? codes.has(String(r?.property_id || '').trim()) : false
+        if ((pidOk || codeOk || legacyOk) && inRange(r)) {
           const id = String(r?.id || '')
           if (id) map.set(id, r)
         }
@@ -1354,7 +1358,23 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
       context = await browser.newContext()
     }
     try {
-      await context.addCookies([{ name: 'auth', value: token, url: front } as any])
+      const apiBaseForAssets = String(
+        process.env.NEXT_PUBLIC_API_BASE_URL ||
+        process.env.NEXT_PUBLIC_API_BASE_DEV ||
+        process.env.NEXT_PUBLIC_API_BASE ||
+        ''
+      ).trim()
+      const cookieBase = (baseUrl: string) => ({
+        name: 'auth',
+        value: token,
+        url: baseUrl,
+        sameSite: 'None',
+        secure: /^https:\/\//i.test(baseUrl),
+      })
+      const cookieTargets = Array.from(new Set([front, apiBaseForAssets].map(s => String(s || '').trim()).filter(Boolean)))
+      if (cookieTargets.length) {
+        await context.addCookies(cookieTargets.map(cookieBase) as any)
+      }
       const page = await context.newPage()
       const pushCap = (arr: string[], s: string, cap = 30) => {
         const v = String(s || '').slice(0, 500)
@@ -1464,7 +1484,7 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
     const qDeep = wantDeep ? pgPool.query(
       `SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
        FROM property_deep_cleaning
-       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND property_code = ANY($2::text[])))
+       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
          AND (
            (occurred_at >= $3::date AND occurred_at < $4::date)
            OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
@@ -1479,7 +1499,7 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
     const qMaint = wantMaint ? pgPool.query(
       `SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
        FROM property_maintenance
-       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND property_code = ANY($2::text[])))
+       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
          AND (
            (occurred_at >= $3::date AND occurred_at < $4::date)
            OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)

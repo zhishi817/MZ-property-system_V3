@@ -33,19 +33,17 @@ export type MonthlyStatementPdfTemplateInput = {
 export function deriveThumbUrl(u: string): string {
   const s = String(u || '').trim()
   if (!s) return ''
-  if (/\.thumb\.jpg($|\?)/i.test(s)) return s
   try {
     const uu = new URL(s)
     const p = String(uu.pathname || '')
     if (p.endsWith('/public/r2-image') || p.endsWith('/r2-image')) {
-      const inner = String(uu.searchParams.get('url') || '').trim()
-      if (inner && !/\.thumb\.jpg$/i.test(inner)) uu.searchParams.set('url', `${inner}.thumb.jpg`)
+      if (!uu.searchParams.get('fmt')) uu.searchParams.set('fmt', 'jpeg')
+      if (!uu.searchParams.get('w')) uu.searchParams.set('w', '720')
+      if (!uu.searchParams.get('q')) uu.searchParams.set('q', '72')
       return uu.toString()
     }
   } catch {}
-  const q = s.indexOf('?')
-  if (q >= 0) return `${s.slice(0, q)}.thumb.jpg${s.slice(q)}`
-  return `${s}.thumb.jpg`
+  return s
 }
 
 function normSections(sections?: string[] | string): Set<SectionMode> {
@@ -116,6 +114,20 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
   const deep = Array.isArray(input.deepCleanings) ? input.deepCleanings : []
   const maint = Array.isArray(input.maintenances) ? input.maintenances : []
 
+  const deriveDirectUrl = (u: string): string => {
+    const s = String(u || '').trim()
+    if (!s) return ''
+    try {
+      const uu = new URL(s)
+      const p = String(uu.pathname || '')
+      if (p.endsWith('/public/r2-image') || p.endsWith('/r2-image')) {
+        const inner = String(uu.searchParams.get('url') || '').trim()
+        if (/^https?:\/\//i.test(inner)) return inner
+      }
+    } catch {}
+    return s
+  }
+
   const buildPhotoItems = (rows: any[], kind: 'deep_cleaning' | 'maintenance', phase: 'before' | 'after') => {
     const items: Array<{ src: string; fallback: string; caption: string }> = []
     for (const r of rows) {
@@ -124,13 +136,13 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
       const urls = (phase === 'before' ? asUrlStrings(r?.photo_urls) : asUrlStrings(r?.repair_photo_urls))
         .filter(u => /^https?:\/\//i.test(u))
       for (const u of urls) {
-        const fallback = u
-        const thumb = deriveThumbUrl(u)
+        const fallback = deriveDirectUrl(u)
+        const src = (photosMode === 'thumbnail') ? deriveThumbUrl(u) : u
         const phaseLabel = phase === 'before'
           ? (showChinese ? 'Before（前）' : 'Before')
           : (showChinese ? 'After（后）' : 'After')
         const caption = `${kind === 'deep_cleaning' ? 'DC' : 'R'}${workNo ? ` ${workNo}` : ''}${dt ? ` • ${dt}` : ''}${` • ${phaseLabel}`}`
-        items.push({ src: thumb, fallback, caption })
+        items.push({ src, fallback, caption })
       }
     }
     return items
@@ -143,12 +155,10 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
   const totalPhotos = (photosMode === 'off')
     ? 0
     : (deepBeforeItems.length + deepAfterItems.length + maintBeforeItems.length + maintAfterItems.length)
-  const effectivePhotosMode: PhotosMode = photosMode
 
   const pickSrc = (it: { src: string; fallback: string }) => {
     if (photosMode === 'off') return ''
-    if (effectivePhotosMode === 'thumbnail') return it.src
-    return it.fallback
+    return it.src
   }
 
   const renderPhotoPages = (titleMain: string, titlePhase: string, items: Array<{ src: string; fallback: string; caption: string }>, perPage: number, enforcePaging: boolean, breakFirst: boolean) => {
@@ -208,7 +218,7 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
     </section>
   ` : ''
 
-  const photosHtml = (effectivePhotosMode === 'off') ? '' : `
+  const photosHtml = (photosMode === 'off') ? '' : `
     ${(() => {
       let hasPrev = !!includeBase
       let out = ''
@@ -274,13 +284,15 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
         <style>
           @page { size: A4; margin: 12mm; }
           html, body { margin: 0; padding: 0; background: #fff; color: #000; font-family: "Times New Roman", Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .page { break-inside: avoid; page-break-inside: avoid; }
+          .page { break-after: page; page-break-after: always; }
+          .page:last-child { break-after: auto; page-break-after: auto; }
           .break-before { break-before: page; page-break-before: always; }
           .header { display: flex; align-items: flex-end; justify-content: space-between; border-bottom: 2px solid #000; padding-bottom: 8px; }
           .title { font-size: 32px; font-weight: 700; letter-spacing: 1px; }
           .meta { text-align: right; font-size: 13px; line-height: 1.4; }
           .note { margin-top: 10mm; font-size: 13px; color: #333; }
-          .section-title { margin-top: 16px; font-weight: 700; background: #eef3fb; padding: 6px 8px; font-size: 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+          .section-title { margin-top: 16px; font-weight: 700; background: #eef3fb; padding: 6px 8px; font-size: 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; break-after: avoid; page-break-after: avoid; }
+          .section-title + .grid { break-before: avoid; page-break-before: avoid; }
           .section-title-right { display: inline-flex; align-items: baseline; gap: 8px; white-space: nowrap; }
           .section-title-phase { font-size: 13px; font-weight: 700; color: #111; }
           .muted { color: #666; font-weight: 400; font-size: 12px; }

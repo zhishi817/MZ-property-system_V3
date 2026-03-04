@@ -73,6 +73,7 @@ export default forwardRef<HTMLDivElement, {
   const showDeepSectionFinal = showDeepSection
   const showMaintSectionFinal = showMaintSection
   const needDeepData = showDeepSectionFinal || (isPdfMode && showBaseSections)
+  const needMaintData = showMaintSectionFinal || (isPdfMode && showBaseSections)
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
   const fetchTimeoutMs = isPdfMode ? 20000 : 30000
@@ -230,20 +231,23 @@ export default forwardRef<HTMLDivElement, {
           const qs = new URLSearchParams({ ...params, limit: '5000' })
           return `${API_BASE}/crud/property_deep_cleaning?${qs.toString()}`
         }
-        const urls = [
-          buildUrl({ property_id: propertyId }),
-          ...(code ? [buildUrl({ property_code: code })] : []),
-          ...(codeRaw && codeRaw !== code ? [buildUrl({ property_code: codeRaw })] : []),
-        ]
-        const rs = await Promise.all(urls.map(async (u) => {
+        const fetchList = async (u: string) => {
           try {
             const res = await fetchWithTimeout(u, { headers: authHeaders() }, { timeoutMs: fetchTimeoutMs })
             return res.ok ? await res.json() : []
           } catch {
             return []
           }
-        }))
-        const merged = ([] as any[]).concat(...rs)
+        }
+        const primary = await fetchList(buildUrl({ property_id: propertyId }))
+        const fallbackUrls = (!primary?.length)
+          ? [
+              ...(code ? [buildUrl({ property_code: code })] : []),
+              ...(codeRaw && codeRaw !== code ? [buildUrl({ property_code: codeRaw })] : []),
+            ]
+          : []
+        const fallbackLists = fallbackUrls.length ? await Promise.all(fallbackUrls.map(fetchList)) : []
+        const merged = ([] as any[]).concat(primary || [], ...fallbackLists)
         const map = new Map<string, any>()
         for (const r of merged) {
           const id = String(r?.id || '')
@@ -251,9 +255,14 @@ export default forwardRef<HTMLDivElement, {
         }
         const list = Array.from(map.values())
         const inMonth = list.filter((d: any) => {
-          const raw: any = d?.occurred_at || d?.completed_at || d?.started_at || d?.submitted_at || d?.created_at
-          const day = toDayStr(raw)
-          return day ? dayjs(day).isSame(start, 'month') : false
+          const days = [
+            d?.occurred_at,
+            d?.completed_at,
+            d?.started_at,
+            d?.submitted_at,
+            d?.created_at,
+          ].map((raw: any) => toDayStr(raw)).filter(Boolean)
+          return days.some((day: any) => dayjs(day).isSame(start, 'month'))
         })
         setDeepCleanings(inMonth as any)
       } catch {
@@ -267,32 +276,20 @@ export default forwardRef<HTMLDivElement, {
     ;(async () => {
       try {
         setMaintenancesLoaded(false)
-        if (!propertyId || !showMaintSectionFinal) { setMaintenances([]); setMaintenancesLoaded(true); return }
-        const codeRaw = String(property?.code || '').trim()
-        const code = (() => {
-          if (!codeRaw) return ''
-          const s = codeRaw.split('(')[0].trim()
-          const t = s.split(/\s+/)[0].trim()
-          return t || s || codeRaw
-        })()
+        if (!propertyId || !needMaintData) { setMaintenances([]); setMaintenancesLoaded(true); return }
         const buildUrl = (params: Record<string, string>) => {
           const qs = new URLSearchParams({ ...params, limit: '5000' })
           return `${API_BASE}/crud/property_maintenance?${qs.toString()}`
         }
-        const urls = [
-          buildUrl({ property_id: propertyId }),
-          ...(code ? [buildUrl({ property_code: code })] : []),
-          ...(codeRaw && codeRaw !== code ? [buildUrl({ property_code: codeRaw })] : []),
-        ]
-        const rs = await Promise.all(urls.map(async (u) => {
+        const fetchList = async (u: string) => {
           try {
             const res = await fetchWithTimeout(u, { headers: authHeaders() }, { timeoutMs: fetchTimeoutMs })
             return res.ok ? await res.json() : []
           } catch {
             return []
           }
-        }))
-        const merged = ([] as any[]).concat(...rs)
+        }
+        const merged = await fetchList(buildUrl({ property_id: propertyId }))
         const map = new Map<string, any>()
         for (const r of merged) {
           const id = String(r?.id || '')
@@ -300,9 +297,14 @@ export default forwardRef<HTMLDivElement, {
         }
         const list = Array.from(map.values())
         const inMonth = list.filter((d: any) => {
-          const raw: any = d?.occurred_at || d?.completed_at || d?.started_at || d?.submitted_at || d?.created_at
-          const day = toDayStr(raw)
-          return day ? dayjs(day).isSame(start, 'month') : false
+          const days = [
+            d?.occurred_at,
+            d?.completed_at,
+            d?.started_at,
+            d?.submitted_at,
+            d?.created_at,
+          ].map((raw: any) => toDayStr(raw)).filter(Boolean)
+          return days.some((day: any) => dayjs(day).isSame(start, 'month'))
         })
         setMaintenances(inMonth as any)
       } catch {
@@ -311,7 +313,7 @@ export default forwardRef<HTMLDivElement, {
         setMaintenancesLoaded(true)
       }
     })()
-  }, [propertyId, month, showMaintSectionFinal])
+  }, [propertyId, month, needMaintData])
   const orderIncomeShare = relatedOrders.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
   const rentIncome = orderIncomeShare
   const orderById = new Map((orders || []).map(o => [String(o.id), o]))
@@ -467,13 +469,27 @@ export default forwardRef<HTMLDivElement, {
     if (k === 'other' || s === '其他') return 'Other'
     return s
   }
-  const allowPhotosInReportOfRecord = (r: any): boolean => {
-    const st = String((r as any)?.status || '').trim().toLowerCase()
-    const rv = String((r as any)?.review_status || (r as any)?.reviewStatus || '').trim().toLowerCase()
-    return st === 'completed' || st === 'approved' || rv === 'approved'
+  const countUrlList = (v: any): number => {
+    if (!v) return 0
+    if (Array.isArray(v)) return v.map((x) => String(x || '').trim()).filter(Boolean).length
+    if (typeof v === 'string') {
+      const s = v.trim()
+      if (!s) return 0
+      try {
+        const j = JSON.parse(s)
+        if (Array.isArray(j)) return j.map((x) => String(x || '').trim()).filter(Boolean).length
+      } catch {}
+    }
+    return 0
   }
-  const deepCleaningsForReport = (deepCleanings || []).filter(allowPhotosInReportOfRecord)
-  const maintenancesForReport = (maintenances || []).filter(allowPhotosInReportOfRecord)
+  const allowPhotosInReportOfRecord = (r: any): boolean => {
+    return (countUrlList((r as any)?.photo_urls) + countUrlList((r as any)?.repair_photo_urls)) > 0
+  }
+  const urlArr = (raw: any) => {
+    if (Array.isArray(raw)) return raw
+    if (typeof raw === 'string') { try { const j = JSON.parse(raw); return Array.isArray(j) ? j : [] } catch { return [] } }
+    return []
+  }
   const otherItems = expensesInMonthForReportAll
     .filter(e => catKey(e) === 'other')
     .map(e => otherDescOfTx(e))
@@ -610,7 +626,6 @@ export default forwardRef<HTMLDivElement, {
           html, body { margin: 0; padding: 0; font-family: StatementFont, serif; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
           [data-monthly-statement-root="1"] [data-keep-with-next="true"] { break-after: avoid; page-break-after: avoid; }
           [data-monthly-statement-root="1"] [data-print-break-before="true"] { break-before: page; page-break-before: always; }
-          [data-monthly-statement-root="1"] [data-pdf-avoid-cut="true"] { break-inside: avoid; page-break-inside: avoid; }
           [data-monthly-statement-root="1"] tr { break-inside: avoid; page-break-inside: avoid; }
         }
       `}</style>
@@ -883,68 +898,43 @@ export default forwardRef<HTMLDivElement, {
         </>
       ) : null}
 
-      {(showDeepSectionFinal && deepCleaningsForReport.length) ? (
+      {(showDeepSectionFinal && deepCleanings.length) ? (
         <div data-deep-clean-section="1" data-pdf-break-before={isPdfMode ? 'true' : undefined}>
-          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, fontSize: 18, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'}</div>
-          {!isPdfMode ? (
-            <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 8 }}>
-              <button
-                type="button"
-                onClick={() => setExpandAllDeepClean(v => !v)}
-                style={{ border:'1px solid #e5e7eb', background:'#fff', borderRadius: 8, padding:'6px 10px', fontSize: 12, cursor:'pointer' }}
-              >
-                {expandAllDeepClean ? '收起全部照片' : '展开全部照片'}
-              </button>
-            </div>
-          ) : null}
-          <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
-            {deepCleaningsForReport
-              .slice()
-              .sort((a: any, b: any) => String(a?.occurred_at || '').localeCompare(String(b?.occurred_at || '')))
-              .map((d: any) => {
-                const date = String(d?.completed_at || d?.occurred_at || '').slice(0, 10)
-                const startTime = d?.started_at ? dayjs(String(d.started_at)).format('HH:mm') : ''
-                const endTime = d?.ended_at ? dayjs(String(d.ended_at)).format('HH:mm') : ''
-                const timeLabel = [date, (startTime || endTime) ? `${startTime || '-'}~${endTime || '-'}` : ''].filter(Boolean).join(' ')
-                const did = String(d?.id || '')
-                const beforeArr = (() => {
-                  const raw: any = (d as any)?.photo_urls
-                  if (Array.isArray(raw)) return raw
-                  if (typeof raw === 'string') { try { const j = JSON.parse(raw); return Array.isArray(j) ? j : [] } catch { return [] } }
-                  return []
-                })().map((u: any) => String(u || '')).filter(Boolean)
-                const afterArr = (() => {
-                  const raw: any = (d as any)?.repair_photo_urls
-                  if (Array.isArray(raw)) return raw
-                  if (typeof raw === 'string') { try { const j = JSON.parse(raw); return Array.isArray(j) ? j : [] } catch { return [] } }
-                  return []
-                })().map((u: any) => String(u || '')).filter(Boolean)
-                const allowPhotosInPdf = allowPhotosInReportOfRecord(d)
-                const expanded = !!isPdfMode || !!expandAllDeepClean || !!expandedDeepClean[did]
-                const beforeShow = expanded ? beforeArr : beforeArr.slice(0, 2)
-                const afterShow = expanded ? afterArr : afterArr.slice(0, 2)
-                const beforePdfArr = isThumbPhotos ? beforeArr.slice(0, 1) : beforeArr
-                const afterPdfArr = isThumbPhotos ? afterArr.slice(0, 1) : afterArr
-                const pairRows = (() => {
-                  const n = Math.max(beforePdfArr.length, afterPdfArr.length)
-                  const rows: Array<{ b?: string; a?: string; idx: number }> = []
-                  for (let i = 0; i < n; i++) rows.push({ b: beforePdfArr[i], a: afterPdfArr[i], idx: i })
-                  return rows
-                })()
-                return (
-                  <div
-                    key={did || String(d?.work_no || '')}
-                    data-pdf-avoid-cut={isPdfMode ? 'true' : undefined}
-                    data-pdf-break-before={(isPdfMode && pairRows.length > 6) ? 'true' : undefined}
-                    style={{ border:'1px solid #eaeef5', borderRadius: 12, padding: 12 }}
-                  >
-                    <div style={{ display:'flex', justifyContent:'space-between', gap: 12, flexWrap:'wrap' }}>
-                      <div style={{ fontWeight: 700 }}>{`Job Number: ${String(d?.work_no || d?.id || '')}`}</div>
-                      <div style={{ color:'#111' }}>{`Completion Date: ${timeLabel || '-'}`}</div>
-                      <div style={{ color:'#111' }}>{isPdfMode ? `Area: ${areaToEn(d?.category)}` : (showChinese ? `区域：${String(d?.category || '-')}` : `Area: ${String(d?.category || '-')}`)}</div>
-                    </div>
-                    {isPdfMode ? (
-                      (allowPhotosInPdf && canIncludeJobPhotos) ? (
+          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'}</div>
+          {isPdfMode ? (
+            <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
+              {deepCleanings
+                .slice()
+                .sort((a: any, b: any) => String(a?.occurred_at || '').localeCompare(String(b?.occurred_at || '')))
+                .map((d: any) => {
+                  const date = toDayStr(d?.completed_at || d?.occurred_at || d?.started_at || d?.submitted_at || d?.created_at)
+                  const startTime = d?.started_at ? dayjs(String(d.started_at)).format('HH:mm') : ''
+                  const endTime = d?.ended_at ? dayjs(String(d.ended_at)).format('HH:mm') : ''
+                  const timeLabel = [date, (startTime || endTime) ? `${startTime || '-'}~${endTime || '-'}` : ''].filter(Boolean).join(' ')
+                  const did = String(d?.id || '')
+                  const beforeArr = urlArr((d as any)?.photo_urls).map((u: any) => String(u || '')).filter(Boolean)
+                  const afterArr = urlArr((d as any)?.repair_photo_urls).map((u: any) => String(u || '')).filter(Boolean)
+                  const allowPhotosInPdf = allowPhotosInReportOfRecord(d)
+                  const beforePdfArr = isThumbPhotos ? beforeArr.slice(0, 1) : beforeArr
+                  const afterPdfArr = isThumbPhotos ? afterArr.slice(0, 1) : afterArr
+                  const pairRows = (() => {
+                    const n = Math.max(beforePdfArr.length, afterPdfArr.length)
+                    const rows: Array<{ b?: string; a?: string; idx: number }> = []
+                    for (let i = 0; i < n; i++) rows.push({ b: beforePdfArr[i], a: afterPdfArr[i], idx: i })
+                    return rows
+                  })()
+                  return (
+                    <div
+                      key={did || String(d?.work_no || '')}
+                      data-pdf-avoid-cut={isPdfMode ? 'true' : undefined}
+                      style={{ border:'1px solid #eaeef5', borderRadius: 12, padding: 12 }}
+                    >
+                      <div style={{ display:'flex', justifyContent:'space-between', gap: 12, flexWrap:'wrap' }}>
+                        <div style={{ fontWeight: 700 }}>{`Job Number: ${String(d?.work_no || d?.id || '')}`}</div>
+                        <div style={{ color:'#111' }}>{`Completion Date: ${timeLabel || '-'}`}</div>
+                        <div style={{ color:'#111' }}>{`Area: ${areaToEn(d?.category)}`}</div>
+                      </div>
+                      {(allowPhotosInPdf && canIncludeJobPhotos) ? (
                       <div style={{ display:'flex', flexDirection:'column', gap: 12, marginTop: 10 }}>
                         <div data-pdf-avoid-cut="true">
                           <div style={{ fontWeight: 700, marginBottom: 6 }}>Before</div>
@@ -979,92 +969,97 @@ export default forwardRef<HTMLDivElement, {
                           </div>
                         </div>
                       </div>
-                      ) : null
-                    ) : (
-                      <>
-                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, marginTop: 10 }}>
-                      <div>
-                            <div style={{ fontWeight: 700, marginBottom: 6 }}>Before</div>
-                            <div style={{ display:'grid', gridTemplateColumns: expanded ? 'repeat(2, 1fr)' : '1fr', gap: 10 }}>
-                              {beforeShow.length ? beforeShow.map((u: string, idx: number) => (
-                                <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
-                                  {isImg(u) ? <img crossOrigin="anonymous" loading="lazy" decoding="async" src={resolveUrl(u)} style={{ width:'100%', height: expanded ? 140 : 170, objectFit:'contain', borderRadius: 8 }} /> : <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>}
-                                </div>
-                              )) : <div style={{ color:'#999' }}>-</div>}
-                            </div>
-                            {!expanded && beforeArr.length > beforeShow.length ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${beforeArr.length - beforeShow.length}`}</div> : null}
+                      ) : null}
+                    </div>
+                  )
+                })}
+            </div>
+          ) : (
+            <>
+              <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => setExpandAllDeepClean(v => !v)}
+                  style={{ border:'1px solid #e5e7eb', background:'#fff', borderRadius: 8, padding:'6px 10px', fontSize: 12, cursor:'pointer' }}
+                >
+                  {expandAllDeepClean ? '收起全部照片' : '展开全部照片'}
+                </button>
+              </div>
+              {(() => {
+                const buildItems = (phase: 'before' | 'after') => {
+                  const phaseLabel = phase === 'before' ? (showChinese ? '清洁前' : 'Before') : (showChinese ? '清洁后' : 'After')
+                  const out: Array<{ url: string; caption: string }> = []
+                  for (const r of deepCleanings || []) {
+                    const workNo = String((r as any)?.work_no || (r as any)?.id || '').trim()
+                    const day = toDayStr((r as any)?.occurred_at || (r as any)?.completed_at || (r as any)?.started_at || (r as any)?.submitted_at || (r as any)?.created_at)
+                    const urls = urlArr(phase === 'before' ? (r as any)?.photo_urls : (r as any)?.repair_photo_urls)
+                      .map((u: any) => String(u || '').trim())
+                      .filter(Boolean)
+                    for (const u of urls) out.push({ url: u, caption: `DC${workNo ? ` ${workNo}` : ''}${day ? ` • ${day}` : ''} • ${phaseLabel}` })
+                  }
+                  return out
+                }
+                const beforeItems = buildItems('before')
+                const afterItems = buildItems('after')
+                const beforeShow = expandAllDeepClean ? beforeItems : beforeItems.slice(0, 12)
+                const afterShow = expandAllDeepClean ? afterItems : afterItems.slice(0, 12)
+                return (
+                  <div style={{ display:'flex', flexDirection:'column', gap: 14, marginTop: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, marginBottom: 6 }}>{showChinese ? '清洁前' : 'Before'}</div>
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
+                        {beforeShow.map((it, idx) => (
+                          <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 0, overflow:'hidden', background:'#fff' }}>
+                            {isImg(it.url)
+                              ? <img crossOrigin="anonymous" loading={idx < 6 ? 'eager' : 'lazy'} decoding="async" src={resolveUrl(it.url)} style={{ width:'100%', height: 170, objectFit:'cover', borderRadius: 8 }} />
+                              : <a href={resolveUrl(it.url)} target="_blank" rel="noreferrer">{String(it.url).split('/').pop() || 'file'}</a>}
+                            <div style={{ fontSize: 12, color:'#333', padding:'6px 4px' }}>{it.caption}</div>
                           </div>
-                          <div>
-                            <div style={{ fontWeight: 700, marginBottom: 6 }}>After</div>
-                            <div style={{ display:'grid', gridTemplateColumns: expanded ? 'repeat(2, 1fr)' : '1fr', gap: 10 }}>
-                              {afterShow.length ? afterShow.map((u: string, idx: number) => (
-                                <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
-                                  {isImg(u) ? <img crossOrigin="anonymous" loading="lazy" decoding="async" src={resolveUrl(u)} style={{ width:'100%', height: expanded ? 140 : 170, objectFit:'contain', borderRadius: 8 }} /> : <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>}
-                                </div>
-                              )) : <div style={{ color:'#999' }}>-</div>}
-                            </div>
-                            {!expanded && afterArr.length > afterShow.length ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${afterArr.length - afterShow.length}`}</div> : null}
+                        ))}
+                      </div>
+                      {(!expandAllDeepClean && beforeItems.length > beforeShow.length) ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${beforeItems.length - beforeShow.length}`}</div> : null}
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 700, marginBottom: 6 }}>{showChinese ? '清洁后' : 'After'}</div>
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
+                        {afterShow.map((it, idx) => (
+                          <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 0, overflow:'hidden', background:'#fff' }}>
+                            {isImg(it.url)
+                              ? <img crossOrigin="anonymous" loading={idx < 6 ? 'eager' : 'lazy'} decoding="async" src={resolveUrl(it.url)} style={{ width:'100%', height: 170, objectFit:'cover', borderRadius: 8 }} />
+                              : <a href={resolveUrl(it.url)} target="_blank" rel="noreferrer">{String(it.url).split('/').pop() || 'file'}</a>}
+                            <div style={{ fontSize: 12, color:'#333', padding:'6px 4px' }}>{it.caption}</div>
                           </div>
-                        </div>
-                        {(!expanded && (beforeArr.length > 2 || afterArr.length > 2)) ? (
-                          <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 10 }}>
-                            <button
-                              type="button"
-                              onClick={() => setExpandedDeepClean(m => ({ ...m, [did]: true }))}
-                              style={{ border:'1px solid #e5e7eb', background:'#fff', borderRadius: 8, padding:'6px 10px', fontSize: 12, cursor:'pointer' }}
-                            >
-                              展开本条照片
-                            </button>
-                          </div>
-                        ) : null}
-                      </>
-                    )}
+                        ))}
+                      </div>
+                      {(!expandAllDeepClean && afterItems.length > afterShow.length) ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${afterItems.length - afterShow.length}`}</div> : null}
+                    </div>
                   </div>
                 )
-              })}
-          </div>
+              })()}
+            </>
+          )}
         </div>
       ) : null}
 
-      {(showMaintSectionFinal && maintenancesForReport.length) ? (
+      {(showMaintSectionFinal && maintenances.length) ? (
         <div data-maint-section="1" data-pdf-break-before={isPdfMode ? 'true' : undefined}>
-          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, fontSize: 18, background:'#eef3fb', padding:'6px 8px' }}>
-            {showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'}
-          </div>
-          {!isPdfMode ? (
-            <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 8 }}>
-              <button
-                type="button"
-                onClick={() => setExpandAllMaintenance(v => !v)}
-                style={{ border:'1px solid #e5e7eb', background:'#fff', borderRadius: 8, padding:'6px 10px', fontSize: 12, cursor:'pointer' }}
-              >
-                {expandAllMaintenance ? '收起全部照片' : '展开全部照片'}
-              </button>
-            </div>
-          ) : null}
-          <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
-            {maintenancesForReport
-              .slice()
-              .sort((a: any, b: any) => String(a?.occurred_at || '').localeCompare(String(b?.occurred_at || '')))
-              .map((m: any) => {
-                const date = String(m?.completed_at || m?.occurred_at || '').slice(0, 10)
+          {isPdfMode ? (
+            (() => {
+              const list = maintenances
+                .slice()
+                .sort((a: any, b: any) => String(a?.occurred_at || '').localeCompare(String(b?.occurred_at || '')))
+
+              const renderCard = (m: any) => {
+                const date = toDayStr(m?.completed_at || m?.occurred_at || m?.started_at || m?.submitted_at || m?.created_at)
                 const startTime = m?.started_at ? dayjs(String(m.started_at)).format('HH:mm') : ''
                 const endTime = m?.ended_at ? dayjs(String(m.ended_at)).format('HH:mm') : ''
                 const timeLabel = [date, (startTime || endTime) ? `${startTime || '-'}~${endTime || '-'}` : ''].filter(Boolean).join(' ')
                 const mid = String(m?.id || '')
                 const summaryRaw = (summaryFromDetails((m as any)?.details) || '').split('\n').map((x: any) => String(x || '').trim()).filter(Boolean)[0] || ''
                 const summary = summaryRaw || String((m as any)?.repair_notes || '').trim() || String(m?.category || '').trim()
-                const urlArr = (raw: any) => {
-                  if (Array.isArray(raw)) return raw
-                  if (typeof raw === 'string') { try { const j = JSON.parse(raw); return Array.isArray(j) ? j : [] } catch { return [] } }
-                  return []
-                }
                 const beforeArr = urlArr((m as any)?.photo_urls).map((u: any) => String(u || '')).filter(Boolean)
                 const afterArr = urlArr((m as any)?.repair_photo_urls).map((u: any) => String(u || '')).filter(Boolean)
                 const allowPhotosInPdf = allowPhotosInReportOfRecord(m)
-                const expanded = !!isPdfMode || !!expandAllMaintenance || !!expandedMaintenance[mid]
-                const beforeShow = expanded ? beforeArr : beforeArr.slice(0, 2)
-                const afterShow = expanded ? afterArr : afterArr.slice(0, 2)
                 const beforePdfArr = isThumbPhotos ? beforeArr.slice(0, 1) : beforeArr
                 const afterPdfArr = isThumbPhotos ? afterArr.slice(0, 1) : afterArr
                 const pairRows = (() => {
@@ -1077,95 +1072,140 @@ export default forwardRef<HTMLDivElement, {
                   <div
                     key={mid || String(m?.work_no || '')}
                     data-pdf-avoid-cut={isPdfMode ? 'true' : undefined}
-                    data-pdf-break-before={(isPdfMode && pairRows.length > 2) ? 'true' : undefined}
                     style={{ border:'1px solid #eaeef5', borderRadius: 12, padding: 12 }}
                   >
                     <div style={{ display:'flex', justifyContent:'space-between', gap: 12, flexWrap:'wrap' }}>
                       <div style={{ fontWeight: 700 }}>{`Job Number: ${String(m?.work_no || m?.id || '')}`}</div>
                       <div style={{ color:'#111' }}>{`Completion Date: ${timeLabel || '-'}`}</div>
-                      <div style={{ color:'#111' }}>{isPdfMode ? `Area: ${areaToEn(m?.category)}` : (showChinese ? `区域：${String(m?.category || '-')}` : `Area: ${String(m?.category || '-')}`)}</div>
+                      <div style={{ color:'#111' }}>{`Area: ${areaToEn(m?.category)}`}</div>
                     </div>
                     {summary ? <div style={{ marginTop: 8, whiteSpace:'pre-wrap', wordBreak:'break-word' }}>{`Job Description: ${summary}`}</div> : null}
-                    {isPdfMode ? (
-                      (allowPhotosInPdf && canIncludeJobPhotos) ? (
-                      <div style={{ display:'flex', flexDirection:'column', gap: 12, marginTop: 10 }}>
-                        <div data-pdf-avoid-cut="true">
-                          <div style={{ fontWeight: 700, marginBottom: 6 }}>Before</div>
-                          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
-                            {beforePdfArr.length ? beforePdfArr.map((u: any, idx: number) => (
-                              <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
-                                {isImg(u) ? (
-                                  renderEngine === 'print'
-                                    ? <img crossOrigin="anonymous" src={resolveUrl(u)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
-                                    : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(u)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
-                                ) : (
-                                  <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
-                                )}
-                              </div>
-                            )) : <div style={{ color:'#999' }}>-</div>}
-                          </div>
-                        </div>
-                        <div data-pdf-avoid-cut="true">
-                          <div style={{ fontWeight: 700, marginBottom: 6 }}>After</div>
-                          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
-                            {afterPdfArr.length ? afterPdfArr.map((u: any, idx: number) => (
-                              <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
-                                {isImg(u) ? (
-                                  renderEngine === 'print'
-                                    ? <img crossOrigin="anonymous" src={resolveUrl(u)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
-                                    : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(u)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
-                                ) : (
-                                  <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
-                                )}
-                              </div>
-                            )) : <div style={{ color:'#999' }}>-</div>}
-                          </div>
+                    {(allowPhotosInPdf && canIncludeJobPhotos) ? (
+                    <div style={{ display:'flex', flexDirection:'column', gap: 12, marginTop: 10 }}>
+                      <div data-pdf-avoid-cut="true">
+                        <div style={{ fontWeight: 700, marginBottom: 6 }}>Before</div>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
+                          {beforePdfArr.length ? beforePdfArr.map((u: any, idx: number) => (
+                            <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
+                              {isImg(u) ? (
+                                renderEngine === 'print'
+                                  ? <img crossOrigin="anonymous" src={resolveUrl(u)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
+                                  : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(u)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                              ) : (
+                                <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
+                              )}
+                            </div>
+                          )) : <div style={{ color:'#999' }}>-</div>}
                         </div>
                       </div>
-                      ) : null
-                    ) : (
-                      <>
-                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, marginTop: 10 }}>
-                          <div>
-                            <div style={{ fontWeight: 700, marginBottom: 6 }}>Before</div>
-                            <div style={{ display:'grid', gridTemplateColumns: expanded ? 'repeat(2, 1fr)' : '1fr', gap: 10 }}>
-                              {beforeShow.length ? beforeShow.map((u: string, idx: number) => (
-                                <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
-                                  {isImg(u) ? <img crossOrigin="anonymous" loading="lazy" decoding="async" src={resolveUrl(u)} style={{ width:'100%', height: expanded ? 140 : 170, objectFit:'contain', borderRadius: 8 }} /> : <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>}
-                                </div>
-                              )) : <div style={{ color:'#999' }}>-</div>}
+                      <div data-pdf-avoid-cut="true">
+                        <div style={{ fontWeight: 700, marginBottom: 6 }}>After</div>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
+                          {afterPdfArr.length ? afterPdfArr.map((u: any, idx: number) => (
+                            <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
+                              {isImg(u) ? (
+                                renderEngine === 'print'
+                                  ? <img crossOrigin="anonymous" src={resolveUrl(u)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
+                                  : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(u)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                              ) : (
+                                <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
+                              )}
                             </div>
-                            {!expanded && beforeArr.length > beforeShow.length ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${beforeArr.length - beforeShow.length}`}</div> : null}
-                          </div>
-                          <div>
-                            <div style={{ fontWeight: 700, marginBottom: 6 }}>After</div>
-                            <div style={{ display:'grid', gridTemplateColumns: expanded ? 'repeat(2, 1fr)' : '1fr', gap: 10 }}>
-                              {afterShow.length ? afterShow.map((u: string, idx: number) => (
-                                <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
-                                  {isImg(u) ? <img crossOrigin="anonymous" loading="lazy" decoding="async" src={resolveUrl(u)} style={{ width:'100%', height: expanded ? 140 : 170, objectFit:'contain', borderRadius: 8 }} /> : <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>}
-                                </div>
-                              )) : <div style={{ color:'#999' }}>-</div>}
-                            </div>
-                            {!expanded && afterArr.length > afterShow.length ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${afterArr.length - afterShow.length}`}</div> : null}
-                          </div>
+                          )) : <div style={{ color:'#999' }}>-</div>}
                         </div>
-                        {(!expanded && (beforeArr.length > 2 || afterArr.length > 2)) ? (
-                          <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 10 }}>
-                            <button
-                              type="button"
-                              onClick={() => setExpandedMaintenance(mm => ({ ...mm, [mid]: true }))}
-                              style={{ border:'1px solid #e5e7eb', background:'#fff', borderRadius: 8, padding:'6px 10px', fontSize: 12, cursor:'pointer' }}
-                            >
-                              展开本条照片
-                            </button>
-                          </div>
-                        ) : null}
-                      </>
-                    )}
+                      </div>
+                    </div>
+                    ) : null}
                   </div>
                 )
-              })}
-          </div>
+              }
+
+              const first = list[0]
+              const rest = list.slice(1)
+
+              return (
+                <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
+                  {first ? (
+                    <div data-pdf-avoid-cut="true">
+                      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>
+                        {showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'}
+                      </div>
+                      <div style={{ marginTop: 12 }}>
+                        {renderCard(first)}
+                      </div>
+                    </div>
+                  ) : null}
+                  {rest.map(renderCard)}
+                </div>
+              )
+            })()
+          ) : (
+            <>
+              <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>
+                {showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'}
+              </div>
+              <div style={{ display:'flex', justifyContent:'flex-end', marginTop: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => setExpandAllMaintenance(v => !v)}
+                  style={{ border:'1px solid #e5e7eb', background:'#fff', borderRadius: 8, padding:'6px 10px', fontSize: 12, cursor:'pointer' }}
+                >
+                  {expandAllMaintenance ? '收起全部照片' : '展开全部照片'}
+                </button>
+              </div>
+              {(() => {
+                const buildItems = (phase: 'before' | 'after') => {
+                  const phaseLabel = phase === 'before' ? (showChinese ? '维修前' : 'Before') : (showChinese ? '维修后' : 'After')
+                  const out: Array<{ url: string; caption: string }> = []
+                  for (const r of maintenances || []) {
+                    const workNo = String((r as any)?.work_no || (r as any)?.id || '').trim()
+                    const day = toDayStr((r as any)?.occurred_at || (r as any)?.completed_at || (r as any)?.started_at || (r as any)?.submitted_at || (r as any)?.created_at)
+                    const urls = urlArr(phase === 'before' ? (r as any)?.photo_urls : (r as any)?.repair_photo_urls)
+                      .map((u: any) => String(u || '').trim())
+                      .filter(Boolean)
+                    for (const u of urls) out.push({ url: u, caption: `R${workNo ? ` ${workNo}` : ''}${day ? ` • ${day}` : ''} • ${phaseLabel}` })
+                  }
+                  return out
+                }
+                const beforeItems = buildItems('before')
+                const afterItems = buildItems('after')
+                const beforeShow = expandAllMaintenance ? beforeItems : beforeItems.slice(0, 12)
+                const afterShow = expandAllMaintenance ? afterItems : afterItems.slice(0, 12)
+                return (
+                  <div style={{ display:'flex', flexDirection:'column', gap: 14, marginTop: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, marginBottom: 6 }}>{showChinese ? '维修前' : 'Before'}</div>
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
+                        {beforeShow.map((it, idx) => (
+                          <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 0, overflow:'hidden', background:'#fff' }}>
+                            {isImg(it.url)
+                              ? <img crossOrigin="anonymous" loading={idx < 6 ? 'eager' : 'lazy'} decoding="async" src={resolveUrl(it.url)} style={{ width:'100%', height: 170, objectFit:'cover', borderRadius: 8 }} />
+                              : <a href={resolveUrl(it.url)} target="_blank" rel="noreferrer">{String(it.url).split('/').pop() || 'file'}</a>}
+                            <div style={{ fontSize: 12, color:'#333', padding:'6px 4px' }}>{it.caption}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {(!expandAllMaintenance && beforeItems.length > beforeShow.length) ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${beforeItems.length - beforeShow.length}`}</div> : null}
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 700, marginBottom: 6 }}>{showChinese ? '维修后' : 'After'}</div>
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
+                        {afterShow.map((it, idx) => (
+                          <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 0, overflow:'hidden', background:'#fff' }}>
+                            {isImg(it.url)
+                              ? <img crossOrigin="anonymous" loading={idx < 6 ? 'eager' : 'lazy'} decoding="async" src={resolveUrl(it.url)} style={{ width:'100%', height: 170, objectFit:'cover', borderRadius: 8 }} />
+                              : <a href={resolveUrl(it.url)} target="_blank" rel="noreferrer">{String(it.url).split('/').pop() || 'file'}</a>}
+                            <div style={{ fontSize: 12, color:'#333', padding:'6px 4px' }}>{it.caption}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {(!expandAllMaintenance && afterItems.length > afterShow.length) ? <div style={{ marginTop: 6, fontSize: 12, color:'#6b7280' }}>{`+${afterItems.length - afterShow.length}`}</div> : null}
+                    </div>
+                  </div>
+                )
+              })()}
+            </>
+          )}
         </div>
       ) : null}
 

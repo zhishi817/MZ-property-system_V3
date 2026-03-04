@@ -25,10 +25,8 @@ export function isOwnerStay(o: any): boolean {
 
 export function toDayStr(raw?: any): string {
   const str = String(raw || '')
-  const m = str.match(/^\d{4}-\d{2}-\d{2}$/)
-  if (m) return m[0]
-  const m2 = str.match(/^(\d{4}-\d{2}-\d{2})T/)
-  if (m2) return m2[1]
+  const m = str.match(/^(\d{4}-\d{2}-\d{2})/)
+  if (m) return m[1]
   try { console.error('[DATE_STRING_ERROR] expect YYYY-MM-DD or YYYY-MM-DDT..., got:', str) } catch {}
   return ''
 }
