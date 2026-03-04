@@ -113,9 +113,7 @@ function countUrlList(v) {
     return 0;
 }
 function allowPhotosInReportOfRecord(r) {
-    const st = String((r === null || r === void 0 ? void 0 : r.status) || '').trim().toLowerCase();
-    const rv = String((r === null || r === void 0 ? void 0 : r.review_status) || (r === null || r === void 0 ? void 0 : r.reviewStatus) || '').trim().toLowerCase();
-    return st === 'completed' || st === 'approved' || rv === 'approved';
+    return (countUrlList(r === null || r === void 0 ? void 0 : r.photo_urls) + countUrlList(r === null || r === void 0 ? void 0 : r.repair_photo_urls)) > 0;
 }
 function recordMonthKey(r) {
     const raw = (r === null || r === void 0 ? void 0 : r.occurred_at) || (r === null || r === void 0 ? void 0 : r.completed_at) || (r === null || r === void 0 ? void 0 : r.started_at) || (r === null || r === void 0 ? void 0 : r.submitted_at) || (r === null || r === void 0 ? void 0 : r.created_at);
@@ -1146,12 +1144,17 @@ exports.router.get('/monthly-statement-photo-stats', (0, auth_1.requireAnyPerm)(
             const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND ${dateCond} LIMIT 8000`;
             const r1 = await dbAdapter_2.pgPool.query(q1, [pid, range.start, range.end]);
             parts.push(...(r1.rows || []).map((x) => x.row));
-            if (hasPropCode && (propertyCode || propertyCodeRaw)) {
+            if (propertyCode || propertyCodeRaw) {
                 const codes = Array.from(new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean)));
                 if (codes.length) {
-                    const q2 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_code = ANY($1::text[]) AND ${dateCond} LIMIT 8000`;
-                    const r2 = await dbAdapter_2.pgPool.query(q2, [codes, range.start, range.end]);
-                    parts.push(...(r2.rows || []).map((x) => x.row));
+                    if (hasPropCode) {
+                        const q2 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_code = ANY($1::text[]) AND ${dateCond} LIMIT 8000`;
+                        const r2 = await dbAdapter_2.pgPool.query(q2, [codes, range.start, range.end]);
+                        parts.push(...(r2.rows || []).map((x) => x.row));
+                    }
+                    const q3 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id = ANY($1::text[]) AND ${dateCond} LIMIT 8000`;
+                    const r3 = await dbAdapter_2.pgPool.query(q3, [codes, range.start, range.end]);
+                    parts.push(...(r3.rows || []).map((x) => x.row));
                 }
             }
             const map = new Map();
@@ -1173,7 +1176,8 @@ exports.router.get('/monthly-statement-photo-stats', (0, auth_1.requireAnyPerm)(
             for (const r of list) {
                 const pidOk = String((r === null || r === void 0 ? void 0 : r.property_id) || '') === pid;
                 const codeOk = codes.size ? codes.has(String((r === null || r === void 0 ? void 0 : r.property_code) || '').trim()) : false;
-                if ((pidOk || codeOk) && inRange(r)) {
+                const legacyOk = codes.size ? codes.has(String((r === null || r === void 0 ? void 0 : r.property_id) || '').trim()) : false;
+                if ((pidOk || codeOk || legacyOk) && inRange(r)) {
                     const id = String((r === null || r === void 0 ? void 0 : r.id) || '');
                     if (id)
                         map.set(id, r);
@@ -1457,7 +1461,21 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             context = await browser.newContext();
         }
         try {
-            await context.addCookies([{ name: 'auth', value: token, url: front }]);
+            const apiBaseForAssets = String(process.env.NEXT_PUBLIC_API_BASE_URL ||
+                process.env.NEXT_PUBLIC_API_BASE_DEV ||
+                process.env.NEXT_PUBLIC_API_BASE ||
+                '').trim();
+            const cookieBase = (baseUrl) => ({
+                name: 'auth',
+                value: token,
+                url: baseUrl,
+                sameSite: 'None',
+                secure: /^https:\/\//i.test(baseUrl),
+            });
+            const cookieTargets = Array.from(new Set([front, apiBaseForAssets].map(s => String(s || '').trim()).filter(Boolean)));
+            if (cookieTargets.length) {
+                await context.addCookies(cookieTargets.map(cookieBase));
+            }
             const page = await context.newPage();
             const pushCap = (arr, s, cap = 30) => {
                 const v = String(s || '').slice(0, 500);
@@ -1587,7 +1605,7 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
         const wantMaint = photosMode !== 'off' && /(all|maintenance)/i.test(sec || 'all');
         const qDeep = wantDeep ? dbAdapter_2.pgPool.query(`SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
        FROM property_deep_cleaning
-       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND property_code = ANY($2::text[])))
+       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
          AND (
            (occurred_at >= $3::date AND occurred_at < $4::date)
            OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
@@ -1598,7 +1616,7 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
        LIMIT 5000`, [pid, codes, range.start, range.end]).then(r => r.rows || []).catch(() => []) : Promise.resolve([]);
         const qMaint = wantMaint ? dbAdapter_2.pgPool.query(`SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
        FROM property_maintenance
-       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND property_code = ANY($2::text[])))
+       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
          AND (
            (occurred_at >= $3::date AND occurred_at < $4::date)
            OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
