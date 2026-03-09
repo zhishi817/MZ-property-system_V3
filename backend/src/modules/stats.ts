@@ -3,7 +3,6 @@ import { hasPg, pgPool } from '../dbAdapter'
 import { db } from '../store'
 import { requireAnyPerm } from '../auth'
 import { z } from 'zod'
-import { ensureCleaningSchemaV2 } from '../services/cleaningSync'
 
 export const router = Router()
 
@@ -84,7 +83,6 @@ router.get('/cleaning-overview', requireAnyPerm(['cleaning.view','cleaning.sched
   const dateStr = parsedDate.success ? parsedDate.data : undefined
   try {
     if (hasPg && pgPool) {
-      await ensureCleaningSchemaV2()
       const baseSql = `SELECT COALESCE($1::date, (now() AT TIME ZONE 'Australia/Melbourne')::date) AS day_au`
       const baseRes = await pgPool.query(baseSql, [dateStr || null])
       const baseDay = baseRes?.rows?.[0]?.day_au ? String(baseRes.rows[0].day_au).slice(0, 10) : (dateStr || '')

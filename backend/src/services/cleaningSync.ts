@@ -11,7 +11,7 @@ export type CleaningSyncAction =
   | 'skipped_locked'
   | 'failed'
 
-export type SyncOrderToCleaningTasksOpts = { deleted?: boolean; client?: any }
+export type SyncOrderToCleaningTasksOpts = { deleted?: boolean; client?: any; jobId?: string }
 
 const CHECKOUT_TASK_TYPE = 'checkout_clean'
 const CHECKIN_TASK_TYPE = 'checkin_clean'
@@ -96,141 +96,23 @@ export async function ensureCleaningSchemaV2(): Promise<void> {
   if (!hasPg || !pgPool) return
   if (schemaEnsured) return schemaEnsured
   schemaEnsured = (async () => {
-    await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_tasks (
-      id text PRIMARY KEY,
-      property_id text,
-      date date,
-      status text,
-      assignee_id text,
-      scheduled_at timestamptz,
-      created_at timestamptz DEFAULT now()
-    );`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS order_id text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS task_type text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS task_date date;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS auto_sync_enabled boolean DEFAULT true;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS sync_fingerprint text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS source text DEFAULT 'auto';`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS note text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkout_time text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkin_time text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS cleaner_id text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspector_id text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS nights_override int;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS old_code text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS new_code text;`)
-
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS type text;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS auto_managed boolean;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS locked boolean;`)
-    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS reschedule_required boolean;`)
-
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_task_date ON cleaning_tasks(task_date);`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_order_id ON cleaning_tasks(order_id);`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_status ON cleaning_tasks(status);`)
-
-    await pgPool.query(`
-      UPDATE cleaning_tasks
-      SET
-        task_date = COALESCE(task_date, date),
-        task_type = COALESCE(
-          task_type,
-          CASE
-            WHEN type = 'checkout_cleaning' THEN 'checkout_clean'
-            WHEN type = 'checkin_cleaning' THEN 'checkin_clean'
-            ELSE type
-          END
-        ),
-        status = CASE WHEN status = 'canceled' THEN 'cancelled' ELSE status END
-      WHERE task_date IS NULL OR task_type IS NULL OR status = 'canceled'
-    `)
-
-    await pgPool.query(`
-      UPDATE orders
-      SET property_id = substring(property_id::text, 1, 36)
-      WHERE property_id::text ~* '^[0-9a-f-]{36}(true|false)$'
-    `)
-
-    await pgPool.query(`
-      UPDATE cleaning_tasks
-      SET property_id = substring(property_id::text, 1, 36)
-      WHERE property_id::text ~* '^[0-9a-f-]{36}(true|false)$'
-    `)
-
-    await pgPool.query(`
-      UPDATE cleaning_tasks t
-      SET status = 'cancelled', updated_at = now()
-      WHERE COALESCE(t.status,'') <> 'cancelled'
-        AND t.order_id IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM orders o WHERE (o.id::text) = (t.order_id::text))
-    `)
-
-    await pgPool.query(`
-      UPDATE cleaning_offline_tasks
-      SET property_id = substring(property_id::text, 1, 36)
-      WHERE property_id IS NOT NULL AND property_id::text ~* '^[0-9a-f-]{36}(true|false)$'
-    `).catch(() => {})
-
-    await pgPool.query(`
-      DELETE FROM properties p
-      WHERE p.id::text ~* '^[0-9a-f-]{36}(true|false)$'
-        AND COALESCE(p.code, '') = ''
-        AND COALESCE(p.address, '') = ''
-        AND NOT EXISTS (SELECT 1 FROM orders o WHERE (o.property_id::text) = (p.id::text))
-        AND NOT EXISTS (SELECT 1 FROM cleaning_tasks t WHERE (t.property_id::text) = (p.id::text))
-        AND NOT EXISTS (SELECT 1 FROM cleaning_offline_tasks t2 WHERE (t2.property_id::text) = (p.id::text))
-    `).catch(() => {})
-
-    await pgPool.query(`
-      WITH ranked AS (
-        SELECT
-          ctid,
-          row_number() OVER (
-            PARTITION BY order_id, task_type
-            ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
-          ) AS rn
-        FROM cleaning_tasks
-        WHERE order_id IS NOT NULL AND task_type IS NOT NULL
-      )
-      DELETE FROM cleaning_tasks
-      USING ranked
-      WHERE cleaning_tasks.ctid = ranked.ctid
-        AND ranked.rn > 1
-    `)
-
-    await pgPool.query(`DO $$ BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uniq_cleaning_tasks_order_task_type_v3') THEN
-        BEGIN
-          ALTER TABLE cleaning_tasks
-          ADD CONSTRAINT uniq_cleaning_tasks_order_task_type_v3 UNIQUE (order_id, task_type);
-        EXCEPTION
-          WHEN duplicate_table OR duplicate_object THEN
-            NULL;
-        END;
-      END IF;
-    END $$;`)
-
-    await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_sync_logs (
-      id text PRIMARY KEY,
-      order_id text,
-      task_id text,
-      action text,
-      before jsonb,
-      after jsonb,
-      meta jsonb,
-      created_at timestamptz DEFAULT now()
-    );`)
-    await pgPool.query(`ALTER TABLE cleaning_sync_logs ADD COLUMN IF NOT EXISTS order_id text;`)
-    await pgPool.query(`ALTER TABLE cleaning_sync_logs ADD COLUMN IF NOT EXISTS task_id text;`)
-    await pgPool.query(`ALTER TABLE cleaning_sync_logs ADD COLUMN IF NOT EXISTS action text;`)
-    await pgPool.query(`ALTER TABLE cleaning_sync_logs ADD COLUMN IF NOT EXISTS before jsonb;`)
-    await pgPool.query(`ALTER TABLE cleaning_sync_logs ADD COLUMN IF NOT EXISTS after jsonb;`)
-    await pgPool.query(`ALTER TABLE cleaning_sync_logs ADD COLUMN IF NOT EXISTS meta jsonb;`)
-    await pgPool.query(`ALTER TABLE cleaning_sync_logs ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_sync_logs_order ON cleaning_sync_logs(order_id);`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_sync_logs_created_at ON cleaning_sync_logs(created_at);`)
-    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_sync_logs_action ON cleaning_sync_logs(action);`)
+    const r = await pgPool.query(
+      `SELECT
+         to_regclass('public.cleaning_tasks') AS cleaning_tasks,
+         to_regclass('public.cleaning_sync_logs') AS cleaning_sync_logs`
+    )
+    const ct = r?.rows?.[0]?.cleaning_tasks
+    const cl = r?.rows?.[0]?.cleaning_sync_logs
+    if (!ct) {
+      const err: any = new Error('cleaning_tasks_missing')
+      err.code = 'CLEANING_SCHEMA_MISSING'
+      throw err
+    }
+    if (!cl) {
+      const err: any = new Error('cleaning_sync_logs_missing')
+      err.code = 'CLEANING_SCHEMA_MISSING'
+      throw err
+    }
   })().catch((e) => {
     schemaEnsured = null
     throw e
@@ -239,6 +121,7 @@ export async function ensureCleaningSchemaV2(): Promise<void> {
 }
 
 export async function logCleaningSync(params: {
+  jobId?: string | null
   orderId: string
   taskId?: string | null
   action: CleaningSyncAction
@@ -250,6 +133,25 @@ export async function logCleaningSync(params: {
   if (!hasPg || !pgPool) return
   await ensureCleaningSchemaV2()
   const exec = params.client || pgPool
+  const jobId = params.jobId ? String(params.jobId) : null
+  if (jobId) {
+    await exec.query(
+      `INSERT INTO cleaning_sync_logs(id, job_id, order_id, task_id, action, before, after, meta)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (job_id, action, task_id) WHERE job_id IS NOT NULL DO NOTHING`,
+      [
+        uuid(),
+        jobId,
+        String(params.orderId || ''),
+        params.taskId ? String(params.taskId) : null,
+        String(params.action || ''),
+        params.before != null ? params.before : null,
+        params.after != null ? params.after : null,
+        params.meta != null ? params.meta : null,
+      ]
+    )
+    return
+  }
   await exec.query(
     'INSERT INTO cleaning_sync_logs(id, order_id, task_id, action, before, after, meta) VALUES($1,$2,$3,$4,$5,$6,$7)',
     [
@@ -362,6 +264,7 @@ async function updateTaskById(id: string, patch: any, client?: any): Promise<any
 }
 
 async function syncOneTask(params: {
+  jobId?: string | null
   orderId: string
   deleted: boolean
   client?: any
@@ -370,16 +273,16 @@ async function syncOneTask(params: {
   statusLower: string
   propertyId: string | null
 }) {
-  const { orderId, deleted, client, taskType, date, statusLower, propertyId } = params
+  const { jobId, orderId, deleted, client, taskType, date, statusLower, propertyId } = params
   const beforeTask = await loadTaskByOrder(orderId, taskType, client)
 
   if (deleted || !date) {
     if (beforeTask) {
       const after = await updateTaskById(String(beforeTask.id), { status: 'cancelled' }, client)
-      await logCleaningSync({ orderId, taskId: beforeTask.id, action: 'cancelled', before: beforeTask, after, meta: { deleted, date, taskType }, client })
+      await logCleaningSync({ jobId, orderId, taskId: beforeTask.id, action: 'cancelled', before: beforeTask, after, meta: { deleted, date, taskType }, client })
       return { action: 'cancelled' as const }
     }
-    await logCleaningSync({ orderId, taskId: null, action: 'no_change', before: null, after: null, meta: { deleted, date, taskType }, client })
+    await logCleaningSync({ jobId, orderId, taskId: null, action: 'no_change', before: null, after: null, meta: { deleted, date, taskType }, client })
     return { action: 'no_change' as const }
   }
 
@@ -404,18 +307,18 @@ async function syncOneTask(params: {
       source: 'auto',
     }
     const after = await insertTask(row, client)
-    await logCleaningSync({ orderId, taskId: after?.id, action: 'created', before: null, after, meta: { fingerprint, taskType }, client })
+    await logCleaningSync({ jobId, orderId, taskId: after?.id, action: 'created', before: null, after, meta: { fingerprint, taskType }, client })
     return { action: 'created' as const }
   }
 
   if (beforeTask.auto_sync_enabled === false) {
-    await logCleaningSync({ orderId, taskId: beforeTask.id, action: 'skipped_locked', before: beforeTask, after: beforeTask, meta: { fingerprint, taskType }, client })
+    await logCleaningSync({ jobId, orderId, taskId: beforeTask.id, action: 'skipped_locked', before: beforeTask, after: beforeTask, meta: { fingerprint, taskType }, client })
     return { action: 'skipped_locked' as const }
   }
 
   const prevFp = String(beforeTask.sync_fingerprint || '')
   if (prevFp && prevFp === fingerprint) {
-    await logCleaningSync({ orderId, taskId: beforeTask.id, action: 'no_change', before: beforeTask, after: beforeTask, meta: { fingerprint, taskType }, client })
+    await logCleaningSync({ jobId, orderId, taskId: beforeTask.id, action: 'no_change', before: beforeTask, after: beforeTask, meta: { fingerprint, taskType }, client })
     return { action: 'no_change' as const }
   }
 
@@ -441,7 +344,7 @@ async function syncOneTask(params: {
     patch.scheduled_at = null
   }
   const after = await updateTaskById(String(beforeTask.id), patch, client)
-  await logCleaningSync({ orderId, taskId: beforeTask.id, action: 'updated', before: beforeTask, after, meta: { fingerprint, propChanged, taskType }, client })
+  await logCleaningSync({ jobId, orderId, taskId: beforeTask.id, action: 'updated', before: beforeTask, after, meta: { fingerprint, propChanged, taskType }, client })
   return { action: 'updated' as const }
 }
 
@@ -449,19 +352,20 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
   const id = String(orderId || '').trim()
   const client = opts?.client
   const deleted = !!opts?.deleted
+  const jobId = opts?.jobId ? String(opts.jobId) : null
   const startedAt = Date.now()
   try {
     await ensureCleaningSchemaV2()
     if (deleted) {
-      const r1 = await syncOneTask({ orderId: id, deleted: true, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null })
-      const r2 = await syncOneTask({ orderId: id, deleted: true, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null })
+      const r1 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null })
+      const r2 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
     }
 
     const order = await loadOrder(id, client)
     if (!order) {
-      const r1 = await syncOneTask({ orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null })
-      const r2 = await syncOneTask({ orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null })
+      const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null })
+      const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
     }
 
@@ -473,13 +377,13 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
     const valid = isValidStatus(statusLower)
 
     if (!valid) {
-      const r1 = await syncOneTask({ orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower, propertyId })
-      const r2 = await syncOneTask({ orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower, propertyId })
+      const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower, propertyId })
+      const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower, propertyId })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
     }
 
-    const rCheckout = await syncOneTask({ orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: checkoutDay, statusLower, propertyId })
-    const rCheckin = await syncOneTask({ orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId })
+    const rCheckout = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: checkoutDay, statusLower, propertyId })
+    const rCheckin = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId })
     const actions = [rCheckout.action, rCheckin.action]
     if (actions.includes('created')) return { action: 'created' as const }
     if (actions.includes('updated')) return { action: 'updated' as const }
@@ -489,6 +393,7 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
   } catch (e: any) {
     try {
       await logCleaningSync({
+        jobId,
         orderId: String(orderId || ''),
         taskId: null,
         action: 'failed',

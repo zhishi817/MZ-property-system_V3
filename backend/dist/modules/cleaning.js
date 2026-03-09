@@ -21,26 +21,16 @@ function dayOnly(s) {
     return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
 }
 async function ensureOfflineTasksTable() {
+    var _a, _b;
     if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
         return;
-    await dbAdapter_1.pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_offline_tasks (
-    id text PRIMARY KEY,
-    date date NOT NULL,
-    task_type text NOT NULL DEFAULT 'other',
-    title text NOT NULL,
-    content text NOT NULL DEFAULT '',
-    kind text NOT NULL,
-    status text NOT NULL,
-    urgency text NOT NULL,
-    property_id text,
-    assignee_id text,
-    created_at timestamptz DEFAULT now(),
-    updated_at timestamptz DEFAULT now()
-  );`);
-    await dbAdapter_1.pgPool.query(`ALTER TABLE cleaning_offline_tasks ADD COLUMN IF NOT EXISTS task_type text NOT NULL DEFAULT 'other';`);
-    await dbAdapter_1.pgPool.query(`ALTER TABLE cleaning_offline_tasks ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '';`);
-    await dbAdapter_1.pgPool.query(`ALTER TABLE cleaning_offline_tasks ADD COLUMN IF NOT EXISTS assignee_id text;`);
-    await dbAdapter_1.pgPool.query('CREATE INDEX IF NOT EXISTS idx_cleaning_offline_tasks_date ON cleaning_offline_tasks(date);');
+    const r = await dbAdapter_1.pgPool.query(`SELECT to_regclass('public.cleaning_offline_tasks') AS t`);
+    const t = (_b = (_a = r === null || r === void 0 ? void 0 : r.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.t;
+    if (!t) {
+        const err = new Error('cleaning_offline_tasks_missing');
+        err.code = 'CLEANING_SCHEMA_MISSING';
+        throw err;
+    }
 }
 exports.router.get('/staff', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
     var _a;
@@ -55,7 +45,6 @@ exports.router.get('/staff', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
     const roles = rolesForKind(kind);
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
-            await dbAdapter_1.pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`);
             const r = await dbAdapter_1.pgPool.query(`SELECT
            id,
            username,
@@ -259,7 +248,6 @@ exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
     const date = parsed.success ? parsed.data : undefined;
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
-            await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             if (date) {
                 const r = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE (COALESCE(task_date, date)::date) = ($1::date) ORDER BY property_id NULLS LAST, id', [date]);
                 return res.json((r === null || r === void 0 ? void 0 : r.rows) || []);
@@ -295,7 +283,6 @@ exports.router.get('/history', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cle
     const to = toRaw || defaultTo;
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
-            await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             const sql = `
         SELECT
           t.*,
@@ -379,7 +366,6 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
         return res.status(400).json({ message: '无效的检查人员' });
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
-            await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             const r0 = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE id = $1 LIMIT 1', [String(id)]);
             const before = ((_c = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _c === void 0 ? void 0 : _c[0]) || null;
             if (!before)
@@ -559,7 +545,6 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
             source: 'manual',
         };
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
-            await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             const client = await dbAdapter_1.pgPool.connect();
             try {
                 await client.query('BEGIN');
@@ -609,7 +594,6 @@ exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assig
     const actorId = (actor === null || actor === void 0 ? void 0 : actor.sub) ? String(actor.sub) : undefined;
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
-            await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             const r0 = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [String(id)]);
             const before = ((_a = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
             if (!before)
@@ -643,7 +627,6 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
     const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)));
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
-            await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             const client = await dbAdapter_1.pgPool.connect();
             try {
                 await client.query('BEGIN');
@@ -703,9 +686,6 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
         basePatch.assignee_id = basePatch.cleaner_id;
     if (basePatch.assignee_id !== undefined && basePatch.cleaner_id === undefined)
         basePatch.cleaner_id = basePatch.assignee_id;
-    if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
-        await (0, cleaningSync_1.ensureCleaningSchemaV2)();
-    }
     try {
         const updated = [];
         for (const id of ids) {
@@ -795,7 +775,6 @@ exports.router.post('/tasks/:id/restore-auto-sync', (0, auth_1.requirePerm)('cle
     const { id } = req.params;
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
-            await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             const r0 = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE id = $1 LIMIT 1', [String(id)]);
             const task = ((_a = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
             if (!task)
@@ -805,7 +784,11 @@ exports.router.post('/tasks/:id/restore-auto-sync', (0, auth_1.requirePerm)('cle
             const orderId = (updated === null || updated === void 0 ? void 0 : updated.order_id) ? String(updated.order_id) : '';
             if (orderId) {
                 try {
-                    await (0, cleaningSync_1.syncOrderToCleaningTasks)(orderId);
+                    const { pgRunInTransaction } = require('../dbAdapter');
+                    const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs');
+                    await pgRunInTransaction(async (client) => {
+                        await enqueueCleaningSyncJobTx(client, { order_id: orderId, action: 'updated', payload_snapshot: { id: orderId } });
+                    });
                 }
                 catch (_c) { }
             }
@@ -815,13 +798,6 @@ exports.router.post('/tasks/:id/restore-auto-sync', (0, auth_1.requirePerm)('cle
         if (!task)
             return res.status(404).json({ message: 'task not found' });
         task.auto_sync_enabled = true;
-        const orderId = task.order_id ? String(task.order_id) : '';
-        if (orderId) {
-            try {
-                await (0, cleaningSync_1.syncOrderToCleaningTasks)(orderId);
-            }
-            catch (_d) { }
-        }
         return res.json({ ok: true, task });
     }
     catch (e) {
@@ -836,7 +812,6 @@ exports.router.get('/sync-logs', (0, auth_1.requireAnyPerm)(['cleaning.schedule.
     try {
         if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
             return res.json([]);
-        await (0, cleaningSync_1.ensureCleaningSchemaV2)();
         if (orderId) {
             const r = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_sync_logs WHERE (order_id::text)=$1 ORDER BY created_at DESC LIMIT $2', [orderId, limit]);
             return res.json((r === null || r === void 0 ? void 0 : r.rows) || []);
@@ -861,7 +836,6 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
     try {
         const items = [];
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
-            await (0, cleaningSync_1.ensureCleaningSchemaV2)();
             const r = await dbAdapter_1.pgPool.query(`SELECT
            t.id,
            t.order_id,
@@ -1159,15 +1133,18 @@ exports.router.post('/debug/sync-one', (0, auth_1.requirePerm)('cleaning.schedul
     try {
         if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
             return res.status(400).json({ message: 'pg=false' });
-        await (0, cleaningSync_1.ensureCleaningSchemaV2)();
         const beforeTasks = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE (order_id::text)=$1 ORDER BY task_type, id', [orderId]);
         const beforeCount = Number(((_a = beforeTasks === null || beforeTasks === void 0 ? void 0 : beforeTasks.rows) === null || _a === void 0 ? void 0 : _a.length) || 0);
-        let syncResult = null;
+        let job = null;
         try {
-            syncResult = await (0, cleaningSync_1.syncOrderToCleaningTasks)(orderId);
+            const { pgRunInTransaction } = require('../dbAdapter');
+            const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs');
+            await pgRunInTransaction(async (client) => {
+                job = await enqueueCleaningSyncJobTx(client, { order_id: orderId, action: 'updated', payload_snapshot: { id: orderId } });
+            });
         }
         catch (e) {
-            syncResult = { error: String((e === null || e === void 0 ? void 0 : e.message) || 'sync_failed') };
+            job = { error: String((e === null || e === void 0 ? void 0 : e.message) || 'enqueue_failed') };
         }
         const afterTasks = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE (order_id::text)=$1 ORDER BY task_type, id', [orderId]);
         const afterCount = Number(((_b = afterTasks === null || afterTasks === void 0 ? void 0 : afterTasks.rows) === null || _b === void 0 ? void 0 : _b.length) || 0);
@@ -1177,7 +1154,7 @@ exports.router.post('/debug/sync-one', (0, auth_1.requirePerm)('cleaning.schedul
             order_id: orderId,
             before_count: beforeCount,
             after_count: afterCount,
-            sync: syncResult,
+            job,
             order: ((_c = orderRow === null || orderRow === void 0 ? void 0 : orderRow.rows) === null || _c === void 0 ? void 0 : _c[0]) || null,
             tasks: (afterTasks === null || afterTasks === void 0 ? void 0 : afterTasks.rows) || [],
         });
@@ -1194,7 +1171,6 @@ exports.router.get('/tasks/minmax', (0, auth_1.requireAnyPerm)(['cleaning.view',
     try {
         if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
             return res.json({ ok: true, min: null, max: null, from });
-        await (0, cleaningSync_1.ensureCleaningSchemaV2)();
         const sql = `SELECT MIN(COALESCE(task_date, date))::text AS min, MAX(COALESCE(task_date, date))::text AS max FROM cleaning_tasks WHERE (COALESCE(task_date, date)::date) >= ($1::date)`;
         const r = await dbAdapter_1.pgPool.query(sql, [from]);
         const min = ((_c = (_b = r === null || r === void 0 ? void 0 : r.rows) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.min) ? String(r.rows[0].min).slice(0, 10) : null;

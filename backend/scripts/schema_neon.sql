@@ -161,6 +161,67 @@ CREATE TABLE IF NOT EXISTS cleaning_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_cleaning_date ON cleaning_tasks(date);
 CREATE INDEX IF NOT EXISTS idx_cleaning_property ON cleaning_tasks(property_id);
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS order_id text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS task_type text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS task_date date;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS auto_sync_enabled boolean DEFAULT true;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS sync_fingerprint text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS source text DEFAULT 'auto';
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS cleaner_id text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspector_id text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS nights_override int;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS type text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS auto_managed boolean;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS locked boolean;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS reschedule_required boolean;
+CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_task_date ON cleaning_tasks(task_date);
+CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_order_id ON cleaning_tasks(order_id);
+CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_status ON cleaning_tasks(status);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uniq_cleaning_tasks_order_task_type_v3') THEN
+    BEGIN
+      ALTER TABLE cleaning_tasks ADD CONSTRAINT uniq_cleaning_tasks_order_task_type_v3 UNIQUE (order_id, task_type);
+    EXCEPTION WHEN duplicate_table OR duplicate_object THEN
+      NULL;
+    END;
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS cleaning_sync_logs (
+  id text PRIMARY KEY,
+  job_id text,
+  order_id text,
+  task_id text,
+  action text,
+  before jsonb,
+  after jsonb,
+  meta jsonb,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE cleaning_sync_logs ADD COLUMN IF NOT EXISTS job_id text;
+CREATE INDEX IF NOT EXISTS idx_cleaning_sync_logs_order ON cleaning_sync_logs(order_id);
+CREATE INDEX IF NOT EXISTS idx_cleaning_sync_logs_created_at ON cleaning_sync_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_cleaning_sync_logs_action ON cleaning_sync_logs(action);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_cleaning_sync_logs_job_action_task
+  ON cleaning_sync_logs(job_id, action, task_id)
+  WHERE job_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS cleaning_offline_tasks (
+  id text PRIMARY KEY,
+  date date NOT NULL,
+  task_type text NOT NULL DEFAULT 'other',
+  title text NOT NULL,
+  content text NOT NULL DEFAULT '',
+  kind text NOT NULL,
+  status text NOT NULL,
+  urgency text NOT NULL,
+  property_id text,
+  assignee_id text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cleaning_offline_tasks_date ON cleaning_offline_tasks(date);
 
 CREATE TABLE IF NOT EXISTS users (
   id text PRIMARY KEY,
@@ -662,3 +723,40 @@ CREATE TABLE IF NOT EXISTS expense_dedup_logs (
   latency_ms integer,
   created_at timestamptz DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS cleaning_sync_retry_jobs (
+  id text PRIMARY KEY,
+  order_id text NOT NULL,
+  action text NOT NULL,
+  status text NOT NULL DEFAULT 'pending',
+  attempts int NOT NULL DEFAULT 0,
+  max_attempts int NOT NULL DEFAULT 8,
+  next_retry_at timestamptz NOT NULL DEFAULT now(),
+  last_error_code text,
+  last_error_message text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cleaning_sync_retry_jobs_status_next ON cleaning_sync_retry_jobs(status, next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_cleaning_sync_retry_jobs_order ON cleaning_sync_retry_jobs(order_id);
+
+CREATE TABLE IF NOT EXISTS cleaning_sync_jobs (
+  id text PRIMARY KEY,
+  order_id text NOT NULL,
+  action text NOT NULL,
+  fingerprint text,
+  payload_snapshot jsonb,
+  status text NOT NULL DEFAULT 'pending',
+  attempts int NOT NULL DEFAULT 0,
+  max_attempts int NOT NULL DEFAULT 10,
+  next_retry_at timestamptz NOT NULL DEFAULT now(),
+  running_started_at timestamptz,
+  last_error_code text,
+  last_error_message text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cleaning_sync_jobs_status_next ON cleaning_sync_jobs(status, next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_cleaning_sync_jobs_order ON cleaning_sync_jobs(order_id);
+CREATE INDEX IF NOT EXISTS idx_cleaning_sync_jobs_running ON cleaning_sync_jobs(running_started_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_cleaning_sync_jobs_order_action_active ON cleaning_sync_jobs(order_id, action) WHERE status IN ('pending','running');

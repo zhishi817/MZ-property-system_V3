@@ -143,7 +143,8 @@ export default function PropertiesPage() {
     if (![airbnb_listing_name, booking_listing_name, listing_names.other].some(x => String(x || '').trim())) { message.error('请至少填写一个平台的 Listing 名称'); return }
     const payload = { ...v, region: v.region === '其他' ? (v.region_other || '') : v.region, bed_config, listing_names, airbnb_listing_name, booking_listing_name }
     const res = await fetch(`${API_BASE}/properties/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
-    if (res.ok) { message.success('房源已更新'); setEditOpen(false); load() } else { message.error('更新失败') }
+    if (res.ok) { message.success('房源已更新'); setEditOpen(false); load() }
+    else { let msg = '更新失败'; try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} } message.error(msg) }
   }
 
   async function submitBatch() {

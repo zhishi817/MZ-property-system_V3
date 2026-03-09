@@ -15,6 +15,17 @@ pg_1.types.setTypeParser(1184, (val) => val);
 const conn = process.env.DATABASE_URL || '';
 exports.pgPool = conn ? new pg_1.Pool({ connectionString: conn, ssl: { rejectUnauthorized: false }, max: Number(process.env.PG_POOL_MAX || 10), idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000), connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 10000) }) : null;
 exports.hasPg = !!exports.pgPool;
+try {
+    if (exports.pgPool) {
+        exports.pgPool.on('error', (err) => {
+            try {
+                console.error(`[pg] pool_error message=${String((err === null || err === void 0 ? void 0 : err.message) || '')} code=${String((err === null || err === void 0 ? void 0 : err.code) || '')}`);
+            }
+            catch (_a) { }
+        });
+    }
+}
+catch (_a) { }
 function buildWhere(filters) {
     const keys = Object.keys(filters || {});
     if (!keys.length)
@@ -73,6 +84,15 @@ async function pgRunInTransaction(cb) {
         return null;
     const client = await exports.pgPool.connect();
     try {
+        client.on('error', (err) => {
+            try {
+                console.error(`[pg] client_error message=${String((err === null || err === void 0 ? void 0 : err.message) || '')} code=${String((err === null || err === void 0 ? void 0 : err.code) || '')}`);
+            }
+            catch (_a) { }
+        });
+    }
+    catch (_a) { }
+    try {
         await client.query('BEGIN');
         const result = await cb(client);
         await client.query('COMMIT');
@@ -82,7 +102,7 @@ async function pgRunInTransaction(cb) {
         try {
             await client.query('ROLLBACK');
         }
-        catch (_a) { }
+        catch (_b) { }
         throw e;
     }
     finally {

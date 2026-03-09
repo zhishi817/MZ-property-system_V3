@@ -31,13 +31,20 @@ function normalizePropertyId(raw: any): string | undefined {
 }
 
 async function syncCleaningTasksForOrderId(orderId: string) {
-  const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
-  await syncOrderToCleaningTasks(String(orderId))
+  if (!hasPg) return
+  const oid = String(orderId || '').trim()
+  if (!oid) return
+  await pgRunInTransaction(async (client: any) => {
+    const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+    await enqueueCleaningSyncJobTx(client, { order_id: oid, action: 'updated', payload_snapshot: { id: oid } })
+  })
 }
 
 async function syncCleaningTasksForOrderIdTx(orderId: string, client: any) {
-  const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
-  await syncOrderToCleaningTasks(String(orderId), { client })
+  const oid = String(orderId || '').trim()
+  if (!oid) return
+  const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+  await enqueueCleaningSyncJobTx(client, { order_id: oid, action: 'updated', payload_snapshot: { id: oid } })
 }
 
 async function findSimilarOrders(candidate: any): Promise<{ reasons: string[]; similar: any[]; duplicateByCodeId?: string }> {
@@ -170,12 +177,26 @@ router.get('/', async (_req, res) => {
       async function enrich(rows: any[]): Promise<any[]> {
         const ids = rows.map(r => String(r.id))
         const totals: Record<string, number> = {}
+        const syncByOrder: Record<string, any> = {}
         try {
           const { pgPool } = require('../dbAdapter')
           const sql = 'SELECT order_id, COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id = ANY($1) GROUP BY order_id'
           const rs = await pgPool?.query(sql, [ids])
           const arr = (rs?.rows || []) as any[]
           arr.forEach(r => { totals[String(r.order_id)] = Number(r.total || 0) })
+        } catch {}
+        try {
+          const { pgPool } = require('../dbAdapter')
+          const rs = await pgPool?.query(
+            `SELECT DISTINCT ON (order_id)
+               order_id, status, action, attempts, last_error_code, last_error_message, updated_at
+             FROM cleaning_sync_jobs
+             WHERE order_id = ANY($1)
+             ORDER BY order_id, updated_at DESC NULLS LAST, created_at DESC NULLS LAST`,
+            [ids]
+          )
+          const arr = (rs?.rows || []) as any[]
+          arr.forEach(r => { syncByOrder[String(r.order_id)] = r })
         } catch {}
         return rows.map(r => {
           const t = totals[String(r.id)] || 0
@@ -184,7 +205,20 @@ router.get('/', async (_req, res) => {
           const isCanceled = status.includes('cancel')
           const include = (!isCanceled) || !!(r as any).count_in_income
           const visible = include ? Number(vn.toFixed(2)) : 0
-          return { ...r, internal_deduction_total: Number(t.toFixed(2)), visible_net_income: visible }
+          const sj = syncByOrder[String(r.id)] || null
+          return {
+            ...r,
+            internal_deduction_total: Number(t.toFixed(2)),
+            visible_net_income: visible,
+            cleaning_sync: sj ? {
+              status: String(sj.status || ''),
+              action: String(sj.action || ''),
+              attempts: Number(sj.attempts || 0),
+              updated_at: sj.updated_at ? String(sj.updated_at) : null,
+              error_code: sj.last_error_code ? String(sj.last_error_code) : null,
+              error_message: sj.last_error_message ? String(sj.last_error_message) : null,
+            } : null,
+          }
         })
       }
       const enriched = await enrich(labeled)
@@ -214,6 +248,36 @@ router.get('/', async (_req, res) => {
       return { ...row, internal_deduction_total: 0, visible_net_income: Number(vn.toFixed(2)) }
     })
     return res.json(out2)
+  }
+})
+
+router.post('/:id/cleaning-sync/retry', requirePerm('order.manage'), async (req, res) => {
+  const { id } = req.params
+  if (!hasPg) return res.status(400).json({ message: 'pg required' })
+  if (!id) return res.status(400).json({ message: '参数错误' })
+  try {
+    const row = await pgRunInTransaction(async (client: any) => {
+      const r0 = await client.query('SELECT * FROM orders WHERE id=$1 LIMIT 1', [String(id)])
+      const order = r0?.rows?.[0] || null
+      if (!order) return null
+      const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+      await enqueueCleaningSyncJobTx(client, {
+        order_id: String(id),
+        action: 'updated',
+        payload_snapshot: {
+          id: String(id),
+          property_id: order.property_id ?? null,
+          checkin: order.checkin ?? null,
+          checkout: order.checkout ?? null,
+          status: order.status ?? null,
+        },
+      })
+      return order
+    })
+    if (!row) return res.status(404).json({ message: 'order not found' })
+    return res.json({ ok: true, id })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'enqueue_failed') })
   }
 })
 
@@ -482,8 +546,10 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
             const payload: any = {}
             for (const k of allow) { if ((newOrder as any)[k] !== undefined) payload[k] = (newOrder as any)[k] }
             const row = await pgRunInTransaction(async (client: any) => {
-              const r1 = await pgUpdate('orders', String(dup[0].id), payload, client)
-              await syncCleaningTasksForOrderIdTx(String(dup[0].id), client)
+              const oid = String(dup[0].id)
+              const r1 = await pgUpdate('orders', oid, payload, client)
+              const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+              await enqueueCleaningSyncJobTx(client, { order_id: oid, action: 'updated', payload_snapshot: { id: oid, property_id: payload.property_id, checkin: payload.checkin, checkout: payload.checkout, status: payload.status } })
               return r1
             })
             try { broadcastOrdersUpdated({ action: 'update', id: String(dup[0].id) }) } catch {}
@@ -516,7 +582,22 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
       await ensureOrdersIndexes()
       const row = await pgRunInTransaction(async (client: any) => {
         const r1 = await pgInsert('orders', insertOrder, client)
-        await syncCleaningTasksForOrderIdTx(String(r1?.id || newOrder.id), client)
+        try {
+          const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+          await enqueueCleaningSyncJobTx(client, {
+            order_id: String(r1?.id || newOrder.id),
+            action: 'created',
+            payload_snapshot: {
+              id: String(r1?.id || newOrder.id),
+              property_id: (r1 as any)?.property_id,
+              checkin: (r1 as any)?.checkin,
+              checkout: (r1 as any)?.checkout,
+              status: (r1 as any)?.status,
+            },
+          })
+        } catch (e: any) {
+          throw e
+        }
         return r1
       })
       try { broadcastOrdersUpdated({ action: 'create', id: row?.id }) } catch {}
@@ -533,7 +614,22 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
           const ins: any = { ...newOrder }; delete ins.property_code
           const row = await pgRunInTransaction(async (client: any) => {
             const r1 = await pgInsert('orders', ins, client)
-            await syncCleaningTasksForOrderIdTx(String(r1?.id || newOrder.id), client)
+            try {
+              const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+              await enqueueCleaningSyncJobTx(client, {
+                order_id: String(r1?.id || newOrder.id),
+                action: 'created',
+                payload_snapshot: {
+                  id: String(r1?.id || newOrder.id),
+                  property_id: (r1 as any)?.property_id,
+                  checkin: (r1 as any)?.checkin,
+                  checkout: (r1 as any)?.checkout,
+                  status: (r1 as any)?.status,
+                },
+              })
+            } catch (e: any) {
+              throw e
+            }
             return r1
           })
           return res.status(201).json(row)
@@ -679,7 +775,22 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
             for (const tx of delTxs) { try { addAudit('FinanceTransaction', tx.id, 'delete', tx, null) } catch {} }
           }
         }
-        try { await syncCleaningTasksForOrderIdTx(String(id), client) } catch (e: any) { throw e }
+        try {
+          const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+          await enqueueCleaningSyncJobTx(client, {
+            order_id: String(id),
+            action: 'updated',
+            payload_snapshot: {
+              id: String(id),
+              property_id: (r1 as any)?.property_id,
+              checkin: (r1 as any)?.checkin,
+              checkout: (r1 as any)?.checkout,
+              status: (r1 as any)?.status,
+            },
+          })
+        } catch (e: any) {
+          throw e
+        }
         return r1
       })
       if (idx !== -1) db.orders[idx] = row as any
@@ -699,7 +810,22 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
           for (const k of [...allow, ...allowExtra2]) { if ((updated as any)[k] !== undefined) payload2[k] = (updated as any)[k] }
           const row = await pgRunInTransaction(async (client: any) => {
             const r1 = await pgUpdate('orders', id, payload2, client)
-            await syncCleaningTasksForOrderIdTx(String(id), client)
+            try {
+              const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+              await enqueueCleaningSyncJobTx(client, {
+                order_id: String(id),
+                action: 'updated',
+                payload_snapshot: {
+                  id: String(id),
+                  property_id: (r1 as any)?.property_id,
+                  checkin: (r1 as any)?.checkin,
+                  checkout: (r1 as any)?.checkout,
+                  status: (r1 as any)?.status,
+                },
+              })
+            } catch (e: any) {
+              throw e
+            }
             return r1
           })
           if (idx !== -1) db.orders[idx] = row as any
@@ -722,31 +848,66 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
 router.delete('/:id', requirePerm('order.write'), async (req, res) => {
   const { id } = req.params
   if (hasPg) {
+    const startedAt = Date.now()
+    const log = (msg: string, extra?: any) => {
+      try {
+        const s = `[delete-order] ${msg} orderId=${String(id || '')}`
+        if (extra) console.log(s, extra)
+        else console.log(s)
+      } catch {}
+    }
+    function mapError(e: any): { status: number; message: string } {
+      const code = String(e?.code || '')
+      const msg = String(e?.message || 'error')
+      if (!id) return { status: 400, message: '参数错误' }
+      if (code === '23503') return { status: 409, message: '有关联数据阻止删除' }
+      if (code === '22P02') return { status: 400, message: '参数错误' }
+      if (code === '57014') return { status: 503, message: '数据库暂时不可用' }
+      if (code === '53300') return { status: 503, message: '数据库暂时不可用' }
+      if (code === '57P01' || code === '57P02' || code === '57P03') return { status: 503, message: '数据库暂时不可用' }
+      if (code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'EPIPE') return { status: 503, message: '数据库暂时不可用' }
+      if (/timeout/i.test(msg) && /statement|lock|query/i.test(msg)) return { status: 503, message: '数据库暂时不可用' }
+      return { status: 500, message: '内部错误' }
+    }
     try {
-      const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
+      if (!id) return res.status(400).json({ message: '参数错误' })
+      log('start')
+      log('begin tx')
       const deleted = await pgRunInTransaction(async (client: any) => {
+        await client.query("SET LOCAL lock_timeout = '5s'")
+        await client.query("SET LOCAL statement_timeout = '15s'")
         const r0 = await pgDelete('orders', id, client)
         if (!r0) return null
-        await syncOrderToCleaningTasks(String(id), { deleted: true, client })
+        log('delete order row ok')
+        try {
+          const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+          await enqueueCleaningSyncJobTx(client, {
+            order_id: String(id),
+            action: 'deleted',
+            payload_snapshot: r0,
+          })
+          log('enqueue cleaning job ok', { action: 'deleted' })
+        } catch (e: any) {
+          throw e
+        }
         return r0
       })
+      log('commit ok', { ms: Date.now() - startedAt })
       if (!deleted) return res.status(404).json({ message: 'order not found' })
       const idx = db.orders.findIndex((x) => x.id === id)
       if (idx !== -1) db.orders.splice(idx, 1)
       try { broadcastOrdersUpdated({ action: 'delete', id }) } catch {}
       return res.json({ ok: true, id })
-    } catch {
-      return res.status(500).json({ message: '数据库删除失败' })
+    } catch (e: any) {
+      const mapped = mapError(e)
+      log('failed', { ms: Date.now() - startedAt, error: String(e?.message || ''), code: String(e?.code || '') })
+      return res.status(mapped.status).json({ message: mapped.message })
     }
   }
   const idx = db.orders.findIndex((x) => x.id === id)
   if (idx === -1) return res.status(404).json({ message: 'order not found' })
   const removed = db.orders[idx]
   db.orders.splice(idx, 1)
-  try {
-    const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
-    await syncOrderToCleaningTasks(String(id), { deleted: true })
-  } catch {}
   try { broadcastOrdersUpdated({ action: 'delete', id }) } catch {}
   return res.json({ ok: true, id: removed.id })
 })
@@ -1664,19 +1825,21 @@ router.post('/actions/dedupeByConfirmationCode', requirePerm('order.manage'), as
     })
     if (!dryRun) { await ensureOrdersIndexes() }
     if (!dryRun) {
-      try {
-        const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
-        for (const it of results) {
-          const kept = it?.kept_id ? String(it.kept_id) : ''
-          if (kept) { try { await syncOrderToCleaningTasks(kept) } catch {} }
-          const dels = Array.isArray(it?.deleted_ids) ? it.deleted_ids : []
-          for (const did of dels) {
-            const dd = did ? String(did) : ''
-            if (!dd) continue
-            try { await syncOrderToCleaningTasks(dd, { deleted: true }) } catch {}
-          }
+      for (const it of results) {
+        const kept = it?.kept_id ? String(it.kept_id) : ''
+        if (kept) { try { syncCleaningTasksForOrderId(kept).catch(() => {}) } catch {} }
+        const dels = Array.isArray(it?.deleted_ids) ? it.deleted_ids : []
+        for (const did of dels) {
+          const dd = did ? String(did) : ''
+          if (!dd) continue
+          try {
+            await pgRunInTransaction(async (client: any) => {
+              const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+              await enqueueCleaningSyncJobTx(client, { order_id: dd, action: 'deleted', payload_snapshot: { id: dd } })
+            })
+          } catch {}
         }
-      } catch {}
+      }
     }
     return res.json({ ok: true, deduped: results.length, items: results })
   } catch (e: any) {
