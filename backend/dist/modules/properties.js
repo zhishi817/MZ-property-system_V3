@@ -77,7 +77,7 @@ async function findListingConflictPg(listingName, excludeId) {
     const res = await dbAdapter_1.pgPool.query(`SELECT id, code, address
      FROM properties
      WHERE (airbnb_listing_name = $1 OR booking_listing_name = $1 OR (listing_names->>'other') = $1)
-       AND ($2 IS NULL OR id <> $2)
+       AND ($2::text IS NULL OR id <> $2::text)
      LIMIT 1`, [listingName, excludeId || null]);
     return ((_a = res.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
 }
