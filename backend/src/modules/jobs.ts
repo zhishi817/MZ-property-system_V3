@@ -696,8 +696,11 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
           const oid = upd?.rows?.[0]?.id || null
           try {
             if (oid) {
-              const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
-              await syncOrderToCleaningTasks(String(oid))
+              const { pgRunInTransaction } = require('../dbAdapter')
+              const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+              await pgRunInTransaction(async (client: any) => {
+                await enqueueCleaningSyncJobTx(client, { order_id: String(oid), action: 'updated', payload_snapshot: { id: String(oid) } })
+              })
             }
           } catch {}
           return { matched: true, inserted: false, skipped_duplicate: false, failed: false, updated: !!oid, order_id: oid, last_uid: Number(msg.uid || 0) }
@@ -752,8 +755,11 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
       if (Array.isArray(dup) && dup[0]) {
         console.log(JSON.stringify({ tag: 'orders_write_done', action: 'duplicate_check', upserted: false, duplicate: true, order_id: dup[0].id }))
         try {
-          const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
-          await syncOrderToCleaningTasks(String(dup[0].id))
+          const { pgRunInTransaction } = require('../dbAdapter')
+          const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+          await pgRunInTransaction(async (client: any) => {
+            await enqueueCleaningSyncJobTx(client, { order_id: String(dup[0].id), action: 'updated', payload_snapshot: { id: String(dup[0].id) } })
+          })
         } catch {}
         try { if (pgPool) { await pgPool.query("UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE uid=$1", [Number(msg.uid || 0), String(dup[0].id || '')]) } } catch {}
         return { matched: true, inserted: false, skipped_duplicate: true, failed: false, order_id: dup[0].id, last_uid: Number(msg.uid || 0) }
@@ -772,8 +778,13 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
       }
       console.log(JSON.stringify({ tag: 'orders_write_done', action: 'upsert', upserted: !!row, duplicate: !row, order_id: orderId || null }))
       try {
-        const { syncOrderToCleaningTasks } = require('../services/cleaningSync')
-        if (orderId) await syncOrderToCleaningTasks(String(orderId))
+        if (orderId) {
+          const { pgRunInTransaction } = require('../dbAdapter')
+          const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+          await pgRunInTransaction(async (client: any) => {
+            await enqueueCleaningSyncJobTx(client, { order_id: String(orderId), action: 'updated', payload_snapshot: { id: String(orderId) } })
+          })
+        }
       } catch {}
       try { if (orderId && pgPool) { await pgPool.query("UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE uid=$1", [Number(msg.uid || 0), String(orderId)]) } } catch {}
       return { matched: true, inserted: !!row, skipped_duplicate: !row, failed: false, order_id: orderId || null, last_uid: Number(msg.uid || 0) }
@@ -871,6 +882,93 @@ router.post('/email-sync/cron-trigger', require('../auth').allowCronTokenOrPerm(
     return res.json({ ok: true, stats: result?.stats || {}, schedule_runs: result?.schedule_runs || [] })
   } catch (e: any) {
     return res.status(Number(e?.status || 500)).json({ message: e?.message || 'cron-trigger failed', reason: e?.reason || 'unknown' })
+  }
+})
+
+router.get('/cleaning-sync-retry-jobs', requirePerm('order.manage'), async (req, res) => {
+  try {
+    const status = String((req.query as any)?.status || '').trim()
+    const limit = Number((req.query as any)?.limit || 50)
+    const { listCleaningSyncRetryJobs } = require('../services/cleaningSyncRetry')
+    const items = await listCleaningSyncRetryJobs({ status: status || undefined, limit })
+    return res.json({ items })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'list_failed') })
+  }
+})
+
+router.post('/cleaning-sync-retry-jobs/run-due', allowCronTokenOrPerm('order.manage'), async (req, res) => {
+  try {
+    const limit = Math.min(50, Math.max(1, Number((req.body || {}).limit || 10)))
+    const { processDueCleaningSyncRetries } = require('../services/cleaningSyncRetry')
+    const r = await processDueCleaningSyncRetries({ limit })
+    return res.json({ ok: true, ...r })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'run_failed') })
+  }
+})
+
+router.post('/cleaning-sync-retry-jobs/:id/retry', requirePerm('order.manage'), async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim()
+    if (!id) return res.status(400).json({ message: '参数错误' })
+    const { setCleaningSyncRetryPending } = require('../services/cleaningSyncRetry')
+    const r = await setCleaningSyncRetryPending(id)
+    if (!r) return res.status(404).json({ message: 'not found' })
+    return res.json({ ok: true, item: r })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'retry_failed') })
+  }
+})
+
+router.get('/cleaning-sync-jobs', requirePerm('order.manage'), async (req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const status = String((req.query as any)?.status || '').trim()
+    const orderId = String((req.query as any)?.order_id || '').trim()
+    const limit = Math.max(1, Math.min(200, Number((req.query as any)?.limit || 50)))
+    const params: any[] = []
+    const where: string[] = []
+    if (status) { params.push(status); where.push(`status=$${params.length}`) }
+    if (orderId) { params.push(orderId); where.push(`order_id=$${params.length}`) }
+    params.push(limit)
+    const sql = `SELECT * FROM cleaning_sync_jobs ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY updated_at DESC, created_at DESC LIMIT $${params.length}`
+    const r = await pgPool!.query(sql, params)
+    return res.json({ items: r?.rows || [] })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'list_failed') })
+  }
+})
+
+router.post('/cleaning-sync-jobs/run-once', allowCronTokenOrPerm('order.manage'), async (req, res) => {
+  try {
+    const limit = Math.min(50, Math.max(1, Number((req.body || {}).limit || 10)))
+    const reclaim = Math.min(120, Math.max(1, Number((req.body || {}).reclaim_timeout_minutes || 10)))
+    const { processCleaningSyncJobsOnce } = require('../services/cleaningSyncJobsWorker')
+    const r = await processCleaningSyncJobsOnce({ limit, reclaim_timeout_minutes: reclaim })
+    return res.json({ ok: true, ...r })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'run_failed') })
+  }
+})
+
+router.post('/cleaning-sync-jobs/:id/retry', requirePerm('order.manage'), async (req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const id = String(req.params.id || '').trim()
+    if (!id) return res.status(400).json({ message: '参数错误' })
+    const r = await pgPool!.query(
+      `UPDATE cleaning_sync_jobs
+       SET status='pending', next_retry_at=now(), running_started_at=NULL, updated_at=now()
+       WHERE id=$1
+       RETURNING *`,
+      [id]
+    )
+    const row = r?.rows?.[0]
+    if (!row) return res.status(404).json({ message: 'not found' })
+    return res.json({ ok: true, item: row })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'retry_failed') })
   }
 })
 
@@ -1273,6 +1371,7 @@ router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req
     if (!uid && !message_id) return res.status(400).json({ message: 'uid_or_message_id_required' })
     if (!property_id) return res.status(400).json({ message: 'property_id_required' })
     const client = await pgPool!.connect()
+    try {
     let row: any = null
     if (uid) { const rs = await client.query('SELECT * FROM email_orders_raw WHERE uid=$1 ORDER BY created_at DESC LIMIT 1', [uid]); row = rs?.rows?.[0] }
     if (!row && message_id) { const rs2 = await client.query('SELECT * FROM email_orders_raw WHERE message_id=$1 ORDER BY created_at DESC LIMIT 1', [message_id]); row = rs2?.rows?.[0] }
@@ -1302,10 +1401,18 @@ router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req
       if (!propCheck?.rows?.[0]) { await client.query('ROLLBACK'); client.release(); return res.status(404).json({ message: 'property_not_found' }) }
       const ins = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, property_id, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
       const newId = String(ins?.rows?.[0]?.id || '')
-      try { if (newId) { const { syncOrderToCleaningTasks } = require('../services/cleaningSync'); await syncOrderToCleaningTasks(newId, { client }) } } catch {}
       await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE (($1::bigint IS NOT NULL AND uid=$1::bigint) OR ($3::text IS NOT NULL AND message_id=$3::text))`, [uid ?? null, newId || null, message_id ?? null])
       await client.query('COMMIT')
       client.release()
+      try {
+        if (newId) {
+          const { pgRunInTransaction } = require('../dbAdapter')
+          const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+          await pgRunInTransaction(async (c: any) => {
+            await enqueueCleaningSyncJobTx(c, { order_id: String(newId), action: 'created', payload_snapshot: { id: String(newId) } })
+          })
+        }
+      } catch {}
       return res.status(201).json({ id: newId })
     } catch (e: any) {
       try { await client.query('ROLLBACK') } catch {}
@@ -1324,10 +1431,18 @@ router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req
           await client.query('BEGIN')
           const ins2 = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, property_id, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
           const newId2 = String(ins2?.rows?.[0]?.id || '')
-          try { if (newId2) { const { syncOrderToCleaningTasks } = require('../services/cleaningSync'); await syncOrderToCleaningTasks(newId2, { client }) } } catch {}
           await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE (($1::bigint IS NOT NULL AND uid=$1::bigint) OR ($3::text IS NOT NULL AND message_id=$3::text))`, [uid ?? null, newId2 || null, message_id ?? null])
           await client.query('COMMIT')
           client.release()
+          try {
+            if (newId2) {
+              const { pgRunInTransaction } = require('../dbAdapter')
+              const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+              await pgRunInTransaction(async (c: any) => {
+                await enqueueCleaningSyncJobTx(c, { order_id: String(newId2), action: 'created', payload_snapshot: { id: String(newId2) } })
+              })
+            }
+          } catch {}
           return res.status(201).json({ id: newId2 })
         } catch (e2: any) {
           try { await client.query('ROLLBACK') } catch {}
@@ -1349,10 +1464,18 @@ router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req
           await client.query('BEGIN')
           const ins3 = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, property_id, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
           const newId3 = String(ins3?.rows?.[0]?.id || '')
-          try { if (newId3) { const { syncOrderToCleaningTasks } = require('../services/cleaningSync'); await syncOrderToCleaningTasks(newId3, { client }) } } catch {}
           await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE (($1::bigint IS NOT NULL AND uid=$1::bigint) OR ($3::text IS NOT NULL AND message_id=$3::text))`, [uid ?? null, newId3 || null, message_id ?? null])
           await client.query('COMMIT')
           client.release()
+          try {
+            if (newId3) {
+              const { pgRunInTransaction } = require('../dbAdapter')
+              const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+              await pgRunInTransaction(async (c: any) => {
+                await enqueueCleaningSyncJobTx(c, { order_id: String(newId3), action: 'created', payload_snapshot: { id: String(newId3) } })
+              })
+            }
+          } catch {}
           return res.status(201).json({ id: newId3 })
         } catch (e3: any) {
           try { await client.query('ROLLBACK') } catch {}
@@ -1362,6 +1485,9 @@ router.post('/email-orders-raw/resolve', requirePerm('order.manage'), async (req
       }
       client.release()
       return res.status(500).json({ message: 'insert_failed', detail: String(e?.message || ''), code: String((e as any)?.code || '') })
+    }
+    } finally {
+      try { client.release() } catch {}
     }
   } catch (e: any) { return res.status(500).json({ message: 'resolve_failed', detail: String(e?.message || '') }) }
 })
@@ -1387,10 +1513,13 @@ router.post('/email-orders-raw/resolve-bulk', requirePerm('order.manage'), async
         if (!uid && !mid) { results.push({ ok: false, error: 'uid_or_message_id_required', property_id: pid }); missing++; continue }
         if (!pid) { results.push({ ok: false, error: 'property_id_required', uid, message_id: mid }); missing++; continue }
         const client = await pgPool!.connect()
+        let released = false
+        const release = () => { if (!released) { released = true; try { client.release() } catch {} } }
         let row: any = null
-        if (uid) { const rs = await client.query('SELECT * FROM email_orders_raw WHERE uid=$1 ORDER BY created_at DESC LIMIT 1', [uid]); row = rs?.rows?.[0] }
-        if (!row && mid) { const rs2 = await client.query('SELECT * FROM email_orders_raw WHERE message_id=$1 ORDER BY created_at DESC LIMIT 1', [mid]); row = rs2?.rows?.[0] }
-        if (!row) { results.push({ ok: false, error: 'raw_not_found', uid, message_id: mid, property_id: pid }); failed++; continue }
+        try {
+          if (uid) { const rs = await client.query('SELECT * FROM email_orders_raw WHERE uid=$1 ORDER BY created_at DESC LIMIT 1', [uid]); row = rs?.rows?.[0] }
+          if (!row && mid) { const rs2 = await client.query('SELECT * FROM email_orders_raw WHERE message_id=$1 ORDER BY created_at DESC LIMIT 1', [mid]); row = rs2?.rows?.[0] }
+          if (!row) { results.push({ ok: false, error: 'raw_not_found', uid, message_id: mid, property_id: pid }); failed++; continue }
         const ci = row.checkin ? dayOnly(row.checkin) : undefined
         const co = row.checkout ? dayOnly(row.checkout) : undefined
         let nights = 0
@@ -1404,23 +1533,28 @@ router.post('/email-orders-raw/resolve-bulk', requirePerm('order.manage'), async
           await client.query('BEGIN')
           if (payload.confirmation_code) {
             const dup = await client.query('SELECT id, property_id FROM orders WHERE confirmation_code=$1 LIMIT 1', [payload.confirmation_code])
-            if (dup?.rows?.[0]) { await client.query('ROLLBACK'); client.release(); results.push({ ok: false, error: 'duplicate', uid, message_id: mid, property_id: pid }); duplicate++; continue }
+            if (dup?.rows?.[0]) { await client.query('ROLLBACK'); release(); results.push({ ok: false, error: 'duplicate', uid, message_id: mid, property_id: pid }); duplicate++; continue }
           }
           const propCheck = await client.query('SELECT id FROM properties WHERE id=$1 LIMIT 1', [pid])
-          if (!propCheck?.rows?.[0]) { await client.query('ROLLBACK'); client.release(); results.push({ ok: false, error: 'property_not_found', uid, message_id: mid, property_id: pid }); failed++; continue }
+          if (!propCheck?.rows?.[0]) { await client.query('ROLLBACK'); release(); results.push({ ok: false, error: 'property_not_found', uid, message_id: mid, property_id: pid }); failed++; continue }
           const ins = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, pid, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
           const newId = String(ins?.rows?.[0]?.id || '')
-          try { if (newId) { const { syncOrderToCleaningTasks } = require('../services/cleaningSync'); await syncOrderToCleaningTasks(newId, { client }) } } catch {}
           await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE (($1::bigint IS NOT NULL AND uid=$1::bigint) OR ($3::text IS NOT NULL AND message_id=$3::text))`, [uid ?? null, newId || null, mid ?? null])
           await client.query('COMMIT')
-          client.release()
+          release()
+          try {
+            if (newId) {
+              const { enqueueCleaningSyncRetry } = require('../services/cleaningSyncRetry')
+              await enqueueCleaningSyncRetry({ order_id: newId, action: 'sync' })
+            }
+          } catch {}
           results.push({ ok: true, uid, message_id: mid, property_id: pid, id: newId })
           inserted++
         } catch (e: any) {
           try { await client.query('ROLLBACK') } catch {}
           const msg = String(e?.message || '')
           if (/duplicate key value violates unique constraint/i.test(msg) && /idx_orders_confirmation_code_unique/i.test(msg)) {
-            client.release()
+            release()
             results.push({ ok: false, error: 'duplicate', uid, message_id: mid, property_id: pid })
             duplicate++
             continue
@@ -1433,24 +1567,32 @@ router.post('/email-orders-raw/resolve-bulk', requirePerm('order.manage'), async
               await client.query('BEGIN')
               const ins2 = await client.query('INSERT INTO orders (id, source, external_id, property_id, guest_name, checkin, checkout, price, cleaning_fee, net_income, avg_nightly_price, nights, currency, status, confirmation_code, idempotency_key, payment_currency, payment_received, email_header_at, year_inferred, raw_checkin_text, raw_checkout_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id', [payload.id, 'airbnb_email', payload.confirmation_code, pid, payload.guest_name, payload.checkin, payload.checkout, payload.price, payload.cleaning_fee, payload.net_income, payload.avg_nightly_price, payload.nights, 'AUD', 'confirmed', payload.confirmation_code, payload.idempotency_key, 'AUD', false, payload.email_header_at, false, null, null])
               const newId2 = String(ins2?.rows?.[0]?.id || '')
-              try { if (newId2) { const { syncOrderToCleaningTasks } = require('../services/cleaningSync'); await syncOrderToCleaningTasks(newId2, { client }) } } catch {}
               await client.query(`UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE (($1::bigint IS NOT NULL AND uid=$1::bigint) OR ($3::text IS NOT NULL AND message_id=$3::text))`, [uid ?? null, newId2 || null, mid ?? null])
               await client.query('COMMIT')
-              client.release()
+              release()
+              try {
+                if (newId2) {
+                  const { enqueueCleaningSyncRetry } = require('../services/cleaningSyncRetry')
+                  await enqueueCleaningSyncRetry({ order_id: newId2, action: 'sync' })
+                }
+              } catch {}
               results.push({ ok: true, uid, message_id: mid, property_id: pid, id: newId2 })
               inserted++
               continue
             } catch (e2: any) {
               try { await client.query('ROLLBACK') } catch {}
-              client.release()
+              release()
               results.push({ ok: false, error: 'insert_failed', uid, message_id: mid, property_id: pid })
               failed++
               continue
             }
           }
-          client.release()
+          release()
           results.push({ ok: false, error: 'insert_failed', uid, message_id: mid, property_id: pid })
           failed++
+        }
+        } finally {
+          release()
         }
       } catch (e: any) {
         results.push({ ok: false, error: String(e?.message || 'error') })

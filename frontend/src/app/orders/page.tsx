@@ -966,10 +966,25 @@ export default function OrdersPage() {
       const color = isConfirmed ? 'green' : (isCanceled ? 'red' : 'default')
       return <Tag color={color}>{s || '-'}</Tag>
     } },
+    { title: '清洁同步', dataIndex: 'cleaning_sync', render: (_: any, r: Order) => {
+      const cs: any = (r as any).cleaning_sync
+      if (!cs) return <Tag>-</Tag>
+      const st = String(cs.status || '')
+      const color = st === 'done' ? 'green' : (st === 'failed' ? 'red' : (st === 'running' ? 'blue' : 'gold'))
+      const txt = st ? `${st}${cs.attempts != null ? `(${Number(cs.attempts)})` : ''}` : '-'
+      return <Tag color={color}>{txt}</Tag>
+    } },
     { title: '到账', dataIndex: 'payment_received', render: (v:any)=> v ? <Tag color="green">已到账</Tag> : <Tag>未到账</Tag> },
     { title: '操作', render: (_: any, r: Order) => (
       <Space>
         <Button onClick={() => openDetail(r)}>查看</Button>
+        {hasPerm('order.manage') && (String(((r as any).cleaning_sync || {}).status || '') === 'failed') ? <Button onClick={async ()=>{
+          try {
+            const res = await fetch(`${API_BASE}/orders/${r.id}/cleaning-sync/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({}) })
+            if (res.ok) { message.success('已重新排队同步'); load() }
+            else { const j = await res.json().catch(()=>({})); message.error(j?.message || `操作失败（HTTP ${res.status}）`) }
+          } catch { message.error('操作失败') }
+        }}>重试同步</Button> : null}
         {hasPerm('order.confirm_payment') && !((r as any).payment_received) ? <Button type="primary" onClick={async ()=>{
           const res = await fetch(`${API_BASE}/orders/${r.id}/confirm-payment`, { method: 'POST', headers: { ...authHeaders() } })
           if (res.ok) {
@@ -1003,7 +1018,8 @@ export default function OrdersPage() {
             cancelText: '取消',
             onOk: async () => {
               const res = await fetch(`${API_BASE}/orders/${r.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
-              if (res.ok) { message.success('订单已删除'); load() } else { message.error('删除失败') }
+              if (res.ok) { message.success('订单已删除'); load() }
+              else { let msg = `删除失败（HTTP ${res.status}）`; try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { const t = await res.text(); if (t) msg = t } catch {} } message.error(msg) }
             }
           })
         }}>删除</Button> : null}

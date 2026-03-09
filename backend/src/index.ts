@@ -409,6 +409,69 @@ app.listen(port, () => {
       console.error(`[cleaning-timeout] init error message=${String(e?.message || '')}`)
     }
   })()
+  ;(async () => {
+    try {
+      const enabled = String(process.env.CLEANING_SYNC_JOBS_ENABLED || 'true').toLowerCase() === 'true'
+      if (enabled && hasPg) {
+        const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '*/1 * * * *')
+        console.log(`[cleaning-sync-jobs][schedule] enabled cron=${expr}`)
+        let inFlight = false
+        const task = cron.schedule(expr, async () => {
+          if (inFlight) { try { console.log('[cleaning-sync-jobs][schedule] skipped_reason=in_flight') } catch {} ; return }
+          try {
+            inFlight = true
+            const { processCleaningSyncJobsOnce } = require('./services/cleaningSyncJobsWorker')
+            const r = await processCleaningSyncJobsOnce({
+              limit: Math.min(20, Number(process.env.CLEANING_SYNC_JOBS_BATCH || 10)),
+              reclaim_timeout_minutes: Math.min(120, Math.max(1, Number(process.env.CLEANING_SYNC_JOBS_RECLAIM_MINUTES || 10))),
+            })
+            if ((r?.processed || 0) > 0 || (r?.failed || 0) > 0 || (r?.reclaimed || 0) > 0) {
+              console.log(`[cleaning-sync-jobs][schedule] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0} reclaimed=${r.reclaimed || 0}`)
+            }
+          } catch (e: any) {
+            console.error(`[cleaning-sync-jobs][schedule] error message=${String(e?.message || '')}`)
+          } finally {
+            inFlight = false
+          }
+        }, { scheduled: true })
+        task.start()
+      } else {
+        console.log('[cleaning-sync-jobs][schedule] disabled')
+      }
+    } catch (e: any) {
+      console.error(`[cleaning-sync-jobs][schedule] init error message=${String(e?.message || '')}`)
+    }
+  })()
+  ;(async () => {
+    try {
+      const enabled = String(process.env.CLEANING_SYNC_RETRY_ENABLED || 'true').toLowerCase() === 'true'
+      if (enabled && hasPg) {
+        const expr = String(process.env.CLEANING_SYNC_RETRY_CRON || '*/5 * * * *')
+        console.log(`[cleaning-sync-retry][schedule] enabled cron=${expr}`)
+        const task = cron.schedule(expr, async () => {
+          try {
+            const key = 246813579
+            const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [key])
+            const ok = !!(lock?.rows?.[0]?.ok)
+            if (!ok) return
+            const { processDueCleaningSyncRetries } = require('./services/cleaningSyncRetry')
+            const r = await processDueCleaningSyncRetries({ limit: Math.min(20, Number(process.env.CLEANING_SYNC_RETRY_BATCH || 10)) })
+            if ((r?.processed || 0) > 0 || (r?.failed || 0) > 0) {
+              console.log(`[cleaning-sync-retry][schedule] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0}`)
+            }
+            try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [key]) } catch {}
+          } catch (e: any) {
+            console.error(`[cleaning-sync-retry][schedule] error message=${String(e?.message || '')}`)
+          }
+        }, { scheduled: true })
+        task.start()
+      } else {
+        console.log('[cleaning-sync-retry][schedule] disabled')
+      }
+    } catch (e: any) {
+      console.error(`[cleaning-sync-retry][schedule] init error message=${String(e?.message || '')}`)
+    }
+  })()
   })
   app.get('/health/login', async (_req, res) => {
     const started = Date.now()

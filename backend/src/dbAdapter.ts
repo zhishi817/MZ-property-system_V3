@@ -7,6 +7,13 @@ types.setTypeParser(1184, (val) => val)
 const conn = process.env.DATABASE_URL || ''
 export const pgPool = conn ? new Pool({ connectionString: conn, ssl: { rejectUnauthorized: false }, max: Number(process.env.PG_POOL_MAX || 10), idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000), connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 10000) }) : null
 export const hasPg = !!pgPool
+try {
+  if (pgPool) {
+    pgPool.on('error', (err) => {
+      try { console.error(`[pg] pool_error message=${String((err as any)?.message || '')} code=${String((err as any)?.code || '')}`) } catch {}
+    })
+  }
+} catch {}
 
 function buildWhere(filters?: Record<string, any>) {
   const keys = Object.keys(filters || {})
@@ -64,6 +71,11 @@ export async function pgDelete(table: string, id: string, client?: any) {
 export async function pgRunInTransaction<T>(cb: (client: any) => Promise<T>) {
   if (!pgPool) return null
   const client = await pgPool.connect()
+  try {
+    client.on('error', (err: any) => {
+      try { console.error(`[pg] client_error message=${String(err?.message || '')} code=${String(err?.code || '')}`) } catch {}
+    })
+  } catch {}
   try {
     await client.query('BEGIN')
     const result = await cb(client)

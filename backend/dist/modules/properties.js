@@ -59,6 +59,41 @@ const createSchema = zod_1.z.object({
     airbnb_listing_id: zod_1.z.string().optional(),
     booking_listing_id: zod_1.z.string().optional(),
 });
+function normListingName(v) {
+    const s = String(v !== null && v !== void 0 ? v : '').trim();
+    return s ? s : null;
+}
+async function ensureListingColumns() {
+    if (!dbAdapter_1.pgPool)
+        return;
+    await dbAdapter_1.pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_name text');
+    await dbAdapter_1.pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_name text');
+    await dbAdapter_1.pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS listing_names jsonb');
+}
+async function findListingConflictPg(listingName, excludeId) {
+    var _a;
+    if (!dbAdapter_1.pgPool)
+        return null;
+    const res = await dbAdapter_1.pgPool.query(`SELECT id, code, address
+     FROM properties
+     WHERE (airbnb_listing_name = $1 OR booking_listing_name = $1 OR (listing_names->>'other') = $1)
+       AND ($2 IS NULL OR id <> $2)
+     LIMIT 1`, [listingName, excludeId || null]);
+    return ((_a = res.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
+}
+function findListingConflictLocal(listingName, excludeId) {
+    var _a;
+    const name = normListingName(listingName);
+    if (!name)
+        return null;
+    const rows = (store_1.db.properties || []).filter((p) => !excludeId || p.id !== excludeId);
+    for (const p of rows) {
+        const vals = [p.airbnb_listing_name, p.booking_listing_name, (_a = p.listing_names) === null || _a === void 0 ? void 0 : _a.other];
+        if (vals.some((v) => normListingName(v) === name))
+            return { id: p.id, code: p.code, address: p.address };
+    }
+    return null;
+}
 exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, res) => {
     var _a, _b, _c, _d, _e, _f, _g, _h;
     const parsed = createSchema.safeParse(req.body);
@@ -79,9 +114,9 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
     const actor = req.user;
     const pFull = { id: (0, uuid_1.v4)(), code: parsed.data.code || autoCode, created_by: (actor === null || actor === void 0 ? void 0 : actor.sub) || (actor === null || actor === void 0 ? void 0 : actor.username) || null, ...parsed.data };
     const lnObj = (pFull.listing_names || {});
-    pFull.airbnb_listing_name = pFull.airbnb_listing_name || lnObj.airbnb || null;
-    pFull.booking_listing_name = pFull.booking_listing_name || lnObj.booking || null;
-    pFull.listing_names = { other: (lnObj.other || '') };
+    pFull.airbnb_listing_name = normListingName(pFull.airbnb_listing_name || lnObj.airbnb || null);
+    pFull.booking_listing_name = normListingName(pFull.booking_listing_name || lnObj.booking || null);
+    pFull.listing_names = { other: String(lnObj.other || '').trim() };
     const baseKeys = ['id', 'code', 'address', 'type', 'capacity', 'region', 'area_sqm', 'biz_category', 'building_name', 'building_facilities', 'building_facility_floor', 'building_facility_other', 'building_contact_name', 'building_contact_phone', 'building_contact_email', 'building_notes', 'bed_config', 'tv_model', 'aircon_model', 'bedroom_ac', 'access_guide_link', 'keybox_location', 'keybox_code', 'garage_guide_link', 'floor', 'parking_type', 'parking_space', 'access_type', 'orientation', 'fireworks_view', 'notes', 'landlord_id', 'created_by', 'listing_names', 'airbnb_listing_name', 'booking_listing_name', 'airbnb_listing_id', 'booking_listing_id'];
     const pBase = Object.fromEntries(Object.entries(pFull).filter(([k]) => baseKeys.includes(k)));
     const minimalKeys = ['id', 'code', 'address', 'type', 'capacity', 'region', 'area_sqm', 'notes', 'listing_names'];
@@ -89,6 +124,24 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
     try {
         // Supabase branch removed
         if (dbAdapter_1.hasPg) {
+            const listingCandidates = [
+                pFull.airbnb_listing_name,
+                pFull.booking_listing_name,
+                (pFull.listing_names || {}).other,
+            ].map(normListingName).filter(Boolean);
+            if (listingCandidates.length) {
+                try {
+                    await ensureListingColumns();
+                    for (const name of listingCandidates) {
+                        const conflict = await findListingConflictPg(name, null);
+                        if (conflict)
+                            return res.status(400).json({ message: `已经存在 Listing 名称：${name}`, code: 'DUPLICATE_LISTING_NAME', listing_name: name });
+                    }
+                }
+                catch (e) {
+                    return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'listing name check failed' });
+                }
+            }
             try {
                 const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
                 (0, store_1.addAudit)('Property', row.id, 'create', null, row);
@@ -211,9 +264,9 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('property.write'), async (r
     const cleanedBody = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'bedrooms'));
     if (cleanedBody.listing_names && typeof cleanedBody.listing_names === 'object') {
         const ln = cleanedBody.listing_names || {};
-        cleanedBody.airbnb_listing_name = cleanedBody.airbnb_listing_name || ln.airbnb || null;
-        cleanedBody.booking_listing_name = cleanedBody.booking_listing_name || ln.booking || null;
-        cleanedBody.listing_names = { other: (ln.other || '') };
+        cleanedBody.airbnb_listing_name = normListingName(cleanedBody.airbnb_listing_name || ln.airbnb || null);
+        cleanedBody.booking_listing_name = normListingName(cleanedBody.booking_listing_name || ln.booking || null);
+        cleanedBody.listing_names = { other: String(ln.other || '').trim() };
     }
     const baseKeys = ['code', 'address', 'type', 'capacity', 'region', 'area_sqm', 'biz_category', 'building_name', 'building_facilities', 'building_facility_floor', 'building_facility_other', 'building_contact_name', 'building_contact_phone', 'building_contact_email', 'building_notes', 'bed_config', 'tv_model', 'aircon_model', 'bedroom_ac', 'access_guide_link', 'keybox_location', 'keybox_code', 'garage_guide_link', 'floor', 'parking_type', 'parking_space', 'access_type', 'orientation', 'fireworks_view', 'notes', 'landlord_id', 'listing_names', 'airbnb_listing_name', 'booking_listing_name', 'airbnb_listing_id', 'booking_listing_id'];
     const actor = req.user;
@@ -223,6 +276,23 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('property.write'), async (r
         if (dbAdapter_1.hasPg) {
             const rows = await (0, dbAdapter_1.pgSelect)('properties', '*', { id });
             const before = rows && rows[0];
+            const touchedListing = Object.prototype.hasOwnProperty.call(bodyBaseRaw, 'airbnb_listing_name')
+                || Object.prototype.hasOwnProperty.call(bodyBaseRaw, 'booking_listing_name')
+                || Object.prototype.hasOwnProperty.call(bodyBaseRaw, 'listing_names');
+            if (touchedListing) {
+                const merged = { ...(before || {}), ...(bodyBaseRaw || {}) };
+                const listingCandidates = [
+                    merged.airbnb_listing_name,
+                    merged.booking_listing_name,
+                    (merged.listing_names || {}).other,
+                ].map(normListingName).filter(Boolean);
+                await ensureListingColumns();
+                for (const name of listingCandidates) {
+                    const conflict = await findListingConflictPg(name, id);
+                    if (conflict)
+                        return res.status(400).json({ message: `已经存在 Listing 名称：${name}`, code: 'DUPLICATE_LISTING_NAME', listing_name: name });
+                }
+            }
             try {
                 const row = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
                 (0, store_1.addAudit)('Property', id, 'update', before, row);
@@ -260,6 +330,22 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('property.write'), async (r
         if (!p)
             return res.status(404).json({ message: 'not found' });
         const beforeLocal = { ...p };
+        const touchedListingLocal = Object.prototype.hasOwnProperty.call(bodyBaseRaw, 'airbnb_listing_name')
+            || Object.prototype.hasOwnProperty.call(bodyBaseRaw, 'booking_listing_name')
+            || Object.prototype.hasOwnProperty.call(bodyBaseRaw, 'listing_names');
+        if (touchedListingLocal) {
+            const merged = { ...p, ...(bodyBaseRaw || {}) };
+            const listingCandidates = [
+                merged.airbnb_listing_name,
+                merged.booking_listing_name,
+                (merged.listing_names || {}).other,
+            ].map(normListingName).filter(Boolean);
+            for (const name of listingCandidates) {
+                const conflict = findListingConflictLocal(name, id);
+                if (conflict)
+                    return res.status(400).json({ message: `已经存在 Listing 名称：${name}`, code: 'DUPLICATE_LISTING_NAME', listing_name: name });
+            }
+        }
         Object.assign(p, cleanedBody);
         (0, store_1.addAudit)('Property', id, 'update', beforeLocal, p);
         return res.json(p);

@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { requireAnyPerm, requirePerm } from '../auth'
 import { addAudit, db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
-import { backfillCleaningTasks, ensureCleaningSchemaV2, syncOrderToCleaningTasks } from '../services/cleaningSync'
+import { backfillCleaningTasks, syncOrderToCleaningTasks } from '../services/cleaningSync'
 import { v4 as uuid } from 'uuid'
 
 export const router = Router()
@@ -24,24 +24,13 @@ function dayOnly(s?: any): string | null {
 
 async function ensureOfflineTasksTable() {
   if (!hasPg || !pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_offline_tasks (
-    id text PRIMARY KEY,
-    date date NOT NULL,
-    task_type text NOT NULL DEFAULT 'other',
-    title text NOT NULL,
-    content text NOT NULL DEFAULT '',
-    kind text NOT NULL,
-    status text NOT NULL,
-    urgency text NOT NULL,
-    property_id text,
-    assignee_id text,
-    created_at timestamptz DEFAULT now(),
-    updated_at timestamptz DEFAULT now()
-  );`)
-  await pgPool.query(`ALTER TABLE cleaning_offline_tasks ADD COLUMN IF NOT EXISTS task_type text NOT NULL DEFAULT 'other';`)
-  await pgPool.query(`ALTER TABLE cleaning_offline_tasks ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '';`)
-  await pgPool.query(`ALTER TABLE cleaning_offline_tasks ADD COLUMN IF NOT EXISTS assignee_id text;`)
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_cleaning_offline_tasks_date ON cleaning_offline_tasks(date);')
+  const r = await pgPool.query(`SELECT to_regclass('public.cleaning_offline_tasks') AS t`)
+  const t = r?.rows?.[0]?.t
+  if (!t) {
+    const err: any = new Error('cleaning_offline_tasks_missing')
+    err.code = 'CLEANING_SCHEMA_MISSING'
+    throw err
+  }
 }
 
 router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
@@ -54,7 +43,6 @@ router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
   const roles = rolesForKind(kind)
   try {
     if (hasPg && pgPool) {
-      await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`)
       const r = await pgPool.query(
         `SELECT
            id,
@@ -249,7 +237,6 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
   const date = parsed.success ? parsed.data : undefined
   try {
     if (hasPg && pgPool) {
-      await ensureCleaningSchemaV2()
       if (date) {
         const r = await pgPool.query(
           'SELECT * FROM cleaning_tasks WHERE (COALESCE(task_date, date)::date) = ($1::date) ORDER BY property_id NULLS LAST, id',
@@ -285,7 +272,6 @@ router.get('/history', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manag
   const to = toRaw || defaultTo
   try {
     if (hasPg && pgPool) {
-      await ensureCleaningSchemaV2()
       const sql = `
         SELECT
           t.*,
@@ -367,7 +353,6 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
   if (!(await isValidStaffId((parsed.data as any).inspector_id ?? null, 'inspector'))) return res.status(400).json({ message: '无效的检查人员' })
   try {
     if (hasPg && pgPool) {
-      await ensureCleaningSchemaV2()
       const r0 = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id = $1 LIMIT 1', [String(id)])
       const before = r0?.rows?.[0] || null
       if (!before) return res.status(404).json({ message: 'task not found' })
@@ -529,7 +514,6 @@ router.post('/tasks', requirePerm('cleaning.task.assign'), async (req, res) => {
       source: 'manual',
     }
     if (hasPg && pgPool) {
-      await ensureCleaningSchemaV2()
       const client = await pgPool.connect()
       try {
         await client.query('BEGIN')
@@ -571,7 +555,6 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res
   const actorId = actor?.sub ? String(actor.sub) : undefined
   try {
     if (hasPg && pgPool) {
-      await ensureCleaningSchemaV2()
       const r0 = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [String(id)])
       const before = r0?.rows?.[0] || null
       if (!before) return res.status(404).json({ message: 'task not found' })
@@ -601,7 +584,6 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (re
   const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)))
   try {
     if (hasPg && pgPool) {
-      await ensureCleaningSchemaV2()
       const client = await pgPool.connect()
       try {
         await client.query('BEGIN')
@@ -648,9 +630,6 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
   const basePatch: any = { ...parsed.data.patch }
   if (basePatch.cleaner_id !== undefined && basePatch.assignee_id === undefined) basePatch.assignee_id = basePatch.cleaner_id
   if (basePatch.assignee_id !== undefined && basePatch.cleaner_id === undefined) basePatch.cleaner_id = basePatch.assignee_id
-  if (hasPg && pgPool) {
-    await ensureCleaningSchemaV2()
-  }
   try {
     const updated: any[] = []
     for (const id of ids) {
@@ -725,7 +704,6 @@ router.post('/tasks/:id/restore-auto-sync', requirePerm('cleaning.schedule.manag
   const { id } = req.params
   try {
     if (hasPg && pgPool) {
-      await ensureCleaningSchemaV2()
       const r0 = await pgPool.query('SELECT * FROM cleaning_tasks WHERE id = $1 LIMIT 1', [String(id)])
       const task = r0?.rows?.[0] || null
       if (!task) return res.status(404).json({ message: 'task not found' })
@@ -733,15 +711,19 @@ router.post('/tasks/:id/restore-auto-sync', requirePerm('cleaning.schedule.manag
       const updated = r1?.rows?.[0] || task
       const orderId = updated?.order_id ? String(updated.order_id) : ''
       if (orderId) {
-        try { await syncOrderToCleaningTasks(orderId) } catch {}
+        try {
+          const { pgRunInTransaction } = require('../dbAdapter')
+          const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+          await pgRunInTransaction(async (client: any) => {
+            await enqueueCleaningSyncJobTx(client, { order_id: orderId, action: 'updated', payload_snapshot: { id: orderId } })
+          })
+        } catch {}
       }
       return res.json({ ok: true, task: updated })
     }
     const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
     if (!task) return res.status(404).json({ message: 'task not found' })
     task.auto_sync_enabled = true
-    const orderId = task.order_id ? String(task.order_id) : ''
-    if (orderId) { try { await syncOrderToCleaningTasks(orderId) } catch {} }
     return res.json({ ok: true, task })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'restore_failed' })
@@ -754,7 +736,6 @@ router.get('/sync-logs', requireAnyPerm(['cleaning.schedule.manage', 'cleaning.t
   const limit = Math.max(1, Math.min(500, Number.isFinite(limitRaw) ? Math.trunc(limitRaw) : 100))
   try {
     if (!hasPg || !pgPool) return res.json([])
-    await ensureCleaningSchemaV2()
     if (orderId) {
       const r = await pgPool.query('SELECT * FROM cleaning_sync_logs WHERE (order_id::text)=$1 ORDER BY created_at DESC LIMIT $2', [orderId, limit])
       return res.json(r?.rows || [])
@@ -779,7 +760,6 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
   try {
     const items: any[] = []
     if (hasPg && pgPool) {
-      await ensureCleaningSchemaV2()
       const r = await pgPool.query(
         `SELECT
            t.id,
@@ -1076,14 +1056,17 @@ router.post('/debug/sync-one', requirePerm('cleaning.schedule.manage'), async (r
   const orderId = String(parsed.data.order_id)
   try {
     if (!hasPg || !pgPool) return res.status(400).json({ message: 'pg=false' })
-    await ensureCleaningSchemaV2()
     const beforeTasks = await pgPool.query('SELECT * FROM cleaning_tasks WHERE (order_id::text)=$1 ORDER BY task_type, id', [orderId])
     const beforeCount = Number(beforeTasks?.rows?.length || 0)
-    let syncResult: any = null
+    let job: any = null
     try {
-      syncResult = await syncOrderToCleaningTasks(orderId)
+      const { pgRunInTransaction } = require('../dbAdapter')
+      const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+      await pgRunInTransaction(async (client: any) => {
+        job = await enqueueCleaningSyncJobTx(client, { order_id: orderId, action: 'updated', payload_snapshot: { id: orderId } })
+      })
     } catch (e: any) {
-      syncResult = { error: String(e?.message || 'sync_failed') }
+      job = { error: String(e?.message || 'enqueue_failed') }
     }
     const afterTasks = await pgPool.query('SELECT * FROM cleaning_tasks WHERE (order_id::text)=$1 ORDER BY task_type, id', [orderId])
     const afterCount = Number(afterTasks?.rows?.length || 0)
@@ -1093,7 +1076,7 @@ router.post('/debug/sync-one', requirePerm('cleaning.schedule.manage'), async (r
       order_id: orderId,
       before_count: beforeCount,
       after_count: afterCount,
-      sync: syncResult,
+      job,
       order: orderRow?.rows?.[0] || null,
       tasks: afterTasks?.rows || [],
     })
@@ -1108,7 +1091,6 @@ router.get('/tasks/minmax', requireAnyPerm(['cleaning.view', 'cleaning.schedule.
   const from = parsed.success ? (parsed.data || auDayStr(new Date())) : auDayStr(new Date())
   try {
     if (!hasPg || !pgPool) return res.json({ ok: true, min: null, max: null, from })
-    await ensureCleaningSchemaV2()
     const sql = `SELECT MIN(COALESCE(task_date, date))::text AS min, MAX(COALESCE(task_date, date))::text AS max FROM cleaning_tasks WHERE (COALESCE(task_date, date)::date) >= ($1::date)`
     const r = await pgPool.query(sql, [from])
     const min = r?.rows?.[0]?.min ? String(r.rows[0].min).slice(0, 10) : null

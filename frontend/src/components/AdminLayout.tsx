@@ -146,6 +146,8 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   if (hasPerm('menu.rbac') || hasPerm('rbac.manage')) items.push({ key: 'rbac', icon: <ProfileOutlined />, label: <Link href="/rbac" prefetch={false}>角色权限</Link> })
   if (hasPerm('menu.jobs.email_sync.visible')) items.push({ key: 'jobs', icon: <ProfileOutlined />, label: '系统任务', children: [
     { key: 'jobs-email-sync', label: <Link href="/jobs/email-sync" prefetch={false}>邮件同步</Link> },
+    { key: 'jobs-cleaning-sync-jobs', label: <Link href="/jobs/cleaning-sync-jobs" prefetch={false}>清洁同步队列</Link> },
+    { key: 'jobs-cleaning-sync-retry', label: <Link href="/jobs/cleaning-sync-retry" prefetch={false}>清洁同步重试</Link> },
   ] })
   if (hasPerm('menu.cms')) items.push({ key: 'cms', icon: <ShopOutlined />, label: 'CMS管理', children: [
     { key: 'cms-home', label: <Link href="/cms" prefetch={false}>页面管理</Link> },
