@@ -1,3 +1,5 @@
+import { renderWorkRecordBodyFragment, workRecordPdfCssTextScoped } from './workRecordPdfTemplate'
+
 type SectionMode = 'all' | 'base' | 'deep_cleaning' | 'maintenance'
 type PhotosMode = 'full' | 'thumbnail' | 'compressed' | 'off'
 
@@ -30,24 +32,6 @@ export type MonthlyStatementPdfTemplateInput = {
   }>
 }
 
-export function deriveThumbUrl(u: string): string {
-  const s = String(u || '').trim()
-  if (!s) return ''
-  if (/\.thumb\.jpg($|\?)/i.test(s)) return s
-  try {
-    const uu = new URL(s)
-    const p = String(uu.pathname || '')
-    if (p.endsWith('/public/r2-image') || p.endsWith('/r2-image')) {
-      const inner = String(uu.searchParams.get('url') || '').trim()
-      if (inner && !/\.thumb\.jpg$/i.test(inner)) uu.searchParams.set('url', `${inner}.thumb.jpg`)
-      return uu.toString()
-    }
-  } catch {}
-  const q = s.indexOf('?')
-  if (q >= 0) return `${s.slice(0, q)}.thumb.jpg${s.slice(q)}`
-  return `${s}.thumb.jpg`
-}
-
 function normSections(sections?: string[] | string): Set<SectionMode> {
   const arr = Array.isArray(sections) ? sections : (sections ? String(sections).split(',') : [])
   const set = new Set(arr.map(s => String(s || '').trim().toLowerCase()).filter(Boolean) as any)
@@ -69,15 +53,28 @@ function safeArr(v: any): any[] {
       const j = JSON.parse(s)
       return Array.isArray(j) ? j : []
     } catch {
+      if (/^https?:\/\//i.test(s) || s.startsWith('/')) return [s]
       return []
     }
   }
-  if (typeof v === 'object') return []
+  if (typeof v === 'object') {
+    const u = String((v as any)?.url || (v as any)?.src || (v as any)?.path || '').trim()
+    if (u) return [u]
+    return []
+  }
   return []
 }
 
 function asUrlStrings(v: any): string[] {
-  return safeArr(v).map(x => String(x || '').trim()).filter(Boolean)
+  return safeArr(v)
+    .map((x) => {
+      if (!x) return ''
+      if (typeof x === 'string') return x
+      if (typeof x === 'object') return String((x as any).url || (x as any).src || (x as any).path || '')
+      return String(x || '')
+    })
+    .map(x => String(x || '').trim())
+    .filter(Boolean)
 }
 
 function pickDate(x: any): string {
@@ -116,75 +113,43 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
   const deep = Array.isArray(input.deepCleanings) ? input.deepCleanings : []
   const maint = Array.isArray(input.maintenances) ? input.maintenances : []
 
-  const buildPhotoItems = (rows: any[], kind: 'deep_cleaning' | 'maintenance', phase: 'before' | 'after') => {
-    const items: Array<{ src: string; fallback: string; caption: string }> = []
-    for (const r of rows) {
-      const workNo = String(r?.work_no || r?.workNo || '').trim()
-      const dt = pickDate(r)
-      const urls = (phase === 'before' ? asUrlStrings(r?.photo_urls) : asUrlStrings(r?.repair_photo_urls))
-        .filter(u => /^https?:\/\//i.test(u))
-      for (const u of urls) {
-        const fallback = u
-        const thumb = deriveThumbUrl(u)
-        const phaseLabel = phase === 'before'
-          ? (showChinese ? 'Before（前）' : 'Before')
-          : (showChinese ? 'After（后）' : 'After')
-        const caption = `${kind === 'deep_cleaning' ? 'DC' : 'R'}${workNo ? ` ${workNo}` : ''}${dt ? ` • ${dt}` : ''}${` • ${phaseLabel}`}`
-        items.push({ src: thumb, fallback, caption })
-      }
-    }
-    return items
+  const pickRecordUrls = (r: any, phase: 'before' | 'after') => {
+    const urls = (phase === 'before' ? asUrlStrings(r?.photo_urls) : asUrlStrings(r?.repair_photo_urls))
+      .filter(u => /^https?:\/\//i.test(u))
+    if (photosMode === 'thumbnail') return urls.slice(0, 1)
+    return urls
   }
-
-  const deepBeforeItems = buildPhotoItems(deep, 'deep_cleaning', 'before')
-  const deepAfterItems = buildPhotoItems(deep, 'deep_cleaning', 'after')
-  const maintBeforeItems = buildPhotoItems(maint, 'maintenance', 'before')
-  const maintAfterItems = buildPhotoItems(maint, 'maintenance', 'after')
-  const totalPhotos = (photosMode === 'off')
-    ? 0
-    : (deepBeforeItems.length + deepAfterItems.length + maintBeforeItems.length + maintAfterItems.length)
-  const effectivePhotosMode: PhotosMode = photosMode
-
-  const pickSrc = (it: { src: string; fallback: string }) => {
-    if (photosMode === 'off') return ''
-    if (effectivePhotosMode === 'thumbnail') return it.src
-    return it.fallback
+  const completionTextOf = (r: any) => {
+    const dt = pickDate(r)
+    return dt
   }
-
-  const renderPhotoPages = (titleMain: string, titlePhase: string, items: Array<{ src: string; fallback: string; caption: string }>, perPage: number, enforcePaging: boolean, breakFirst: boolean) => {
-    if (!items.length) return { html: '', rendered: false }
-    const pages = enforcePaging ? chunk(items, perPage) : [items]
+  const recordBlocks = (rows: any[], kind: 'deep_cleaning' | 'maintenance') => {
+    const sorted = rows.slice().sort((a, b) => pickDate(a).localeCompare(pickDate(b)) || String(a?.id || '').localeCompare(String(b?.id || '')))
     let out = ''
-    pages.forEach((page, idx) => {
-      const pageNo = idx + 1
-      const needBreak = (idx === 0) ? breakFirst : true
-      out += `
-        <section class="page${needBreak ? ' break-before' : ''}">
-          <div class="section-title">
-            <span class="section-title-main">${escapeHtml(titleMain)}</span>
-            <span class="section-title-right">
-              <span class="section-title-phase">${escapeHtml(titlePhase)}</span>
-              ${pages.length > 1 ? `<span class="muted">(${pageNo}/${pages.length})</span>` : ''}
-            </span>
-          </div>
-          <div class="grid">
-            ${page.map((it) => {
-              const src = pickSrc(it)
-              const fb = it.fallback
-              const cap = it.caption
-              const onerr = `try{var fb=this.getAttribute('data-fallback')||'';if(fb&&this.src!==fb){this.onerror=null;this.src=fb}}catch(e){}`
-              return `
-                <figure class="cell">
-                  <img crossorigin="anonymous" referrerpolicy="no-referrer" src="${escapeHtml(src)}" data-fallback="${escapeHtml(fb)}" alt="" onerror="${escapeHtml(onerr)}" />
-                  <figcaption>${escapeHtml(cap)}</figcaption>
-                </figure>
-              `
-            }).join('')}
-          </div>
-        </section>
-      `
+    let images = 0
+    sorted.forEach((r, idx) => {
+      const beforeUrls = pickRecordUrls(r, 'before')
+      const afterUrls = pickRecordUrls(r, 'after')
+      if (!beforeUrls.length && !afterUrls.length) return
+      const jobNumber = String(r?.work_no || r?.id || '').trim()
+      const completionText = completionTextOf(r)
+      const areaText = kind === 'maintenance'
+        ? String((r as any)?.category_detail || (r as any)?.category || '').trim()
+        : String((r as any)?.category || '').trim()
+      const frag = renderWorkRecordBodyFragment({
+        kind,
+        showChinese,
+        jobNumber,
+        completionText,
+        areaText,
+        beforeUrls,
+        afterUrls,
+      })
+      images += Number(frag.imageCount || 0)
+      const breakCls = idx > 0 ? ' wr-break' : ''
+      out += `<div class="wr${breakCls}">${frag.body}</div>`
     })
-    return { html: out, rendered: true }
+    return { html: out, imageCount: images }
   }
 
   const includeAll = sec.has('all')
@@ -208,61 +173,29 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
     </section>
   ` : ''
 
-  const photosHtml = (effectivePhotosMode === 'off') ? '' : `
-    ${(() => {
-      let hasPrev = !!includeBase
-      let out = ''
-      const titleDeep = showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'
-      const titleMaint = showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'
-      const phaseBefore = showChinese ? 'Before（前）' : 'Before'
-      const phaseAfter = showChinese ? 'After（后）' : 'After'
-      if (includeDeep) {
-        const r1 = renderPhotoPages(
-          titleDeep,
-          phaseBefore,
-          deepBeforeItems,
-          12,
-          true,
-          hasPrev
-        )
-        out += r1.html
-        if (r1.rendered) hasPrev = true
-        const r2 = renderPhotoPages(
-          titleDeep,
-          phaseAfter,
-          deepAfterItems,
-          12,
-          true,
-          hasPrev
-        )
-        out += r2.html
-        if (r2.rendered) hasPrev = true
+  const photosParts = (() => {
+    if (photosMode === 'off') return { html: '', imageCount: 0 }
+    let out = ''
+    let n = 0
+    let hasPrev = !!includeBase
+    if (includeDeep) {
+      const r = recordBlocks(deep, 'deep_cleaning')
+      if (r.html) {
+        out += hasPrev ? `<div class="wr-break"></div>${r.html}` : r.html
+        hasPrev = true
+        n += r.imageCount
       }
-      if (includeMaint) {
-        const r3 = renderPhotoPages(
-          titleMaint,
-          phaseBefore,
-          maintBeforeItems,
-          12,
-          true,
-          hasPrev
-        )
-        out += r3.html
-        if (r3.rendered) hasPrev = true
-        const r4 = renderPhotoPages(
-          titleMaint,
-          phaseAfter,
-          maintAfterItems,
-          12,
-          true,
-          hasPrev
-        )
-        out += r4.html
-        if (r4.rendered) hasPrev = true
+    }
+    if (includeMaint) {
+      const r = recordBlocks(maint, 'maintenance')
+      if (r.html) {
+        out += hasPrev ? `<div class="wr-break"></div>${r.html}` : r.html
+        hasPrev = true
+        n += r.imageCount
       }
-      return out
-    })()}
-  `
+    }
+    return { html: out, imageCount: n }
+  })()
 
   const html = `
     <!doctype html>
@@ -280,21 +213,15 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
           .title { font-size: 32px; font-weight: 700; letter-spacing: 1px; }
           .meta { text-align: right; font-size: 13px; line-height: 1.4; }
           .note { margin-top: 10mm; font-size: 13px; color: #333; }
-          .section-title { margin-top: 16px; font-weight: 700; background: #eef3fb; padding: 6px 8px; font-size: 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-          .section-title-right { display: inline-flex; align-items: baseline; gap: 8px; white-space: nowrap; }
-          .section-title-phase { font-size: 13px; font-weight: 700; color: #111; }
-          .muted { color: #666; font-weight: 400; font-size: 12px; }
-          .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-          .cell { margin: 0; border: 1px solid #eee; border-radius: 8px; padding: 6px; }
-          .cell img { width: 100%; height: 55mm; object-fit: contain; display: block; background: #fafafa; border-radius: 6px; }
-          .cell figcaption { margin-top: 6px; font-size: 11px; color: #333; word-break: break-word; }
+          .wr-break { break-before: page; page-break-before: always; height: 0; }
+          ${workRecordPdfCssTextScoped('.wr')}
         </style>
       </head>
       <body>
         ${baseHtml}
-        ${photosHtml}
+        ${photosParts.html}
       </body>
     </html>
   `
-  return { html, imageCount: totalPhotos }
+  return { html, imageCount: photosParts.imageCount }
 }

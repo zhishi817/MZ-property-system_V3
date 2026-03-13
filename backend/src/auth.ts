@@ -303,6 +303,7 @@ export function requireResourcePerm(kind: 'view' | 'write' | 'delete') {
     const user = (req as any).user
     if (!user) return res.status(401).json({ message: 'unauthorized' })
     const roleName = String(user.role || '')
+    if (roleName === 'admin') return next()
     const resource = String((req.params as any)?.resource || '')
     if (!resource) return res.status(400).json({ message: 'missing resource' })
     const code = `${resource}.${kind}`

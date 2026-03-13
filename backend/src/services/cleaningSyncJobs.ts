@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { ensureCleaningSyncJobsSchema } from './cleaningSyncJobsSchema'
 
 export type CleaningSyncJobAction = 'created' | 'updated' | 'deleted'
 
@@ -36,6 +37,12 @@ export async function enqueueCleaningSyncJobTx(
     payload_snapshot?: any
   }
 ): Promise<{ id: string; merged: boolean }> {
+  try {
+    await ensureCleaningSyncJobsSchema()
+  } catch (e: any) {
+    if (String(e?.code || '') === 'CLEANING_SCHEMA_MISSING') return { id: '', merged: false }
+    throw e
+  }
   const orderId = String(params.order_id || '').trim()
   const action = String(params.action || '').trim() as CleaningSyncJobAction
   const snapshot = params.payload_snapshot ?? null
@@ -84,4 +91,3 @@ export async function enqueueCleaningSyncJobTx(
   )
   return { id, merged: false }
 }
-

@@ -360,6 +360,8 @@ function requireResourcePerm(kind) {
         if (!user)
             return res.status(401).json({ message: 'unauthorized' });
         const roleName = String(user.role || '');
+        if (roleName === 'admin')
+            return next();
         const resource = String(((_a = req.params) === null || _a === void 0 ? void 0 : _a.resource) || '');
         if (!resource)
             return res.status(400).json({ message: 'missing resource' });
