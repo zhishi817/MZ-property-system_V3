@@ -5,6 +5,11 @@ import crypto from 'crypto'
 import { hasR2, r2Upload } from '../r2'
 import { requireAnyPerm } from '../auth'
 import { hasPg, pgPool } from '../dbAdapter'
+import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
+import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
+import { waitForImages } from '../lib/waitForImages'
+import { renderWorkRecordPdfHtml } from '../lib/workRecordPdfTemplate'
+import { resizeUploadImage } from '../lib/uploadImageResize'
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
@@ -16,6 +21,28 @@ function sha256Hex(input: string) {
 function randomToken(bytes = 24) {
   const b64 = crypto.randomBytes(bytes).toString('base64')
   return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
+function pdfLimiter(req: any, res: any, next: any) {
+  pdfTaskLimiter.acquire().then((release) => {
+    let done = false
+    const once = () => {
+      if (done) return
+      done = true
+      try { release() } catch {}
+    }
+    res.on('finish', once)
+    res.on('close', once)
+    try { res.on('error', once) } catch {}
+    next()
+  }).catch(() => {
+    return res.status(429).json({ message: 'PDF任务繁忙，请稍后重试' })
+  })
+}
+
+function isPlaywrightClosedError(e: any) {
+  const msg = String(e?.message || '')
+  return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg)
 }
 
 async function ensureDeepCleaningShareTables() {
@@ -85,9 +112,10 @@ router.post('/upload', requireAnyPerm(['property_deep_cleaning.write','rbac.mana
     if (!hasR2 || !(req.file as any).buffer) {
       return res.status(500).json({ message: 'R2 not configured' })
     }
-    const ext = path.extname(req.file.originalname) || ''
+    const img = await resizeUploadImage({ buffer: (req.file as any).buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
+    const ext = img.ext || path.extname(req.file.originalname) || ''
     const key = `deep-cleaning/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    const url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     return res.status(201).json({ url })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'upload failed' })
@@ -142,6 +170,165 @@ router.post('/share-link/:id', requireAnyPerm(['property_deep_cleaning.view','pr
     return res.json({ token, expires_at: expiresAt })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'create share link failed' })
+  }
+})
+
+router.post('/pdf/:id', requireAnyPerm(['property_deep_cleaning.view','property_deep_cleaning.write','rbac.manage']), pdfLimiter, async (req, res) => {
+  const { id } = req.params as any
+  const rid = String(id || '').trim()
+  if (!rid) return res.status(400).json({ message: 'missing id' })
+  try {
+    const showChineseRaw = String((req as any)?.query?.showChinese ?? '').trim().toLowerCase()
+    const showChinese = showChineseRaw === '1' || showChineseRaw === 'true' || showChineseRaw === 'yes'
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensurePropertyDeepCleaningTable()
+    const r0 = await pgPool.query(
+      `SELECT d.*, COALESCE(d.property_code, p.code) AS property_code
+       FROM property_deep_cleaning d
+       LEFT JOIN properties p ON p.id = d.property_id
+       WHERE d.id=$1
+       LIMIT 1`,
+      [rid]
+    )
+    const row = r0.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not found' })
+
+    const tz = 'Australia/Melbourne'
+    function dayStrAtTZ(d: Date): string {
+      const parts = new Intl.DateTimeFormat('en-AU', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d)
+      const get = (t: string) => parts.find(p => p.type === t)?.value || ''
+      const yyyy = get('year'); const mm = get('month'); const dd = get('day')
+      return `${yyyy}-${mm}-${dd}`
+    }
+    function timeStrAtTZ(d: Date): string {
+      const parts = new Intl.DateTimeFormat('en-AU', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(d)
+      const get = (t: string) => parts.find(p => p.type === t)?.value || ''
+      const hh = get('hour'); const mi = get('minute')
+      return `${hh}:${mi}`
+    }
+    function pickDateOnly(): string {
+      const occurred = String(row?.occurred_at || '').slice(0, 10)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(occurred)) return occurred
+      const raw = row?.started_at || row?.completed_at || row?.created_at
+      if (!raw) return ''
+      const d = new Date(String(raw))
+      return isNaN(d.getTime()) ? '' : dayStrAtTZ(d)
+    }
+    function completionText(): string {
+      const dateOnly = pickDateOnly()
+      const stRaw = String(row?.started_at || '').trim()
+      const enRaw = String(row?.ended_at || '').trim()
+      const ctRaw = String(row?.completed_at || '').trim()
+      const st = stRaw ? new Date(stRaw) : null
+      const en = enRaw ? new Date(enRaw) : null
+      const ct = ctRaw ? new Date(ctRaw) : null
+      const stOk = st && !isNaN(st.getTime())
+      const enOk = en && !isNaN(en.getTime())
+      const ctOk = ct && !isNaN(ct.getTime())
+      const base = dateOnly || (stOk ? dayStrAtTZ(st as any) : (ctOk ? dayStrAtTZ(ct as any) : ''))
+      if (stOk && enOk) return `${base} ${timeStrAtTZ(st as any)}~${timeStrAtTZ(en as any)}`
+      if (stOk) return `${base} ${timeStrAtTZ(st as any)}`
+      if (enOk) return `${base} ${timeStrAtTZ(en as any)}`
+      if (ctOk) return `${base} ${timeStrAtTZ(ct as any)}`
+      return base || '-'
+    }
+
+    const apiBase = (() => {
+      const host = String((req.headers['x-forwarded-host'] as any) || req.headers.host || '').split(',')[0].trim()
+      const proto = String((req.headers['x-forwarded-proto'] as any) || req.protocol || 'https').split(',')[0].trim()
+      return host ? `${proto}://${host}` : ''
+    })()
+    const isR2 = (u: string) => u.includes('.r2.dev/') || u.includes('r2.cloudflarestorage.com/')
+    const proxyR2 = (u: string) => apiBase ? `${apiBase}/public/r2-image?url=${encodeURIComponent(u)}` : u
+    const normalizePhotoUrl = (u: string) => {
+      const s = String(u || '').trim()
+      if (!s) return ''
+      if (/^https?:\/\//i.test(s)) return isR2(s) ? proxyR2(s) : s
+      if (s.startsWith('//')) {
+        const abs = `https:${s}`
+        return isR2(abs) ? proxyR2(abs) : abs
+      }
+      if (s.startsWith('/')) return apiBase ? `${apiBase}${s}` : ''
+      return ''
+    }
+    const normUrlList = (raw: any): string[] => {
+      if (!raw) return []
+      let arr: any[] = []
+      if (Array.isArray(raw)) arr = raw
+      else if (typeof raw === 'string') { try { const j = JSON.parse(raw); arr = Array.isArray(j) ? j : [] } catch { arr = [] } }
+      return arr
+        .map((x) => {
+          if (!x) return ''
+          if (typeof x === 'string') return x
+          if (typeof x === 'object') return String((x as any).url || (x as any).src || (x as any).path || '')
+          return String(x || '')
+        })
+        .map((s) => String(s || '').trim())
+        .filter(Boolean)
+    }
+    const beforeUrls = normUrlList(row?.photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
+    const afterUrls = normUrlList(row?.repair_photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
+
+    const tpl = renderWorkRecordPdfHtml({
+      kind: 'deep_cleaning',
+      showChinese,
+      jobNumber: String(row?.work_no || row?.id || ''),
+      completionText: completionText(),
+      areaText: String(row?.category || ''),
+      beforeUrls,
+      afterUrls,
+    })
+    if (Number(tpl?.imageCount || 0) <= 0) return res.status(422).json({ message: 'no photos to render' })
+
+    const filename = `deep-cleaning-${String(row?.work_no || row?.id || rid).replace(/[^a-zA-Z0-9._-]+/g, '-')}.pdf`
+
+    const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)))
+    const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
+
+    const runOnce = async () => {
+      let browser = await getChromiumBrowser()
+      let context: any = null
+      try { context = await browser.newContext() } catch (e: any) {
+        if (!isPlaywrightClosedError(e)) throw e
+        await resetChromiumBrowser()
+        browser = await getChromiumBrowser()
+        context = await browser.newContext()
+      }
+      try {
+        const page = await context.newPage()
+        page.setDefaultTimeout(waitTimeoutMs)
+        page.setDefaultNavigationTimeout(navTimeoutMs)
+        await page.setContent(tpl.html, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs } as any)
+        await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
+        await waitForImages(page, { timeoutMs: 20000, scroll: true, tryFallbackAttr: 'data-fallback', maxFailedUrls: 8 }).catch(() => null)
+        await page.waitForTimeout(200)
+        await page.emulateMedia({ media: 'print' } as any)
+        const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
+        try { await page.close() } catch {}
+        return pdf
+      } finally {
+        try { await context?.close?.() } catch {}
+      }
+    }
+
+    let pdf: any = null
+    try {
+      pdf = await runOnce()
+    } catch (e: any) {
+      if (!isPlaywrightClosedError(e)) throw e
+      await resetChromiumBrowser()
+      pdf = await runOnce()
+    }
+
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.setHeader('Cache-Control', 'no-store, max-age=0')
+    res.setHeader('Pragma', 'no-cache')
+    res.setHeader('X-WorkRecordPdfTemplate', 'workRecordPdfTemplate.v4.headerOnce.noFrame')
+    res.setHeader('X-WorkRecordPdfChinese', showChinese ? '1' : '0')
+    return res.status(200).send(Buffer.from(pdf))
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'generate pdf failed' })
   }
 })
 

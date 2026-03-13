@@ -9,6 +9,7 @@ import bcrypt from 'bcryptjs'
 import { addAudit } from '../store'
 import crypto from 'crypto'
 import sharp from 'sharp'
+import { resizeUploadImage } from '../lib/uploadImageResize'
 
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
 const DEFAULT_PUBLIC_CLEANING_PASSWORD = process.env.PUBLIC_CLEANING_PASSWORD || 'mz-cleaning'
@@ -878,9 +879,10 @@ router.post('/maintenance-progress/upload', upload.single('file'), async (req, r
     if (!hasR2 || !(req.file as any).buffer) {
       return res.status(500).json({ message: 'R2 not configured' })
     }
-    const ext = path.extname(req.file.originalname) || ''
+    const img = await resizeUploadImage({ buffer: (req.file as any).buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
+    const ext = img.ext || path.extname(req.file.originalname) || ''
     const key = `maintenance-progress/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    const url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     return res.status(201).json({ url })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'upload failed' })
@@ -1042,9 +1044,10 @@ router.post('/company-expense/upload', upload.single('file'), async (req, res) =
     if (!hasR2 || !(req.file as any).buffer) {
       return res.status(500).json({ message: 'R2 not configured' })
     }
-    const ext = path.extname(req.file.originalname) || ''
+    const img = await resizeUploadImage({ buffer: (req.file as any).buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
+    const ext = img.ext || path.extname(req.file.originalname) || ''
     const key = `company-expenses/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    const url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     return res.status(201).json({ url })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'upload failed' })
@@ -1228,9 +1231,10 @@ router.post('/property-expense/:expenseId/upload', upload.single('file'), async 
     if (!hasR2 || !(req.file as any).buffer) {
       return res.status(500).json({ message: 'R2 not configured' })
     }
-    const ext = path.extname(req.file.originalname) || ''
+    const img = await resizeUploadImage({ buffer: (req.file as any).buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
+    const ext = img.ext || path.extname(req.file.originalname) || ''
     const key = `expenses/${expenseId}/${uuidv4()}${ext}`
-    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    const url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     try {
       const row = await pgInsert('expense_invoices', {
         id: uuidv4(),
@@ -1296,9 +1300,10 @@ router.post('/deep-cleaning-upload/upload', upload.single('file'), async (req, r
     if (!hasR2 || !(req.file as any).buffer) {
       return res.status(500).json({ message: 'R2 not configured' })
     }
-    const ext = path.extname(req.file.originalname) || ''
+    const img = await resizeUploadImage({ buffer: (req.file as any).buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
+    const ext = img.ext || path.extname(req.file.originalname) || ''
     const key = `deep-cleaning-upload/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    const url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     return res.status(201).json({ url })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'upload failed' })
@@ -1413,9 +1418,10 @@ router.post('/maintenance-share/upload', upload.single('file'), async (req, res)
     if (!hasR2 || !(req.file as any).buffer) {
       return res.status(500).json({ message: 'R2 not configured' })
     }
-    const ext = path.extname(req.file.originalname) || ''
+    const img = await resizeUploadImage({ buffer: (req.file as any).buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
+    const ext = img.ext || path.extname(req.file.originalname) || ''
     const key = `maintenance-share/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    const url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     return res.status(201).json({ url })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'upload failed' })
@@ -1558,9 +1564,10 @@ router.post('/deep-cleaning-share/upload', upload.single('file'), async (req, re
     if (!hasR2 || !(req.file as any).buffer) {
       return res.status(500).json({ message: 'R2 not configured' })
     }
-    const ext = path.extname(req.file.originalname) || ''
+    const img = await resizeUploadImage({ buffer: (req.file as any).buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
+    const ext = img.ext || path.extname(req.file.originalname) || ''
     const key = `deep-cleaning-share/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-    const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+    const url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     return res.status(201).json({ url })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'upload failed' })

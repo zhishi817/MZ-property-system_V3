@@ -42,6 +42,10 @@ export default forwardRef<HTMLDivElement, {
   txs: Tx[]
   properties: { id: string; code?: string; address?: string }[]
   landlords: Landlord[]
+  ordersLoaded?: boolean
+  txsLoaded?: boolean
+  propertiesLoaded?: boolean
+  landlordsLoaded?: boolean
   showChinese?: boolean
   showInvoices?: boolean
   sections?: string[]
@@ -52,7 +56,7 @@ export default forwardRef<HTMLDivElement, {
   mode?: 'preview' | 'pdf'
   pdfMode?: boolean
   renderEngine?: 'canvas' | 'print'
-}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords, showChinese = true, showInvoices = false, sections, includeJobPhotos = true, photosMode = 'full', photoW, photoQ, mode, pdfMode = false, renderEngine = 'canvas' }, ref) {
+}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords, ordersLoaded, txsLoaded, propertiesLoaded, landlordsLoaded, showChinese = true, showInvoices = false, sections, includeJobPhotos = true, photosMode = 'full', photoW, photoQ, mode, pdfMode = false, renderEngine = 'canvas' }, ref) {
   const resolvedMode: 'preview' | 'pdf' = mode || ((pdfMode || renderEngine === 'print') ? 'pdf' : 'preview')
   const isPdfMode = resolvedMode === 'pdf'
   const sectionSet = new Set((Array.isArray(sections) ? sections : []).map(s => String(s || '').trim().toLowerCase()).filter(Boolean))
@@ -255,14 +259,14 @@ export default forwardRef<HTMLDivElement, {
         }
         const list = Array.from(map.values())
         const inMonth = list.filter((d: any) => {
-          const days = [
+          const raws = [
             d?.occurred_at,
             d?.completed_at,
             d?.started_at,
             d?.submitted_at,
             d?.created_at,
-          ].map((raw: any) => toDayStr(raw)).filter(Boolean)
-          return days.some((day: any) => dayjs(day).isSame(start, 'month'))
+          ].filter(Boolean)
+          return raws.some(isInMonth)
         })
         setDeepCleanings(inMonth as any)
       } catch {
@@ -271,7 +275,7 @@ export default forwardRef<HTMLDivElement, {
         setDeepCleaningsLoaded(true)
       }
     })()
-  }, [propertyId, month, needDeepData])
+  }, [propertyId, month, needDeepData, property?.code])
   useEffect(() => {
     ;(async () => {
       try {
@@ -289,7 +293,22 @@ export default forwardRef<HTMLDivElement, {
             return []
           }
         }
-        const merged = await fetchList(buildUrl({ property_id: propertyId }))
+        const primary = await fetchList(buildUrl({ property_id: propertyId }))
+        const codeRaw = String(property?.code || '').trim()
+        const code = (() => {
+          if (!codeRaw) return ''
+          const s = codeRaw.split('(')[0].trim()
+          const t = s.split(/\s+/)[0].trim()
+          return t || s || codeRaw
+        })()
+        const fallbackUrls = (!primary?.length)
+          ? [
+              ...(code ? [buildUrl({ property_code: code })] : []),
+              ...(codeRaw && codeRaw !== code ? [buildUrl({ property_code: codeRaw })] : []),
+            ]
+          : []
+        const fallbackLists = fallbackUrls.length ? await Promise.all(fallbackUrls.map(fetchList)) : []
+        const merged = ([] as any[]).concat(primary || [], ...fallbackLists)
         const map = new Map<string, any>()
         for (const r of merged) {
           const id = String(r?.id || '')
@@ -297,14 +316,14 @@ export default forwardRef<HTMLDivElement, {
         }
         const list = Array.from(map.values())
         const inMonth = list.filter((d: any) => {
-          const days = [
+          const raws = [
             d?.occurred_at,
             d?.completed_at,
             d?.started_at,
             d?.submitted_at,
             d?.created_at,
-          ].map((raw: any) => toDayStr(raw)).filter(Boolean)
-          return days.some((day: any) => dayjs(day).isSame(start, 'month'))
+          ].filter(Boolean)
+          return raws.some(isInMonth)
         })
         setMaintenances(inMonth as any)
       } catch {
@@ -313,7 +332,7 @@ export default forwardRef<HTMLDivElement, {
         setMaintenancesLoaded(true)
       }
     })()
-  }, [propertyId, month, needMaintData])
+  }, [propertyId, month, needMaintData, property?.code])
   const orderIncomeShare = relatedOrders.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
   const rentIncome = orderIncomeShare
   const orderById = new Map((orders || []).map(o => [String(o.id), o]))
@@ -470,25 +489,64 @@ export default forwardRef<HTMLDivElement, {
     return s
   }
   const countUrlList = (v: any): number => {
-    if (!v) return 0
-    if (Array.isArray(v)) return v.map((x) => String(x || '').trim()).filter(Boolean).length
-    if (typeof v === 'string') {
-      const s = v.trim()
-      if (!s) return 0
+    const arr = toUrlStrings(v)
+    return arr.length
+  }
+  const toUrlStrings = (raw: any): string[] => {
+    if (!raw) return []
+    if (Array.isArray(raw)) {
+      return raw
+        .map((x) => {
+          if (!x) return ''
+          if (typeof x === 'string') return x
+          if (typeof x === 'object') return String((x as any).url || (x as any).src || (x as any).path || '')
+          return String(x || '')
+        })
+        .map((s) => String(s || '').trim())
+        .filter(Boolean)
+    }
+    if (typeof raw === 'string') {
+      const s = raw.trim()
+      if (!s) return []
       try {
         const j = JSON.parse(s)
-        if (Array.isArray(j)) return j.map((x) => String(x || '').trim()).filter(Boolean).length
+        if (Array.isArray(j)) return toUrlStrings(j)
       } catch {}
+      if (/^https?:\/\//i.test(s) || s.startsWith('/')) return [s]
+      return []
     }
-    return 0
-  }
-  const allowPhotosInReportOfRecord = (r: any): boolean => {
-    return (countUrlList((r as any)?.photo_urls) + countUrlList((r as any)?.repair_photo_urls)) > 0
-  }
-  const urlArr = (raw: any) => {
-    if (Array.isArray(raw)) return raw
-    if (typeof raw === 'string') { try { const j = JSON.parse(raw); return Array.isArray(j) ? j : [] } catch { return [] } }
+    if (typeof raw === 'object') {
+      const u = String((raw as any).url || (raw as any).src || (raw as any).path || '').trim()
+      if (u) return [u]
+    }
     return []
+  }
+  const urlArr = (raw: any) => toUrlStrings(raw)
+  const isInMonth = (raw: any): boolean => {
+    if (!raw) return false
+    const s = String(raw || '').trim()
+    if (!s) return false
+    const day = toDayStr(s)
+    if (day) return dayjs(day).isSame(start, 'month')
+    const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+    if (m) {
+      const mm = String(m[2]).padStart(2, '0')
+      const dd = String(m[1]).padStart(2, '0')
+      return dayjs(`${m[3]}-${mm}-${dd}`).isSame(start, 'month')
+    }
+    const d = dayjs(s)
+    if (d.isValid()) return d.isSame(start, 'month')
+    return false
+  }
+  const dayLabel = (raw: any): string => {
+    if (!raw) return ''
+    const s = String(raw || '').trim()
+    if (!s) return ''
+    const day = toDayStr(s)
+    if (day) return day
+    const d = dayjs(s)
+    if (d.isValid()) return d.format('YYYY-MM-DD')
+    return ''
   }
   const otherItems = expensesInMonthForReportAll
     .filter(e => catKey(e) === 'other')
@@ -520,7 +578,12 @@ export default forwardRef<HTMLDivElement, {
     balance.furniture_closing_outstanding,
   ].some(v => Math.abs(Number(v || 0)) > 0.005))
   const showBalance = !!balance && (hasCarry || hasFurniture)
-  const isImg = (u?: string) => !!u && /\.(png|jpg|jpeg|gif)$/i.test(u)
+  const isImg = (u?: string) => {
+    if (!u) return false
+    const s = String(u || '')
+    const base = s.split('?')[0]
+    return /\.(png|jpg|jpeg|gif|webp)$/i.test(base)
+  }
   const isPdf = (u?: string) => !!u && /\.pdf$/i.test(u)
   const compressCfg = (() => {
     const w = Math.max(600, Math.min(2400, Number.isFinite(Number(photoW)) && Number(photoW) > 0 ? Number(photoW) : 1400))
@@ -578,7 +641,60 @@ export default forwardRef<HTMLDivElement, {
     return { segs, laneMap, laneCount: lanesEnd.length }
   }
   const sourceColor: Record<string, string> = { airbnb: '#FF9F97', booking: '#98B6EC', offline: '#DC8C03', other: '#98B6EC' }
-  const monthlyStatementReady = !!propertyId && (needDeepData ? deepCleaningsLoaded : true) && (showMaintSectionFinal ? maintenancesLoaded : true)
+  const baseDataReady = (() => {
+    if (!(isPdfMode && renderEngine === 'print')) return true
+    const o = (typeof ordersLoaded === 'boolean') ? ordersLoaded : true
+    const t = (typeof txsLoaded === 'boolean') ? txsLoaded : true
+    const p = (typeof propertiesLoaded === 'boolean') ? propertiesLoaded : true
+    const l = (typeof landlordsLoaded === 'boolean') ? landlordsLoaded : true
+    return o && t && p && l
+  })()
+  const [deepRendered, setDeepRendered] = useState(false)
+  const [maintRendered, setMaintRendered] = useState(false)
+
+  useEffect(() => {
+    if (!(isPdfMode && renderEngine === 'print')) { setDeepRendered(true); return }
+    if (!showDeepSectionFinal) { setDeepRendered(true); return }
+    if (!deepCleaningsLoaded) { setDeepRendered(false); return }
+    if (!deepCleanings.length) { setDeepRendered(true); return }
+    let cancelled = false
+    const t0 = Date.now()
+    const tick = () => {
+      if (cancelled) return
+      const root = document.querySelector('[data-monthly-statement-root="1"]') as HTMLElement | null
+      if (root?.querySelector?.('[data-deep-clean-section="1"]')) { setDeepRendered(true); return }
+      if (Date.now() - t0 > 4000) { setDeepRendered(true); return }
+      requestAnimationFrame(tick)
+    }
+    tick()
+    return () => { cancelled = true }
+  }, [isPdfMode, renderEngine, showDeepSectionFinal, deepCleaningsLoaded, deepCleanings.length, propertyId, month])
+
+  useEffect(() => {
+    if (!(isPdfMode && renderEngine === 'print')) { setMaintRendered(true); return }
+    if (!showMaintSectionFinal) { setMaintRendered(true); return }
+    if (!maintenancesLoaded) { setMaintRendered(false); return }
+    if (!maintenances.length) { setMaintRendered(true); return }
+    let cancelled = false
+    const t0 = Date.now()
+    const tick = () => {
+      if (cancelled) return
+      const root = document.querySelector('[data-monthly-statement-root="1"]') as HTMLElement | null
+      if (root?.querySelector?.('[data-maint-section="1"]')) { setMaintRendered(true); return }
+      if (Date.now() - t0 > 4000) { setMaintRendered(true); return }
+      requestAnimationFrame(tick)
+    }
+    tick()
+    return () => { cancelled = true }
+  }, [isPdfMode, renderEngine, showMaintSectionFinal, maintenancesLoaded, maintenances.length, propertyId, month])
+
+  const monthlyStatementReady =
+    !!propertyId &&
+    baseDataReady &&
+    (needDeepData ? deepCleaningsLoaded : true) &&
+    (needMaintData ? maintenancesLoaded : true) &&
+    deepRendered &&
+    maintRendered
 
   return (
     <div
@@ -900,76 +1016,112 @@ export default forwardRef<HTMLDivElement, {
 
       {(showDeepSectionFinal && deepCleanings.length) ? (
         <div data-deep-clean-section="1" data-pdf-break-before={isPdfMode ? 'true' : undefined}>
-          <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'}</div>
           {isPdfMode ? (
             <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
               {deepCleanings
                 .slice()
                 .sort((a: any, b: any) => String(a?.occurred_at || '').localeCompare(String(b?.occurred_at || '')))
-                .map((d: any) => {
-                  const date = toDayStr(d?.completed_at || d?.occurred_at || d?.started_at || d?.submitted_at || d?.created_at)
+                .map((d: any, idx: number) => {
+                  const date = dayLabel(d?.completed_at || d?.occurred_at || d?.started_at || d?.submitted_at || d?.created_at)
                   const startTime = d?.started_at ? dayjs(String(d.started_at)).format('HH:mm') : ''
                   const endTime = d?.ended_at ? dayjs(String(d.ended_at)).format('HH:mm') : ''
                   const timeLabel = [date, (startTime || endTime) ? `${startTime || '-'}~${endTime || '-'}` : ''].filter(Boolean).join(' ')
                   const did = String(d?.id || '')
                   const beforeArr = urlArr((d as any)?.photo_urls).map((u: any) => String(u || '')).filter(Boolean)
                   const afterArr = urlArr((d as any)?.repair_photo_urls).map((u: any) => String(u || '')).filter(Boolean)
-                  const allowPhotosInPdf = allowPhotosInReportOfRecord(d)
                   const beforePdfArr = isThumbPhotos ? beforeArr.slice(0, 1) : beforeArr
                   const afterPdfArr = isThumbPhotos ? afterArr.slice(0, 1) : afterArr
-                  const pairRows = (() => {
-                    const n = Math.max(beforePdfArr.length, afterPdfArr.length)
-                    const rows: Array<{ b?: string; a?: string; idx: number }> = []
-                    for (let i = 0; i < n; i++) rows.push({ b: beforePdfArr[i], a: afterPdfArr[i], idx: i })
-                    return rows
-                  })()
+                  const allowPhotosInPdf = (beforePdfArr.length + afterPdfArr.length) > 0
+                  const title = showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'
+                  const labelJob = showChinese ? '工单编号  JOB NUMBER' : 'JOB NUMBER'
+                  const labelCompletion = showChinese ? '完成时间  COMPLETION DATE' : 'COMPLETION DATE'
+                  const labelArea = showChinese ? '维护区域  SERVICE AREA' : 'SERVICE AREA'
+                  const labelDetails = showChinese ? '维护详情对比  Service Details' : 'Service Details'
+                  const areaCn = String(d?.category || '').trim()
+                  const areaEn = areaToEn(areaCn)
+                  const areaShow = showChinese ? [areaCn, areaEn].filter(Boolean).join(' ') : (areaEn || areaCn)
+                  const jobNo = String(d?.work_no || d?.id || '')
+                  const renderPhase = (phaseText: string, urls: string[]) => {
+                    if (!urls.length) return null
+                    const firstRow = urls.slice(0, 3)
+                    const rest = urls.slice(3)
+                    const cell = (u: string, idx: number) => {
+                      const src = resolveUrl(u)
+                      return (
+                        <div key={`${idx}-${u}`} style={{ width:'calc((100% - 32px) / 3)', padding: 0, margin: 0, border: 'none', borderRadius: 0, background: 'transparent', boxShadow: 'none', breakInside:'avoid', pageBreakInside:'avoid' }}>
+                          {isImg(u) ? (
+                            renderEngine === 'print'
+                              ? <img crossOrigin="anonymous" src={src} style={{ width:'100%', height: '76mm', objectFit:'contain', display:'block', background:'#fff', border:'none', borderRadius: 0, boxShadow:'none', outline:'none' }} />
+                              : <div style={{ width:'100%', height: '76mm', backgroundColor:'#fff', backgroundImage: `url(${src})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                          ) : (
+                            <a href={src} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
+                          )}
+                        </div>
+                      )
+                    }
+                    return (
+                      <div style={{ display:'flex', flexWrap:'wrap', gap: 16 }}>
+                        <div style={{ width:'100%', marginTop: 18, breakInside:'avoid', pageBreakInside:'avoid' }}>
+                          <div style={{ fontSize: 16, fontWeight: 700, color:'#111' }}>{phaseText}</div>
+                          <div style={{ height: 2, background: '#c4cddd', marginTop: 10, marginBottom: 12 }} />
+                          <div style={{ display:'flex', flexWrap:'wrap', gap: 16 }}>
+                            {firstRow.map((u, idx) => cell(u, idx))}
+                          </div>
+                        </div>
+                        {rest.map((u, idx) => cell(u, idx + 3))}
+                      </div>
+                    )
+                  }
                   return (
                     <div
                       key={did || String(d?.work_no || '')}
-                      data-pdf-avoid-cut={isPdfMode ? 'true' : undefined}
-                      style={{ border:'1px solid #eaeef5', borderRadius: 12, padding: 12 }}
+                      style={{ marginTop: idx === 0 ? 16 : 0 }}
                     >
-                      <div style={{ display:'flex', justifyContent:'space-between', gap: 12, flexWrap:'wrap' }}>
-                        <div style={{ fontWeight: 700 }}>{`Job Number: ${String(d?.work_no || d?.id || '')}`}</div>
-                        <div style={{ color:'#111' }}>{`Completion Date: ${timeLabel || '-'}`}</div>
-                        <div style={{ color:'#111' }}>{`Area: ${areaToEn(d?.category)}`}</div>
-                      </div>
-                      {(allowPhotosInPdf && canIncludeJobPhotos) ? (
-                      <div style={{ display:'flex', flexDirection:'column', gap: 12, marginTop: 10 }}>
-                        <div data-pdf-avoid-cut="true">
-                          <div style={{ fontWeight: 700, marginBottom: 6 }}>Before</div>
-                          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
-                            {beforePdfArr.length ? beforePdfArr.map((u: any, idx: number) => (
-                              <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
-                                {isImg(u) ? (
-                                  renderEngine === 'print'
-                                    ? <img crossOrigin="anonymous" src={resolveUrl(u)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
-                                    : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(u)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
-                                ) : (
-                                  <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
-                                )}
+                      {(() => {
+                        const phases: Array<{ label: string; urls: string[] }> = []
+                        if (beforePdfArr.length) phases.push({ label: showChinese ? 'Before（前）' : 'Before', urls: beforePdfArr })
+                        if (afterPdfArr.length) phases.push({ label: showChinese ? 'After（后）' : 'After', urls: afterPdfArr })
+                        const firstPhase = phases[0] || null
+                        const secondPhase = phases[1] || null
+                        const canShow = allowPhotosInPdf && canIncludeJobPhotos && !!firstPhase
+                        return (
+                          <>
+                            <div data-pdf-avoid-cut="true" style={{ breakInside:'avoid', pageBreakInside:'avoid' }}>
+                              <div style={{ background: '#eef3fb', padding: '6px 8px', marginBottom: 10 }}>
+                                <div style={{ fontWeight: 700, fontSize: 16, lineHeight: 1.2 }}>{title}</div>
                               </div>
-                            )) : <div style={{ color:'#999' }}>-</div>}
-                          </div>
-                        </div>
-                        <div data-pdf-avoid-cut="true">
-                          <div style={{ fontWeight: 700, marginBottom: 6 }}>After</div>
-                          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
-                            {afterPdfArr.length ? afterPdfArr.map((u: any, idx: number) => (
-                              <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
-                                {isImg(u) ? (
-                                  renderEngine === 'print'
-                                    ? <img crossOrigin="anonymous" src={resolveUrl(u)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
-                                    : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(u)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
-                                ) : (
-                                  <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
-                                )}
+                              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap: 22, padding: '2px 0 10px' }}>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: 12, fontWeight: 700, color:'#6b778c', letterSpacing: 0.2, textTransform:'uppercase' }}>{labelJob}</div>
+                                  <div style={{ marginTop: 8, fontSize: 16, fontWeight: 700, color:'#1f5cff', overflowWrap:'anywhere', lineHeight: 1.25 }}>{jobNo || '-'}</div>
+                                </div>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: 12, fontWeight: 700, color:'#6b778c', letterSpacing: 0.2, textTransform:'uppercase' }}>{labelCompletion}</div>
+                                  <div style={{ marginTop: 8, fontSize: 16, fontWeight: 700, color:'#111', overflowWrap:'anywhere', lineHeight: 1.25 }}>{timeLabel || '-'}</div>
+                                </div>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: 12, fontWeight: 700, color:'#6b778c', letterSpacing: 0.2, textTransform:'uppercase' }}>{labelArea}</div>
+                                  <div style={{ marginTop: 8, fontSize: 16, fontWeight: 700, color:'#111', overflowWrap:'anywhere', lineHeight: 1.25 }}>{areaShow || '-'}</div>
+                                </div>
                               </div>
-                            )) : <div style={{ color:'#999' }}>-</div>}
-                          </div>
-                        </div>
-                      </div>
-                      ) : null}
+                              <div style={{ marginTop: 16, display:'flex', alignItems:'center', gap: 10 }}>
+                                <div style={{ width: 4, height: 16, background:'#1f5cff', borderRadius: 2 }} />
+                                <div style={{ fontSize: 16, fontWeight: 700, color:'#2b3a55', letterSpacing: 0.2, lineHeight: 1.2 }}>{labelDetails}</div>
+                              </div>
+                              {canShow ? (
+                                <div style={{ marginTop: 6 }}>
+                                  {renderPhase(firstPhase!.label, firstPhase!.urls)}
+                                </div>
+                              ) : null}
+                            </div>
+                            {(allowPhotosInPdf && canIncludeJobPhotos && !!secondPhase) ? (
+                              <div style={{ marginTop: 6 }}>
+                                {renderPhase(secondPhase!.label, secondPhase!.urls)}
+                              </div>
+                            ) : null}
+                          </>
+                        )
+                      })()}
                     </div>
                   )
                 })}
@@ -1044,101 +1196,112 @@ export default forwardRef<HTMLDivElement, {
       {(showMaintSectionFinal && maintenances.length) ? (
         <div data-maint-section="1" data-pdf-break-before={isPdfMode ? 'true' : undefined}>
           {isPdfMode ? (
-            (() => {
-              const list = maintenances
+            <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
+              {maintenances
                 .slice()
                 .sort((a: any, b: any) => String(a?.occurred_at || '').localeCompare(String(b?.occurred_at || '')))
-
-              const renderCard = (m: any) => {
-                const date = toDayStr(m?.completed_at || m?.occurred_at || m?.started_at || m?.submitted_at || m?.created_at)
-                const startTime = m?.started_at ? dayjs(String(m.started_at)).format('HH:mm') : ''
-                const endTime = m?.ended_at ? dayjs(String(m.ended_at)).format('HH:mm') : ''
-                const timeLabel = [date, (startTime || endTime) ? `${startTime || '-'}~${endTime || '-'}` : ''].filter(Boolean).join(' ')
-                const mid = String(m?.id || '')
-                const summaryRaw = (summaryFromDetails((m as any)?.details) || '').split('\n').map((x: any) => String(x || '').trim()).filter(Boolean)[0] || ''
-                const summary = summaryRaw || String((m as any)?.repair_notes || '').trim() || String(m?.category || '').trim()
-                const beforeArr = urlArr((m as any)?.photo_urls).map((u: any) => String(u || '')).filter(Boolean)
-                const afterArr = urlArr((m as any)?.repair_photo_urls).map((u: any) => String(u || '')).filter(Boolean)
-                const allowPhotosInPdf = allowPhotosInReportOfRecord(m)
-                const beforePdfArr = isThumbPhotos ? beforeArr.slice(0, 1) : beforeArr
-                const afterPdfArr = isThumbPhotos ? afterArr.slice(0, 1) : afterArr
-                const pairRows = (() => {
-                  const n = Math.max(beforePdfArr.length, afterPdfArr.length)
-                  const rows: Array<{ b?: string; a?: string; idx: number }> = []
-                  for (let i = 0; i < n; i++) rows.push({ b: beforePdfArr[i], a: afterPdfArr[i], idx: i })
-                  return rows
-                })()
-                return (
-                  <div
-                    key={mid || String(m?.work_no || '')}
-                    data-pdf-avoid-cut={isPdfMode ? 'true' : undefined}
-                    style={{ border:'1px solid #eaeef5', borderRadius: 12, padding: 12 }}
-                  >
-                    <div style={{ display:'flex', justifyContent:'space-between', gap: 12, flexWrap:'wrap' }}>
-                      <div style={{ fontWeight: 700 }}>{`Job Number: ${String(m?.work_no || m?.id || '')}`}</div>
-                      <div style={{ color:'#111' }}>{`Completion Date: ${timeLabel || '-'}`}</div>
-                      <div style={{ color:'#111' }}>{`Area: ${areaToEn(m?.category)}`}</div>
-                    </div>
-                    {summary ? <div style={{ marginTop: 8, whiteSpace:'pre-wrap', wordBreak:'break-word' }}>{`Job Description: ${summary}`}</div> : null}
-                    {(allowPhotosInPdf && canIncludeJobPhotos) ? (
-                    <div style={{ display:'flex', flexDirection:'column', gap: 12, marginTop: 10 }}>
-                      <div data-pdf-avoid-cut="true">
-                        <div style={{ fontWeight: 700, marginBottom: 6 }}>Before</div>
-                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
-                          {beforePdfArr.length ? beforePdfArr.map((u: any, idx: number) => (
-                            <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
-                              {isImg(u) ? (
-                                renderEngine === 'print'
-                                  ? <img crossOrigin="anonymous" src={resolveUrl(u)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
-                                  : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(u)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
-                              ) : (
-                                <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
-                              )}
-                            </div>
-                          )) : <div style={{ color:'#999' }}>-</div>}
+                .map((m: any, idx: number) => {
+                  const date = dayLabel(m?.completed_at || m?.occurred_at || m?.started_at || m?.submitted_at || m?.created_at)
+                  const startTime = m?.started_at ? dayjs(String(m.started_at)).format('HH:mm') : ''
+                  const endTime = m?.ended_at ? dayjs(String(m.ended_at)).format('HH:mm') : ''
+                  const timeLabel = [date, (startTime || endTime) ? `${startTime || '-'}~${endTime || '-'}` : ''].filter(Boolean).join(' ')
+                  const mid = String(m?.id || '')
+                  const beforeArr = urlArr((m as any)?.photo_urls).map((u: any) => String(u || '')).filter(Boolean)
+                  const afterArr = urlArr((m as any)?.repair_photo_urls).map((u: any) => String(u || '')).filter(Boolean)
+                  const beforePdfArr = isThumbPhotos ? beforeArr.slice(0, 1) : beforeArr
+                  const afterPdfArr = isThumbPhotos ? afterArr.slice(0, 1) : afterArr
+                  const allowPhotosInPdf = (beforePdfArr.length + afterPdfArr.length) > 0
+                  const title = showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'
+                  const labelJob = showChinese ? '工单编号  JOB NUMBER' : 'JOB NUMBER'
+                  const labelCompletion = showChinese ? '完成时间  COMPLETION DATE' : 'COMPLETION DATE'
+                  const labelArea = showChinese ? '维护区域  SERVICE AREA' : 'SERVICE AREA'
+                  const labelDetails = showChinese ? '维护详情对比  Service Details' : 'Service Details'
+                  const areaCn = String(m?.category_detail || m?.category || '').trim()
+                  const areaEn = areaToEn(areaCn)
+                  const areaShow = showChinese ? [areaCn, areaEn].filter(Boolean).join(' ') : (areaEn || areaCn)
+                  const jobNo = String(m?.work_no || m?.id || '')
+                  const renderPhase = (phaseText: string, urls: string[]) => {
+                    if (!urls.length) return null
+                    const firstRow = urls.slice(0, 3)
+                    const rest = urls.slice(3)
+                    const cell = (u: string, idx: number) => {
+                      const src = resolveUrl(u)
+                      return (
+                        <div key={`${idx}-${u}`} style={{ width:'calc((100% - 32px) / 3)', padding: 0, margin: 0, border: 'none', borderRadius: 0, background: 'transparent', boxShadow: 'none', breakInside:'avoid', pageBreakInside:'avoid' }}>
+                          {isImg(u) ? (
+                            renderEngine === 'print'
+                              ? <img crossOrigin="anonymous" src={src} style={{ width:'100%', height: '76mm', objectFit:'contain', display:'block', background:'#fff', border:'none', borderRadius: 0, boxShadow:'none', outline:'none' }} />
+                              : <div style={{ width:'100%', height: '76mm', backgroundColor:'#fff', backgroundImage: `url(${src})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
+                          ) : (
+                            <a href={src} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
+                          )}
                         </div>
-                      </div>
-                      <div data-pdf-avoid-cut="true">
-                        <div style={{ fontWeight: 700, marginBottom: 6 }}>After</div>
-                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap: 10 }}>
-                          {afterPdfArr.length ? afterPdfArr.map((u: any, idx: number) => (
-                            <div key={idx} style={{ border:'1px solid #eee', borderRadius: 10, padding: 8 }}>
-                              {isImg(u) ? (
-                                renderEngine === 'print'
-                                  ? <img crossOrigin="anonymous" src={resolveUrl(u)} style={{ width:'100%', height: isThumbPhotos ? 220 : 360, objectFit:'contain', borderRadius: 8 }} />
-                                  : <div style={{ width:'100%', height: isThumbPhotos ? 220 : 360, borderRadius: 8, backgroundColor:'#fff', backgroundImage: `url(${resolveUrl(u)})`, backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain' }} />
-                              ) : (
-                                <a href={resolveUrl(u)} target="_blank" rel="noreferrer">{String(u).split('/').pop() || 'file'}</a>
-                              )}
-                            </div>
-                          )) : <div style={{ color:'#999' }}>-</div>}
+                      )
+                    }
+                    return (
+                      <div style={{ display:'flex', flexWrap:'wrap', gap: 16 }}>
+                        <div style={{ width:'100%', marginTop: 18, breakInside:'avoid', pageBreakInside:'avoid' }}>
+                          <div style={{ fontSize: 16, fontWeight: 700, color:'#111' }}>{phaseText}</div>
+                          <div style={{ height: 2, background: '#c4cddd', marginTop: 10, marginBottom: 12 }} />
+                          <div style={{ display:'flex', flexWrap:'wrap', gap: 16 }}>
+                            {firstRow.map((u, idx) => cell(u, idx))}
+                          </div>
                         </div>
+                        {rest.map((u, idx) => cell(u, idx + 3))}
                       </div>
+                    )
+                  }
+                  return (
+                    <div key={mid || String(m?.work_no || '')} style={{ marginTop: idx === 0 ? 16 : 0 }}>
+                      {(() => {
+                        const phases: Array<{ label: string; urls: string[] }> = []
+                        if (beforePdfArr.length) phases.push({ label: showChinese ? 'Before（前）' : 'Before', urls: beforePdfArr })
+                        if (afterPdfArr.length) phases.push({ label: showChinese ? 'After（后）' : 'After', urls: afterPdfArr })
+                        const firstPhase = phases[0] || null
+                        const secondPhase = phases[1] || null
+                        const canShow = allowPhotosInPdf && canIncludeJobPhotos && !!firstPhase
+                        return (
+                          <>
+                            <div data-pdf-avoid-cut="true" style={{ breakInside:'avoid', pageBreakInside:'avoid' }}>
+                              <div style={{ background: '#eef3fb', padding: '6px 8px', marginBottom: 10 }}>
+                                <div style={{ fontWeight: 700, fontSize: 16, lineHeight: 1.2 }}>{title}</div>
+                              </div>
+                              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap: 22, padding: '2px 0 10px' }}>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: 12, fontWeight: 700, color:'#6b778c', letterSpacing: 0.2, textTransform:'uppercase' }}>{labelJob}</div>
+                                  <div style={{ marginTop: 8, fontSize: 16, fontWeight: 700, color:'#1f5cff', overflowWrap:'anywhere', lineHeight: 1.25 }}>{jobNo || '-'}</div>
+                                </div>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: 12, fontWeight: 700, color:'#6b778c', letterSpacing: 0.2, textTransform:'uppercase' }}>{labelCompletion}</div>
+                                  <div style={{ marginTop: 8, fontSize: 16, fontWeight: 700, color:'#111', overflowWrap:'anywhere', lineHeight: 1.25 }}>{timeLabel || '-'}</div>
+                                </div>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: 12, fontWeight: 700, color:'#6b778c', letterSpacing: 0.2, textTransform:'uppercase' }}>{labelArea}</div>
+                                  <div style={{ marginTop: 8, fontSize: 16, fontWeight: 700, color:'#111', overflowWrap:'anywhere', lineHeight: 1.25 }}>{areaShow || '-'}</div>
+                                </div>
+                              </div>
+                              <div style={{ marginTop: 16, display:'flex', alignItems:'center', gap: 10 }}>
+                                <div style={{ width: 4, height: 16, background:'#1f5cff', borderRadius: 2 }} />
+                                <div style={{ fontSize: 16, fontWeight: 700, color:'#2b3a55', letterSpacing: 0.2, lineHeight: 1.2 }}>{labelDetails}</div>
+                              </div>
+                              {canShow ? (
+                                <div style={{ marginTop: 6 }}>
+                                  {renderPhase(firstPhase!.label, firstPhase!.urls)}
+                                </div>
+                              ) : null}
+                            </div>
+                            {(allowPhotosInPdf && canIncludeJobPhotos && !!secondPhase) ? (
+                              <div style={{ marginTop: 6 }}>
+                                {renderPhase(secondPhase!.label, secondPhase!.urls)}
+                              </div>
+                            ) : null}
+                          </>
+                        )
+                      })()}
                     </div>
-                    ) : null}
-                  </div>
-                )
-              }
-
-              const first = list[0]
-              const rest = list.slice(1)
-
-              return (
-                <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
-                  {first ? (
-                    <div data-pdf-avoid-cut="true">
-                      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>
-                        {showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'}
-                      </div>
-                      <div style={{ marginTop: 12 }}>
-                        {renderCard(first)}
-                      </div>
-                    </div>
-                  ) : null}
-                  {rest.map(renderCard)}
-                </div>
-              )
-            })()
+                  )
+                })}
+            </div>
           ) : (
             <>
               <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>

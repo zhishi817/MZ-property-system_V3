@@ -15,6 +15,10 @@ export default function PublicMonthlyStatementPrintPage() {
   const [txs, setTxs] = useState<any[]>([])
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
+  const [ordersLoaded, setOrdersLoaded] = useState<boolean>(false)
+  const [txsLoaded, setTxsLoaded] = useState<boolean>(false)
+  const [propertiesLoaded, setPropertiesLoaded] = useState<boolean>(false)
+  const [landlordsLoaded, setLandlordsLoaded] = useState<boolean>(false)
   const [showChinese, setShowChinese] = useState<boolean>(true)
   const [pdfMode, setPdfMode] = useState<boolean>(true)
   const [sections, setSections] = useState<string[]>(['all'])
@@ -77,9 +81,21 @@ export default function PublicMonthlyStatementPrintPage() {
     } catch {}
   }, [])
 
-  useEffect(() => { getJSON<any>('/properties', { timeoutMs: fetchTimeoutMs }).then(j => setProperties(j || [])).catch(() => setProperties([])) }, [])
   useEffect(() => {
-    getJSON<Order[]>('/orders', { timeoutMs: fetchTimeoutMs }).then(setOrders).catch(() => setOrders([]))
+    setPropertiesLoaded(false)
+    getJSON<any>('/properties', { timeoutMs: fetchTimeoutMs })
+      .then(j => setProperties(j || []))
+      .catch(() => setProperties([]))
+      .finally(() => setPropertiesLoaded(true))
+  }, [])
+  useEffect(() => {
+    setOrdersLoaded(false)
+    setTxsLoaded(false)
+    setLandlordsLoaded(false)
+    getJSON<Order[]>('/orders', { timeoutMs: fetchTimeoutMs })
+      .then(setOrders)
+      .catch(() => setOrders([]))
+      .finally(() => setOrdersLoaded(true))
     ;(async () => {
       try {
         const fin: any[] = await getJSON<any[]>('/finance', { timeoutMs: fetchTimeoutMs })
@@ -88,8 +104,12 @@ export default function PublicMonthlyStatementPrintPage() {
         const built = buildStatementTxs(fin, pexp, { properties, recurring_payments: recurs, excludeOrphanFixedSnapshots })
         setTxs(built.txs as any)
       } catch { setTxs([]) }
+      finally { setTxsLoaded(true) }
     })()
-    getJSON<Landlord[]>('/landlords', { timeoutMs: fetchTimeoutMs }).then(setLandlords).catch(() => setLandlords([]))
+    getJSON<Landlord[]>('/landlords', { timeoutMs: fetchTimeoutMs })
+      .then(setLandlords)
+      .catch(() => setLandlords([]))
+      .finally(() => setLandlordsLoaded(true))
   }, [properties, excludeOrphanFixedSnapshots])
 
   if (!propertyId) return <div />
@@ -103,6 +123,10 @@ export default function PublicMonthlyStatementPrintPage() {
       txs={txs as any}
       properties={properties as any}
       landlords={landlords as any}
+      ordersLoaded={ordersLoaded}
+      txsLoaded={txsLoaded}
+      propertiesLoaded={propertiesLoaded}
+      landlordsLoaded={landlordsLoaded}
       showChinese={showChinese}
       showInvoices={false}
       sections={sections}

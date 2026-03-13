@@ -924,6 +924,10 @@ router.post('/cleaning-sync-retry-jobs/:id/retry', requirePerm('order.manage'), 
 router.get('/cleaning-sync-jobs', requirePerm('order.manage'), async (req, res) => {
   try {
     if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    try { const { ensureCleaningSyncJobsSchema } = require('../services/cleaningSyncJobsSchema'); await ensureCleaningSyncJobsSchema() } catch (e: any) {
+      if (String(e?.code || '') === 'CLEANING_SCHEMA_MISSING') return res.json({ items: [] })
+      throw e
+    }
     const status = String((req.query as any)?.status || '').trim()
     const orderId = String((req.query as any)?.order_id || '').trim()
     const limit = Math.max(1, Math.min(200, Number((req.query as any)?.limit || 50)))
@@ -957,6 +961,10 @@ router.post('/cleaning-sync-jobs/:id/retry', requirePerm('order.manage'), async 
     if (!hasPg) return res.status(400).json({ message: 'pg required' })
     const id = String(req.params.id || '').trim()
     if (!id) return res.status(400).json({ message: '参数错误' })
+    try { const { ensureCleaningSyncJobsSchema } = require('../services/cleaningSyncJobsSchema'); await ensureCleaningSyncJobsSchema() } catch (e: any) {
+      if (String(e?.code || '') === 'CLEANING_SCHEMA_MISSING') return res.status(500).json({ message: 'cleaning_sync_jobs_missing' })
+      throw e
+    }
     const r = await pgPool!.query(
       `UPDATE cleaning_sync_jobs
        SET status='pending', next_retry_at=now(), running_started_at=NULL, updated_at=now()

@@ -20,6 +20,7 @@ const playwright_1 = require("../lib/playwright");
 const pdfTaskLimiter_1 = require("../lib/pdfTaskLimiter");
 const monthlyStatementPdfTemplate_1 = require("../lib/monthlyStatementPdfTemplate");
 const waitForImages_1 = require("../lib/waitForImages");
+const uploadImageResize_1 = require("../lib/uploadImageResize");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -913,9 +914,10 @@ exports.router.post('/invoices', (0, auth_1.requireAnyPerm)(['finance.tx.write',
         return res.status(400).json({ message: 'missing file' });
     try {
         if (r2_1.hasR2 && req.file && req.file.buffer) {
-            const ext = path_1.default.extname(req.file.originalname) || '';
+            const img = await (0, uploadImageResize_1.resizeUploadImage)({ buffer: req.file.buffer, contentType: req.file.mimetype, originalName: req.file.originalname });
+            const ext = img.ext || path_1.default.extname(req.file.originalname) || '';
             const key = `invoices/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
-            const url = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
+            const url = await (0, r2_1.r2Upload)(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer);
             return res.status(201).json({ url });
         }
         const url = `/uploads/${req.file.filename}`;
@@ -969,18 +971,21 @@ exports.router.post('/expense-invoices/:expenseId/upload', (0, auth_1.requireAny
     try {
         const user = req.user || {};
         const { v4: uuid } = require('uuid');
-        const ext = path_1.default.extname(req.file.originalname) || '';
+        const img = req.file.buffer
+            ? await (0, uploadImageResize_1.resizeUploadImage)({ buffer: req.file.buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
+            : { buffer: req.file.buffer, contentType: req.file.mimetype, ext: path_1.default.extname(req.file.originalname) || '' };
+        const ext = img.ext || path_1.default.extname(req.file.originalname) || '';
         let url = '';
         if (r2_1.hasR2 && req.file.buffer) {
             const key = `expenses/${expenseId}/${uuid()}${ext}`;
-            url = await (0, r2_1.r2Upload)(key, req.file.mimetype || 'application/octet-stream', req.file.buffer);
+            url = await (0, r2_1.r2Upload)(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer);
         }
         else {
             const dir = path_1.default.join(process.cwd(), 'uploads', 'expenses', expenseId);
             await fs_1.default.promises.mkdir(dir, { recursive: true });
             const name = `${uuid()}${ext}`;
             const full = path_1.default.join(dir, name);
-            await fs_1.default.promises.writeFile(full, req.file.buffer);
+            await fs_1.default.promises.writeFile(full, img.buffer);
             url = `/uploads/expenses/${expenseId}/${name}`;
         }
         if (dbAdapter_1.hasPg) {
@@ -1465,13 +1470,16 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
                 process.env.NEXT_PUBLIC_API_BASE_DEV ||
                 process.env.NEXT_PUBLIC_API_BASE ||
                 '').trim();
-            const cookieBase = (baseUrl) => ({
-                name: 'auth',
-                value: token,
-                url: baseUrl,
-                sameSite: 'None',
-                secure: /^https:\/\//i.test(baseUrl),
-            });
+            const cookieBase = (baseUrl) => {
+                const isHttps = /^https:\/\//i.test(baseUrl);
+                return {
+                    name: 'auth',
+                    value: token,
+                    url: baseUrl,
+                    sameSite: isHttps ? 'None' : 'Lax',
+                    secure: isHttps,
+                };
+            };
             const cookieTargets = Array.from(new Set([front, apiBaseForAssets].map(s => String(s || '').trim()).filter(Boolean)));
             if (cookieTargets.length) {
                 await context.addCookies(cookieTargets.map(cookieBase));
@@ -1511,13 +1519,22 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
             await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => { });
             await page.evaluate(() => { var _a; return (_a = document.fonts) === null || _a === void 0 ? void 0 : _a.ready; }).catch(() => { });
-            await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs }).catch((e) => {
+            let readyOk = false;
+            try {
+                await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs });
+                readyOk = true;
+            }
+            catch (e) {
                 try {
                     const msg = String((e === null || e === void 0 ? void 0 : e.message) || e || 'timeout');
                     console.error(`[monthly-statement-pdf][ready-timeout] month=${monthKey} pid=${pid} ${msg}`);
                 }
-                catch (_a) { }
-            });
+                catch (_c) { }
+            }
+            if (!readyOk) {
+                const extraWaitMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS_EXTRA || 60000)));
+                await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: extraWaitMs });
+            }
             const imgStats = await (0, waitForImages_1.waitForImages)(page, { timeoutMs: 20000, scroll: true, maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] }));
             try {
                 if (Number((imgStats === null || imgStats === void 0 ? void 0 : imgStats.notLoaded) || 0) > 0) {
@@ -1525,7 +1542,7 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
                     console.error(`[monthly-statement-pdf][img-timeout] month=${monthKey} pid=${pid} total=${imgStats.total} notLoaded=${imgStats.notLoaded}${sample}`);
                 }
             }
-            catch (_c) { }
+            catch (_d) { }
             await page.waitForTimeout(200);
             await page.emulateMedia({ media: 'print' });
             const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true });
@@ -1537,7 +1554,7 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             try {
                 await context.close();
             }
-            catch (_d) { }
+            catch (_e) { }
         }
     }
     catch (e) {

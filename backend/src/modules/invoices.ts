@@ -12,6 +12,7 @@ import { addAudit, db, roleHasPermission } from '../store'
 import { v4 as uuid } from 'uuid'
 import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
 import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
+import { resizeUploadImage } from '../lib/uploadImageResize'
  
 export const router = Router()
  
@@ -516,16 +517,19 @@ router.post('/companies/:id/logo/upload', requirePerm('invoice.company.manage'),
       return '.jpg'
     })()
 
+    const img = (req.file as any).buffer
+      ? await resizeUploadImage({ buffer: (req.file as any).buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
+      : { buffer: (req.file as any).buffer, contentType: req.file.mimetype, ext }
     let url = ''
     if (hasR2 && (req.file as any).buffer) {
       const key = `invoice-company-logos/${id}/${uuid()}${ext}`
-      url = await r2Upload(key, ct, (req.file as any).buffer)
+      url = await r2Upload(key, img.contentType || ct, img.buffer)
     } else {
       const dir = path.join(process.cwd(), 'uploads', 'invoice-company-logos', id)
       await fs.promises.mkdir(dir, { recursive: true })
       const name = `${uuid()}${ext}`
       const full = path.join(dir, name)
-      await fs.promises.writeFile(full, (req.file as any).buffer)
+      await fs.promises.writeFile(full, img.buffer)
       url = `/uploads/invoice-company-logos/${id}/${name}`
     }
 
@@ -1504,17 +1508,20 @@ router.post('/:id/files/upload', requireAnyPerm(['invoice.draft.create','invoice
     await ensureInvoiceTables()
     const user = (req as any).user || {}
     const actor = user?.sub || user?.username || null
-    const ext = path.extname(req.file.originalname) || ''
+    const img = (req.file as any).buffer
+      ? await resizeUploadImage({ buffer: (req.file as any).buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
+      : { buffer: (req.file as any).buffer, contentType: req.file.mimetype, ext: path.extname(req.file.originalname) || '' }
+    const ext = img.ext || path.extname(req.file.originalname) || ''
     let url = ''
     if (hasR2 && (req.file as any).buffer) {
       const key = `invoice-files/${id}/${uuid()}${ext}`
-      url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+      url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     } else {
       const dir = path.join(process.cwd(), 'uploads', 'invoice-files', id)
       await fs.promises.mkdir(dir, { recursive: true })
       const name = `${uuid()}${ext}`
       const full = path.join(dir, name)
-      await fs.promises.writeFile(full, (req.file as any).buffer)
+      await fs.promises.writeFile(full, img.buffer)
       url = `/uploads/invoice-files/${id}/${name}`
     }
     const rec: any = {

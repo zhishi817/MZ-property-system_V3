@@ -14,6 +14,7 @@ import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
 import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
 import { renderMonthlyStatementPdfHtml } from '../lib/monthlyStatementPdfTemplate'
 import { waitForImages } from '../lib/waitForImages'
+import { resizeUploadImage } from '../lib/uploadImageResize'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -864,9 +865,10 @@ router.post('/invoices', requireAnyPerm(['finance.tx.write','property_expenses.w
   if (!req.file) return res.status(400).json({ message: 'missing file' })
   try {
     if (hasR2 && req.file && (req.file as any).buffer) {
-      const ext = path.extname(req.file.originalname) || ''
+      const img = await resizeUploadImage({ buffer: (req.file as any).buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
+      const ext = img.ext || path.extname(req.file.originalname) || ''
       const key = `invoices/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-      const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+      const url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
       return res.status(201).json({ url })
     }
     const url = `/uploads/${req.file.filename}`
@@ -918,17 +920,20 @@ router.post('/expense-invoices/:expenseId/upload', requireAnyPerm(['property_exp
   try {
     const user = (req as any).user || {}
     const { v4: uuid } = require('uuid')
-    const ext = path.extname(req.file.originalname) || ''
+    const img = (req.file as any).buffer
+      ? await resizeUploadImage({ buffer: (req.file as any).buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
+      : { buffer: (req.file as any).buffer, contentType: req.file.mimetype, ext: path.extname(req.file.originalname) || '' }
+    const ext = img.ext || path.extname(req.file.originalname) || ''
     let url = ''
     if (hasR2 && (req.file as any).buffer) {
       const key = `expenses/${expenseId}/${uuid()}${ext}`
-      url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+      url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     } else {
       const dir = path.join(process.cwd(), 'uploads', 'expenses', expenseId)
       await fs.promises.mkdir(dir, { recursive: true })
       const name = `${uuid()}${ext}`
       const full = path.join(dir, name)
-      await fs.promises.writeFile(full, (req.file as any).buffer)
+      await fs.promises.writeFile(full, img.buffer)
       url = `/uploads/expenses/${expenseId}/${name}`
     }
     if (hasPg) {
@@ -1364,13 +1369,16 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
         process.env.NEXT_PUBLIC_API_BASE ||
         ''
       ).trim()
-      const cookieBase = (baseUrl: string) => ({
-        name: 'auth',
-        value: token,
-        url: baseUrl,
-        sameSite: 'None',
-        secure: /^https:\/\//i.test(baseUrl),
-      })
+      const cookieBase = (baseUrl: string) => {
+        const isHttps = /^https:\/\//i.test(baseUrl)
+        return {
+          name: 'auth',
+          value: token,
+          url: baseUrl,
+          sameSite: isHttps ? 'None' : 'Lax',
+          secure: isHttps,
+        }
+      }
       const cookieTargets = Array.from(new Set([front, apiBaseForAssets].map(s => String(s || '').trim()).filter(Boolean)))
       if (cookieTargets.length) {
         await context.addCookies(cookieTargets.map(cookieBase) as any)
@@ -1404,12 +1412,20 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
       await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
       await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
-      await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs }).catch((e: any) => {
+      let readyOk = false
+      try {
+        await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs })
+        readyOk = true
+      } catch (e: any) {
         try {
           const msg = String(e?.message || e || 'timeout')
           console.error(`[monthly-statement-pdf][ready-timeout] month=${monthKey} pid=${pid} ${msg}`)
         } catch {}
-      })
+      }
+      if (!readyOk) {
+        const extraWaitMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS_EXTRA || 60000)))
+        await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: extraWaitMs })
+      }
       const imgStats = await waitForImages(page, { timeoutMs: 20000, scroll: true, maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
       try {
         if (Number(imgStats?.notLoaded || 0) > 0) {

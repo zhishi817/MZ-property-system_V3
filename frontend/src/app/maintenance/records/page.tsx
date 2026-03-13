@@ -7,6 +7,7 @@ import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { apiUpdate, apiDelete, apiCreate, getJSON, API_BASE, authHeaders } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
+import { downloadNamedBlob } from '../../../lib/download'
 import { sortProperties } from '../../../lib/properties'
 
 type RepairOrder = {
@@ -55,10 +56,13 @@ export default function MaintenanceRecordsUnified() {
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [downloadingId, setDownloadingId] = useState<string | null>(null)
+  const [pdfPreview, setPdfPreview] = useState<{ open: boolean; url: string; title: string; showChinese: boolean; blob: Blob | null; row: RepairOrder | null; loading: boolean }>({ open: false, url: '', title: '', showChinese: false, blob: null, row: null, loading: false })
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<RepairOrder | null>(null)
   const [form] = Form.useForm()
   const { message } = App.useApp()
+  const canDownload = hasPerm('property_maintenance.view') || hasPerm('property_maintenance.write') || hasPerm('rbac.manage')
   const [pwdOpen, setPwdOpen] = useState(false)
   const [pwdForm] = Form.useForm()
   const [viewOpen, setViewOpen] = useState(false)
@@ -491,6 +495,60 @@ export default function MaintenanceRecordsUnified() {
       message.error('生成分享链接失败')
     }
   }
+  const closePdfPreview = () => {
+    setPdfPreview((prev) => {
+      try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
+      return { open: false, url: '', title: '', showChinese: false, blob: null, row: null, loading: false }
+    })
+  }
+  async function fetchPdfBlob(r: RepairOrder, showChinese: boolean) {
+    if (!r?.id) return
+    const qs = showChinese ? '?showChinese=1' : ''
+    const resp = await fetch(`${API_BASE}/maintenance/pdf/${String(r.id)}${qs}`, { method: 'POST', cache: 'no-store', headers: authHeaders() })
+    if (!resp.ok) {
+      let msg = `HTTP ${resp.status}`
+      try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
+      throw new Error(msg)
+    }
+    return await resp.blob()
+  }
+
+  async function openExportPdf(r: RepairOrder) {
+    if (!r?.id) return
+    setDownloadingId(String(r.id))
+    try {
+      const blob = await fetchPdfBlob(r, false)
+      if (!blob) return
+      const url = URL.createObjectURL(blob)
+      const workNo = String((r as any)?.work_no || (r as any)?.id || '').trim()
+      const title = `Maintenance${workNo ? ` - ${workNo}` : ''}`
+      setPdfPreview((prev) => {
+        try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
+        return { open: true, url, title, showChinese: false, blob, row: r, loading: false }
+      })
+    } catch (e: any) {
+      message.error(e?.message || '预览失败')
+    } finally {
+      setDownloadingId(null)
+    }
+  }
+  async function exportFromPreview() {
+    const r = pdfPreview.row
+    if (!r?.id) return
+    setPdfPreview(p => ({ ...p, loading: true }))
+    try {
+      const blob = pdfPreview.showChinese ? await fetchPdfBlob(r, true) : pdfPreview.blob
+      if (!blob) return
+      const workNo = String((r as any)?.work_no || (r as any)?.id || '').trim()
+      const suffix = pdfPreview.showChinese ? '-cn' : ''
+      const filename = `maintenance-${(workNo || String(r.id)).replace(/[^a-zA-Z0-9._-]+/g, '-')}${suffix}.pdf`
+      downloadNamedBlob(blob, filename)
+    } catch (e: any) {
+      message.error(e?.message || '导出失败')
+    } finally {
+      setPdfPreview(p => ({ ...p, loading: false }))
+    }
+  }
   async function remove(id: string) {
     try {
       await apiDelete('property_maintenance', id)
@@ -660,6 +718,7 @@ export default function MaintenanceRecordsUnified() {
                         <Space>
                           <Button onClick={()=>openView(r)}>详情</Button>
                           <Button onClick={()=>shareLink(r)}>分享</Button>
+                          <Button onClick={()=>openExportPdf(r)} loading={downloadingId === String(r.id)} disabled={!canDownload}>导出PDF</Button>
                           <Button onClick={()=>openEdit(r)} disabled={!hasPerm('property_maintenance.write')}>编辑</Button>
                           <Button danger onClick={()=>remove(r.id)} disabled={!hasPerm('property_maintenance.delete')}>删除</Button>
                         </Space>
@@ -695,6 +754,7 @@ export default function MaintenanceRecordsUnified() {
                 <Space wrap>
                   <Button onClick={()=>openView(r)}>详情</Button>
                   <Button onClick={()=>shareLink(r)}>分享</Button>
+                  <Button onClick={()=>openExportPdf(r)} loading={downloadingId === String(r.id)} disabled={!canDownload}>导出PDF</Button>
                   <Button onClick={()=>openEdit(r)} disabled={!hasPerm('property_maintenance.write')}>编辑</Button>
                   <Button danger onClick={()=>remove(r.id)} disabled={!hasPerm('property_maintenance.delete')}>删除</Button>
                 </Space>
@@ -723,6 +783,31 @@ export default function MaintenanceRecordsUnified() {
           })()}
         </div>
       </Card>
+
+      <Modal
+        open={pdfPreview.open}
+        onCancel={closePdfPreview}
+        title={pdfPreview.title || 'PDF预览'}
+        width={isMobile ? '100%' : 980}
+        style={{ top: 12 }}
+        footer={
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+            <Space>
+              <span>包含中文</span>
+              <Switch checked={pdfPreview.showChinese} onChange={(v) => setPdfPreview(p => ({ ...p, showChinese: !!v }))} disabled={pdfPreview.loading} />
+            </Space>
+            <Space>
+              <Button onClick={closePdfPreview}>关闭</Button>
+              <Button type="primary" onClick={exportFromPreview} disabled={!pdfPreview.blob} loading={pdfPreview.loading}>导出</Button>
+            </Space>
+          </div>
+        }
+      >
+        {pdfPreview.url ? (
+          <iframe src={pdfPreview.url} style={{ width: '100%', height: isMobile ? '75vh' : '80vh', border: 'none' }} />
+        ) : null}
+      </Modal>
+
       <Drawer open={viewOpen} onClose={()=>setViewOpen(false)} placement="right" width={isMobile ? 420 : 720}>
         <Space direction="vertical" style={{ width: '100%' }}>
           <Typography.Title level={4} style={{ margin: 0 }}>维修详情</Typography.Title>

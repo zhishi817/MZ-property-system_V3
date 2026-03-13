@@ -1,11 +1,23 @@
 import { hasPg, pgPool } from '../dbAdapter'
+import { ensureCleaningSyncJobsSchema } from './cleaningSyncJobsSchema'
 
 export type CleaningSyncWorkerResult = { processed: number; ok: number; failed: number; reclaimed: number }
+
+let schemaMissingLogged = false
 
 function msEnv(name: string, defMs: number): number {
   const raw = Number(process.env[name] || defMs)
   if (!Number.isFinite(raw)) return defMs
   return Math.max(0, Math.floor(raw))
+}
+
+async function applyTxTimeouts(client: any) {
+  const lockTimeoutMs = msEnv('CLEANING_SYNC_JOBS_LOCK_TIMEOUT_MS', 2000)
+  const statementTimeoutMs = msEnv('CLEANING_SYNC_JOBS_STATEMENT_TIMEOUT_MS', 30000)
+  const idleTimeoutMs = msEnv('CLEANING_SYNC_JOBS_IDLE_IN_TX_TIMEOUT_MS', 60000)
+  if (lockTimeoutMs) await client.query(`SET LOCAL lock_timeout = ${lockTimeoutMs}`)
+  if (statementTimeoutMs) await client.query(`SET LOCAL statement_timeout = ${statementTimeoutMs}`)
+  if (idleTimeoutMs) await client.query(`SET LOCAL idle_in_transaction_session_timeout = ${idleTimeoutMs}`)
 }
 
 function backoffMinutes(attempts: number) {
@@ -63,14 +75,7 @@ async function claimJobs(limit: number): Promise<any[]> {
     locked = !!(got?.rows?.[0]?.ok)
     if (!locked) return []
     await client.query('BEGIN')
-    {
-      const lockTimeoutMs = msEnv('CLEANING_SYNC_JOBS_LOCK_TIMEOUT_MS', 2000)
-      const statementTimeoutMs = msEnv('CLEANING_SYNC_JOBS_STATEMENT_TIMEOUT_MS', 30000)
-      const idleTimeoutMs = msEnv('CLEANING_SYNC_JOBS_IDLE_IN_TX_TIMEOUT_MS', 60000)
-      if (lockTimeoutMs) await client.query('SET LOCAL lock_timeout = $1', [`${lockTimeoutMs}`])
-      if (statementTimeoutMs) await client.query('SET LOCAL statement_timeout = $1', [`${statementTimeoutMs}`])
-      if (idleTimeoutMs) await client.query('SET LOCAL idle_in_transaction_session_timeout = $1', [`${idleTimeoutMs}`])
-    }
+    await applyTxTimeouts(client)
     const r = await client.query(
       `WITH picked AS (
          SELECT id
@@ -151,14 +156,7 @@ async function runOne(job: any) {
   const client = await pgPool!.connect()
   try {
     await client.query('BEGIN')
-    {
-      const lockTimeoutMs = msEnv('CLEANING_SYNC_JOBS_LOCK_TIMEOUT_MS', 2000)
-      const statementTimeoutMs = msEnv('CLEANING_SYNC_JOBS_STATEMENT_TIMEOUT_MS', 30000)
-      const idleTimeoutMs = msEnv('CLEANING_SYNC_JOBS_IDLE_IN_TX_TIMEOUT_MS', 60000)
-      if (lockTimeoutMs) await client.query('SET LOCAL lock_timeout = $1', [`${lockTimeoutMs}`])
-      if (statementTimeoutMs) await client.query('SET LOCAL statement_timeout = $1', [`${statementTimeoutMs}`])
-      if (idleTimeoutMs) await client.query('SET LOCAL idle_in_transaction_session_timeout = $1', [`${idleTimeoutMs}`])
-    }
+    await applyTxTimeouts(client)
     if (action === 'deleted') {
       try { await client.query(`DELETE FROM finance_transactions WHERE ref_type='order' AND ref_id=$1`, [orderId]) } catch {}
       try { await client.query(`DELETE FROM company_incomes WHERE ref_type='order' AND ref_id=$1`, [orderId]) } catch {}
@@ -181,6 +179,18 @@ async function runOne(job: any) {
 
 export async function processCleaningSyncJobsOnce(opts: { limit?: number; reclaim_timeout_minutes?: number } = {}): Promise<CleaningSyncWorkerResult> {
   if (!hasPg || !pgPool) return { processed: 0, ok: 0, failed: 0, reclaimed: 0 }
+  try {
+    await ensureCleaningSyncJobsSchema()
+  } catch (e: any) {
+    if (String(e?.code || '') === 'CLEANING_SCHEMA_MISSING') {
+      if (!schemaMissingLogged) {
+        schemaMissingLogged = true
+        try { console.error('[cleaning-sync][worker] schema_missing table=cleaning_sync_jobs') } catch {}
+      }
+      return { processed: 0, ok: 0, failed: 0, reclaimed: 0 }
+    }
+    throw e
+  }
   const reclaimMin = Math.max(1, Number(opts.reclaim_timeout_minutes || process.env.CLEANING_SYNC_JOBS_RECLAIM_MINUTES || 10))
   const reclaimed = await reclaimStuckRunning(reclaimMin).catch(() => 0)
   const jobs = await claimJobs(Number(opts.limit || 10))
