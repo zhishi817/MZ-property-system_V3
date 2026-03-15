@@ -594,37 +594,19 @@ export default forwardRef<HTMLDivElement, {
     const q = Math.max(45, Math.min(80, Number.isFinite(Number(photoQ)) && Number(photoQ) > 0 ? Math.min(Number(photoQ), 60) : 55))
     return { w, q }
   })()
-  const deriveThumbUrl = (u: string) => {
-    const s = String(u || '').trim()
-    if (!s) return ''
-    if (/\.thumb\.jpg($|\?)/i.test(s)) return s
-    try {
-      const uu = new URL(s)
-      const p = String(uu.pathname || '')
-      if (p.endsWith('/public/r2-image') || p.endsWith('/r2-image')) {
-        const inner = String(uu.searchParams.get('url') || '').trim()
-        if (inner && !/\.thumb\.jpg$/i.test(inner)) uu.searchParams.set('url', `${inner}.thumb.jpg`)
-        return uu.toString()
-      }
-    } catch {}
-    const q = s.indexOf('?')
-    if (q >= 0) return `${s.slice(0, q)}.thumb.jpg${s.slice(q)}`
-    return `${s}.thumb.jpg`
-  }
   const resolveUrl = (u?: string) => {
     if (!u) return ''
     const raw = String(u || '').trim()
-    const s = (photosModeNorm === 'thumbnail' && isImg(raw)) ? deriveThumbUrl(raw) : raw
-    if (/^https?:\/\//.test(s)) {
-      if (s.includes('.r2.dev/') || s.includes('r2.cloudflarestorage.com')) {
-        const base = `${API_BASE}/public/r2-image?url=${encodeURIComponent(s)}`
+    if (/^https?:\/\//.test(raw)) {
+      if (raw.includes('.r2.dev/') || raw.includes('r2.cloudflarestorage.com')) {
+        const base = `${API_BASE}/public/r2-image?url=${encodeURIComponent(raw)}`
         if (photosModeNorm === 'compressed') return `${base}&fmt=jpeg&w=${compressCfg.w}&q=${compressCfg.q}`
         if (photosModeNorm === 'thumbnail') return `${base}&fmt=jpeg&w=${thumbCfg.w}&q=${thumbCfg.q}`
         return base
       }
-      return s
+      return raw
     }
-    return `${API_BASE}${s}`
+    return `${API_BASE}${raw}`
   }
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   function perDayPrice(o: Order): number {
