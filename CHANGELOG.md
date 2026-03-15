@@ -1,5 +1,13 @@
 # Changelog
 
+## Dev (2026-03-15)
+
+- Version: `0.2.7-statement-pdf.20260315+build.1`
+- Finance PDF: Fix monthly statement exports showing only 1 job photo when photosMode=thumbnail (applies to both print-based monthly statement PDF and template photo-only PDFs).
+- Finance PDF: In thumbnail mode, prefer `.thumb.jpg` and use lower w/q proxy params to keep large photo months stable and smaller.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## Dev (2026-03-04)
 
 - Version: `0.2.7-statement-pdf.20260304+build.3`
