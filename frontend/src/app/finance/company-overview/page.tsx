@@ -124,10 +124,10 @@ export default function PropertyRevenuePage() {
     const hardSplit = !!splitInfo?.hardSplit
     const photosMode: 'full' | 'compressed' | 'thumbnail' | 'off' = noPhotos
       ? 'off'
-      : ((shouldSplit || hardSplit) ? 'thumbnail' : (exportQuality === 'ultra' ? 'full' : 'compressed'))
+      : ((shouldSplit || hardSplit) ? 'off' : (exportQuality === 'ultra' ? 'full' : 'compressed'))
     const photoCfg = photosMode === 'compressed' ? pickMonthPhotoCfg('normal') : null
-    const sectionsApi = 'all'
-    const sectionsView = ['all']
+    const sectionsApi = photosMode === 'off' ? 'base' : 'all'
+    const sectionsView = [sectionsApi]
     return { shouldSplit, hardSplit, photosMode, photoCfg, sectionsApi, sectionsView }
   }
   const buildTxsFromRaw = (fin: any[], pexp: any[], recurs: any[], props: any[], excludeOrphans: boolean) => {
@@ -1154,7 +1154,6 @@ export default function PropertyRevenuePage() {
                   if (Number.isFinite(total) && total > 0) {
                     const detail = `照片数：${Number(j.totalPhotoCount || 0)}（维修 ${Number(j.maintenancePhotoCount || 0)} / 深清 ${Number(j.deepCleaningPhotoCount || 0)}）`
                     if (cfg0.photosMode === 'off') updateMerge(24, '照片较多，将生成无照片版报表', `${detail}；照片将作为分卷下载`)
-                    else if (cfg0.photosMode === 'thumbnail') updateMerge(24, '照片较多，将生成缩略图版报表', `${detail}；全部照片将作为分卷下载`)
                     else if (cfg0.photosMode === 'compressed') updateMerge(24, '照片较多，将压缩照片以控制体积', detail)
                   }
                 }
@@ -1321,7 +1320,7 @@ export default function PropertyRevenuePage() {
               {(monthPdfCfg?.shouldSplit) ? (
                 <div style={{ marginBottom: 8, padding: '8px 12px', borderRadius: 8, border: '1px solid #ffd591', background: '#fff7e6', color: 'rgba(0,0,0,0.72)' }}>
                   照片较多（共 {Number(mergeSplit?.totalPhotoCount || 0)} 张；维修 {Number(mergeSplit?.maintenancePhotoCount || 0)} / 深清 {Number(mergeSplit?.deepCleaningPhotoCount || 0)}）。
-                  合并PDF下载将{monthPdfCfg.photosMode === 'off' ? '生成无照片版报表，并提供照片分卷下载。' : (monthPdfCfg.photosMode === 'thumbnail' ? '生成缩略图版报表，并提供照片分卷下载。' : '压缩照片以控制体积（如仍过大将自动生成无照片版报表）。')}
+                  合并PDF下载将{monthPdfCfg.photosMode === 'off' ? '生成无照片版报表，并提供照片分卷下载。' : '压缩照片以控制体积（如仍过大将自动生成无照片版报表）。'}
                 </div>
               ) : null}
               <div style={{ position:'relative' }}>

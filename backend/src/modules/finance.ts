@@ -1412,19 +1412,47 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
       await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
       await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
-      let readyOk = false
+      await page.waitForSelector('[data-monthly-statement-root="1"]', { timeout: waitTimeoutMs })
+      const readRootAttrs = async () => {
+        const curUrl = String(page.url?.() || '')
+        const title = await page.title().catch(() => '')
+        const hasRoot = await page.$('[data-monthly-statement-root="1"]').then((h: any) => !!h).catch(() => false)
+        const attrs = await page.evaluate(() => {
+          const el = document.querySelector('[data-monthly-statement-root="1"]') as any
+          if (!el) return null
+          return {
+            ready: String(el.getAttribute('data-monthly-statement-ready') || ''),
+            deepLoaded: String(el.getAttribute('data-deep-clean-loaded') || ''),
+            deepCount: String(el.getAttribute('data-deep-clean-count') || ''),
+            maintLoaded: String(el.getAttribute('data-maint-loaded') || ''),
+            maintCount: String(el.getAttribute('data-maint-count') || ''),
+          }
+        }).catch(() => null)
+        return { curUrl, title, hasRoot, attrs }
+      }
       try {
-        await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: waitTimeoutMs })
-        readyOk = true
+        const u0 = String(page.url?.() || '')
+        if (u0.includes('/login')) throw new Error('print page redirected to /login')
+        await page.waitForFunction(() => {
+          const el = document.querySelector('[data-monthly-statement-root="1"]') as any
+          if (!el) return false
+          const deepLoaded = String(el.getAttribute('data-deep-clean-loaded') || '') === '1'
+          const maintLoaded = String(el.getAttribute('data-maint-loaded') || '') === '1'
+          return deepLoaded && maintLoaded
+        }, { timeout: waitTimeoutMs } as any)
       } catch (e: any) {
+        const d = await readRootAttrs().catch(() => ({ curUrl: '', title: '', hasRoot: false, attrs: null as any }))
         try {
           const msg = String(e?.message || e || 'timeout')
-          console.error(`[monthly-statement-pdf][ready-timeout] month=${monthKey} pid=${pid} ${msg}`)
+          console.error(
+            `[monthly-statement-pdf][ready-timeout] month=${monthKey} pid=${pid} url=${d.curUrl} title=${d.title} hasRoot=${d.hasRoot} attrs=${d.attrs ? JSON.stringify(d.attrs) : ''} ${msg}` +
+              `${consoleNotes.length ? ` console=${consoleNotes.slice(-5).join(' | ')}` : ''}` +
+              `${pageErrors.length ? ` pageErrors=${pageErrors.slice(-3).join(' | ')}` : ''}` +
+              `${requestFails.length ? ` requestFails=${requestFails.slice(-3).join(' | ')}` : ''}`
+          )
         } catch {}
-      }
-      if (!readyOk) {
-        const extraWaitMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS_EXTRA || 60000)))
-        await page.waitForSelector('[data-monthly-statement-ready="1"]', { timeout: extraWaitMs })
+        if (!d.hasRoot) throw new Error('monthly statement print page not ready (root missing)')
+        if (String(d.curUrl || '').includes('/login')) throw new Error('monthly statement print page redirected to /login (auth failed)')
       }
       const imgStats = await waitForImages(page, { timeoutMs: 20000, scroll: true, maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
       try {

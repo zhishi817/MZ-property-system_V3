@@ -2,9 +2,11 @@
 
 ## Dev (2026-03-15)
 
-- Version: `0.2.7-statement-pdf.20260315+build.1`
+- Version: `0.2.7-statement-pdf.20260315+build.2`
 - Finance PDF: Fix monthly statement exports showing only 1 job photo when photosMode=thumbnail (applies to both print-based monthly statement PDF and template photo-only PDFs).
 - Finance PDF: In thumbnail mode, use `/public/r2-image` compression (w/q) to keep large photo months stable and smaller (avoid requesting non-existent `.thumb.jpg` keys that can 404).
+- Finance PDF: When photo count is too high, merge download generates base (no-photos) statement and relies on photo split PDFs to avoid Playwright timeouts.
+- Finance PDF: Monthly statement PDF generation now waits for root + data-loaded markers and reports clearer timeout diagnostics (no longer hard-blocked by monthly-statement-ready).
 
 Author: MZ System Bot <dev@mzpropertygroup.com>
 
