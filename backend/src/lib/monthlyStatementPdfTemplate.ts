@@ -116,7 +116,6 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
   const pickRecordUrls = (r: any, phase: 'before' | 'after') => {
     const urls = (phase === 'before' ? asUrlStrings(r?.photo_urls) : asUrlStrings(r?.repair_photo_urls))
       .filter(u => /^https?:\/\//i.test(u))
-    if (photosMode === 'thumbnail') return urls.slice(0, 1)
     return urls
   }
   const completionTextOf = (r: any) => {

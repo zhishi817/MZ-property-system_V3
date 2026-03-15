@@ -72,7 +72,6 @@ export default forwardRef<HTMLDivElement, {
     return 'full'
   })()
   const canIncludeJobPhotos = includeJobPhotos !== false && photosModeNorm !== 'off'
-  const isThumbPhotos = isPdfMode && photosModeNorm === 'thumbnail'
   const hideReportHeader = isPdfMode && !showBaseSections && (showDeepSection || showMaintSection)
   const showDeepSectionFinal = showDeepSection
   const showMaintSectionFinal = showMaintSection
@@ -590,17 +589,42 @@ export default forwardRef<HTMLDivElement, {
     const q = Math.max(40, Math.min(85, Number.isFinite(Number(photoQ)) && Number(photoQ) > 0 ? Number(photoQ) : 72))
     return { w, q }
   })()
+  const thumbCfg = (() => {
+    const w = Math.max(700, Math.min(1600, Number.isFinite(Number(photoW)) && Number(photoW) > 0 ? Math.min(Number(photoW), 1200) : 1000))
+    const q = Math.max(45, Math.min(80, Number.isFinite(Number(photoQ)) && Number(photoQ) > 0 ? Math.min(Number(photoQ), 60) : 55))
+    return { w, q }
+  })()
+  const deriveThumbUrl = (u: string) => {
+    const s = String(u || '').trim()
+    if (!s) return ''
+    if (/\.thumb\.jpg($|\?)/i.test(s)) return s
+    try {
+      const uu = new URL(s)
+      const p = String(uu.pathname || '')
+      if (p.endsWith('/public/r2-image') || p.endsWith('/r2-image')) {
+        const inner = String(uu.searchParams.get('url') || '').trim()
+        if (inner && !/\.thumb\.jpg$/i.test(inner)) uu.searchParams.set('url', `${inner}.thumb.jpg`)
+        return uu.toString()
+      }
+    } catch {}
+    const q = s.indexOf('?')
+    if (q >= 0) return `${s.slice(0, q)}.thumb.jpg${s.slice(q)}`
+    return `${s}.thumb.jpg`
+  }
   const resolveUrl = (u?: string) => {
     if (!u) return ''
-    if (/^https?:\/\//.test(u)) {
-      if (u.includes('.r2.dev/') || u.includes('r2.cloudflarestorage.com')) {
-        const base = `${API_BASE}/public/r2-image?url=${encodeURIComponent(u)}`
+    const raw = String(u || '').trim()
+    const s = (photosModeNorm === 'thumbnail' && isImg(raw)) ? deriveThumbUrl(raw) : raw
+    if (/^https?:\/\//.test(s)) {
+      if (s.includes('.r2.dev/') || s.includes('r2.cloudflarestorage.com')) {
+        const base = `${API_BASE}/public/r2-image?url=${encodeURIComponent(s)}`
         if (photosModeNorm === 'compressed') return `${base}&fmt=jpeg&w=${compressCfg.w}&q=${compressCfg.q}`
+        if (photosModeNorm === 'thumbnail') return `${base}&fmt=jpeg&w=${thumbCfg.w}&q=${thumbCfg.q}`
         return base
       }
-      return u
+      return s
     }
-    return `${API_BASE}${u}`
+    return `${API_BASE}${s}`
   }
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   function perDayPrice(o: Order): number {
@@ -1029,8 +1053,8 @@ export default forwardRef<HTMLDivElement, {
                   const did = String(d?.id || '')
                   const beforeArr = urlArr((d as any)?.photo_urls).map((u: any) => String(u || '')).filter(Boolean)
                   const afterArr = urlArr((d as any)?.repair_photo_urls).map((u: any) => String(u || '')).filter(Boolean)
-                  const beforePdfArr = isThumbPhotos ? beforeArr.slice(0, 1) : beforeArr
-                  const afterPdfArr = isThumbPhotos ? afterArr.slice(0, 1) : afterArr
+                  const beforePdfArr = beforeArr
+                  const afterPdfArr = afterArr
                   const allowPhotosInPdf = (beforePdfArr.length + afterPdfArr.length) > 0
                   const title = showChinese ? 'Deep Cleaning Maintenance 深度清洁维护' : 'Deep Cleaning Maintenance'
                   const labelJob = showChinese ? '工单编号  JOB NUMBER' : 'JOB NUMBER'
@@ -1208,8 +1232,8 @@ export default forwardRef<HTMLDivElement, {
                   const mid = String(m?.id || '')
                   const beforeArr = urlArr((m as any)?.photo_urls).map((u: any) => String(u || '')).filter(Boolean)
                   const afterArr = urlArr((m as any)?.repair_photo_urls).map((u: any) => String(u || '')).filter(Boolean)
-                  const beforePdfArr = isThumbPhotos ? beforeArr.slice(0, 1) : beforeArr
-                  const afterPdfArr = isThumbPhotos ? afterArr.slice(0, 1) : afterArr
+                  const beforePdfArr = beforeArr
+                  const afterPdfArr = afterArr
                   const allowPhotosInPdf = (beforePdfArr.length + afterPdfArr.length) > 0
                   const title = showChinese ? 'Maintenance Repairs 维修记录' : 'Maintenance Repairs'
                   const labelJob = showChinese ? '工单编号  JOB NUMBER' : 'JOB NUMBER'
