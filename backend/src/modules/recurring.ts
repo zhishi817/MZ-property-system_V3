@@ -105,6 +105,7 @@ async function ensureSchemasOnce() {
     try { await pgPool.query(`ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS amount_mode text DEFAULT 'fixed';`) } catch {}
     try { await pgPool.query(`ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS income_base text DEFAULT 'total_income';`) } catch {}
     try { await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS rate_percent numeric;') } catch {}
+    try { await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS property_ids text[];') } catch {}
 
     try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;') } catch {}
     try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;') } catch {}
@@ -149,6 +150,7 @@ const createPaymentSchema = z.object({
   id: z.string().min(8),
   scope: z.enum(['company', 'property']).optional().default('company'),
   property_id: z.string().optional(),
+  property_ids: z.array(z.string()).optional(),
   vendor: z.string().optional(),
   category: z.string().optional(),
   category_detail: z.string().optional(),
@@ -216,7 +218,8 @@ async function computePropertyTotalIncomeForMonthTx(client: any, propertyId: str
   const pid = String(propertyId || '').trim()
   const mk = String(monthKey || '').trim()
   if (!pid || !mk) return 0
-  if (cache && Object.prototype.hasOwnProperty.call(cache, mk)) return Number(cache[mk] || 0)
+  const cacheKey = `${pid}__${mk}`
+  if (cache && Object.prototype.hasOwnProperty.call(cache, cacheKey)) return Number(cache[cacheKey] || 0)
   const ms = monthStartUTC(mk)
   if (!ms) return 0
   const meNext = addMonthsUTC(ms, 1)
@@ -309,20 +312,109 @@ async function computePropertyTotalIncomeForMonthTx(client: any, propertyId: str
   } catch {}
 
   const total = round2(rentIncome + otherIncome)
-  if (cache) cache[mk] = total
+  if (cache) cache[cacheKey] = total
   return total
+}
+
+async function computePropertyRentIncomeForMonthTx(client: any, propertyId: string, monthKey: string, cache?: Record<string, number>): Promise<number> {
+  const pid = String(propertyId || '').trim()
+  const mk = String(monthKey || '').trim()
+  if (!pid || !mk) return 0
+  const cacheKey = `rent__${pid}__${mk}`
+  if (cache && Object.prototype.hasOwnProperty.call(cache, cacheKey)) return Number(cache[cacheKey] || 0)
+  const ms = monthStartUTC(mk)
+  if (!ms) return 0
+  const meNext = addMonthsUTC(ms, 1)
+  const startISO = ms.toISOString().slice(0, 10)
+  const endExclusiveISO = meNext.toISOString().slice(0, 10)
+
+  let rentIncome = 0
+  try {
+    const ordersRes = await client.query(
+      `SELECT id, checkin, checkout, price, cleaning_fee, status, count_in_income
+       FROM orders
+       WHERE property_id = $1
+         AND checkin < to_date($3,'YYYY-MM-DD')
+         AND checkout > to_date($2,'YYYY-MM-DD')`,
+      [pid, startISO, endExclusiveISO]
+    )
+    const orders: any[] = ordersRes?.rows || []
+    const ids = orders.map(o => String(o.id)).filter(Boolean)
+    const deductionTotals: Record<string, number> = {}
+    if (ids.length) {
+      try {
+        const rs = await client.query(
+          `SELECT order_id, COALESCE(SUM(amount),0) AS total
+           FROM order_internal_deductions
+           WHERE is_active=true AND order_id = ANY($1)
+           GROUP BY order_id`,
+          [ids]
+        )
+        ;(rs?.rows || []).forEach((r: any) => { deductionTotals[String(r.order_id)] = round2(Number(r.total || 0)) })
+      } catch {}
+    }
+    for (const o of orders) {
+      const ci = parseDateOnlyUTC(o.checkin)
+      const co = parseDateOnlyUTC(o.checkout)
+      if (!ci || !co) continue
+      const totalNights = Math.max(0, dayDiffUTC(ci, co))
+      if (totalNights <= 0) continue
+      const a = ci > ms ? ci : ms
+      const b = co < meNext ? co : meNext
+      const nightsMonth = Math.max(0, dayDiffUTC(a, b))
+      if (nightsMonth <= 0) continue
+      const totalPrice = Number(o.price || 0)
+      const totalCleaning = Number(o.cleaning_fee || 0)
+      const netTotal = round2(totalPrice - totalCleaning)
+      const dailyNet = totalNights ? (netTotal / totalNights) : 0
+      const netMonth = round2(dailyNet * nightsMonth)
+      const lastNight = new Date(co.getTime() - 24 * 3600 * 1000)
+      const isDeductionMonth = totalNights > 0 && (lastNight.getUTCFullYear() === ms.getUTCFullYear()) && (lastNight.getUTCMonth() === ms.getUTCMonth())
+      const deductionMonth = isDeductionMonth ? Number(deductionTotals[String(o.id)] || 0) : 0
+      const include = (!isCanceledStatus(o.status)) || !!o.count_in_income
+      const visibleNetMonth = include ? round2(netMonth - deductionMonth) : 0
+      rentIncome += visibleNetMonth
+    }
+  } catch {}
+
+  const total = round2(rentIncome)
+  if (cache) cache[cacheKey] = total
+  return total
+}
+
+function normalizePropertyIds(v: any): string[] {
+  if (!v) return []
+  if (Array.isArray(v)) return Array.from(new Set(v.map(x => String(x || '').trim()).filter(Boolean)))
+  if (typeof v === 'string') {
+    const s = v.trim()
+    if (!s) return []
+    try {
+      const j = JSON.parse(s)
+      if (Array.isArray(j)) return Array.from(new Set(j.map(x => String(x || '').trim()).filter(Boolean)))
+    } catch {}
+    return [s]
+  }
+  return []
 }
 
 async function computeSnapshotAmountTx(client: any, paymentRow: any, paymentMonthKey: string, incomeCache?: Record<string, number>): Promise<number> {
   const mode = String((paymentRow as any).amount_mode || 'fixed')
   if (mode !== 'percent_of_property_total_income') return round2(Number(paymentRow.amount || 0))
-  const pid = String(paymentRow.property_id || '').trim()
-  if (!pid) return 0
+  const pids = (() => {
+    const ids = normalizePropertyIds((paymentRow as any).property_ids)
+    const pid = String((paymentRow as any).property_id || '').trim()
+    if (!ids.length && pid) return [pid]
+    return ids
+  })()
+  if (!pids.length) return 0
   const rate = Number((paymentRow as any).rate_percent || 0)
   if (!Number.isFinite(rate) || rate < 0) return 0
   const baseMonth = prevMonthKey(paymentMonthKey)
   if (!baseMonth) return 0
-  const base = await computePropertyTotalIncomeForMonthTx(client, pid, baseMonth, incomeCache)
+  let base = 0
+  for (const pid of pids) {
+    base += await computePropertyRentIncomeForMonthTx(client, pid, baseMonth, incomeCache)
+  }
   return round2(Math.max(0, base) * rate / 100)
 }
 
@@ -349,9 +441,14 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
   if (!Number.isFinite(freq) || freq < 1 || freq > 24) return res.status(400).json({ message: 'frequency_months invalid' })
   if (payment.scope === 'property' && !payment.property_id) return res.status(400).json({ message: 'property_id required' })
   if (mode === 'percent_of_property_total_income') {
-    if (!payment.property_id) return res.status(400).json({ message: 'property_id required for referral fee' })
+    if (payment.scope === 'property') return res.status(400).json({ message: 'referral fee must be company scoped' })
+    const pids = normalizePropertyIds((payment as any).property_ids)
+    const single = String(payment.property_id || '').trim()
+    if (!pids.length && !single) return res.status(400).json({ message: 'property_ids required for referral fee' })
     if ((payment as any).rate_percent == null) return res.status(400).json({ message: 'rate_percent required' })
     if (!Number.isFinite(rate) || rate < 0 || rate > 100) return res.status(400).json({ message: 'rate_percent invalid' })
+    ;(payment as any).property_ids = pids.length ? pids : (single ? [single] : [])
+    ;(payment as any).property_id = ((payment as any).property_ids.length === 1) ? String((payment as any).property_ids[0] || '').trim() : null
   }
   const pastEndMonthKey = startIdx <= pastEndIdx ? indexToMonthKey(pastEndIdx) : ''
   const pastDueMonths = pastEndMonthKey ? dueMonthKeysBetween(startMonth, pastEndMonthKey, freq) : []
@@ -716,7 +813,7 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
   if (!hasPg) return res.status(500).json({ message: 'pg not available' })
   const { id } = req.params
   const body = req.body || {}
-  const allowed = ['amount','vendor','category','category_detail','due_day_of_month','frequency_months','status','pay_account_name','pay_bsb','pay_account_number','pay_ref','payment_type','bpay_code','pay_mobile_number','report_category','start_month_key','amount_mode','rate_percent','income_base','property_id']
+  const allowed = ['amount','vendor','category','category_detail','due_day_of_month','frequency_months','status','pay_account_name','pay_bsb','pay_account_number','pay_ref','payment_type','bpay_code','pay_mobile_number','report_category','start_month_key','amount_mode','rate_percent','income_base','property_id','property_ids']
   const payload: Record<string, any> = {}
   allowed.forEach(k => { if (body[k] != null) payload[k] = body[k] })
   const currentMonth = currentMonthKeyAU()
@@ -729,13 +826,25 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
       const before = (beforeRes.rows?.[0]) || null
       if (!before) return { notFound: true }
       const nextMode = String((Object.prototype.hasOwnProperty.call(payload, 'amount_mode') ? payload.amount_mode : (before as any).amount_mode) || 'fixed')
-      const nextPid = String((Object.prototype.hasOwnProperty.call(payload, 'property_id') ? payload.property_id : (before as any).property_id) || '').trim()
+      const nextPids = (() => {
+        if (Object.prototype.hasOwnProperty.call(payload, 'property_ids')) {
+          const ids = normalizePropertyIds(payload.property_ids)
+          if (ids.length) return ids
+        }
+        const ids = normalizePropertyIds((before as any).property_ids)
+        if (ids.length) return ids
+        const single = String((Object.prototype.hasOwnProperty.call(payload, 'property_id') ? payload.property_id : (before as any).property_id) || '').trim()
+        return single ? [single] : []
+      })()
       const nextRateRaw = (Object.prototype.hasOwnProperty.call(payload, 'rate_percent') ? payload.rate_percent : (before as any).rate_percent)
       const nextRate = Number(nextRateRaw)
       if (nextMode === 'percent_of_property_total_income') {
-        if (!nextPid) return { invalid: 'property_id required for referral fee' }
+        if (String((before as any).scope || 'company') === 'property') return { invalid: 'referral fee must be company scoped' }
+        if (!nextPids.length) return { invalid: 'property_ids required for referral fee' }
         if (nextRateRaw == null) return { invalid: 'rate_percent required' }
         if (!Number.isFinite(nextRate) || nextRate < 0 || nextRate > 100) return { invalid: 'rate_percent invalid' }
+        payload.property_ids = nextPids
+        payload.property_id = nextPids.length === 1 ? nextPids[0] : null
       }
       const keys = Object.keys(payload)
       const sets = keys.map((k, i) => `${k} = $${i + 1}`)
@@ -748,7 +857,7 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
       const listRes = await client.query(`SELECT id, month_key FROM ${table} WHERE fixed_expense_id = $1 AND month_key >= $2 AND status = 'unpaid'`, [id, currentMonth])
       const rows: Array<{ id: string; month_key: string }> = Array.isArray(listRes.rows) ? listRes.rows.map((r: any) => ({ id: String(r.id), month_key: String(r.month_key || '') })) : []
       const amountChanged = Object.prototype.hasOwnProperty.call(payload, 'amount')
-      const modeChanged = Object.prototype.hasOwnProperty.call(payload, 'amount_mode') || Object.prototype.hasOwnProperty.call(payload, 'rate_percent') || Object.prototype.hasOwnProperty.call(payload, 'income_base') || Object.prototype.hasOwnProperty.call(payload, 'property_id')
+      const modeChanged = Object.prototype.hasOwnProperty.call(payload, 'amount_mode') || Object.prototype.hasOwnProperty.call(payload, 'rate_percent') || Object.prototype.hasOwnProperty.call(payload, 'income_base') || Object.prototype.hasOwnProperty.call(payload, 'property_id') || Object.prototype.hasOwnProperty.call(payload, 'property_ids')
       const dueChanged = Object.prototype.hasOwnProperty.call(payload, 'due_day_of_month')
       const newAmount = Number(payload.amount || 0)
       const newDueDay = Number(payload.due_day_of_month || updated.due_day_of_month || before.due_day_of_month || 1)
@@ -757,10 +866,9 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
       for (const r of rows) {
         const sets2: string[] = []
         const vals2: any[] = []
-        const locked = String((updated as any).amount_mode || '') === 'percent_of_property_total_income' && isReferralLocked(r.month_key)
         if ((amountChanged && !modeChanged) && String((updated as any).amount_mode || '') !== 'percent_of_property_total_income') {
           sets2.push('amount = $1'); vals2.push(newAmount)
-        } else if ((amountChanged || modeChanged) && !locked) {
+        } else if ((amountChanged || modeChanged)) {
           const amt = await computeSnapshotAmountTx(client, updated, r.month_key, incomeCache)
           sets2.push('amount = $1'); vals2.push(amt)
         }

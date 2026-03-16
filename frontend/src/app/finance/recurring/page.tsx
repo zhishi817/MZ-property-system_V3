@@ -10,7 +10,7 @@ import { sortProperties } from '../../../lib/properties'
 import { isDueForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
 import { isAutoPaidInRent } from '../../../lib/recurringPaymentRules'
 
-type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; is_paid?: boolean; is_due_month?: boolean; created_at?: string }
+type Recurring = { id: string; property_id?: string; property_ids?: string[]; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; is_paid?: boolean; is_due_month?: boolean; created_at?: string }
 type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
 type Property = { id: string; code?: string; address?: string; region?: string }
 
@@ -73,6 +73,24 @@ export default function RecurringPage() {
   function toISODate(s?: string) {
     const d = parseAU(s)
     return d ? d.format('YYYY-MM-DD') : ''
+  }
+  function normalizeIds(v: any): string[] {
+    if (!v) return []
+    if (Array.isArray(v)) return Array.from(new Set(v.map(x => String(x || '').trim()).filter(Boolean)))
+    if (typeof v === 'string') {
+      const s = v.trim()
+      if (!s) return []
+      if (s.startsWith('{') && s.endsWith('}')) {
+        const inner = s.slice(1, -1)
+        return Array.from(new Set(inner.split(',').map(x => String(x || '').trim().replace(/^"(.*)"$/, '$1')).filter(Boolean)))
+      }
+      try {
+        const j = JSON.parse(s)
+        if (Array.isArray(j)) return Array.from(new Set(j.map(x => String(x || '').trim()).filter(Boolean)))
+      } catch {}
+      return [s]
+    }
+    return []
   }
   function betterExpense(a: ExpenseRow | undefined, b: ExpenseRow): ExpenseRow {
     if (!a) return b
@@ -179,7 +197,7 @@ export default function RecurringPage() {
     { title:'操作', key:'ops', render:(_:any,r:Recurring)=> (
       <Space>
         <Button onClick={()=>{ setViewing(r); setViewOpen(true) }}>查看</Button>
-        <Button onClick={()=>{ const sm = (r as any).start_month_key ? dayjs.tz(`${String((r as any).start_month_key)}-01`, 'YYYY-MM-DD', 'Australia/Melbourne') : nowAU().startOf('month'); setEditing(r); setOpen(true); form.setFieldsValue({ ...r, start_month: sm, frequency_months: r.frequency_months ?? 1 }) }}>编辑</Button>
+        <Button onClick={()=>{ const sm = (r as any).start_month_key ? dayjs.tz(`${String((r as any).start_month_key)}-01`, 'YYYY-MM-DD', 'Australia/Melbourne') : nowAU().startOf('month'); const pids = normalizeIds((r as any).property_ids); const pids2 = pids.length ? pids : (r.property_id ? [r.property_id] : []); setEditing(r); setOpen(true); form.setFieldsValue({ ...r, property_ids: pids2, start_month: sm, frequency_months: r.frequency_months ?? 1 }) }}>编辑</Button>
         {String(r.status || '') === 'paused' ? (
           <>
             <Button disabled>已停用</Button>
@@ -594,6 +612,9 @@ export default function RecurringPage() {
       frequency_months: v.frequency_months!=null ? Number(v.frequency_months) : undefined,
     }
     if (isReferral) {
+      const pids = normalizeIds(v.property_ids)
+      payload.property_ids = pids
+      payload.property_id = (pids.length === 1) ? pids[0] : undefined
       payload.amount = undefined
       payload.rate_percent = v.rate_percent!=null ? Number(v.rate_percent) : undefined
       payload.income_base = v.income_base || 'total_income'
@@ -603,6 +624,7 @@ export default function RecurringPage() {
     } else {
       payload.amount = v.amount!=null ? Number(v.amount) : undefined
       if (payload.scope !== 'property') payload.property_id = undefined
+      payload.property_ids = undefined
       payload.rate_percent = undefined
       payload.income_base = undefined
     }
@@ -611,8 +633,8 @@ export default function RecurringPage() {
       if (editing) {
         const url = `${API_BASE}/recurring/payments/${editing.id}`
         const res = await fetch(url, { method:'PATCH', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const j = await res.json().catch(()=>({}))
+        if (!res.ok) throw new Error(String(j?.message || j?.invalid || `HTTP ${res.status}`))
         const n = Number(j?.syncedCount || 0)
         message.success(`未来未付记录已同步 ${n} 条`)
         setOpen(false); setEditing(null); form.resetFields(); await load(); await refreshMonth()
@@ -622,7 +644,8 @@ export default function RecurringPage() {
         const initMark = (startKey && startKey > currentMonthKey) ? 'unpaid' : String(v.initial_mark || 'unpaid')
         const body = { id: newId, ...payload, initial_mark: initMark }
         const res = await fetch(`${API_BASE}/recurring/payments`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(body) })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const j = await res.json().catch(()=>({}))
+        if (!res.ok) throw new Error(String(j?.message || j?.invalid || `HTTP ${res.status}`))
         setOpen(false); setEditing(null); form.resetFields(); await load(); await refreshMonth()
       }
     } catch (e:any) {
@@ -688,7 +711,7 @@ export default function RecurringPage() {
               <Form.Item name="amount_mode" label="计费方式" initialValue="fixed">
                 <Select options={[
                   { value: 'fixed', label: '固定金额' },
-                  { value: 'percent_of_property_total_income', label: 'Referral（按上月房源总收入比例）' },
+                  { value: 'percent_of_property_total_income', label: 'Referral（按上月房源总租金比例）' },
                 ]} />
               </Form.Item>
             </Col>
@@ -698,7 +721,7 @@ export default function RecurringPage() {
             {()=> {
               const am = form.getFieldValue('amount_mode')
               if (am === 'percent_of_property_total_income') {
-                form.setFieldsValue({ scope: 'company', due_day_of_month: 6, frequency_months: 1, amount: undefined, income_base: 'total_income' })
+                form.setFieldsValue({ scope: 'company', due_day_of_month: 6, frequency_months: 1, amount: undefined, income_base: 'total_income', property_id: undefined })
               }
               return null
             }}
@@ -711,9 +734,25 @@ export default function RecurringPage() {
                 const am = form.getFieldValue('amount_mode')
                 const needProperty = sc === 'property' || am === 'percent_of_property_total_income'
                 if (!needProperty) return <Col span={12}><div style={{ height: 62 }} /></Col>
+                if (am === 'percent_of_property_total_income') {
+                  return (
+                    <Col span={12}>
+                      <Form.Item name="property_ids" label="关联房源" rules={[{ required: true }]}>
+                        <Select
+                          mode="multiple"
+                          allowClear
+                          showSearch
+                          optionFilterProp="label"
+                          filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())}
+                          options={sortProperties(properties||[]).map(p=>({ value:p.id, label:p.code||p.address||p.id }))}
+                        />
+                      </Form.Item>
+                    </Col>
+                  )
+                }
                 return (
                   <Col span={12}>
-                    <Form.Item name="property_id" label={sc==='property' ? '房号' : '关联房源'} rules={[{ required: true }]}>
+                    <Form.Item name="property_id" label="房号" rules={[{ required: true }]}>
                       <Select
                         allowClear
                         showSearch
@@ -924,8 +963,24 @@ export default function RecurringPage() {
         {viewing ? (
           <Descriptions bordered size="small" column={1} style={{ marginTop: 8 }}>
             <Descriptions.Item label="对象">{(viewing.scope==='company' || !viewing.property_id) ? '公司' : getLabel(viewing.property_id)}</Descriptions.Item>
+            {String((viewing as any).amount_mode || '') === 'percent_of_property_total_income' ? (
+              <Descriptions.Item label="关联房源">{(() => {
+                const pids = normalizeIds((viewing as any).property_ids)
+                const pids2 = pids.length ? pids : (viewing.property_id ? [viewing.property_id] : [])
+                const labels = pids2.map((id: any) => getLabel(String(id))).filter(Boolean)
+                return labels.length ? labels.join(', ') : '-'
+              })()}</Descriptions.Item>
+            ) : null}
+            <Descriptions.Item label="计费方式">{String((viewing as any).amount_mode || 'fixed') === 'percent_of_property_total_income' ? 'Referral（按上月房源总租金比例）' : '固定金额'}</Descriptions.Item>
+            {String((viewing as any).amount_mode || '') === 'percent_of_property_total_income' ? (
+              <Descriptions.Item label="百分比(%)">{(() => {
+                const n = Number((viewing as any).rate_percent)
+                return Number.isFinite(n) ? String(n) : '-'
+              })()}</Descriptions.Item>
+            ) : null}
             <Descriptions.Item label="支出事项">{viewing.vendor || '-'}</Descriptions.Item>
             <Descriptions.Item label="支出类别">{viewing.category==='other' ? '其他' : (viewing.category || '-')}</Descriptions.Item>
+            <Descriptions.Item label="类别描述">{(viewing as any).category_detail || '-'}</Descriptions.Item>
             <Descriptions.Item label="营收报表归类">{(() => { const m: Record<string,string> = { parking_fee:'车位费', electricity:'电费', water:'水费', gas:'气费', internet:'网费', consumables:'消耗品费', body_corp:'物业费', council:'市政费', other:'其他支出' }; const v = String(viewing.report_category||''); return m[v] || (v || '-') })()}</Descriptions.Item>
             <Descriptions.Item label="金额">{viewing.amount!=null?`$${Number(viewing.amount).toFixed(2)}`:'-'}</Descriptions.Item>
             <Descriptions.Item label="每月到期日">{dueForSelectedMonth(viewing) || '-'}</Descriptions.Item>
