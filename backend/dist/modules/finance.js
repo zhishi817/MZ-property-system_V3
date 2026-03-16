@@ -85,6 +85,33 @@ let pdfJobsKickLastAt = 0;
 function pdfJobsOnDemandEnabled() {
     return String(process.env.PDF_JOBS_ON_DEMAND_ENABLED || 'true').toLowerCase() === 'true';
 }
+async function kickPdfJobsNow(reason) {
+    if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
+        return { attempted: false, error: 'no_db' };
+    if (!pdfJobsOnDemandEnabled())
+        return { attempted: false, error: 'disabled' };
+    const now = Date.now();
+    if (pdfJobsKickInFlight)
+        return { attempted: false, error: 'in_flight' };
+    if (now - pdfJobsKickLastAt < 2000)
+        return { attempted: false, error: 'throttled' };
+    pdfJobsKickLastAt = now;
+    pdfJobsKickInFlight = true;
+    try {
+        const { processPdfJobsOnce } = require('../services/pdfJobsWorker');
+        const r = await Promise.race([
+            processPdfJobsOnce({ limit: 1 }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('kick_timeout')), 1800)),
+        ]);
+        return { attempted: true, processed: Number((r === null || r === void 0 ? void 0 : r.processed) || 0), ok: Number((r === null || r === void 0 ? void 0 : r.ok) || 0), failed: Number((r === null || r === void 0 ? void 0 : r.failed) || 0), reclaimed: Number((r === null || r === void 0 ? void 0 : r.reclaimed) || 0) };
+    }
+    catch (e) {
+        return { attempted: true, error: String((e === null || e === void 0 ? void 0 : e.message) || e || '') || 'kick_failed' };
+    }
+    finally {
+        pdfJobsKickInFlight = false;
+    }
+}
 function kickPdfJobsSoon(reason) {
     if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
         return;
@@ -1336,7 +1363,7 @@ exports.router.get('/merge-monthly-pack/:id/download', (0, auth_1.requireAnyPerm
     }
 });
 exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
-    var _a, _b;
+    var _a;
     try {
         const id = String(((_a = req.params) === null || _a === void 0 ? void 0 : _a.id) || '').trim();
         if (!id)
@@ -1344,18 +1371,35 @@ exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finan
         if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
             return res.status(500).json({ message: 'no database configured' });
         await (0, pdfJobsSchema_1.ensurePdfJobsSchema)();
-        const r = await dbAdapter_2.pgPool.query('SELECT * FROM pdf_jobs WHERE id=$1 LIMIT 1', [id]);
-        const row = ((_b = r.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
+        const loadRow = async () => {
+            var _a;
+            const r = await dbAdapter_2.pgPool.query('SELECT * FROM pdf_jobs WHERE id=$1 LIMIT 1', [id]);
+            return ((_a = r.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
+        };
+        let row = await loadRow();
         if (!row)
             return res.status(404).json({ message: 'not_found' });
-        try {
-            const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN;
-            const ageMs = Number.isFinite(createdMs) ? (Date.now() - createdMs) : NaN;
-            if (String(row.status || '') === 'queued' && Number.isFinite(ageMs) && ageMs > 15000) {
-                kickPdfJobsSoon('poll_merge_monthly_pack');
+        const createdMs0 = row.created_at ? new Date(row.created_at).getTime() : NaN;
+        const ageMs0 = Number.isFinite(createdMs0) ? (Date.now() - createdMs0) : NaN;
+        const shouldKick = String(row.status || '') === 'queued' &&
+            Number.isFinite(ageMs0) &&
+            ageMs0 > 15000 &&
+            Number(row.attempts || 0) === 0 &&
+            !row.locked_by;
+        let kick = null;
+        if (shouldKick) {
+            kick = await kickPdfJobsNow('poll_merge_monthly_pack');
+            try {
+                if (kick === null || kick === void 0 ? void 0 : kick.attempted)
+                    row = await loadRow();
             }
+            catch (_b) { }
+            try {
+                if (!(kick === null || kick === void 0 ? void 0 : kick.attempted))
+                    kickPdfJobsSoon('poll_merge_monthly_pack');
+            }
+            catch (_c) { }
         }
-        catch (_c) { }
         const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN;
         const updatedMs = row.updated_at ? new Date(row.updated_at).getTime() : NaN;
         const ageSec = Number.isFinite(createdMs) ? Math.max(0, Math.round((Date.now() - createdMs) / 1000)) : null;
@@ -1375,6 +1419,7 @@ exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finan
             next_retry_at: row.next_retry_at || null,
             locked_by: row.locked_by || null,
             lease_expires_at: row.lease_expires_at || null,
+            kick: kick || null,
             params: row.params || null,
             result_files: row.result_files || [],
             last_error_code: row.last_error_code || null,
