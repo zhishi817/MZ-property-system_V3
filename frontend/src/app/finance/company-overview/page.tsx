@@ -1119,15 +1119,20 @@ export default function PropertyRevenuePage() {
                 URL.revokeObjectURL(url)
               } catch {}
             }
-            const downloadUrl = (url: string, forcedName?: string) => {
+            const downloadMergeJobFile = async (jobId: string, kind?: string, forcedName?: string) => {
               try {
-                const a = document.createElement('a')
-                a.href = url
-                a.download = forcedName || filename
-                document.body.appendChild(a)
-                a.click()
-                document.body.removeChild(a)
-              } catch {}
+                const qs = kind ? `?kind=${encodeURIComponent(kind)}` : ''
+                const resp = await fetch(`${API_BASE}/finance/merge-monthly-pack/${encodeURIComponent(jobId)}/download${qs}`, { headers: authHeaders() })
+                if (!resp.ok) {
+                  let msg = `HTTP ${resp.status}`
+                  try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
+                  throw new Error(msg)
+                }
+                const blob = await resp.blob()
+                downloadBlob(blob, forcedName)
+              } catch (e: any) {
+                message.error(e?.message || '下载失败')
+              }
             }
             let statementBlob: Blob
             let pageCount = 0
@@ -1209,7 +1214,7 @@ export default function PropertyRevenuePage() {
                     const best = merged || base
                     if (!best?.url) throw new Error('合并完成但未返回下载链接')
                     setMergeNoPhotos(true)
-                    downloadUrl(String(best.url), filename)
+                    await downloadMergeJobFile(jobId, String(best?.kind || ''), filename)
                     const extraParts = files.filter((x: any) => String(x?.kind || '') === 'invoices_part')
                     const mergedInv = files.find((x: any) => String(x?.kind || '') === 'statement_merged_invoices')
                     const invCount = Number(mergedInv?.source_count || 0) + extraParts.reduce((n: number, x: any) => n + Number(x?.source_count || 0), 0)
@@ -1465,12 +1470,14 @@ export default function PropertyRevenuePage() {
         <Progress percent={mergeUi.percent || 0} status={mergeUi.status === 'active' ? 'active' : (mergeUi.status === 'success' ? 'success' : 'exception')} />
         {mergeUi.detail ? <div style={{ marginTop: 8, color: mergeUi.status === 'exception' ? '#cf1322' : 'rgba(0,0,0,0.65)' }}>{mergeUi.detail}</div> : null}
         {mergeUi.status === 'active' ? <div style={{ marginTop: 8, color: 'rgba(0,0,0,0.45)' }}>请勿关闭页面，合并完成后会自动触发下载。</div> : null}
-        {(period === 'month' && mergeNoPhotos && Number(mergeSplit?.totalPhotoCount || 0) > 0 && mergeUi.status !== 'active') ? (
+        {(period === 'month' && mergeNoPhotos && mergeUi.status !== 'active') ? (
           <div style={{ marginTop: 12 }}>
-            <div style={{ marginBottom: 8, color: 'rgba(0,0,0,0.65)' }}>本次下载的报表不包含照片，可在这里下载照片分卷：</div>
+            <div style={{ marginBottom: 8, color: 'rgba(0,0,0,0.65)' }}>
+              本次下载的报表不包含照片，可在这里下载照片分卷{mergeSplit && Number(mergeSplit.totalPhotoCount || 0) === 0 ? '（本月无照片）' : ''}：
+            </div>
             <div style={{ display:'flex', flexWrap:'wrap', gap: 10 }}>
-              <Button onClick={() => downloadSplitPart('maintenance')} loading={splitDl.maintenance}>下载维修照片分卷</Button>
-              <Button onClick={() => downloadSplitPart('deep_cleaning')} loading={splitDl.deepCleaning}>下载深清照片分卷</Button>
+              <Button onClick={() => downloadSplitPart('maintenance')} loading={splitDl.maintenance} disabled={!!mergeSplit && Number(mergeSplit.totalPhotoCount || 0) === 0}>下载维修照片分卷</Button>
+              <Button onClick={() => downloadSplitPart('deep_cleaning')} loading={splitDl.deepCleaning} disabled={!!mergeSplit && Number(mergeSplit.totalPhotoCount || 0) === 0}>下载深清照片分卷</Button>
             </div>
           </div>
         ) : null}

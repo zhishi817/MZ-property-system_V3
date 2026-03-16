@@ -17,6 +17,7 @@ import { waitForImages } from '../lib/waitForImages'
 import { resizeUploadImage } from '../lib/uploadImageResize'
 import { v4 as uuidv4 } from 'uuid'
 import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
+import { r2Status, r2GetObjectByKey } from '../r2'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -97,6 +98,15 @@ function monthRangeISO(monthKey: string): { start: string; end: string } | null 
   const start = new Date(Date.UTC(y, mo - 1, 1))
   const end = new Date(Date.UTC(y, mo, 1))
   return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) }
+}
+
+function r2PublicBaseForKey(): string {
+  const st = r2Status()
+  const endpoint = String(st.endpoint || '').replace(/\/$/, '')
+  const bucket = String(st.bucket || '').trim()
+  const pb = String(st.publicBase || '').replace(/\/$/, '')
+  const cleaned = pb && /\.r2\.dev($|\/)/.test(pb) ? pb.replace(new RegExp(`/${bucket}$`), '') : pb
+  return cleaned || (endpoint && bucket ? `${endpoint}/${bucket}` : '')
 }
 
 function countUrlList(v: any): number {
@@ -1214,6 +1224,36 @@ router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx
   }
 })
 
+router.get('/merge-monthly-pack/:id/download', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
+  try {
+    const id = String(req.params?.id || '').trim()
+    const kind = String((req.query as any)?.kind || '').trim()
+    if (!id) return res.status(400).json({ message: 'missing id' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
+    await ensurePdfJobsSchema()
+    const r = await pgPool.query('SELECT id, status, result_files FROM pdf_jobs WHERE id=$1 LIMIT 1', [id])
+    const row = r.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not_found' })
+    const files = Array.isArray(row?.result_files) ? row.result_files : []
+    const pick = (k: string) => files.find((x: any) => String(x?.kind || '') === k)
+    const merged = pick('statement_merged_invoices')
+    const base = pick('statement_base')
+    const want = kind ? pick(kind) : (merged || base)
+    const key = String(want?.path || '').trim()
+    if (!key) return res.status(404).json({ message: 'file_not_found' })
+    const obj = await r2GetObjectByKey(key)
+    if (!obj || !obj.body?.length) return res.status(404).json({ message: 'file_not_found' })
+    const filename = String(want?.name || `${String(row.id)}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_')
+    res.setHeader('Content-Type', obj.contentType || 'application/octet-stream')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.setHeader('Cache-Control', 'private, max-age=0, no-cache')
+    return res.status(200).send(obj.body)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'download failed' })
+  }
+})
+
 router.get('/merge-monthly-pack/:id', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
   try {
     const id = String(req.params?.id || '').trim()
@@ -1706,6 +1746,15 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       if (photosMode === 'compressed' || photosMode === 'thumbnail') return `${base}&fmt=jpeg&w=${compress.w}&q=${compress.q}`
       return base
     }
+    const normalizeR2Key = (key: string) => {
+      const k = String(key || '').trim().replace(/^\/+/, '')
+      if (!k) return ''
+      if (!/^(maintenance|deep-cleaning|invoice-company-logos)\//i.test(k)) return ''
+      const base = r2PublicBaseForKey()
+      if (!base) return ''
+      const u = `${base}/${k}`
+      return isR2(u) ? proxyR2(u) : u
+    }
     const normalizePhotoUrl = (u: string) => {
       const s = String(u || '').trim()
       if (!s) return ''
@@ -1715,6 +1764,8 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
         return isR2(abs) ? proxyR2(abs) : abs
       }
       if (s.startsWith('/')) return apiBase ? `${apiBase}${s}` : ''
+      const maybeKey = normalizeR2Key(s)
+      if (maybeKey) return maybeKey
       return ''
     }
     const mapRowUrls = (r: any) => {

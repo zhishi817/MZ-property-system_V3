@@ -23,6 +23,7 @@ const waitForImages_1 = require("../lib/waitForImages");
 const uploadImageResize_1 = require("../lib/uploadImageResize");
 const uuid_1 = require("uuid");
 const pdfJobsSchema_1 = require("../services/pdfJobsSchema");
+const r2_2 = require("../r2");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -124,6 +125,14 @@ function monthRangeISO(monthKey) {
     const start = new Date(Date.UTC(y, mo - 1, 1));
     const end = new Date(Date.UTC(y, mo, 1));
     return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+}
+function r2PublicBaseForKey() {
+    const st = (0, r2_2.r2Status)();
+    const endpoint = String(st.endpoint || '').replace(/\/$/, '');
+    const bucket = String(st.bucket || '').trim();
+    const pb = String(st.publicBase || '').replace(/\/$/, '');
+    const cleaned = pb && /\.r2\.dev($|\/)/.test(pb) ? pb.replace(new RegExp(`/${bucket}$`), '') : pb;
+    return cleaned || (endpoint && bucket ? `${endpoint}/${bucket}` : '');
 }
 function countUrlList(v) {
     if (!v)
@@ -1289,6 +1298,43 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'create job failed' });
     }
 });
+exports.router.get('/merge-monthly-pack/:id/download', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
+    var _a, _b, _c, _d;
+    try {
+        const id = String(((_a = req.params) === null || _a === void 0 ? void 0 : _a.id) || '').trim();
+        const kind = String(((_b = req.query) === null || _b === void 0 ? void 0 : _b.kind) || '').trim();
+        if (!id)
+            return res.status(400).json({ message: 'missing id' });
+        if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
+            return res.status(500).json({ message: 'no database configured' });
+        if (!r2_1.hasR2)
+            return res.status(500).json({ message: 'R2 not configured' });
+        await (0, pdfJobsSchema_1.ensurePdfJobsSchema)();
+        const r = await dbAdapter_2.pgPool.query('SELECT id, status, result_files FROM pdf_jobs WHERE id=$1 LIMIT 1', [id]);
+        const row = ((_c = r.rows) === null || _c === void 0 ? void 0 : _c[0]) || null;
+        if (!row)
+            return res.status(404).json({ message: 'not_found' });
+        const files = Array.isArray(row === null || row === void 0 ? void 0 : row.result_files) ? row.result_files : [];
+        const pick = (k) => files.find((x) => String((x === null || x === void 0 ? void 0 : x.kind) || '') === k);
+        const merged = pick('statement_merged_invoices');
+        const base = pick('statement_base');
+        const want = kind ? pick(kind) : (merged || base);
+        const key = String((want === null || want === void 0 ? void 0 : want.path) || '').trim();
+        if (!key)
+            return res.status(404).json({ message: 'file_not_found' });
+        const obj = await (0, r2_2.r2GetObjectByKey)(key);
+        if (!obj || !((_d = obj.body) === null || _d === void 0 ? void 0 : _d.length))
+            return res.status(404).json({ message: 'file_not_found' });
+        const filename = String((want === null || want === void 0 ? void 0 : want.name) || `${String(row.id)}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_');
+        res.setHeader('Content-Type', obj.contentType || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Cache-Control', 'private, max-age=0, no-cache');
+        return res.status(200).send(obj.body);
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'download failed' });
+    }
+});
 exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
     var _a, _b;
     try {
@@ -1857,6 +1903,18 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
                 return `${base}&fmt=jpeg&w=${compress.w}&q=${compress.q}`;
             return base;
         };
+        const normalizeR2Key = (key) => {
+            const k = String(key || '').trim().replace(/^\/+/, '');
+            if (!k)
+                return '';
+            if (!/^(maintenance|deep-cleaning|invoice-company-logos)\//i.test(k))
+                return '';
+            const base = r2PublicBaseForKey();
+            if (!base)
+                return '';
+            const u = `${base}/${k}`;
+            return isR2(u) ? proxyR2(u) : u;
+        };
         const normalizePhotoUrl = (u) => {
             const s = String(u || '').trim();
             if (!s)
@@ -1869,6 +1927,9 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
             }
             if (s.startsWith('/'))
                 return apiBase ? `${apiBase}${s}` : '';
+            const maybeKey = normalizeR2Key(s);
+            if (maybeKey)
+                return maybeKey;
             return '';
         };
         const mapRowUrls = (r) => {
