@@ -1763,9 +1763,8 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
                     const el = document.querySelector('[data-monthly-statement-root="1"]');
                     if (!el)
                         return false;
-                    const deepLoaded = String(el.getAttribute('data-deep-clean-loaded') || '') === '1';
-                    const maintLoaded = String(el.getAttribute('data-maint-loaded') || '') === '1';
-                    return deepLoaded && maintLoaded;
+                    const ready = String(el.getAttribute('data-monthly-statement-ready') || '') === '1';
+                    return ready;
                 }, { timeout: waitTimeoutMs });
             }
             catch (e) {
