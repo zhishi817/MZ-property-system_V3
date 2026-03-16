@@ -245,13 +245,14 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
     await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
     await page.waitForSelector('[data-monthly-statement-root="1"]', { timeout: waitTimeoutMs })
+    const u0 = String(page.url?.() || '')
+    if (u0.includes('/login')) throw new Error('print page redirected to /login')
     await page.waitForFunction(() => {
       const el = document.querySelector('[data-monthly-statement-root="1"]') as any
       if (!el) return false
-      const deepLoaded = String(el.getAttribute('data-deep-clean-loaded') || '') === '1'
-      const maintLoaded = String(el.getAttribute('data-maint-loaded') || '') === '1'
-      return deepLoaded && maintLoaded
-    }, { timeout: waitTimeoutMs } as any).catch(() => {})
+      const ready = String(el.getAttribute('data-monthly-statement-ready') || '') === '1'
+      return ready
+    }, { timeout: waitTimeoutMs } as any)
     await waitForImages(page, { timeoutMs: 20000, scroll: true, maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
     await page.waitForTimeout(200)
     await page.emulateMedia({ media: 'print' } as any)
@@ -541,4 +542,3 @@ export async function processPdfJobsOnce(opts: { limit?: number } = {}): Promise
   }
   return { processed: jobs.length, ok, failed, reclaimed }
 }
-

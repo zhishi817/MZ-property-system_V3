@@ -2,7 +2,7 @@
 
 ## Dev (2026-03-16)
 
-- Version: `0.2.7-statement-pdf.20260316+build.3`
+- Version: `0.2.7-statement-pdf.20260316+build.6`
 - Finance PDF: Fix monthly statement exports showing only 1 job photo when photosMode=thumbnail (applies to both print-based monthly statement PDF and template photo-only PDFs).
 - Finance PDF: In thumbnail mode, use `/public/r2-image` compression (w/q) to keep large photo months stable and smaller (avoid requesting non-existent `.thumb.jpg` keys that can 404).
 - Finance PDF: When photo count is too high, merge download generates base (no-photos) statement and relies on photo split PDFs to avoid Playwright timeouts.
@@ -11,6 +11,8 @@
 - Finance UI: Switch monthly “merge download” to job polling + direct R2 download (no statement re-upload).
 - Finance PDF: Web process also schedules pdf-jobs (DB-backed) for single-service deployments; photo stats are shown again during merge.
 - Finance recurring: Fix fixed-expenses page ensure-snapshot connection timeouts by limiting frontend concurrency and reducing backend DB load (avoid PG pool exhaustion).
+- Finance PDF: Fix merge download stuck in queued by triggering job processing during status polling and returning kick diagnostics.
+- Finance PDF: Fix “no-photos” statement PDF showing 0 totals by waiting monthly-statement-ready before printing (applies to merge job statement_base and /finance/monthly-statement-pdf).
 - Ops: Add migration `20260316_create_pdf_jobs.sql` and Render worker entries for pdf-jobs.
 - Finance recurring: Add Referral fee as recurring payment mode (percent of previous month property total income; locked on the 5th) with backend-calculated snapshots and a new ensure endpoint; includes DB migration `20260316_recurring_referral_fee.sql`.
 

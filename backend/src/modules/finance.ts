@@ -68,6 +68,27 @@ let pdfJobsKickLastAt = 0
 function pdfJobsOnDemandEnabled() {
   return String(process.env.PDF_JOBS_ON_DEMAND_ENABLED || 'true').toLowerCase() === 'true'
 }
+async function kickPdfJobsNow(reason: string): Promise<{ attempted: boolean; processed?: number; ok?: number; failed?: number; reclaimed?: number; error?: string }> {
+  if (!hasPg || !pgPool) return { attempted: false, error: 'no_db' }
+  if (!pdfJobsOnDemandEnabled()) return { attempted: false, error: 'disabled' }
+  const now = Date.now()
+  if (pdfJobsKickInFlight) return { attempted: false, error: 'in_flight' }
+  if (now - pdfJobsKickLastAt < 2000) return { attempted: false, error: 'throttled' }
+  pdfJobsKickLastAt = now
+  pdfJobsKickInFlight = true
+  try {
+    const { processPdfJobsOnce } = require('../services/pdfJobsWorker')
+    const r = await Promise.race([
+      processPdfJobsOnce({ limit: 1 }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('kick_timeout')), 1800)),
+    ]) as any
+    return { attempted: true, processed: Number(r?.processed || 0), ok: Number(r?.ok || 0), failed: Number(r?.failed || 0), reclaimed: Number(r?.reclaimed || 0) }
+  } catch (e: any) {
+    return { attempted: true, error: String(e?.message || e || '') || 'kick_failed' }
+  } finally {
+    pdfJobsKickInFlight = false
+  }
+}
 function kickPdfJobsSoon(reason: string) {
   if (!hasPg || !pgPool) return
   if (!pdfJobsOnDemandEnabled()) return
@@ -1260,16 +1281,26 @@ router.get('/merge-monthly-pack/:id', requireAnyPerm(['finance.payout', 'finance
     if (!id) return res.status(400).json({ message: 'missing id' })
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
     await ensurePdfJobsSchema()
-    const r = await pgPool.query('SELECT * FROM pdf_jobs WHERE id=$1 LIMIT 1', [id])
-    const row = r.rows?.[0] || null
+    const loadRow = async () => {
+      const r = await pgPool!.query('SELECT * FROM pdf_jobs WHERE id=$1 LIMIT 1', [id])
+      return r.rows?.[0] || null
+    }
+    let row = await loadRow()
     if (!row) return res.status(404).json({ message: 'not_found' })
-    try {
-      const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN
-      const ageMs = Number.isFinite(createdMs) ? (Date.now() - createdMs) : NaN
-      if (String(row.status || '') === 'queued' && Number.isFinite(ageMs) && ageMs > 15000) {
-        kickPdfJobsSoon('poll_merge_monthly_pack')
-      }
-    } catch {}
+    const createdMs0 = row.created_at ? new Date(row.created_at).getTime() : NaN
+    const ageMs0 = Number.isFinite(createdMs0) ? (Date.now() - createdMs0) : NaN
+    const shouldKick =
+      String(row.status || '') === 'queued' &&
+      Number.isFinite(ageMs0) &&
+      ageMs0 > 15000 &&
+      Number(row.attempts || 0) === 0 &&
+      !row.locked_by
+    let kick: any = null
+    if (shouldKick) {
+      kick = await kickPdfJobsNow('poll_merge_monthly_pack')
+      try { if (kick?.attempted) row = await loadRow() } catch {}
+      try { if (!kick?.attempted) kickPdfJobsSoon('poll_merge_monthly_pack') } catch {}
+    }
     const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN
     const updatedMs = row.updated_at ? new Date(row.updated_at).getTime() : NaN
     const ageSec = Number.isFinite(createdMs) ? Math.max(0, Math.round((Date.now() - createdMs) / 1000)) : null
@@ -1289,6 +1320,7 @@ router.get('/merge-monthly-pack/:id', requireAnyPerm(['finance.payout', 'finance
       next_retry_at: row.next_retry_at || null,
       locked_by: row.locked_by || null,
       lease_expires_at: row.lease_expires_at || null,
+      kick: kick || null,
       params: row.params || null,
       result_files: row.result_files || [],
       last_error_code: row.last_error_code || null,
@@ -1584,9 +1616,8 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
         await page.waitForFunction(() => {
           const el = document.querySelector('[data-monthly-statement-root="1"]') as any
           if (!el) return false
-          const deepLoaded = String(el.getAttribute('data-deep-clean-loaded') || '') === '1'
-          const maintLoaded = String(el.getAttribute('data-maint-loaded') || '') === '1'
-          return deepLoaded && maintLoaded
+          const ready = String(el.getAttribute('data-monthly-statement-ready') || '') === '1'
+          return ready
         }, { timeout: waitTimeoutMs } as any)
       } catch (e: any) {
         const d = await readRootAttrs().catch(() => ({ curUrl: '', title: '', hasRoot: false, attrs: null as any }))
