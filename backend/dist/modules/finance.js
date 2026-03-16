@@ -23,6 +23,7 @@ const waitForImages_1 = require("../lib/waitForImages");
 const uploadImageResize_1 = require("../lib/uploadImageResize");
 const uuid_1 = require("uuid");
 const pdfJobsSchema_1 = require("../services/pdfJobsSchema");
+const r2_2 = require("../r2");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -79,6 +80,39 @@ function isPlaywrightClosedError(e) {
     const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
     return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg);
 }
+let pdfJobsKickInFlight = false;
+let pdfJobsKickLastAt = 0;
+function pdfJobsOnDemandEnabled() {
+    return String(process.env.PDF_JOBS_ON_DEMAND_ENABLED || 'true').toLowerCase() === 'true';
+}
+function kickPdfJobsSoon(reason) {
+    if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
+        return;
+    if (!pdfJobsOnDemandEnabled())
+        return;
+    const now = Date.now();
+    if (pdfJobsKickInFlight)
+        return;
+    if (now - pdfJobsKickLastAt < 8000)
+        return;
+    pdfJobsKickLastAt = now;
+    pdfJobsKickInFlight = true;
+    setTimeout(async () => {
+        try {
+            const { processPdfJobsOnce } = require('../services/pdfJobsWorker');
+            await processPdfJobsOnce({ limit: 1 });
+        }
+        catch (e) {
+            try {
+                console.error(`[pdf-jobs][kick] failed reason=${String(reason || '')} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+            }
+            catch (_a) { }
+        }
+        finally {
+            pdfJobsKickInFlight = false;
+        }
+    }, 0);
+}
 function monthRangeISO(monthKey) {
     const m = String(monthKey || '').trim();
     const mm = m.match(/^(\d{4})-(\d{2})$/);
@@ -91,6 +125,14 @@ function monthRangeISO(monthKey) {
     const start = new Date(Date.UTC(y, mo - 1, 1));
     const end = new Date(Date.UTC(y, mo, 1));
     return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+}
+function r2PublicBaseForKey() {
+    const st = (0, r2_2.r2Status)();
+    const endpoint = String(st.endpoint || '').replace(/\/$/, '');
+    const bucket = String(st.bucket || '').trim();
+    const pb = String(st.publicBase || '').replace(/\/$/, '');
+    const cleaned = pb && /\.r2\.dev($|\/)/.test(pb) ? pb.replace(new RegExp(`/${bucket}$`), '') : pb;
+    return cleaned || (endpoint && bucket ? `${endpoint}/${bucket}` : '');
 }
 function countUrlList(v) {
     if (!v)
@@ -1246,6 +1288,7 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
         };
         await dbAdapter_2.pgPool.query(`INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
        VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`, [id, JSON.stringify(params)]);
+        kickPdfJobsSoon('create_merge_monthly_pack');
         return res.json({ job_id: id, status: 'queued' });
     }
     catch (e) {
@@ -1253,6 +1296,43 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
         if (code === 'PDF_JOBS_SCHEMA_MISSING')
             return res.status(500).json({ message: 'pdf_jobs table missing (apply migration)' });
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'create job failed' });
+    }
+});
+exports.router.get('/merge-monthly-pack/:id/download', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
+    var _a, _b, _c, _d;
+    try {
+        const id = String(((_a = req.params) === null || _a === void 0 ? void 0 : _a.id) || '').trim();
+        const kind = String(((_b = req.query) === null || _b === void 0 ? void 0 : _b.kind) || '').trim();
+        if (!id)
+            return res.status(400).json({ message: 'missing id' });
+        if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
+            return res.status(500).json({ message: 'no database configured' });
+        if (!r2_1.hasR2)
+            return res.status(500).json({ message: 'R2 not configured' });
+        await (0, pdfJobsSchema_1.ensurePdfJobsSchema)();
+        const r = await dbAdapter_2.pgPool.query('SELECT id, status, result_files FROM pdf_jobs WHERE id=$1 LIMIT 1', [id]);
+        const row = ((_c = r.rows) === null || _c === void 0 ? void 0 : _c[0]) || null;
+        if (!row)
+            return res.status(404).json({ message: 'not_found' });
+        const files = Array.isArray(row === null || row === void 0 ? void 0 : row.result_files) ? row.result_files : [];
+        const pick = (k) => files.find((x) => String((x === null || x === void 0 ? void 0 : x.kind) || '') === k);
+        const merged = pick('statement_merged_invoices');
+        const base = pick('statement_base');
+        const want = kind ? pick(kind) : (merged || base);
+        const key = String((want === null || want === void 0 ? void 0 : want.path) || '').trim();
+        if (!key)
+            return res.status(404).json({ message: 'file_not_found' });
+        const obj = await (0, r2_2.r2GetObjectByKey)(key);
+        if (!obj || !((_d = obj.body) === null || _d === void 0 ? void 0 : _d.length))
+            return res.status(404).json({ message: 'file_not_found' });
+        const filename = String((want === null || want === void 0 ? void 0 : want.name) || `${String(row.id)}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_');
+        res.setHeader('Content-Type', obj.contentType || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Cache-Control', 'private, max-age=0, no-cache');
+        return res.status(200).send(obj.body);
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'download failed' });
     }
 });
 exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
@@ -1268,6 +1348,18 @@ exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finan
         const row = ((_b = r.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
         if (!row)
             return res.status(404).json({ message: 'not_found' });
+        try {
+            const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN;
+            const ageMs = Number.isFinite(createdMs) ? (Date.now() - createdMs) : NaN;
+            if (String(row.status || '') === 'queued' && Number.isFinite(ageMs) && ageMs > 15000) {
+                kickPdfJobsSoon('poll_merge_monthly_pack');
+            }
+        }
+        catch (_c) { }
+        const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN;
+        const updatedMs = row.updated_at ? new Date(row.updated_at).getTime() : NaN;
+        const ageSec = Number.isFinite(createdMs) ? Math.max(0, Math.round((Date.now() - createdMs) / 1000)) : null;
+        const idleSec = Number.isFinite(updatedMs) ? Math.max(0, Math.round((Date.now() - updatedMs) / 1000)) : null;
         return res.json({
             id: row.id,
             kind: row.kind,
@@ -1278,6 +1370,11 @@ exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finan
             attempts: Number(row.attempts || 0),
             created_at: row.created_at,
             updated_at: row.updated_at,
+            age_seconds: ageSec,
+            idle_seconds: idleSec,
+            next_retry_at: row.next_retry_at || null,
+            locked_by: row.locked_by || null,
+            lease_expires_at: row.lease_expires_at || null,
             params: row.params || null,
             result_files: row.result_files || [],
             last_error_code: row.last_error_code || null,
@@ -1737,17 +1834,48 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
          )
        ORDER BY occurred_at ASC, created_at ASC
        LIMIT 5000`, [pid, codes, range.start, range.end]).then(r => r.rows || []).catch(() => []) : Promise.resolve([]);
-        const qMaint = wantMaint ? dbAdapter_2.pgPool.query(`SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
-       FROM property_maintenance
-       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
-         AND (
-           (occurred_at >= $3::date AND occurred_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
-         )
-       ORDER BY occurred_at ASC, created_at ASC
-       LIMIT 5000`, [pid, codes, range.start, range.end]).then(r => r.rows || []).catch(() => []) : Promise.resolve([]);
+        const qMaint = wantMaint ? (async () => {
+            const baseWhere = `
+        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
+          AND (
+            (occurred_at >= $3::date AND occurred_at < $4::date)
+            OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
+            OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
+            OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
+          )`;
+            const sql0 = `
+        SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
+        FROM property_maintenance
+        ${baseWhere}
+        ORDER BY occurred_at ASC, created_at ASC
+        LIMIT 5000`;
+            const sql1 = `
+        SELECT id, work_no, occurred_at, completed_at, started_at, submitted_at, created_at, photo_urls, repair_photo_urls
+        FROM property_maintenance
+        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
+          AND (
+            (occurred_at >= $3::date AND occurred_at < $4::date)
+            OR (completed_at >= $3::date AND completed_at < $4::date)
+            OR (started_at >= $3::date AND started_at < $4::date)
+            OR (submitted_at >= $3::date AND submitted_at < $4::date)
+            OR (created_at >= $3::date AND created_at < $4::date)
+          )
+        ORDER BY occurred_at ASC, created_at ASC
+        LIMIT 5000`;
+            try {
+                const r = await dbAdapter_2.pgPool.query(sql1, [pid, codes, range.start, range.end]);
+                return r.rows || [];
+            }
+            catch (e) {
+                const code = String((e === null || e === void 0 ? void 0 : e.code) || '');
+                const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+                if (code === '42703' || /submitted_at/i.test(msg)) {
+                    const r = await dbAdapter_2.pgPool.query(sql0, [pid, codes, range.start, range.end]);
+                    return r.rows || [];
+                }
+                throw e;
+            }
+        })().catch(() => []) : Promise.resolve([]);
         const [deepRows0, maintRows0, llName] = await Promise.all([qDeep, qMaint, landlordName]);
         const apiBase = (() => {
             const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
@@ -1806,6 +1934,18 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
                 return `${base}&fmt=jpeg&w=${compress.w}&q=${compress.q}`;
             return base;
         };
+        const normalizeR2Key = (key) => {
+            const k = String(key || '').trim().replace(/^\/+/, '');
+            if (!k)
+                return '';
+            if (!/^(maintenance|deep-cleaning|invoice-company-logos)\//i.test(k))
+                return '';
+            const base = r2PublicBaseForKey();
+            if (!base)
+                return '';
+            const u = `${base}/${k}`;
+            return isR2(u) ? proxyR2(u) : u;
+        };
         const normalizePhotoUrl = (u) => {
             const s = String(u || '').trim();
             if (!s)
@@ -1818,6 +1958,9 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
             }
             if (s.startsWith('/'))
                 return apiBase ? `${apiBase}${s}` : '';
+            const maybeKey = normalizeR2Key(s);
+            if (maybeKey)
+                return maybeKey;
             return '';
         };
         const mapRowUrls = (r) => {

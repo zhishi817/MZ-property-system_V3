@@ -17,6 +17,7 @@ import { waitForImages } from '../lib/waitForImages'
 import { resizeUploadImage } from '../lib/uploadImageResize'
 import { v4 as uuidv4 } from 'uuid'
 import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
+import { r2Status, r2GetObjectByKey } from '../r2'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -62,6 +63,31 @@ function isPlaywrightClosedError(e: any) {
   return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg)
 }
 
+let pdfJobsKickInFlight = false
+let pdfJobsKickLastAt = 0
+function pdfJobsOnDemandEnabled() {
+  return String(process.env.PDF_JOBS_ON_DEMAND_ENABLED || 'true').toLowerCase() === 'true'
+}
+function kickPdfJobsSoon(reason: string) {
+  if (!hasPg || !pgPool) return
+  if (!pdfJobsOnDemandEnabled()) return
+  const now = Date.now()
+  if (pdfJobsKickInFlight) return
+  if (now - pdfJobsKickLastAt < 8000) return
+  pdfJobsKickLastAt = now
+  pdfJobsKickInFlight = true
+  setTimeout(async () => {
+    try {
+      const { processPdfJobsOnce } = require('../services/pdfJobsWorker')
+      await processPdfJobsOnce({ limit: 1 })
+    } catch (e: any) {
+      try { console.error(`[pdf-jobs][kick] failed reason=${String(reason || '')} message=${String(e?.message || '')}`) } catch {}
+    } finally {
+      pdfJobsKickInFlight = false
+    }
+  }, 0)
+}
+
 function monthRangeISO(monthKey: string): { start: string; end: string } | null {
   const m = String(monthKey || '').trim()
   const mm = m.match(/^(\d{4})-(\d{2})$/)
@@ -72,6 +98,15 @@ function monthRangeISO(monthKey: string): { start: string; end: string } | null 
   const start = new Date(Date.UTC(y, mo - 1, 1))
   const end = new Date(Date.UTC(y, mo, 1))
   return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) }
+}
+
+function r2PublicBaseForKey(): string {
+  const st = r2Status()
+  const endpoint = String(st.endpoint || '').replace(/\/$/, '')
+  const bucket = String(st.bucket || '').trim()
+  const pb = String(st.publicBase || '').replace(/\/$/, '')
+  const cleaned = pb && /\.r2\.dev($|\/)/.test(pb) ? pb.replace(new RegExp(`/${bucket}$`), '') : pb
+  return cleaned || (endpoint && bucket ? `${endpoint}/${bucket}` : '')
 }
 
 function countUrlList(v: any): number {
@@ -1180,11 +1215,42 @@ router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx
        VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`,
       [id, JSON.stringify(params)]
     )
+    kickPdfJobsSoon('create_merge_monthly_pack')
     return res.json({ job_id: id, status: 'queued' })
   } catch (e: any) {
     const code = String(e?.code || '')
     if (code === 'PDF_JOBS_SCHEMA_MISSING') return res.status(500).json({ message: 'pdf_jobs table missing (apply migration)' })
     return res.status(500).json({ message: e?.message || 'create job failed' })
+  }
+})
+
+router.get('/merge-monthly-pack/:id/download', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
+  try {
+    const id = String(req.params?.id || '').trim()
+    const kind = String((req.query as any)?.kind || '').trim()
+    if (!id) return res.status(400).json({ message: 'missing id' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
+    await ensurePdfJobsSchema()
+    const r = await pgPool.query('SELECT id, status, result_files FROM pdf_jobs WHERE id=$1 LIMIT 1', [id])
+    const row = r.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not_found' })
+    const files = Array.isArray(row?.result_files) ? row.result_files : []
+    const pick = (k: string) => files.find((x: any) => String(x?.kind || '') === k)
+    const merged = pick('statement_merged_invoices')
+    const base = pick('statement_base')
+    const want = kind ? pick(kind) : (merged || base)
+    const key = String(want?.path || '').trim()
+    if (!key) return res.status(404).json({ message: 'file_not_found' })
+    const obj = await r2GetObjectByKey(key)
+    if (!obj || !obj.body?.length) return res.status(404).json({ message: 'file_not_found' })
+    const filename = String(want?.name || `${String(row.id)}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_')
+    res.setHeader('Content-Type', obj.contentType || 'application/octet-stream')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.setHeader('Cache-Control', 'private, max-age=0, no-cache')
+    return res.status(200).send(obj.body)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'download failed' })
   }
 })
 
@@ -1197,6 +1263,17 @@ router.get('/merge-monthly-pack/:id', requireAnyPerm(['finance.payout', 'finance
     const r = await pgPool.query('SELECT * FROM pdf_jobs WHERE id=$1 LIMIT 1', [id])
     const row = r.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not_found' })
+    try {
+      const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN
+      const ageMs = Number.isFinite(createdMs) ? (Date.now() - createdMs) : NaN
+      if (String(row.status || '') === 'queued' && Number.isFinite(ageMs) && ageMs > 15000) {
+        kickPdfJobsSoon('poll_merge_monthly_pack')
+      }
+    } catch {}
+    const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN
+    const updatedMs = row.updated_at ? new Date(row.updated_at).getTime() : NaN
+    const ageSec = Number.isFinite(createdMs) ? Math.max(0, Math.round((Date.now() - createdMs) / 1000)) : null
+    const idleSec = Number.isFinite(updatedMs) ? Math.max(0, Math.round((Date.now() - updatedMs) / 1000)) : null
     return res.json({
       id: row.id,
       kind: row.kind,
@@ -1207,6 +1284,11 @@ router.get('/merge-monthly-pack/:id', requireAnyPerm(['finance.payout', 'finance
       attempts: Number(row.attempts || 0),
       created_at: row.created_at,
       updated_at: row.updated_at,
+      age_seconds: ageSec,
+      idle_seconds: idleSec,
+      next_retry_at: row.next_retry_at || null,
+      locked_by: row.locked_by || null,
+      lease_expires_at: row.lease_expires_at || null,
       params: row.params || null,
       result_files: row.result_files || [],
       last_error_code: row.last_error_code || null,
@@ -1606,20 +1688,47 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       [pid, codes, range.start, range.end]
     ).then(r => r.rows || []).catch(() => []) : Promise.resolve([] as any[])
 
-    const qMaint = wantMaint ? pgPool.query(
-      `SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
-       FROM property_maintenance
-       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
-         AND (
-           (occurred_at >= $3::date AND occurred_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
-         )
-       ORDER BY occurred_at ASC, created_at ASC
-       LIMIT 5000`,
-      [pid, codes, range.start, range.end]
-    ).then(r => r.rows || []).catch(() => []) : Promise.resolve([] as any[])
+    const qMaint = wantMaint ? (async () => {
+      const baseWhere = `
+        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
+          AND (
+            (occurred_at >= $3::date AND occurred_at < $4::date)
+            OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
+            OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
+            OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
+          )`
+      const sql0 = `
+        SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
+        FROM property_maintenance
+        ${baseWhere}
+        ORDER BY occurred_at ASC, created_at ASC
+        LIMIT 5000`
+      const sql1 = `
+        SELECT id, work_no, occurred_at, completed_at, started_at, submitted_at, created_at, photo_urls, repair_photo_urls
+        FROM property_maintenance
+        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
+          AND (
+            (occurred_at >= $3::date AND occurred_at < $4::date)
+            OR (completed_at >= $3::date AND completed_at < $4::date)
+            OR (started_at >= $3::date AND started_at < $4::date)
+            OR (submitted_at >= $3::date AND submitted_at < $4::date)
+            OR (created_at >= $3::date AND created_at < $4::date)
+          )
+        ORDER BY occurred_at ASC, created_at ASC
+        LIMIT 5000`
+      try {
+        const r = await pgPool.query(sql1, [pid, codes, range.start, range.end])
+        return r.rows || []
+      } catch (e: any) {
+        const code = String(e?.code || '')
+        const msg = String(e?.message || '')
+        if (code === '42703' || /submitted_at/i.test(msg)) {
+          const r = await pgPool.query(sql0, [pid, codes, range.start, range.end])
+          return r.rows || []
+        }
+        throw e
+      }
+    })().catch(() => []) : Promise.resolve([] as any[])
 
     const [deepRows0, maintRows0, llName] = await Promise.all([qDeep, qMaint, landlordName])
     const apiBase = (() => {
@@ -1664,6 +1773,15 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       if (photosMode === 'compressed' || photosMode === 'thumbnail') return `${base}&fmt=jpeg&w=${compress.w}&q=${compress.q}`
       return base
     }
+    const normalizeR2Key = (key: string) => {
+      const k = String(key || '').trim().replace(/^\/+/, '')
+      if (!k) return ''
+      if (!/^(maintenance|deep-cleaning|invoice-company-logos)\//i.test(k)) return ''
+      const base = r2PublicBaseForKey()
+      if (!base) return ''
+      const u = `${base}/${k}`
+      return isR2(u) ? proxyR2(u) : u
+    }
     const normalizePhotoUrl = (u: string) => {
       const s = String(u || '').trim()
       if (!s) return ''
@@ -1673,6 +1791,8 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
         return isR2(abs) ? proxyR2(abs) : abs
       }
       if (s.startsWith('/')) return apiBase ? `${apiBase}${s}` : ''
+      const maybeKey = normalizeR2Key(s)
+      if (maybeKey) return maybeKey
       return ''
     }
     const mapRowUrls = (r: any) => {
