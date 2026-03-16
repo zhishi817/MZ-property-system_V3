@@ -1163,6 +1163,8 @@ router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
     if (!pid) return res.status(400).json({ message: 'missing property_id' })
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    if (!String(process.env.FRONTEND_BASE_URL || '').trim()) return res.status(500).json({ message: 'missing FRONTEND_BASE_URL' })
+    if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
     await ensurePdfJobsSchema()
     const id = uuidv4()
     const params = {
