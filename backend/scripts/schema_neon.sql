@@ -558,6 +558,10 @@ ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bpay_code text;
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS pay_mobile_number text;
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS report_category text;
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS start_month_key text;
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS frequency_months integer DEFAULT 1;
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS amount_mode text DEFAULT 'fixed';
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS income_base text DEFAULT 'total_income';
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS rate_percent numeric;
 
 CREATE TABLE IF NOT EXISTS fixed_expenses (
   id text PRIMARY KEY,

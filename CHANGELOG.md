@@ -10,7 +10,7 @@
 - Finance PDF: Add persistent merge job APIs (`POST/GET /finance/merge-monthly-pack`) and a DB-backed worker to generate merged outputs asynchronously, avoiding 502/504 for huge months.
 - Finance UI: Switch monthly “merge download” to job polling + direct R2 download (no statement re-upload).
 - Ops: Add migration `20260316_create_pdf_jobs.sql` and Render worker entries for pdf-jobs.
-- Finance recurring: Add Referral fee as recurring payment mode (percent of previous month property total income; locked on the 5th) with backend-calculated snapshots and a new ensure endpoint; includes DB migration `20260315_recurring_referral_fee.sql`.
+- Finance recurring: Add Referral fee as recurring payment mode (percent of previous month property total income; locked on the 5th) with backend-calculated snapshots and a new ensure endpoint; includes DB migration `20260316_recurring_referral_fee.sql`.
 
 Author: MZ System Bot <dev@mzpropertygroup.com>
 

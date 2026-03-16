@@ -655,6 +655,11 @@ CREATE TABLE IF NOT EXISTS expense_dedup_logs (
 );
 -- Property recurring payments reporting category for revenue mapping
 ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS report_category text;
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS start_month_key text;
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS frequency_months integer DEFAULT 1;
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS amount_mode text DEFAULT 'fixed';
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS income_base text DEFAULT 'total_income';
+ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS rate_percent numeric;
 -- Relax status check to include transitional states
 DO $$ BEGIN
   BEGIN
