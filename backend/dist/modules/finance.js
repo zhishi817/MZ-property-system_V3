@@ -79,6 +79,39 @@ function isPlaywrightClosedError(e) {
     const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
     return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg);
 }
+let pdfJobsKickInFlight = false;
+let pdfJobsKickLastAt = 0;
+function pdfJobsOnDemandEnabled() {
+    return String(process.env.PDF_JOBS_ON_DEMAND_ENABLED || 'true').toLowerCase() === 'true';
+}
+function kickPdfJobsSoon(reason) {
+    if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
+        return;
+    if (!pdfJobsOnDemandEnabled())
+        return;
+    const now = Date.now();
+    if (pdfJobsKickInFlight)
+        return;
+    if (now - pdfJobsKickLastAt < 8000)
+        return;
+    pdfJobsKickLastAt = now;
+    pdfJobsKickInFlight = true;
+    setTimeout(async () => {
+        try {
+            const { processPdfJobsOnce } = require('../services/pdfJobsWorker');
+            await processPdfJobsOnce({ limit: 1 });
+        }
+        catch (e) {
+            try {
+                console.error(`[pdf-jobs][kick] failed reason=${String(reason || '')} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+            }
+            catch (_a) { }
+        }
+        finally {
+            pdfJobsKickInFlight = false;
+        }
+    }, 0);
+}
 function monthRangeISO(monthKey) {
     const m = String(monthKey || '').trim();
     const mm = m.match(/^(\d{4})-(\d{2})$/);
@@ -1246,6 +1279,7 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
         };
         await dbAdapter_2.pgPool.query(`INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
        VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`, [id, JSON.stringify(params)]);
+        kickPdfJobsSoon('create_merge_monthly_pack');
         return res.json({ job_id: id, status: 'queued' });
     }
     catch (e) {
@@ -1268,6 +1302,18 @@ exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finan
         const row = ((_b = r.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
         if (!row)
             return res.status(404).json({ message: 'not_found' });
+        try {
+            const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN;
+            const ageMs = Number.isFinite(createdMs) ? (Date.now() - createdMs) : NaN;
+            if (String(row.status || '') === 'queued' && Number.isFinite(ageMs) && ageMs > 15000) {
+                kickPdfJobsSoon('poll_merge_monthly_pack');
+            }
+        }
+        catch (_c) { }
+        const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN;
+        const updatedMs = row.updated_at ? new Date(row.updated_at).getTime() : NaN;
+        const ageSec = Number.isFinite(createdMs) ? Math.max(0, Math.round((Date.now() - createdMs) / 1000)) : null;
+        const idleSec = Number.isFinite(updatedMs) ? Math.max(0, Math.round((Date.now() - updatedMs) / 1000)) : null;
         return res.json({
             id: row.id,
             kind: row.kind,
@@ -1278,6 +1324,11 @@ exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finan
             attempts: Number(row.attempts || 0),
             created_at: row.created_at,
             updated_at: row.updated_at,
+            age_seconds: ageSec,
+            idle_seconds: idleSec,
+            next_retry_at: row.next_retry_at || null,
+            locked_by: row.locked_by || null,
+            lease_expires_at: row.lease_expires_at || null,
             params: row.params || null,
             result_files: row.result_files || [],
             last_error_code: row.last_error_code || null,
