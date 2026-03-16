@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { requireAnyPerm } from '../auth'
 import { addAudit } from '../store'
-import { hasPg, pgRunInTransaction } from '../dbAdapter'
+import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
 import { z } from 'zod'
 
 export const router = Router()
@@ -94,29 +94,51 @@ function dueMonthKeysBetween(start: string, end: string, freqMonths: number): st
   return out
 }
 
-async function ensureRecurringPaymentsSchema(client: any) {
-  await client.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS start_month_key text;')
-  try { await client.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS report_category text;') } catch {}
-  try { await client.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS frequency_months integer DEFAULT 1;') } catch {}
-  try { await client.query(`ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS amount_mode text DEFAULT 'fixed';`) } catch {}
-  try { await client.query(`ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS income_base text DEFAULT 'total_income';`) } catch {}
-  try { await client.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS rate_percent numeric;') } catch {}
+let schemaEnsured: Promise<void> | null = null
+async function ensureSchemasOnce() {
+  if (!hasPg || !pgPool) return
+  if (schemaEnsured) return schemaEnsured
+  schemaEnsured = (async () => {
+    await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS start_month_key text;')
+    try { await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS report_category text;') } catch {}
+    try { await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS frequency_months integer DEFAULT 1;') } catch {}
+    try { await pgPool.query(`ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS amount_mode text DEFAULT 'fixed';`) } catch {}
+    try { await pgPool.query(`ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS income_base text DEFAULT 'total_income';`) } catch {}
+    try { await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS rate_percent numeric;') } catch {}
+
+    try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;') } catch {}
+    try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;') } catch {}
+    try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;') } catch {}
+    try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;') } catch {}
+    try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
+    try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
+
+    try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;') } catch {}
+    try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;') } catch {}
+    try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;') } catch {}
+    try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;') } catch {}
+    try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
+    try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
+  })().catch((e) => {
+    schemaEnsured = null
+    throw e
+  })
+  return schemaEnsured
 }
 
-async function ensureExpensesSchema(client: any) {
-  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;') } catch {}
-  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;') } catch {}
-  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;') } catch {}
-  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;') } catch {}
-  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
-  try { await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
+function msEnv(name: string, defMs: number): number {
+  const raw = Number(process.env[name] || defMs)
+  if (!Number.isFinite(raw)) return defMs
+  return Math.max(0, Math.floor(raw))
+}
 
-  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;') } catch {}
-  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;') } catch {}
-  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;') } catch {}
-  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;') } catch {}
-  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
-  try { await client.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
+async function applyTxTimeouts(client: any) {
+  const lockTimeoutMs = msEnv('RECURRING_TX_LOCK_TIMEOUT_MS', 1500)
+  const statementTimeoutMs = msEnv('RECURRING_TX_STATEMENT_TIMEOUT_MS', 20000)
+  const idleTimeoutMs = msEnv('RECURRING_TX_IDLE_TIMEOUT_MS', 30000)
+  if (lockTimeoutMs) await client.query(`SET LOCAL lock_timeout = ${lockTimeoutMs}`)
+  if (statementTimeoutMs) await client.query(`SET LOCAL statement_timeout = ${statementTimeoutMs}`)
+  if (idleTimeoutMs) await client.query(`SET LOCAL idle_in_transaction_session_timeout = ${idleTimeoutMs}`)
 }
 
 const paymentTypeEnum = z.enum(['bank_account', 'bpay', 'payid', 'rent_deduction', 'cash'])
@@ -337,8 +359,8 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
 
   try {
     const result = await pgRunInTransaction(async (client) => {
-      await ensureRecurringPaymentsSchema(client)
-      await ensureExpensesSchema(client)
+      await applyTxTimeouts(client)
+      await ensureSchemasOnce()
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202603, String(payment.id)])
 
       const keys = Object.keys(payment)
@@ -459,8 +481,8 @@ router.post('/payments/:id/pause', requireAnyPerm(['recurring_payments.write', '
   const nextMonthStart = nextMonthKey ? `${nextMonthKey}-01` : ''
   try {
     const result = await pgRunInTransaction(async (client) => {
-      await ensureRecurringPaymentsSchema(client)
-      await ensureExpensesSchema(client)
+      await applyTxTimeouts(client)
+      await ensureSchemasOnce()
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202603, String(id)])
       const beforeRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
       const before = beforeRes.rows?.[0] || null
@@ -546,8 +568,8 @@ router.post('/payments/:id/resume', requireAnyPerm(['recurring_payments.write', 
   if (!Number.isFinite(monthIdx) || !Number.isFinite(curIdx)) return res.status(400).json({ message: 'invalid month key' })
   try {
     const result = await pgRunInTransaction(async (client) => {
-      await ensureRecurringPaymentsSchema(client)
-      await ensureExpensesSchema(client)
+      await applyTxTimeouts(client)
+      await ensureSchemasOnce()
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202603, String(id)])
       const beforeRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
       const before = beforeRes.rows?.[0] || null
@@ -615,8 +637,8 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
   if (!Number.isFinite(monthIdx) || !Number.isFinite(curIdx)) return res.status(400).json({ message: 'invalid month key' })
   try {
     const result = await pgRunInTransaction(async (client) => {
-      await ensureRecurringPaymentsSchema(client)
-      await ensureExpensesSchema(client)
+      await applyTxTimeouts(client)
+      await ensureSchemasOnce()
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202603, String(id)])
       const beforeRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
       const payment = beforeRes.rows?.[0] || null
@@ -630,9 +652,9 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
       if (!isDue) return { ensured: false, month_key: monthKey }
       const dueISO = payment.payment_type === 'rent_deduction' ? `${monthKey}-01` : computeDueISO(monthKey, dueDay)
       const shouldPaid = payment.payment_type === 'rent_deduction' || monthIdx < curIdx
-      const wantAmount = await computeSnapshotAmountTx(client, payment, monthKey)
       const existing = await client.query(`SELECT id, status FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
       if (!existing.rowCount) {
+        const wantAmount = await computeSnapshotAmountTx(client, payment, monthKey)
         const { v4: uuid } = require('uuid')
         const payload: any = {
           id: uuid(),
@@ -666,6 +688,7 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
       if (String((payment as any).amount_mode || '') === 'percent_of_property_total_income' && isReferralLocked(monthKey)) {
         return { ensured: true, inserted: 0, updated: 0, month_key: monthKey, locked: true }
       }
+      const wantAmount = await computeSnapshotAmountTx(client, payment, monthKey)
       const updates: string[] = []
       const vals: any[] = []
       updates.push(`amount = $${vals.length + 1}`); vals.push(wantAmount)
@@ -682,7 +705,10 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
     return res.json({ ok: true, ...result })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'ensure failed' })
+    const msg = String(e?.message || 'ensure failed')
+    if (/timeout exceeded when trying to connect/i.test(msg)) return res.status(503).json({ message: msg })
+    if (/lock timeout/i.test(msg)) return res.status(503).json({ message: msg })
+    return res.status(500).json({ message: msg })
   }
 })
 
@@ -696,8 +722,8 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
   const currentMonth = currentMonthKeyAU()
   try {
     const result = await pgRunInTransaction(async (client) => {
-      await ensureRecurringPaymentsSchema(client)
-      await ensureExpensesSchema(client)
+      await applyTxTimeouts(client)
+      await ensureSchemasOnce()
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202603, String(id)])
       const beforeRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
       const before = (beforeRes.rows?.[0]) || null
