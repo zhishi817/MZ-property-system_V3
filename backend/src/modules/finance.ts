@@ -1688,20 +1688,47 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       [pid, codes, range.start, range.end]
     ).then(r => r.rows || []).catch(() => []) : Promise.resolve([] as any[])
 
-    const qMaint = wantMaint ? pgPool.query(
-      `SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
-       FROM property_maintenance
-       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
-         AND (
-           (occurred_at >= $3::date AND occurred_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
-         )
-       ORDER BY occurred_at ASC, created_at ASC
-       LIMIT 5000`,
-      [pid, codes, range.start, range.end]
-    ).then(r => r.rows || []).catch(() => []) : Promise.resolve([] as any[])
+    const qMaint = wantMaint ? (async () => {
+      const baseWhere = `
+        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
+          AND (
+            (occurred_at >= $3::date AND occurred_at < $4::date)
+            OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
+            OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
+            OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
+          )`
+      const sql0 = `
+        SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
+        FROM property_maintenance
+        ${baseWhere}
+        ORDER BY occurred_at ASC, created_at ASC
+        LIMIT 5000`
+      const sql1 = `
+        SELECT id, work_no, occurred_at, completed_at, started_at, submitted_at, created_at, photo_urls, repair_photo_urls
+        FROM property_maintenance
+        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
+          AND (
+            (occurred_at >= $3::date AND occurred_at < $4::date)
+            OR (completed_at >= $3::date AND completed_at < $4::date)
+            OR (started_at >= $3::date AND started_at < $4::date)
+            OR (submitted_at >= $3::date AND submitted_at < $4::date)
+            OR (created_at >= $3::date AND created_at < $4::date)
+          )
+        ORDER BY occurred_at ASC, created_at ASC
+        LIMIT 5000`
+      try {
+        const r = await pgPool.query(sql1, [pid, codes, range.start, range.end])
+        return r.rows || []
+      } catch (e: any) {
+        const code = String(e?.code || '')
+        const msg = String(e?.message || '')
+        if (code === '42703' || /submitted_at/i.test(msg)) {
+          const r = await pgPool.query(sql0, [pid, codes, range.start, range.end])
+          return r.rows || []
+        }
+        throw e
+      }
+    })().catch(() => []) : Promise.resolve([] as any[])
 
     const [deepRows0, maintRows0, llName] = await Promise.all([qDeep, qMaint, landlordName])
     const apiBase = (() => {

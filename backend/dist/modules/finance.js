@@ -1834,17 +1834,48 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
          )
        ORDER BY occurred_at ASC, created_at ASC
        LIMIT 5000`, [pid, codes, range.start, range.end]).then(r => r.rows || []).catch(() => []) : Promise.resolve([]);
-        const qMaint = wantMaint ? dbAdapter_2.pgPool.query(`SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
-       FROM property_maintenance
-       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
-         AND (
-           (occurred_at >= $3::date AND occurred_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
-         )
-       ORDER BY occurred_at ASC, created_at ASC
-       LIMIT 5000`, [pid, codes, range.start, range.end]).then(r => r.rows || []).catch(() => []) : Promise.resolve([]);
+        const qMaint = wantMaint ? (async () => {
+            const baseWhere = `
+        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
+          AND (
+            (occurred_at >= $3::date AND occurred_at < $4::date)
+            OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
+            OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
+            OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
+          )`;
+            const sql0 = `
+        SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
+        FROM property_maintenance
+        ${baseWhere}
+        ORDER BY occurred_at ASC, created_at ASC
+        LIMIT 5000`;
+            const sql1 = `
+        SELECT id, work_no, occurred_at, completed_at, started_at, submitted_at, created_at, photo_urls, repair_photo_urls
+        FROM property_maintenance
+        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
+          AND (
+            (occurred_at >= $3::date AND occurred_at < $4::date)
+            OR (completed_at >= $3::date AND completed_at < $4::date)
+            OR (started_at >= $3::date AND started_at < $4::date)
+            OR (submitted_at >= $3::date AND submitted_at < $4::date)
+            OR (created_at >= $3::date AND created_at < $4::date)
+          )
+        ORDER BY occurred_at ASC, created_at ASC
+        LIMIT 5000`;
+            try {
+                const r = await dbAdapter_2.pgPool.query(sql1, [pid, codes, range.start, range.end]);
+                return r.rows || [];
+            }
+            catch (e) {
+                const code = String((e === null || e === void 0 ? void 0 : e.code) || '');
+                const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
+                if (code === '42703' || /submitted_at/i.test(msg)) {
+                    const r = await dbAdapter_2.pgPool.query(sql0, [pid, codes, range.start, range.end]);
+                    return r.rows || [];
+                }
+                throw e;
+            }
+        })().catch(() => []) : Promise.resolve([]);
         const [deepRows0, maintRows0, llName] = await Promise.all([qDeep, qMaint, landlordName]);
         const apiBase = (() => {
             const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
