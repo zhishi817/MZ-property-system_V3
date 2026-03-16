@@ -124,10 +124,10 @@ export default function PropertyRevenuePage() {
     const hardSplit = !!splitInfo?.hardSplit
     const photosMode: 'full' | 'compressed' | 'thumbnail' | 'off' = noPhotos
       ? 'off'
-      : ((shouldSplit || hardSplit) ? 'thumbnail' : (exportQuality === 'ultra' ? 'full' : 'compressed'))
+      : ((shouldSplit || hardSplit) ? 'off' : (exportQuality === 'ultra' ? 'full' : 'compressed'))
     const photoCfg = photosMode === 'compressed' ? pickMonthPhotoCfg('normal') : null
-    const sectionsApi = 'all'
-    const sectionsView = ['all']
+    const sectionsApi = photosMode === 'off' ? 'base' : 'all'
+    const sectionsView = [sectionsApi]
     return { shouldSplit, hardSplit, photosMode, photoCfg, sectionsApi, sectionsView }
   }
   const buildTxsFromRaw = (fin: any[], pexp: any[], recurs: any[], props: any[], excludeOrphans: boolean) => {
@@ -1087,9 +1087,8 @@ export default function PropertyRevenuePage() {
             setMergeUi((prev) => ({ ...prev, open: true, percent: 100, status: 'success', stage: '合并完成，开始下载', detail: detail || prev.detail }))
             if (!keepOpen) setTimeout(() => setMergeUi((prev) => ({ ...prev, open: false })), 1200)
           }
-          updateMerge(5, '正在生成报表PDF...')
+          updateMerge(5, '正在准备合并任务...')
           try {
-            updateMerge(20, '正在渲染页面...')
             const orientation = period === 'fiscal-year' ? 'l' : 'p'
             const rootWidthMm = period === 'fiscal-year' ? 277 : 190
             const imgCount = Number((printRef.current as any)?.getAttribute?.('data-deep-clean-count') || 0) || 0
@@ -1120,6 +1119,16 @@ export default function PropertyRevenuePage() {
                 URL.revokeObjectURL(url)
               } catch {}
             }
+            const downloadUrl = (url: string, forcedName?: string) => {
+              try {
+                const a = document.createElement('a')
+                a.href = url
+                a.download = forcedName || filename
+                document.body.appendChild(a)
+                a.click()
+                document.body.removeChild(a)
+              } catch {}
+            }
             let statementBlob: Blob
             let pageCount = 0
             let splitInfo: any = null
@@ -1140,6 +1149,61 @@ export default function PropertyRevenuePage() {
             }
 
             if (period === 'month') {
+              updateMerge(10, '正在创建后台合并任务...')
+              try {
+                const create = await fetch(`${API_BASE}/finance/merge-monthly-pack`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                  body: JSON.stringify({
+                    month: month.format('YYYY-MM'),
+                    property_id: previewPid,
+                    showChinese,
+                    excludeOrphanFixedSnapshots,
+                    exportQuality,
+                    mergeInvoices: true,
+                  }),
+                })
+                if (!create.ok) {
+                  let msg = `HTTP ${create.status}`
+                  try { const j = await create.json() as any; msg = String(j?.message || msg) } catch {}
+                  throw new Error(msg)
+                }
+                const j = await create.json() as any
+                const jobId = String(j?.job_id || j?.id || '').trim()
+                if (!jobId) throw new Error('创建任务失败（missing job_id）')
+                updateMerge(15, '任务已创建，正在生成...', `任务ID：${jobId}`)
+                const t0 = Date.now()
+                const pollMs = Math.max(800, Math.min(4000, Number((window as any).__mergePollMs || 1500)))
+                while (Date.now() - t0 < 12 * 60 * 1000) {
+                  await new Promise(r => setTimeout(r, pollMs))
+                  const st = await fetch(`${API_BASE}/finance/merge-monthly-pack/${encodeURIComponent(jobId)}`, { headers: authHeaders() })
+                  if (!st.ok) continue
+                  const s = await st.json() as any
+                  const status = String(s?.status || '')
+                  const percent = Number(s?.progress || 0)
+                  const stage = String(s?.stage || '处理中...')
+                  const detail = String(s?.detail || '')
+                  updateMerge(Number.isFinite(percent) ? percent : 0, stage, detail)
+                  if (status === 'failed') throw new Error(String(s?.last_error_message || s?.detail || '合并失败'))
+                  if (status === 'success') {
+                    const files = Array.isArray(s?.result_files) ? s.result_files : []
+                    const pick = (k: string) => files.find((x: any) => String(x?.kind || '') === k)
+                    const merged = pick('statement_merged_invoices')
+                    const base = pick('statement_base')
+                    const best = merged || base
+                    if (!best?.url) throw new Error('合并完成但未返回下载链接')
+                    setMergeNoPhotos(true)
+                    downloadUrl(String(best.url), filename)
+                    const extraParts = files.filter((x: any) => String(x?.kind || '') === 'invoices_part')
+                    mergeSuccess(`附件数：${Number(mergeSplit?.totalPhotoCount || 0) > 0 ? '（报表不含照片，可下载照片分卷）' : ''}${extraParts.length ? `；发票分卷：${extraParts.length}` : ''}`, true)
+                    return
+                  }
+                }
+                throw new Error('合并超时，请稍后在页面重试')
+              } catch (e: any) {
+                mergeFail(e?.message || '合并下载失败', false)
+                return
+              }
               setMergeSplit(null)
               setMergeNoPhotos(false)
               updateMerge(22, '正在检查照片体积...')
@@ -1154,7 +1218,6 @@ export default function PropertyRevenuePage() {
                   if (Number.isFinite(total) && total > 0) {
                     const detail = `照片数：${Number(j.totalPhotoCount || 0)}（维修 ${Number(j.maintenancePhotoCount || 0)} / 深清 ${Number(j.deepCleaningPhotoCount || 0)}）`
                     if (cfg0.photosMode === 'off') updateMerge(24, '照片较多，将生成无照片版报表', `${detail}；照片将作为分卷下载`)
-                    else if (cfg0.photosMode === 'thumbnail') updateMerge(24, '照片较多，将生成缩略图版报表', `${detail}；全部照片将作为分卷下载`)
                     else if (cfg0.photosMode === 'compressed') updateMerge(24, '照片较多，将压缩照片以控制体积', detail)
                   }
                 }
@@ -1199,32 +1262,10 @@ export default function PropertyRevenuePage() {
             }
             updateMerge(55, '正在准备合并附件...', `报表页数：${pageCount}`)
             if (statementBlob.size > 18 * 1024 * 1024) {
-              if (period === 'month' && monthPhotosMode !== 'off') {
-                try {
-                  updateMerge(58, '报表过大，正在压缩照片...')
-                  monthPhotosMode = 'compressed'
-                  monthPhotoCfg = pickMonthPhotoCfg('low')
-                  statementBlob = await genMonthly(monthPhotosMode, (resolveMonthPdfCfg(splitInfo).sectionsApi || 'all'), monthPhotoCfg)
-                } catch {}
-              }
-              if (statementBlob.size > 18 * 1024 * 1024) {
-                if (period === 'month' && monthPhotosMode !== 'off') {
-                  try {
-                    updateMerge(62, '压缩后仍过大，正在生成无照片版...')
-                    const forced = { shouldSplit: true, hardSplit: true, totalPhotoCount: 0, maintenancePhotoCount: 0, deepCleaningPhotoCount: 0, threshold: 0, hardThreshold: 0, forced: true }
-                    splitInfo = splitInfo || forced
-                    setMergeSplit((prev) => prev || forced as any)
-                    monthPhotosMode = 'off'
-                    statementBlob = await genMonthly('off', (resolveMonthPdfCfg(splitInfo, true).sectionsApi || 'base'), null)
-                  } catch {}
-                }
-                mergeFail(`报表PDF过大（${Math.round(statementBlob.size / 1024 / 1024)}MB），已回退仅下载报表。建议使用“标准/高清（平衡）”导出或拆分下载。`, true)
-                if (period === 'month') setMergeNoPhotos(monthPhotosMode === 'off')
-                downloadBlob(statementBlob)
-                return
-              }
+              mergeFail(`报表PDF过大（${Math.round(statementBlob.size / 1024 / 1024)}MB），已回退仅下载报表。建议使用“标准/高清（平衡）”导出或拆分下载。`, true)
+              downloadBlob(statementBlob)
+              return
             }
-            if (period === 'month') setMergeNoPhotos(monthPhotosMode === 'off')
             let invUrls: string[] = []
             try {
               updateMerge(60, '正在收集发票附件...')
@@ -1286,9 +1327,8 @@ export default function PropertyRevenuePage() {
               }
               updateMerge(95, '正在下载合并后的PDF...')
               const blob = await resp.blob()
-              const mergedFilename = (period === 'month' && monthPhotosMode === 'off') ? filename.replace(/\.pdf$/i, ' - no photos.pdf') : filename
-              downloadBlob(blob, mergedFilename)
-              mergeSuccess(`附件数：${invUrls.length}${(period === 'month' && monthPhotosMode === 'off') ? '（报表不含照片，可下载照片分卷）' : ''}`, !!(period === 'month' && monthPhotosMode === 'off'))
+              downloadBlob(blob, filename)
+              mergeSuccess(`附件数：${invUrls.length}`)
             } catch (e: any) {
               mergeFail(e?.message || '合并下载失败', true)
               downloadBlob(statementBlob)
@@ -1321,7 +1361,7 @@ export default function PropertyRevenuePage() {
               {(monthPdfCfg?.shouldSplit) ? (
                 <div style={{ marginBottom: 8, padding: '8px 12px', borderRadius: 8, border: '1px solid #ffd591', background: '#fff7e6', color: 'rgba(0,0,0,0.72)' }}>
                   照片较多（共 {Number(mergeSplit?.totalPhotoCount || 0)} 张；维修 {Number(mergeSplit?.maintenancePhotoCount || 0)} / 深清 {Number(mergeSplit?.deepCleaningPhotoCount || 0)}）。
-                  合并PDF下载将{monthPdfCfg.photosMode === 'off' ? '生成无照片版报表，并提供照片分卷下载。' : (monthPdfCfg.photosMode === 'thumbnail' ? '生成缩略图版报表，并提供照片分卷下载。' : '压缩照片以控制体积（如仍过大将自动生成无照片版报表）。')}
+                  合并PDF下载将{monthPdfCfg.photosMode === 'off' ? '生成无照片版报表，并提供照片分卷下载。' : '压缩照片以控制体积（如仍过大将自动生成无照片版报表）。'}
                 </div>
               ) : null}
               <div style={{ position:'relative' }}>

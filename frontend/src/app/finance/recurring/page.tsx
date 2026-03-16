@@ -7,7 +7,7 @@ import timezone from 'dayjs/plugin/timezone'
 import { useEffect, useRef, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
-import { isDueForMonth, shouldAutoMarkPaidForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
+import { isDueForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
 import { isAutoPaidInRent } from '../../../lib/recurringPaymentRules'
 
 type Recurring = { id: string; property_id?: string; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; is_paid?: boolean; is_due_month?: boolean; created_at?: string }
@@ -108,7 +108,6 @@ export default function RecurringPage() {
   }
   function nowAU() { return dayjs.tz(dayjs(), 'Australia/Melbourne') }
   function fmt(d?: string) { const m = parseAU(d); return m ? m.format('DD/MM/YYYY') : '-' }
-  function inSelectedMonth(d?: string) { const m = parseAU(d); return !!(m && m.format('YYYY-MM') === (month||dayjs()).format('YYYY-MM')) }
   function getLabel(p?: string) { const x = properties.find(pp=>pp.id===p); return x?.code || x?.address || '公司' }
   function statusTag(r: Recurring & { is_paid?: boolean }) {
     const today = nowAU()
@@ -410,19 +409,6 @@ export default function RecurringPage() {
     const mm = (idx % 12) + 1
     return `${String(y)}-${String(mm).padStart(2, '0')}`
   }
-  function computeNextDue(r: Recurring): string | undefined {
-    if (r.payment_type === 'rent_deduction') return undefined
-    if (r.next_due_date) return r.next_due_date
-    const base = r.last_paid_date ? parseAU(r.last_paid_date) : nowAU()
-    const due = Number(r.due_day_of_month || 1)
-    const daysInMonth = base.endOf('month').date()
-    const targetDayThis = Math.min(due, daysInMonth)
-    const thisDue = base.startOf('month').date(targetDayThis)
-    if (base.date() < targetDayThis) return thisDue.format('DD/MM/YYYY')
-    const nextMonth = base.add(Number((form.getFieldValue('frequency_months') || 1)), 'month')
-    const dim2 = nextMonth.endOf('month').date()
-    return nextMonth.startOf('month').date(Math.min(due, dim2)).format('DD/MM/YYYY')
-  }
   function dueForSelectedMonth(r: Recurring): string | undefined {
     if (r.payment_type === 'rent_deduction') return undefined
     const due = Number(r.due_day_of_month || 1)
@@ -557,29 +543,9 @@ export default function RecurringPage() {
         const startKey = String((t as any).start_month_key || '')
         const isDue = isDueForMonth(startKey || undefined, monthKey, Number((t as any).frequency_months || 1))
         if (!isDue) return
-        const e = expByFixed[String(t.id)]
-        const autoPaidInRent = isAutoPaidInRent(t)
-        if (e) {
-          if ((autoPaidInRent || shouldAutoMarkPaidForMonth(startKey || undefined, monthKey, currentMonthKey)) && String(e.status || '') !== 'paid') {
-            const resType = (t.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
-            const dueDay = Number(t.due_day_of_month || 1)
-            const dim = m.endOf('month').date()
-            const dueISO = m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
-            try {
-              await fetch(`${API_BASE}/crud/${resType}/${e.id}`, { method:'PATCH', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ status:'paid', paid_date: dueISO, due_date: dueISO }) })
-            } catch {}
-          }
-          return
-        }
-        const resType = (t.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
-        const dueDay = Number(t.due_day_of_month || 1)
-        const dim = m.endOf('month').date()
-        const dueISO = m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
-        const autoPaid = autoPaidInRent || shouldAutoMarkPaidForMonth(startKey || undefined, monthKey, currentMonthKey)
-        const body = { occurred_at: dueISO, amount: Number(t.amount||0), currency: 'AUD', category: t.category || 'other', note: 'Fixed payment snapshot', generated_from: 'recurring_payments', fixed_expense_id: t.id, month_key: monthKey, due_date: dueISO, status: autoPaid ? 'paid' : 'unpaid', paid_date: autoPaid ? dueISO : null, property_id: t.property_id }
         try {
-          const resp = await fetch(`${API_BASE}/crud/${resType}`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(body) })
-          if (!resp.ok && resp.status !== 409) throw new Error(`HTTP ${resp.status}`)
+          const resp = await fetch(`${API_BASE}/recurring/payments/${t.id}/ensure-snapshot`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ month_key: monthKey }) })
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
         } catch {}
       })
       try {
@@ -596,7 +562,26 @@ export default function RecurringPage() {
     setSaving(true)
     const v = await form.validateFields()
     const startMonthKey = v.start_month ? dayjs(v.start_month).format('YYYY-MM') : undefined
-    const payload = { ...v, start_month_key: startMonthKey, report_category: (v.scope==='property' ? (v.report_category || defaultReportCategoryByName(v.category)) : undefined), amount: v.amount!=null?Number(v.amount):undefined, frequency_months: v.frequency_months!=null?Number(v.frequency_months):undefined }
+    const isReferral = String(v.amount_mode || 'fixed') === 'percent_of_property_total_income'
+    const payload: any = {
+      ...v,
+      start_month_key: startMonthKey,
+      report_category: (v.scope==='property' ? (v.report_category || defaultReportCategoryByName(v.category)) : undefined),
+      frequency_months: v.frequency_months!=null ? Number(v.frequency_months) : undefined,
+    }
+    if (isReferral) {
+      payload.amount = undefined
+      payload.rate_percent = v.rate_percent!=null ? Number(v.rate_percent) : undefined
+      payload.income_base = v.income_base || 'total_income'
+      payload.scope = 'company'
+      payload.due_day_of_month = 6
+      payload.frequency_months = 1
+    } else {
+      payload.amount = v.amount!=null ? Number(v.amount) : undefined
+      if (payload.scope !== 'property') payload.property_id = undefined
+      payload.rate_percent = undefined
+      payload.income_base = undefined
+    }
     delete (payload as any).start_month
     try {
       if (editing) {
@@ -625,7 +610,7 @@ export default function RecurringPage() {
   // removed normalization side-effect; display uses selected-month computation
 
   return (
-    <Card title="固定支出" extra={<Space><DatePicker picker="month" value={month} onChange={(v)=> setMonth(v || dayjs())} /><Input allowClear placeholder="按房号搜索" value={searchText} onChange={(e)=> setSearchText(e.target.value)} style={{ width: 220 }} /><Button type="primary" onClick={()=>{ setEditing(null); form.resetFields(); form.setFieldsValue({ start_month: nowAU().startOf('month'), initial_mark: 'unpaid', frequency_months: 1, status: 'active', payment_type: 'bank_account' }); setOpen(true) }}>新增固定支出</Button></Space>}>
+    <Card title="固定支出" extra={<Space><DatePicker picker="month" value={month} onChange={(v)=> setMonth(v || dayjs())} /><Input allowClear placeholder="按房号搜索" value={searchText} onChange={(e)=> setSearchText(e.target.value)} style={{ width: 220 }} /><Button type="primary" onClick={()=>{ setEditing(null); form.resetFields(); form.setFieldsValue({ start_month: nowAU().startOf('month'), initial_mark: 'unpaid', frequency_months: 1, status: 'active', payment_type: 'bank_account', amount_mode: 'fixed' }); setOpen(true) }}>新增固定支出</Button></Space>}>
       <div className="stats-grid">
         <Card loading={pageLoading}><Statistic title="本月未付总额" value={unpaidAmount} prefix="$" precision={2} /></Card>
         <Card loading={pageLoading}><Statistic title="本月已付总额" value={paidAmount} prefix="$" precision={2} /></Card>
@@ -667,23 +652,69 @@ export default function RecurringPage() {
           <Divider orientation="left">基本信息</Divider>
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item name="scope" label="对象" initialValue="company"><Select options={[{value:'company',label:'公司'},{value:'property',label:'房源'}]} /></Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.scope!==cur.scope}>
-                {()=> (form.getFieldValue('scope')==='property' ? (
-                  <Form.Item name="property_id" label="房号">
-                    <Select
-                      allowClear
-                      showSearch
-                      optionFilterProp="label"
-                      filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())}
-                      options={sortProperties(properties||[]).map(p=>({ value:p.id, label:p.code||p.address||p.id }))}
-                    />
+              <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.amount_mode!==cur.amount_mode}>
+                {()=> (
+                  <Form.Item name="scope" label="对象" initialValue="company">
+                    <Select disabled={form.getFieldValue('amount_mode')==='percent_of_property_total_income'} options={[{value:'company',label:'公司'},{value:'property',label:'房源'}]} />
                   </Form.Item>
-                ) : <div style={{ height: 62 }} />)}
+                )}
               </Form.Item>
             </Col>
+            <Col span={12}>
+              <Form.Item name="amount_mode" label="计费方式" initialValue="fixed">
+                <Select options={[
+                  { value: 'fixed', label: '固定金额' },
+                  { value: 'percent_of_property_total_income', label: 'Referral（按上月房源总收入比例）' },
+                ]} />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Form.Item noStyle shouldUpdate={(prev,cur)=> prev.amount_mode!==cur.amount_mode}>
+            {()=> {
+              const am = form.getFieldValue('amount_mode')
+              if (am === 'percent_of_property_total_income') {
+                form.setFieldsValue({ scope: 'company', due_day_of_month: 6, frequency_months: 1, amount: undefined, income_base: 'total_income' })
+              }
+              return null
+            }}
+          </Form.Item>
+
+          <Row gutter={16}>
+            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.scope!==cur.scope || prev.amount_mode!==cur.amount_mode}>
+              {()=> {
+                const sc = form.getFieldValue('scope')
+                const am = form.getFieldValue('amount_mode')
+                const needProperty = sc === 'property' || am === 'percent_of_property_total_income'
+                if (!needProperty) return <Col span={12}><div style={{ height: 62 }} /></Col>
+                return (
+                  <Col span={12}>
+                    <Form.Item name="property_id" label={sc==='property' ? '房号' : '关联房源'} rules={[{ required: true }]}>
+                      <Select
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())}
+                        options={sortProperties(properties||[]).map(p=>({ value:p.id, label:p.code||p.address||p.id }))}
+                      />
+                    </Form.Item>
+                  </Col>
+                )
+              }}
+            </Form.Item>
+            <Form.Item noStyle shouldUpdate={(prev,cur)=>prev.amount_mode!==cur.amount_mode}>
+              {()=> (form.getFieldValue('amount_mode')==='percent_of_property_total_income' ? (
+                <Col span={12}>
+                  <Form.Item name="rate_percent" label="百分比(%)" rules={[{ required: true }]}>
+                    <InputNumber min={0} max={100} step={0.1} style={{ width:'100%' }} />
+                  </Form.Item>
+                </Col>
+              ) : <Col span={12}><div style={{ height: 62 }} /></Col>)}
+            </Form.Item>
+          </Row>
+          <Form.Item name="income_base" initialValue="total_income" hidden><Input /></Form.Item>
+
+          <Row gutter={16}>
             <Col span={12}>
               <Form.Item name="vendor" label="支出事项" rules={[{ required: true }]}><Input /></Form.Item>
             </Col>
@@ -768,16 +799,28 @@ export default function RecurringPage() {
                 )
               }}
             </Form.Item>
-            <Col span={12}>
-              <Form.Item name="amount" label="金额"><InputNumber min={0} step={1} style={{ width:'100%' }} /></Form.Item>
-            </Col>
+            <Form.Item noStyle shouldUpdate={(prev,cur)=> prev.amount_mode!==cur.amount_mode}>
+              {()=> (form.getFieldValue('amount_mode')==='percent_of_property_total_income' ? (
+                <Col span={12}>
+                  <Form.Item label="金额">
+                    <Input disabled value="按上月收入自动计算（每月5号锁账）" />
+                  </Form.Item>
+                </Col>
+              ) : (
+                <Col span={12}>
+                  <Form.Item name="amount" label="金额"><InputNumber min={0} step={1} style={{ width:'100%' }} /></Form.Item>
+                </Col>
+              ))}
+            </Form.Item>
             <Col span={12}>
               <Form.Item name="status" label="状态" initialValue="active"><Select options={[{value:'active',label:'active'},{value:'paused',label:'paused'}]} /></Form.Item>
             </Col>
-            <Form.Item noStyle shouldUpdate={(prev,cur)=> prev.payment_type!==cur.payment_type}>
+            <Form.Item noStyle shouldUpdate={(prev,cur)=> prev.payment_type!==cur.payment_type || prev.amount_mode!==cur.amount_mode}>
               {()=> (form.getFieldValue('payment_type')==='rent_deduction' ? null : (
                 <Col span={12}>
-                  <Form.Item name="due_day_of_month" label="每月几号到期" rules={[{ required: true }]}><InputNumber min={1} max={31} style={{ width:'100%' }} /></Form.Item>
+                  <Form.Item name="due_day_of_month" label="每月几号到期" rules={[{ required: true }]}>
+                    <InputNumber min={1} max={31} style={{ width:'100%' }} disabled={form.getFieldValue('amount_mode')==='percent_of_property_total_income'} />
+                  </Form.Item>
                 </Col>
               ))}
             </Form.Item>

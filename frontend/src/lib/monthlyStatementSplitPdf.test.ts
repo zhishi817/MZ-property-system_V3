@@ -6,8 +6,8 @@ describe('monthly statement split pdf', () => {
   it('uses base sections for no-photos monthly statement', () => {
     const p = path.join(process.cwd(), 'src', 'app', 'finance', 'company-overview', 'page.tsx')
     const s = fs.readFileSync(p, 'utf8')
-    expect(s).toContain("resolveMonthPdfCfg(splitInfo, true).sectionsApi || 'base'")
-    expect(s).toContain("genMonthly('off'")
+    expect(s).toContain("const sectionsApi = photosMode === 'off' ? 'base' : 'all'")
+    expect(s).toContain('/finance/merge-monthly-pack')
   })
 
   it('hides MONTHLY STATEMENT header for module-only pdfs', () => {
