@@ -39,6 +39,8 @@ export default function RecurringPage() {
   const [suppressSnapUntil, setSuppressSnapUntil] = useState(0)
   const reloadSeq = useRef(0)
   const lastLoadedAt = useRef(0)
+  const snapSeq = useRef(0)
+  const snapAbortRef = useRef<AbortController | null>(null)
 
   async function fetchRecurringPayments() {
     const resp = await fetch(`${API_BASE}/crud/recurring_payments`, { headers: authHeaders(), cache: 'no-store' })
@@ -550,10 +552,15 @@ export default function RecurringPage() {
 
   useEffect(()=>{
     (async()=>{
+      if (monthKey !== currentMonthKey) return
       if (pageLoading) return
       if (Date.now() < suppressSnapUntil) return
       if (snapKey === monthKey) return
       if (!templatesForMonth.length) return
+      const mySeq = ++snapSeq.current
+      try { snapAbortRef.current?.abort() } catch {}
+      const controller = new AbortController()
+      snapAbortRef.current = controller
       setSnapKey(monthKey)
       setSnapLoading(true)
       try {
@@ -574,7 +581,7 @@ export default function RecurringPage() {
         let sawServerBusy = false
         const runOne = async (t: any) => {
           try {
-            const resp = await fetch(`${API_BASE}/recurring/payments/${t.id}/ensure-snapshot`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ month_key: monthKey }) })
+            const resp = await fetch(`${API_BASE}/recurring/payments/${t.id}/ensure-snapshot`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ month_key: monthKey }), signal: controller.signal })
             if (!resp.ok) {
               if (resp.status === 503 || resp.status === 500) sawServerBusy = true
               return
@@ -591,10 +598,11 @@ export default function RecurringPage() {
           }
         })
         await Promise.all(workers)
+        if (mySeq !== snapSeq.current) return
         if (ok > 0) await refreshMonth()
         if (sawServerBusy) setSuppressSnapUntil(Date.now() + 60_000)
       } finally {
-        setSnapLoading(false)
+        if (mySeq === snapSeq.current) setSnapLoading(false)
       }
     })()
   },[monthKey, templatesForMonth.length, pageLoading, suppressSnapUntil])
@@ -667,7 +675,7 @@ export default function RecurringPage() {
       </div>
       <Card title="固定支出" size="small" style={{ marginTop: 8 }} loading={pageLoading}>
         <div style={{ margin:'8px 0', color:'#888' }}>修改将从本月起生效，历史或已支付记录不会变化。</div>
-        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={(pageLoading ? [] : allRows)} loading={pageLoading || snapLoading} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }}
+        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={(pageLoading ? [] : allRows)} loading={pageLoading || (snapLoading && monthKey === currentMonthKey)} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }}
           rowClassName={(r)=>{
             const today = nowAU()
             const nd = parseAU(r.next_due_date)
