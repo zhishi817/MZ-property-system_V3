@@ -15,6 +15,8 @@ import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
 import { renderMonthlyStatementPdfHtml } from '../lib/monthlyStatementPdfTemplate'
 import { waitForImages } from '../lib/waitForImages'
 import { resizeUploadImage } from '../lib/uploadImageResize'
+import { v4 as uuidv4 } from 'uuid'
+import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -1150,6 +1152,68 @@ router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', '
     })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'stats failed' })
+  }
+})
+
+router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
+  try {
+    const { month, property_id, showChinese, excludeOrphanFixedSnapshots, exportQuality, mergeInvoices } = req.body || {}
+    const monthKey = String(month || '').trim()
+    const pid = String(property_id || '').trim()
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
+    if (!pid) return res.status(400).json({ message: 'missing property_id' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensurePdfJobsSchema()
+    const id = uuidv4()
+    const params = {
+      month: monthKey,
+      property_id: pid,
+      showChinese: !(showChinese === false || showChinese === '0'),
+      excludeOrphanFixedSnapshots: !!(excludeOrphanFixedSnapshots === true || excludeOrphanFixedSnapshots === 1 || excludeOrphanFixedSnapshots === '1'),
+      exportQuality: String(exportQuality || '').trim() || null,
+      mergeInvoices: mergeInvoices === false ? false : true,
+    }
+    await pgPool.query(
+      `INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
+       VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`,
+      [id, JSON.stringify(params)]
+    )
+    return res.json({ job_id: id, status: 'queued' })
+  } catch (e: any) {
+    const code = String(e?.code || '')
+    if (code === 'PDF_JOBS_SCHEMA_MISSING') return res.status(500).json({ message: 'pdf_jobs table missing (apply migration)' })
+    return res.status(500).json({ message: e?.message || 'create job failed' })
+  }
+})
+
+router.get('/merge-monthly-pack/:id', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
+  try {
+    const id = String(req.params?.id || '').trim()
+    if (!id) return res.status(400).json({ message: 'missing id' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensurePdfJobsSchema()
+    const r = await pgPool.query('SELECT * FROM pdf_jobs WHERE id=$1 LIMIT 1', [id])
+    const row = r.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not_found' })
+    return res.json({
+      id: row.id,
+      kind: row.kind,
+      status: row.status,
+      progress: Number(row.progress || 0),
+      stage: row.stage || '',
+      detail: row.detail || '',
+      attempts: Number(row.attempts || 0),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      params: row.params || null,
+      result_files: row.result_files || [],
+      last_error_code: row.last_error_code || null,
+      last_error_message: row.last_error_message || null,
+    })
+  } catch (e: any) {
+    const code = String(e?.code || '')
+    if (code === 'PDF_JOBS_SCHEMA_MISSING') return res.status(500).json({ message: 'pdf_jobs table missing (apply migration)' })
+    return res.status(500).json({ message: e?.message || 'get job failed' })
   }
 })
 

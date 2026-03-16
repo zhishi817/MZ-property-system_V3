@@ -13,11 +13,39 @@ services:
       - key: DATABASE_URL
         value: ${NEON_DATABASE_URL_DEV}
 
+  - type: worker
+    name: mz-backend-dev-pdf-worker
+    env: node
+    buildCommand: cd backend && npm install && npm run build
+    startCommand: node backend/dist/worker_pdf_jobs.js
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RENDER_ENV
+        value: dev
+      - key: DATABASE_URL
+        value: ${NEON_DATABASE_URL_DEV}
+
   - type: web
     name: mz-backend-prod
     env: node
     buildCommand: cd backend && npm install && npm run build
     startCommand: node backend/dist/index.js
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RENDER_ENV
+        value: prod
+      - key: DATABASE_URL
+        value: ${NEON_DATABASE_URL_PROD}
+
+  - type: worker
+    name: mz-backend-prod-pdf-worker
+    env: node
+    buildCommand: cd backend && npm install && npm run build
+    startCommand: node backend/dist/worker_pdf_jobs.js
     autoDeploy: true
     envVars:
       - key: NODE_ENV

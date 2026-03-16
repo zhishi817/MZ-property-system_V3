@@ -1,9 +1,10 @@
 {
   "name": "mz-property-backend",
-  "version": "0.2.7-statement-pdf.20260315+build.2",
+  "version": "0.2.7-statement-pdf.20260316+build.1",
   "private": true,
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "worker:pdf-jobs": "node dist/worker_pdf_jobs.js",
     "build": "tsc -p .",
     "start": "node dist/index.js",
     "db:init": "ts-node-dev --transpile-only scripts/init_db.ts",

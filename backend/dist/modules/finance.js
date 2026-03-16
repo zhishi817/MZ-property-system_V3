@@ -21,6 +21,8 @@ const pdfTaskLimiter_1 = require("../lib/pdfTaskLimiter");
 const monthlyStatementPdfTemplate_1 = require("../lib/monthlyStatementPdfTemplate");
 const waitForImages_1 = require("../lib/waitForImages");
 const uploadImageResize_1 = require("../lib/uploadImageResize");
+const uuid_1 = require("uuid");
+const pdfJobsSchema_1 = require("../services/pdfJobsSchema");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -1215,6 +1217,74 @@ exports.router.get('/monthly-statement-photo-stats', (0, auth_1.requireAnyPerm)(
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'stats failed' });
+    }
+});
+exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
+    try {
+        const { month, property_id, showChinese, excludeOrphanFixedSnapshots, exportQuality, mergeInvoices } = req.body || {};
+        const monthKey = String(month || '').trim();
+        const pid = String(property_id || '').trim();
+        if (!/^\d{4}-\d{2}$/.test(monthKey))
+            return res.status(400).json({ message: 'invalid month' });
+        if (!pid)
+            return res.status(400).json({ message: 'missing property_id' });
+        if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
+            return res.status(500).json({ message: 'no database configured' });
+        await (0, pdfJobsSchema_1.ensurePdfJobsSchema)();
+        const id = (0, uuid_1.v4)();
+        const params = {
+            month: monthKey,
+            property_id: pid,
+            showChinese: !(showChinese === false || showChinese === '0'),
+            excludeOrphanFixedSnapshots: !!(excludeOrphanFixedSnapshots === true || excludeOrphanFixedSnapshots === 1 || excludeOrphanFixedSnapshots === '1'),
+            exportQuality: String(exportQuality || '').trim() || null,
+            mergeInvoices: mergeInvoices === false ? false : true,
+        };
+        await dbAdapter_2.pgPool.query(`INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
+       VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`, [id, JSON.stringify(params)]);
+        return res.json({ job_id: id, status: 'queued' });
+    }
+    catch (e) {
+        const code = String((e === null || e === void 0 ? void 0 : e.code) || '');
+        if (code === 'PDF_JOBS_SCHEMA_MISSING')
+            return res.status(500).json({ message: 'pdf_jobs table missing (apply migration)' });
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'create job failed' });
+    }
+});
+exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
+    var _a, _b;
+    try {
+        const id = String(((_a = req.params) === null || _a === void 0 ? void 0 : _a.id) || '').trim();
+        if (!id)
+            return res.status(400).json({ message: 'missing id' });
+        if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
+            return res.status(500).json({ message: 'no database configured' });
+        await (0, pdfJobsSchema_1.ensurePdfJobsSchema)();
+        const r = await dbAdapter_2.pgPool.query('SELECT * FROM pdf_jobs WHERE id=$1 LIMIT 1', [id]);
+        const row = ((_b = r.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
+        if (!row)
+            return res.status(404).json({ message: 'not_found' });
+        return res.json({
+            id: row.id,
+            kind: row.kind,
+            status: row.status,
+            progress: Number(row.progress || 0),
+            stage: row.stage || '',
+            detail: row.detail || '',
+            attempts: Number(row.attempts || 0),
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            params: row.params || null,
+            result_files: row.result_files || [],
+            last_error_code: row.last_error_code || null,
+            last_error_message: row.last_error_message || null,
+        });
+    }
+    catch (e) {
+        const code = String((e === null || e === void 0 ? void 0 : e.code) || '');
+        if (code === 'PDF_JOBS_SCHEMA_MISSING')
+            return res.status(500).json({ message: 'pdf_jobs table missing (apply migration)' });
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'get job failed' });
     }
 });
 // Merge monthly statement PDF with multiple invoice PDFs and return a single PDF
