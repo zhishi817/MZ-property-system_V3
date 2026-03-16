@@ -1149,6 +1149,22 @@ export default function PropertyRevenuePage() {
             }
 
             if (period === 'month') {
+              setMergeSplit(null)
+              setMergeNoPhotos(false)
+              updateMerge(8, '正在检查照片体积...')
+              try {
+                const stats = await fetch(`${API_BASE}/finance/monthly-statement-photo-stats?pid=${encodeURIComponent(previewPid!)}&month=${encodeURIComponent(month.format('YYYY-MM'))}`, { headers: authHeaders() })
+                if (stats.ok) {
+                  const j = await stats.json() as any
+                  splitInfo = j
+                  setMergeSplit(j)
+                  const total = Number(j?.totalPhotoCount || 0)
+                  if (Number.isFinite(total) && total > 0) {
+                    const detail = `照片数：${Number(j.totalPhotoCount || 0)}（维修 ${Number(j.maintenancePhotoCount || 0)} / 深清 ${Number(j.deepCleaningPhotoCount || 0)}）`
+                    updateMerge(9, '照片统计完成', detail)
+                  }
+                }
+              } catch {}
               updateMerge(10, '正在创建后台合并任务...')
               try {
                 const create = await fetch(`${API_BASE}/finance/merge-monthly-pack`, {
@@ -1195,7 +1211,10 @@ export default function PropertyRevenuePage() {
                     setMergeNoPhotos(true)
                     downloadUrl(String(best.url), filename)
                     const extraParts = files.filter((x: any) => String(x?.kind || '') === 'invoices_part')
-                    mergeSuccess(`附件数：${Number(mergeSplit?.totalPhotoCount || 0) > 0 ? '（报表不含照片，可下载照片分卷）' : ''}${extraParts.length ? `；发票分卷：${extraParts.length}` : ''}`, true)
+                    const mergedInv = files.find((x: any) => String(x?.kind || '') === 'statement_merged_invoices')
+                    const invCount = Number(mergedInv?.source_count || 0) + extraParts.reduce((n: number, x: any) => n + Number(x?.source_count || 0), 0)
+                    const hasPhotos = Number((splitInfo as any)?.totalPhotoCount || 0) > 0
+                    mergeSuccess(`附件数：${invCount || 0}${extraParts.length ? `；发票分卷：${extraParts.length}` : ''}${hasPhotos ? '（报表不含照片，可下载照片分卷）' : ''}`, true)
                     return
                   }
                 }
@@ -1204,29 +1223,6 @@ export default function PropertyRevenuePage() {
                 mergeFail(e?.message || '合并下载失败', false)
                 return
               }
-              setMergeSplit(null)
-              setMergeNoPhotos(false)
-              updateMerge(22, '正在检查照片体积...')
-              try {
-                const stats = await fetch(`${API_BASE}/finance/monthly-statement-photo-stats?pid=${encodeURIComponent(previewPid!)}&month=${encodeURIComponent(month.format('YYYY-MM'))}`, { headers: authHeaders() })
-                if (stats.ok) {
-                  const j = await stats.json() as any
-                  splitInfo = j
-                  setMergeSplit(j)
-                  const cfg0 = resolveMonthPdfCfg(j)
-                  const total = Number(j?.totalPhotoCount || 0)
-                  if (Number.isFinite(total) && total > 0) {
-                    const detail = `照片数：${Number(j.totalPhotoCount || 0)}（维修 ${Number(j.maintenancePhotoCount || 0)} / 深清 ${Number(j.deepCleaningPhotoCount || 0)}）`
-                    if (cfg0.photosMode === 'off') updateMerge(24, '照片较多，将生成无照片版报表', `${detail}；照片将作为分卷下载`)
-                    else if (cfg0.photosMode === 'compressed') updateMerge(24, '照片较多，将压缩照片以控制体积', detail)
-                  }
-                }
-              } catch {}
-              updateMerge(26, '正在生成报表PDF...')
-              const cfg = resolveMonthPdfCfg(splitInfo)
-              monthPhotosMode = cfg.photosMode
-              monthPhotoCfg = cfg.photoCfg
-              statementBlob = await genMonthly(monthPhotosMode, cfg.sectionsApi, monthPhotoCfg)
             } else {
               updateMerge(26, '正在渲染页面...')
               setStatementPdfMode(true)

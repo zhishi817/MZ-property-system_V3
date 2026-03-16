@@ -1230,6 +1230,10 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
             return res.status(400).json({ message: 'missing property_id' });
         if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
             return res.status(500).json({ message: 'no database configured' });
+        if (!String(process.env.FRONTEND_BASE_URL || '').trim())
+            return res.status(500).json({ message: 'missing FRONTEND_BASE_URL' });
+        if (!r2_1.hasR2)
+            return res.status(500).json({ message: 'R2 not configured' });
         await (0, pdfJobsSchema_1.ensurePdfJobsSchema)();
         const id = (0, uuid_1.v4)();
         const params = {

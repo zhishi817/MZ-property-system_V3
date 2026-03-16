@@ -538,19 +538,43 @@ export default function RecurringPage() {
       if (!templatesForMonth.length) return
       setSnapKey(monthKey)
       setSnapLoading(true)
-      const tasks = templatesForMonth.map(async (t)=>{
-        if (String((t as any).status || '') === 'paused') return
-        const startKey = String((t as any).start_month_key || '')
-        const isDue = isDueForMonth(startKey || undefined, monthKey, Number((t as any).frequency_months || 1))
-        if (!isDue) return
-        try {
-          const resp = await fetch(`${API_BASE}/recurring/payments/${t.id}/ensure-snapshot`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ month_key: monthKey }) })
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-        } catch {}
-      })
       try {
-        await Promise.all(tasks)
-        await refreshMonth()
+        const candidates = templatesForMonth
+          .filter((t) => String((t as any).status || '') !== 'paused')
+          .filter((t) => {
+            const startKey = String((t as any).start_month_key || '')
+            return isDueForMonth(startKey || undefined, monthKey, Number((t as any).frequency_months || 1))
+          })
+          .filter((t) => {
+            const mode = String((t as any).amount_mode || 'fixed')
+            const hasRow = !!expByFixed[String(t.id)]
+            return !hasRow || mode === 'percent_of_property_total_income'
+          })
+        const limit = Math.max(1, Math.min(3, Number((window as any).__ensureSnapConcurrency || 2)))
+        let idx = 0
+        let ok = 0
+        let sawServerBusy = false
+        const runOne = async (t: any) => {
+          try {
+            const resp = await fetch(`${API_BASE}/recurring/payments/${t.id}/ensure-snapshot`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ month_key: monthKey }) })
+            if (!resp.ok) {
+              if (resp.status === 503 || resp.status === 500) sawServerBusy = true
+              return
+            }
+            ok++
+          } catch {
+            sawServerBusy = true
+          }
+        }
+        const workers = Array.from({ length: Math.min(limit, candidates.length || 0) }).map(async () => {
+          while (idx < candidates.length) {
+            const cur = candidates[idx++]
+            await runOne(cur)
+          }
+        })
+        await Promise.all(workers)
+        if (ok > 0) await refreshMonth()
+        if (sawServerBusy) setSuppressSnapUntil(Date.now() + 60_000)
       } finally {
         setSnapLoading(false)
       }
