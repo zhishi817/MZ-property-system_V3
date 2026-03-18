@@ -411,6 +411,64 @@ app.listen(port, () => {
   })()
   ;(async () => {
     try {
+      const fastEnabled = String(process.env.CLEANING_BACKFILL_FAST_ENABLED || 'false').toLowerCase() === 'true'
+      const slowEnabled = String(process.env.CLEANING_BACKFILL_SLOW_ENABLED || 'false').toLowerCase() === 'true'
+      if (!(fastEnabled || slowEnabled)) {
+        console.log('[cleaning-backfill][schedule] disabled')
+        return
+      }
+      if (!hasPg || !pgPool) {
+        console.log('[cleaning-backfill][schedule] pg=false')
+        return
+      }
+
+      const lockName = String(process.env.CLEANING_BACKFILL_LOCK_NAME || 'cleaning_backfill')
+      const lockTtlMs = Math.max(60000, Number(process.env.CLEANING_BACKFILL_LOCK_TTL_MS || (6 * 60 * 60 * 1000)))
+      const minIntervalMs = Math.max(0, Number(process.env.CLEANING_BACKFILL_MIN_INTERVAL_MS || 0))
+      const timeZone = String(process.env.CLEANING_BACKFILL_TIME_ZONE || 'Australia/Sydney')
+      const renewEveryMs = Math.max(60000, Number(process.env.CLEANING_BACKFILL_LOCK_RENEW_MS || (2 * 60 * 1000)))
+      const state: { lastRunAt?: number } = {}
+      const { runCleaningBackfillOnce } = require('./services/cleaningBackfillRunner')
+
+      if (fastEnabled) {
+        const expr = String(process.env.CLEANING_BACKFILL_FAST_CRON || '0 */4 * * *')
+        console.log(`[cleaning-backfill][fast][schedule] enabled cron=${expr}`)
+        const pastDays = Math.max(0, Number(process.env.CLEANING_BACKFILL_FAST_PAST_DAYS || 1))
+        const futureDays = Math.max(0, Number(process.env.CLEANING_BACKFILL_FAST_FUTURE_DAYS || 7))
+        const concurrency = Math.max(1, Math.min(25, Number(process.env.CLEANING_BACKFILL_FAST_CONCURRENCY || 10)))
+        const task = cron.schedule(expr, async () => {
+          const r = await runCleaningBackfillOnce({ scheduleName: 'fast', lockName, lockTtlMs, lockRenewIntervalMs: renewEveryMs, timeZone, pastDays, futureDays, concurrency, minIntervalMs, state, triggerSource: 'schedule' })
+          if (r?.skipped) console.log(`[cleaning-backfill][fast][schedule] skipped_reason=${String((r as any).skipped_reason || '')}`)
+          else if (r?.ok) console.log(`[cleaning-backfill][fast][schedule] ok run_id=${String((r as any).run_id || '')} scanned=${Number((r as any).orders_scanned || 0)} failed=${Number((r as any).orders_failed || 0)} duration_ms=${Number((r as any).duration_ms || 0)}`)
+          else console.error(`[cleaning-backfill][fast][schedule] failed run_id=${String((r as any).run_id || '')} message=${String((r as any).error || '')}`)
+        }, { scheduled: true })
+        task.start()
+      } else {
+        console.log('[cleaning-backfill][fast][schedule] disabled')
+      }
+
+      if (slowEnabled) {
+        const expr = String(process.env.CLEANING_BACKFILL_SLOW_CRON || '0 3 */2 * *')
+        console.log(`[cleaning-backfill][slow][schedule] enabled cron=${expr}`)
+        const pastDays = Math.max(0, Number(process.env.CLEANING_BACKFILL_SLOW_PAST_DAYS || 14))
+        const futureDays = Math.max(0, Number(process.env.CLEANING_BACKFILL_SLOW_FUTURE_DAYS || 30))
+        const concurrency = Math.max(1, Math.min(25, Number(process.env.CLEANING_BACKFILL_SLOW_CONCURRENCY || 10)))
+        const task = cron.schedule(expr, async () => {
+          const r = await runCleaningBackfillOnce({ scheduleName: 'slow', lockName, lockTtlMs, lockRenewIntervalMs: renewEveryMs, timeZone, pastDays, futureDays, concurrency, minIntervalMs, state, triggerSource: 'schedule' })
+          if (r?.skipped) console.log(`[cleaning-backfill][slow][schedule] skipped_reason=${String((r as any).skipped_reason || '')}`)
+          else if (r?.ok) console.log(`[cleaning-backfill][slow][schedule] ok run_id=${String((r as any).run_id || '')} scanned=${Number((r as any).orders_scanned || 0)} failed=${Number((r as any).orders_failed || 0)} duration_ms=${Number((r as any).duration_ms || 0)}`)
+          else console.error(`[cleaning-backfill][slow][schedule] failed run_id=${String((r as any).run_id || '')} message=${String((r as any).error || '')}`)
+        }, { scheduled: true })
+        task.start()
+      } else {
+        console.log('[cleaning-backfill][slow][schedule] disabled')
+      }
+    } catch (e: any) {
+      console.error(`[cleaning-backfill][schedule] init error message=${String(e?.message || '')}`)
+    }
+  })()
+  ;(async () => {
+    try {
       const enabled = String(process.env.CLEANING_SYNC_JOBS_ENABLED || 'true').toLowerCase() === 'true'
       if (enabled && hasPg) {
         const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '*/1 * * * *')

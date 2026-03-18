@@ -1,6 +1,6 @@
 "use client"
-import { Card, Table, Space, Button, Input, Select, DatePicker, Modal, Form, App, Upload, Grid, Drawer, Image, InputNumber, Switch, Typography, Tag, Row, Col, Divider } from 'antd'
-import { EnvironmentOutlined, InfoCircleOutlined, DollarCircleOutlined, PictureOutlined, CheckCircleOutlined, ShareAltOutlined } from '@ant-design/icons'
+import { Card, Table, Space, Button, Input, Select, DatePicker, Modal, Form, App, Upload, Grid, Drawer, Image, InputNumber, Switch, Typography, Tag, Row, Col, Divider, Spin } from 'antd'
+import { AppstoreOutlined, CreditCardOutlined, EnvironmentOutlined, InfoCircleOutlined, PercentageOutlined, DollarCircleOutlined, PictureOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import html2canvas from 'html2canvas'
 import type { UploadFile } from 'antd/es/upload/interface'
 import dayjs from 'dayjs'
@@ -9,6 +9,7 @@ import { apiUpdate, apiDelete, apiCreate, getJSON, API_BASE, authHeaders } from 
 import { hasPerm } from '../../../lib/auth'
 import { downloadNamedBlob } from '../../../lib/download'
 import { sortProperties } from '../../../lib/properties'
+import styles from './records.module.scss'
 
 type RepairOrder = {
   id: string
@@ -60,6 +61,7 @@ export default function MaintenanceRecordsUnified() {
   const [pdfPreview, setPdfPreview] = useState<{ open: boolean; url: string; title: string; showChinese: boolean; blob: Blob | null; row: RepairOrder | null; loading: boolean }>({ open: false, url: '', title: '', showChinese: false, blob: null, row: null, loading: false })
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<RepairOrder | null>(null)
+  const [saving, setSaving] = useState(false)
   const [form] = Form.useForm()
   const { message } = App.useApp()
   const canDownload = hasPerm('property_maintenance.view') || hasPerm('property_maintenance.write') || hasPerm('rbac.manage')
@@ -96,12 +98,6 @@ export default function MaintenanceRecordsUnified() {
     }
   }, [])
 
-  async function loadProperties() {
-    try {
-      const ps = await getJSON<any[]>('/properties').catch(()=>[])
-      setProps(Array.isArray(ps) ? ps : [])
-    } catch { setProps([]) }
-  }
   async function ensurePropsLoaded() {
     if (props && props.length) return
     if (propsLoadingRef.current) return propsLoadingRef.current
@@ -316,70 +312,98 @@ export default function MaintenanceRecordsUnified() {
   }
 
   async function save() {
-    const v = await form.validateFields()
-    const payload: any = {
-      property_id: v.property_id || undefined,
-      submitter_name: v.submitter_name || undefined,
-      status: v.status,
-      assignee_id: v.assignee_id || undefined,
-      eta: v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : undefined,
-      notes: v.notes || undefined,
-      urgency: v.urgency || undefined
-    }
-    if (v.details) {
-      try {
-        payload.details = JSON.stringify([{ content: String(v.details || '') }])
-      } catch {
-        payload.details = String(v.details || '')
-      }
-    }
-    const st = String(v.status || '')
-    if (st === 'in_progress' || st === 'completed') {
-      if (repairPhotos.length) payload.repair_photo_urls = repairPhotos
-      if (v.repair_notes) payload.repair_notes = v.repair_notes
-    }
-    if (prePhotos.length) payload.photo_urls = prePhotos
-    if (st === 'completed') {
-      const existing = (editing as any)?.completed_at
-      payload.completed_at = v.completed_at ? dayjs(v.completed_at).toDate().toISOString() : (existing ? String(existing) : new Date().toISOString())
-      if (v.maintenance_amount !== undefined) payload.maintenance_amount = Number(v.maintenance_amount || 0)
-      if (v.has_parts === true) {
-        payload.has_parts = true
-        if (v.parts_amount !== undefined) payload.parts_amount = Number(v.parts_amount || 0)
-        if (v.maintenance_amount_includes_parts !== undefined) payload.maintenance_amount_includes_parts = !!v.maintenance_amount_includes_parts
-      } else if (v.has_parts === false) {
-        payload.has_parts = false
-        payload.parts_amount = null
-        payload.maintenance_amount_includes_parts = null
-      }
-      if (v.has_gst === true) {
-        payload.has_gst = true
-        if (v.maintenance_amount_includes_gst !== undefined) payload.maintenance_amount_includes_gst = !!v.maintenance_amount_includes_gst
-      } else if (v.has_gst === false) {
-        payload.has_gst = false
-        payload.maintenance_amount_includes_gst = null
-      }
-      if (v.pay_method) payload.pay_method = String(v.pay_method)
-      if (String(v.pay_method || '') === 'other_pay' && v.pay_other_note) payload.pay_other_note = String(v.pay_other_note)
-      if (String(v.pay_method || '') !== 'other_pay') payload.pay_other_note = undefined
-    }
     try {
-      if (editing) await apiUpdate('property_maintenance', editing.id, payload)
-      message.success('已更新记录')
+      if (saving) return
+      if (files.some((f) => f.status === 'uploading') || preFiles.some((f) => f.status === 'uploading')) {
+        message.warning('照片上传中，请稍后再保存')
+        return
+      }
+      setSaving(true)
+      message.loading({ key: 'maint-record-save', content: '保存中…', duration: 0 })
+
+      const v = await form.validateFields()
+      const payload: any = {
+        property_id: v.property_id || undefined,
+        submitter_name: v.submitter_name || undefined,
+        status: v.status,
+        assignee_id: v.assignee_id || undefined,
+        eta: v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : undefined,
+        notes: v.notes || undefined,
+        urgency: v.urgency || undefined,
+      }
+      if (v.details) {
+        try {
+          payload.details = JSON.stringify([{ content: String(v.details || '') }])
+        } catch {
+          payload.details = String(v.details || '')
+        }
+      }
+      const st = String(v.status || '')
+      if (st === 'in_progress' || st === 'completed') {
+        if (repairPhotos.length) payload.repair_photo_urls = repairPhotos
+        if (v.repair_notes) payload.repair_notes = v.repair_notes
+      }
+      if (prePhotos.length) payload.photo_urls = prePhotos
+      if (st === 'completed') {
+        const existing = (editing as any)?.completed_at
+        payload.completed_at = v.completed_at ? dayjs(v.completed_at).toDate().toISOString() : (existing ? String(existing) : new Date().toISOString())
+        if (v.maintenance_amount !== undefined) payload.maintenance_amount = Number(v.maintenance_amount || 0)
+        if (v.has_parts === true) {
+          payload.has_parts = true
+          if (v.parts_amount !== undefined) payload.parts_amount = Number(v.parts_amount || 0)
+          if (v.maintenance_amount_includes_parts !== undefined) payload.maintenance_amount_includes_parts = !!v.maintenance_amount_includes_parts
+        } else if (v.has_parts === false) {
+          payload.has_parts = false
+          payload.parts_amount = null
+          payload.maintenance_amount_includes_parts = null
+        }
+        if (v.has_gst === true) {
+          payload.has_gst = true
+          if (v.maintenance_amount_includes_gst !== undefined) payload.maintenance_amount_includes_gst = !!v.maintenance_amount_includes_gst
+        } else if (v.has_gst === false) {
+          payload.has_gst = false
+          payload.maintenance_amount_includes_gst = null
+        }
+        if (v.pay_method) payload.pay_method = String(v.pay_method)
+        if (String(v.pay_method || '') === 'other_pay' && v.pay_other_note) payload.pay_other_note = String(v.pay_other_note)
+        if (String(v.pay_method || '') !== 'other_pay') payload.pay_other_note = undefined
+      }
+
+      let updated: RepairOrder | null = null
+      if (editing) updated = await apiUpdate<RepairOrder>('property_maintenance', editing.id, payload)
+
+      if (updated?.id) {
+        setList((prev) => prev.map((x) => (String(x.id) === String(updated!.id) ? { ...x, ...updated! } : x)))
+      }
+      message.success({ key: 'maint-record-save', content: '已保存' })
       setOpen(false)
       setEditing(null)
       loadMaintenance(page === 1, { silent: true, page })
     } catch (e: any) {
-      message.error(e?.message || '保存失败')
+      message.error({ key: 'maint-record-save', content: e?.message || '保存失败' })
+    } finally {
+      setSaving(false)
     }
   }
 
   const statusWatch = Form.useWatch('status', form)
   const hasPartsWatch = Form.useWatch('has_parts', form)
+  const maintenanceAmountWatch = Form.useWatch('maintenance_amount', form)
+  const partsAmountWatch = Form.useWatch('parts_amount', form)
+  const includesPartsWatch = Form.useWatch('maintenance_amount_includes_parts', form)
   const hasGstWatch = Form.useWatch('has_gst', form)
+  const includesGstWatch = Form.useWatch('maintenance_amount_includes_gst', form)
   const payMethodWatch = Form.useWatch('pay_method', form)
 
-  const catOptions = ['水电','家具','家电','墙面','其他'].map(x => ({ value: x, label: x }))
+  const feeTotal = useMemo(() => calcTotalAmount({
+    maintenance_amount: maintenanceAmountWatch,
+    has_parts: hasPartsWatch,
+    parts_amount: partsAmountWatch,
+    maintenance_amount_includes_parts: includesPartsWatch,
+    has_gst: hasGstWatch,
+    maintenance_amount_includes_gst: includesGstWatch,
+  }), [hasGstWatch, hasPartsWatch, includesGstWatch, includesPartsWatch, maintenanceAmountWatch, partsAmountWatch])
+
   const statusOptions = [
     { value: 'pending', label: '待维修' },
     { value: 'assigned', label: '已分配' },
@@ -435,6 +459,38 @@ export default function MaintenanceRecordsUnified() {
       return new Intl.NumberFormat('en-AU', { style: 'currency', currency: 'AUD' }).format(n).replace('A$', '$')
     } catch {
       return `$${n.toFixed(2)}`
+    }
+  }
+  function calcTotalAmount(row?: any) {
+    const hasBase = row?.maintenance_amount !== undefined && row?.maintenance_amount !== null && row?.maintenance_amount !== ''
+    const hasPartsAmt = row?.parts_amount !== undefined && row?.parts_amount !== null && row?.parts_amount !== ''
+    if (!hasBase && !hasPartsAmt) return null
+
+    const base = hasBase ? Number(row?.maintenance_amount || 0) : 0
+    const parts = hasPartsAmt ? Number(row?.parts_amount || 0) : 0
+    const hasParts = row?.has_parts === true
+    const hasGst = row?.has_gst === true
+    const includesParts = row?.maintenance_amount_includes_parts === true
+    const includesGst = row?.maintenance_amount_includes_gst === true
+
+    let total = Number.isFinite(base) ? base : 0
+    if (hasParts && !includesParts) total += (Number.isFinite(parts) ? parts : 0)
+
+    let gstExtra = 0
+    if (hasGst && !includesGst) {
+      gstExtra = total * 0.1
+      total += gstExtra
+    }
+
+    return {
+      base: Number.isFinite(base) ? base : 0,
+      parts: Number.isFinite(parts) ? parts : 0,
+      gstExtra: Number.isFinite(gstExtra) ? gstExtra : 0,
+      total: Number.isFinite(total) ? total : 0,
+      hasParts,
+      hasGst,
+      includesParts,
+      includesGst,
     }
   }
   function payMethodLabel(v?: string | null) {
@@ -610,7 +666,7 @@ export default function MaintenanceRecordsUnified() {
           String(summary || ''),
           String((r as any).submitter_name || (r as any).worker_name || (r as any).created_by || ''),
           (r as any).submitted_at ? dayjs((r as any).submitted_at).format('YYYY-MM-DD') : '',
-          String((r as any).maintenance_amount ?? ''),
+          String(calcTotalAmount(r)?.total ?? ''),
           (r as any).has_parts === true ? '是' : (r as any).has_parts === false ? '否' : '',
           String((r as any).parts_amount ?? ''),
           payMethodLabel((r as any).pay_method),
@@ -707,7 +763,7 @@ export default function MaintenanceRecordsUnified() {
                           <div style={{ gridColumn:'1 / span 2' }}>完成日期：{(r as any)?.completed_at ? dayjs((r as any).completed_at).format('YYYY-MM-DD') : '-'}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>提交时间：{(r.submitted_at || (r as any).occurred_at || (r as any).created_at) ? dayjs(r.submitted_at || (r as any).occurred_at || (r as any).created_at).format('YYYY-MM-DD') : '-'}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>问题摘要：{summaryFromDetails(r.details)}</div>
-                          <div>维修金额：{fmtAmount((r as any).maintenance_amount)}</div>
+                          <div>维修金额：{fmtAmount(calcTotalAmount(r)?.total)}</div>
                           <div>是否有配件费：{(r as any).has_parts === true ? '是' : (r as any).has_parts === false ? '否' : '-'}</div>
                           <div>配件费：{fmtAmount((r as any).parts_amount)}</div>
                           <div>扣款方式：{payMethodLabel((r as any).pay_method)}</div>
@@ -743,7 +799,7 @@ export default function MaintenanceRecordsUnified() {
                 const v = (r as any)?.submitted_at || (r as any)?.occurred_at || (r as any)?.created_at
                 return v ? dayjs(v).format('YYYY-MM-DD') : '-'
               } },
-              { title:'维修金额', dataIndex:'maintenance_amount', width: 140, render:(a:any)=> fmtAmount(a) },
+              { title:'维修金额', dataIndex:'maintenance_amount', width: 140, render:(_:any, r:any)=> fmtAmount(calcTotalAmount(r)?.total) },
               { title:'是否有配件费', dataIndex:'has_parts', width: 120, render:(b:boolean)=> b === true ? '是' : b === false ? '否' : '-' },
               { title:'配件费金额', dataIndex:'parts_amount', width: 140, render:(a:any)=> fmtAmount(a) },
               { title:'扣款方式', dataIndex:'pay_method', width: 140, render:(v:string)=> payMethodLabel(v) },
@@ -864,27 +920,46 @@ export default function MaintenanceRecordsUnified() {
               <DollarCircleOutlined style={{ color:'#16c784' }} />
               <Typography.Text style={{ color:'#0b1738', fontWeight:600 }}>费用信息</Typography.Text>
             </Space>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, alignItems:'end' }}>
-              <div>
-                <Typography.Text type="secondary">维修金额</Typography.Text>
-                <div style={{ fontSize:22, fontWeight:700, color:'#1677ff', marginTop:6 }}>{fmtAmount((viewRow as any)?.maintenance_amount)}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">配件费</Typography.Text>
-                <div style={{ fontSize:22, fontWeight:700, color:'#1677ff', marginTop:6 }}>{fmtAmount((viewRow as any)?.parts_amount)}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary" style={{ display:'block' }}>是否有配件费</Typography.Text>
-                <div style={{ display:'inline-flex', alignItems:'center', gap:6, background:'#f0fff4', border:'1px solid #b7eb8f', borderRadius:20, padding:'2px 10px', marginTop:6, width:'fit-content' }}>
-                  <CheckCircleOutlined style={{ color:'#52c41a' }} />
-                  <span style={{ color:'#1677ff' }}>{(viewRow as any)?.has_parts === true ? '是' : (viewRow as any)?.has_parts === false ? '否' : '-'}</span>
-                </div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">扣款方式</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{payMethodLabel((viewRow as any)?.pay_method)}</div>
-              </div>
-            </div>
+            {(() => {
+              const c = calcTotalAmount(viewRow)
+              return (
+                <>
+                  <div>
+                    <Typography.Text type="secondary">总金额</Typography.Text>
+                    <div style={{ fontSize:22, fontWeight:700, color:'#1677ff', marginTop:6 }}>{fmtAmount(c?.total)}</div>
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, alignItems:'end', marginTop: 14 }}>
+                    <div>
+                      <Typography.Text type="secondary">维修金额</Typography.Text>
+                      <div style={{ fontSize:16, fontWeight:600, color:'#0b1738', marginTop:6 }}>{fmtAmount((viewRow as any)?.maintenance_amount)}</div>
+                    </div>
+                    <div>
+                      <Typography.Text type="secondary">配件费</Typography.Text>
+                      <div style={{ fontSize:16, fontWeight:600, color:'#0b1738', marginTop:6 }}>
+                        {fmtAmount((viewRow as any)?.parts_amount)}
+                        {(viewRow as any)?.has_parts === true ? (
+                          <span style={{ marginLeft: 8, color: '#64748b', fontWeight: 500 }}>
+                            {c?.includesParts ? '包含' : '额外'}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div>
+                      <Typography.Text type="secondary">GST</Typography.Text>
+                      <div style={{ fontSize:16, fontWeight:600, color:'#0b1738', marginTop:6 }}>
+                        {(viewRow as any)?.has_gst === true
+                          ? (c?.includesGst ? '包含' : fmtAmount(c?.gstExtra))
+                          : '-'}
+                      </div>
+                    </div>
+                    <div>
+                      <Typography.Text type="secondary">扣款方式</Typography.Text>
+                      <div style={{ color:'#0b1738', marginTop:6 }}>{payMethodLabel((viewRow as any)?.pay_method)}</div>
+                    </div>
+                  </div>
+                </>
+              )
+            })()}
             {String((viewRow as any)?.pay_method || '') === 'other_pay' ? (
               <div style={{ marginTop:12 }}>
                 <Typography.Text type="secondary">其他人备注</Typography.Text>
@@ -1049,17 +1124,20 @@ export default function MaintenanceRecordsUnified() {
       <Drawer
         title="更新维修记录"
         width={720}
-        onClose={() => setOpen(false)}
+        onClose={() => { if (!saving) setOpen(false) }}
         open={open}
+        closable={!saving}
+        maskClosable={!saving}
         footer={
           <div style={{ textAlign: 'right' }}>
             <Space>
-              <Button onClick={() => setOpen(false)}>取消</Button>
-              <Button type="primary" onClick={save}>保存</Button>
+              <Button onClick={() => setOpen(false)} disabled={saving}>取消</Button>
+              <Button type="primary" onClick={save} loading={saving} disabled={saving}>保存</Button>
             </Space>
           </div>
         }
       >
+        <Spin spinning={saving} tip="保存中…">
         <Form form={form} layout="vertical">
           <Divider orientation="left">基础信息</Divider>
           <Row gutter={16}>
@@ -1216,72 +1294,115 @@ export default function MaintenanceRecordsUnified() {
           {String(statusWatch || '') === 'completed' ? (
             <>
               <Divider orientation="left">费用结算</Divider>
-              <Row gutter={16}>
-                <Col span={12}>
+              <div className={styles.feeGrid}>
+                <div className={styles.feeRow2}>
                   <Form.Item name="maintenance_amount" label="维修金额（AUD）">
-                    <InputNumber min={0} step={1} style={{ width:'100%' }} />
+                    <InputNumber
+                      min={0}
+                      step={1}
+                      style={{ width: '100%' }}
+                      formatter={(v) => `$ ${v || ''}`}
+                      parser={(v: any) => {
+                        const n = Number(String(v || '').replace(/\$\s?/g, ''))
+                        return Number.isFinite(n) ? n : 0
+                      }}
+                    />
                   </Form.Item>
-                </Col>
-                <Col span={12}>
                   <Form.Item name="completed_at" label="完成时间">
                     <DatePicker style={{ width: '100%' }} />
                   </Form.Item>
-                </Col>
-                <Col span={8}>
-                  <Form.Item name="has_parts" label="是否有配件费" valuePropName="checked">
-                    <Switch onChange={(checked) => { if (!checked) form.setFieldsValue({ parts_amount: undefined, maintenance_amount_includes_parts: undefined }) }} />
+                </div>
+                <div className={styles.feeRow1}>
+                  <Form.Item label="总金额（AUD）">
+                    <InputNumber
+                      disabled
+                      value={feeTotal?.total ?? undefined}
+                      style={{ width: '100%' }}
+                      formatter={(v) => `$ ${v || ''}`}
+                      parser={(v: any) => {
+                        const n = Number(String(v || '').replace(/\$\s?/g, ''))
+                        return Number.isFinite(n) ? n : 0
+                      }}
+                    />
                   </Form.Item>
-                </Col>
-                {hasPartsWatch ? (
-                  <>
-                    <Col span={8}>
-                      <Form.Item name="maintenance_amount_includes_parts" label="维修金额是否包含配件费" valuePropName="checked" preserve={false}>
-                        <Switch />
-                      </Form.Item>
-                    </Col>
-                    <Col span={8}>
-                      <Form.Item name="parts_amount" label="配件费金额（AUD）" preserve={false}>
-                        <InputNumber min={0} step={1} style={{ width:'100%' }} />
-                      </Form.Item>
-                    </Col>
-                  </>
-                ) : null}
-                <Col span={8}>
-                  <Form.Item name="has_gst" label="是否有GST" valuePropName="checked">
-                    <Switch onChange={(checked) => { if (!checked) form.setFieldsValue({ maintenance_amount_includes_gst: undefined }) }} />
-                  </Form.Item>
-                </Col>
-                {hasGstWatch ? (
-                  <Col span={8}>
-                    <Form.Item name="maintenance_amount_includes_gst" label="是否包含GST" valuePropName="checked" preserve={false}>
-                      <Switch />
+                </div>
+
+                <div className={styles.feeToggleRow}>
+                  <div className={styles.feeToggleCard}>
+                    <div className={styles.feeToggleLeft}>
+                      <span className={styles.feeToggleIcon}><AppstoreOutlined /></span>
+                      <span className={styles.feeToggleText}>是否有配件费</span>
+                    </div>
+                    <Form.Item name="has_parts" valuePropName="checked" noStyle>
+                      <Switch onChange={(checked) => { if (!checked) form.setFieldsValue({ parts_amount: undefined, maintenance_amount_includes_parts: undefined }) }} />
                     </Form.Item>
-                  </Col>
+                  </div>
+
+                  <div className={styles.feeToggleCard}>
+                    <div className={styles.feeToggleLeft}>
+                      <span className={styles.feeToggleIcon}><PercentageOutlined /></span>
+                      <span className={styles.feeToggleText}>是否有 GST</span>
+                    </div>
+                    <Form.Item name="has_gst" valuePropName="checked" noStyle>
+                      <Switch onChange={(checked) => { if (!checked) form.setFieldsValue({ maintenance_amount_includes_gst: undefined }) }} />
+                    </Form.Item>
+                  </div>
+                </div>
+
+                {hasPartsWatch ? (
+                  <div className={styles.feeDashedBox}>
+                    <div className={styles.feeDashedRow}>
+                      <div>
+                        <div className={styles.feeInlineLabel}>配件费金额（AUD）</div>
+                        <Form.Item name="parts_amount" preserve={false} noStyle>
+                          <InputNumber
+                            min={0}
+                            step={1}
+                            style={{ width: '100%' }}
+                            formatter={(v) => `$ ${v || ''}`}
+                            parser={(v: any) => {
+                              const n = Number(String(v || '').replace(/\$\s?/g, ''))
+                              return Number.isFinite(n) ? n : 0
+                            }}
+                          />
+                        </Form.Item>
+                      </div>
+                      <div>
+                        <div className={styles.feeInlineLabel}>维修金额是否包含配件费</div>
+                        <div className={styles.feeToggleLine}>
+                          <Form.Item name="maintenance_amount_includes_parts" valuePropName="checked" preserve={false} noStyle>
+                            <Switch />
+                          </Form.Item>
+                          <span className={styles.feeHint}>额外支付</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 ) : null}
-                <Col span={12}>
-                  <Form.Item name="pay_method" label="扣款方式">
+
+                <div className={styles.feePayBox}>
+                  <Form.Item name="pay_method" label={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><CreditCardOutlined />扣款方式</span>}>
                     <Select
                       options={[
-                        { value:'rent_deduction', label:'租金扣除' },
-                        { value:'tenant_pay', label:'房客支付' },
-                        { value:'company_pay', label:'公司承担' },
-                        { value:'landlord_pay', label:'房东支付' },
-                        { value:'other_pay', label:'其他人支付' },
+                        { value: 'rent_deduction', label: '租金扣除' },
+                        { value: 'tenant_pay', label: '房客支付' },
+                        { value: 'company_pay', label: '公司承担' },
+                        { value: 'landlord_pay', label: '房东支付' },
+                        { value: 'other_pay', label: '其他人支付' },
                       ]}
                     />
                   </Form.Item>
-                </Col>
-                <Col span={12}>
                   <Form.Item name="pay_other_note" label="其他人备注" style={{ display: String(payMethodWatch || '') === 'other_pay' ? 'block' : 'none' }}>
                     <Input />
                   </Form.Item>
-                </Col>
-              </Row>
+                </div>
+              </div>
             </>
           ) : null}
           <Divider orientation="left">其他</Divider>
           <Form.Item name="notes" label="内部备注"><Input.TextArea rows={2} /></Form.Item>
         </Form>
+        </Spin>
       </Drawer>
     </Space>
   )

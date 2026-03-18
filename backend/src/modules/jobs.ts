@@ -885,6 +885,106 @@ router.post('/email-sync/cron-trigger', require('../auth').allowCronTokenOrPerm(
   }
 })
 
+const cleaningBackfillRunSchema = z.object({
+  schedule_name: z.enum(['fast', 'slow', 'custom']).optional().default('fast'),
+  past_days: z.coerce.number().optional(),
+  future_days: z.coerce.number().optional(),
+  concurrency: z.coerce.number().optional(),
+})
+
+async function runCleaningBackfillByPreset(opts: { schedule_name: 'fast' | 'slow' | 'custom'; body: any; trigger_source: 'manual' | 'cron_trigger' | 'external_cron' }) {
+  if (!hasPg) { const err: any = new Error('pg required'); err.status = 400; throw err }
+  const lockName = String(process.env.CLEANING_BACKFILL_LOCK_NAME || 'cleaning_backfill')
+  const lockTtlMs = Math.max(60000, Number(process.env.CLEANING_BACKFILL_LOCK_TTL_MS || (6 * 60 * 60 * 1000)))
+  const renewEveryMs = Math.max(60000, Number(process.env.CLEANING_BACKFILL_LOCK_RENEW_MS || (2 * 60 * 1000)))
+  const timeZone = String(process.env.CLEANING_BACKFILL_TIME_ZONE || 'Australia/Sydney')
+  const minIntervalMs = opts.trigger_source === 'external_cron' ? 0 : Math.max(0, Number(process.env.CLEANING_BACKFILL_MIN_INTERVAL_MS || 0))
+  const state: any = {}
+
+  const preset = opts.schedule_name
+  const envPast = preset === 'slow' ? process.env.CLEANING_BACKFILL_SLOW_PAST_DAYS : process.env.CLEANING_BACKFILL_FAST_PAST_DAYS
+  const envFuture = preset === 'slow' ? process.env.CLEANING_BACKFILL_SLOW_FUTURE_DAYS : process.env.CLEANING_BACKFILL_FAST_FUTURE_DAYS
+  const envConc = preset === 'slow' ? process.env.CLEANING_BACKFILL_SLOW_CONCURRENCY : process.env.CLEANING_BACKFILL_FAST_CONCURRENCY
+
+  const pastDays = Math.max(0, Number(opts.body.past_days ?? envPast ?? (preset === 'slow' ? 14 : 1)))
+  const futureDays = Math.max(0, Number(opts.body.future_days ?? envFuture ?? (preset === 'slow' ? 30 : 7)))
+  const concurrency = Math.max(1, Math.min(25, Number(opts.body.concurrency ?? envConc ?? 10)))
+
+  const { runCleaningBackfillOnce } = require('../services/cleaningBackfillRunner')
+  const scheduleName = preset === 'custom' ? 'custom' : preset
+  return await runCleaningBackfillOnce({ scheduleName, lockName, lockTtlMs, lockRenewIntervalMs: renewEveryMs, timeZone, pastDays, futureDays, concurrency, minIntervalMs, state, triggerSource: opts.trigger_source })
+}
+
+router.get('/cleaning-backfill/status', requirePerm('order.manage'), async (_req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const lockName = String(process.env.CLEANING_BACKFILL_LOCK_NAME || 'cleaning_backfill')
+    const lockTtlMs = Math.max(60000, Number(process.env.CLEANING_BACKFILL_LOCK_TTL_MS || (6 * 60 * 60 * 1000)))
+    const renewEveryMs = Math.max(60000, Number(process.env.CLEANING_BACKFILL_LOCK_RENEW_MS || (2 * 60 * 1000)))
+    const timeZone = String(process.env.CLEANING_BACKFILL_TIME_ZONE || 'Australia/Sydney')
+    const minIntervalMs = Math.max(0, Number(process.env.CLEANING_BACKFILL_MIN_INTERVAL_MS || 0))
+    const fast = {
+      enabled: String(process.env.CLEANING_BACKFILL_FAST_ENABLED || 'false').toLowerCase() === 'true',
+      cron: String(process.env.CLEANING_BACKFILL_FAST_CRON || '0 */4 * * *'),
+      past_days: Number(process.env.CLEANING_BACKFILL_FAST_PAST_DAYS || 1),
+      future_days: Number(process.env.CLEANING_BACKFILL_FAST_FUTURE_DAYS || 7),
+      concurrency: Number(process.env.CLEANING_BACKFILL_FAST_CONCURRENCY || 10),
+    }
+    const slow = {
+      enabled: String(process.env.CLEANING_BACKFILL_SLOW_ENABLED || 'false').toLowerCase() === 'true',
+      cron: String(process.env.CLEANING_BACKFILL_SLOW_CRON || '0 3 */2 * *'),
+      past_days: Number(process.env.CLEANING_BACKFILL_SLOW_PAST_DAYS || 14),
+      future_days: Number(process.env.CLEANING_BACKFILL_SLOW_FUTURE_DAYS || 30),
+      concurrency: Number(process.env.CLEANING_BACKFILL_SLOW_CONCURRENCY || 10),
+    }
+    let lock: any = null
+    try {
+      const r = await pgPool!.query('SELECT name, locked_by, locked_until, heartbeat_at, updated_at FROM job_locks WHERE name=$1 LIMIT 1', [lockName])
+      lock = r?.rows?.[0] || null
+    } catch {}
+    return res.json({ ok: true, config: { lock_name: lockName, lock_ttl_ms: lockTtlMs, lock_renew_ms: renewEveryMs, time_zone: timeZone, min_interval_ms: minIntervalMs, fast, slow }, lock })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'status_failed') })
+  }
+})
+
+router.get('/cleaning-backfill/runs', requirePerm('order.manage'), async (req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const limit = Math.max(1, Math.min(200, Number((req.query as any)?.limit || 50)))
+    const scheduleName = String((req.query as any)?.schedule_name || '').trim()
+    const okRaw = String((req.query as any)?.ok || '').trim()
+    const ok = okRaw === '' ? null : (okRaw === '1' || okRaw === 'true')
+    const { listJobRuns } = require('../services/jobRuns')
+    const items = await listJobRuns({ job_name: 'cleaning_backfill', limit, schedule_name: scheduleName || null, ok })
+    return res.json({ ok: true, items })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'runs_failed') })
+  }
+})
+
+router.post('/cleaning-backfill/run', allowCronTokenOrPerm('order.manage'), async (req, res) => {
+  const parsed = cleaningBackfillRunSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    const r = await runCleaningBackfillByPreset({ schedule_name: parsed.data.schedule_name, body: parsed.data, trigger_source: 'manual' })
+    return res.json({ ok: true, result: r })
+  } catch (e: any) {
+    return res.status(Number(e?.status || 500)).json({ message: String(e?.message || 'run_failed') })
+  }
+})
+
+router.post('/cleaning-backfill/cron-trigger', allowCronTokenOrPerm('order.manage'), async (req, res) => {
+  try {
+    const parsed = cleaningBackfillRunSchema.safeParse(req.body || {})
+    if (!parsed.success) return res.status(400).json(parsed.error.format())
+    const r = await runCleaningBackfillByPreset({ schedule_name: parsed.data.schedule_name, body: parsed.data, trigger_source: 'external_cron' })
+    return res.json({ ok: true, result: r })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'cron_trigger_failed') })
+  }
+})
+
 router.get('/cleaning-sync-retry-jobs', requirePerm('order.manage'), async (req, res) => {
   try {
     const status = String((req.query as any)?.status || '').trim()

@@ -1,5 +1,28 @@
 # Changelog
 
+## Dev (2026-03-18)
+
+- Version: `0.2.7-statement-pdf.20260316+build.6` (no bump)
+- Task Center: Remove standalone “offline” view; merge offline tasks into Cleaning/Inspection pools and add “其他” filter for offline items.
+- Task Center: Improve scheduling UX — sticky scrollable left pool, compact two-line task cards, drag grip hints, and clearer drop targets.
+- Task Center: Switch staff board to responsive grid with vertical scan; add staff filters (all/busy/idle), staff search jump, and preview/expand/collapse states.
+- Cleaning: Fix manual cleaning task creation (stayover) — no checkin time or passwords required; ensure manual tasks are assignable.
+- Offline tasks: Fix create 400 by providing required fields; allow date selection on create and keep newly created tasks visible on the chosen day.
+- Maintenance records: Fee settlement UI aligned to new layout; show total amount (incl. parts/GST) in list, edit form, and details view; improve save UX with progress feedback.
+- Backend: Reduce maintenance save latency by caching schema-ensure work in-process (avoid repeated ALTER TABLE / schema checks per request).
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
+## Dev (2026-03-17)
+
+- Version: `0.2.7-statement-pdf.20260316+build.6` (no bump)
+- Cleaning: Add scheduled cleaning backfill runner (fast/slow schedules) with owner+heartbeat lock renew/release, and timezone-based window calculation.
+- Cleaning: Add external trigger `POST /jobs/cleaning-backfill/cron-trigger` (cron token or permission) protected by the same lock.
+- Cleaning: Add job run history (`job_runs`) and system-tasks UI page for cleaning backfill.
+- Ops: Add migrations `20260317_create_job_locks.sql`, `20260317_job_locks_heartbeat.sql`, and `20260317_create_job_runs.sql`.
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## Dev (2026-03-16)
 
 - Version: `0.2.7-statement-pdf.20260316+build.6`

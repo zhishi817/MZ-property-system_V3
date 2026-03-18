@@ -1,0 +1,105 @@
+.feeGrid {
+  display: grid;
+  gap: 18px;
+}
+
+.feeRow2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.feeRow1 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+
+.feeToggleRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.feeToggleCard {
+  border: 1px solid rgba(226, 232, 240, 1);
+  background: rgba(248, 250, 252, 1);
+  border-radius: 14px;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 68px;
+}
+
+.feeToggleLeft {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.feeToggleIcon {
+  color: rgba(148, 163, 184, 1);
+  font-size: 20px;
+  display: inline-flex;
+}
+
+.feeToggleText {
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(15, 23, 42, 1);
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.feeDashedBox {
+  border: 1px dashed rgba(147, 197, 253, 1);
+  background: rgba(248, 250, 252, 0.55);
+  border-radius: 16px;
+  padding: 18px;
+}
+
+.feeDashedRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  align-items: center;
+}
+
+.feeInlineLabel {
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(15, 23, 42, 1);
+  margin-bottom: 8px;
+}
+
+.feeHint {
+  color: rgba(100, 116, 139, 1);
+  font-weight: 500;
+}
+
+.feeToggleLine {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.feePayBox {
+  display: grid;
+  gap: 10px;
+}
+
+@media (max-width: 900px) {
+  .feeRow2 {
+    grid-template-columns: 1fr;
+  }
+  .feeToggleRow {
+    grid-template-columns: 1fr;
+  }
+  .feeDashedRow {
+    grid-template-columns: 1fr;
+  }
+}

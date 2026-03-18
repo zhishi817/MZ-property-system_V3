@@ -294,7 +294,13 @@ async function hasManualOverrideForRef(client: any, refType: string, refId: stri
   return !!(r?.rows?.[0]?.ok)
 }
 
+let autoExpenseSchemaEnsured = false
+let autoExpenseSchemaEnsuring: Promise<void> | null = null
+
 async function ensureAutoExpenseSchema(client: any) {
+  if (autoExpenseSchemaEnsured) return
+  if (autoExpenseSchemaEnsuring) return autoExpenseSchemaEnsuring
+  autoExpenseSchemaEnsuring = (async () => {
   let sp = 0
   const safeQuery = async (sql: string) => {
     const name = `s${sp++}`
@@ -390,6 +396,83 @@ async function ensureAutoExpenseSchema(client: any) {
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_title text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_summary text;')
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_ref ON company_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
+  autoExpenseSchemaEnsured = true
+  })().catch((e: any) => {
+    autoExpenseSchemaEnsuring = null
+    throw e
+  })
+  return autoExpenseSchemaEnsuring
+}
+
+let propertyMaintenanceSchemaEnsured = false
+let propertyMaintenanceSchemaEnsuring: Promise<void> | null = null
+
+async function ensurePropertyMaintenanceSchema() {
+  if (!hasPg) return
+  if (propertyMaintenanceSchemaEnsured) return
+  if (propertyMaintenanceSchemaEnsuring) return propertyMaintenanceSchemaEnsuring
+  propertyMaintenanceSchemaEnsuring = (async () => {
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS urgency text;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS assignee_id text;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS eta date;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount numeric;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_parts boolean;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS parts_amount numeric;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_parts boolean;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_gst boolean;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_gst boolean;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;`)
+    await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+    try {
+      const c = await pgPool.query(
+        `SELECT data_type, udt_name
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'property_maintenance'
+           AND column_name = 'photo_urls'
+         LIMIT 1`
+      )
+      const dataType = String(c?.rows?.[0]?.data_type || '')
+      const udtName = String(c?.rows?.[0]?.udt_name || '')
+      const isTextArray = dataType === 'ARRAY' && udtName === '_text'
+      if (!isTextArray) {
+        await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];`)
+        await pgPool.query(`UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;`)
+        await pgPool.query(`
+          UPDATE property_maintenance
+          SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
+          WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array'
+        `)
+        await pgPool.query(`
+          UPDATE property_maintenance
+          SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
+          WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string'
+        `)
+        await pgPool.query(`ALTER TABLE property_maintenance DROP COLUMN photo_urls;`)
+        await pgPool.query(`ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;`)
+        await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+      }
+    } catch (e: any) {
+      throw new Error(String(e?.message || 'photo_urls type migration failed'))
+    }
+    propertyMaintenanceSchemaEnsured = true
+  })().catch((e: any) => {
+    propertyMaintenanceSchemaEnsuring = null
+    throw e
+  })
+  return propertyMaintenanceSchemaEnsuring
 }
 
 async function syncAutoExpensesFromDeepCleaningRow(row: any) {
@@ -666,29 +749,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         if (pgPool) {
           try {
             if (resource === 'property_maintenance') {
-              try {
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS urgency text;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS assignee_id text;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS eta date;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount numeric;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_parts boolean;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS parts_amount numeric;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_parts boolean;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_gst boolean;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_gst boolean;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;`)
-              } catch {}
+              await ensurePropertyMaintenanceSchema()
             }
             if (resource === 'property_deep_cleaning') {
               try {
@@ -2298,56 +2359,10 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
       let toUpdate: any = payload
       if (resource === 'property_maintenance') {
         try {
-          const { pgPool } = require('../dbAdapter')
-          if (pgPool) {
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS urgency text;`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS assignee_id text;`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS eta date;`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_parts boolean;`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_gst boolean;`)
-            await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_gst boolean;`)
-            try {
-              const c = await pgPool.query(
-                `SELECT data_type, udt_name
-                 FROM information_schema.columns
-                 WHERE table_schema = 'public'
-                   AND table_name = 'property_maintenance'
-                   AND column_name = 'photo_urls'
-                 LIMIT 1`
-              )
-              const dataType = String(c?.rows?.[0]?.data_type || '')
-              const udtName = String(c?.rows?.[0]?.udt_name || '')
-              const isTextArray = dataType === 'ARRAY' && udtName === '_text'
-              if (!isTextArray) {
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];`)
-                await pgPool.query(`UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;`)
-                await pgPool.query(`
-                  UPDATE property_maintenance
-                  SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
-                  WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array'
-                `)
-                await pgPool.query(`
-                  UPDATE property_maintenance
-                  SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
-                  WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string'
-                `)
-                await pgPool.query(`ALTER TABLE property_maintenance DROP COLUMN photo_urls;`)
-                await pgPool.query(`ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;`)
-                await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-              }
-            } catch (e: any) {
-              return res.status(500).json({ message: String(e?.message || 'photo_urls type migration failed') })
-            }
-          }
-        } catch {}
+          await ensurePropertyMaintenanceSchema()
+        } catch (e: any) {
+          return res.status(500).json({ message: String(e?.message || 'schema ensure failed') })
+        }
         if (toUpdate.details && typeof toUpdate.details !== 'string') {
           try { toUpdate.details = JSON.stringify(toUpdate.details) } catch {}
         }

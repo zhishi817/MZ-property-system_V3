@@ -139,15 +139,17 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   ] })
   if (hasPerm('menu.finance.company_revenue.visible')) financeChildren.push({ key: 'company-revenue', label: <Link href="/finance/company-revenue" prefetch={false}>公司营收</Link> })
   if (hasPerm('menu.finance')) items.push({ key: 'finance', icon: <DollarOutlined />, label: '财务管理', children: financeChildren })
-  if (hasPerm('menu.cleaning')) items.push({ key: 'cleaning', icon: <CalendarOutlined />, label: '清洁安排', children: [
-    { key: 'cleaning-overview', label: <Link href="/cleaning/overview" prefetch={false}>清洁总览</Link> },
-    { key: 'cleaning-schedule', label: <Link href="/cleaning" prefetch={false}>清洁安排</Link> },
+  if (hasPerm('menu.cleaning')) items.push({ key: 'cleaning', icon: <CalendarOutlined />, label: '线下事务', children: [
+    { key: 'cleaning-overview', label: <Link href="/cleaning/overview" prefetch={false}>线下总览</Link> },
+    { key: 'task-center', label: <Link href="/task-center" prefetch={false}>任务安排</Link> },
+    { key: 'cleaning-schedule', label: <Link href="/cleaning" prefetch={false}>每日清洁</Link> },
   ] })
   if (hasPerm('menu.rbac') || hasPerm('rbac.manage')) items.push({ key: 'rbac', icon: <ProfileOutlined />, label: <Link href="/rbac" prefetch={false}>角色权限</Link> })
   if (hasPerm('menu.jobs.email_sync.visible')) items.push({ key: 'jobs', icon: <ProfileOutlined />, label: '系统任务', children: [
     { key: 'jobs-email-sync', label: <Link href="/jobs/email-sync" prefetch={false}>邮件同步</Link> },
     { key: 'jobs-cleaning-sync-jobs', label: <Link href="/jobs/cleaning-sync-jobs" prefetch={false}>清洁同步队列</Link> },
     { key: 'jobs-cleaning-sync-retry', label: <Link href="/jobs/cleaning-sync-retry" prefetch={false}>清洁同步重试</Link> },
+    { key: 'jobs-cleaning-backfill', label: <Link href="/jobs/cleaning-backfill" prefetch={false}>清洁回填自动化</Link> },
   ] })
   if (hasPerm('menu.cms')) items.push({ key: 'cms', icon: <ShopOutlined />, label: 'CMS管理', children: [
     { key: 'cms-home', label: <Link href="/cms" prefetch={false}>页面管理</Link> },
