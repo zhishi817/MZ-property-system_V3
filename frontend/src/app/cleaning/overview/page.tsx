@@ -1,13 +1,13 @@
 "use client"
-import { Alert, Button, DatePicker, Drawer, Form, Input, Modal, Popconfirm, Select, Space, message } from 'antd'
+import { Alert, Button, DatePicker, Drawer, Form, Input, Popconfirm, Select, Space, message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import utc from 'dayjs/plugin/utc'
 import timezone from 'dayjs/plugin/timezone'
-import { API_BASE, deleteJSON, getJSON, patchJSON, postJSON } from '../../../lib/api'
+import { API_BASE, deleteJSON, getJSON, patchJSON } from '../../../lib/api'
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { sortProperties } from '../../../lib/properties'
-import { ClockCircleOutlined, DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined, RiseOutlined } from '@ant-design/icons'
+import { ClockCircleOutlined, DeleteOutlined, EditOutlined, EyeOutlined, RiseOutlined } from '@ant-design/icons'
 import styles from './cleaningOverview.module.scss'
 
 type OverviewResp = {
@@ -78,19 +78,13 @@ dayjs.tz.setDefault('Australia/Melbourne')
 
 export default function CleaningOverviewPage() {
   const [data, setData] = useState<OverviewResp | null>(null)
-  const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [offlineTasks, setOfflineTasks] = useState<OfflineTask[]>([])
-  const [createOpen, setCreateOpen] = useState(false)
   const [staff, setStaff] = useState<StaffLite[]>([])
   const [properties, setProperties] = useState<PropertyLite[]>([])
-  const [createForm] = Form.useForm()
   const [editForm] = Form.useForm()
   const [editOpen, setEditOpen] = useState(false)
   const [editing, setEditing] = useState<OfflineTask | null>(null)
-  const [rescheduleOpen, setRescheduleOpen] = useState(false)
-  const [rescheduleTask, setRescheduleTask] = useState<OfflineTask | null>(null)
-  const [rescheduleDate, setRescheduleDate] = useState<Dayjs | null>(null)
   const [dbStatus, setDbStatus] = useState<any>(null)
   const [historyPropertyId, setHistoryPropertyId] = useState<string | null>(null)
   const [historyRange, setHistoryRange] = useState<[Dayjs, Dayjs]>(() => [dayjs().subtract(180, 'day'), dayjs()])
@@ -98,7 +92,6 @@ export default function CleaningOverviewPage() {
   const [historyLoading, setHistoryLoading] = useState(false)
 
   const reload = useCallback(async (opts?: { silent?: boolean }) => {
-    if (!opts?.silent) setLoading(true)
     if (!opts?.silent) setLoadError(null)
     try {
       const resp = await getJSON<OverviewResp>('/stats/cleaning-overview')
@@ -107,8 +100,6 @@ export default function CleaningOverviewPage() {
       setOfflineTasks(Array.isArray(tasks) ? tasks : [])
     } catch (e: any) {
       if (!opts?.silent) setLoadError(String(e?.message || '加载失败'))
-    } finally {
-      if (!opts?.silent) setLoading(false)
     }
   }, [])
 
@@ -154,40 +145,6 @@ export default function CleaningOverviewPage() {
     return updated
   }, [viewDate])
 
-  const openCreate = useCallback(() => {
-    setCreateOpen(true)
-    createForm.setFieldsValue({
-      date: dayjs(viewDate),
-      task_type: 'other',
-      title: '',
-      content: '',
-      kind: 'other',
-      urgency: 'medium',
-      property_id: undefined,
-      assignee_id: undefined,
-    })
-  }, [createForm, viewDate])
-
-  const createOfflineTask = useCallback(async () => {
-    const v = await createForm.validateFields()
-    const payload: any = {
-      date: v.date ? dayjs(v.date).format('YYYY-MM-DD') : viewDate,
-      task_type: v.task_type,
-      title: String(v.title || '').trim(),
-      content: String(v.content || '').trim(),
-      kind: v.kind,
-      urgency: v.urgency,
-      property_id: v.task_type === 'property' ? v.property_id : undefined,
-      assignee_id: v.assignee_id || undefined,
-    }
-    const created = await postJSON<OfflineTask>('/cleaning/offline-tasks', payload)
-    if (String(created.date).slice(0, 10) === viewDate) setOfflineTasks((prev) => [created, ...prev])
-    else reload({ silent: true }).catch(() => {})
-    setCreateOpen(false)
-    createForm.resetFields()
-    message.success('任务已创建')
-  }, [createForm, reload, viewDate])
-
   const openEdit = useCallback((t: OfflineTask) => {
     setEditing(t)
     setEditOpen(true)
@@ -230,22 +187,6 @@ export default function CleaningOverviewPage() {
     if (editing?.id === id) setEditOpen(false)
     message.success('已删除')
   }, [editing?.id])
-
-  const openReschedule = useCallback((t: OfflineTask) => {
-    setRescheduleTask(t)
-    setRescheduleDate(dayjs(viewDate).add(1, 'day'))
-    setRescheduleOpen(true)
-  }, [viewDate])
-
-  const submitReschedule = useCallback(async () => {
-    if (!rescheduleTask) return
-    const nextDate = rescheduleDate ? dayjs(rescheduleDate).format('YYYY-MM-DD') : null
-    if (!nextDate) return
-    await updateOfflineTask(rescheduleTask.id, { date: nextDate, status: 'todo' })
-    setRescheduleOpen(false)
-    setRescheduleTask(null)
-    message.success('已更新执行日期')
-  }, [rescheduleDate, rescheduleTask, updateOfflineTask])
 
   const staffNameById = useCallback((id?: string | null) => {
     if (!id) return null
@@ -567,9 +508,6 @@ export default function CleaningOverviewPage() {
               <div className={styles.cardTitle}>今日其他线下任务</div>
               <div className={styles.countPill}>{offlineTasks.length} 个任务</div>
             </div>
-            <Button type="primary" className={styles.primaryBtn} icon={<PlusOutlined />} onClick={openCreate}>
-              新增任务
-            </Button>
           </div>
 
           <div className={styles.tableWrap} role="table" aria-label="线下任务表格">
@@ -633,72 +571,6 @@ export default function CleaningOverviewPage() {
             })}
           </div>
         </div>
-
-      <Modal
-        open={createOpen}
-        title="新增线下任务"
-        okText="创建"
-        onOk={() => createOfflineTask().catch((e) => message.error(e?.message || '创建失败'))}
-        onCancel={() => setCreateOpen(false)}
-      >
-        <Form
-          form={createForm}
-          layout="vertical"
-          onValuesChange={(changed, all) => {
-            if (changed?.task_type && all.task_type !== 'property') createForm.setFieldsValue({ property_id: undefined })
-          }}
-        >
-          <Form.Item name="date" label="执行日期" rules={[{ required: true, message: '请选择执行日期' }]}>
-            <DatePicker style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="task_type" label="任务类型" rules={[{ required: true, message: '请选择任务类型' }]}>
-            <Select options={[{ label: '房源', value: 'property' }, { label: '公司', value: 'company' }, { label: '其他', value: 'other' }]} />
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.task_type !== cur.task_type}>
-            {() => (createForm.getFieldValue('task_type') === 'property' ? (
-              <Form.Item name="property_id" label="房源" rules={[{ required: true, message: '请选择房源' }]}>
-                <Select
-                  showSearch
-                  optionFilterProp="label"
-                  filterOption={(input, option) => String((option as any)?.label || '').toLowerCase().includes(String(input || '').toLowerCase())}
-                  options={sortProperties(Array.isArray(properties) ? properties : []).map((p) => ({ value: p.id, label: p.code || p.address || p.id }))}
-                />
-              </Form.Item>
-            ) : null)}
-          </Form.Item>
-          <Form.Item name="title" label="任务标题" rules={[{ required: true, message: '请输入任务标题' }]}>
-            <Input placeholder="例如：换密码 / 挂钥匙 / 维修跟进" />
-          </Form.Item>
-          <Form.Item name="content" label="任务具体内容">
-            <Input.TextArea rows={4} placeholder="填写任务说明、需要注意的点、联系人等" />
-          </Form.Item>
-          <Form.Item name="assignee_id" label="分配人员">
-            <Select allowClear placeholder="选择人员" options={staff.map((s) => ({ value: s.id, label: s.name }))} />
-          </Form.Item>
-          <Form.Item name="kind" label="任务分类" rules={[{ required: true, message: '请选择任务分类' }]}>
-            <Select
-              options={[
-                { label: '挂钥匙', value: 'key_hanging' },
-                { label: '换密码', value: 'password_change' },
-                { label: '补消耗品', value: 'restock' },
-                { label: '维修', value: 'maintenance' },
-                { label: '检查（Inspection）', value: 'inspection' },
-                { label: '其他', value: 'other' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="urgency" label="紧急程度" rules={[{ required: true, message: '请选择紧急程度' }]}>
-            <Select
-              options={[
-                { label: '低', value: 'low' },
-                { label: '中', value: 'medium' },
-                { label: '高', value: 'high' },
-                { label: '紧急', value: 'urgent' },
-              ]}
-            />
-          </Form.Item>
-        </Form>
-      </Modal>
 
       <Drawer
         open={editOpen}
@@ -782,19 +654,6 @@ export default function CleaningOverviewPage() {
           </Form.Item>
         </Form>
       </Drawer>
-
-      <Modal
-        open={rescheduleOpen}
-        title="设置下次执行日期"
-        okText="确定"
-        onOk={() => submitReschedule().catch((e) => message.error(e?.message || '更新失败'))}
-        onCancel={() => setRescheduleOpen(false)}
-      >
-        <Space direction="vertical" style={{ width: '100%' }}>
-          <div style={{ color: '#888' }}>{rescheduleTask ? `任务：${rescheduleTask.title}` : ''}</div>
-          <DatePicker style={{ width: '100%' }} value={rescheduleDate} onChange={setRescheduleDate} />
-        </Space>
-      </Modal>
       </div>
     </div>
   )

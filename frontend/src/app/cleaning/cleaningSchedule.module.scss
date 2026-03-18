@@ -666,3 +666,317 @@
   .cell { min-height: 104px; }
   .missionName { font-size: 18px; }
 }
+
+.boardWrap {
+  padding: 0 16px 18px 16px;
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.poolPane {
+  border: 1px solid var(--clean-schedule-border);
+  background: #ffffff;
+  border-radius: var(--daily-task-radius);
+  box-shadow: var(--daily-task-shadow);
+  overflow: hidden;
+  min-height: 520px;
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  position: sticky;
+  top: 12px;
+  height: calc(100vh - 210px);
+}
+
+.poolHead {
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--clean-schedule-border);
+  background: #f8fafc;
+}
+
+.poolTools {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--clean-schedule-border);
+  display: grid;
+  gap: 10px;
+}
+
+.poolTabs {
+  display: flex;
+  gap: 8px;
+}
+
+.poolTitle {
+  font-weight: 1000;
+  color: #0f172a;
+}
+
+.poolCount {
+  font-weight: 1000;
+  color: #1d4ed8;
+  background: rgba(59, 130, 246, 0.14);
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  border-radius: 999px;
+  height: 24px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.poolList {
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  overflow: auto;
+}
+
+.staffBoard {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  align-content: start;
+  align-items: start;
+  overflow-y: auto;
+  padding-bottom: 4px;
+  height: calc(100vh - 210px);
+}
+
+.staffCol {
+  border: 1px solid var(--clean-schedule-border);
+  background: #ffffff;
+  border-radius: var(--daily-task-radius);
+  box-shadow: var(--daily-task-shadow);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+}
+
+.staffColHead {
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--clean-schedule-border);
+  background: #f8fafc;
+}
+
+.staffHeadRight {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(100, 116, 139, 0.95);
+}
+
+.staffName {
+  font-weight: 1000;
+  color: #0f172a;
+}
+
+.staffCount {
+  font-weight: 1000;
+  color: #334155;
+  background: rgba(148, 163, 184, 0.14);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 999px;
+  height: 24px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.staffPane {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.staffColBody {
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  overflow: auto;
+}
+
+.staffTools {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--clean-schedule-border);
+  display: grid;
+  gap: 10px;
+  background: #ffffff;
+}
+
+.staffToolsRow {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.staffJump {
+  flex: 1 1 auto;
+  min-width: 200px;
+}
+
+.staffCollapsed {
+  display: none;
+}
+
+.staffPreviewList {
+  display: grid;
+  gap: 10px;
+  overflow-y: auto;
+  max-height: 360px;
+  padding-right: 2px;
+}
+
+.staffExpandedList {
+  display: grid;
+  gap: 10px;
+  overflow-y: auto;
+  max-height: 720px;
+  padding-right: 2px;
+}
+
+.dropZone {
+  border: 1px dashed rgba(148, 163, 184, 0.65);
+  border-radius: 14px;
+  padding: 12px;
+  color: rgba(100, 116, 139, 0.95);
+  background: rgba(248, 250, 252, 0.9);
+  font-weight: 900;
+  text-align: center;
+  min-height: 110px;
+  display: grid;
+  place-items: center;
+}
+
+.dropZoneCompact {
+  min-height: 64px;
+  padding: 8px;
+}
+
+.dropZoneCollapsed {
+  min-height: 52px;
+  padding: 8px;
+}
+
+.staffHighlight {
+  outline: 2px solid rgba(59, 130, 246, 0.8);
+  outline-offset: 2px;
+}
+
+.dropHint {
+  border: 1px dashed rgba(59, 130, 246, 0.45);
+  border-radius: 14px;
+  padding: 10px 12px;
+  color: rgba(30, 64, 175, 0.9);
+  background: rgba(59, 130, 246, 0.08);
+  font-weight: 900;
+  text-align: center;
+}
+
+.taskChip {
+  position: relative;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 8px 10px;
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+  cursor: pointer;
+}
+
+.taskChipDraggable {
+  cursor: grab;
+}
+
+.taskChipDraggable:active {
+  cursor: grabbing;
+}
+
+.taskChipDisabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.taskStripe {
+  width: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.taskGrip {
+  color: rgba(148, 163, 184, 0.95);
+  font-size: 16px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.taskMain {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: grid;
+  gap: 6px;
+}
+
+.taskTopRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.taskTitleRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.taskRegion {
+  color: var(--clean-schedule-ant-blue);
+  font-weight: 1000;
+}
+
+.taskCode {
+  color: #0f172a;
+  font-weight: 1000;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskDetail {
+  color: #0f172a;
+  font-weight: 900;
+}
+
+.taskSubRow {
+  color: rgba(100, 116, 139, 0.95);
+  font-weight: 900;
+  font-size: 12px;
+  line-height: 16px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dropActive {
+  outline: 2px solid rgba(59, 130, 246, 0.6);
+  outline-offset: 2px;
+}

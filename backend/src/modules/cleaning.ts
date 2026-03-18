@@ -357,15 +357,6 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       const before = r0?.rows?.[0] || null
       if (!before) return res.status(404).json({ message: 'task not found' })
 
-      const nextCleaner =
-        (parsed.data as any).cleaner_id !== undefined
-          ? ((parsed.data as any).cleaner_id ?? null)
-          : (parsed.data.assignee_id !== undefined ? (parsed.data.assignee_id ?? null) : (before.cleaner_id ?? before.assignee_id ?? null))
-      const keyChanged =
-        (parsed.data.task_date != null && String(parsed.data.task_date) !== String(before.task_date || before.date || '')) ||
-        (nextCleaner !== undefined && String(nextCleaner ?? '') !== String(before.cleaner_id ?? before.assignee_id ?? '')) ||
-        (parsed.data.scheduled_at !== undefined && String(parsed.data.scheduled_at ?? '') !== String(before.scheduled_at ?? ''))
-
       const patch: any = { ...parsed.data }
       if (patch.cleaner_id !== undefined && patch.assignee_id === undefined) patch.assignee_id = patch.cleaner_id
       if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) patch.cleaner_id = patch.assignee_id
@@ -384,7 +375,6 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
           patch.status = nextCleanerId && nextInspectorId ? 'assigned' : 'pending'
         }
       }
-      if (keyChanged) patch.auto_sync_enabled = false
       patch.updated_at = new Date().toISOString()
 
       const keys = Object.keys(patch).filter((k) => patch[k] !== undefined)
@@ -413,15 +403,6 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
     if (parsed.data.assignee_id !== undefined && (parsed.data as any).cleaner_id === undefined) task.cleaner_id = parsed.data.assignee_id
     if (parsed.data.scheduled_at !== undefined) task.scheduled_at = parsed.data.scheduled_at
     if (parsed.data.note !== undefined) task.note = parsed.data.note
-    const nextCleanerMem =
-      (parsed.data as any).cleaner_id !== undefined
-        ? ((parsed.data as any).cleaner_id ?? null)
-        : (parsed.data.assignee_id !== undefined ? (parsed.data.assignee_id ?? null) : (before as any).cleaner_id ?? before.assignee_id ?? null)
-    const keyChanged =
-      (parsed.data.task_date != null && String(parsed.data.task_date) !== String(before.task_date || before.date || '')) ||
-      (nextCleanerMem !== undefined && String(nextCleanerMem ?? '') !== String((before as any).cleaner_id ?? before.assignee_id ?? '')) ||
-      (parsed.data.scheduled_at !== undefined && String(parsed.data.scheduled_at ?? '') !== String(before.scheduled_at ?? ''))
-    if (keyChanged) task.auto_sync_enabled = false
     {
       const beforeStatus = String((before as any).status || 'pending')
       const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned'
@@ -510,7 +491,7 @@ router.post('/tasks', requirePerm('cleaning.task.assign'), async (req, res) => {
       checkin_time: parsed.data.checkin_time ?? null,
       nights_override: (parsed.data as any).nights_override ?? null,
       note: (parsed.data as any).note ?? null,
-      auto_sync_enabled: false,
+      auto_sync_enabled: true,
       source: 'manual',
     }
     if (hasPg && pgPool) {
@@ -653,11 +634,6 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
               patch.status = nextCleanerId && nextInspectorId ? 'assigned' : 'pending'
             }
           }
-          const keyChanged =
-            (patch.task_date != null && String(patch.task_date) !== String(before.task_date || before.date || '')) ||
-            (patch.cleaner_id !== undefined && String(patch.cleaner_id ?? '') !== String(before.cleaner_id ?? before.assignee_id ?? '')) ||
-            (patch.scheduled_at !== undefined && String(patch.scheduled_at ?? '') !== String(before.scheduled_at ?? ''))
-          if (keyChanged) patch.auto_sync_enabled = false
           patch.updated_at = new Date().toISOString()
           const keys = Object.keys(patch).filter((k) => patch[k] !== undefined)
           if (!keys.length) return before
@@ -697,6 +673,72 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
     return res.json({ ok: true, updated: updated.length })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'bulk_patch_failed' })
+  }
+})
+
+const bulkIdsSchema = z.object({ ids: z.array(z.string().min(1)).min(1) }).strict()
+
+router.post('/tasks/bulk-lock-auto-sync', requirePerm('cleaning.schedule.manage'), async (req, res) => {
+  const parsed = bulkIdsSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)))
+  if (!ids.length) return res.status(400).json({ message: 'ids required' })
+  try {
+    if (hasPg && pgPool) {
+      const r = await pgPool.query(
+        'UPDATE cleaning_tasks SET auto_sync_enabled=false, updated_at=now() WHERE id = ANY($1::text[]) RETURNING id',
+        [ids]
+      )
+      return res.json({ ok: true, updated: r?.rowCount || 0 })
+    }
+    let cnt = 0
+    for (const id of ids) {
+      const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
+      if (!task) continue
+      task.auto_sync_enabled = false
+      cnt++
+    }
+    return res.json({ ok: true, updated: cnt })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'bulk_lock_failed' })
+  }
+})
+
+router.post('/tasks/bulk-restore-auto-sync', requirePerm('cleaning.schedule.manage'), async (req, res) => {
+  const parsed = bulkIdsSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)))
+  if (!ids.length) return res.status(400).json({ message: 'ids required' })
+  try {
+    if (hasPg && pgPool) {
+      const r = await pgPool.query(
+        'UPDATE cleaning_tasks SET auto_sync_enabled=true, updated_at=now() WHERE id = ANY($1::text[]) RETURNING id, order_id',
+        [ids]
+      )
+      const orderIds = Array.from(new Set((r?.rows || []).map((x: any) => String(x?.order_id || '')).filter(Boolean)))
+      if (orderIds.length) {
+        try {
+          const { pgRunInTransaction } = require('../dbAdapter')
+          const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
+          for (const orderId of orderIds) {
+            await pgRunInTransaction(async (client: any) => {
+              await enqueueCleaningSyncJobTx(client, { order_id: orderId, action: 'updated', payload_snapshot: { id: orderId } })
+            })
+          }
+        } catch {}
+      }
+      return res.json({ ok: true, updated: r?.rowCount || 0 })
+    }
+    let cnt = 0
+    for (const id of ids) {
+      const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
+      if (!task) continue
+      task.auto_sync_enabled = true
+      cnt++
+    }
+    return res.json({ ok: true, updated: cnt })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'bulk_restore_failed' })
   }
 })
 

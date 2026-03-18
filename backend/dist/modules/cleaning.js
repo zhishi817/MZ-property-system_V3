@@ -355,7 +355,7 @@ async function isValidStaffId(id, kind) {
     return !!found;
 }
 exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j;
     const { id } = req.params;
     const parsed = patchTaskSchema.safeParse(req.body || {});
     if (!parsed.success)
@@ -370,12 +370,6 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             const before = ((_c = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _c === void 0 ? void 0 : _c[0]) || null;
             if (!before)
                 return res.status(404).json({ message: 'task not found' });
-            const nextCleaner = parsed.data.cleaner_id !== undefined
-                ? ((_d = parsed.data.cleaner_id) !== null && _d !== void 0 ? _d : null)
-                : (parsed.data.assignee_id !== undefined ? ((_e = parsed.data.assignee_id) !== null && _e !== void 0 ? _e : null) : ((_g = (_f = before.cleaner_id) !== null && _f !== void 0 ? _f : before.assignee_id) !== null && _g !== void 0 ? _g : null));
-            const keyChanged = (parsed.data.task_date != null && String(parsed.data.task_date) !== String(before.task_date || before.date || '')) ||
-                (nextCleaner !== undefined && String(nextCleaner !== null && nextCleaner !== void 0 ? nextCleaner : '') !== String((_j = (_h = before.cleaner_id) !== null && _h !== void 0 ? _h : before.assignee_id) !== null && _j !== void 0 ? _j : '')) ||
-                (parsed.data.scheduled_at !== undefined && String((_k = parsed.data.scheduled_at) !== null && _k !== void 0 ? _k : '') !== String((_l = before.scheduled_at) !== null && _l !== void 0 ? _l : ''));
             const patch = { ...parsed.data };
             if (patch.cleaner_id !== undefined && patch.assignee_id === undefined)
                 patch.assignee_id = patch.cleaner_id;
@@ -390,20 +384,18 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                 const incomingStatusEligible = incomingStatus === undefined || String(incomingStatus) === 'pending' || String(incomingStatus) === 'assigned';
                 const touchingAssignees = parsed.data.cleaner_id !== undefined || parsed.data.inspector_id !== undefined || parsed.data.assignee_id !== undefined;
                 if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
-                    const nextCleanerId = patch.cleaner_id !== undefined ? ((_m = patch.cleaner_id) !== null && _m !== void 0 ? _m : null) : ((_p = (_o = before.cleaner_id) !== null && _o !== void 0 ? _o : before.assignee_id) !== null && _p !== void 0 ? _p : null);
-                    const nextInspectorId = parsed.data.inspector_id !== undefined ? ((_q = parsed.data.inspector_id) !== null && _q !== void 0 ? _q : null) : ((_r = before.inspector_id) !== null && _r !== void 0 ? _r : null);
+                    const nextCleanerId = patch.cleaner_id !== undefined ? ((_d = patch.cleaner_id) !== null && _d !== void 0 ? _d : null) : ((_f = (_e = before.cleaner_id) !== null && _e !== void 0 ? _e : before.assignee_id) !== null && _f !== void 0 ? _f : null);
+                    const nextInspectorId = parsed.data.inspector_id !== undefined ? ((_g = parsed.data.inspector_id) !== null && _g !== void 0 ? _g : null) : ((_h = before.inspector_id) !== null && _h !== void 0 ? _h : null);
                     patch.status = nextCleanerId && nextInspectorId ? 'assigned' : 'pending';
                 }
             }
-            if (keyChanged)
-                patch.auto_sync_enabled = false;
             patch.updated_at = new Date().toISOString();
             const keys = Object.keys(patch).filter((k) => patch[k] !== undefined);
             const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
             const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
             const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`;
             const r1 = await dbAdapter_1.pgPool.query(sql, [...values, String(id)]);
-            return res.json(((_s = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _s === void 0 ? void 0 : _s[0]) || before);
+            return res.json(((_j = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _j === void 0 ? void 0 : _j[0]) || before);
         }
         const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
         if (!task)
@@ -441,14 +433,6 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             task.scheduled_at = parsed.data.scheduled_at;
         if (parsed.data.note !== undefined)
             task.note = parsed.data.note;
-        const nextCleanerMem = parsed.data.cleaner_id !== undefined
-            ? ((_t = parsed.data.cleaner_id) !== null && _t !== void 0 ? _t : null)
-            : (parsed.data.assignee_id !== undefined ? ((_u = parsed.data.assignee_id) !== null && _u !== void 0 ? _u : null) : (_w = (_v = before.cleaner_id) !== null && _v !== void 0 ? _v : before.assignee_id) !== null && _w !== void 0 ? _w : null);
-        const keyChanged = (parsed.data.task_date != null && String(parsed.data.task_date) !== String(before.task_date || before.date || '')) ||
-            (nextCleanerMem !== undefined && String(nextCleanerMem !== null && nextCleanerMem !== void 0 ? nextCleanerMem : '') !== String((_y = (_x = before.cleaner_id) !== null && _x !== void 0 ? _x : before.assignee_id) !== null && _y !== void 0 ? _y : '')) ||
-            (parsed.data.scheduled_at !== undefined && String((_z = parsed.data.scheduled_at) !== null && _z !== void 0 ? _z : '') !== String((_0 = before.scheduled_at) !== null && _0 !== void 0 ? _0 : ''));
-        if (keyChanged)
-            task.auto_sync_enabled = false;
         {
             const beforeStatus = String(before.status || 'pending');
             const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned';
@@ -541,7 +525,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
             checkin_time: (_o = parsed.data.checkin_time) !== null && _o !== void 0 ? _o : null,
             nights_override: (_p = parsed.data.nights_override) !== null && _p !== void 0 ? _p : null,
             note: (_q = parsed.data.note) !== null && _q !== void 0 ? _q : null,
-            auto_sync_enabled: false,
+            auto_sync_enabled: true,
             source: 'manual',
         };
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
@@ -690,7 +674,7 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
         const updated = [];
         for (const id of ids) {
             const r = await (async () => {
-                var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m;
+                var _a, _b, _c, _d, _e, _f, _g;
                 if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
                     const r0 = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id]);
                     const before = ((_a = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
@@ -711,11 +695,6 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                             patch.status = nextCleanerId && nextInspectorId ? 'assigned' : 'pending';
                         }
                     }
-                    const keyChanged = (patch.task_date != null && String(patch.task_date) !== String(before.task_date || before.date || '')) ||
-                        (patch.cleaner_id !== undefined && String((_g = patch.cleaner_id) !== null && _g !== void 0 ? _g : '') !== String((_j = (_h = before.cleaner_id) !== null && _h !== void 0 ? _h : before.assignee_id) !== null && _j !== void 0 ? _j : '')) ||
-                        (patch.scheduled_at !== undefined && String((_k = patch.scheduled_at) !== null && _k !== void 0 ? _k : '') !== String((_l = before.scheduled_at) !== null && _l !== void 0 ? _l : ''));
-                    if (keyChanged)
-                        patch.auto_sync_enabled = false;
                     patch.updated_at = new Date().toISOString();
                     const keys = Object.keys(patch).filter((k) => patch[k] !== undefined);
                     if (!keys.length)
@@ -724,7 +703,7 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
                     const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`;
                     const r1 = await dbAdapter_1.pgPool.query(sql, [...values, id]);
-                    return ((_m = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _m === void 0 ? void 0 : _m[0]) || before;
+                    return ((_g = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _g === void 0 ? void 0 : _g[0]) || before;
                 }
                 const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
                 if (!task)
@@ -768,6 +747,72 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'bulk_patch_failed' });
+    }
+});
+const bulkIdsSchema = zod_1.z.object({ ids: zod_1.z.array(zod_1.z.string().min(1)).min(1) }).strict();
+exports.router.post('/tasks/bulk-lock-auto-sync', (0, auth_1.requirePerm)('cleaning.schedule.manage'), async (req, res) => {
+    const parsed = bulkIdsSchema.safeParse(req.body || {});
+    if (!parsed.success)
+        return res.status(400).json(parsed.error.format());
+    const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)));
+    if (!ids.length)
+        return res.status(400).json({ message: 'ids required' });
+    try {
+        if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
+            const r = await dbAdapter_1.pgPool.query('UPDATE cleaning_tasks SET auto_sync_enabled=false, updated_at=now() WHERE id = ANY($1::text[]) RETURNING id', [ids]);
+            return res.json({ ok: true, updated: (r === null || r === void 0 ? void 0 : r.rowCount) || 0 });
+        }
+        let cnt = 0;
+        for (const id of ids) {
+            const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
+            if (!task)
+                continue;
+            task.auto_sync_enabled = false;
+            cnt++;
+        }
+        return res.json({ ok: true, updated: cnt });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'bulk_lock_failed' });
+    }
+});
+exports.router.post('/tasks/bulk-restore-auto-sync', (0, auth_1.requirePerm)('cleaning.schedule.manage'), async (req, res) => {
+    const parsed = bulkIdsSchema.safeParse(req.body || {});
+    if (!parsed.success)
+        return res.status(400).json(parsed.error.format());
+    const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)));
+    if (!ids.length)
+        return res.status(400).json({ message: 'ids required' });
+    try {
+        if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
+            const r = await dbAdapter_1.pgPool.query('UPDATE cleaning_tasks SET auto_sync_enabled=true, updated_at=now() WHERE id = ANY($1::text[]) RETURNING id, order_id', [ids]);
+            const orderIds = Array.from(new Set(((r === null || r === void 0 ? void 0 : r.rows) || []).map((x) => String((x === null || x === void 0 ? void 0 : x.order_id) || '')).filter(Boolean)));
+            if (orderIds.length) {
+                try {
+                    const { pgRunInTransaction } = require('../dbAdapter');
+                    const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs');
+                    for (const orderId of orderIds) {
+                        await pgRunInTransaction(async (client) => {
+                            await enqueueCleaningSyncJobTx(client, { order_id: orderId, action: 'updated', payload_snapshot: { id: orderId } });
+                        });
+                    }
+                }
+                catch (_a) { }
+            }
+            return res.json({ ok: true, updated: (r === null || r === void 0 ? void 0 : r.rowCount) || 0 });
+        }
+        let cnt = 0;
+        for (const id of ids) {
+            const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
+            if (!task)
+                continue;
+            task.auto_sync_enabled = true;
+            cnt++;
+        }
+        return res.json({ ok: true, updated: cnt });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'bulk_restore_failed' });
     }
 });
 exports.router.post('/tasks/:id/restore-auto-sync', (0, auth_1.requirePerm)('cleaning.schedule.manage'), async (req, res) => {

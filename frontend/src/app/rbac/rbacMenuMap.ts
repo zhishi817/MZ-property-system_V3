@@ -166,7 +166,7 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
     },
   },
   'menu.cleaning': {
-    label: '清洁安排',
+    label: '线下事务',
     perms: [
       'cleaning.view',
       'cleaning.schedule.manage',

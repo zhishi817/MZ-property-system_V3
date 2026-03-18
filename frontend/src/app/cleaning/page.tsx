@@ -1,12 +1,11 @@
 "use client"
 
 import { Alert, Button, Checkbox, DatePicker, Empty, Input, InputNumber, Modal, Segmented, Select, Skeleton, Space, message } from 'antd'
-import { DeleteOutlined, EditOutlined, LeftOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { API_BASE, getJSON, patchJSON, postJSON } from '../../lib/api'
 import { cleaningColorKind } from '../../lib/cleaningColor'
-import { isTaskLocked } from '../../lib/cleaningTaskUi'
 import styles from './cleaningSchedule.module.scss'
 
 type Staff = { id: string; name: string; capacity_per_day: number; kind?: 'cleaner' | 'inspector'; is_active?: boolean; color_hex?: string | null }
@@ -97,7 +96,6 @@ type BulkEditForm = {
 }
 
 type ManualCreateForm = {
-  task_date: Dayjs
   area: string | null
   property_id: string | null
   create_mode: 'checkout' | 'checkin' | 'turnover' | 'stayover'
@@ -717,14 +715,6 @@ export default function CleaningPage() {
     loadRangeItems().catch(() => {})
   }, [loadRangeItems])
 
-  const restoreAutoSync = useCallback(async (it: CalendarItem) => {
-    if (it.source !== 'cleaning_tasks') return
-    const ids = entityIds(it)
-    await Promise.all(ids.map((id) => postJSON(`/cleaning/tasks/${encodeURIComponent(id)}/restore-auto-sync`, {})))
-    message.success('已恢复自动同步')
-    loadRangeItems().catch(() => {})
-  }, [entityIds, loadRangeItems])
-
   const submitBackfill = useCallback(async () => {
     const from = backfillFrom.format('YYYY-MM-DD')
     const to = backfillTo.format('YYYY-MM-DD')
@@ -864,7 +854,6 @@ export default function CleaningPage() {
 
   const openManualCreate = useCallback(() => {
     setManualCreateForm({
-      task_date: dayjs(selectedDateStr),
       area: null,
       property_id: null,
       create_mode: 'turnover',
@@ -876,7 +865,7 @@ export default function CleaningPage() {
       note: '',
     })
     setManualCreateOpen(true)
-  }, [selectedDateStr])
+  }, [])
 
   const submitManualCreate = useCallback(async () => {
     if (!manualCreateForm) return
@@ -884,32 +873,28 @@ export default function CleaningPage() {
       message.warning('请选择房号')
       return
     }
+    const isStayover = manualCreateForm.create_mode === 'stayover'
     const body: any = {
       create_mode: manualCreateForm.create_mode,
-      task_date: dayjs(manualCreateForm.task_date).format('YYYY-MM-DD'),
+      task_date: selectedDateStr,
       property_id: String(manualCreateForm.property_id),
-      old_code: manualCreateForm.checkout_password.trim() ? manualCreateForm.checkout_password.trim() : null,
-      new_code: manualCreateForm.checkin_password.trim() ? manualCreateForm.checkin_password.trim() : null,
+      old_code: isStayover ? null : (manualCreateForm.checkout_password.trim() ? manualCreateForm.checkout_password.trim() : null),
+      new_code: isStayover ? null : (manualCreateForm.checkin_password.trim() ? manualCreateForm.checkin_password.trim() : null),
       nights_override: manualCreateForm.nights_override != null ? Number(manualCreateForm.nights_override) : null,
       checkout_time: manualCreateForm.checkout_time ? String(manualCreateForm.checkout_time) : null,
-      checkin_time: manualCreateForm.checkin_time ? String(manualCreateForm.checkin_time) : null,
+      checkin_time: isStayover ? null : (manualCreateForm.checkin_time ? String(manualCreateForm.checkin_time) : null),
       note: manualCreateForm.note.trim() ? manualCreateForm.note.trim() : null,
     }
     await postJSON('/cleaning/tasks', body)
+    message.success('已新增清洁任务')
     setManualCreateOpen(false)
     setManualCreateForm(null)
-    message.success('已新增清洁任务')
     loadRangeItems().catch(() => {})
-  }, [loadRangeItems, manualCreateForm])
+  }, [loadRangeItems, manualCreateForm, selectedDateStr])
 
   const updateTaskQuick = useCallback(async (ids: string[], patch: any) => {
     const normIds = Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
     const idSet = new Set(normIds)
-    const keyChanged =
-      patch.task_date !== undefined ||
-      patch.cleaner_id !== undefined ||
-      patch.assignee_id !== undefined ||
-      patch.scheduled_at !== undefined
 
     setItems((prev) => prev.map((it) => {
       if (it.source !== 'cleaning_tasks') return it
@@ -934,7 +919,6 @@ export default function CleaningPage() {
         const inspector = String(next.inspector_id || '').trim()
         next.status = cleaner && inspector ? 'assigned' : 'pending'
       }
-      if (keyChanged) next.auto_sync_enabled = false
       return next
     }))
 
@@ -1046,14 +1030,14 @@ export default function CleaningPage() {
             <Button className={styles.secondaryBtn} icon={<ReloadOutlined />} onClick={() => loadRangeItems().catch(() => {})} loading={loading}>
               刷新
             </Button>
+            <Button className={styles.primaryBtn} icon={<PlusOutlined />} onClick={openManualCreate}>
+              新增清洁任务
+            </Button>
             <Button className={styles.primaryBtn} onClick={() => setBackfillOpen(true)}>
               Backfill
             </Button>
             <Button className={styles.secondaryBtn} onClick={() => openDebug().catch(() => {})} loading={debugLoading}>
               调试
-            </Button>
-            <Button className={styles.secondaryBtn} onClick={openManualCreate} disabled={bulkMode}>
-              新增清洁
             </Button>
           </div>
         </div>
@@ -1210,12 +1194,12 @@ export default function CleaningPage() {
           </div>
 
           <div className={styles.missionList}>
-            {loading ? (
-              <>
-                <div className={styles.missionCard}><Skeleton active paragraph={{ rows: 2 }} /></div>
-                <div className={styles.missionCard}><Skeleton active paragraph={{ rows: 2 }} /></div>
-              </>
-            ) : selectedList.length ? selectedList.map((it) => {
+              {loading ? (
+                <>
+                  <div className={styles.missionCard}><Skeleton active paragraph={{ rows: 2 }} /></div>
+                  <div className={styles.missionCard}><Skeleton active paragraph={{ rows: 2 }} /></div>
+                </>
+              ) : selectedList.length ? selectedList.map((it) => {
               const kind = itemKind(it)
               const room = propertyLabelForItem(it) || '-'
               const sum = summaryText(it)
@@ -1296,7 +1280,7 @@ export default function CleaningPage() {
                             allowClear
                             showSearch
                             optionFilterProp="label"
-                            disabled={bulkMode}
+                            disabled={bulkMode || it.auto_sync_enabled === false}
                             value={(it.cleaner_id || it.assignee_id) || undefined}
                             options={cleanerOptions}
                             onChange={(v) => updateTaskQuick(ids, { cleaner_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
@@ -1310,7 +1294,7 @@ export default function CleaningPage() {
                             allowClear
                             showSearch
                             optionFilterProp="label"
-                            disabled={bulkMode}
+                            disabled={bulkMode || it.auto_sync_enabled === false}
                             value={it.inspector_id || undefined}
                             options={inspectorOptions}
                             onChange={(v) => updateTaskQuick(ids, { inspector_id: v ? String(v) : null }).catch((e) => message.error(e?.message || '更新失败'))}
@@ -1321,7 +1305,7 @@ export default function CleaningPage() {
                           <div className={styles.assigneeLabel}>状态</div>
                           <Select
                             className={styles.assigneeSelect}
-                            disabled={bulkMode}
+                            disabled={bulkMode || it.auto_sync_enabled === false}
                             value={String(it.status || 'pending')}
                             options={statusOptions}
                             onChange={(v) => updateTaskQuick(ids, { status: v }).catch((e) => message.error(e?.message || '更新失败'))}
@@ -1337,9 +1321,9 @@ export default function CleaningPage() {
                 <Empty description="当日无任务" />
               </div>
             )}
+            </div>
           </div>
         </div>
-      </div>
 
       <Modal
         open={editOpen}
@@ -1551,23 +1535,16 @@ export default function CleaningPage() {
 
       <Modal
         open={manualCreateOpen}
-        title="手动新增清洁任务"
+        title="新增清洁任务"
         okText="创建"
         onOk={() => submitManualCreate().catch((e) => message.error(e?.message || '创建失败'))}
-        onCancel={() => {
-          setManualCreateOpen(false)
-          setManualCreateForm(null)
-        }}
+        onCancel={() => { setManualCreateOpen(false); setManualCreateForm(null) }}
       >
         {manualCreateForm ? (
           <Space direction="vertical" style={{ width: '100%' }}>
             <div>
               <div className={styles.fieldLabel}>日期</div>
-              <DatePicker
-                value={manualCreateForm.task_date}
-                onChange={(v) => v && setManualCreateForm((p) => (p ? { ...p, task_date: v } : p))}
-                style={{ width: '100%' }}
-              />
+              <DatePicker value={dayjs(selectedDateStr)} disabled style={{ width: '100%' }} />
             </div>
             <div>
               <div className={styles.fieldLabel}>区域（area）</div>
@@ -1606,7 +1583,6 @@ export default function CleaningPage() {
                 ]}
               />
             </div>
-
             {manualCreateForm.create_mode === 'checkout' || manualCreateForm.create_mode === 'turnover' ? (
               <div>
                 <div className={styles.fieldLabel}>退房时间</div>
@@ -1618,48 +1594,39 @@ export default function CleaningPage() {
                 />
               </div>
             ) : null}
-
-            {manualCreateForm.create_mode === 'checkin' || manualCreateForm.create_mode === 'turnover' || manualCreateForm.create_mode === 'stayover' ? (
+            {manualCreateForm.create_mode === 'checkin' || manualCreateForm.create_mode === 'turnover' ? (
+              <div>
+                <div className={styles.fieldLabel}>入住时间</div>
+                <Select
+                  value={manualCreateForm.checkin_time}
+                  onChange={(v) => setManualCreateForm((p) => (p ? { ...p, checkin_time: String(v) } : p))}
+                  style={{ width: '100%' }}
+                  options={timeOptions}
+                />
+              </div>
+            ) : null}
+            {manualCreateForm.create_mode !== 'stayover' ? (
               <>
                 <div>
-                  <div className={styles.fieldLabel}>入住时间</div>
-                  <Select
-                    value={manualCreateForm.checkin_time}
-                    onChange={(v) => setManualCreateForm((p) => (p ? { ...p, checkin_time: String(v) } : p))}
+                  <div className={styles.fieldLabel}>退房密码</div>
+                  <Input
+                    value={manualCreateForm.checkout_password}
+                    onChange={(e) => setManualCreateForm((p) => (p ? { ...p, checkout_password: e.target.value } : p))}
                     style={{ width: '100%' }}
-                    options={timeOptions}
+                    placeholder="可为空"
                   />
                 </div>
                 <div>
-                  <div className={styles.fieldLabel}>入住天数</div>
-                  <InputNumber
-                    value={manualCreateForm.nights_override == null ? null : manualCreateForm.nights_override}
-                    onChange={(v) => setManualCreateForm((p) => (p ? { ...p, nights_override: v == null ? null : Number(v) } : p))}
-                    min={0}
+                  <div className={styles.fieldLabel}>入住密码</div>
+                  <Input
+                    value={manualCreateForm.checkin_password}
+                    onChange={(e) => setManualCreateForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))}
                     style={{ width: '100%' }}
+                    placeholder="可为空"
                   />
                 </div>
               </>
             ) : null}
-
-            <div>
-              <div className={styles.fieldLabel}>退房密码</div>
-              <Input
-                value={manualCreateForm.checkout_password}
-                onChange={(e) => setManualCreateForm((p) => (p ? { ...p, checkout_password: e.target.value } : p))}
-                style={{ width: '100%' }}
-                placeholder="可为空"
-              />
-            </div>
-            <div>
-              <div className={styles.fieldLabel}>入住密码</div>
-              <Input
-                value={manualCreateForm.checkin_password}
-                onChange={(e) => setManualCreateForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))}
-                style={{ width: '100%' }}
-                placeholder="可为空"
-              />
-            </div>
             <div>
               <div className={styles.fieldLabel}>备注</div>
               <Input.TextArea
