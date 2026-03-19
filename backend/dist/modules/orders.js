@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.router = void 0;
+exports.__test = exports.router = void 0;
 const express_1 = require("express");
 const store_1 = require("../store");
 const events_1 = require("./events");
@@ -12,18 +12,25 @@ exports.router = (0, express_1.Router)();
 function dayOnly(s) {
     if (!s)
         return undefined;
-    try {
-        const d = new Date(s);
-        if (!isNaN(d.getTime())) {
-            const yyyy = d.getFullYear();
-            const mm = String(d.getMonth() + 1).padStart(2, '0');
-            const dd = String(d.getDate()).padStart(2, '0');
-            return `${yyyy}-${mm}-${dd}`;
-        }
-    }
-    catch (_a) { }
-    const m = /^\d{4}-\d{2}-\d{2}/.exec(String(s));
+    if (s instanceof Date && isFinite(s.getTime()))
+        return s.toISOString().slice(0, 10);
+    const raw = String(s).trim();
+    if (!raw)
+        return undefined;
+    const m = /^\d{4}-\d{2}-\d{2}/.exec(raw);
     return m ? m[0] : undefined;
+}
+function isInactiveOrderStatus(v) {
+    const s = String(v || '').trim().toLowerCase();
+    if (!s)
+        return false;
+    if (s.includes('cancel'))
+        return true;
+    if (s.includes('void'))
+        return true;
+    if (s.includes('invalid'))
+        return true;
+    return false;
 }
 function normalizePropertyId(raw) {
     const s = String(raw || '').trim();
@@ -73,6 +80,8 @@ async function findSimilarOrders(candidate) {
                     candidate.__dup_id = sameCode[0].id;
             }
             const sameContent = rows.filter(r => {
+                if (isInactiveOrderStatus(r.status))
+                    return false;
                 const rPid = String(r.property_id || '');
                 const rGn = String(r.guest_name || '').trim().toLowerCase();
                 const rGp = String(r.guest_phone || '').trim();
@@ -92,6 +101,8 @@ async function findSimilarOrders(candidate) {
                 similar.push(...sameContent.filter(x => !similar.find(y => y.id === x.id)));
             }
             const near = rows.filter(r => {
+                if (isInactiveOrderStatus(r.status))
+                    return false;
                 const rCi = String(r.checkin || '').slice(0, 10);
                 const rCo = String(r.checkout || '').slice(0, 10);
                 const sameRange = !!ci && !!co && rCi === ci && rCo === co;
@@ -119,6 +130,8 @@ async function findSimilarOrders(candidate) {
             candidate.__dup_id = sameCode[0].id;
     }
     const sameContent = localRows.filter(r => {
+        if (isInactiveOrderStatus(r.status))
+            return false;
         const rPid = String(r.property_id || '');
         const rGn = String(r.guest_name || '').trim().toLowerCase();
         const rGp = String(r.guest_phone || '').trim();
@@ -138,6 +151,8 @@ async function findSimilarOrders(candidate) {
         similar.push(...sameContent.filter(x => !similar.find(y => y.id === x.id)));
     }
     const near = localRows.filter(r => {
+        if (isInactiveOrderStatus(r.status))
+            return false;
         const rCi = String(r.checkin || '').slice(0, 10);
         const rCo = String(r.checkout || '').slice(0, 10);
         const sameRange = !!ci && !!co && rCi === ci && rCo === co;
@@ -441,20 +456,27 @@ function parseAirbnbDate(value) {
     return `${yyyy}-${m[1]}-${m[2]}`;
 }
 function rangesOverlap(aStart, aEnd, bStart, bEnd) {
-    const ds = (s) => (s ? String(s).slice(0, 10) : '');
+    const ds = (s) => {
+        const m = /^\d{4}-\d{2}-\d{2}/.exec(String(s || '').trim());
+        return m ? m[0] : '';
+    };
     const as = ds(aStart);
     const ae = ds(aEnd);
     const bs = ds(bStart);
     const be = ds(bEnd);
     if (!as || !ae || !bs || !be)
         return false;
-    const asDay = new Date(`${as}T00:00:00`);
-    const aeDay = new Date(`${ae}T00:00:00`);
-    const bsDay = new Date(`${bs}T00:00:00`);
-    const beDay = new Date(`${be}T00:00:00`);
+    const n = (d) => Number(d.replace(/-/g, ''));
+    const asN = n(as);
+    const aeN = n(ae);
+    const bsN = n(bs);
+    const beN = n(be);
+    if (!isFinite(asN) || !isFinite(aeN) || !isFinite(bsN) || !isFinite(beN))
+        return false;
     // day-level exclusive end: [checkin, checkout)
-    return asDay < beDay && bsDay < aeDay;
+    return asN < beN && bsN < aeN;
 }
+exports.__test = { dayOnly, rangesOverlap, isInactiveOrderStatus };
 function toIsoString(v) {
     if (!v)
         return '';
@@ -514,6 +536,8 @@ async function hasOrderOverlap(propertyId, checkin, checkout, excludeId) {
     const localHit = store_1.db.orders.some(o => {
         if (o.property_id !== propertyId || o.id === excludeId)
             return false;
+        if (isInactiveOrderStatus(o.status))
+            return false;
         const oCiDay = String(o.checkin || '').slice(0, 10);
         const oCoDay = String(o.checkout || '').slice(0, 10);
         if (oCoDay === ciDay || coDay === oCiDay)
@@ -527,6 +551,8 @@ async function hasOrderOverlap(propertyId, checkin, checkout, excludeId) {
             const rows = (await (0, dbAdapter_1.pgSelect)('orders', '*', { property_id: propertyId })) || [];
             const remoteHit = rows.some((o) => {
                 if (o.id === excludeId)
+                    return false;
+                if (isInactiveOrderStatus(o.status))
                     return false;
                 const oCiDay = String(o.checkin || '').slice(0, 10);
                 const oCoDay = String(o.checkout || '').slice(0, 10);

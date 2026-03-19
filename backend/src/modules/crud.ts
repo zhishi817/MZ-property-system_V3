@@ -475,6 +475,139 @@ async function ensurePropertyMaintenanceSchema() {
   return propertyMaintenanceSchemaEnsuring
 }
 
+let workTasksSchemaEnsured = false
+let workTasksSchemaEnsuring: Promise<void> | null = null
+
+async function ensureWorkTasksSchema() {
+  if (!hasPg) return
+  if (workTasksSchemaEnsured) return
+  if (workTasksSchemaEnsuring) return workTasksSchemaEnsuring
+  workTasksSchemaEnsuring = (async () => {
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS work_tasks (
+      id text PRIMARY KEY,
+      task_kind text NOT NULL,
+      source_type text NOT NULL,
+      source_id text NOT NULL,
+      property_id text,
+      title text NOT NULL DEFAULT '',
+      summary text,
+      scheduled_date date,
+      start_time text,
+      end_time text,
+      assignee_id text,
+      status text NOT NULL DEFAULT 'todo',
+      urgency text NOT NULL DEFAULT 'medium',
+      created_by text,
+      updated_by text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );`)
+    try { await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`) } catch {}
+    try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`) } catch {}
+    try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`) } catch {}
+    try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day ON work_tasks(scheduled_date);`) } catch {}
+    workTasksSchemaEnsured = true
+  })().catch((e: any) => {
+    workTasksSchemaEnsuring = null
+    throw e
+  })
+  return workTasksSchemaEnsuring
+}
+
+function normWorkTaskStatus(v: any): string {
+  const s = String(v || '').trim().toLowerCase()
+  if (s === 'completed' || s === 'done') return 'done'
+  if (s === 'cancelled' || s === 'canceled') return 'cancelled'
+  if (s === 'in_progress') return 'in_progress'
+  if (s === 'assigned') return 'assigned'
+  if (s === 'pending' || s === 'todo') return 'todo'
+  return s || 'todo'
+}
+
+function normWorkTaskUrgency(v: any): string {
+  const s = String(v || '').trim().toLowerCase()
+  if (s === 'low' || s === 'medium' || s === 'high' || s === 'urgent') return s
+  return 'medium'
+}
+
+async function upsertWorkTaskFromMaintenanceRow(row: any) {
+  if (!hasPg) return
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool) return
+  await ensureWorkTasksSchema()
+  const id = String(row?.id || '').trim()
+  if (!id) return
+  const srcType = 'property_maintenance'
+  const srcId = id
+  const workId = `${srcType}:${srcId}`
+  const scheduled = row?.eta ? String(row.eta).slice(0, 10) : null
+  const title = String(row?.work_no || row?.id || '').trim()
+  const summary = String(row?.details || '').trim() || null
+  const status = normWorkTaskStatus(row?.status)
+  if (status === 'done' || status === 'cancelled') {
+    await pgPool.query(`DELETE FROM work_tasks WHERE source_type=$1 AND source_id=$2`, [srcType, srcId])
+    return
+  }
+  const urgency = normWorkTaskUrgency(row?.urgency)
+  const assignee = String(row?.assignee_id || '').trim() || null
+  const propertyId = String(row?.property_id || '').trim() || null
+  await pgPool.query(
+    `INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, urgency, created_at, updated_at)
+     VALUES($1,'maintenance',$2,$3,$4,$5,$6,$7::date,$8,$9,$10,COALESCE($11::timestamptz, now()), now())
+     ON CONFLICT (source_type, source_id) DO UPDATE SET
+       task_kind=EXCLUDED.task_kind,
+       property_id=EXCLUDED.property_id,
+       title=EXCLUDED.title,
+       summary=EXCLUDED.summary,
+       scheduled_date=EXCLUDED.scheduled_date,
+       assignee_id=EXCLUDED.assignee_id,
+       status=EXCLUDED.status,
+       urgency=EXCLUDED.urgency,
+       updated_at=now()`,
+    [workId, srcType, srcId, propertyId, title, summary, scheduled, assignee, status, urgency, row?.created_at || null]
+  )
+}
+
+async function upsertWorkTaskFromDeepCleaningRow(row: any) {
+  if (!hasPg) return
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool) return
+  await ensureWorkTasksSchema()
+  const id = String(row?.id || '').trim()
+  if (!id) return
+  const srcType = 'property_deep_cleaning'
+  const srcId = id
+  const workId = `${srcType}:${srcId}`
+  const scheduled = row?.eta ? String(row.eta).slice(0, 10) : null
+  const title = String(row?.work_no || row?.id || '').trim()
+  const summary = String(row?.project_desc || row?.details || '').trim() || null
+  const status = normWorkTaskStatus(row?.status)
+  if (status === 'done' || status === 'cancelled') {
+    await pgPool.query(`DELETE FROM work_tasks WHERE source_type=$1 AND source_id=$2`, [srcType, srcId])
+    return
+  }
+  const urgency = normWorkTaskUrgency(row?.urgency)
+  const assignee = String(row?.assignee_id || '').trim() || null
+  const propertyId = String(row?.property_id || '').trim() || null
+  await pgPool.query(
+    `INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, urgency, created_at, updated_at)
+     VALUES($1,'deep_cleaning',$2,$3,$4,$5,$6,$7::date,$8,$9,$10,COALESCE($11::timestamptz, now()), now())
+     ON CONFLICT (source_type, source_id) DO UPDATE SET
+       task_kind=EXCLUDED.task_kind,
+       property_id=EXCLUDED.property_id,
+       title=EXCLUDED.title,
+       summary=EXCLUDED.summary,
+       scheduled_date=EXCLUDED.scheduled_date,
+       assignee_id=EXCLUDED.assignee_id,
+       status=EXCLUDED.status,
+       urgency=EXCLUDED.urgency,
+       updated_at=now()`,
+    [workId, srcType, srcId, propertyId, title, summary, scheduled, assignee, status, urgency, row?.created_at || null]
+  )
+}
+
 async function syncAutoExpensesFromDeepCleaningRow(row: any) {
   if (!hasPg) return
   const refType = 'deep_cleaning'
@@ -1749,6 +1882,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             const r = await pgPool.query(sql, values)
             const row2 = r.rows && r.rows[0]
             addAudit(resource, String((row2 as any)?.id || ''), 'create', null, row2, (req as any).user?.sub)
+            try { await upsertWorkTaskFromDeepCleaningRow(row2) } catch {}
             return res.status(201).json(row2)
           }
 
@@ -2058,6 +2192,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               cleaned.total_cost = computeDeepCleaningTotalCost(cleaned.labor_cost, cleaned.consumables)
               row = await pgInsert(resource, cleaned)
               addAudit(resource, String((row as any)?.id || ''), 'create', null, row, (req as any).user?.sub)
+              try { await upsertWorkTaskFromDeepCleaningRow(row) } catch {}
               return res.status(201).json(row)
             }
           } catch (e2) {
@@ -2299,6 +2434,14 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
           if (!ok) res.setHeader('x-auto-expense-reason', reason || 'other')
           if (!ok && errMsg && process.env.NODE_ENV !== 'production') res.setHeader('x-auto-expense-error', errMsg.slice(0, 180))
         } catch {}
+      }
+      if (resource === 'property_maintenance') {
+        try {
+          const rows = Array.isArray(row) ? row : (row ? [row] : [])
+          for (const r of rows) await upsertWorkTaskFromMaintenanceRow(r)
+        } catch {}
+      } else if (resource === 'property_deep_cleaning') {
+        try { await upsertWorkTaskFromDeepCleaningRow(row) } catch {}
       }
       addAudit(resource, String((row as any)?.id || ''), 'create', null, row, (req as any).user?.sub)
       return res.status(201).json(row)
@@ -2602,6 +2745,9 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         } catch {}
       }
       addAudit(resource, id, 'update', null, row, (req as any).user?.sub)
+      if (resource === 'property_deep_cleaning') {
+        try { await upsertWorkTaskFromDeepCleaningRow(row) } catch {}
+      }
       if (resource === 'property_maintenance') {
         const syncOk = autoExpenseSync?.ok === true
         const syncSkipped = autoExpenseSync?.skipped === true
@@ -2617,6 +2763,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
             if (body.auto_expense_error && process.env.NODE_ENV !== 'production') res.setHeader('x-auto-expense-error', String(body.auto_expense_error).slice(0, 180))
           }
         } catch {}
+        try { await upsertWorkTaskFromMaintenanceRow(row) } catch {}
         return res.json(body)
       }
       return res.json(row || { id, ...payload })

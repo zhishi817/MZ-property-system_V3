@@ -27,6 +27,8 @@ import { router as eventsRouter } from './modules/events'
 import notificationsRouter from './modules/notifications'
 import maintenanceRouter from './modules/maintenance'
 import deepCleaningRouter from './modules/deep_cleaning'
+import { router as workTasksRouter } from './modules/work_tasks'
+import { router as taskCenterRouter } from './modules/task_center'
 import { router as propertyOnboardingRouter } from './modules/propertyOnboarding'
 import { router as propertyGuidesRouter } from './modules/property_guides'
 import { router as propertyGuideLinkSyncRouter } from './modules/property_guide_link_sync'
@@ -275,6 +277,8 @@ app.use('/events', eventsRouter)
 app.use('/notifications', notificationsRouter)
 app.use('/maintenance', maintenanceRouter)
 app.use('/deep-cleaning', deepCleaningRouter)
+app.use('/work-tasks', workTasksRouter)
+app.use('/task-center', taskCenterRouter)
 app.use('/property-guides', propertyGuidesRouter)
 app.use('/property-guide-link-sync', propertyGuideLinkSyncRouter)
 app.use('/jobs', jobsRouter)

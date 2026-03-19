@@ -33,6 +33,57 @@ async function ensureOfflineTasksTable() {
   }
 }
 
+async function ensureWorkTasksTable() {
+  if (!hasPg || !pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS work_tasks (
+    id text PRIMARY KEY,
+    task_kind text NOT NULL,
+    source_type text NOT NULL,
+    source_id text NOT NULL,
+    property_id text,
+    title text NOT NULL DEFAULT '',
+    summary text,
+    scheduled_date date,
+    start_time text,
+    end_time text,
+    assignee_id text,
+    status text NOT NULL DEFAULT 'todo',
+    urgency text NOT NULL DEFAULT 'medium',
+    created_by text,
+    updated_by text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );`)
+  try { await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`) } catch {}
+  try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`) } catch {}
+}
+
+async function upsertWorkTaskFromOfflineTask(row: any) {
+  if (!hasPg || !pgPool) return
+  const id = String(row?.id || '').trim()
+  if (!id) return
+  await ensureWorkTasksTable()
+  const workId = `cleaning_offline_tasks:${id}`
+  const scheduled = row?.date ? String(row.date).slice(0, 10) : null
+  const assignee = String(row?.assignee_id || '').trim() || null
+  const status = String(row?.status || '').trim() === 'done' ? 'done' : 'todo'
+  const urgency = String(row?.urgency || '').trim() || 'medium'
+  await pgPool.query(
+    `INSERT INTO work_tasks(id, task_kind, source_type, source_id, property_id, title, summary, scheduled_date, assignee_id, status, urgency, created_at, updated_at)
+     VALUES($1,'offline','cleaning_offline_tasks',$2,$3,$4,$5,$6::date,$7,$8,$9,COALESCE($10::timestamptz, now()), now())
+     ON CONFLICT (source_type, source_id) DO UPDATE SET
+       property_id=EXCLUDED.property_id,
+       title=EXCLUDED.title,
+       summary=EXCLUDED.summary,
+       scheduled_date=EXCLUDED.scheduled_date,
+       assignee_id=EXCLUDED.assignee_id,
+       status=EXCLUDED.status,
+       urgency=EXCLUDED.urgency,
+       updated_at=now()`,
+    [workId, id, row?.property_id || null, String(row?.title || ''), String(row?.content || '') || null, scheduled, assignee, status, urgency, row?.created_at || null]
+  )
+}
+
 router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (req, res) => {
   const kind = String((req.query as any)?.kind || '').trim().toLowerCase()
   const rolesForKind = (k: string): string[] => {
@@ -172,7 +223,9 @@ router.post('/offline-tasks', requirePerm('cleaning.schedule.manage'), async (re
         ) VALUES($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
         [row.id, row.date, row.task_type, row.title, row.content, row.kind, row.status, row.urgency, row.property_id, row.assignee_id]
       )
-      return res.status(201).json(r?.rows?.[0] || row)
+      const out = r?.rows?.[0] || row
+      try { await upsertWorkTaskFromOfflineTask(out) } catch {}
+      return res.status(201).json(out)
     }
     ;(db as any).cleaningOfflineTasks = (db as any).cleaningOfflineTasks || []
     ;(db as any).cleaningOfflineTasks.unshift(row)
@@ -203,6 +256,7 @@ router.patch('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asyn
       const r1 = await pgPool.query(sql, [...values, String(id)])
       const row = r1?.rows?.[0] || null
       if (!row) return res.status(404).json({ message: 'task not found' })
+      try { await upsertWorkTaskFromOfflineTask(row) } catch {}
       return res.json(row)
     }
     const rows = ((db as any).cleaningOfflineTasks || []) as any[]
@@ -720,11 +774,18 @@ router.post('/tasks/bulk-restore-auto-sync', requirePerm('cleaning.schedule.mana
         try {
           const { pgRunInTransaction } = require('../dbAdapter')
           const { enqueueCleaningSyncJobTx } = require('../services/cleaningSyncJobs')
-          for (const orderId of orderIds) {
-            await pgRunInTransaction(async (client: any) => {
-              await enqueueCleaningSyncJobTx(client, { order_id: orderId, action: 'updated', payload_snapshot: { id: orderId } })
-            })
-          }
+          const idsForJob = orderIds.slice()
+          setTimeout(() => {
+            ;(async () => {
+              await pgRunInTransaction(async (client: any) => {
+                for (const orderId of idsForJob) {
+                  try {
+                    await enqueueCleaningSyncJobTx(client, { order_id: orderId, action: 'updated', payload_snapshot: { id: orderId } })
+                  } catch {}
+                }
+              })
+            })().catch(() => {})
+          }, 0)
         } catch {}
       }
       return res.json({ ok: true, updated: r?.rowCount || 0 })

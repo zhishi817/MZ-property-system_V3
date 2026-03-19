@@ -741,9 +741,10 @@
   gap: 12px;
   align-content: start;
   align-items: start;
-  overflow-y: auto;
   padding-bottom: 4px;
-  height: calc(100vh - 210px);
+  overflow: visible;
+  height: auto;
+  min-height: calc(100vh - 210px);
 }
 
 .staffCol {
@@ -801,7 +802,7 @@
   padding: 12px;
   display: grid;
   gap: 10px;
-  overflow: auto;
+  overflow: visible;
 }
 
 .staffTools {
@@ -832,17 +833,17 @@
 .staffPreviewList {
   display: grid;
   gap: 10px;
-  overflow-y: auto;
   max-height: 360px;
   padding-right: 2px;
+  overflow: hidden;
 }
 
 .staffExpandedList {
   display: grid;
   gap: 10px;
-  overflow-y: auto;
-  max-height: 720px;
   padding-right: 2px;
+  max-height: none;
+  overflow: visible;
 }
 
 .dropZone {
@@ -963,6 +964,11 @@
 .taskDetail {
   color: #0f172a;
   font-weight: 900;
+}
+
+.taskDetailPlain {
+  color: #0f172a;
+  font-weight: 600;
 }
 
 .taskSubRow {

@@ -92,6 +92,7 @@ export default function OrdersPage() {
   const [dupOpen, setDupOpen] = useState(false)
   const [dupLoading, setDupLoading] = useState(false)
   const [dupResult, setDupResult] = useState<any | null>(null)
+  const [creatingOrder, setCreatingOrder] = useState(false)
   function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
   function getPropertyCodeLabel(o: Order) {
     const p = getPropertyById(o.property_id)
@@ -751,6 +752,8 @@ export default function OrdersPage() {
   }
 
   async function submitCreate() {
+    if (creatingOrder) return
+    setCreatingOrder(true)
     const v = await form.validateFields()
     const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
     const isBooking = String(v.source || '').toLowerCase().includes('book')
@@ -781,21 +784,24 @@ export default function OrdersPage() {
       currency: 'AUD',
           count_in_income: v.count_in_income != null ? !!v.count_in_income : ((v.status || '') === 'canceled' ? false : true),
     }
-    setDupLoading(true)
     try {
-      const pre = await fetch(`${API_BASE}/orders/validate-duplicate`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
-      const j = await pre.json().catch(()=>null)
-      setDupResult(j || null)
-      if (pre.ok && j?.is_duplicate) {
-        setDupOpen(true)
+      setDupLoading(true)
+      try {
+        const pre = await fetch(`${API_BASE}/orders/validate-duplicate`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+        const j = await pre.json().catch(()=>null)
+        setDupResult(j || null)
+        if (pre.ok && j?.is_duplicate) {
+          setDupOpen(true)
+          return
+        }
+      } catch {}
+      finally {
         setDupLoading(false)
-        return
       }
-    } catch {}
-    setDupLoading(false)
-    const res = await fetch(`${API_BASE}/orders/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
-    if (res.status === 201) {
-      const created = await res.json()
+
+      const res = await fetch(`${API_BASE}/orders/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+      if (res.status === 201) {
+        const created = await res.json()
       async function writeIncome(amount: number, cat: string, note: string) {
         if (!amount || amount <= 0) return
         const tx = { kind: 'income', amount: Number(amount), currency: 'AUD', occurred_at: v.checkout.format('YYYY-MM-DD'), note, category: cat, property_id: v.property_id, ref_type: 'order', ref_id: created?.id }
@@ -804,13 +810,18 @@ export default function OrdersPage() {
       await writeIncome(lateFee, 'late_checkout', 'Late checkout income')
       if ((v.status || '') === 'canceled') await writeIncome(cancelFee, 'cancel_fee', 'Cancelation fee')
       message.success('订单已创建'); setOpen(false); form.resetFields(); load()
-    }
-    else if (res.status === 200) {
-      message.error('订单已存在')
-    } else {
-      let msg = '创建失败'
-      try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} }
-      message.error(msg)
+      }
+      else if (res.status === 200) {
+        message.error('订单已存在')
+      } else {
+        let msg = '创建失败'
+        try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} }
+        message.error(msg)
+      }
+    } catch (e: any) {
+      message.error(e?.message || '保存失败')
+    } finally {
+      setCreatingOrder(false)
     }
   }
 
@@ -850,6 +861,8 @@ export default function OrdersPage() {
   }
 
   async function proceedCreateForce() {
+    if (creatingOrder) return
+    setCreatingOrder(true)
     const v = form.getFieldsValue()
     const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
     const isBooking = String(v.source || '').toLowerCase().includes('book')
@@ -882,23 +895,27 @@ export default function OrdersPage() {
       currency: 'AUD',
       force: true
     }
-    const res = await fetch(`${API_BASE}/orders/sync?force=true`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
-    if (res.status === 201 || res.status === 200) {
-      const created = await res.json().catch(()=>null)
-      message.success(res.status===201 ? '订单已创建' : '已覆盖更新重复订单')
-      setDupOpen(false); setOpen(false); form.resetFields(); load()
-      const lateFee2 = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
-      const cancelFee2 = Number(v.cancel_fee || 0)
-      async function writeIncome(amount: number, cat: string, note: string) {
-        if (!amount || amount <= 0) return
-        const tx = { kind: 'income', amount: Number(amount), currency: 'AUD', occurred_at: v.checkout.format('YYYY-MM-DD'), note, category: cat, property_id: v.property_id, ref_type: 'order', ref_id: created?.id }
-        await fetch(`${API_BASE}/finance`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(tx) }).catch(() => {})
+    try {
+      const res = await fetch(`${API_BASE}/orders/sync?force=true`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
+      if (res.status === 201 || res.status === 200) {
+        const created = await res.json().catch(()=>null)
+        message.success(res.status===201 ? '订单已创建' : '已覆盖更新重复订单')
+        setDupOpen(false); setOpen(false); form.resetFields(); load()
+        const lateFee2 = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+        const cancelFee2 = Number(v.cancel_fee || 0)
+        async function writeIncome(amount: number, cat: string, note: string) {
+          if (!amount || amount <= 0) return
+          const tx = { kind: 'income', amount: Number(amount), currency: 'AUD', occurred_at: v.checkout.format('YYYY-MM-DD'), note, category: cat, property_id: v.property_id, ref_type: 'order', ref_id: created?.id }
+          await fetch(`${API_BASE}/finance`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(tx) }).catch(() => {})
+        }
+        await writeIncome(lateFee2, 'late_checkout', 'Late checkout income')
+        if ((v.status || '') === 'canceled') await writeIncome(cancelFee2, 'cancel_fee', 'Cancelation fee')
+      } else {
+        const j = await res.json().catch(()=>({}))
+        message.error(j?.message || '覆盖创建失败')
       }
-      await writeIncome(lateFee2, 'late_checkout', 'Late checkout income')
-      if ((v.status || '') === 'canceled') await writeIncome(cancelFee2, 'cancel_fee', 'Cancelation fee')
-    } else {
-      const j = await res.json().catch(()=>({}))
-      message.error(j?.message || '覆盖创建失败')
+    } finally {
+      setCreatingOrder(false)
     }
   }
 
@@ -1487,7 +1504,17 @@ export default function OrdersPage() {
           />
         </div>
       )}
-      <Modal open={open} onCancel={() => setOpen(false)} onOk={submitCreate} title="新建订单">
+      <Modal
+        open={open}
+        onCancel={() => { if (!creatingOrder) setOpen(false) }}
+        onOk={submitCreate}
+        title="新建订单"
+        confirmLoading={creatingOrder}
+        okButtonProps={{ disabled: creatingOrder }}
+        cancelButtonProps={{ disabled: creatingOrder }}
+        maskClosable={!creatingOrder}
+        keyboard={!creatingOrder}
+      >
       <Form form={form} layout="vertical">
         <Form.Item name="confirmation_code" label="确认码" rules={[{ required: true, message: '确认码必填' }]}>
           <Input placeholder="平台订单确认码或唯一编号" />
@@ -1639,8 +1666,8 @@ export default function OrdersPage() {
             ] as any}
           />
           <Space style={{ marginTop: 12 }}>
-            {hasPerm('order.create.override') ? <Button type="primary" onClick={proceedCreateForce}>继续创建（覆盖）</Button> : <Tag color="orange">无覆盖创建权限</Tag>}
-            <Button onClick={()=> setDupOpen(false)}>返回</Button>
+            {hasPerm('order.create.override') ? <Button type="primary" loading={creatingOrder} disabled={creatingOrder} onClick={proceedCreateForce}>继续创建（覆盖）</Button> : <Tag color="orange">无覆盖创建权限</Tag>}
+            <Button disabled={creatingOrder} onClick={()=> setDupOpen(false)}>返回</Button>
           </Space>
         </>
       ) : null}
