@@ -1,5 +1,17 @@
 # Changelog
 
+## Dev (2026-03-19)
+
+- Version: `0.2.7-statement-pdf.20260316+build.6` (no bump)
+- Task Center: Introduce unified work-task view for pending Offline / Maintenance / Deep Cleaning items (no longer loads all maintenance records).
+- Task Center: Show task status chips for Maintenance/Deep Cleaning; render task content as plain text (extract `content` from JSON); make work order id non-bold.
+- Task Center: Fix staff column expand/scroll overlap and improve board scrolling behavior.
+- Task Center: Fix “unlock day” hanging loading; add request timeout and reduce backend lock/unlock latency.
+- Backend: Add `work_tasks` indexing table and APIs (`GET /task-center/day`, `POST/PATCH /work-tasks`); keep only pending maintenance/deep-cleaning in `work_tasks` and remove on done/cancel.
+- Ops: Add migration `20260319_create_work_tasks.sql` (create `work_tasks` + indexes + backfill).
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 ## Dev (2026-03-18)
 
 - Version: `0.2.7-statement-pdf.20260316+build.6` (no bump)
