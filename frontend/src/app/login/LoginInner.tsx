@@ -124,23 +124,30 @@ export default function LoginInner() {
         </Form>
       </Card>
       <Modal open={forgotOpen} onCancel={() => setForgotOpen(false)} onOk={async () => {
-        const v = await forgotForm.validateFields()
         try {
+          const v = await forgotForm.validateFields()
           const controller = new AbortController()
           const timer = setTimeout(() => { try { controller.abort() } catch {} }, 15000)
           try {
             const urls = buildAuthUrlCandidates('forgot')
-            if (!urls.length) throw new Error('missing_api_base')
+            if (!urls.length) { msg.error('后端地址未配置（NEXT_PUBLIC_API_BASE_URL）'); return }
             let last: Response | null = null
             for (const url of urls) {
               last = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: v.email }), signal: controller.signal })
               if (last.status !== 404) break
             }
-            if (!last?.ok) throw new Error('fallback')
+            if (!last?.ok) {
+              let m = `发送失败 (${last?.status || 0})`
+              try { if (last) { const j = await last.json(); if (j?.message) m = String(j.message) } } catch {}
+              msg.error(m)
+              return
+            }
           } finally { try { clearTimeout(timer) } catch {} }
-        } catch {}
-        msg.success('已发送重置密码指南到邮箱')
-        setForgotOpen(false); forgotForm.resetFields()
+          msg.success('如果该邮箱已注册，将收到重置密码链接')
+          setForgotOpen(false); forgotForm.resetFields()
+        } catch {
+          msg.error('发送失败，请稍后重试')
+        }
       }} title="找回密码">
         <Form form={forgotForm} layout="vertical">
           <Form.Item name="email" label="邮箱" rules={[{ required: true, type: 'email' }]}>

@@ -272,6 +272,78 @@ CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_password_hash text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_au text;
+CREATE INDEX IF NOT EXISTS idx_users_phone_au ON users(phone_au);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url text;
+
+-- CMS pages
+CREATE TABLE IF NOT EXISTS cms_pages (
+  id text PRIMARY KEY,
+  slug text UNIQUE,
+  title text,
+  content text,
+  status text,
+  published_at date,
+  page_type text NOT NULL DEFAULT 'generic',
+  category text,
+  pinned boolean NOT NULL DEFAULT false,
+  urgent boolean NOT NULL DEFAULT false,
+  audience_scope text,
+  expires_at date,
+  updated_at timestamptz DEFAULT now(),
+  updated_by text,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS page_type text NOT NULL DEFAULT 'generic';
+ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS category text;
+ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false;
+ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS urgent boolean NOT NULL DEFAULT false;
+ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS audience_scope text;
+ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS expires_at date;
+ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
+ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS updated_by text;
+CREATE INDEX IF NOT EXISTS idx_cms_pages_status ON cms_pages(status);
+CREATE INDEX IF NOT EXISTS idx_cms_pages_type ON cms_pages(page_type);
+CREATE INDEX IF NOT EXISTS idx_cms_pages_pinned ON cms_pages(pinned, published_at);
+CREATE INDEX IF NOT EXISTS idx_cms_pages_expires ON cms_pages(expires_at);
+
+-- Company secret items (internal secrets)
+CREATE TABLE IF NOT EXISTS company_secret_items (
+  id text PRIMARY KEY,
+  title text NOT NULL,
+  username text,
+  secret_enc text NOT NULL,
+  note text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  updated_by text
+);
+CREATE INDEX IF NOT EXISTS idx_company_secret_items_updated ON company_secret_items(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS company_secret_access_logs (
+  id text PRIMARY KEY,
+  secret_item_id text NOT NULL REFERENCES company_secret_items(id) ON DELETE CASCADE,
+  user_id text,
+  action text NOT NULL,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_company_secret_logs_item ON company_secret_access_logs(secret_item_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_company_secret_logs_user ON company_secret_access_logs(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS password_resets (
+  id text PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash text NOT NULL,
+  created_at timestamptz DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  used_at timestamptz,
+  ip text,
+  user_agent text
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_password_resets_token_hash ON password_resets(token_hash);
+CREATE INDEX IF NOT EXISTS idx_password_resets_user_id ON password_resets(user_id);
+CREATE INDEX IF NOT EXISTS idx_password_resets_expires_at ON password_resets(expires_at);
 
 -- Key sets and items
 CREATE TABLE IF NOT EXISTS key_sets (

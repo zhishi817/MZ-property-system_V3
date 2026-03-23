@@ -34,6 +34,7 @@ const maintenance_1 = __importDefault(require("./modules/maintenance"));
 const deep_cleaning_1 = __importDefault(require("./modules/deep_cleaning"));
 const work_tasks_1 = require("./modules/work_tasks");
 const task_center_1 = require("./modules/task_center");
+const mzapp_1 = require("./modules/mzapp");
 const propertyOnboarding_1 = require("./modules/propertyOnboarding");
 const property_guides_1 = require("./modules/property_guides");
 const property_guide_link_sync_1 = require("./modules/property_guide_link_sync");
@@ -42,6 +43,9 @@ const node_cron_1 = __importDefault(require("node-cron"));
 const crud_1 = __importDefault(require("./modules/crud"));
 const recurring_1 = __importDefault(require("./modules/recurring"));
 const invoices_1 = require("./modules/invoices");
+const cms_company_1 = require("./modules/cms_company");
+const cms_company_secrets_1 = require("./modules/cms_company_secrets");
+const keyUploadSlaJob_1 = require("./lib/keyUploadSlaJob");
 const auth_2 = require("./auth");
 const public_1 = __importDefault(require("./modules/public"));
 const public_admin_1 = __importDefault(require("./modules/public_admin"));
@@ -320,11 +324,14 @@ app.use('/maintenance', maintenance_1.default);
 app.use('/deep-cleaning', deep_cleaning_1.default);
 app.use('/work-tasks', work_tasks_1.router);
 app.use('/task-center', task_center_1.router);
+app.use('/mzapp', mzapp_1.router);
 app.use('/property-guides', property_guides_1.router);
 app.use('/property-guide-link-sync', property_guide_link_sync_1.router);
 app.use('/jobs', jobs_1.router);
 app.use('/onboarding', propertyOnboarding_1.router);
 app.use('/invoices', invoices_1.router);
+app.use('/cms', cms_company_1.router);
+app.use('/cms', cms_company_secrets_1.router);
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001);
 app.listen(port, () => {
     console.log(`Server listening on port ${port}`);
@@ -674,6 +681,66 @@ app.listen(port, () => {
         }
         catch (e) {
             console.error(`[pdf-jobs][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+        }
+    })();
+    (async () => {
+        try {
+            const defaultEnabled = process.env.NODE_ENV === 'production';
+            const enabled = String(process.env.KEY_UPLOAD_SLA_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true';
+            const featureCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true';
+            if (!enabled) {
+                console.log('[key-upload-sla][schedule] disabled');
+                return;
+            }
+            if (!featureCleaning) {
+                console.log('[key-upload-sla][schedule] skipped_reason=feature_cleaning_app_disabled');
+                return;
+            }
+            if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool) {
+                console.log('[key-upload-sla][schedule] skipped_reason=pg=false');
+                return;
+            }
+            const schedules = [
+                { expr: '15 10 * * *', position: 1, level: 'remind' },
+                { expr: '30 10 * * *', position: 1, level: 'escalate' },
+                { expr: '45 11 * * *', position: 2, level: 'remind' },
+                { expr: '0 12 * * *', position: 2, level: 'escalate' },
+                { expr: '30 13 * * *', position: 3, level: 'remind' },
+                { expr: '45 13 * * *', position: 3, level: 'escalate' },
+                { expr: '15 14 * * *', position: 4, level: 'remind' },
+                { expr: '30 14 * * *', position: 4, level: 'escalate' },
+            ];
+            for (const s of schedules) {
+                console.log(`[key-upload-sla][schedule] enabled cron=${s.expr} tz=Australia/Melbourne position=${s.position} level=${s.level}`);
+                const task = node_cron_1.default.schedule(s.expr, async () => {
+                    var _a, _b;
+                    const started = Date.now();
+                    try {
+                        const lockKey = 135791357 + (s.position * 10) + (s.level === 'escalate' ? 1 : 0);
+                        const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey]);
+                        const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
+                        if (!ok)
+                            return;
+                        const r = await (0, keyUploadSlaJob_1.runKeyUploadSlaCheck)(s.position, s.level);
+                        const dur = Date.now() - started;
+                        if (r === null || r === void 0 ? void 0 : r.skipped)
+                            console.log(`[key-upload-sla][schedule] skipped_reason=${String(r.skipped)}`);
+                        else
+                            console.log(`[key-upload-sla][schedule] ok position=${s.position} level=${s.level} created=${Number(r.created || 0)} duration_ms=${dur}`);
+                        try {
+                            await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [lockKey]);
+                        }
+                        catch (_c) { }
+                    }
+                    catch (e) {
+                        console.error(`[key-upload-sla][schedule] error position=${s.position} level=${s.level} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                    }
+                }, { scheduled: true, timezone: 'Australia/Melbourne' });
+                task.start();
+            }
+        }
+        catch (e) {
+            console.error(`[key-upload-sla][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
         }
     })();
 });

@@ -1,5 +1,16 @@
 # Changelog
 
+## Dev (2026-03-23)
+
+- Version: `0.2.7-statement-pdf.20260316+build.6` (no bump)
+- RBAC Users: Add AU phone field (phone_au) for create/edit and make email optional.
+- Auth: Fix “Forgot password” flow by implementing SMTP reset email + `/reset-password` page.
+- Cleaning: Sync checkout/checkin task passwords from order guest phone (last 4 digits) and update when phone changes.
+- CMS: Add Company Content Center (`/cms/company`) with Announcements / Docs / Warehouse Guides and blocks editor (text/steps/images/video links) + preview modal aligned to new UI.
+- CMS Passwords: Add external access password management (view/reset/clear) and internal secret vault (encrypted with CMS_SECRET_KEY) with audit logs.
+- MZApp: Add alerts table + APIs and key-upload SLA checks (with related migrations).
+- DB/Schema: Update `cms_pages` columns/indexes; add `password_resets`, `company_secret_items`, `company_secret_access_logs`; add `users.phone_au`.
+
 ## Dev (2026-03-19)
 
 - Version: `0.2.7-statement-pdf.20260316+build.6` (no bump)

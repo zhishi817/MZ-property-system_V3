@@ -502,9 +502,41 @@ async function run() {
       content text,
       status text,
       published_at date,
+      page_type text NOT NULL DEFAULT 'generic',
+      category text,
+      pinned boolean NOT NULL DEFAULT false,
+      urgent boolean NOT NULL DEFAULT false,
+      audience_scope text,
+      expires_at date,
+      updated_at timestamptz DEFAULT now(),
+      updated_by text,
       created_at timestamptz DEFAULT now()
     );`,
-    `CREATE INDEX IF NOT EXISTS idx_cms_pages_status ON cms_pages(status);`
+    `CREATE INDEX IF NOT EXISTS idx_cms_pages_status ON cms_pages(status);`,
+    `CREATE INDEX IF NOT EXISTS idx_cms_pages_type ON cms_pages(page_type);`,
+    `CREATE INDEX IF NOT EXISTS idx_cms_pages_pinned ON cms_pages(pinned, published_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_cms_pages_expires ON cms_pages(expires_at);`
+    ,
+    `CREATE TABLE IF NOT EXISTS company_secret_items (
+      id text PRIMARY KEY,
+      title text NOT NULL,
+      username text,
+      secret_enc text NOT NULL,
+      note text,
+      created_at timestamptz DEFAULT now(),
+      updated_at timestamptz DEFAULT now(),
+      updated_by text
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_company_secret_items_updated ON company_secret_items(updated_at DESC);`,
+    `CREATE TABLE IF NOT EXISTS company_secret_access_logs (
+      id text PRIMARY KEY,
+      secret_item_id text NOT NULL REFERENCES company_secret_items(id) ON DELETE CASCADE,
+      user_id text,
+      action text NOT NULL,
+      created_at timestamptz DEFAULT now()
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_company_secret_logs_item ON company_secret_access_logs(secret_item_id, created_at DESC);`,
+    `CREATE INDEX IF NOT EXISTS idx_company_secret_logs_user ON company_secret_access_logs(user_id, created_at DESC);`
     ,
     `CREATE TABLE IF NOT EXISTS property_maintenance (
       id text PRIMARY KEY,

@@ -155,6 +155,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     { key: 'cms-home', label: <Link href="/cms" prefetch={false}>页面管理</Link> },
     { key: 'cms-cleaning', label: <Link href="/cms/public-cleaning" prefetch={false}>清洁公开指南</Link> },
     { key: 'cms-cleaning-password', label: <Link href="/cms/public-cleaning-password" prefetch={false}>公开访问密码</Link> },
+    { key: 'cms-company', label: <Link href="/cms/company" prefetch={false}>公司内容中心</Link> },
   ] })
 
   

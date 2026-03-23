@@ -202,19 +202,83 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
   }
 })
 
-// Submit consumables
-const consumableSchema = z.object({ items: z.array(z.object({ item_id: z.string(), qty: z.number().int().min(1), need_restock: z.boolean().optional(), note: z.string().optional() })) })
+// Submit consumables checklist (cannot skip; low requires photo)
+const consumableSchema = z.object({
+  items: z.array(
+    z.object({
+      item_id: z.string().min(1),
+      status: z.enum(['ok', 'low']),
+      qty: z.number().int().min(1).optional(),
+      note: z.string().optional(),
+      photo_url: z.string().optional(),
+    }),
+  ),
+})
 router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
   const { id } = req.params
   const parsed = consumableSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (hasPg) {
+      const { pgPool } = require('../dbAdapter')
+      if (pgPool) {
+        try {
+          await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_checklist_items (
+            id text PRIMARY KEY,
+            label text NOT NULL,
+            kind text NOT NULL DEFAULT 'consumable',
+            required boolean NOT NULL DEFAULT true,
+            requires_photo_when_low boolean NOT NULL DEFAULT true,
+            active boolean NOT NULL DEFAULT true,
+            sort_order integer,
+            created_by text,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now()
+          );`)
+          await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS status text;`)
+          await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_url text;`)
+          await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS item_label text;`)
+        } catch {}
+      }
+
+      const activeItems = pgPool
+        ? (
+            await pgPool.query(
+              `SELECT id, label, required, requires_photo_when_low
+               FROM cleaning_checklist_items
+               WHERE active = true
+               ORDER BY sort_order ASC NULLS LAST, created_at ASC`,
+            )
+          )?.rows || []
+        : []
+      const byId = new Map(activeItems.map((x: any) => [String(x.id), x]))
+      const submittedIds = new Set(parsed.data.items.map((x) => String(x.item_id)))
+      const missing = activeItems.map((x: any) => String(x.id)).filter((x: string) => !submittedIds.has(x))
+      if (missing.length) return res.status(400).json({ message: '缺少必填项', missing })
+
       for (const it of parsed.data.items) {
-        const row = { id: require('uuid').v4(), task_id: id, item_id: it.item_id, qty: it.qty, need_restock: !!it.need_restock, note: it.note || null }
+        const meta: any = byId.get(String(it.item_id)) || null
+        const requiresPhoto = meta ? !!meta.requires_photo_when_low : true
+        if (it.status === 'low' && requiresPhoto && !String(it.photo_url || '').trim()) {
+          return res.status(400).json({ message: '不足项必须拍照', item_id: it.item_id })
+        }
+        if (it.status === 'low' && (!it.qty || it.qty < 1)) {
+          return res.status(400).json({ message: '不足项必须填写数量', item_id: it.item_id })
+        }
+        const row = {
+          id: require('uuid').v4(),
+          task_id: id,
+          item_id: String(it.item_id),
+          qty: it.status === 'low' ? Number(it.qty || 1) : 1,
+          need_restock: it.status === 'low',
+          note: it.note || null,
+          status: it.status,
+          photo_url: it.photo_url || null,
+          item_label: meta ? String(meta.label || '') : null,
+        }
         await pgInsert('cleaning_consumable_usages', row as any)
       }
-      const needsRestock = parsed.data.items.some((i) => !!i.need_restock)
+      const needsRestock = parsed.data.items.some((i) => i.status === 'low')
       const patch: any = { status: needsRestock ? 'restock_pending' : 'cleaned', finished_at: new Date().toISOString() }
       const up = await pgUpdate('cleaning_tasks', id, patch)
       try { broadcastCleaningEvent({ event: 'consumables_submitted', task_id: id, restock_pending: needsRestock }) } catch {}

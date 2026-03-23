@@ -18,7 +18,7 @@ type PermissionMeta = {
   privacyRisk: string[]
 }
 type Permission = { code: string; name?: string; meta?: PermissionMeta }
-type User = { id: string; username: string; email?: string; role: string; color_hex?: string | null }
+type User = { id: string; username: string; email?: string; phone_au?: string; role: string; color_hex?: string | null }
 
 export default function RBACPage() {
   const [roles, setRoles] = useState<Role[]>([])
@@ -46,6 +46,28 @@ export default function RBACPage() {
   const [menuSearch, setMenuSearch] = useState<string>('')
   const [activeMenuKey, setActiveMenuKey] = useState<string>('')
   const [advancedSearch, setAdvancedSearch] = useState<string>('')
+
+  function normalizeAuPhone(v: any) {
+    const raw = String(v || '').trim()
+    if (!raw) return ''
+    let s = raw.replace(/[\s()-]/g, '').replace(/-+/g, '')
+    if (s.startsWith('00')) s = `+${s.slice(2)}`
+    if (s.startsWith('+')) {
+      const d = s.slice(1).replace(/\D/g, '')
+      if (!d.startsWith('61')) return raw
+      const rest = d.slice(2)
+      if (!/^\d{9}$/.test(rest)) return raw
+      return `+61${rest}`
+    }
+    const d = s.replace(/\D/g, '')
+    if (d.startsWith('61')) {
+      const rest = d.slice(2)
+      if (!/^\d{9}$/.test(rest)) return raw
+      return `+61${rest}`
+    }
+    if (d.startsWith('0') && d.length === 10) return `+61${d.slice(1)}`
+    return raw
+  }
 
   function riskTag(level?: RiskLevel) {
     const lv = level || 'medium'
@@ -195,7 +217,9 @@ export default function RBACPage() {
   async function submitUser() {
     const v = await userForm.validateFields()
     const payload: any = { ...v }
+    if (!payload.email) delete payload.email
     if (payload.color_hex) payload.color_hex = String(payload.color_hex).trim().toUpperCase()
+    if (payload.phone_au) payload.phone_au = normalizeAuPhone(payload.phone_au)
     const res = await fetch(`${API_BASE}/rbac/users`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('已创建用户'); setUserOpen(false); userForm.resetFields(); load() } else { message.error('创建失败') }
   }
@@ -203,7 +227,7 @@ export default function RBACPage() {
   function openEditUser(u: User) {
     setEditUser(u)
     setEditUserOpen(true)
-    editUserForm.setFieldsValue({ username: u.username, email: u.email || '', role: u.role, color_hex: (u.color_hex || '#3B82F6') })
+    editUserForm.setFieldsValue({ username: u.username, email: u.email || '', phone_au: u.phone_au || '', role: u.role, color_hex: (u.color_hex || '#3B82F6') })
   }
 
   async function submitEditUser() {
@@ -212,6 +236,7 @@ export default function RBACPage() {
     if (!id) return
     const payload: any = { ...v }
     if (!payload.email) delete payload.email
+    if (payload.phone_au) payload.phone_au = normalizeAuPhone(payload.phone_au)
     if (!payload.color_hex) delete payload.color_hex
     if (payload.color_hex) payload.color_hex = String(payload.color_hex).trim().toUpperCase()
     const res = await fetch(`${API_BASE}/rbac/users/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
@@ -335,6 +360,7 @@ export default function RBACPage() {
   const userCols = [
     { title: '用户名', dataIndex: 'username' },
     { title: '邮箱', dataIndex: 'email' },
+    { title: '澳洲手机号', dataIndex: 'phone_au' },
     { title: '角色', dataIndex: 'role' },
     { title: '操作', render: (_: any, r: User) => (
       <Space>
@@ -873,7 +899,15 @@ export default function RBACPage() {
       <Modal open={userOpen} onCancel={() => setUserOpen(false)} onOk={submitUser} title="新建用户">
         <Form form={userForm} layout="vertical" initialValues={{ color_hex: '#3B82F6' }}>
           <Form.Item name="username" label="用户名" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="email" label="邮箱" rules={[{ required: true, type: 'email' }]}><Input /></Form.Item>
+          <Form.Item name="email" label="邮箱" rules={[{ type: 'email' }]}><Input placeholder="可选" /></Form.Item>
+          <Form.Item
+            name="phone_au"
+            label="澳洲手机号"
+            normalize={(v) => normalizeAuPhone(v)}
+            rules={[{ required: true }, { pattern: /^\+61\d{9}$/, message: '请输入有效澳洲手机号，例如 +61412345678 或 0412345678' }]}
+          >
+            <Input placeholder="+61412345678 或 0412345678" />
+          </Form.Item>
           <Form.Item name="role" label="角色" rules={[{ required: true }]}><Select options={roles.map(r => ({ value: r.name, label: r.name }))} /></Form.Item>
           <Form.Item
             name="color_hex"
@@ -903,6 +937,14 @@ export default function RBACPage() {
         <Form form={editUserForm} layout="vertical">
           <Form.Item name="username" label="用户名" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="email" label="邮箱" rules={[{ type: 'email' }]}><Input placeholder="留空则不修改" /></Form.Item>
+          <Form.Item
+            name="phone_au"
+            label="澳洲手机号"
+            normalize={(v) => normalizeAuPhone(v)}
+            rules={[{ required: true }, { pattern: /^\+61\d{9}$/, message: '请输入有效澳洲手机号，例如 +61412345678 或 0412345678' }]}
+          >
+            <Input placeholder="+61412345678 或 0412345678" />
+          </Form.Item>
           <Form.Item name="role" label="角色" rules={[{ required: true }]}><Select options={roles.map(r => ({ value: r.name, label: r.name }))} /></Form.Item>
           <Form.Item
             name="color_hex"

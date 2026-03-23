@@ -148,9 +148,28 @@ async function ensureCmsPagesTable() {
     content text,
     status text,
     published_at date,
-    created_at timestamptz DEFAULT now(),
-    updated_at timestamptz
+    page_type text NOT NULL DEFAULT 'generic',
+    category text,
+    pinned boolean NOT NULL DEFAULT false,
+    urgent boolean NOT NULL DEFAULT false,
+    audience_scope text,
+    expires_at date,
+    updated_at timestamptz DEFAULT now(),
+    updated_by text,
+    created_at timestamptz DEFAULT now()
   );`)
+  try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS page_type text NOT NULL DEFAULT 'generic';`) } catch {}
+  try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS category text;`) } catch {}
+  try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false;`) } catch {}
+  try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS urgent boolean NOT NULL DEFAULT false;`) } catch {}
+  try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS audience_scope text;`) } catch {}
+  try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS expires_at date;`) } catch {}
+  try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();`) } catch {}
+  try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS updated_by text;`) } catch {}
+  try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_status ON cms_pages(status);`) } catch {}
+  try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_type ON cms_pages(page_type);`) } catch {}
+  try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_pinned ON cms_pages(pinned, published_at);`) } catch {}
+  try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_expires ON cms_pages(expires_at);`) } catch {}
 }
 
 async function getOrInitCleaningAccess(): Promise<{ area: string; password_hash: string; password_updated_at: string } | null> {
