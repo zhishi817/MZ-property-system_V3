@@ -272,8 +272,9 @@ async function syncOneTask(params: {
   date: string | null
   statusLower: string
   propertyId: string | null
+  derivedCode?: string | null
 }) {
-  const { jobId, orderId, deleted, client, taskType, date, statusLower, propertyId } = params
+  const { jobId, orderId, deleted, client, taskType, date, statusLower, propertyId, derivedCode } = params
   const beforeTask = await loadTaskByOrder(orderId, taskType, client)
 
   if (deleted || !date) {
@@ -286,7 +287,7 @@ async function syncOneTask(params: {
     return { action: 'no_change' as const }
   }
 
-  const fingerprint = sha256([propertyId || '', date, statusLower, taskType].join('|'))
+  const fingerprint = sha256([propertyId || '', date, statusLower, taskType, derivedCode || ''].join('|'))
 
   if (!beforeTask) {
     const row = {
@@ -302,6 +303,8 @@ async function syncOneTask(params: {
       scheduled_at: null,
       checkout_time: taskType === CHECKOUT_TASK_TYPE ? DEFAULT_CHECKOUT_TIME : null,
       checkin_time: taskType === CHECKIN_TASK_TYPE ? DEFAULT_CHECKIN_TIME : null,
+      old_code: taskType === CHECKOUT_TASK_TYPE ? (derivedCode || null) : null,
+      new_code: taskType === CHECKIN_TASK_TYPE ? (derivedCode || null) : null,
       auto_sync_enabled: true,
       sync_fingerprint: fingerprint,
       source: 'auto',
@@ -333,6 +336,10 @@ async function syncOneTask(params: {
     source: 'auto',
     auto_sync_enabled: true,
   }
+  if (derivedCode) {
+    if (taskType === CHECKOUT_TASK_TYPE) patch.old_code = derivedCode
+    if (taskType === CHECKIN_TASK_TYPE) patch.new_code = derivedCode
+  }
   if (taskType === CHECKOUT_TASK_TYPE && !String(beforeTask.checkout_time || '').trim()) {
     patch.checkout_time = DEFAULT_CHECKOUT_TIME
   }
@@ -357,17 +364,20 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
   try {
     await ensureCleaningSchemaV2()
     if (deleted) {
-      const r1 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null })
-      const r2 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null })
+      const r1 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null, derivedCode: null })
+      const r2 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null, derivedCode: null })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
     }
 
     const order = await loadOrder(id, client)
     if (!order) {
-      const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null })
-      const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null })
+      const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null, derivedCode: null })
+      const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null, derivedCode: null })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
     }
+
+    const digits = String(order.guest_phone || '').replace(/\D/g, '')
+    const derivedCode = digits.length >= 4 ? digits.slice(-4) : null
 
     const status = String(order.status || '').trim()
     const statusLower = status.toLowerCase()
@@ -377,13 +387,13 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
     const valid = isValidStatus(statusLower)
 
     if (!valid) {
-      const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower, propertyId })
-      const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower, propertyId })
+      const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower, propertyId, derivedCode: null })
+      const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower, propertyId, derivedCode: null })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
     }
 
-    const rCheckout = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: checkoutDay, statusLower, propertyId })
-    const rCheckin = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId })
+    const rCheckout = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: checkoutDay, statusLower, propertyId, derivedCode })
+    const rCheckin = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId, derivedCode })
     const actions = [rCheckout.action, rCheckin.action]
     if (actions.includes('created')) return { action: 'created' as const }
     if (actions.includes('updated')) return { action: 'updated' as const }

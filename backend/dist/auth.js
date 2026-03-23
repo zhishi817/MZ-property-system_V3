@@ -39,7 +39,6 @@ async function login(req, res) {
     const { username, password } = req.body || {};
     if (!username || !password)
         return res.status(400).json({ message: 'missing credentials' });
-    const isDev = String(process.env.APP_ENV || '').toLowerCase() === 'dev' && String(process.env.NODE_ENV || '').toLowerCase() !== 'production';
     // DB first（Postgres；容错）
     let row = null;
     // Supabase branch removed
@@ -62,25 +61,6 @@ async function login(req, res) {
                 ok = await bcryptjs_1.default.compare(password, hash);
         }
         catch (_b) { }
-        if (!ok && isDev) {
-            const alias = { ops: 'cs', field: 'cleaner' };
-            const k = alias[String(username)] || String(username);
-            const u = exports.users[k];
-            if (u && u.password === String(password)) {
-                ok = true;
-                try {
-                    if (dbAdapter_1.hasPg) {
-                        const { pgPool } = require('./dbAdapter');
-                        if (pgPool) {
-                            const newHash = await bcryptjs_1.default.hash(String(password), 10);
-                            await pgPool.query('UPDATE users SET password_hash=$1 WHERE id=$2', [newHash, row.id]);
-                            row.password_hash = newHash;
-                        }
-                    }
-                }
-                catch (_c) { }
-            }
-        }
         if (!ok)
             return res.status(401).json({ message: 'invalid credentials' });
         let sid = null;
@@ -99,7 +79,7 @@ async function login(req, res) {
                 });
                 sid = String(sidNew);
             }
-            catch (_d) { }
+            catch (_c) { }
         }
         const payload = { sub: row.id, role: row.role, username: row.username };
         if (sid)
@@ -107,7 +87,7 @@ async function login(req, res) {
         const token = jsonwebtoken_1.default.sign(payload, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` });
         return res.json({ token, role: row.role });
     }
-    if (!row && store_1.db.users.length) {
+    if (!dbAdapter_1.hasPg && !row && store_1.db.users.length) {
         const byUser = store_1.db.users.find(u => u.username === username);
         const byEmail = store_1.db.users.find(u => u.email === username);
         const found = byUser || byEmail;
@@ -131,7 +111,7 @@ async function login(req, res) {
                     });
                     sid = String(sidNew);
                 }
-                catch (_e) { }
+                catch (_d) { }
             }
             const payload = { sub: found.id, role: found.role, username: found.username || found.email };
             if (sid)
@@ -140,8 +120,8 @@ async function login(req, res) {
             return res.json({ token, role: found.role });
         }
     }
-    // Fallback static users (dev/no-db only)
-    if (!dbAdapter_1.hasPg || isDev) {
+    // Fallback static users (no-db only)
+    if (!dbAdapter_1.hasPg) {
         const u = exports.users[username];
         if (!u || u.password !== password)
             return res.status(401).json({ message: 'invalid credentials' });
@@ -327,7 +307,7 @@ function me(req, res) {
     const user = req.user;
     if (!user)
         return res.status(401).json({ message: 'unauthorized' });
-    res.json({ role: user.role, username: user.username });
+    res.json({ id: user.sub, role: user.role, username: user.username });
 }
 async function setDeletePassword(req, res) {
     const user = req.user;

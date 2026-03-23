@@ -471,19 +471,63 @@ router.get('/my-permissions', auth, async (req, res) => {
 })
 
 // Users management
+function normalizeAuPhone(v: unknown) {
+  const raw = String(v || '').trim()
+  if (!raw) return null
+  let s = raw.replace(/[\s()-]/g, '').replace(/-+/g, '')
+  if (s.startsWith('00')) s = `+${s.slice(2)}`
+  if (s.startsWith('+')) {
+    const d = s.slice(1).replace(/\D/g, '')
+    if (!d.startsWith('61')) return null
+    const rest = d.slice(2)
+    if (!/^\d{9}$/.test(rest)) return null
+    return `+61${rest}`
+  }
+  const d = s.replace(/\D/g, '')
+  if (d.startsWith('61')) {
+    const rest = d.slice(2)
+    if (!/^\d{9}$/.test(rest)) return null
+    return `+61${rest}`
+  }
+  if (d.startsWith('0') && d.length === 10) return `+61${d.slice(1)}`
+  return null
+}
+
 const userCreateSchema = z.object({
   username: z.string().min(1),
-  email: z.string().email(),
+  email: z.preprocess((v) => {
+    if (v === null || v === undefined) return undefined
+    const s = String(v).trim()
+    return s ? s : undefined
+  }, z.string().email().optional()),
+  phone_au: z.string().min(1),
   role: z.string().min(1),
   password: z.string().min(6),
   color_hex: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+}).transform((v) => {
+  const phone = normalizeAuPhone((v as any).phone_au)
+  if (!phone) throw new Error('invalid_phone_au')
+  return { ...(v as any), phone_au: phone }
 })
 const userUpdateSchema = z.object({
   username: z.string().optional(),
-  email: z.string().email().optional(),
+  email: z.preprocess((v) => {
+    if (v === null || v === undefined) return undefined
+    const s = String(v).trim()
+    return s ? s : undefined
+  }, z.string().email().optional()),
+  phone_au: z.string().optional(),
   role: z.string().optional(),
   password: z.string().min(6).optional(),
   color_hex: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+}).transform((v) => {
+  const out: any = { ...(v as any) }
+  if (out.phone_au !== undefined) {
+    const phone = normalizeAuPhone(out.phone_au)
+    if (!phone) throw new Error('invalid_phone_au')
+    out.phone_au = phone
+  }
+  return out
 })
 
 router.get('/users', requirePerm('rbac.manage'), async (_req, res) => {
@@ -515,7 +559,7 @@ router.post('/users', requirePerm('rbac.manage'), async (req, res) => {
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const { v4: uuid } = require('uuid')
   const hash = await bcrypt.hash(parsed.data.password, 10)
-  const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, role: parsed.data.role, password_hash: hash, color_hex: parsed.data.color_hex || '#3B82F6' }
+  const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, phone_au: parsed.data.phone_au, role: parsed.data.role, password_hash: hash, color_hex: parsed.data.color_hex || '#3B82F6' }
   try {
     if (hasPg) {
       try {
@@ -525,6 +569,7 @@ router.post('/users', requirePerm('rbac.manage'), async (req, res) => {
             id text PRIMARY KEY,
             username text UNIQUE,
             email text UNIQUE,
+            phone_au text,
             password_hash text NOT NULL,
             role text NOT NULL,
             color_hex text NOT NULL DEFAULT '#3B82F6',
@@ -532,8 +577,10 @@ router.post('/users', requirePerm('rbac.manage'), async (req, res) => {
           );`)
           await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);')
           await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);')
+          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_phone_au ON users(phone_au);')
           await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_password_hash text;')
           await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`)
+          await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_au text;')
         }
       } catch (e: any) {
         try { console.error(`[RBAC] ensure users table error message=${String(e?.message || '')}`) } catch {}
@@ -571,6 +618,8 @@ router.patch('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
         const { pgPool } = require('../dbAdapter')
         if (pgPool) {
           await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`)
+          await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_au text;')
+          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_phone_au ON users(phone_au);')
         }
       } catch {}
       const updated = await pgUpdate('users', id, payload as any)

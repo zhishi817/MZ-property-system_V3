@@ -32,7 +32,6 @@ export const users: Record<string, User & { password: string }> = {
 export async function login(req: Request, res: Response) {
   const { username, password } = req.body || {}
   if (!username || !password) return res.status(400).json({ message: 'missing credentials' })
-  const isDev = String(process.env.APP_ENV || '').toLowerCase() === 'dev' && String(process.env.NODE_ENV || '').toLowerCase() !== 'production'
   // DB first（Postgres；容错）
   let row: any = null
   // Supabase branch removed
@@ -52,24 +51,6 @@ export async function login(req: Request, res: Response) {
       const hash = typeof row.password_hash === 'string' ? row.password_hash : ''
       if (hash) ok = await bcrypt.compare(password, hash)
     } catch {}
-    if (!ok && isDev) {
-      const alias: Record<string, string> = { ops: 'cs', field: 'cleaner' }
-      const k = alias[String(username)] || String(username)
-      const u = (users as any)[k]
-      if (u && u.password === String(password)) {
-        ok = true
-        try {
-          if (hasPg) {
-            const { pgPool } = require('./dbAdapter')
-            if (pgPool) {
-              const newHash = await bcrypt.hash(String(password), 10)
-              await pgPool.query('UPDATE users SET password_hash=$1 WHERE id=$2', [newHash, row.id])
-              row.password_hash = newHash
-            }
-          }
-        } catch {}
-      }
-    }
     if (!ok) return res.status(401).json({ message: 'invalid credentials' })
     let sid: string | null = null
     if (hasPg) {
@@ -95,7 +76,7 @@ export async function login(req: Request, res: Response) {
     const token = jwt.sign(payload, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
     return res.json({ token, role: row.role })
   }
-  if (!row && db.users.length) {
+  if (!hasPg && !row && db.users.length) {
     const byUser = db.users.find(u => u.username === username)
     const byEmail = db.users.find(u => u.email === username)
     const found = byUser || byEmail
@@ -127,8 +108,8 @@ export async function login(req: Request, res: Response) {
       return res.json({ token, role: found.role })
     }
   }
-  // Fallback static users (dev/no-db only)
-  if (!hasPg || isDev) {
+  // Fallback static users (no-db only)
+  if (!hasPg) {
     const u = users[username]
     if (!u || u.password !== password) return res.status(401).json({ message: 'invalid credentials' })
     const token = jwt.sign({ sub: u.id, role: u.role, username: u.username }, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
@@ -274,7 +255,7 @@ export function allowCronTokenOrPerm(code: string) {
 export function me(req: Request, res: Response) {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  res.json({ role: user.role, username: user.username })
+  res.json({ id: user.sub, role: user.role, username: user.username })
 }
 
 export async function setDeletePassword(req: Request, res: Response) {

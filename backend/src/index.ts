@@ -29,6 +29,7 @@ import maintenanceRouter from './modules/maintenance'
 import deepCleaningRouter from './modules/deep_cleaning'
 import { router as workTasksRouter } from './modules/work_tasks'
 import { router as taskCenterRouter } from './modules/task_center'
+import { router as mzappRouter } from './modules/mzapp'
 import { router as propertyOnboardingRouter } from './modules/propertyOnboarding'
 import { router as propertyGuidesRouter } from './modules/property_guides'
 import { router as propertyGuideLinkSyncRouter } from './modules/property_guide_link_sync'
@@ -37,6 +38,9 @@ import cron from 'node-cron'
 import crudRouter from './modules/crud'
 import recurringRouter from './modules/recurring'
 import { router as invoicesRouter } from './modules/invoices'
+import { router as cmsCompanyRouter } from './modules/cms_company'
+import { router as cmsCompanySecretsRouter } from './modules/cms_company_secrets'
+import { runKeyUploadSlaCheck } from './lib/keyUploadSlaJob'
 import { auth } from './auth'
 import publicRouter from './modules/public'
 import publicAdminRouter from './modules/public_admin'
@@ -279,11 +283,14 @@ app.use('/maintenance', maintenanceRouter)
 app.use('/deep-cleaning', deepCleaningRouter)
 app.use('/work-tasks', workTasksRouter)
 app.use('/task-center', taskCenterRouter)
+app.use('/mzapp', mzappRouter)
 app.use('/property-guides', propertyGuidesRouter)
 app.use('/property-guide-link-sync', propertyGuideLinkSyncRouter)
 app.use('/jobs', jobsRouter)
 app.use('/onboarding', propertyOnboardingRouter)
 app.use('/invoices', invoicesRouter)
+app.use('/cms', cmsCompanyRouter)
+app.use('/cms', cmsCompanySecretsRouter)
 
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001)
 app.listen(port, () => {
@@ -564,6 +571,64 @@ app.listen(port, () => {
       }
     } catch (e: any) {
       console.error(`[pdf-jobs][schedule] init error message=${String(e?.message || '')}`)
+    }
+  })()
+
+  ;(async () => {
+    try {
+      const defaultEnabled = process.env.NODE_ENV === 'production'
+      const enabled = String(process.env.KEY_UPLOAD_SLA_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true'
+      const featureCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true'
+      if (!enabled) {
+        console.log('[key-upload-sla][schedule] disabled')
+        return
+      }
+      if (!featureCleaning) {
+        console.log('[key-upload-sla][schedule] skipped_reason=feature_cleaning_app_disabled')
+        return
+      }
+      if (!hasPg || !pgPool) {
+        console.log('[key-upload-sla][schedule] skipped_reason=pg=false')
+        return
+      }
+
+      const schedules: Array<{ expr: string; position: number; level: 'remind' | 'escalate' }> = [
+        { expr: '15 10 * * *', position: 1, level: 'remind' },
+        { expr: '30 10 * * *', position: 1, level: 'escalate' },
+        { expr: '45 11 * * *', position: 2, level: 'remind' },
+        { expr: '0 12 * * *', position: 2, level: 'escalate' },
+        { expr: '30 13 * * *', position: 3, level: 'remind' },
+        { expr: '45 13 * * *', position: 3, level: 'escalate' },
+        { expr: '15 14 * * *', position: 4, level: 'remind' },
+        { expr: '30 14 * * *', position: 4, level: 'escalate' },
+      ]
+
+      for (const s of schedules) {
+        console.log(`[key-upload-sla][schedule] enabled cron=${s.expr} tz=Australia/Melbourne position=${s.position} level=${s.level}`)
+        const task = cron.schedule(
+          s.expr,
+          async () => {
+            const started = Date.now()
+            try {
+              const lockKey = 135791357 + (s.position * 10) + (s.level === 'escalate' ? 1 : 0)
+              const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey])
+              const ok = !!(lock?.rows?.[0]?.ok)
+              if (!ok) return
+              const r = await runKeyUploadSlaCheck(s.position, s.level)
+              const dur = Date.now() - started
+              if ((r as any)?.skipped) console.log(`[key-upload-sla][schedule] skipped_reason=${String((r as any).skipped)}`)
+              else console.log(`[key-upload-sla][schedule] ok position=${s.position} level=${s.level} created=${Number((r as any).created || 0)} duration_ms=${dur}`)
+              try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [lockKey]) } catch {}
+            } catch (e: any) {
+              console.error(`[key-upload-sla][schedule] error position=${s.position} level=${s.level} message=${String(e?.message || '')}`)
+            }
+          },
+          { scheduled: true, timezone: 'Australia/Melbourne' },
+        )
+        task.start()
+      }
+    } catch (e: any) {
+      console.error(`[key-upload-sla][schedule] init error message=${String(e?.message || '')}`)
     }
   })()
   })

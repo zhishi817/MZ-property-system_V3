@@ -576,19 +576,72 @@ exports.router.get('/my-permissions', auth_1.auth, async (req, res) => {
     return res.json(Array.from(normalized));
 });
 // Users management
+function normalizeAuPhone(v) {
+    const raw = String(v || '').trim();
+    if (!raw)
+        return null;
+    let s = raw.replace(/[\s()-]/g, '').replace(/-+/g, '');
+    if (s.startsWith('00'))
+        s = `+${s.slice(2)}`;
+    if (s.startsWith('+')) {
+        const d = s.slice(1).replace(/\D/g, '');
+        if (!d.startsWith('61'))
+            return null;
+        const rest = d.slice(2);
+        if (!/^\d{9}$/.test(rest))
+            return null;
+        return `+61${rest}`;
+    }
+    const d = s.replace(/\D/g, '');
+    if (d.startsWith('61')) {
+        const rest = d.slice(2);
+        if (!/^\d{9}$/.test(rest))
+            return null;
+        return `+61${rest}`;
+    }
+    if (d.startsWith('0') && d.length === 10)
+        return `+61${d.slice(1)}`;
+    return null;
+}
 const userCreateSchema = zod_1.z.object({
     username: zod_1.z.string().min(1),
-    email: zod_1.z.string().email(),
+    email: zod_1.z.preprocess((v) => {
+        if (v === null || v === undefined)
+            return undefined;
+        const s = String(v).trim();
+        return s ? s : undefined;
+    }, zod_1.z.string().email().optional()),
+    phone_au: zod_1.z.string().min(1),
     role: zod_1.z.string().min(1),
     password: zod_1.z.string().min(6),
     color_hex: zod_1.z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+}).transform((v) => {
+    const phone = normalizeAuPhone(v.phone_au);
+    if (!phone)
+        throw new Error('invalid_phone_au');
+    return { ...v, phone_au: phone };
 });
 const userUpdateSchema = zod_1.z.object({
     username: zod_1.z.string().optional(),
-    email: zod_1.z.string().email().optional(),
+    email: zod_1.z.preprocess((v) => {
+        if (v === null || v === undefined)
+            return undefined;
+        const s = String(v).trim();
+        return s ? s : undefined;
+    }, zod_1.z.string().email().optional()),
+    phone_au: zod_1.z.string().optional(),
     role: zod_1.z.string().optional(),
     password: zod_1.z.string().min(6).optional(),
     color_hex: zod_1.z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+}).transform((v) => {
+    const out = { ...v };
+    if (out.phone_au !== undefined) {
+        const phone = normalizeAuPhone(out.phone_au);
+        if (!phone)
+            throw new Error('invalid_phone_au');
+        out.phone_au = phone;
+    }
+    return out;
 });
 exports.router.get('/users', (0, auth_1.requirePerm)('rbac.manage'), async (_req, res) => {
     try {
@@ -630,7 +683,7 @@ exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req
         return res.status(400).json(parsed.error.format());
     const { v4: uuid } = require('uuid');
     const hash = await bcryptjs_1.default.hash(parsed.data.password, 10);
-    const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, role: parsed.data.role, password_hash: hash, color_hex: parsed.data.color_hex || '#3B82F6' };
+    const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, phone_au: parsed.data.phone_au, role: parsed.data.role, password_hash: hash, color_hex: parsed.data.color_hex || '#3B82F6' };
     try {
         if (dbAdapter_1.hasPg) {
             try {
@@ -640,6 +693,7 @@ exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req
             id text PRIMARY KEY,
             username text UNIQUE,
             email text UNIQUE,
+            phone_au text,
             password_hash text NOT NULL,
             role text NOT NULL,
             color_hex text NOT NULL DEFAULT '#3B82F6',
@@ -647,8 +701,10 @@ exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req
           );`);
                     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);');
                     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);');
+                    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_phone_au ON users(phone_au);');
                     await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_password_hash text;');
                     await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`);
+                    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_au text;');
                 }
             }
             catch (e) {
@@ -697,6 +753,8 @@ exports.router.patch('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async
                 const { pgPool } = require('../dbAdapter');
                 if (pgPool) {
                     await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS color_hex text NOT NULL DEFAULT '#3B82F6';`);
+                    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_au text;');
+                    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_phone_au ON users(phone_au);');
                 }
             }
             catch (_a) { }
