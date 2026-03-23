@@ -1044,12 +1044,46 @@ router.get('/cleaning-sync-jobs', requirePerm('order.manage'), async (req, res) 
   }
 })
 
+router.get('/cleaning-sync-jobs/runs', requirePerm('order.manage'), async (req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const limit = Math.max(1, Math.min(200, Number((req.query as any)?.limit || 50)))
+    const scheduleName = String((req.query as any)?.schedule_name || '').trim()
+    const okRaw = String((req.query as any)?.ok || '').trim()
+    const ok = okRaw === '' ? null : (okRaw === '1' || okRaw === 'true')
+    const { listJobRuns } = require('../services/jobRuns')
+    const items = await listJobRuns({ job_name: 'cleaning_sync_jobs', limit, schedule_name: scheduleName || null, ok })
+    return res.json({ ok: true, items })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'runs_failed') })
+  }
+})
+
 router.post('/cleaning-sync-jobs/run-once', allowCronTokenOrPerm('order.manage'), async (req, res) => {
   try {
     const limit = Math.min(50, Math.max(1, Number((req.body || {}).limit || 10)))
     const reclaim = Math.min(120, Math.max(1, Number((req.body || {}).reclaim_timeout_minutes || 10)))
+    let jr: any = null
+    const startedAt = Date.now()
+    try {
+      const { createJobRun } = require('../services/jobRuns')
+      jr = await createJobRun({ job_name: 'cleaning_sync_jobs', schedule_name: 'manual', trigger_source: 'api_manual' })
+    } catch {}
     const { processCleaningSyncJobsOnce } = require('../services/cleaningSyncJobsWorker')
     const r = await processCleaningSyncJobsOnce({ limit, reclaim_timeout_minutes: reclaim })
+    try {
+      if (jr?.id) {
+        const { finishJobRun } = require('../services/jobRuns')
+        await finishJobRun({
+          id: String(jr.id),
+          orders_scanned: Number(r.processed || 0),
+          orders_succeeded: Number(r.ok || 0),
+          orders_failed: Number(r.failed || 0),
+          duration_ms: Date.now() - startedAt,
+          result: r,
+        })
+      }
+    } catch {}
     return res.json({ ok: true, ...r })
   } catch (e: any) {
     return res.status(500).json({ message: String(e?.message || 'run_failed') })

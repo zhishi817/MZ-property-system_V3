@@ -764,3 +764,18 @@ CREATE INDEX IF NOT EXISTS idx_cleaning_sync_jobs_status_next ON cleaning_sync_j
 CREATE INDEX IF NOT EXISTS idx_cleaning_sync_jobs_order ON cleaning_sync_jobs(order_id);
 CREATE INDEX IF NOT EXISTS idx_cleaning_sync_jobs_running ON cleaning_sync_jobs(running_started_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_cleaning_sync_jobs_order_action_active ON cleaning_sync_jobs(order_id, action) WHERE status IN ('pending','running');
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id text PRIMARY KEY,
+  entity text NOT NULL,
+  entity_id text NOT NULL,
+  action text NOT NULL,
+  actor_id text,
+  ip text,
+  user_agent text,
+  before_json jsonb,
+  after_json jsonb,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);

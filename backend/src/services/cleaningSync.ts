@@ -113,6 +113,29 @@ export async function ensureCleaningSchemaV2(): Promise<void> {
       err.code = 'CLEANING_SCHEMA_MISSING'
       throw err
     }
+    const rc = await pgPool.query(
+      `SELECT
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_sync_logs' AND column_name='job_id') AS has_logs_job_id,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='cleaner_id') AS has_tasks_cleaner_id,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspector_id') AS has_tasks_inspector_id,
+         EXISTS (SELECT 1 FROM pg_constraint WHERE conname='uniq_cleaning_tasks_order_task_type_v3') AS has_tasks_uq_v3`
+    )
+    const row = rc?.rows?.[0] || {}
+    if (!row?.has_logs_job_id) {
+      const err: any = new Error('cleaning_sync_logs_missing_job_id')
+      err.code = 'CLEANING_SCHEMA_MISSING'
+      throw err
+    }
+    if (!row?.has_tasks_cleaner_id || !row?.has_tasks_inspector_id) {
+      const err: any = new Error('cleaning_tasks_missing_cleaner_fields')
+      err.code = 'CLEANING_SCHEMA_MISSING'
+      throw err
+    }
+    if (!row?.has_tasks_uq_v3) {
+      const err: any = new Error('cleaning_tasks_missing_unique_constraint_v3')
+      err.code = 'CLEANING_SCHEMA_MISSING'
+      throw err
+    }
   })().catch((e) => {
     schemaEnsured = null
     throw e

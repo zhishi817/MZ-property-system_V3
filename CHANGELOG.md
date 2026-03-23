@@ -2,7 +2,7 @@
 
 ## Dev (2026-03-23)
 
-- Version: `0.2.7-statement-pdf.20260316+build.6` (no bump)
+- Version: `0.2.7-statement-pdf.20260316+build.7`
 - RBAC Users: Add AU phone field (phone_au) for create/edit and make email optional.
 - Auth: Fix “Forgot password” flow by implementing SMTP reset email + `/reset-password` page.
 - Cleaning: Sync checkout/checkin task passwords from order guest phone (last 4 digits) and update when phone changes.
@@ -10,6 +10,9 @@
 - CMS Passwords: Add external access password management (view/reset/clear) and internal secret vault (encrypted with CMS_SECRET_KEY) with audit logs.
 - MZApp: Add alerts table + APIs and key-upload SLA checks (with related migrations).
 - DB/Schema: Update `cms_pages` columns/indexes; add `password_resets`, `company_secret_items`, `company_secret_access_logs`; add `users.phone_au`.
+- Cleaning: Cleaning sync jobs UI defaults to all and shows job run history; scheduled runs now record `job_runs`.
+- Cleaning: Add migrations to fix cleaning sync schema (v2) and ensure `audit_logs` exists.
+- Audits: Enhance `/audits` to return items + actor info and add unified “操作记录” panel in multiple detail views.
 
 ## Dev (2026-03-19)
 

@@ -2499,6 +2499,12 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
   }
   try {
     if (hasPg) {
+      let before: any = null
+      try {
+        const rowsRaw = await pgSelect(resource, '*', { id })
+        const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
+        before = rows[0] || null
+      } catch {}
       let toUpdate: any = payload
       if (resource === 'property_maintenance') {
         try {
@@ -2744,7 +2750,22 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
           if (!ok && errMsg && process.env.NODE_ENV !== 'production') res.setHeader('x-auto-expense-error', errMsg.slice(0, 180))
         } catch {}
       }
-      addAudit(resource, id, 'update', null, row, (req as any).user?.sub)
+      const actor = (req as any).user?.sub
+      const meta = { ip: req.ip, user_agent: req.headers['user-agent'] }
+      let action = 'update'
+      try {
+        const b: any = before || {}
+        const a: any = row || {}
+        const bActive = b.is_active
+        const aActive = a.is_active
+        if (bActive === true && aActive === false) action = 'archived'
+        else if (bActive === false && aActive === true) action = 'unarchived'
+        const bs = String(b.status || '')
+        const as = String(a.status || '')
+        if (bs !== as && (as === 'void' || as === 'voided')) action = 'voided'
+        else if (bs !== as && (as === 'archived' || as === 'cancelled' || as === 'canceled')) action = 'status_changed'
+      } catch {}
+      addAudit(resource, id, action, before, row, actor, meta)
       if (resource === 'property_deep_cleaning') {
         try { await upsertWorkTaskFromDeepCleaningRow(row) } catch {}
       }
@@ -2772,9 +2793,25 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
     const arrKey = camelToArrayKey(resource)
     const arr = (db as any)[arrKey] || []
     const idx = arr.findIndex((x: any) => x.id === id)
+    const before = idx !== -1 ? { ...arr[idx] } : null
     const merged = { ...(arr[idx] || { id }), ...payload }
     if (idx !== -1) arr[idx] = merged; else arr.push(merged)
-    addAudit(resource, id, 'update', null, merged, (req as any).user?.sub)
+    const actor = (req as any).user?.sub
+    const meta = { ip: req.ip, user_agent: req.headers['user-agent'] }
+    let action = 'update'
+    try {
+      const b: any = before || {}
+      const a: any = merged || {}
+      const bActive = b.is_active
+      const aActive = a.is_active
+      if (bActive === true && aActive === false) action = 'archived'
+      else if (bActive === false && aActive === true) action = 'unarchived'
+      const bs = String(b.status || '')
+      const as = String(a.status || '')
+      if (bs !== as && (as === 'void' || as === 'voided')) action = 'voided'
+      else if (bs !== as && (as === 'archived' || as === 'cancelled' || as === 'canceled')) action = 'status_changed'
+    } catch {}
+    addAudit(resource, id, action, before, merged, actor, meta)
     return res.json(merged)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update failed' })
@@ -2786,6 +2823,12 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
   try {
     if (hasPg) {
+      let before: any = null
+      try {
+        const rowsRaw = await pgSelect(resource, '*', { id })
+        const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
+        before = rows[0] || null
+      } catch {}
       if (resource === 'recurring_payments') {
         const purge = String((req.query as any)?.purge || '') === '1'
         if (!purge) {
@@ -2810,19 +2853,20 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
             deleted_template: Number(dt.rowCount || 0),
           }
         })
-        addAudit(resource, id, 'delete', null, null, (req as any).user?.sub)
+        addAudit(resource, id, 'delete', before, null, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
         return res.json({ ok: true, ...result })
       }
-      await pgDelete(resource, id)
-      addAudit(resource, id, 'delete', null, null, (req as any).user?.sub)
+      const deleted = await pgDelete(resource, id)
+      addAudit(resource, id, 'delete', before, deleted || null, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
       return res.json({ ok: true })
     }
     // Supabase branch removed
     const arrKey = camelToArrayKey(resource)
     const arr = (db as any)[arrKey] || []
     const idx = arr.findIndex((x: any) => x.id === id)
+    const before = idx !== -1 ? { ...arr[idx] } : null
     if (idx !== -1) arr.splice(idx, 1)
-    addAudit(resource, id, 'delete', null, null, (req as any).user?.sub)
+    addAudit(resource, id, 'delete', before, null, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
     return res.json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'delete failed' })

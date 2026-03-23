@@ -751,7 +751,17 @@ export default function MaintenanceRecordsUnified() {
               return (
                 <Space direction="vertical" style={{ width: '100%' }} data-page-root="maintenance-records">
                   {filtered.map(r => (
-                    <Card size="small" key={r.id} style={{ borderRadius: 12 }}>
+                    <Card
+                      size="small"
+                      key={r.id}
+                      style={{ borderRadius: 12, cursor: 'pointer' }}
+                      onClick={(e: any) => {
+                        const t = (e as any)?.target as any
+                        const hit = t?.closest?.('button,a,input,textarea,select,option,.ant-select,.ant-dropdown,.ant-checkbox-wrapper,.ant-popover,.ant-modal,.ant-drawer')
+                        if (hit) return
+                        openView(r)
+                      }}
+                    >
                       <Space direction="vertical" style={{ width: '100%' }}>
                         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 8 }}>
                           <div>房号：{String((r as any).code || r.property_id || '')}</div>
@@ -822,6 +832,15 @@ export default function MaintenanceRecordsUnified() {
                   rowKey={r=>r.id}
                   dataSource={filtered}
                   loading={loading}
+                  onRow={(record: any) => ({
+                    onClick: (e: any) => {
+                      const t = (e as any)?.target as any
+                      const hit = t?.closest?.('button,a,input,textarea,select,option,.ant-select,.ant-dropdown,.ant-checkbox-wrapper,.ant-popover,.ant-modal,.ant-drawer')
+                      if (hit) return
+                      openView(record as any)
+                    },
+                    style: { cursor: 'pointer' },
+                  })}
                   pagination={{
                     current: page,
                     pageSize,
@@ -864,7 +883,18 @@ export default function MaintenanceRecordsUnified() {
         ) : null}
       </Modal>
 
-      <Drawer open={viewOpen} onClose={()=>setViewOpen(false)} placement="right" width={isMobile ? 420 : 720}>
+      <Drawer
+        open={viewOpen}
+        onClose={()=>setViewOpen(false)}
+        placement="right"
+        width={isMobile ? 420 : 720}
+        footer={
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <Button onClick={() => setViewOpen(false)}>关闭</Button>
+            {viewRow && hasPerm('property_maintenance.write') ? <Button type="primary" onClick={() => { setViewOpen(false); openEdit(viewRow) }}>编辑记录</Button> : null}
+          </div>
+        }
+      >
         <Space direction="vertical" style={{ width: '100%' }}>
           <Typography.Title level={4} style={{ margin: 0 }}>维修详情</Typography.Title>
           <Typography.Text type="secondary">工单编号：{(viewRow as any)?.work_no || viewRow?.id}</Typography.Text>

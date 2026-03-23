@@ -308,8 +308,9 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
 
   async function loadAudits(id: string) {
     try {
-      const rows = await getJSON<any[]>(`/audits?entity=Invoice&entity_id=${encodeURIComponent(id)}`)
-      setAuditRows(Array.isArray(rows) ? rows : [])
+      const j = await getJSON<any>(`/audits?entity=Invoice&entity_id=${encodeURIComponent(id)}`)
+      const rows = Array.isArray(j) ? j : (Array.isArray(j?.items) ? j.items : [])
+      setAuditRows(rows)
     } catch {
       setAuditRows([])
     }

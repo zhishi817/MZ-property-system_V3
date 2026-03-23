@@ -6,6 +6,7 @@ dotenv.config()
 
 import cron from 'node-cron'
 import { hasPg, pgPool } from './dbAdapter'
+import { v4 as uuid } from 'uuid'
 
 function boolEnv(name: string, def: boolean): boolean {
   const v = process.env[name]
@@ -15,12 +16,42 @@ function boolEnv(name: string, def: boolean): boolean {
 }
 
 async function runOnce() {
+  let jr: any = null
+  const startedAt = Date.now()
+  try {
+    const { createJobRun } = require('./services/jobRuns')
+    jr = await createJobRun({ job_name: 'cleaning_sync_jobs', schedule_name: 'cron', trigger_source: 'schedule', run_id: uuid() })
+  } catch {}
   const { processCleaningSyncJobsOnce } = require('./services/cleaningSyncJobsWorker')
-  const r = await processCleaningSyncJobsOnce({
-    limit: Math.min(20, Number(process.env.CLEANING_SYNC_JOBS_BATCH || 10)),
-    reclaim_timeout_minutes: Math.min(120, Math.max(1, Number(process.env.CLEANING_SYNC_JOBS_RECLAIM_MINUTES || 10))),
-  })
-  console.log(`[cleaning-sync-jobs][run-once] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0} reclaimed=${r.reclaimed || 0}`)
+  try {
+    const r = await processCleaningSyncJobsOnce({
+      limit: Math.min(20, Number(process.env.CLEANING_SYNC_JOBS_BATCH || 10)),
+      reclaim_timeout_minutes: Math.min(120, Math.max(1, Number(process.env.CLEANING_SYNC_JOBS_RECLAIM_MINUTES || 10))),
+    })
+    try {
+      if (jr?.id) {
+        const { finishJobRun } = require('./services/jobRuns')
+        await finishJobRun({
+          id: String(jr.id),
+          orders_scanned: Number(r.processed || 0),
+          orders_succeeded: Number(r.ok || 0),
+          orders_failed: Number(r.failed || 0),
+          duration_ms: Date.now() - startedAt,
+          result: r,
+        })
+      }
+    } catch {}
+    console.log(`[cleaning-sync-jobs][run-once] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0} reclaimed=${r.reclaimed || 0}`)
+    return
+  } catch (e: any) {
+    try {
+      if (jr?.id) {
+        const { finishJobRun } = require('./services/jobRuns')
+        await finishJobRun({ id: String(jr.id), duration_ms: Date.now() - startedAt, error_message: String(e?.message || ''), result: { message: String(e?.message || ''), code: String(e?.code || '') } })
+      }
+    } catch {}
+    throw e
+  }
 }
 
 async function main() {
@@ -71,4 +102,3 @@ main().catch((e: any) => {
   try { pgPool?.end?.() } catch {}
   process.exit(1)
 })
-

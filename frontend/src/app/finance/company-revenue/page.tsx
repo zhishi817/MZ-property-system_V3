@@ -1,10 +1,11 @@
 "use client"
-import { Card, DatePicker, Table, Space, Button, Modal, Form, InputNumber, Select, DatePicker as DP, Input, message, Segmented, Upload, Typography } from 'antd'
+import { Card, DatePicker, Table, Space, Button, Modal, Form, InputNumber, Select, DatePicker as DP, Input, message, Segmented, Upload, Typography, Divider, Drawer, Descriptions } from 'antd'
 import { LeftOutlined, RightOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { getJSON, API_BASE, authHeaders, apiList, apiCreate, apiUpdate, apiDelete } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
+import AuditTrail from '../../../components/AuditTrail'
 
 type Order = { id: string; price?: number; cleaning_fee?: number; checkin?: string; checkout?: string; property_id?: string }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; occurred_at: string }
@@ -27,6 +28,9 @@ export default function CompanyRevenuePage() {
   const [editingIncome, setEditingIncome] = useState<Tx | null>(null)
   const [editingExpense, setEditingExpense] = useState<any | null>(null)
   const [expenseInvoiceFiles, setExpenseInvoiceFiles] = useState<any[]>([])
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [detailKind, setDetailKind] = useState<'income' | 'expense'>('income')
+  const [detailRow, setDetailRow] = useState<any | null>(null)
   const [shareOpen, setShareOpen] = useState(false)
   const [shareUrl, setShareUrl] = useState('')
   const [sharePwdUpdatedAt, setSharePwdUpdatedAt] = useState<string | null>(null)
@@ -43,6 +47,20 @@ export default function CompanyRevenuePage() {
       arr.sort((a:any,b:any)=> String(b.occurred_at).localeCompare(String(a.occurred_at)))
       setCompanyExpenses(arr)
     }).catch(()=>setCompanyExpenses([]))
+  }
+
+  function openEditIncomeRow(r: any) {
+    setEditingIncome(r)
+    setIncomeOpen(true)
+    incomeForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, note: r.note, property_id: r.property_id })
+  }
+
+  function openEditExpenseRow(r: any) {
+    setEditingExpense(r)
+    setExpenseOpen(true)
+    const inv = String(r.invoice_url || '')
+    expenseForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, other_detail: r.category === 'other' ? r.category_detail : undefined, note: r.note, invoice_url: inv || undefined })
+    setExpenseInvoiceFiles(inv ? [{ uid: 'invoice', name: inv.split('/').pop() || 'invoice', status: 'done', url: absUrl(inv) }] : [])
   }
   useEffect(() => { loadAll() }, [])
   useEffect(() => {
@@ -252,9 +270,117 @@ export default function CompanyRevenuePage() {
         </>
       ) : (
         <>
-          <Table rowKey={(r)=>r.id} title={()=>'收入明细'} pagination={{ pageSize: 10 }} dataSource={incomeDetails} columns={[{ title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') }, { title:'类别', dataIndex:'category', width: COL.category }, { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` }, { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' }, { title:'房号', dataIndex:'property_code', width: COL.property }, { title:'备注', dataIndex:'note', width: COL.note }, { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (<Space><Button onClick={() => { setEditingIncome(r); setIncomeOpen(true); incomeForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, note: r.note, property_id: r.property_id }) }}>编辑</Button><Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_incomes', r.id); apiList<any[]>('company_incomes').then((rows)=>setCompanyIncomes(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button></Space>) }]} />
+          <Table
+            rowKey={(r)=>r.id}
+            title={()=>'收入明细'}
+            pagination={{ pageSize: 10 }}
+            dataSource={incomeDetails}
+            onRow={(record: any) => ({
+              onClick: (e: any) => {
+                const t = (e as any)?.target as any
+                const hit = t?.closest?.('button,a,input,textarea,select,option,.ant-select,.ant-dropdown,.ant-checkbox-wrapper,.ant-popover,.ant-modal,.ant-drawer')
+                if (hit) return
+                setDetailKind('income')
+                setDetailRow(record)
+                setDetailOpen(true)
+              },
+              style: { cursor: 'pointer' },
+            })}
+            columns={[
+              { title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') },
+              { title:'类别', dataIndex:'category', width: COL.category },
+              { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` },
+              { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' },
+              { title:'房号', dataIndex:'property_code', width: COL.property },
+              { title:'备注', dataIndex:'note', width: COL.note },
+              { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (
+                <Space>
+                  <Button onClick={() => openEditIncomeRow(r)}>编辑</Button>
+                  <Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_incomes', r.id); apiList<any[]>('company_incomes').then((rows)=>setCompanyIncomes(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button>
+                </Space>
+              ) }
+            ]}
+          />
           <div style={{ height: 12 }} />
-          <Table rowKey={(r)=>r.id} title={()=>'支出明细'} pagination={{ pageSize: 10 }} dataSource={expenseDetails} columns={[{ title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') }, { title:'类别', dataIndex:'category', width: COL.category, render:(v:any)=>expenseCategoryLabel(v) }, { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` }, { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' }, { title:'发票', dataIndex:'invoice_url', width: 90, align:'center', render: (v:any) => v ? <Button size="small" onClick={() => { const u = absUrl(String(v||'')); if (u) window.open(u, '_blank', 'noopener,noreferrer') }}>查看</Button> : '-' }, { title:'其他支出描述', dataIndex:'category_detail', width: COL.other, render: (v:any, r:any) => (r.category === 'other' ? (v || '-') : '-') }, { title:'备注', dataIndex:'note', width: COL.note }, { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (<Space><Button onClick={() => { setEditingExpense(r); setExpenseOpen(true); const inv = String(r.invoice_url || ''); expenseForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, other_detail: r.category === 'other' ? r.category_detail : undefined, note: r.note, invoice_url: inv || undefined }); setExpenseInvoiceFiles(inv ? [{ uid: 'invoice', name: inv.split('/').pop() || 'invoice', status: 'done', url: absUrl(inv) }] : []) }}>编辑</Button><Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_expenses', r.id); apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button></Space>) }]} />
+          <Table
+            rowKey={(r)=>r.id}
+            title={()=>'支出明细'}
+            pagination={{ pageSize: 10 }}
+            dataSource={expenseDetails}
+            onRow={(record: any) => ({
+              onClick: (e: any) => {
+                const t = (e as any)?.target as any
+                const hit = t?.closest?.('button,a,input,textarea,select,option,.ant-select,.ant-dropdown,.ant-checkbox-wrapper,.ant-popover,.ant-modal,.ant-drawer')
+                if (hit) return
+                setDetailKind('expense')
+                setDetailRow(record)
+                setDetailOpen(true)
+              },
+              style: { cursor: 'pointer' },
+            })}
+            columns={[
+              { title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') },
+              { title:'类别', dataIndex:'category', width: COL.category, render:(v:any)=>expenseCategoryLabel(v) },
+              { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` },
+              { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' },
+              { title:'发票', dataIndex:'invoice_url', width: 90, align:'center', render: (v:any) => v ? <Button size="small" onClick={(e: any) => { e?.stopPropagation?.(); const u = absUrl(String(v||'')); if (u) window.open(u, '_blank', 'noopener,noreferrer') }}>查看</Button> : '-' },
+              { title:'其他支出描述', dataIndex:'category_detail', width: COL.other, render: (v:any, r:any) => (r.category === 'other' ? (v || '-') : '-') },
+              { title:'备注', dataIndex:'note', width: COL.note },
+              { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (
+                <Space>
+                  <Button onClick={() => openEditExpenseRow(r)}>编辑</Button>
+                  <Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_expenses', r.id); apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button>
+                </Space>
+              ) }
+            ]}
+          />
+
+          <Drawer
+            open={detailOpen}
+            onClose={() => { setDetailOpen(false); setDetailRow(null) }}
+            title={detailKind === 'income' ? '收入详情' : '支出详情'}
+            width={560}
+            placement="right"
+            footer={
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <Button onClick={() => { setDetailOpen(false); setDetailRow(null) }}>关闭</Button>
+                {detailRow ? (
+                  <Button type="primary" onClick={() => {
+                    const r = detailRow
+                    const k = detailKind
+                    setDetailOpen(false)
+                    setDetailRow(null)
+                    if (k === 'income') openEditIncomeRow(r)
+                    else openEditExpenseRow(r)
+                  }}>编辑记录</Button>
+                ) : null}
+              </div>
+            }
+          >
+            {detailRow ? (
+              <>
+                <Descriptions bordered size="small" column={1}>
+                  <Descriptions.Item label="日期">{String(detailRow.occurred_at || '').slice(0, 10)}</Descriptions.Item>
+                  <Descriptions.Item label="类别">{detailKind === 'income' ? String(detailRow.category || '-') : expenseCategoryLabel(detailRow.category)}</Descriptions.Item>
+                  <Descriptions.Item label="金额">{`$${fmt(Number(detailRow.amount || 0))}`}</Descriptions.Item>
+                  <Descriptions.Item label="币种">{String(detailRow.currency || 'AUD')}</Descriptions.Item>
+                  <Descriptions.Item label="房号">{String(detailRow.property_code || detailRow.property_id || '')}</Descriptions.Item>
+                  <Descriptions.Item label="备注">{String(detailRow.note || '')}</Descriptions.Item>
+                  {detailKind === 'expense' ? (
+                    <>
+                      <Descriptions.Item label="其他支出描述">{detailRow.category === 'other' ? String(detailRow.category_detail || '') : ''}</Descriptions.Item>
+                      <Descriptions.Item label="发票">{detailRow.invoice_url ? <Button size="small" onClick={() => { const u = absUrl(String(detailRow.invoice_url || '')); if (u) window.open(u, '_blank', 'noopener,noreferrer') }}>查看</Button> : '-'}</Descriptions.Item>
+                    </>
+                  ) : null}
+                </Descriptions>
+                <Divider orientation="left">操作记录</Divider>
+                <AuditTrail refs={[
+                  { entity: detailKind === 'income' ? 'company_incomes' : 'company_expenses', entity_id: String(detailRow.id) },
+                  { entity: detailKind === 'income' ? 'CompanyIncome' : 'CompanyExpense', entity_id: String(detailRow.id) },
+                ]} />
+              </>
+            ) : null}
+          </Drawer>
         </>
       )}
 
@@ -268,6 +394,15 @@ export default function CompanyRevenuePage() {
           <Form.Item name="property_id" label="房号(可选)"><Select allowClear showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))} /></Form.Item>
           <Form.Item name="note" label="备注"><Input /></Form.Item>
         </Form>
+        {editingIncome ? (
+          <>
+            <Divider orientation="left">操作记录</Divider>
+            <AuditTrail refs={[
+              { entity: 'company_incomes', entity_id: String(editingIncome.id) },
+              { entity: 'CompanyIncome', entity_id: String(editingIncome.id) },
+            ]} />
+          </>
+        ) : null}
       </Modal>
 
       <Modal title={editingExpense ? '编辑支出' : '记录支出'} open={expenseOpen} onCancel={() => { setExpenseOpen(false); setEditingExpense(null); setExpenseInvoiceFiles([]) }} onOk={submitExpense} confirmLoading={savingExpense}>
@@ -316,6 +451,15 @@ export default function CompanyRevenuePage() {
               </Upload>
             </Form.Item>
           </Form>
+          {editingExpense ? (
+            <>
+              <Divider orientation="left">操作记录</Divider>
+              <AuditTrail refs={[
+                { entity: 'company_expenses', entity_id: String(editingExpense.id) },
+                { entity: 'CompanyExpense', entity_id: String(editingExpense.id) },
+              ]} />
+            </>
+          ) : null}
       </Modal>
       <Modal open={shareOpen} onCancel={() => setShareOpen(false)} footer={null} title="公司支出记录分享链接">
         <Space direction="vertical" style={{ width: '100%' }}>

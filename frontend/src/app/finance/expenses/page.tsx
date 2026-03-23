@@ -7,6 +7,7 @@ import { API_BASE, getJSON, authHeaders, apiList, apiCreate, apiUpdate, apiDelet
 import { sortProperties } from '../../../lib/properties'
 import { hasPerm } from '../../../lib/auth'
 import { getExpenseDateForDisplay } from '../../../lib/expenseDate'
+import AuditTrail from '../../../components/AuditTrail'
 
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; fixed_expense_id?: string; occurred_at: string; due_date?: string; paid_date?: string; created_at?: string; note?: string; ref_type?: string; ref_id?: string; generated_from?: string; is_auto?: boolean; source_title?: string; source_summary?: string }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
@@ -558,7 +559,27 @@ export default function ExpensesPage() {
         placement="right"
         footer={
           <div style={{ textAlign: 'right' }}>
-            <Button onClick={() => { setDetailOpen(false); setDetailRecord(null) }}>关闭</Button>
+            <Space>
+              <Button onClick={() => { setDetailOpen(false); setDetailRecord(null) }}>关闭</Button>
+              {detailRecord && (hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) ? (
+                <Button type="primary" onClick={() => {
+                  const r = detailRecord
+                  setDetailOpen(false)
+                  setDetailRecord(null)
+                  setEditing(r)
+                  setOpen(true)
+                  form.setFieldsValue({
+                    paid_date: dayjs(r.paid_date || r.occurred_at),
+                    property_id: r.property_id,
+                    category: r.category,
+                    other_detail: r.category === 'other' ? r.category_detail : undefined,
+                    amount: r.amount,
+                    currency: r.currency,
+                    note: r.note,
+                  })
+                }}>编辑记录</Button>
+              ) : null}
+            </Space>
           </div>
         }
       >
@@ -589,6 +610,8 @@ export default function ExpensesPage() {
                 </Descriptions>
               </>
             ) : null}
+            <Divider orientation="left">操作记录</Divider>
+            <AuditTrail refs={[{ entity: 'property_expenses', entity_id: detailRecord.id }]} />
           </>
         ) : null}
       </Drawer>
