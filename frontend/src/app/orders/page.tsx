@@ -14,6 +14,7 @@ import { monthSegments, getMonthSegmentsForProperty, calcOrderMonthAmounts, toDa
 import { sortProperties } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 import { buildSegments, placeIntoLanes } from '../../lib/calendarTimeline'
+import AuditTrail from '../../components/AuditTrail'
 
 type Order = { id: string; source?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; note?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number; email_header_at?: string; total_payment_raw?: number; processed_status?: string }
 // guest_phone 在后端已支持，这里表单也支持录入
@@ -676,6 +677,21 @@ export default function OrdersPage() {
       setDetailDeductions(Array.isArray(ds) ? ds : [])
     } finally { setDetailLoading(false) }
   }
+
+  function jumpToCalendarByConfirmationCode(raw: string) {
+    const q = String(raw || '').trim().toLowerCase()
+    if (!q) { message.warning('请输入确认码'); return }
+    const arr = Array.isArray(data) ? data : []
+    const exact = arr.find(o => String((o as any).confirmation_code || '').trim().toLowerCase() === q)
+    const hit = exact || arr.find(o => String((o as any).confirmation_code || '').trim().toLowerCase().includes(q))
+    if (!hit) { message.warning('未找到对应订单'); return }
+    const pid = String((hit as any).property_id || '').trim()
+    if (!pid) { message.warning('订单缺少房源信息'); return }
+    setCalPid(pid)
+    const d0 = dayjs(String((hit as any).checkin || '').slice(0, 10))
+    setCalMonth(d0.isValid() ? d0 : dayjs())
+    setView('calendar')
+  }
   async function saveDetailDeduction() {
     if (!detail) return
     const payload = { amount: detailDedAmount, item_desc: detailDedDesc, note: detailDedNote }
@@ -1274,7 +1290,8 @@ export default function OrdersPage() {
         {view==='list' ? (
           <>
             <Input placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} style={{ width: 200 }} />
-            <Input placeholder="按确认码搜索" allowClear value={confQuery} onChange={(e) => setConfQuery(e.target.value)} style={{ width: 200 }} />
+            <Input placeholder="按确认码搜索" allowClear value={confQuery} onChange={(e) => setConfQuery(e.target.value)} onPressEnter={() => jumpToCalendarByConfirmationCode(confQuery)} style={{ width: 200 }} />
+            <Button onClick={() => jumpToCalendarByConfirmationCode(confQuery)}>跳转日历</Button>
             <DatePicker picker="month" value={monthFilter as any} onChange={setMonthFilter as any} allowClear placeholder="选择月份(可选)" />
             <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} format="DD/MM/YYYY" />
           </>
@@ -1317,6 +1334,15 @@ export default function OrdersPage() {
         <Table
           rowKey={(r) => String((r as any).__rid || r.id)}
           columns={columns as any}
+          onRow={(record: any) => ({
+            onClick: (e: any) => {
+              const t = e?.target as any
+              const hit = t?.closest?.('button,a,input,textarea,select,option,.ant-select,.ant-dropdown,.ant-checkbox-wrapper,.ant-popover,.ant-modal,.ant-drawer')
+              if (hit) return
+              openDetail(record)
+            },
+            style: { cursor: 'pointer' },
+          })}
           dataSource={(function(){
             const ms = (monthFilter || dayjs()).startOf('month')
             const me = ms.add(1, 'month').startOf('month')
@@ -2049,7 +2075,20 @@ export default function OrdersPage() {
           </div>
         </Form>
     </Drawer>
-    <Drawer open={view==='list' && detailOpen} onClose={() => setDetailOpen(false)} title="订单详情" width={520}>
+    <Drawer
+      open={detailOpen}
+      onClose={() => setDetailOpen(false)}
+      title="订单详情"
+      width={520}
+      footer={
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <Button onClick={() => setDetailOpen(false)}>关闭</Button>
+          {detail && hasPerm('order.write') ? (
+            <Button type="primary" onClick={() => { setDetailOpen(false); openEdit(detail) }}>编辑记录</Button>
+          ) : null}
+        </div>
+      }
+    >
       {detailLoading ? <div style={{ padding: 8 }}><span>加载中...</span></div> : null}
       {detail && (
         <Descriptions bordered size="small" column={1}>
@@ -2081,6 +2120,11 @@ export default function OrdersPage() {
           ) : null }
         ]} />
       </Card>
+      {detail ? (
+        <div style={{ marginTop: 12 }}>
+          <AuditTrail refs={[{ entity: 'Order', entity_id: String(detail.id) }]} />
+        </div>
+      ) : null}
     </Drawer>
     <Modal open={importOpen} onCancel={() => { setImportOpen(false); setImportPercent(0); setImportProcessed(0); setImportTotal(null) }} footer={null} title="批量导入订单" width={960} styles={{ body: { maxHeight: 520, overflow: 'auto' } }}>
       <Upload.Dragger {...uploadProps} disabled={importing}>

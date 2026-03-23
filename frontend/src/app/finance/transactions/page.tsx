@@ -1,10 +1,11 @@
 "use client"
-import { Alert, Button, Card, DatePicker, Drawer, Form, Input, InputNumber, Popconfirm, Select, Space, Switch, Table, message } from 'antd'
+import { Alert, Button, Card, DatePicker, Drawer, Form, Input, InputNumber, Popconfirm, Select, Space, Switch, Table, message, Divider, Descriptions } from 'antd'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { deleteJSON, getJSON, patchJSON, postJSON } from '../../../lib/api'
 import { isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
 import { sortPropertiesByRegionThenCode } from '../../../lib/properties'
+import AuditTrail from '../../../components/AuditTrail'
 
 type Property = { id: string; code?: string; address?: string; region?: string }
 type Tx = {
@@ -49,6 +50,8 @@ export default function FinanceTransactionsPage() {
   const [onlyFurniture, setOnlyFurniture] = useState<boolean>(true)
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Tx | null>(null)
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [detail, setDetail] = useState<Tx | null>(null)
   const [form] = Form.useForm<FormValues>()
 
   async function reload() {
@@ -230,7 +233,52 @@ export default function FinanceTransactionsPage() {
         rowKey={r => String((r as any).id)}
         dataSource={rows}
         columns={columns}
+        onRow={(record: any) => ({
+          onClick: (e: any) => {
+            const t = (e as any)?.target as any
+            const hit = t?.closest?.('button,a,input,textarea,select,option,.ant-select,.ant-dropdown,.ant-checkbox-wrapper,.ant-popover,.ant-modal,.ant-drawer')
+            if (hit) return
+            setDetail(record as any)
+            setDetailOpen(true)
+          },
+          style: { cursor: 'pointer' },
+        })}
       />
+
+      <Drawer
+        open={detailOpen}
+        width={520}
+        title="交易详情"
+        onClose={() => { setDetailOpen(false); setDetail(null) }}
+        footer={
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <Button onClick={() => { setDetailOpen(false); setDetail(null) }}>关闭</Button>
+            {detail ? <Button type="primary" onClick={() => { const r = detail; setDetailOpen(false); setDetail(null); openEdit(r) }}>编辑记录</Button> : null}
+          </div>
+        }
+      >
+        {detail ? (
+          <>
+            <Descriptions bordered size="small" column={1}>
+              <Descriptions.Item label="日期">{String(detail.occurred_at || '').slice(0,10)}</Descriptions.Item>
+              <Descriptions.Item label="房源">{(() => {
+                const p = propsById.get(String(detail.property_id || ''))
+                return p ? (p.code || p.address || p.id) : (String(detail.property_id || '') || '-')
+              })()}</Descriptions.Item>
+              <Descriptions.Item label="类型">{detail.kind === 'income' ? '收入' : '支出'}</Descriptions.Item>
+              <Descriptions.Item label="类别">{String(detail.category || '-')}{detail.category_detail ? ` / ${String(detail.category_detail)}` : ''}</Descriptions.Item>
+              <Descriptions.Item label="金额">{detail.kind === 'expense' ? `-$${fmt(detail.amount)}` : `$${fmt(detail.amount)}`}</Descriptions.Item>
+              <Descriptions.Item label="备注">{String(detail.note || '')}</Descriptions.Item>
+              <Descriptions.Item label="关联">{`ref_type=${String(detail.ref_type || '-')}, ref_id=${String(detail.ref_id || '-')}`}</Descriptions.Item>
+            </Descriptions>
+            <Divider orientation="left">操作记录</Divider>
+            <AuditTrail refs={[
+              { entity: 'finance_transactions', entity_id: String(detail.id) },
+              { entity: 'FinanceTransaction', entity_id: String(detail.id) },
+            ]} />
+          </>
+        ) : null}
+      </Drawer>
 
       <Drawer
         open={open}
@@ -269,6 +317,15 @@ export default function FinanceTransactionsPage() {
             <Input.TextArea rows={3} placeholder="例如：房东转入家具费、用于抵扣租金等" />
           </Form.Item>
         </Form>
+        {editing ? (
+          <>
+            <Divider orientation="left">操作记录</Divider>
+            <AuditTrail refs={[
+              { entity: 'finance_transactions', entity_id: String(editing.id) },
+              { entity: 'FinanceTransaction', entity_id: String(editing.id) },
+            ]} />
+          </>
+        ) : null}
       </Drawer>
     </Card>
   )

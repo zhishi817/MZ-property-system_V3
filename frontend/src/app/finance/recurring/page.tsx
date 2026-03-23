@@ -9,6 +9,7 @@ import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
 import { isDueForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
 import { isAutoPaidInRent } from '../../../lib/recurringPaymentRules'
+import AuditTrail from '../../../components/AuditTrail'
 
 type Recurring = { id: string; property_id?: string; property_ids?: string[]; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; is_paid?: boolean; is_due_month?: boolean; created_at?: string }
 type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
@@ -969,8 +970,9 @@ export default function RecurringPage() {
       </Drawer>
       <Drawer open={viewOpen} onClose={()=>{ setViewOpen(false); setViewing(null) }} title="查看固定支出" width={640}>
         {viewing ? (
-          <Descriptions bordered size="small" column={1} style={{ marginTop: 8 }}>
-            <Descriptions.Item label="对象">{(viewing.scope==='company' || !viewing.property_id) ? '公司' : getLabel(viewing.property_id)}</Descriptions.Item>
+          <>
+            <Descriptions bordered size="small" column={1} style={{ marginTop: 8 }}>
+              <Descriptions.Item label="对象">{(viewing.scope==='company' || !viewing.property_id) ? '公司' : getLabel(viewing.property_id)}</Descriptions.Item>
             {String((viewing as any).amount_mode || '') === 'percent_of_property_total_income' ? (
               <Descriptions.Item label="关联房源">{(() => {
                 const pids = normalizeIds((viewing as any).property_ids)
@@ -1003,7 +1005,13 @@ export default function RecurringPage() {
             <Descriptions.Item label="Bpay">{(viewing.bpay_code||viewing.pay_ref) ? `Code: ${viewing.bpay_code||'-'} | Ref: ${viewing.pay_ref||'-'}` : '-'}</Descriptions.Item>
             <Descriptions.Item label="Bank Ref">{viewing.payment_type==='bank_account' && viewing.pay_ref ? viewing.pay_ref : '-'}</Descriptions.Item>
             <Descriptions.Item label="Mobile">{viewing.pay_mobile_number || '-'}</Descriptions.Item>
-          </Descriptions>
+            </Descriptions>
+            <Divider orientation="left">操作记录</Divider>
+            <AuditTrail refs={[
+              { entity: 'recurring_payments', entity_id: String(viewing.id) },
+              { entity: 'RecurringPayment', entity_id: String(viewing.id) },
+            ]} />
+          </>
         ) : null}
       </Drawer>
       <style jsx>{`

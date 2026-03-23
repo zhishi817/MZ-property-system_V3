@@ -230,6 +230,9 @@ ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS auto_sync_enabled boolean DE
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS sync_fingerprint text;
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS source text DEFAULT 'auto';
 ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS cleaner_id text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspector_id text;
+ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS nights_override int;
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'uniq_cleaning_tasks_order_type') THEN
     CREATE UNIQUE INDEX uniq_cleaning_tasks_order_type ON cleaning_tasks(order_id, type) WHERE order_id IS NOT NULL;
@@ -241,12 +244,25 @@ DO $$ BEGIN
     ADD CONSTRAINT uniq_cleaning_tasks_order_task_type UNIQUE (order_id, task_type);
   END IF;
 END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uniq_cleaning_tasks_order_task_type_v3') THEN
+    BEGIN
+      ALTER TABLE cleaning_tasks ADD CONSTRAINT uniq_cleaning_tasks_order_task_type_v3 UNIQUE (order_id, task_type);
+    EXCEPTION WHEN duplicate_table OR duplicate_object THEN
+      NULL;
+    END;
+  END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_cleaning_task_date ON cleaning_tasks(task_date);
 CREATE INDEX IF NOT EXISTS idx_cleaning_order_id ON cleaning_tasks(order_id);
+CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_task_date ON cleaning_tasks(task_date);
+CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_order_id ON cleaning_tasks(order_id);
+CREATE INDEX IF NOT EXISTS idx_cleaning_tasks_status ON cleaning_tasks(status);
 
 -- Cleaning sync logs (auditable actions)
 CREATE TABLE IF NOT EXISTS cleaning_sync_logs (
   id text PRIMARY KEY,
+  job_id text,
   order_id text,
   task_id text,
   action text,
@@ -255,9 +271,13 @@ CREATE TABLE IF NOT EXISTS cleaning_sync_logs (
   meta jsonb,
   created_at timestamptz DEFAULT now()
 );
+ALTER TABLE cleaning_sync_logs ADD COLUMN IF NOT EXISTS job_id text;
 CREATE INDEX IF NOT EXISTS idx_cleaning_sync_logs_order ON cleaning_sync_logs(order_id);
 CREATE INDEX IF NOT EXISTS idx_cleaning_sync_logs_created_at ON cleaning_sync_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_cleaning_sync_logs_action ON cleaning_sync_logs(action);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_cleaning_sync_logs_job_action_task
+  ON cleaning_sync_logs(job_id, action, task_id)
+  WHERE job_id IS NOT NULL;
 
 -- Users table for system login
 CREATE TABLE IF NOT EXISTS users (
@@ -766,3 +786,18 @@ CREATE INDEX IF NOT EXISTS idx_cleaning_sync_jobs_status_next ON cleaning_sync_j
 CREATE INDEX IF NOT EXISTS idx_cleaning_sync_jobs_order ON cleaning_sync_jobs(order_id);
 CREATE INDEX IF NOT EXISTS idx_cleaning_sync_jobs_running ON cleaning_sync_jobs(running_started_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_cleaning_sync_jobs_order_action_active ON cleaning_sync_jobs(order_id, action) WHERE status IN ('pending','running');
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id text PRIMARY KEY,
+  entity text NOT NULL,
+  entity_id text NOT NULL,
+  action text NOT NULL,
+  actor_id text,
+  ip text,
+  user_agent text,
+  before_json jsonb,
+  after_json jsonb,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);

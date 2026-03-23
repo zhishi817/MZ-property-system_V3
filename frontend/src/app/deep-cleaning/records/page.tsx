@@ -724,6 +724,15 @@ export default function DeepCleaningRecordsPage() {
             rowKey={r=>String((r as any).id)}
             dataSource={rows}
             loading={loading}
+            onRow={(record: any) => ({
+              onClick: (e: any) => {
+                const t = (e as any)?.target as any
+                const hit = t?.closest?.('button,a,input,textarea,select,option,.ant-select,.ant-dropdown,.ant-checkbox-wrapper,.ant-popover,.ant-modal,.ant-drawer')
+                if (hit) return
+                setViewing(record as any)
+              },
+              style: { cursor: 'pointer' },
+            })}
             pagination={{
               current: page,
               pageSize,
@@ -1156,7 +1165,18 @@ export default function DeepCleaningRecordsPage() {
         ) : null}
       </Modal>
 
-      <Drawer open={!!viewing} onClose={()=>setViewing(null)} placement="right" width={isMobile ? 420 : 780}>
+      <Drawer
+        open={!!viewing}
+        onClose={()=>setViewing(null)}
+        placement="right"
+        width={isMobile ? 420 : 780}
+        footer={
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <Button onClick={() => setViewing(null)}>关闭</Button>
+            {viewing && (canWrite || canAudit) ? <Button type="primary" onClick={() => { const v = viewing; setViewing(null); openEdit(v) }}>编辑记录</Button> : null}
+          </div>
+        }
+      >
         <Space direction="vertical" style={{ width: '100%' }}>
           <Typography.Title level={4} style={{ margin: 0 }}>深度清洁详情</Typography.Title>
           <Typography.Text type="secondary">工单号：{viewing?.work_no || viewing?.id || '-'}</Typography.Text>

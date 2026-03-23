@@ -5,6 +5,7 @@ import { API_BASE } from '../../../lib/api'
 import dayjs from 'dayjs'
 import { toDayStr } from '../../../lib/orders'
 import { hasPerm } from '../../../lib/auth'
+import AuditTrail from '../../../components/AuditTrail'
 
 type Order = { id: string; source?: string; property_id?: string; checkin?: string; checkout?: string; status?: string }
 type Deduction = { id: string; order_id: string; amount: number; currency?: string; item_desc?: string; note?: string; created_at?: string; is_active?: boolean }
@@ -61,6 +62,9 @@ export default function OrderDetail({ params }: { params: { id: string } }) {
           <Descriptions.Item label="可见净额">{(order as any).visible_net_income ?? ((order as any).net_income || 0)}</Descriptions.Item>
         </Descriptions>
       )}
+      <div style={{ marginTop: 12 }}>
+        <AuditTrail refs={[{ entity: 'Order', entity_id: params.id }]} />
+      </div>
       {/* 清洁任务模块已移除 */}
 
       {/* 清洁任务模块已移除 */}

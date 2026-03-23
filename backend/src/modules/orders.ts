@@ -565,6 +565,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
               await enqueueCleaningSyncJobTx(client, { order_id: oid, action: 'updated', payload_snapshot: { id: oid, property_id: payload.property_id, checkin: payload.checkin, checkout: payload.checkout, status: payload.status } })
               return r1
             })
+            try { addAudit('Order', String(dup[0].id), 'update', dup[0], row, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] }) } catch {}
             try { broadcastOrdersUpdated({ action: 'update', id: String(dup[0].id) }) } catch {}
             return res.status(200).json(row || dup[0])
           } catch {}
@@ -613,6 +614,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
         }
         return r1
       })
+      try { addAudit('Order', String(row?.id || ''), 'create', null, row, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] }) } catch {}
       try { broadcastOrdersUpdated({ action: 'create', id: row?.id }) } catch {}
       return res.status(201).json(row)
     } catch (e: any) {
@@ -645,6 +647,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
             }
             return r1
           })
+          try { addAudit('Order', String(row?.id || ''), 'create', null, row, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] }) } catch {}
           return res.status(201).json(row)
         } catch (e2: any) {
           return res.status(500).json({ message: '数据库写入失败', error: String(e2?.message || '') })
@@ -657,6 +660,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   // Supabase removed
   // 无远端数据库，使用内存存储
   db.orders.push(newOrder)
+  try { addAudit('Order', String(newOrder.id), 'create', null, newOrder, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] }) } catch {}
   try { broadcastOrdersUpdated({ action: 'create', id: newOrder.id }) } catch {}
   syncCleaningTasksForOrderId(String(newOrder.id)).catch(() => {})
   return res.status(201).json(newOrder)
@@ -807,6 +811,12 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
         return r1
       })
       if (idx !== -1) db.orders[idx] = row as any
+      try {
+        const bs = String((base as any)?.status || '')
+        const as = String((row as any)?.status || '')
+        const action = bs !== as ? 'status_changed' : 'update'
+        addAudit('Order', String(id), action, base, row, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
+      } catch {}
       try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
       return res.json(row)
     } catch (e: any) {
@@ -842,6 +852,12 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
             return r1
           })
           if (idx !== -1) db.orders[idx] = row as any
+          try {
+            const bs = String((base as any)?.status || '')
+            const as = String((row as any)?.status || '')
+            const action = bs !== as ? 'status_changed' : 'update'
+            addAudit('Order', String(id), action, base, row, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
+          } catch {}
           return res.json(row)
         } catch (e2: any) {
           return res.status(500).json({ message: '数据库更新失败', error: String(e2?.message || '') })
@@ -853,6 +869,12 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
   }
   // Supabase branch removed
   if (idx !== -1) db.orders[idx] = updated
+  try {
+    const bs = String((base as any)?.status || '')
+    const as = String((updated as any)?.status || '')
+    const action = bs !== as ? 'status_changed' : 'update'
+    addAudit('Order', String(id), action, base, updated, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
+  } catch {}
   try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
   syncCleaningTasksForOrderId(String(id)).catch(() => {})
   return res.json(updated)
@@ -909,6 +931,7 @@ router.delete('/:id', requirePerm('order.write'), async (req, res) => {
       if (!deleted) return res.status(404).json({ message: 'order not found' })
       const idx = db.orders.findIndex((x) => x.id === id)
       if (idx !== -1) db.orders.splice(idx, 1)
+      try { addAudit('Order', String(id), 'delete', deleted, null, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] }) } catch {}
       try { broadcastOrdersUpdated({ action: 'delete', id }) } catch {}
       return res.json({ ok: true, id })
     } catch (e: any) {
@@ -921,6 +944,7 @@ router.delete('/:id', requirePerm('order.write'), async (req, res) => {
   if (idx === -1) return res.status(404).json({ message: 'order not found' })
   const removed = db.orders[idx]
   db.orders.splice(idx, 1)
+  try { addAudit('Order', String(id), 'delete', removed, null, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] }) } catch {}
   try { broadcastOrdersUpdated({ action: 'delete', id }) } catch {}
   return res.json({ ok: true, id: removed.id })
 })
