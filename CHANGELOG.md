@@ -1,5 +1,12 @@
 # Changelog
 
+## Dev (2026-03-24)
+
+- Version: `0.2.7-statement-pdf.20260324+build.3`
+- MZApp: `GET/POST /mzapp/property-feedbacks` supports mobile “问题反馈” and lists existing pending Maintenance/Deep Cleaning by property_id/property_code (joins properties and falls back to repair_orders), reducing duplicate submissions.
+- Cleaning App: `POST /cleaning-app/upload` watermark overlay supports bottom-right white text (with fallback lines when watermark_text missing).
+- DB: Add migration `20260324_property_maintenance_add_area.sql` (optional `property_maintenance.area`).
+
 ## Dev (2026-03-23)
 
 - Version: `0.2.7-statement-pdf.20260316+build.7`

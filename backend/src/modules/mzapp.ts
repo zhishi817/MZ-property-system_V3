@@ -1036,6 +1036,7 @@ router.get('/property-feedbacks', async (req, res) => {
   const wantInProgress = want.length ? want.includes('in_progress') : true
   const wantResolved = want.length ? want.includes('resolved') : false
   const wantCancelled = want.length ? want.includes('cancelled') : false
+  const openView = wantOpen && wantInProgress && !wantResolved && !wantCancelled
 
   const maintStatuses: string[] = []
   if (wantOpen) maintStatuses.push('pending', 'assigned')
@@ -1050,16 +1051,51 @@ router.get('/property-feedbacks', async (req, res) => {
     if (!hasPg || !pgPool) return res.json([])
     const out: any[] = []
 
+    const unresolvedSql =
+      openView
+        ? `(m.status IS NULL OR lower(m.status) NOT IN ('completed','done','ready','canceled','cancelled'))`
+        : `($3::text[] IS NULL OR m.status IS NULL OR m.status = ANY($3::text[]))`
+
     try {
       const r = await pgPool.query(
         `SELECT m.id, m.property_id, COALESCE(m.property_code, p.code) AS property_code,
-                m.category, m.category_detail, m.details, m.notes, m.photo_urls, m.submitter_name,
+                m.area, m.category, m.category_detail, m.details, m.notes, m.photo_urls, m.submitter_name,
                 m.submitted_at, m.created_at, m.status
            FROM property_maintenance m
            LEFT JOIN properties p ON p.id = m.property_id
           WHERE (($1::text IS NOT NULL AND m.property_id = $1) OR ($2::text IS NOT NULL AND COALESCE(m.property_code, p.code) = $2))
-            AND ($3::text[] IS NULL OR status IS NULL OR status = ANY($3::text[]))
-          ORDER BY COALESCE(submitted_at, created_at) DESC
+            AND (${unresolvedSql})
+          ORDER BY COALESCE(m.submitted_at, m.created_at) DESC
+          LIMIT $4`,
+        [propertyId || null, propertyCode || null, maintStatuses.length ? maintStatuses : null, limit],
+      )
+      for (const row of (r?.rows || [])) {
+        const mapped = mapWorkStatus(row.status)
+        out.push({
+          id: String(row.id),
+          property_id: row.property_id ? String(row.property_id) : propertyId || null,
+          kind: 'maintenance',
+          area: row.area || null,
+          category: row.category_detail || row.category || null,
+          detail: String(row.notes || row.details || ''),
+          media_urls: Array.isArray(row.photo_urls) ? row.photo_urls : row.photo_urls ? row.photo_urls : [],
+          created_by_name: row.submitter_name || null,
+          created_at: row.submitted_at || row.created_at || null,
+          status: mapped,
+        })
+      }
+    } catch {}
+
+    try {
+      const r = await pgPool.query(
+        `SELECT r.id, r.property_id, p.code AS property_code,
+                r.category, r.category_detail, r.detail, r.remark, r.attachment_urls, r.submitter_name,
+                r.submitted_at, r.created_at, r.status
+           FROM repair_orders r
+           LEFT JOIN properties p ON p.id = r.property_id
+          WHERE (($1::text IS NOT NULL AND r.property_id = $1) OR ($2::text IS NOT NULL AND p.code = $2))
+            AND (${openView ? `(r.status IS NULL OR lower(r.status) NOT IN ('completed','done','ready','canceled','cancelled'))` : `($3::text[] IS NULL OR r.status IS NULL OR r.status = ANY($3::text[]))`})
+          ORDER BY COALESCE(r.submitted_at, r.created_at) DESC
           LIMIT $4`,
         [propertyId || null, propertyCode || null, maintStatuses.length ? maintStatuses : null, limit],
       )
@@ -1071,8 +1107,8 @@ router.get('/property-feedbacks', async (req, res) => {
           kind: 'maintenance',
           area: null,
           category: row.category_detail || row.category || null,
-          detail: String(row.notes || row.details || ''),
-          media_urls: Array.isArray(row.photo_urls) ? row.photo_urls : row.photo_urls ? row.photo_urls : [],
+          detail: String(row.detail || row.remark || ''),
+          media_urls: Array.isArray(row.attachment_urls) ? row.attachment_urls : row.attachment_urls ? row.attachment_urls : [],
           created_by_name: row.submitter_name || null,
           created_at: row.submitted_at || row.created_at || null,
           status: mapped,
@@ -1088,8 +1124,8 @@ router.get('/property-feedbacks', async (req, res) => {
            FROM property_deep_cleaning d
            LEFT JOIN properties p ON p.id = d.property_id
           WHERE (($1::text IS NOT NULL AND d.property_id = $1) OR ($2::text IS NOT NULL AND COALESCE(d.property_code, p.code) = $2))
-            AND ($3::text[] IS NULL OR status IS NULL OR status = ANY($3::text[]))
-          ORDER BY COALESCE(submitted_at, created_at) DESC
+            AND (${openView ? `(d.status IS NULL OR lower(d.status) NOT IN ('completed','done','ready','canceled','cancelled'))` : `($3::text[] IS NULL OR d.status IS NULL OR d.status = ANY($3::text[]))`})
+          ORDER BY COALESCE(d.submitted_at, d.created_at) DESC
           LIMIT $4`,
         [propertyId || null, propertyCode || null, maintStatuses.length ? maintStatuses : null, limit],
       )
