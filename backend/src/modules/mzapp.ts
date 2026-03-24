@@ -1019,6 +1019,48 @@ function mapWorkStatus(raw: any): 'open' | 'in_progress' | 'resolved' | 'cancell
   return 'open'
 }
 
+async function ensurePropertyMaintenanceColumns() {
+  if (!pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_maintenance (
+    id text PRIMARY KEY,
+    property_id text,
+    occurred_at date,
+    worker_name text,
+    details text,
+    notes text,
+    created_by text,
+    created_at timestamptz DEFAULT now()
+  );`)
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category_detail text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
+}
+
+async function ensurePropertyDeepCleaningColumns() {
+  if (!pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_deep_cleaning (
+    id text PRIMARY KEY,
+    property_id text,
+    occurred_at date,
+    details text,
+    notes text,
+    created_by text,
+    created_at timestamptz DEFAULT now()
+  );`)
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS property_code text;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS status text;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS submitter_name text;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_desc text;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;')
+}
+
 router.get('/property-feedbacks', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
@@ -1057,6 +1099,9 @@ router.get('/property-feedbacks', async (req, res) => {
         : `($3::text[] IS NULL OR m.status IS NULL OR m.status = ANY($3::text[]))`
 
     try {
+      try {
+        await ensurePropertyMaintenanceColumns()
+      } catch {}
       const r = await pgPool.query(
         `SELECT m.id, m.property_id, COALESCE(m.property_code, p.code) AS property_code,
                 m.area, m.category, m.category_detail, m.details, m.notes, m.photo_urls, m.submitter_name,
@@ -1117,6 +1162,9 @@ router.get('/property-feedbacks', async (req, res) => {
     } catch {}
 
     try {
+      try {
+        await ensurePropertyDeepCleaningColumns()
+      } catch {}
       const r = await pgPool.query(
         `SELECT d.id, d.property_id, COALESCE(d.property_code, p.code) AS property_code,
                 d.project_desc, d.details, d.notes, d.photo_urls, d.attachment_urls, d.submitter_name,
