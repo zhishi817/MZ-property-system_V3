@@ -1019,6 +1019,36 @@ function mapWorkStatus(raw: any): 'open' | 'in_progress' | 'resolved' | 'cancell
   return 'open'
 }
 
+const colTypeCache = new Map<string, 'jsonb' | 'text[]' | 'unknown'>()
+
+async function getColumnType(table: string, column: string): Promise<'jsonb' | 'text[]' | 'unknown'> {
+  if (!pgPool) return 'unknown'
+  const key = `${table}.${column}`
+  const cached = colTypeCache.get(key)
+  if (cached) return cached
+  try {
+    const r = await pgPool.query(
+      `SELECT data_type, udt_name
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name = $2
+        LIMIT 1`,
+      [table, column],
+    )
+    const row = r.rows?.[0]
+    const dataType = String(row?.data_type || '').trim().toLowerCase()
+    const udt = String(row?.udt_name || '').trim().toLowerCase()
+    const t: 'jsonb' | 'text[]' | 'unknown' =
+      dataType === 'jsonb' || udt === 'jsonb' ? 'jsonb' : udt === '_text' ? 'text[]' : 'unknown'
+    colTypeCache.set(key, t)
+    return t
+  } catch {
+    colTypeCache.set(key, 'unknown')
+    return 'unknown'
+  }
+}
+
 async function ensurePropertyMaintenanceColumns() {
   if (!pgPool) return
   await pgPool.query(`CREATE TABLE IF NOT EXISTS property_maintenance (
@@ -1263,11 +1293,14 @@ router.post('/property-feedbacks', async (req, res) => {
       const details = `${area}${categoryLabel ? ` / ${categoryLabel}` : ''}\n${detail}`
 
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
+      const photoType = await getColumnType('property_maintenance', 'photo_urls')
+      const photoExpr = photoType === 'jsonb' ? '$13::jsonb' : photoType === 'text[]' ? '$13::text[]' : '$13'
+      const photoValue = photoType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
       await pgPool.query(
         `INSERT INTO property_maintenance(
           id, property_id, occurred_at, details, notes, created_by, created_at,
           status, submitted_at, submitter_name, category, category_detail, photo_urls, area
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,${photoExpr},$14)
         RETURNING id`,
         [
           id,
@@ -1282,7 +1315,7 @@ router.post('/property-feedbacks', async (req, res) => {
           submitterName,
           category,
           categoryLabel,
-          JSON.stringify(mediaUrls),
+          photoValue,
           area,
         ],
       )
@@ -1295,11 +1328,17 @@ router.post('/property-feedbacks', async (req, res) => {
     if (!mediaUrls.length) return res.status(400).json({ message: 'missing photos' })
     const detail = String(parsed.data.detail || '').trim()
     const projectDesc = areas.join('、')
+    const deepPhotoType = await getColumnType('property_deep_cleaning', 'photo_urls')
+    const deepAttachType = await getColumnType('property_deep_cleaning', 'attachment_urls')
+    const photoExpr = deepPhotoType === 'jsonb' ? '$11::jsonb' : deepPhotoType === 'text[]' ? '$11::text[]' : '$11'
+    const attachExpr = deepAttachType === 'jsonb' ? '$12::jsonb' : deepAttachType === 'text[]' ? '$12::text[]' : '$12'
+    const photoValue = deepPhotoType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
+    const attachValue = deepAttachType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
     await pgPool.query(
       `INSERT INTO property_deep_cleaning(
         id, property_id, occurred_at, project_desc, details, created_by, created_at,
         status, submitted_at, submitter_name, photo_urls, attachment_urls, review_status
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,${photoExpr},${attachExpr},$13)
       RETURNING id`,
       [
         id,
@@ -1312,8 +1351,8 @@ router.post('/property-feedbacks', async (req, res) => {
         'pending',
         createdAt,
         submitterName,
-        JSON.stringify(mediaUrls),
-        JSON.stringify(mediaUrls),
+        photoValue,
+        attachValue,
         'pending',
       ],
     )
