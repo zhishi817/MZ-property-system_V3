@@ -1121,8 +1121,8 @@ router.get('/property-feedbacks', async (req, res) => {
             )
             AND (${unresolvedMaintSql})
           ORDER BY COALESCE(m.submitted_at, m.created_at) DESC
-          LIMIT $4`,
-        [propertyId || null, propertyCode || null, null, limit],
+          LIMIT $3`,
+        [propertyId || null, propertyCode || null, limit],
       )
       for (const row of (r?.rows || [])) {
         const mapped = mapWorkStatus(row.status)
@@ -1153,8 +1153,8 @@ router.get('/property-feedbacks', async (req, res) => {
           WHERE (($1::text IS NOT NULL AND r.property_id = $1) OR ($2::text IS NOT NULL AND p.code = $2))
             AND (${unresolvedRepairSql})
           ORDER BY COALESCE(r.submitted_at, r.created_at) DESC
-          LIMIT $4`,
-        [propertyId || null, propertyCode || null, null, limit],
+          LIMIT $3`,
+        [propertyId || null, propertyCode || null, limit],
       )
       for (const row of (r?.rows || [])) {
         const mapped = mapWorkStatus(row.status)
@@ -1198,8 +1198,8 @@ router.get('/property-feedbacks', async (req, res) => {
             )
             AND (${unresolvedDeepSql})
           ORDER BY COALESCE(d.submitted_at, d.created_at) DESC
-          LIMIT $4`,
-        [propertyId || null, propertyCode || null, null, limit],
+          LIMIT $3`,
+        [propertyId || null, propertyCode || null, limit],
       )
       for (const row of (r?.rows || [])) {
         const mapped = mapWorkStatus(row.status)
