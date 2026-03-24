@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { z } from 'zod'
 import { hasPg, pgPool } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
@@ -996,6 +997,214 @@ router.get('/work-tasks', async (req, res) => {
     return res.json(out)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'mzapp_work_tasks_failed' })
+  }
+})
+
+const feedbackCreateSchema = z.object({
+  kind: z.enum(['maintenance', 'deep_cleaning']),
+  property_id: z.string().min(1),
+  source_task_id: z.string().optional(),
+  area: z.string().optional(),
+  areas: z.array(z.string().min(1)).optional(),
+  category: z.string().optional(),
+  detail: z.string().min(1),
+  media_urls: z.array(z.string().min(1)).optional(),
+})
+
+function mapWorkStatus(raw: any): 'open' | 'in_progress' | 'resolved' | 'cancelled' {
+  const s = String(raw ?? '').trim().toLowerCase()
+  if (s === 'in_progress') return 'in_progress'
+  if (s === 'completed' || s === 'done' || s === 'ready') return 'resolved'
+  if (s === 'canceled' || s === 'cancelled') return 'cancelled'
+  return 'open'
+}
+
+router.get('/property-feedbacks', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const propertyId = String((req.query as any)?.property_id || '').trim()
+  const propertyCode = String((req.query as any)?.property_code || '').trim()
+  if (!propertyId && !propertyCode) return res.status(400).json({ message: 'missing property_id' })
+
+  const statusRaw = String((req.query as any)?.status || 'open,in_progress').trim()
+  const want = statusRaw
+    .split(',')
+    .map((s) => String(s || '').trim())
+    .filter(Boolean)
+
+  const wantOpen = want.length ? want.includes('open') : true
+  const wantInProgress = want.length ? want.includes('in_progress') : true
+  const wantResolved = want.length ? want.includes('resolved') : false
+  const wantCancelled = want.length ? want.includes('cancelled') : false
+
+  const maintStatuses: string[] = []
+  if (wantOpen) maintStatuses.push('pending', 'assigned')
+  if (wantInProgress) maintStatuses.push('in_progress')
+  if (wantResolved) maintStatuses.push('completed')
+  if (wantCancelled) maintStatuses.push('canceled', 'cancelled')
+
+  const limit0 = Number((req.query as any)?.limit || 20)
+  const limit = Number.isFinite(limit0) ? Math.max(1, Math.min(50, limit0)) : 20
+
+  try {
+    if (!hasPg || !pgPool) return res.json([])
+    const out: any[] = []
+
+    try {
+      const r = await pgPool.query(
+        `SELECT id, property_id, property_code, category, category_detail, details, notes, photo_urls, submitter_name,
+                submitted_at, created_at, status
+           FROM property_maintenance
+          WHERE (($1::text IS NOT NULL AND property_id = $1) OR ($1::text IS NULL AND property_code = $2))
+            AND ($3::text[] IS NULL OR status IS NULL OR status = ANY($3::text[]))
+          ORDER BY COALESCE(submitted_at, created_at) DESC
+          LIMIT $4`,
+        [propertyId || null, propertyCode || null, maintStatuses.length ? maintStatuses : null, limit],
+      )
+      for (const row of (r?.rows || [])) {
+        const mapped = mapWorkStatus(row.status)
+        out.push({
+          id: String(row.id),
+          property_id: row.property_id ? String(row.property_id) : propertyId || null,
+          kind: 'maintenance',
+          area: null,
+          category: row.category_detail || row.category || null,
+          detail: String(row.notes || row.details || ''),
+          media_urls: Array.isArray(row.photo_urls) ? row.photo_urls : row.photo_urls ? row.photo_urls : [],
+          created_by_name: row.submitter_name || null,
+          created_at: row.submitted_at || row.created_at || null,
+          status: mapped,
+        })
+      }
+    } catch {}
+
+    try {
+      const r = await pgPool.query(
+        `SELECT id, property_id, property_code, project_desc, details, notes, photo_urls, attachment_urls, submitter_name,
+                submitted_at, created_at, status
+           FROM property_deep_cleaning
+          WHERE (($1::text IS NOT NULL AND property_id = $1) OR ($1::text IS NULL AND property_code = $2))
+            AND ($3::text[] IS NULL OR status IS NULL OR status = ANY($3::text[]))
+          ORDER BY COALESCE(submitted_at, created_at) DESC
+          LIMIT $4`,
+        [propertyId || null, propertyCode || null, maintStatuses.length ? maintStatuses : null, limit],
+      )
+      for (const row of (r?.rows || [])) {
+        const mapped = mapWorkStatus(row.status)
+        const areas = String(row.project_desc || '')
+          .split('、')
+          .map((s) => String(s || '').trim())
+          .filter(Boolean)
+        const media =
+          Array.isArray(row.attachment_urls) && row.attachment_urls.length
+            ? row.attachment_urls
+            : Array.isArray(row.photo_urls)
+              ? row.photo_urls
+              : []
+        out.push({
+          id: String(row.id),
+          property_id: row.property_id ? String(row.property_id) : propertyId || null,
+          kind: 'deep_cleaning',
+          areas,
+          detail: String(row.details || row.notes || ''),
+          media_urls: media,
+          created_by_name: row.submitter_name || null,
+          created_at: row.submitted_at || row.created_at || null,
+          status: mapped,
+        })
+      }
+    } catch {}
+
+    out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    return res.json(out.slice(0, limit))
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'property_feedbacks_failed' })
+  }
+})
+
+router.post('/property-feedbacks', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = feedbackCreateSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+    const now = new Date()
+    const createdAt = now.toISOString()
+    const occurredAt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    const submitterName = String(user.username || user.sub || '').trim() || 'unknown'
+    const createdBy = String(user.sub || '').trim() || submitterName
+    const id = require('uuid').v4()
+
+    if (parsed.data.kind === 'maintenance') {
+      const area = String(parsed.data.area || '').trim()
+      const categoryLabel = String(parsed.data.category || '').trim()
+      if (!area) return res.status(400).json({ message: 'missing area' })
+      if (!categoryLabel) return res.status(400).json({ message: 'missing category' })
+      const category =
+        categoryLabel === '电器' ? 'appliance' : categoryLabel === '家具' ? 'furniture' : 'other'
+      const detail = String(parsed.data.detail || '').trim()
+      const mediaUrls = parsed.data.media_urls || []
+      const details = `${area}${categoryLabel ? ` / ${categoryLabel}` : ''}\n${detail}`
+
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
+      await pgPool.query(
+        `INSERT INTO property_maintenance(
+          id, property_id, occurred_at, details, notes, created_by, created_at,
+          status, submitted_at, submitter_name, category, category_detail, photo_urls, area
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        RETURNING id`,
+        [
+          id,
+          parsed.data.property_id,
+          occurredAt,
+          details,
+          detail,
+          createdBy,
+          createdAt,
+          'pending',
+          createdAt,
+          submitterName,
+          category,
+          categoryLabel,
+          JSON.stringify(mediaUrls),
+          area,
+        ],
+      )
+      return res.status(201).json({ ok: true, id })
+    }
+
+    const areas = parsed.data.areas || []
+    if (!areas.length) return res.status(400).json({ message: 'missing areas' })
+    const mediaUrls = parsed.data.media_urls || []
+    if (!mediaUrls.length) return res.status(400).json({ message: 'missing photos' })
+    const detail = String(parsed.data.detail || '').trim()
+    const projectDesc = areas.join('、')
+    await pgPool.query(
+      `INSERT INTO property_deep_cleaning(
+        id, property_id, occurred_at, project_desc, details, created_by, created_at,
+        status, submitted_at, submitter_name, photo_urls, attachment_urls, review_status
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      RETURNING id`,
+      [
+        id,
+        parsed.data.property_id,
+        occurredAt,
+        projectDesc,
+        detail,
+        createdBy,
+        createdAt,
+        'pending',
+        createdAt,
+        submitterName,
+        JSON.stringify(mediaUrls),
+        JSON.stringify(mediaUrls),
+        'pending',
+      ],
+    )
+    return res.status(201).json({ ok: true, id })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'property_feedbacks_create_failed' })
   }
 })
 

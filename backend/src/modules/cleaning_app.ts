@@ -7,6 +7,8 @@ import path from 'path'
 import { hasR2, r2Upload } from '../r2'
 import { broadcastCleaningEvent } from './events'
 import { roleHasPermission } from '../store'
+import sharp from 'sharp'
+import fs from 'fs'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -346,11 +348,98 @@ export default router
 router.post('/upload', requirePerm('cleaning_app.media.upload'), upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'missing file' })
   try {
+    const body: any = (req as any).body || {}
+    const isImage = String(req.file.mimetype || '').startsWith('image/')
+    const wantWatermark = String(body.watermark || '').trim() === '1' || String(body.purpose || '').trim() === 'key_photo'
+    const watermarkText = String(body.watermark_text || '').trim()
+    const lines0 = watermarkText ? watermarkText.split(/\r?\n/).map((x) => String(x || '').trim()).filter(Boolean) : []
+    const lines = lines0.length > 2 ? lines0.slice(0, 2) : lines0
+
     if (hasR2 && (req.file as any).buffer) {
-      const ext = path.extname(req.file.originalname) || ''
+      let buf: Buffer = (req.file as any).buffer
+      if (isImage && wantWatermark && lines.length) {
+        try {
+          const img = sharp(buf)
+          const meta = await img.metadata()
+          const w = Math.max(1, Number(meta.width || 0))
+          const h = Math.max(1, Number(meta.height || 0))
+          if (w && h) {
+            const esc = (s: string) =>
+              String(s || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+            const fontSize = Math.max(18, Math.round(Math.min(w, h) * 0.032))
+            const pad = Math.round(fontSize * 0.65)
+            const lineH = Math.round(fontSize * 1.25)
+            const yBottom = h - pad
+            const xRight = w - pad
+            const strokeW = Math.max(2, Math.round(fontSize * 0.12))
+            const svg = `
+              <svg width="${w}" height="${h}">
+                <g font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}" text-anchor="end">
+                  ${lines
+                    .map((t, idx) => {
+                      const y = yBottom - (lines.length - 1 - idx) * lineH
+                      return `<text x="${xRight}" y="${y}" fill="#ffffff" stroke="rgba(0,0,0,0.65)" stroke-width="${strokeW}" paint-order="stroke">${esc(t)}</text>`
+                    })
+                    .join('')}
+                </g>
+              </svg>
+            `
+            buf = await img
+              .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+              .jpeg({ quality: 88 })
+              .toBuffer()
+          }
+        } catch {}
+      }
+      const ext = (isImage && wantWatermark && lines.length) ? '.jpg' : (path.extname(req.file.originalname) || '')
       const key = `cleaning/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-      const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+      const mime = (isImage && wantWatermark && lines.length) ? 'image/jpeg' : (req.file.mimetype || 'application/octet-stream')
+      const url = await r2Upload(key, mime, buf)
       return res.status(201).json({ url })
+    }
+    const filePath = (req.file as any).path ? String((req.file as any).path) : ''
+    if (filePath && isImage && wantWatermark && lines.length) {
+      try {
+        const buf = await fs.promises.readFile(filePath)
+        const img = sharp(buf)
+        const meta = await img.metadata()
+        const w = Math.max(1, Number(meta.width || 0))
+        const h = Math.max(1, Number(meta.height || 0))
+        if (w && h) {
+          const esc = (s: string) =>
+            String(s || '')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#39;')
+          const fontSize = Math.max(18, Math.round(Math.min(w, h) * 0.032))
+          const pad = Math.round(fontSize * 0.65)
+          const lineH = Math.round(fontSize * 1.25)
+          const yBottom = h - pad
+          const xRight = w - pad
+          const strokeW = Math.max(2, Math.round(fontSize * 0.12))
+          const svg = `
+            <svg width="${w}" height="${h}">
+              <g font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}" text-anchor="end">
+                ${lines
+                  .map((t, idx) => {
+                    const y = yBottom - (lines.length - 1 - idx) * lineH
+                    return `<text x="${xRight}" y="${y}" fill="#ffffff" stroke="rgba(0,0,0,0.65)" stroke-width="${strokeW}" paint-order="stroke">${esc(t)}</text>`
+                  })
+                  .join('')}
+              </g>
+            </svg>
+          `
+          const out = await img.composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).jpeg({ quality: 88 }).toBuffer()
+          await fs.promises.writeFile(filePath, out)
+        }
+      } catch {}
     }
     const url = `/uploads/${req.file.filename}`
     return res.status(201).json({ url })

@@ -53,9 +53,20 @@ Author: MZ System Bot <dev@mzpropertygroup.com>
 
 ## Dev (2026-03-16)
 
+## Dev (2026-03-24)
+
+- Version: `0.2.7-statement-pdf.20260324+build.1`
+- MZApp: Add property feedback APIs (`GET/POST /mzapp/property-feedbacks`) to unify mobile “问题反馈” and to list existing pending Maintenance/Deep Cleaning by property_id/property_code, reducing duplicate submissions.
+- Cleaning App: Add optional bottom-right watermark support for uploads (`POST /cleaning-app/upload`) via form fields (e.g., `purpose=key_photo`, `watermark_text`).
+- DB: Add migration `20260324_property_maintenance_add_area.sql` (optional area field for maintenance records).
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 - Version: `0.2.7-statement-pdf.20260316+build.6`
 - Finance PDF: Fix monthly statement exports showing only 1 job photo when photosMode=thumbnail (applies to both print-based monthly statement PDF and template photo-only PDFs).
 - Finance PDF: In thumbnail mode, use `/public/r2-image` compression (w/q) to keep large photo months stable and smaller (avoid requesting non-existent `.thumb.jpg` keys that can 404).
+- Finance PDF: When photo count is too high, merge download generates base (no-photos) statement and relies on photo split PDFs to avoid Playwright timeouts.
+- Finance PDF: Monthly statement PDF generation now waits for root + data-loaded markers and reports clearer timeout diagnostics (no longer hard-blocked by monthly-statement-ready).
 - Finance PDF: When photo count is too high, merge download generates base (no-photos) statement and relies on photo split PDFs to avoid Playwright timeouts.
 - Finance PDF: Monthly statement PDF generation now waits for root + data-loaded markers and reports clearer timeout diagnostics (no longer hard-blocked by monthly-statement-ready).
 - Finance PDF: Add persistent merge job APIs (`POST/GET /finance/merge-monthly-pack`) and a DB-backed worker to generate merged outputs asynchronously, avoiding 502/504 for huge months.
