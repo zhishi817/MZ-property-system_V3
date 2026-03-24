@@ -1092,6 +1092,7 @@ router.get('/property-feedbacks', async (req, res) => {
   try {
     if (!hasPg || !pgPool) return res.json([])
     const out: any[] = []
+    const errors: string[] = []
 
     const unresolvedSql =
       openView
@@ -1108,7 +1109,16 @@ router.get('/property-feedbacks', async (req, res) => {
                 m.submitted_at, m.created_at, m.status
            FROM property_maintenance m
            LEFT JOIN properties p ON p.id = m.property_id
-          WHERE (($1::text IS NOT NULL AND m.property_id = $1) OR ($2::text IS NOT NULL AND COALESCE(m.property_code, p.code) = $2))
+          WHERE (
+              ($1::text IS NOT NULL AND m.property_id = $1)
+              OR (
+                $2::text IS NOT NULL
+                AND (
+                  COALESCE(m.property_code, p.code) = $2
+                  OR m.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
+                )
+              )
+            )
             AND (${unresolvedSql})
           ORDER BY COALESCE(m.submitted_at, m.created_at) DESC
           LIMIT $4`,
@@ -1129,7 +1139,9 @@ router.get('/property-feedbacks', async (req, res) => {
           status: mapped,
         })
       }
-    } catch {}
+    } catch (e: any) {
+      errors.push(`maintenance:${String(e?.message || e)}`.slice(0, 220))
+    }
 
     try {
       const r = await pgPool.query(
@@ -1159,7 +1171,9 @@ router.get('/property-feedbacks', async (req, res) => {
           status: mapped,
         })
       }
-    } catch {}
+    } catch (e: any) {
+      errors.push(`repair_orders:${String(e?.message || e)}`.slice(0, 220))
+    }
 
     try {
       try {
@@ -1171,7 +1185,16 @@ router.get('/property-feedbacks', async (req, res) => {
                 d.submitted_at, d.created_at, d.status
            FROM property_deep_cleaning d
            LEFT JOIN properties p ON p.id = d.property_id
-          WHERE (($1::text IS NOT NULL AND d.property_id = $1) OR ($2::text IS NOT NULL AND COALESCE(d.property_code, p.code) = $2))
+          WHERE (
+              ($1::text IS NOT NULL AND d.property_id = $1)
+              OR (
+                $2::text IS NOT NULL
+                AND (
+                  COALESCE(d.property_code, p.code) = $2
+                  OR d.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
+                )
+              )
+            )
             AND (${openView ? `(d.status IS NULL OR lower(d.status) NOT IN ('completed','done','ready','canceled','cancelled'))` : `($3::text[] IS NULL OR d.status IS NULL OR d.status = ANY($3::text[]))`})
           ORDER BY COALESCE(d.submitted_at, d.created_at) DESC
           LIMIT $4`,
@@ -1201,9 +1224,12 @@ router.get('/property-feedbacks', async (req, res) => {
           status: mapped,
         })
       }
-    } catch {}
+    } catch (e: any) {
+      errors.push(`deep_cleaning:${String(e?.message || e)}`.slice(0, 220))
+    }
 
     out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    if (!out.length && errors.length) return res.status(500).json({ message: 'property_feedbacks_failed', errors })
     return res.json(out.slice(0, limit))
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'property_feedbacks_failed' })
