@@ -55,7 +55,7 @@ Author: MZ System Bot <dev@mzpropertygroup.com>
 
 ## Dev (2026-03-24)
 
-- Version: `0.2.7-statement-pdf.20260324+build.1`
+- Version: `0.2.7-statement-pdf.20260324+build.2`
 - MZApp: Add property feedback APIs (`GET/POST /mzapp/property-feedbacks`) to unify mobile “问题反馈” and to list existing pending Maintenance/Deep Cleaning by property_id/property_code, reducing duplicate submissions.
 - Cleaning App: Add optional bottom-right watermark support for uploads (`POST /cleaning-app/upload`) via form fields (e.g., `purpose=key_photo`, `watermark_text`).
 - DB: Add migration `20260324_property_maintenance_add_area.sql` (optional area field for maintenance records).

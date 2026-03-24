@@ -348,11 +348,29 @@ export default router
 router.post('/upload', requirePerm('cleaning_app.media.upload'), upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'missing file' })
   try {
+    const user = (req as any).user || {}
     const body: any = (req as any).body || {}
     const isImage = String(req.file.mimetype || '').startsWith('image/')
     const wantWatermark = String(body.watermark || '').trim() === '1' || String(body.purpose || '').trim() === 'key_photo'
     const watermarkText = String(body.watermark_text || '').trim()
-    const lines0 = watermarkText ? watermarkText.split(/\r?\n/).map((x) => String(x || '').trim()).filter(Boolean) : []
+    const propertyCode = String(body.property_code || '').trim()
+    const capturedAt = String(body.captured_at || '').trim()
+    const submitter = String(user.username || user.sub || '').trim()
+    const fmt = (iso: string) => {
+      const d = new Date(String(iso || ''))
+      if (Number.isNaN(d.getTime())) return ''
+      const pad2 = (n: number) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+    }
+    const fallbackLines =
+      wantWatermark && isImage
+        ? [
+            `${propertyCode || '未知房号'}${submitter ? `  ${submitter}` : ''}`.trim(),
+            fmt(capturedAt) || fmt(new Date().toISOString()),
+          ].filter(Boolean)
+        : []
+
+    const lines0 = (watermarkText ? watermarkText.split(/\r?\n/) : fallbackLines).map((x) => String(x || '').trim()).filter(Boolean)
     const lines = lines0.length > 2 ? lines0.slice(0, 2) : lines0
 
     if (hasR2 && (req.file as any).buffer) {

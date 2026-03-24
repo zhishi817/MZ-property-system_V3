@@ -1052,10 +1052,12 @@ router.get('/property-feedbacks', async (req, res) => {
 
     try {
       const r = await pgPool.query(
-        `SELECT id, property_id, property_code, category, category_detail, details, notes, photo_urls, submitter_name,
-                submitted_at, created_at, status
-           FROM property_maintenance
-          WHERE (($1::text IS NOT NULL AND property_id = $1) OR ($1::text IS NULL AND property_code = $2))
+        `SELECT m.id, m.property_id, COALESCE(m.property_code, p.code) AS property_code,
+                m.category, m.category_detail, m.details, m.notes, m.photo_urls, m.submitter_name,
+                m.submitted_at, m.created_at, m.status
+           FROM property_maintenance m
+           LEFT JOIN properties p ON p.id = m.property_id
+          WHERE (($1::text IS NOT NULL AND m.property_id = $1) OR ($2::text IS NOT NULL AND COALESCE(m.property_code, p.code) = $2))
             AND ($3::text[] IS NULL OR status IS NULL OR status = ANY($3::text[]))
           ORDER BY COALESCE(submitted_at, created_at) DESC
           LIMIT $4`,
@@ -1080,10 +1082,12 @@ router.get('/property-feedbacks', async (req, res) => {
 
     try {
       const r = await pgPool.query(
-        `SELECT id, property_id, property_code, project_desc, details, notes, photo_urls, attachment_urls, submitter_name,
-                submitted_at, created_at, status
-           FROM property_deep_cleaning
-          WHERE (($1::text IS NOT NULL AND property_id = $1) OR ($1::text IS NULL AND property_code = $2))
+        `SELECT d.id, d.property_id, COALESCE(d.property_code, p.code) AS property_code,
+                d.project_desc, d.details, d.notes, d.photo_urls, d.attachment_urls, d.submitter_name,
+                d.submitted_at, d.created_at, d.status
+           FROM property_deep_cleaning d
+           LEFT JOIN properties p ON p.id = d.property_id
+          WHERE (($1::text IS NOT NULL AND d.property_id = $1) OR ($2::text IS NOT NULL AND COALESCE(d.property_code, p.code) = $2))
             AND ($3::text[] IS NULL OR status IS NULL OR status = ANY($3::text[]))
           ORDER BY COALESCE(submitted_at, created_at) DESC
           LIMIT $4`,
