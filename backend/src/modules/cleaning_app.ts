@@ -392,9 +392,9 @@ router.post('/upload', requirePerm('cleaning_app.media.upload'), upload.single('
             const fontSize = Math.max(18, Math.round(Math.min(w, h) * 0.032))
             const pad = Math.round(fontSize * 0.65)
             const lineH = Math.round(fontSize * 1.25)
-            const yBottom = h - pad
             const xRight = w - pad
             const strokeW = Math.max(2, Math.round(fontSize * 0.12))
+            const yBottom = h - pad - strokeW
             const svg = `
               <svg width="${w}" height="${h}">
                 <g font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}" text-anchor="end">
@@ -439,9 +439,9 @@ router.post('/upload', requirePerm('cleaning_app.media.upload'), upload.single('
           const fontSize = Math.max(18, Math.round(Math.min(w, h) * 0.032))
           const pad = Math.round(fontSize * 0.65)
           const lineH = Math.round(fontSize * 1.25)
-          const yBottom = h - pad
           const xRight = w - pad
           const strokeW = Math.max(2, Math.round(fontSize * 0.12))
+          const yBottom = h - pad - strokeW
           const svg = `
             <svg width="${w}" height="${h}">
               <g font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}" text-anchor="end">

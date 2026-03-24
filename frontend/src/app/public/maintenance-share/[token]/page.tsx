@@ -71,7 +71,19 @@ export default function PublicMaintenanceSharePage({ params }: { params: { token
       const j = await res.json().catch(() => null)
       if (!res.ok) { message.error(j?.message || '加载失败'); setRecord(null); return }
       setRecord(j)
-      const initUrls: string[] = Array.isArray(j?.repair_photo_urls) ? j.repair_photo_urls : []
+      const rawUrls: any = j?.repair_photo_urls
+      let initUrls: string[] = Array.isArray(rawUrls) ? rawUrls : []
+      if (!initUrls.length && typeof rawUrls === 'string') {
+        const s = rawUrls.trim()
+        if (s) {
+          try {
+            const parsed = JSON.parse(s)
+            if (Array.isArray(parsed)) initUrls = parsed
+          } catch {
+            initUrls = [s]
+          }
+        }
+      }
       setUrls(initUrls)
       setFiles(initUrls.map((u: string, i: number) => ({ uid: String(i), name: `photo-${i + 1}`, status: 'done', url: u } as UploadFile)))
       form.setFieldsValue({
