@@ -1080,12 +1080,6 @@ router.get('/property-feedbacks', async (req, res) => {
   const wantCancelled = want.length ? want.includes('cancelled') : false
   const openView = wantOpen && wantInProgress && !wantResolved && !wantCancelled
 
-  const maintStatuses: string[] = []
-  if (wantOpen) maintStatuses.push('pending', 'assigned')
-  if (wantInProgress) maintStatuses.push('in_progress')
-  if (wantResolved) maintStatuses.push('completed')
-  if (wantCancelled) maintStatuses.push('canceled', 'cancelled')
-
   const limit0 = Number((req.query as any)?.limit || 20)
   const limit = Number.isFinite(limit0) ? Math.max(1, Math.min(50, limit0)) : 20
 
@@ -1094,10 +1088,15 @@ router.get('/property-feedbacks', async (req, res) => {
     const out: any[] = []
     const errors: string[] = []
 
-    const unresolvedSql =
-      openView
-        ? `(m.status IS NULL OR lower(m.status) NOT IN ('completed','done','ready','canceled','cancelled'))`
-        : `($3::text[] IS NULL OR m.status IS NULL OR m.status = ANY($3::text[]))`
+    const unresolvedMaintSql = openView
+      ? `(m.status IS NULL OR lower(m.status) NOT IN ('completed','done','ready','canceled','cancelled'))`
+      : `true`
+    const unresolvedDeepSql = openView
+      ? `(d.status IS NULL OR lower(d.status) NOT IN ('completed','done','ready','canceled','cancelled'))`
+      : `true`
+    const unresolvedRepairSql = openView
+      ? `(r.status IS NULL OR lower(r.status) NOT IN ('completed','done','ready','canceled','cancelled'))`
+      : `true`
 
     try {
       try {
@@ -1115,14 +1114,15 @@ router.get('/property-feedbacks', async (req, res) => {
                 $2::text IS NOT NULL
                 AND (
                   COALESCE(m.property_code, p.code) = $2
+                  OR m.property_id = $2
                   OR m.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
                 )
               )
             )
-            AND (${unresolvedSql})
+            AND (${unresolvedMaintSql})
           ORDER BY COALESCE(m.submitted_at, m.created_at) DESC
           LIMIT $4`,
-        [propertyId || null, propertyCode || null, maintStatuses.length ? maintStatuses : null, limit],
+        [propertyId || null, propertyCode || null, null, limit],
       )
       for (const row of (r?.rows || [])) {
         const mapped = mapWorkStatus(row.status)
@@ -1151,10 +1151,10 @@ router.get('/property-feedbacks', async (req, res) => {
            FROM repair_orders r
            LEFT JOIN properties p ON p.id = r.property_id
           WHERE (($1::text IS NOT NULL AND r.property_id = $1) OR ($2::text IS NOT NULL AND p.code = $2))
-            AND (${openView ? `(r.status IS NULL OR lower(r.status) NOT IN ('completed','done','ready','canceled','cancelled'))` : `($3::text[] IS NULL OR r.status IS NULL OR r.status = ANY($3::text[]))`})
+            AND (${unresolvedRepairSql})
           ORDER BY COALESCE(r.submitted_at, r.created_at) DESC
           LIMIT $4`,
-        [propertyId || null, propertyCode || null, maintStatuses.length ? maintStatuses : null, limit],
+        [propertyId || null, propertyCode || null, null, limit],
       )
       for (const row of (r?.rows || [])) {
         const mapped = mapWorkStatus(row.status)
@@ -1191,14 +1191,15 @@ router.get('/property-feedbacks', async (req, res) => {
                 $2::text IS NOT NULL
                 AND (
                   COALESCE(d.property_code, p.code) = $2
+                  OR d.property_id = $2
                   OR d.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
                 )
               )
             )
-            AND (${openView ? `(d.status IS NULL OR lower(d.status) NOT IN ('completed','done','ready','canceled','cancelled'))` : `($3::text[] IS NULL OR d.status IS NULL OR d.status = ANY($3::text[]))`})
+            AND (${unresolvedDeepSql})
           ORDER BY COALESCE(d.submitted_at, d.created_at) DESC
           LIMIT $4`,
-        [propertyId || null, propertyCode || null, maintStatuses.length ? maintStatuses : null, limit],
+        [propertyId || null, propertyCode || null, null, limit],
       )
       for (const row of (r?.rows || [])) {
         const mapped = mapWorkStatus(row.status)
