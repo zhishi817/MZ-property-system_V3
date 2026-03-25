@@ -215,6 +215,7 @@ async function ensureCleaningTaskMediaTable() {
         task_id text REFERENCES cleaning_tasks(id) ON DELETE CASCADE,
         type text,
         url text NOT NULL,
+        note text,
         captured_at timestamptz,
         lat numeric,
         lng numeric,
@@ -223,8 +224,10 @@ async function ensureCleaningTaskMediaTable() {
         mime text,
         created_at timestamptz DEFAULT now()
       );`)
+      await pgPool.query(`ALTER TABLE cleaning_task_media ADD COLUMN IF NOT EXISTS note text;`)
       await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task ON cleaning_task_media(task_id);`)
       await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_type ON cleaning_task_media(type);`)
+      await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type ON cleaning_task_media(task_id, type);`)
     } finally {
       mediaEnsured = true
     }
@@ -452,6 +455,230 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     return res.status(201).json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'lockbox_video_failed' })
+  }
+})
+
+const inspectionPhotosSchema = z
+  .object({
+    items: z.array(
+      z.object({
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'unclean']),
+        url: z.string().trim().min(1).max(800),
+        note: z.string().trim().max(800).optional().nullable(),
+        captured_at: z.string().trim().max(64).optional(),
+      }),
+    ),
+  })
+  .strict()
+
+router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const role = String(user.role || '')
+  const userId = String(user.sub || '')
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureCleaningTaskMediaTable()
+    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const row = r0?.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
+    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
+    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
+    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+
+    const r = await pgPool.query(
+      `SELECT type, url, note, captured_at, created_at
+       FROM cleaning_task_media
+       WHERE task_id=$1 AND type LIKE 'inspection_%'
+       ORDER BY created_at ASC`,
+      [id],
+    )
+    const items = (r?.rows || []).map((x: any) => {
+      const type = String(x.type || '')
+      const area = type.startsWith('inspection_') ? type.slice('inspection_'.length) : type
+      return {
+        area,
+        url: String(x.url || ''),
+        note: x.note == null ? null : String(x.note || ''),
+        captured_at: x.captured_at ? String(x.captured_at) : null,
+        created_at: x.created_at ? String(x.created_at) : null,
+      }
+    })
+    return res.json({ items })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'inspection_photos_failed' })
+  }
+})
+
+router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const role = String(user.role || '')
+  const userId = String(user.sub || '')
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  const parsed = inspectionPhotosSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureCleaningTaskMediaTable()
+    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const row = r0?.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
+    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
+    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
+    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+
+    const fixed = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen']
+    const byArea = new Map<string, number>()
+    let uncleanCount = 0
+    for (const it of parsed.data.items) {
+      if (it.area === 'unclean') uncleanCount++
+      else byArea.set(it.area, (byArea.get(it.area) || 0) + 1)
+    }
+    for (const a of fixed) {
+      const n = byArea.get(a) || 0
+      if (n > 1) return res.status(400).json({ message: '每个区域最多 1 张', area: a })
+    }
+    if (uncleanCount > 3) return res.status(400).json({ message: '未清洁照片最多 3 张' })
+
+    await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
+    const uuid = require('uuid')
+    for (const it of parsed.data.items) {
+      const type = `inspection_${it.area}`
+      const cap = String(it.captured_at || '').trim()
+      const capturedAt = cap ? new Date(cap) : new Date()
+      await pgPool.query(
+        `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString(), userId],
+      )
+    }
+    try {
+      const { broadcastCleaningEvent } = require('./events')
+      broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id })
+    } catch {}
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'inspection_photos_failed' })
+  }
+})
+
+const restockProofSchema = z
+  .object({
+    items: z.array(
+      z.object({
+        item_id: z.string().trim().min(1).max(80),
+        status: z.enum(['restocked', 'unavailable']),
+        qty: z.number().int().min(1).optional().nullable(),
+        note: z.string().trim().max(800).optional().nullable(),
+        proof_url: z.string().trim().min(1).max(800),
+      }),
+    ),
+  })
+  .strict()
+
+router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const role = String(user.role || '')
+  const userId = String(user.sub || '')
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureCleaningTaskMediaTable()
+    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const row = r0?.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
+    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
+    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
+    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+
+    const r = await pgPool.query(
+      `SELECT type, url, note, created_at
+       FROM cleaning_task_media
+       WHERE task_id=$1 AND type LIKE 'restock_proof:%'
+       ORDER BY created_at ASC`,
+      [id],
+    )
+    const items = (r?.rows || []).map((x: any) => {
+      const type = String(x.type || '')
+      const itemId = type.includes(':') ? type.split(':').slice(1).join(':') : type
+      let meta: any = null
+      try {
+        const raw = String(x.note || '').trim()
+        meta = raw && (raw.startsWith('{') || raw.startsWith('[')) ? JSON.parse(raw) : null
+      } catch {}
+      return {
+        item_id: itemId,
+        proof_url: String(x.url || ''),
+        status: String(meta?.status || ''),
+        qty: meta?.qty == null ? null : Number(meta.qty),
+        note: meta?.note == null ? null : String(meta.note || ''),
+        created_at: x.created_at ? String(x.created_at) : null,
+      }
+    })
+    return res.json({ items })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'restock_proof_failed' })
+  }
+})
+
+router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const role = String(user.role || '')
+  const userId = String(user.sub || '')
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  const parsed = restockProofSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureCleaningTaskMediaTable()
+    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const row = r0?.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
+    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
+    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
+    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+
+    const uniq = new Set<string>()
+    for (const it of parsed.data.items) {
+      const k = String(it.item_id || '').trim()
+      if (!k) continue
+      if (uniq.has(k)) return res.status(400).json({ message: '重复 item_id', item_id: k })
+      uniq.add(k)
+    }
+
+    await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'restock_proof:%'`, [id])
+    const uuid = require('uuid')
+    for (const it of parsed.data.items) {
+      const meta = { status: it.status, qty: it.qty == null ? null : Number(it.qty), note: it.note == null ? null : String(it.note || '') }
+      await pgPool.query(
+        `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
+         VALUES ($1,$2,$3,$4,$5,now(),$6)`,
+        [uuid.v4(), id, `restock_proof:${it.item_id}`, String(it.proof_url), JSON.stringify(meta), userId],
+      )
+    }
+    try {
+      const { broadcastCleaningEvent } = require('./events')
+      broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id })
+    } catch {}
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'restock_proof_failed' })
   }
 })
 
@@ -1341,7 +1568,6 @@ router.post('/property-feedbacks', async (req, res) => {
     const createdBy = String(user.sub || '').trim() || submitterName
     const id = require('uuid').v4()
     const duplicateWindowHours = 24
-    const duplicateSinceIso = new Date(Date.now() - duplicateWindowHours * 3600 * 1000).toISOString()
 
     if (parsed.data.kind === 'maintenance') {
       const area = String(parsed.data.area || '').trim()
@@ -1366,40 +1592,18 @@ router.post('/property-feedbacks', async (req, res) => {
         category_detail: categoryLabel,
         detail,
       })
-      try {
-        const cand = await pgPool.query(
-          `SELECT id, area, category, category_detail, details, notes, dedup_fingerprint
-             FROM property_maintenance
-            WHERE property_id = $1
-              AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
-              AND COALESCE(submitted_at, created_at) >= $2
-            ORDER BY COALESCE(submitted_at, created_at) DESC
-            LIMIT 50`,
-          [parsed.data.property_id, duplicateSinceIso],
-        )
-        for (const row of (cand?.rows || [])) {
-          const fp =
-            String(row?.dedup_fingerprint || '').trim() ||
-            makeFeedbackFingerprint({
-              kind: 'maintenance',
-              property_id: parsed.data.property_id,
-              area: String(row?.area || row?.category || '').trim(),
-              category_detail: String(row?.category_detail || '').trim(),
-              detail: String(row?.notes || row?.details || '').trim(),
-            })
-          if (fp === fingerprint) return res.status(409).json({ message: 'duplicate', existing_id: String(row?.id) })
-          if (!String(row?.dedup_fingerprint || '').trim()) {
-            try {
-              await pgPool.query(
-                `UPDATE property_maintenance
-                    SET dedup_fingerprint = $2
-                  WHERE id = $1 AND (dedup_fingerprint IS NULL OR dedup_fingerprint = '')`,
-                [String(row?.id), fp],
-              )
-            } catch {}
-          }
-        }
-      } catch {}
+      const dup = await pgPool.query(
+        `SELECT id
+           FROM property_maintenance
+          WHERE property_id = $1
+            AND dedup_fingerprint = $2
+            AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
+            AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
+          ORDER BY COALESCE(submitted_at, created_at) DESC
+          LIMIT 1`,
+        [parsed.data.property_id, fingerprint, duplicateWindowHours],
+      )
+      if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
       await pgPool.query(
         `INSERT INTO property_maintenance(
           id, property_id, occurred_at, details, notes, created_by, created_at,
@@ -1456,42 +1660,18 @@ router.post('/property-feedbacks', async (req, res) => {
       areas,
       detail,
     })
-    try {
-      const cand = await pgPool.query(
-        `SELECT id, project_desc, details, notes, dedup_fingerprint
-           FROM property_deep_cleaning
-          WHERE property_id = $1
-            AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
-            AND COALESCE(submitted_at, created_at) >= $2
-          ORDER BY COALESCE(submitted_at, created_at) DESC
-          LIMIT 50`,
-        [parsed.data.property_id, duplicateSinceIso],
-      )
-      for (const row of (cand?.rows || [])) {
-        const fp =
-          String(row?.dedup_fingerprint || '').trim() ||
-          makeFeedbackFingerprint({
-            kind: 'deep_cleaning',
-            property_id: parsed.data.property_id,
-            areas: String(row?.project_desc || '')
-              .split('、')
-              .map((s) => String(s || '').trim())
-              .filter(Boolean),
-            detail: String(row?.details || row?.notes || '').trim(),
-          })
-        if (fp === fingerprint) return res.status(409).json({ message: 'duplicate', existing_id: String(row?.id) })
-        if (!String(row?.dedup_fingerprint || '').trim()) {
-          try {
-            await pgPool.query(
-              `UPDATE property_deep_cleaning
-                  SET dedup_fingerprint = $2
-                WHERE id = $1 AND (dedup_fingerprint IS NULL OR dedup_fingerprint = '')`,
-              [String(row?.id), fp],
-            )
-          } catch {}
-        }
-      }
-    } catch {}
+    const dup = await pgPool.query(
+      `SELECT id
+         FROM property_deep_cleaning
+        WHERE property_id = $1
+          AND dedup_fingerprint = $2
+          AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
+          AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
+        ORDER BY COALESCE(submitted_at, created_at) DESC
+        LIMIT 1`,
+      [parsed.data.property_id, fingerprint, duplicateWindowHours],
+    )
+    if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
     await pgPool.query(
       `INSERT INTO property_deep_cleaning(
         id, property_id, occurred_at, project_desc, details, created_by, created_at,

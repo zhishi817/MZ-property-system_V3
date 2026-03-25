@@ -329,6 +329,188 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
   }
 })
 
+async function ensureCleaningTaskMediaNote() {
+  try {
+    if (!hasPg) return
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return
+    await pgPool.query(`ALTER TABLE cleaning_task_media ADD COLUMN IF NOT EXISTS note text;`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type ON cleaning_task_media(task_id, type);`)
+  } catch {}
+}
+
+const inspectionPhotosSchema = z
+  .object({
+    items: z.array(
+      z.object({
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'unclean']),
+        url: z.string().trim().min(1),
+        note: z.string().trim().max(800).optional().nullable(),
+        captured_at: z.string().trim().max(64).optional(),
+      }),
+    ),
+  })
+  .strict()
+
+router.get('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+  const { id } = req.params
+  try {
+    if (hasPg) {
+      await ensureCleaningTaskMediaNote()
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      const r = await pgPool.query(
+        `SELECT type, url, note, captured_at, created_at
+         FROM cleaning_task_media
+         WHERE task_id=$1 AND type LIKE 'inspection_%'
+         ORDER BY created_at ASC`,
+        [id],
+      )
+      const items = (r?.rows || []).map((x: any) => {
+        const type = String(x.type || '')
+        const area = type.startsWith('inspection_') ? type.slice('inspection_'.length) : type
+        return {
+          area,
+          url: String(x.url || ''),
+          note: x.note == null ? null : String(x.note || ''),
+          captured_at: x.captured_at ? String(x.captured_at) : null,
+          created_at: x.created_at ? String(x.created_at) : null,
+        }
+      })
+      return res.json({ items })
+    }
+    return res.json({ items: [] })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+  const { id } = req.params
+  const parsed = inspectionPhotosSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    const limits: Record<string, number> = { toilet: 3, living: 1, sofa: 2, bedroom: 4, kitchen: 2, unclean: 12 }
+    const byArea = new Map<string, number>()
+    for (const it of parsed.data.items) {
+      const a = String(it.area)
+      byArea.set(a, (byArea.get(a) || 0) + 1)
+      const lim = limits[a] ?? 1
+      if ((byArea.get(a) || 0) > lim) return res.status(400).json({ message: '超出数量限制', area: a, limit: lim })
+      if (a === 'unclean' && !String(it.note || '').trim()) return res.status(400).json({ message: '未清洁照片需要备注' })
+    }
+    if (hasPg) {
+      await ensureCleaningTaskMediaNote()
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      const uuid = require('uuid')
+      await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
+      for (const it of parsed.data.items) {
+        const type = `inspection_${it.area}`
+        const cap = String(it.captured_at || '').trim()
+        const capturedAt = cap ? new Date(cap) : new Date()
+        await pgPool.query(
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString()],
+        )
+      }
+      try { broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id }) } catch {}
+      return res.status(201).json({ ok: true })
+    }
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+const restockProofSchema = z
+  .object({
+    items: z.array(
+      z.object({
+        item_id: z.string().trim().min(1).max(80),
+        status: z.enum(['restocked', 'unavailable']),
+        qty: z.number().int().min(1).optional().nullable(),
+        note: z.string().trim().max(800).optional().nullable(),
+        proof_url: z.string().trim().min(1),
+      }),
+    ),
+  })
+  .strict()
+
+router.get('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+  const { id } = req.params
+  try {
+    if (hasPg) {
+      await ensureCleaningTaskMediaNote()
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      const r = await pgPool.query(
+        `SELECT type, url, note, created_at
+         FROM cleaning_task_media
+         WHERE task_id=$1 AND type LIKE 'restock_proof:%'
+         ORDER BY created_at ASC`,
+        [id],
+      )
+      const items = (r?.rows || []).map((x: any) => {
+        const type = String(x.type || '')
+        const itemId = type.includes(':') ? type.split(':').slice(1).join(':') : type
+        let meta: any = null
+        try {
+          const raw = String(x.note || '').trim()
+          meta = raw && (raw.startsWith('{') || raw.startsWith('[')) ? JSON.parse(raw) : null
+        } catch {}
+        return {
+          item_id: itemId,
+          proof_url: String(x.url || ''),
+          status: meta?.status == null ? null : String(meta.status || ''),
+          qty: meta?.qty == null ? null : Number(meta.qty),
+          note: meta?.note == null ? null : String(meta.note || ''),
+          created_at: x.created_at ? String(x.created_at) : null,
+        }
+      })
+      return res.json({ items })
+    }
+    return res.json({ items: [] })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+router.post('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+  const { id } = req.params
+  const parsed = restockProofSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    const uniq = new Set<string>()
+    for (const it of parsed.data.items) {
+      const k = String(it.item_id || '').trim()
+      if (uniq.has(k)) return res.status(400).json({ message: '重复 item_id', item_id: k })
+      uniq.add(k)
+    }
+    if (hasPg) {
+      await ensureCleaningTaskMediaNote()
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      const uuid = require('uuid')
+      await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'restock_proof:%'`, [id])
+      for (const it of parsed.data.items) {
+        const meta = { status: it.status, qty: it.qty == null ? null : Number(it.qty), note: it.note == null ? null : String(it.note || '') }
+        await pgPool.query(
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
+           VALUES ($1,$2,$3,$4,$5,now())`,
+          [uuid.v4(), id, `restock_proof:${it.item_id}`, String(it.proof_url), JSON.stringify(meta)],
+        )
+      }
+      try { broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id }) } catch {}
+      return res.status(201).json({ ok: true })
+    }
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
 // Set ready
 router.patch('/tasks/:id/ready', requirePerm('cleaning_app.ready.set'), async (req, res) => {
   const { id } = req.params

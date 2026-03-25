@@ -1,5 +1,14 @@
 # Changelog
 
+## Dev (2026-03-25)
+
+- Version: (no bump)
+- Cleaning App: Saved avatar now renders on Home header and Contacts list/detail.
+- Cleaning App: Inspector notifications now use banner + Tab red dot, dedupe by stable ids, and exclude generic “系统通知”.
+- Cleaning App (Inspector): Add “检查与补充” panel (restock proof + inspection photos) and a separate “标记已完成” page for lockbox video + completion; inspection tasks on Home show 3 quick buttons.
+- Cleaning App (Inspector): Fix restock-proof / inspection-photos submissions by routing to `/cleaning-app/tasks/:id/*`; re-order steps and allow multi photos per area (toilet 3, living 1, sofa 2, bedroom 4, kitchen 2); adjust spacing and button heights; increase upload compression quality.
+- MZApp Backend: Add `GET/POST /mzapp/cleaning-tasks/:id/inspection-photos` and `GET/POST /mzapp/cleaning-tasks/:id/restock-proof`; extend `cleaning_task_media` with `note` and task+type index.
+
 ## Dev (2026-03-24)
 
 - Version: `0.2.7-statement-pdf.20260324+build.5`
