@@ -1286,11 +1286,9 @@ router.post('/property-feedbacks', async (req, res) => {
       const categoryLabel = String(parsed.data.category || '').trim()
       if (!area) return res.status(400).json({ message: 'missing area' })
       if (!categoryLabel) return res.status(400).json({ message: 'missing category' })
-      const category =
-        categoryLabel === '电器' ? 'appliance' : categoryLabel === '家具' ? 'furniture' : 'other'
       const detail = String(parsed.data.detail || '').trim()
       const mediaUrls = parsed.data.media_urls || []
-      const details = `${area}${categoryLabel ? ` / ${categoryLabel}` : ''}\n${detail}`
+      const details = detail
 
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
       const photoType = await getColumnType('property_maintenance', 'photo_urls')
@@ -1313,7 +1311,7 @@ router.post('/property-feedbacks', async (req, res) => {
           'pending',
           createdAt,
           submitterName,
-          category,
+          area,
           categoryLabel,
           photoValue,
           area,
