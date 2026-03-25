@@ -1344,6 +1344,14 @@ router.post('/property-feedbacks', async (req, res) => {
           area,
         ],
       )
+      try {
+        await pgPool.query(
+          `UPDATE property_maintenance
+              SET work_no = COALESCE(NULLIF(work_no, ''), $2)
+            WHERE id = $1`,
+          [id, workNo],
+        )
+      } catch {}
       return res.status(201).json({ ok: true, id })
     }
 
@@ -1383,6 +1391,14 @@ router.post('/property-feedbacks', async (req, res) => {
         'pending',
       ],
     )
+    try {
+      await pgPool.query(
+        `UPDATE property_deep_cleaning
+            SET work_no = COALESCE(NULLIF(work_no, ''), $2)
+          WHERE id = $1`,
+        [id, workNo],
+      )
+    } catch {}
     return res.status(201).json({ ok: true, id })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'property_feedbacks_create_failed' })
