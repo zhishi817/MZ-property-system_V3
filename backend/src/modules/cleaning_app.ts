@@ -527,7 +527,11 @@ router.patch('/tasks/:id/ready', requirePerm('cleaning_app.ready.set'), async (r
 })
 
 export default router
-router.post('/upload', requirePerm('cleaning_app.media.upload'), upload.single('file'), async (req, res) => {
+router.post(
+  '/upload',
+  requireAnyPerm(['cleaning_app.media.upload', 'cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.issues.report']),
+  upload.single('file'),
+  async (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'missing file' })
   try {
     const user = (req as any).user || {}
@@ -644,6 +648,6 @@ router.post('/upload', requirePerm('cleaning_app.media.upload'), upload.single('
     const url = `/uploads/${req.file.filename}`
     return res.status(201).json({ url })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'upload failed' })
+    return res.status(500).json({ message: e?.message || 'upload_failed' })
   }
 })
