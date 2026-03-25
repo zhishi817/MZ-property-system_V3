@@ -1341,6 +1341,7 @@ router.post('/property-feedbacks', async (req, res) => {
     const createdBy = String(user.sub || '').trim() || submitterName
     const id = require('uuid').v4()
     const duplicateWindowHours = 24
+    const duplicateSinceIso = new Date(Date.now() - duplicateWindowHours * 3600 * 1000).toISOString()
 
     if (parsed.data.kind === 'maintenance') {
       const area = String(parsed.data.area || '').trim()
@@ -1365,18 +1366,40 @@ router.post('/property-feedbacks', async (req, res) => {
         category_detail: categoryLabel,
         detail,
       })
-      const dup = await pgPool.query(
-        `SELECT id
-           FROM property_maintenance
-          WHERE property_id = $1
-            AND dedup_fingerprint = $2
-            AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
-            AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
-          ORDER BY COALESCE(submitted_at, created_at) DESC
-          LIMIT 1`,
-        [parsed.data.property_id, fingerprint, duplicateWindowHours],
-      )
-      if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+      try {
+        const cand = await pgPool.query(
+          `SELECT id, area, category, category_detail, details, notes, dedup_fingerprint
+             FROM property_maintenance
+            WHERE property_id = $1
+              AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
+              AND COALESCE(submitted_at, created_at) >= $2
+            ORDER BY COALESCE(submitted_at, created_at) DESC
+            LIMIT 50`,
+          [parsed.data.property_id, duplicateSinceIso],
+        )
+        for (const row of (cand?.rows || [])) {
+          const fp =
+            String(row?.dedup_fingerprint || '').trim() ||
+            makeFeedbackFingerprint({
+              kind: 'maintenance',
+              property_id: parsed.data.property_id,
+              area: String(row?.area || row?.category || '').trim(),
+              category_detail: String(row?.category_detail || '').trim(),
+              detail: String(row?.notes || row?.details || '').trim(),
+            })
+          if (fp === fingerprint) return res.status(409).json({ message: 'duplicate', existing_id: String(row?.id) })
+          if (!String(row?.dedup_fingerprint || '').trim()) {
+            try {
+              await pgPool.query(
+                `UPDATE property_maintenance
+                    SET dedup_fingerprint = $2
+                  WHERE id = $1 AND (dedup_fingerprint IS NULL OR dedup_fingerprint = '')`,
+                [String(row?.id), fp],
+              )
+            } catch {}
+          }
+        }
+      } catch {}
       await pgPool.query(
         `INSERT INTO property_maintenance(
           id, property_id, occurred_at, details, notes, created_by, created_at,
@@ -1433,18 +1456,42 @@ router.post('/property-feedbacks', async (req, res) => {
       areas,
       detail,
     })
-    const dup = await pgPool.query(
-      `SELECT id
-         FROM property_deep_cleaning
-        WHERE property_id = $1
-          AND dedup_fingerprint = $2
-          AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
-          AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
-        ORDER BY COALESCE(submitted_at, created_at) DESC
-        LIMIT 1`,
-      [parsed.data.property_id, fingerprint, duplicateWindowHours],
-    )
-    if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+    try {
+      const cand = await pgPool.query(
+        `SELECT id, project_desc, details, notes, dedup_fingerprint
+           FROM property_deep_cleaning
+          WHERE property_id = $1
+            AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
+            AND COALESCE(submitted_at, created_at) >= $2
+          ORDER BY COALESCE(submitted_at, created_at) DESC
+          LIMIT 50`,
+        [parsed.data.property_id, duplicateSinceIso],
+      )
+      for (const row of (cand?.rows || [])) {
+        const fp =
+          String(row?.dedup_fingerprint || '').trim() ||
+          makeFeedbackFingerprint({
+            kind: 'deep_cleaning',
+            property_id: parsed.data.property_id,
+            areas: String(row?.project_desc || '')
+              .split('、')
+              .map((s) => String(s || '').trim())
+              .filter(Boolean),
+            detail: String(row?.details || row?.notes || '').trim(),
+          })
+        if (fp === fingerprint) return res.status(409).json({ message: 'duplicate', existing_id: String(row?.id) })
+        if (!String(row?.dedup_fingerprint || '').trim()) {
+          try {
+            await pgPool.query(
+              `UPDATE property_deep_cleaning
+                  SET dedup_fingerprint = $2
+                WHERE id = $1 AND (dedup_fingerprint IS NULL OR dedup_fingerprint = '')`,
+              [String(row?.id), fp],
+            )
+          } catch {}
+        }
+      }
+    } catch {}
     await pgPool.query(
       `INSERT INTO property_deep_cleaning(
         id, property_id, occurred_at, project_desc, details, created_by, created_at,
