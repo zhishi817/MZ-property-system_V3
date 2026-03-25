@@ -4,6 +4,7 @@ import { hasPg, pgPool } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
 import { hasR2, r2Upload } from '../r2'
+import crypto from 'crypto'
 
 export const router = Router()
 
@@ -27,6 +28,27 @@ function normUrgency(v: any): string {
   const s = String(v ?? '').trim().toLowerCase()
   if (s === 'low' || s === 'medium' || s === 'high' || s === 'urgent') return s
   return 'medium'
+}
+
+function randomBase62(len = 4) {
+  const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  let out = ''
+  for (let i = 0; i < len; i++) {
+    out += chars[crypto.randomInt(0, chars.length)]
+  }
+  return out
+}
+
+function makeWorkNo(prefix: string, occurredAt?: string) {
+  const day = String(occurredAt || '').slice(0, 10)
+  const ymd = /^\d{4}-\d{2}-\d{2}$/.test(day)
+    ? day.replace(/-/g, '')
+    : (() => {
+        const d = new Date()
+        const pad2 = (n: number) => String(n).padStart(2, '0')
+        return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}`
+      })()
+  return `${String(prefix || 'R').trim()}-${ymd}-${randomBase62(4)}`
 }
 
 function canViewAll(role: string) {
@@ -1069,6 +1091,7 @@ async function ensurePropertyMaintenanceColumns() {
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category_detail text;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
 }
 
 async function ensurePropertyDeepCleaningColumns() {
@@ -1089,6 +1112,7 @@ async function ensurePropertyDeepCleaningColumns() {
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_desc text;')
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS work_no text;')
 }
 
 router.get('/property-feedbacks', async (req, res) => {
@@ -1291,14 +1315,16 @@ router.post('/property-feedbacks', async (req, res) => {
       const details = detail
 
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
       const photoType = await getColumnType('property_maintenance', 'photo_urls')
       const photoExpr = photoType === 'jsonb' ? '$13::jsonb' : photoType === 'text[]' ? '$13::text[]' : '$13'
       const photoValue = photoType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
+      const workNo = makeWorkNo('R', occurredAt)
       await pgPool.query(
         `INSERT INTO property_maintenance(
           id, property_id, occurred_at, details, notes, created_by, created_at,
-          status, submitted_at, submitter_name, category, category_detail, photo_urls, area
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,${photoExpr},$14)
+          status, submitted_at, submitter_name, category, category_detail, photo_urls, work_no, area
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,${photoExpr},$14,$15)
         RETURNING id`,
         [
           id,
@@ -1314,6 +1340,7 @@ router.post('/property-feedbacks', async (req, res) => {
           area,
           categoryLabel,
           photoValue,
+          workNo,
           area,
         ],
       )
@@ -1328,15 +1355,16 @@ router.post('/property-feedbacks', async (req, res) => {
     const projectDesc = areas.join('、')
     const deepPhotoType = await getColumnType('property_deep_cleaning', 'photo_urls')
     const deepAttachType = await getColumnType('property_deep_cleaning', 'attachment_urls')
-    const photoExpr = deepPhotoType === 'jsonb' ? '$11::jsonb' : deepPhotoType === 'text[]' ? '$11::text[]' : '$11'
-    const attachExpr = deepAttachType === 'jsonb' ? '$12::jsonb' : deepAttachType === 'text[]' ? '$12::text[]' : '$12'
+    const photoExpr = deepPhotoType === 'jsonb' ? '$12::jsonb' : deepPhotoType === 'text[]' ? '$12::text[]' : '$12'
+    const attachExpr = deepAttachType === 'jsonb' ? '$13::jsonb' : deepAttachType === 'text[]' ? '$13::text[]' : '$13'
     const photoValue = deepPhotoType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
     const attachValue = deepAttachType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
+    const workNo = makeWorkNo('DC', occurredAt)
     await pgPool.query(
       `INSERT INTO property_deep_cleaning(
         id, property_id, occurred_at, project_desc, details, created_by, created_at,
-        status, submitted_at, submitter_name, photo_urls, attachment_urls, review_status
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,${photoExpr},${attachExpr},$13)
+        status, submitted_at, submitter_name, work_no, photo_urls, attachment_urls, review_status
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,${photoExpr},${attachExpr},$14)
       RETURNING id`,
       [
         id,
@@ -1349,6 +1377,7 @@ router.post('/property-feedbacks', async (req, res) => {
         'pending',
         createdAt,
         submitterName,
+        workNo,
         photoValue,
         attachValue,
         'pending',
