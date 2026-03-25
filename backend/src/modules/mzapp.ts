@@ -1071,6 +1071,38 @@ async function getColumnType(table: string, column: string): Promise<'jsonb' | '
   }
 }
 
+function sha256Hex(input: string) {
+  return crypto.createHash('sha256').update(input).digest('hex')
+}
+
+function normalizeForFingerprint(input: any) {
+  const s0 = String(input ?? '').trim()
+  if (!s0) return ''
+  const s1 = s0.replace(/\s+/g, ' ')
+  const s2 = s1.replace(/[，。！？、,.!?;:()（）【】\[\]{}'"“”‘’\-_/\\]+/g, ' ')
+  return s2.replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+function makeFeedbackFingerprint(args: {
+  kind: 'maintenance' | 'deep_cleaning'
+  property_id: string
+  area?: string
+  category_detail?: string
+  areas?: string[]
+  detail?: string
+}) {
+  const pid = String(args.property_id || '').trim()
+  const kind = args.kind
+  const detail = normalizeForFingerprint(args.detail).slice(0, 160)
+  if (kind === 'maintenance') {
+    const area = String(args.area || '').trim()
+    const cat = String(args.category_detail || '').trim()
+    return sha256Hex([pid, kind, area, cat, detail].join('|'))
+  }
+  const areas = (args.areas || []).map((s) => String(s || '').trim()).filter(Boolean).sort()
+  return sha256Hex([pid, kind, areas.join(','), detail].join('|'))
+}
+
 async function ensurePropertyMaintenanceColumns() {
   if (!pgPool) return
   await pgPool.query(`CREATE TABLE IF NOT EXISTS property_maintenance (
@@ -1092,6 +1124,8 @@ async function ensurePropertyMaintenanceColumns() {
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_maintenance_dedup ON property_maintenance(property_id, dedup_fingerprint, submitted_at);')
 }
 
 async function ensurePropertyDeepCleaningColumns() {
@@ -1113,6 +1147,8 @@ async function ensurePropertyDeepCleaningColumns() {
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;')
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS work_no text;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_dedup ON property_deep_cleaning(property_id, dedup_fingerprint, submitted_at);')
 }
 
 router.get('/property-feedbacks', async (req, res) => {
@@ -1304,6 +1340,7 @@ router.post('/property-feedbacks', async (req, res) => {
     const submitterName = String(user.username || user.sub || '').trim() || 'unknown'
     const createdBy = String(user.sub || '').trim() || submitterName
     const id = require('uuid').v4()
+    const duplicateWindowHours = 24
 
     if (parsed.data.kind === 'maintenance') {
       const area = String(parsed.data.area || '').trim()
@@ -1316,15 +1353,35 @@ router.post('/property-feedbacks', async (req, res) => {
 
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
       const photoType = await getColumnType('property_maintenance', 'photo_urls')
       const photoExpr = photoType === 'jsonb' ? '$13::jsonb' : photoType === 'text[]' ? '$13::text[]' : '$13'
       const photoValue = photoType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
       const workNo = makeWorkNo('R', occurredAt)
+      const fingerprint = makeFeedbackFingerprint({
+        kind: 'maintenance',
+        property_id: parsed.data.property_id,
+        area,
+        category_detail: categoryLabel,
+        detail,
+      })
+      const dup = await pgPool.query(
+        `SELECT id
+           FROM property_maintenance
+          WHERE property_id = $1
+            AND dedup_fingerprint = $2
+            AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
+            AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
+          ORDER BY COALESCE(submitted_at, created_at) DESC
+          LIMIT 1`,
+        [parsed.data.property_id, fingerprint, duplicateWindowHours],
+      )
+      if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
       await pgPool.query(
         `INSERT INTO property_maintenance(
           id, property_id, occurred_at, details, notes, created_by, created_at,
-          status, submitted_at, submitter_name, category, category_detail, photo_urls, work_no, area
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,${photoExpr},$14,$15)
+          status, submitted_at, submitter_name, category, category_detail, photo_urls, work_no, area, dedup_fingerprint
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,${photoExpr},$14,$15,$16)
         RETURNING id`,
         [
           id,
@@ -1342,6 +1399,7 @@ router.post('/property-feedbacks', async (req, res) => {
           photoValue,
           workNo,
           area,
+          fingerprint,
         ],
       )
       try {
@@ -1368,11 +1426,30 @@ router.post('/property-feedbacks', async (req, res) => {
     const photoValue = deepPhotoType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
     const attachValue = deepAttachType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
     const workNo = makeWorkNo('DC', occurredAt)
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+    const fingerprint = makeFeedbackFingerprint({
+      kind: 'deep_cleaning',
+      property_id: parsed.data.property_id,
+      areas,
+      detail,
+    })
+    const dup = await pgPool.query(
+      `SELECT id
+         FROM property_deep_cleaning
+        WHERE property_id = $1
+          AND dedup_fingerprint = $2
+          AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
+          AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
+        ORDER BY COALESCE(submitted_at, created_at) DESC
+        LIMIT 1`,
+      [parsed.data.property_id, fingerprint, duplicateWindowHours],
+    )
+    if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
     await pgPool.query(
       `INSERT INTO property_deep_cleaning(
         id, property_id, occurred_at, project_desc, details, created_by, created_at,
-        status, submitted_at, submitter_name, work_no, photo_urls, attachment_urls, review_status
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,${photoExpr},${attachExpr},$14)
+        status, submitted_at, submitter_name, work_no, photo_urls, attachment_urls, review_status, dedup_fingerprint
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,${photoExpr},${attachExpr},$14,$15)
       RETURNING id`,
       [
         id,
@@ -1389,6 +1466,7 @@ router.post('/property-feedbacks', async (req, res) => {
         photoValue,
         attachValue,
         'pending',
+        fingerprint,
       ],
     )
     try {
