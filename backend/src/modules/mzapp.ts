@@ -1300,12 +1300,14 @@ router.get('/work-tasks', async (req, res) => {
       for (const it of out) {
         const isCleaning = String(it?.source_type || '') === 'cleaning_tasks'
         const d = String(it?.scheduled_date || '').slice(0, 10)
+        const code = String(it?.property?.code || '').trim()
         const pid = it?.property_id ? String(it.property_id) : ''
-        if (!isCleaning || !d || !pid) {
+        const propKey = code || pid || String(it?.title || '').trim()
+        if (!isCleaning || !d || !propKey) {
           merged.push(it)
           continue
         }
-        const k = `${d}|${pid}|${String(it?.start_time || '')}|${String(it?.end_time || '')}`
+        const k = `${d}|${propKey}`
         const arr = byKey.get(k) || []
         arr.push(it)
         byKey.set(k, arr)
@@ -1327,7 +1329,7 @@ router.get('/work-tasks', async (req, res) => {
         const arr = (arr0 || []).filter(Boolean)
         if (!arr.length) continue
         const preferred = arr.find((x) => String(x?.task_kind || '') === 'inspection') || arr[0]
-        const [d, pid] = k.split('|')
+        const [d, propKey] = k.split('|')
         const srcIds = Array.from(new Set(arr.flatMap((x) => (Array.isArray(x?.source_ids) ? x.source_ids : []))))
         const cleaningTaskIds = Array.from(
           new Set(arr.filter((x) => String(x?.task_kind || '') === 'cleaning').flatMap((x) => (Array.isArray(x?.source_ids) ? x.source_ids : []))),
@@ -1337,6 +1339,8 @@ router.get('/work-tasks', async (req, res) => {
         )
         const cleaningStatus = (arr.find((x) => String(x?.task_kind || '') === 'cleaning') || null)?.status || null
         const inspectionStatus = (arr.find((x) => String(x?.task_kind || '') === 'inspection') || null)?.status || null
+        const startTime = firstNonEmpty(...arr.map((x) => x.start_time))
+        const endTime = firstNonEmpty(...arr.map((x) => x.end_time))
         const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
         const lockboxVideoUrl = firstNonEmpty(...arr.map((x) => x.lockbox_video_url))
         const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
@@ -1350,13 +1354,20 @@ router.get('/work-tasks', async (req, res) => {
           seenRestock.add(iid)
           restockItems.push(it)
         }
-        const statusOut = arr
-          .map((x) => x.status)
-          .sort((a: any, b: any) => rankStatus(a) - rankStatus(b))[0]
+        const statusOut =
+          cleaningStatus && rankStatus(cleaningStatus) < 80
+            ? cleaningStatus
+            : inspectionStatus
+              ? inspectionStatus
+              : arr
+                  .map((x) => x.status)
+                  .sort((a: any, b: any) => rankStatus(a) - rankStatus(b))[0]
 
         merged.push({
           ...preferred,
-          id: `cleaning_tasks_merged:${d}:${pid}:${String(preferred?.start_time || '')}:${String(preferred?.end_time || '')}`,
+          id: `cleaning_tasks_merged:${d}:${propKey}`,
+          start_time: startTime || null,
+          end_time: endTime || null,
           task_kind: arr.some((x) => String(x?.task_kind || '') === 'inspection') ? 'inspection' : 'cleaning',
           source_ids: srcIds.length ? srcIds : (Array.isArray(preferred?.source_ids) ? preferred.source_ids : undefined),
           cleaning_task_ids: cleaningTaskIds,
