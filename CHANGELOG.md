@@ -31,6 +31,7 @@
 - Push: Deduplicate checkout notifications and format as “已退房：房号 / 已退房” (no “请安排清洁”).
 - Push: Deduplicate task info update notifications and include room code + change details.
 - Tasks: For managers, show “待检查” after cleaning done until inspection completes.
+- Push: Include room code in “清洁完成” notification title; tapping notification opens its notice detail.
 - MZApp Backend: Fix manager task list duplicates by merging same property/day regardless of time and id/code mismatches.
 - Cleaning App: Deduplicate manager Home tasks client-side as a fallback for old backend.
 - MZApp Backend: Add `GET/POST /mzapp/cleaning-tasks/:id/inspection-photos` and `GET/POST /mzapp/cleaning-tasks/:id/restock-proof`; extend `cleaning_task_media` with `note` and task+type index.

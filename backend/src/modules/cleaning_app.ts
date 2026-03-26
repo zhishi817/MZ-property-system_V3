@@ -307,11 +307,27 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       try { broadcastCleaningEvent({ event: 'consumables_submitted', task_id: id, restock_pending: needsRestock }) } catch {}
       try {
         const { notifyExpoAll } = require('./notifications')
+        let propertyCode = ''
+        try {
+          const { pgPool } = require('../dbAdapter')
+          if (pgPool) {
+            const r = await pgPool.query(
+              `SELECT COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+               FROM cleaning_tasks t
+               LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+               LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+               WHERE t.id=$1 LIMIT 1`,
+              [id],
+            )
+            propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
+          }
+        } catch {}
+        const eventId = `consumables_submitted:${propertyCode || id}:${String(patch.finished_at || '')}`
         await notifyExpoAll({
           exclude_user_id: String(user?.sub || ''),
-          title: '任务有更新',
+          title: propertyCode ? `清洁完成：${propertyCode}` : '清洁完成',
           body: needsRestock ? '清洁已完成，待补货' : '清洁已完成，待检查',
-          data: { kind: 'consumables_submitted', task_id: id, restock_pending: needsRestock, event_id: `consumables_submitted:${id}:${Date.now()}` },
+          data: { kind: 'consumables_submitted', task_id: id, restock_pending: needsRestock, property_code: propertyCode, event_id: eventId },
         })
       } catch {}
       return res.json(up || patch)
