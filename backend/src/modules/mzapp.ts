@@ -745,7 +745,24 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
       } catch {}
       try {
         const { notifyExpoAll } = require('./notifications')
-        await notifyExpoAll({ exclude_user_id: userId, title: '取消已退房', body: '房源已取消退房', data: { kind: 'guest_checked_out_cancelled', task_id: id, event_id: `guest_checked_out_cancelled:${id}:${Date.now()}` } })
+        let propertyCode = ''
+        try {
+          const r = await pgPool.query(
+            `SELECT COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+             FROM cleaning_tasks t
+             LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+             LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+             WHERE t.id=$1 LIMIT 1`,
+            [id],
+          )
+          propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
+        } catch {}
+        await notifyExpoAll({
+          exclude_user_id: userId,
+          title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
+          body: '已取消退房',
+          data: { kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, event_id: `guest_checked_out_cancelled:${propertyCode || id}:${Date.now()}` },
+        })
       } catch {}
       return res.status(201).json({ ok: true })
     }
@@ -763,11 +780,131 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
     } catch {}
     try {
       const { notifyExpoAll } = require('./notifications')
-      await notifyExpoAll({ exclude_user_id: userId, title: '已退房', body: '房源已退房，请安排清洁', data: { kind: 'guest_checked_out', task_id: id, event_id: `guest_checked_out:${id}:${Date.now()}` } })
+      let checkedOutAt: string | null = null
+      let propertyCode = ''
+      try {
+        const r = await pgPool.query(
+          `SELECT t.checked_out_at, COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+           FROM cleaning_tasks t
+           LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+           LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+           WHERE t.id=$1 LIMIT 1`,
+          [id],
+        )
+        checkedOutAt = r?.rows?.[0]?.checked_out_at ? String(r.rows[0].checked_out_at) : null
+        propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
+      } catch {}
+      await notifyExpoAll({
+        exclude_user_id: userId,
+        title: propertyCode ? `已退房：${propertyCode}` : '已退房',
+        body: '已退房',
+        data: { kind: 'guest_checked_out', task_id: id, property_code: propertyCode, checked_out_at: checkedOutAt, event_id: `guest_checked_out:${propertyCode || id}:${checkedOutAt || ''}` },
+      })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'guest_checked_out_failed' })
+  }
+})
+
+const guestCheckedOutBulkSchema = z
+  .object({
+    task_ids: z.array(z.string().trim().min(1)).min(1).max(20),
+    action: z.enum(['set', 'unset']).optional(),
+  })
+  .strict()
+
+router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const role = String(user.role || '')
+  const userId = String(user.sub || '')
+  if (role !== 'customer_service' && role !== 'admin' && role !== 'offline_manager') return res.status(403).json({ message: 'forbidden' })
+  const parsed = guestCheckedOutBulkSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  const ids = Array.from(new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean)))
+  if (!ids.length) return res.status(400).json({ message: 'missing task_ids' })
+  try {
+    await ensureCleaningCheckoutColumns()
+    const action = String(parsed.data.action || 'set').trim().toLowerCase()
+    if (action === 'unset' || action === 'clear' || action === 'cancel') {
+      await pgPool.query(
+        `UPDATE cleaning_tasks
+         SET checked_out_at = NULL,
+             checkout_marked_by = NULL,
+             updated_at = now()
+         WHERE id::text = ANY($1::text[])`,
+        [ids],
+      )
+      try {
+        const { broadcastCleaningEvent } = require('./events')
+        for (const id of ids) broadcastCleaningEvent({ event: 'guest_checked_out_cancelled', task_id: id })
+      } catch {}
+      let propertyCode = ''
+      try {
+        const r = await pgPool.query(
+          `SELECT COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+           FROM cleaning_tasks t
+           LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+           LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+           WHERE t.id=$1 LIMIT 1`,
+          [ids[0]],
+        )
+        propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
+      } catch {}
+      try {
+        const { notifyExpoAll } = require('./notifications')
+        await notifyExpoAll({
+          exclude_user_id: userId,
+          title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
+          body: '已取消退房',
+          data: { kind: 'guest_checked_out_cancelled', task_ids: ids, property_code: propertyCode, event_id: `guest_checked_out_cancelled:${propertyCode || ids[0]}:${Date.now()}` },
+        })
+      } catch {}
+      return res.status(201).json({ ok: true })
+    }
+
+    await pgPool.query(
+      `UPDATE cleaning_tasks
+       SET checked_out_at = COALESCE(checked_out_at, now()),
+           checkout_marked_by = COALESCE(checkout_marked_by, $2),
+           updated_at = now()
+       WHERE id::text = ANY($1::text[])`,
+      [ids, userId],
+    )
+    try {
+      const { broadcastCleaningEvent } = require('./events')
+      for (const id of ids) broadcastCleaningEvent({ event: 'guest_checked_out', task_id: id })
+    } catch {}
+
+    let checkedOutAt: string | null = null
+    let propertyCode = ''
+    try {
+      const r = await pgPool.query(
+        `SELECT t.checked_out_at, COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+         FROM cleaning_tasks t
+         LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+         LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+         WHERE t.id=$1 LIMIT 1`,
+        [ids[0]],
+      )
+      checkedOutAt = r?.rows?.[0]?.checked_out_at ? String(r.rows[0].checked_out_at) : null
+      propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
+    } catch {}
+    const eventId = `guest_checked_out:${propertyCode || ids[0]}:${checkedOutAt || ''}`
+    try {
+      const { notifyExpoAll } = require('./notifications')
+      await notifyExpoAll({
+        exclude_user_id: userId,
+        title: propertyCode ? `已退房：${propertyCode}` : '已退房',
+        body: '已退房',
+        data: { kind: 'guest_checked_out', task_ids: ids, property_code: propertyCode, checked_out_at: checkedOutAt, event_id: eventId },
+      })
+    } catch {}
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'guest_checked_out_bulk_failed' })
   }
 })
 

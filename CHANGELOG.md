@@ -28,6 +28,7 @@
 - Cleaning App: Request notification permission after login (expo-notifications).
 - Cleaning App/Backend: Add Expo Push token register + send push on checkout/manager updates.
 - Cleaning App/Backend: Push notifications now also fire on key upload, inspection photos, restock proof, ready, issues, and work task updates; push messages are mirrored into 信息中心.
+- Push: Deduplicate checkout notifications and format as “已退房：房号 / 已退房” (no “请安排清洁”).
 - MZApp Backend: Fix manager task list duplicates by merging same property/day regardless of time and id/code mismatches.
 - Cleaning App: Deduplicate manager Home tasks client-side as a fallback for old backend.
 - MZApp Backend: Add `GET/POST /mzapp/cleaning-tasks/:id/inspection-photos` and `GET/POST /mzapp/cleaning-tasks/:id/restock-proof`; extend `cleaning_task_media` with `note` and task+type index.
