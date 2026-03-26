@@ -25,7 +25,11 @@
 - Cleaning App (Manager): Show “标记已退房/房源问题反馈” under each cleaning/inspection task card on home.
 - Cleaning App: Show guest special request on task cards for all roles and include full details in notices.
 - Cleaning App (Inspector): Restore Home quick buttons and require confirming guest special request before completion.
+- Cleaning App: Request notification permission after login (expo-notifications).
+- Cleaning App/Backend: Add Expo Push token register + send push on checkout/manager updates.
+- Cleaning App/Backend: Push notifications now also fire on key upload, inspection photos, restock proof, ready, issues, and work task updates; push messages are mirrored into 信息中心.
 - MZApp Backend: Fix manager task list duplicates by merging same property/day regardless of time and id/code mismatches.
+- Cleaning App: Deduplicate manager Home tasks client-side as a fallback for old backend.
 - MZApp Backend: Add `GET/POST /mzapp/cleaning-tasks/:id/inspection-photos` and `GET/POST /mzapp/cleaning-tasks/:id/restock-proof`; extend `cleaning_task_media` with `note` and task+type index.
 
 ## Dev (2026-03-24)
