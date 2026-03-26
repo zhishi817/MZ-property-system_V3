@@ -730,6 +730,7 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
     const r0 = await pgPool.query('SELECT id, checked_out_at FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
+    const prevCheckedOutAt = row.checked_out_at ? String(row.checked_out_at) : null
     if (action === 'unset' || action === 'clear' || action === 'cancel') {
       await pgPool.query(
         `UPDATE cleaning_tasks
@@ -761,7 +762,7 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
           exclude_user_id: userId,
           title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
           body: '已取消退房',
-          data: { kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, event_id: `guest_checked_out_cancelled:${propertyCode || id}:${Date.now()}` },
+          data: { kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: `guest_checked_out_cancelled:${propertyCode || id}:${prevCheckedOutAt || ''}` },
         })
       } catch {}
       return res.status(201).json({ ok: true })
@@ -829,6 +830,11 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
     await ensureCleaningCheckoutColumns()
     const action = String(parsed.data.action || 'set').trim().toLowerCase()
     if (action === 'unset' || action === 'clear' || action === 'cancel') {
+      let prevCheckedOutAt: string | null = null
+      try {
+        const rPrev = await pgPool.query(`SELECT checked_out_at FROM cleaning_tasks WHERE id=$1 LIMIT 1`, [ids[0]])
+        prevCheckedOutAt = rPrev?.rows?.[0]?.checked_out_at ? String(rPrev.rows[0].checked_out_at) : null
+      } catch {}
       await pgPool.query(
         `UPDATE cleaning_tasks
          SET checked_out_at = NULL,
@@ -859,7 +865,7 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
           exclude_user_id: userId,
           title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
           body: '已取消退房',
-          data: { kind: 'guest_checked_out_cancelled', task_ids: ids, property_code: propertyCode, event_id: `guest_checked_out_cancelled:${propertyCode || ids[0]}:${Date.now()}` },
+          data: { kind: 'guest_checked_out_cancelled', task_ids: ids, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: `guest_checked_out_cancelled:${propertyCode || ids[0]}:${prevCheckedOutAt || ''}` },
         })
       } catch {}
       return res.status(201).json({ ok: true })
@@ -929,6 +935,22 @@ async function handleManagerFields(req: any, res: any) {
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningCustomerColumns()
+    const repId = String(parsed.data.task_ids[0] || '').trim()
+    let propertyCode = ''
+    let prevRow: any = null
+    try {
+      const r = await pgPool.query(
+        `SELECT t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request,
+                COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+         FROM cleaning_tasks t
+         LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+         LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+         WHERE t.id=$1 LIMIT 1`,
+        [repId],
+      )
+      prevRow = r?.rows?.[0] || null
+      propertyCode = String(prevRow?.property_code || '').trim()
+    } catch {}
     const fields: string[] = []
     const vals: any[] = []
     const push = (sql: string, v: any) => {
@@ -951,11 +973,46 @@ async function handleManagerFields(req: any, res: any) {
     } catch {}
     try {
       const { notifyExpoAll } = require('./notifications')
+      const norm = (v: any) => String(v ?? '').replace(/\s+/g, ' ').trim()
+      const fmt = (label: string, next: any, prev: any) => `${label}：${norm(next) || '-'}（原：${norm(prev) || '-'}）`
+      const lines: string[] = []
+      if (parsed.data.checkout_time !== undefined) lines.push(fmt('退房时间', parsed.data.checkout_time, prevRow?.checkout_time))
+      if (parsed.data.checkin_time !== undefined) lines.push(fmt('入住时间', parsed.data.checkin_time, prevRow?.checkin_time))
+      if (parsed.data.old_code !== undefined) lines.push(fmt('旧密码', parsed.data.old_code, prevRow?.old_code))
+      if (parsed.data.new_code !== undefined) lines.push(fmt('新密码', parsed.data.new_code, prevRow?.new_code))
+      if (parsed.data.guest_special_request !== undefined) lines.push(fmt('客人需求', parsed.data.guest_special_request, prevRow?.guest_special_request))
+      const hashText = (s: string) => {
+        let h = 0
+        for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+        return String(h)
+      }
+      let afterRow: any = null
+      try {
+        const rAfter = await pgPool.query(
+          `SELECT t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request,
+                  COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+           FROM cleaning_tasks t
+           LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+           LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+           WHERE t.id=$1 LIMIT 1`,
+          [repId],
+        )
+        afterRow = rAfter?.rows?.[0] || null
+        if (!propertyCode) propertyCode = String(afterRow?.property_code || '').trim()
+      } catch {}
+      const keyObj = {
+        checkout_time: afterRow?.checkout_time == null ? null : String(afterRow.checkout_time),
+        checkin_time: afterRow?.checkin_time == null ? null : String(afterRow.checkin_time),
+        old_code: afterRow?.old_code == null ? null : String(afterRow.old_code),
+        new_code: afterRow?.new_code == null ? null : String(afterRow.new_code),
+        guest_special_request: afterRow?.guest_special_request == null ? null : String(afterRow.guest_special_request),
+      }
+      const fieldsKey = hashText(JSON.stringify(keyObj))
       await notifyExpoAll({
         exclude_user_id: String(user.sub || ''),
-        title: '任务信息更新',
-        body: '入住/退房时间、密码或客人需求已更新',
-        data: { kind: 'cleaning_task_manager_fields_updated', task_ids: parsed.data.task_ids, event_id: `cleaning_task_manager_fields_updated:${parsed.data.task_ids.join(',')}:${Date.now()}` },
+        title: propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新',
+        body: lines.length ? lines.join('\n') : '任务信息已更新',
+        data: { kind: 'cleaning_task_manager_fields_updated', task_ids: parsed.data.task_ids, property_code: propertyCode, fields_key: fieldsKey, event_id: `manager_fields:${propertyCode || repId}:${fieldsKey}` },
       })
     } catch {}
     return res.status(201).json({ ok: true })
