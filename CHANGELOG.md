@@ -13,6 +13,16 @@
 - Cleaning App (Inspector): Expand room photo limits (toilet 9, living 3, bedroom 8).
 - Backend: Relax restock proof schema to allow “unavailable” without photo (stores placeholder url).
 - MZApp Backend: For customer_service/admin/offline_manager (view=all), merge same-property same-day checkin+checkout tasks into one card to avoid duplicates.
+- Cleaning App (Manager): Add “每日清洁” manager detail screen; customer_service can edit times/codes/guest note; admin/customer_service/offline_manager can view inspection issue + room photos.
+- MZApp Backend: Add `PATCH /mzapp/cleaning-tasks/manager-fields`, add `cleaning_tasks.guest_special_request`, and include cleaning/inspection status + ids in merged work-tasks.
+- Cleaning App: Remove task card quick-action buttons on Tasks home for inspectors.
+- Cleaning App (Manager): Move “房源问题反馈” below “保存修改”; rename “媒体” to “钥匙与挂钥匙视频” with clearer empty state.
+- Cleaning App (Manager): Hide “清洁问题照片” for customer_service; only admin/offline_manager can view.
+- Cleaning App: Show inspection-only tasks as “待检查” instead of “待处理”.
+- Cleaning App (Customer Service): Add “标记已退房/取消已退房” in manager task page.
+- Cleaning App: Generate notices on refresh for check-out and manager field updates.
+- Cleaning App/Backend: Manager task edit now supports POST fallback when PATCH is unavailable.
+- Cleaning App (Manager): Show “标记已退房/房源问题反馈” under each cleaning/inspection task card on home.
 - MZApp Backend: Add `GET/POST /mzapp/cleaning-tasks/:id/inspection-photos` and `GET/POST /mzapp/cleaning-tasks/:id/restock-proof`; extend `cleaning_task_media` with `note` and task+type index.
 
 ## Dev (2026-03-24)

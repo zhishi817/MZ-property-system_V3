@@ -261,6 +261,27 @@ async function ensureCleaningCheckoutColumns() {
   return checkoutEnsuring
 }
 
+let cleaningCustomerEnsured = false
+let cleaningCustomerEnsuring: Promise<void> | null = null
+
+async function ensureCleaningCustomerColumns() {
+  if (!hasPg || !pgPool) return
+  if (cleaningCustomerEnsured) return
+  if (cleaningCustomerEnsuring) return cleaningCustomerEnsuring
+  cleaningCustomerEnsuring = (async () => {
+    try {
+      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS guest_special_request text;`)
+    } finally {
+      cleaningCustomerEnsured = true
+    }
+  })()
+    .catch(() => {})
+    .finally(() => {
+      cleaningCustomerEnsuring = null
+    })
+  return cleaningCustomerEnsuring
+}
+
 let checklistEnsured = false
 let checklistEnsuring: Promise<void> | null = null
 
@@ -730,6 +751,56 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
   }
 })
 
+const managerFieldsSchema = z
+  .object({
+    task_ids: z.array(z.string().trim().min(1)).min(1).max(10),
+    checkout_time: z.string().trim().max(32).optional().nullable(),
+    checkin_time: z.string().trim().max(32).optional().nullable(),
+    old_code: z.string().trim().max(64).optional().nullable(),
+    new_code: z.string().trim().max(64).optional().nullable(),
+    guest_special_request: z.string().trim().max(1500).optional().nullable(),
+  })
+  .strict()
+
+async function handleManagerFields(req: any, res: any) {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const role = String(user.role || '')
+  if (role !== 'customer_service') return res.status(403).json({ message: 'forbidden' })
+  const parsed = managerFieldsSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureCleaningCustomerColumns()
+    const fields: string[] = []
+    const vals: any[] = []
+    const push = (sql: string, v: any) => {
+      vals.push(v)
+      fields.push(`${sql} = $${vals.length}`)
+    }
+    if (parsed.data.checkout_time !== undefined) push('checkout_time', parsed.data.checkout_time)
+    if (parsed.data.checkin_time !== undefined) push('checkin_time', parsed.data.checkin_time)
+    if (parsed.data.old_code !== undefined) push('old_code', parsed.data.old_code)
+    if (parsed.data.new_code !== undefined) push('new_code', parsed.data.new_code)
+    if (parsed.data.guest_special_request !== undefined) push('guest_special_request', parsed.data.guest_special_request)
+    if (!fields.length) return res.status(400).json({ message: 'no fields' })
+
+    vals.push(parsed.data.task_ids)
+    const sql = `UPDATE cleaning_tasks SET ${fields.join(', ')}, updated_at = now() WHERE id::text = ANY($${vals.length}::text[])`
+    await pgPool.query(sql, vals)
+    try {
+      const { broadcastCleaningEvent } = require('./events')
+      for (const id of parsed.data.task_ids) broadcastCleaningEvent({ event: 'cleaning_task_manager_fields_updated', task_id: String(id) })
+    } catch {}
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'manager_fields_failed' })
+  }
+}
+
+router.patch('/cleaning-tasks/manager-fields', handleManagerFields)
+router.post('/cleaning-tasks/manager-fields', handleManagerFields)
+
 router.get('/checklist-items', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
@@ -899,6 +970,7 @@ router.get('/work-tasks', async (req, res) => {
     await ensureCleaningTaskSortColumns()
     await ensureCleaningTaskMediaTable()
     await ensureCleaningCheckoutColumns()
+    await ensureCleaningCustomerColumns()
 
     const out: any[] = []
 
@@ -981,6 +1053,7 @@ router.get('/work-tasks', async (req, res) => {
             t.checkin_time,
             t.old_code,
             t.new_code,
+            t.guest_special_request,
             t.checked_out_at,
             (
               SELECT m.url
@@ -1077,6 +1150,7 @@ router.get('/work-tasks', async (req, res) => {
             checkin_time: row.checkin_time,
             old_code: row.old_code,
             new_code: row.new_code,
+            guest_special_request: row.guest_special_request,
             checked_out_at: row.checked_out_at,
             key_photo_url: row.key_photo_url,
             lockbox_video_url: row.lockbox_video_url,
@@ -1137,6 +1211,7 @@ router.get('/work-tasks', async (req, res) => {
 
           const oldCode = firstNonEmpty(p.a.old_code, p.b?.old_code, ...rows.map((x) => x.old_code))
           const newCode = firstNonEmpty(p.a.new_code, p.b?.new_code, ...rows.map((x) => x.new_code))
+          const guestSpecialRequest = firstNonEmpty(p.a.guest_special_request, p.b?.guest_special_request, ...rows.map((x) => x.guest_special_request))
           const checkedOutAt = firstNonEmpty(p.a.checked_out_at, p.b?.checked_out_at, ...rows.map((x) => x.checked_out_at))
           const keyPhotoUrl = firstNonEmpty(p.a.key_photo_url, p.b?.key_photo_url, ...rows.map((x) => x.key_photo_url))
           const lockboxVideoUrl = firstNonEmpty(p.a.lockbox_video_url, p.b?.lockbox_video_url, ...rows.map((x) => x.lockbox_video_url))
@@ -1192,6 +1267,7 @@ router.get('/work-tasks', async (req, res) => {
             sort_index_inspector,
             old_code: oldCode,
             new_code: newCode,
+            guest_special_request: guestSpecialRequest,
             checked_out_at: checkedOutAt,
             key_photo_url: keyPhotoUrl,
             lockbox_video_url: lockboxVideoUrl,
@@ -1253,6 +1329,14 @@ router.get('/work-tasks', async (req, res) => {
         const preferred = arr.find((x) => String(x?.task_kind || '') === 'inspection') || arr[0]
         const [d, pid] = k.split('|')
         const srcIds = Array.from(new Set(arr.flatMap((x) => (Array.isArray(x?.source_ids) ? x.source_ids : []))))
+        const cleaningTaskIds = Array.from(
+          new Set(arr.filter((x) => String(x?.task_kind || '') === 'cleaning').flatMap((x) => (Array.isArray(x?.source_ids) ? x.source_ids : []))),
+        )
+        const inspectionTaskIds = Array.from(
+          new Set(arr.filter((x) => String(x?.task_kind || '') === 'inspection').flatMap((x) => (Array.isArray(x?.source_ids) ? x.source_ids : []))),
+        )
+        const cleaningStatus = (arr.find((x) => String(x?.task_kind || '') === 'cleaning') || null)?.status || null
+        const inspectionStatus = (arr.find((x) => String(x?.task_kind || '') === 'inspection') || null)?.status || null
         const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
         const lockboxVideoUrl = firstNonEmpty(...arr.map((x) => x.lockbox_video_url))
         const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
@@ -1275,6 +1359,10 @@ router.get('/work-tasks', async (req, res) => {
           id: `cleaning_tasks_merged:${d}:${pid}:${String(preferred?.start_time || '')}:${String(preferred?.end_time || '')}`,
           task_kind: arr.some((x) => String(x?.task_kind || '') === 'inspection') ? 'inspection' : 'cleaning',
           source_ids: srcIds.length ? srcIds : (Array.isArray(preferred?.source_ids) ? preferred.source_ids : undefined),
+          cleaning_task_ids: cleaningTaskIds,
+          inspection_task_ids: inspectionTaskIds,
+          cleaning_status: cleaningStatus,
+          inspection_status: inspectionStatus,
           assignee_id: null,
           status: statusOut,
           key_photo_url: keyPhotoUrl,
