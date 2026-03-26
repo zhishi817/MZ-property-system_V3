@@ -473,6 +473,10 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
       const { broadcastCleaningEvent } = require('./events')
       broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id })
     } catch {}
+    try {
+      const { notifyExpoAll } = require('./notifications')
+      await notifyExpoAll({ exclude_user_id: userId, title: '挂钥匙视频已上传', body: '检查员已上传挂钥匙视频', data: { kind: 'lockbox_video_uploaded', task_id: id, event_id: `lockbox_video_uploaded:${id}:${Date.now()}` } })
+    } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'lockbox_video_failed' })
@@ -580,6 +584,10 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     try {
       const { broadcastCleaningEvent } = require('./events')
       broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id })
+    } catch {}
+    try {
+      const { notifyExpoAll } = require('./notifications')
+      await notifyExpoAll({ exclude_user_id: userId, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, event_id: `inspection_photos_saved:${id}:${Date.now()}` } })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -697,6 +705,10 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
       const { broadcastCleaningEvent } = require('./events')
       broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id })
     } catch {}
+    try {
+      const { notifyExpoAll } = require('./notifications')
+      await notifyExpoAll({ exclude_user_id: userId, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, event_id: `restock_proof_saved:${id}:${Date.now()}` } })
+    } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'restock_proof_failed' })
@@ -731,6 +743,10 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
         const { broadcastCleaningEvent } = require('./events')
         broadcastCleaningEvent({ event: 'guest_checked_out_cancelled', task_id: id })
       } catch {}
+      try {
+        const { notifyExpoAll } = require('./notifications')
+        await notifyExpoAll({ exclude_user_id: userId, title: '取消已退房', body: '房源已取消退房', data: { kind: 'guest_checked_out_cancelled', task_id: id, event_id: `guest_checked_out_cancelled:${id}:${Date.now()}` } })
+      } catch {}
       return res.status(201).json({ ok: true })
     }
     await pgPool.query(
@@ -744,6 +760,10 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
     try {
       const { broadcastCleaningEvent } = require('./events')
       broadcastCleaningEvent({ event: 'guest_checked_out', task_id: id })
+    } catch {}
+    try {
+      const { notifyExpoAll } = require('./notifications')
+      await notifyExpoAll({ exclude_user_id: userId, title: '已退房', body: '房源已退房，请安排清洁', data: { kind: 'guest_checked_out', task_id: id, event_id: `guest_checked_out:${id}:${Date.now()}` } })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -791,6 +811,15 @@ async function handleManagerFields(req: any, res: any) {
     try {
       const { broadcastCleaningEvent } = require('./events')
       for (const id of parsed.data.task_ids) broadcastCleaningEvent({ event: 'cleaning_task_manager_fields_updated', task_id: String(id) })
+    } catch {}
+    try {
+      const { notifyExpoAll } = require('./notifications')
+      await notifyExpoAll({
+        exclude_user_id: String(user.sub || ''),
+        title: '任务信息更新',
+        body: '入住/退房时间、密码或客人需求已更新',
+        data: { kind: 'cleaning_task_manager_fields_updated', task_ids: parsed.data.task_ids, event_id: `cleaning_task_manager_fields_updated:${parsed.data.task_ids.join(',')}:${Date.now()}` },
+      })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {

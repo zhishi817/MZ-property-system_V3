@@ -152,6 +152,7 @@ router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_
 // Start cleaning: upload key photo (url provided) + geo + timestamps
 const startSchema = z.object({ media_url: z.string().min(1), captured_at: z.string().optional(), lat: z.number().optional(), lng: z.number().optional() })
 router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (req, res) => {
+  const user = (req as any).user
   const { id } = req.params
   const parsed = startSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -173,6 +174,15 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
       }
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
       try { broadcastCleaningEvent({ event: 'started', task_id: id }) } catch {}
+      try {
+        const { notifyExpoAll } = require('./notifications')
+        await notifyExpoAll({
+          exclude_user_id: String(user?.sub || ''),
+          title: '钥匙已上传',
+          body: '清洁员已上传钥匙照片',
+          data: { kind: 'key_photo_uploaded', task_id: id, event_id: `key_photo_uploaded:${id}:${now}` },
+        })
+      } catch {}
       return res.json(up || patch)
     }
     return res.json({ id, status: 'in_progress' })
@@ -184,6 +194,7 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
 // Report issue
 const issueSchema = z.object({ title: z.string().min(1), detail: z.string().optional(), severity: z.string().optional(), media_url: z.string().optional() })
 router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), async (req, res) => {
+  const user = (req as any).user
   const { id } = req.params
   const parsed = issueSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -196,6 +207,15 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
         try { await pgInsert('cleaning_task_media', media as any) } catch {}
       }
       try { broadcastCleaningEvent({ event: 'issue', task_id: id }) } catch {}
+      try {
+        const { notifyExpoAll } = require('./notifications')
+        await notifyExpoAll({
+          exclude_user_id: String(user?.sub || ''),
+          title: '任务有更新',
+          body: '清洁员提交了问题',
+          data: { kind: 'issue_reported', task_id: id, event_id: `issue_reported:${id}:${Date.now()}` },
+        })
+      } catch {}
       return res.status(201).json(issue)
     }
     return res.status(201).json({ id: 'local', task_id: id })
@@ -217,6 +237,7 @@ const consumableSchema = z.object({
   ),
 })
 router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+  const user = (req as any).user
   const { id } = req.params
   const parsed = consumableSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -284,6 +305,15 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       const patch: any = { status: needsRestock ? 'restock_pending' : 'cleaned', finished_at: new Date().toISOString() }
       const up = await pgUpdate('cleaning_tasks', id, patch)
       try { broadcastCleaningEvent({ event: 'consumables_submitted', task_id: id, restock_pending: needsRestock }) } catch {}
+      try {
+        const { notifyExpoAll } = require('./notifications')
+        await notifyExpoAll({
+          exclude_user_id: String(user?.sub || ''),
+          title: '任务有更新',
+          body: needsRestock ? '清洁已完成，待补货' : '清洁已完成，待检查',
+          data: { kind: 'consumables_submitted', task_id: id, restock_pending: needsRestock, event_id: `consumables_submitted:${id}:${Date.now()}` },
+        })
+      } catch {}
       return res.json(up || patch)
     }
     return res.json({ id, status: 'cleaned' })
@@ -294,11 +324,16 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
 
 // Restock done
 router.patch('/tasks/:id/restock', requirePerm('cleaning_app.restock.manage'), async (req, res) => {
+  const user = (req as any).user
   const { id } = req.params
   try {
     if (hasPg) {
       const up = await pgUpdate('cleaning_tasks', id, { status: 'restocked' } as any)
       try { broadcastCleaningEvent({ event: 'restock_done', task_id: id }) } catch {}
+      try {
+        const { notifyExpoAll } = require('./notifications')
+        await notifyExpoAll({ exclude_user_id: String(user?.sub || ''), title: '任务有更新', body: '补货已完成，待检查', data: { kind: 'restock_done', task_id: id, event_id: `restock_done:${id}:${Date.now()}` } })
+      } catch {}
       return res.json(up || { id, status: 'restocked' })
     }
     return res.json({ id, status: 'restocked' })
@@ -310,6 +345,7 @@ router.patch('/tasks/:id/restock', requirePerm('cleaning_app.restock.manage'), a
 // Inspection complete with lockbox video
 const inspectSchema = z.object({ media_url: z.string().min(1), captured_at: z.string().optional(), lat: z.number().optional(), lng: z.number().optional() })
 router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+  const user = (req as any).user
   const { id } = req.params
   const parsed = inspectSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -321,6 +357,10 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
       const media = { id: require('uuid').v4(), task_id: id, type: 'lockbox_video', url: parsed.data.media_url, captured_at: parsed.data.captured_at || now, lat: parsed.data.lat, lng: parsed.data.lng }
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
       try { broadcastCleaningEvent({ event: 'inspected', task_id: id }) } catch {}
+      try {
+        const { notifyExpoAll } = require('./notifications')
+        await notifyExpoAll({ exclude_user_id: String(user?.sub || ''), title: '检查已完成', body: '检查员已提交挂钥匙视频并标记完成', data: { kind: 'inspection_complete', task_id: id, event_id: `inspection_complete:${id}:${now}` } })
+      } catch {}
       return res.json(up || patch)
     }
     return res.json({ id, status: 'inspected' })
@@ -386,6 +426,7 @@ router.get('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fin
 })
 
 router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+  const user = (req as any).user
   const { id } = req.params
   const parsed = inspectionPhotosSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -415,6 +456,10 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
         )
       }
       try { broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id }) } catch {}
+      try {
+        const { notifyExpoAll } = require('./notifications')
+        await notifyExpoAll({ exclude_user_id: String(user?.sub || ''), title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, event_id: `inspection_photos_saved:${id}:${Date.now()}` } })
+      } catch {}
       return res.status(201).json({ ok: true })
     }
     return res.status(201).json({ ok: true })
@@ -480,6 +525,7 @@ router.get('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish'
 })
 
 router.post('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+  const user = (req as any).user
   const { id } = req.params
   const parsed = restockProofSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -506,6 +552,10 @@ router.post('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish
         )
       }
       try { broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id }) } catch {}
+      try {
+        const { notifyExpoAll } = require('./notifications')
+        await notifyExpoAll({ exclude_user_id: String(user?.sub || ''), title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, event_id: `restock_proof_saved:${id}:${Date.now()}` } })
+      } catch {}
       return res.status(201).json({ ok: true })
     }
     return res.status(201).json({ ok: true })
@@ -516,11 +566,16 @@ router.post('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish
 
 // Set ready
 router.patch('/tasks/:id/ready', requirePerm('cleaning_app.ready.set'), async (req, res) => {
+  const user = (req as any).user
   const { id } = req.params
   try {
     if (hasPg) {
       const up = await pgUpdate('cleaning_tasks', id, { status: 'ready' } as any)
       try { broadcastCleaningEvent({ event: 'ready', task_id: id }) } catch {}
+      try {
+        const { notifyExpoAll } = require('./notifications')
+        await notifyExpoAll({ exclude_user_id: String(user?.sub || ''), title: '可入住', body: '房源已标记为可入住', data: { kind: 'ready', task_id: id, event_id: `ready:${id}:${Date.now()}` } })
+      } catch {}
       return res.json(up || { id, status: 'ready' })
     }
     return res.json({ id, status: 'ready' })

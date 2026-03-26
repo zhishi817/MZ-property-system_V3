@@ -1,8 +1,66 @@
 import { Router } from 'express'
 import { requireAnyPerm, requirePerm } from '../auth'
-import { hasPg, pgInsert, pgSelect } from '../dbAdapter'
+import { hasPg, pgInsert, pgPool, pgSelect } from '../dbAdapter'
 
 export const router = Router()
+
+let expoTokensEnsured = false
+let expoTokensEnsuring: Promise<void> | null = null
+
+async function ensureExpoPushTokensTable() {
+  if (!hasPg || !pgPool) return
+  if (expoTokensEnsured) return
+  if (expoTokensEnsuring) return expoTokensEnsuring
+  expoTokensEnsuring = (async () => {
+    await pgPool.query(
+      `CREATE TABLE IF NOT EXISTS expo_push_tokens (
+        token text PRIMARY KEY,
+        user_id text NOT NULL,
+        platform text,
+        ua text,
+        created_at timestamptz DEFAULT now(),
+        updated_at timestamptz DEFAULT now()
+      );`,
+    )
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS expo_push_tokens_user_id_idx ON expo_push_tokens (user_id);`)
+    expoTokensEnsured = true
+  })()
+    .catch(() => {})
+    .finally(() => {
+      expoTokensEnsuring = null
+    })
+  return expoTokensEnsuring
+}
+
+async function sendExpoPush(tokens: string[], payload: { title: string; body: string; data?: any }) {
+  const list = (tokens || []).map((x) => String(x || '').trim()).filter(Boolean)
+  if (!list.length) return { sent: 0, failed: 0 }
+  const url = 'https://exp.host/--/api/v2/push/send'
+  let sent = 0
+  let failed = 0
+  for (let i = 0; i < list.length; i += 90) {
+    const chunk = list.slice(i, i + 90)
+    const messages = chunk.map((to) => ({
+      to,
+      title: payload.title,
+      body: payload.body,
+      sound: 'default',
+      data: payload.data || {},
+    }))
+    try {
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(messages) })
+      const j = await res.json().catch(() => null)
+      const arr = Array.isArray(j?.data) ? j.data : []
+      sent += chunk.length
+      for (const it of arr) {
+        if (String(it?.status || '') !== 'ok') failed++
+      }
+    } catch {
+      failed += chunk.length
+    }
+  }
+  return { sent, failed }
+}
 
 router.post('/push/subscribe', requireAnyPerm(['cleaning_app.push.subscribe','cleaning_app.sse.subscribe']), async (req, res) => {
   const user = (req as any).user
@@ -21,6 +79,29 @@ router.post('/push/subscribe', requireAnyPerm(['cleaning_app.push.subscribe','cl
   }
 })
 
+router.post('/expo/register', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const userId = String(user.sub || '')
+  const { expo_push_token, platform, ua } = req.body || {}
+  const token = String(expo_push_token || '').trim()
+  if (!token) return res.status(400).json({ message: 'missing expo_push_token' })
+  if (!hasPg || !pgPool) return res.json({ ok: true })
+  try {
+    await ensureExpoPushTokensTable()
+    await pgPool.query(
+      `INSERT INTO expo_push_tokens (token, user_id, platform, ua, updated_at)
+       VALUES ($1,$2,$3,$4,now())
+       ON CONFLICT (token)
+       DO UPDATE SET user_id=EXCLUDED.user_id, platform=EXCLUDED.platform, ua=EXCLUDED.ua, updated_at=now()`,
+      [token, userId, platform == null ? null : String(platform || ''), ua == null ? null : String(ua || '')],
+    )
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'expo_register_failed' })
+  }
+})
+
 router.post('/push/send', requirePerm('guest.notify'), async (req, res) => {
   const { user_id, payload } = req.body || {}
   if (!user_id) return res.status(400).json({ message: 'missing user_id' })
@@ -34,5 +115,26 @@ router.post('/push/send', requirePerm('guest.notify'), async (req, res) => {
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
+
+export async function notifyExpoAll(params: { exclude_user_id?: string; title: string; body: string; data?: any }) {
+  if (!hasPg || !pgPool) return { sent: 0, failed: 0 }
+  await ensureExpoPushTokensTable()
+  const exclude = String(params.exclude_user_id || '').trim()
+  const rows = exclude
+    ? await pgPool.query(`SELECT token FROM expo_push_tokens WHERE user_id <> $1`, [exclude])
+    : await pgPool.query(`SELECT token FROM expo_push_tokens`)
+  const tokens = (rows?.rows || []).map((x: any) => String(x.token || '').trim()).filter(Boolean)
+  return await sendExpoPush(tokens, { title: params.title, body: params.body, data: params.data || {} })
+}
+
+export async function notifyExpoUsers(params: { user_ids: string[]; title: string; body: string; data?: any }) {
+  if (!hasPg || !pgPool) return { sent: 0, failed: 0 }
+  await ensureExpoPushTokensTable()
+  const ids = Array.from(new Set((params.user_ids || []).map((x) => String(x || '').trim()).filter(Boolean)))
+  if (!ids.length) return { sent: 0, failed: 0 }
+  const rows = await pgPool.query(`SELECT token FROM expo_push_tokens WHERE user_id = ANY($1::text[])`, [ids])
+  const tokens = (rows?.rows || []).map((x: any) => String(x.token || '').trim()).filter(Boolean)
+  return await sendExpoPush(tokens, { title: params.title, body: params.body, data: params.data || {} })
+}
 
 export default router
