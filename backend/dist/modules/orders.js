@@ -569,7 +569,7 @@ async function hasOrderOverlap(propertyId, checkin, checkout, excludeId) {
     return false;
 }
 exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.manage']), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
     const parsed = createOrderSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -581,7 +581,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
         if (ci && co && !(ci < co))
             return res.status(400).json({ message: '入住日期必须早于退房日期' });
     }
-    catch (_g) { }
+    catch (_l) { }
     let propertyId = normalizePropertyId(o.property_id) || (o.property_code ? ((_c = store_1.db.properties.find(p => (p.code || '') === o.property_code)) === null || _c === void 0 ? void 0 : _c.id) : undefined);
     // 如果传入的 property_id 不存在于 PG，则尝试用房号 code 在 PG 中查找并替换
     if (dbAdapter_1.hasPg) {
@@ -594,7 +594,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                     propertyId = byCode[0].id;
             }
         }
-        catch (_h) { }
+        catch (_m) { }
     }
     const key = o.idempotency_key || `${propertyId || ''}-${o.checkin || ''}-${o.checkout || ''}`;
     const exists = store_1.db.orders.find((x) => x.idempotency_key === key);
@@ -610,7 +610,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
             const ms = co.getTime() - ci.getTime();
             nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
         }
-        catch (_j) {
+        catch (_o) {
             nights = 0;
         }
     }
@@ -641,7 +641,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                 return res.status(409).json({ message: '疑似重复订单', reasons: dup.reasons, similar_orders: dup.similar });
         }
     }
-    catch (_k) { }
+    catch (_p) { }
     // overlap guard
     const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout);
     if (conflict)
@@ -668,18 +668,22 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                             return r1;
                         });
                         try {
+                            (0, store_1.addAudit)('Order', String(dup[0].id), 'update', dup[0], row, (_g = req.user) === null || _g === void 0 ? void 0 : _g.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+                        }
+                        catch (_q) { }
+                        try {
                             (0, events_1.broadcastOrdersUpdated)({ action: 'update', id: String(dup[0].id) });
                         }
-                        catch (_l) { }
+                        catch (_r) { }
                         return res.status(200).json(row || dup[0]);
                     }
-                    catch (_m) { }
+                    catch (_s) { }
                 }
                 return res.status(409).json({ message: '确认码已存在', existing_order_id: String(dup[0].id) });
             }
         }
     }
-    catch (_o) { }
+    catch (_t) { }
     if (dbAdapter_1.hasPg) {
         try {
             if (newOrder.property_id) {
@@ -697,7 +701,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                         await (0, dbAdapter_1.pgInsert)('properties', payload);
                     }
                 }
-                catch (_p) { }
+                catch (_u) { }
             }
             const insertOrder = { ...newOrder };
             delete insertOrder.property_code;
@@ -725,9 +729,13 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                 return r1;
             });
             try {
+                (0, store_1.addAudit)('Order', String((row === null || row === void 0 ? void 0 : row.id) || ''), 'create', null, row, (_h = req.user) === null || _h === void 0 ? void 0 : _h.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+            }
+            catch (_v) { }
+            try {
                 (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: row === null || row === void 0 ? void 0 : row.id });
             }
-            catch (_q) { }
+            catch (_w) { }
             return res.status(201).json(row);
         }
         catch (e) {
@@ -762,6 +770,10 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
                         }
                         return r1;
                     });
+                    try {
+                        (0, store_1.addAudit)('Order', String((row === null || row === void 0 ? void 0 : row.id) || ''), 'create', null, row, (_j = req.user) === null || _j === void 0 ? void 0 : _j.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+                    }
+                    catch (_x) { }
                     return res.status(201).json(row);
                 }
                 catch (e2) {
@@ -777,9 +789,13 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
     // 无远端数据库，使用内存存储
     store_1.db.orders.push(newOrder);
     try {
+        (0, store_1.addAudit)('Order', String(newOrder.id), 'create', null, newOrder, (_k = req.user) === null || _k === void 0 ? void 0 : _k.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+    }
+    catch (_y) { }
+    try {
         (0, events_1.broadcastOrdersUpdated)({ action: 'create', id: newOrder.id });
     }
-    catch (_r) { }
+    catch (_z) { }
     syncCleaningTasksForOrderId(String(newOrder.id)).catch(() => { });
     return res.status(201).json(newOrder);
 });
@@ -804,7 +820,7 @@ exports.router.post('/validate-duplicate', (0, auth_1.requireAnyPerm)(['order.cr
     }
 });
 exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req, res) => {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e, _f;
     const { id } = req.params;
     const parsed = updateOrderSchema.safeParse(req.body);
     if (!parsed.success)
@@ -819,7 +835,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
             const rows = (await (0, dbAdapter_1.pgSelect)('orders', '*', { id })) || [];
             base = Array.isArray(rows) ? rows[0] : undefined;
         }
-        catch (_d) { }
+        catch (_g) { }
     }
     if (!base)
         return res.status(404).json({ message: 'order not found' });
@@ -834,7 +850,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
         if (ci0 && co0 && !(ci0 < co0))
             return res.status(400).json({ message: '入住日期必须早于退房日期' });
     }
-    catch (_e) { }
+    catch (_h) { }
     if (!nights && checkin && checkout) {
         try {
             const ci = new Date(checkin);
@@ -842,7 +858,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
             const ms = co.getTime() - ci.getTime();
             nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
         }
-        catch (_f) {
+        catch (_j) {
             nights = 0;
         }
     }
@@ -955,9 +971,16 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
             if (idx !== -1)
                 store_1.db.orders[idx] = row;
             try {
+                const bs = String((base === null || base === void 0 ? void 0 : base.status) || '');
+                const as = String((row === null || row === void 0 ? void 0 : row.status) || '');
+                const action = bs !== as ? 'status_changed' : 'update';
+                (0, store_1.addAudit)('Order', String(id), action, base, row, (_d = req.user) === null || _d === void 0 ? void 0 : _d.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+            }
+            catch (_k) { }
+            try {
                 (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
             }
-            catch (_g) { }
+            catch (_l) { }
             return res.json(row);
         }
         catch (e) {
@@ -998,6 +1021,13 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
                     });
                     if (idx !== -1)
                         store_1.db.orders[idx] = row;
+                    try {
+                        const bs = String((base === null || base === void 0 ? void 0 : base.status) || '');
+                        const as = String((row === null || row === void 0 ? void 0 : row.status) || '');
+                        const action = bs !== as ? 'status_changed' : 'update';
+                        (0, store_1.addAudit)('Order', String(id), action, base, row, (_e = req.user) === null || _e === void 0 ? void 0 : _e.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+                    }
+                    catch (_m) { }
                     return res.json(row);
                 }
                 catch (e2) {
@@ -1013,13 +1043,21 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
     if (idx !== -1)
         store_1.db.orders[idx] = updated;
     try {
+        const bs = String((base === null || base === void 0 ? void 0 : base.status) || '');
+        const as = String((updated === null || updated === void 0 ? void 0 : updated.status) || '');
+        const action = bs !== as ? 'status_changed' : 'update';
+        (0, store_1.addAudit)('Order', String(id), action, base, updated, (_f = req.user) === null || _f === void 0 ? void 0 : _f.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+    }
+    catch (_o) { }
+    try {
         (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
     }
-    catch (_h) { }
+    catch (_p) { }
     syncCleaningTasksForOrderId(String(id)).catch(() => { });
     return res.json(updated);
 });
 exports.router.delete('/:id', (0, auth_1.requirePerm)('order.write'), async (req, res) => {
+    var _a, _b;
     const { id } = req.params;
     if (dbAdapter_1.hasPg) {
         const startedAt = Date.now();
@@ -1087,9 +1125,13 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('order.write'), async (req
             if (idx !== -1)
                 store_1.db.orders.splice(idx, 1);
             try {
+                (0, store_1.addAudit)('Order', String(id), 'delete', deleted, null, (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+            }
+            catch (_c) { }
+            try {
                 (0, events_1.broadcastOrdersUpdated)({ action: 'delete', id });
             }
-            catch (_a) { }
+            catch (_d) { }
             return res.json({ ok: true, id });
         }
         catch (e) {
@@ -1104,9 +1146,13 @@ exports.router.delete('/:id', (0, auth_1.requirePerm)('order.write'), async (req
     const removed = store_1.db.orders[idx];
     store_1.db.orders.splice(idx, 1);
     try {
+        (0, store_1.addAudit)('Order', String(id), 'delete', removed, null, (_b = req.user) === null || _b === void 0 ? void 0 : _b.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+    }
+    catch (_e) { }
+    try {
         (0, events_1.broadcastOrdersUpdated)({ action: 'delete', id });
     }
-    catch (_b) { }
+    catch (_f) { }
     return res.json({ ok: true, id: removed.id });
 });
 // 清洁任务模块已移除

@@ -3,6 +3,7 @@ import { requireAnyPerm, requireResourcePerm } from '../auth'
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
 import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } from '../fingerprint'
 import { db, addAudit } from '../store'
+import { normalizeUrlList } from '../lib/normalizeUrlList'
 
 const router = Router()
 // Supabase removed
@@ -2516,15 +2517,10 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
           try { toUpdate.details = JSON.stringify(toUpdate.details) } catch {}
         }
         if (toUpdate.photo_urls !== undefined) {
-          let v: any = toUpdate.photo_urls
-          if (typeof v === 'string') {
-            try { v = JSON.parse(v) } catch { v = [] }
-          }
-          if (!Array.isArray(v)) v = []
-          toUpdate.photo_urls = v.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
+          toUpdate.photo_urls = normalizeUrlList(toUpdate.photo_urls)
         }
-        if (toUpdate.repair_photo_urls && !Array.isArray(toUpdate.repair_photo_urls)) {
-          toUpdate.repair_photo_urls = [toUpdate.repair_photo_urls]
+        if (Object.prototype.hasOwnProperty.call(toUpdate, 'repair_photo_urls')) {
+          toUpdate.repair_photo_urls = normalizeUrlList(toUpdate.repair_photo_urls)
         }
       }
       if (resource === 'property_deep_cleaning') {

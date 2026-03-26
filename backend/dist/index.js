@@ -574,18 +574,46 @@ app.listen(port, () => {
                         ;
                         return;
                     }
+                    let jr = null;
+                    const startedAt = Date.now();
                     try {
                         inFlight = true;
+                        try {
+                            const { createJobRun } = require('./services/jobRuns');
+                            jr = await createJobRun({ job_name: 'cleaning_sync_jobs', schedule_name: 'cron', trigger_source: 'schedule', run_id: (0, uuid_1.v4)() });
+                        }
+                        catch (_b) { }
                         const { processCleaningSyncJobsOnce } = require('./services/cleaningSyncJobsWorker');
                         const r = await processCleaningSyncJobsOnce({
                             limit: Math.min(20, Number(process.env.CLEANING_SYNC_JOBS_BATCH || 10)),
                             reclaim_timeout_minutes: Math.min(120, Math.max(1, Number(process.env.CLEANING_SYNC_JOBS_RECLAIM_MINUTES || 10))),
                         });
+                        try {
+                            if (jr === null || jr === void 0 ? void 0 : jr.id) {
+                                const { finishJobRun } = require('./services/jobRuns');
+                                await finishJobRun({
+                                    id: String(jr.id),
+                                    orders_scanned: Number(r.processed || 0),
+                                    orders_succeeded: Number(r.ok || 0),
+                                    orders_failed: Number(r.failed || 0),
+                                    duration_ms: Date.now() - startedAt,
+                                    result: r,
+                                });
+                            }
+                        }
+                        catch (_c) { }
                         if (((r === null || r === void 0 ? void 0 : r.processed) || 0) > 0 || ((r === null || r === void 0 ? void 0 : r.failed) || 0) > 0 || ((r === null || r === void 0 ? void 0 : r.reclaimed) || 0) > 0) {
                             console.log(`[cleaning-sync-jobs][schedule] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0} reclaimed=${r.reclaimed || 0}`);
                         }
                     }
                     catch (e) {
+                        try {
+                            if (jr === null || jr === void 0 ? void 0 : jr.id) {
+                                const { finishJobRun } = require('./services/jobRuns');
+                                await finishJobRun({ id: String(jr.id), duration_ms: Date.now() - startedAt, error_message: String((e === null || e === void 0 ? void 0 : e.message) || ''), result: { message: String((e === null || e === void 0 ? void 0 : e.message) || ''), code: String((e === null || e === void 0 ? void 0 : e.code) || '') } });
+                            }
+                        }
+                        catch (_d) { }
                         console.error(`[cleaning-sync-jobs][schedule] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
                     }
                     finally {

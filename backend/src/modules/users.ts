@@ -40,10 +40,17 @@ router.get('/contacts', async (req, res) => {
   try {
     await ensureProfileColumns()
     if (hasPg) {
-      const rows = (await pgSelect('users', 'id, username, phone_au, role') as any[]) || []
+      const rows = (await pgSelect('users', 'id, username, phone_au, role, display_name, avatar_url') as any[]) || []
       return res.json(rows)
     }
-    const rows = (db.users || []).map((u: any) => ({ id: u.id, username: u.username, phone_au: (u as any).phone_au, role: u.role }))
+    const rows = (db.users || []).map((u: any) => ({
+      id: u.id,
+      username: u.username,
+      phone_au: (u as any).phone_au,
+      role: u.role,
+      display_name: (u as any).display_name,
+      avatar_url: (u as any).avatar_url,
+    }))
     return res.json(rows)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'users_contacts_failed' })

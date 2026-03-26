@@ -1,8 +1,10 @@
 import { Router } from 'express'
+import { z } from 'zod'
 import { hasPg, pgPool } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
 import { hasR2, r2Upload } from '../r2'
+import crypto from 'crypto'
 
 export const router = Router()
 
@@ -26,6 +28,27 @@ function normUrgency(v: any): string {
   const s = String(v ?? '').trim().toLowerCase()
   if (s === 'low' || s === 'medium' || s === 'high' || s === 'urgent') return s
   return 'medium'
+}
+
+function randomBase62(len = 4) {
+  const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  let out = ''
+  for (let i = 0; i < len; i++) {
+    out += chars[crypto.randomInt(0, chars.length)]
+  }
+  return out
+}
+
+function makeWorkNo(prefix: string, occurredAt?: string) {
+  const day = String(occurredAt || '').slice(0, 10)
+  const ymd = /^\d{4}-\d{2}-\d{2}$/.test(day)
+    ? day.replace(/-/g, '')
+    : (() => {
+        const d = new Date()
+        const pad2 = (n: number) => String(n).padStart(2, '0')
+        return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}`
+      })()
+  return `${String(prefix || 'R').trim()}-${ymd}-${randomBase62(4)}`
 }
 
 function canViewAll(role: string) {
@@ -192,6 +215,7 @@ async function ensureCleaningTaskMediaTable() {
         task_id text REFERENCES cleaning_tasks(id) ON DELETE CASCADE,
         type text,
         url text NOT NULL,
+        note text,
         captured_at timestamptz,
         lat numeric,
         lng numeric,
@@ -200,8 +224,10 @@ async function ensureCleaningTaskMediaTable() {
         mime text,
         created_at timestamptz DEFAULT now()
       );`)
+      await pgPool.query(`ALTER TABLE cleaning_task_media ADD COLUMN IF NOT EXISTS note text;`)
       await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task ON cleaning_task_media(task_id);`)
       await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_type ON cleaning_task_media(type);`)
+      await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type ON cleaning_task_media(task_id, type);`)
     } finally {
       mediaEnsured = true
     }
@@ -233,6 +259,27 @@ async function ensureCleaningCheckoutColumns() {
       checkoutEnsuring = null
     })
   return checkoutEnsuring
+}
+
+let cleaningCustomerEnsured = false
+let cleaningCustomerEnsuring: Promise<void> | null = null
+
+async function ensureCleaningCustomerColumns() {
+  if (!hasPg || !pgPool) return
+  if (cleaningCustomerEnsured) return
+  if (cleaningCustomerEnsuring) return cleaningCustomerEnsuring
+  cleaningCustomerEnsuring = (async () => {
+    try {
+      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS guest_special_request text;`)
+    } finally {
+      cleaningCustomerEnsured = true
+    }
+  })()
+    .catch(() => {})
+    .finally(() => {
+      cleaningCustomerEnsuring = null
+    })
+  return cleaningCustomerEnsuring
 }
 
 let checklistEnsured = false
@@ -432,6 +479,230 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
   }
 })
 
+const inspectionPhotosSchema = z
+  .object({
+    items: z.array(
+      z.object({
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'unclean']),
+        url: z.string().trim().min(1).max(800),
+        note: z.string().trim().max(800).optional().nullable(),
+        captured_at: z.string().trim().max(64).optional(),
+      }),
+    ),
+  })
+  .strict()
+
+router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const role = String(user.role || '')
+  const userId = String(user.sub || '')
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureCleaningTaskMediaTable()
+    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const row = r0?.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
+    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
+    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
+    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+
+    const r = await pgPool.query(
+      `SELECT type, url, note, captured_at, created_at
+       FROM cleaning_task_media
+       WHERE task_id=$1 AND type LIKE 'inspection_%'
+       ORDER BY created_at ASC`,
+      [id],
+    )
+    const items = (r?.rows || []).map((x: any) => {
+      const type = String(x.type || '')
+      const area = type.startsWith('inspection_') ? type.slice('inspection_'.length) : type
+      return {
+        area,
+        url: String(x.url || ''),
+        note: x.note == null ? null : String(x.note || ''),
+        captured_at: x.captured_at ? String(x.captured_at) : null,
+        created_at: x.created_at ? String(x.created_at) : null,
+      }
+    })
+    return res.json({ items })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'inspection_photos_failed' })
+  }
+})
+
+router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const role = String(user.role || '')
+  const userId = String(user.sub || '')
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  const parsed = inspectionPhotosSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureCleaningTaskMediaTable()
+    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const row = r0?.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
+    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
+    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
+    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, unclean: 12 }
+    const byArea = new Map<string, number>()
+    for (const it of parsed.data.items) {
+      const a = String(it.area)
+      byArea.set(a, (byArea.get(a) || 0) + 1)
+      const lim = limits[a] ?? 1
+      if ((byArea.get(a) || 0) > lim) return res.status(400).json({ message: '超出数量限制', area: a, limit: lim })
+    }
+
+    await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
+    const uuid = require('uuid')
+    for (const it of parsed.data.items) {
+      const type = `inspection_${it.area}`
+      const cap = String(it.captured_at || '').trim()
+      const capturedAt = cap ? new Date(cap) : new Date()
+      await pgPool.query(
+        `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString(), userId],
+      )
+    }
+    try {
+      const { broadcastCleaningEvent } = require('./events')
+      broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id })
+    } catch {}
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'inspection_photos_failed' })
+  }
+})
+
+const restockProofSchema = z
+  .object({
+    items: z.array(
+      z.object({
+        item_id: z.string().trim().min(1).max(80),
+        status: z.enum(['restocked', 'unavailable']),
+        qty: z.number().int().min(1).optional().nullable(),
+        note: z.string().trim().max(800).optional().nullable(),
+        proof_url: z.string().trim().min(1).max(800).optional().nullable(),
+      }),
+    ),
+  })
+  .strict()
+
+router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const role = String(user.role || '')
+  const userId = String(user.sub || '')
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureCleaningTaskMediaTable()
+    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const row = r0?.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
+    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
+    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
+    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+
+    const r = await pgPool.query(
+      `SELECT type, url, note, created_at
+       FROM cleaning_task_media
+       WHERE task_id=$1 AND type LIKE 'restock_proof:%'
+       ORDER BY created_at ASC`,
+      [id],
+    )
+    const items = (r?.rows || []).map((x: any) => {
+      const type = String(x.type || '')
+      const itemId = type.includes(':') ? type.split(':').slice(1).join(':') : type
+      let meta: any = null
+      try {
+        const raw = String(x.note || '').trim()
+        meta = raw && (raw.startsWith('{') || raw.startsWith('[')) ? JSON.parse(raw) : null
+      } catch {}
+      return {
+        item_id: itemId,
+        proof_url: (() => {
+          const u = String(x.url || '').trim()
+          return u && /^https?:\/\//i.test(u) ? u : null
+        })(),
+        status: String(meta?.status || ''),
+        qty: meta?.qty == null ? null : Number(meta.qty),
+        note: meta?.note == null ? null : String(meta.note || ''),
+        created_at: x.created_at ? String(x.created_at) : null,
+      }
+    })
+    return res.json({ items })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'restock_proof_failed' })
+  }
+})
+
+router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const role = String(user.role || '')
+  const userId = String(user.sub || '')
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  const parsed = restockProofSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureCleaningTaskMediaTable()
+    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const row = r0?.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
+    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
+    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
+    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+
+    const uniq = new Set<string>()
+    for (const it of parsed.data.items) {
+      const k = String(it.item_id || '').trim()
+      if (!k) continue
+      if (uniq.has(k)) return res.status(400).json({ message: '重复 item_id', item_id: k })
+      uniq.add(k)
+    }
+
+    await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'restock_proof:%'`, [id])
+    const uuid = require('uuid')
+    for (const it of parsed.data.items) {
+      const meta = { status: it.status, qty: it.qty == null ? null : Number(it.qty), note: it.note == null ? null : String(it.note || '') }
+      const url = String(it.proof_url || '').trim()
+      await pgPool.query(
+        `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
+         VALUES ($1,$2,$3,$4,$5,now(),$6)`,
+        [uuid.v4(), id, `restock_proof:${it.item_id}`, url || 'no_photo', JSON.stringify(meta), userId],
+      )
+    }
+    try {
+      const { broadcastCleaningEvent } = require('./events')
+      broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id })
+    } catch {}
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'restock_proof_failed' })
+  }
+})
+
 router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
@@ -479,6 +750,56 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
     return res.status(500).json({ message: e?.message || 'guest_checked_out_failed' })
   }
 })
+
+const managerFieldsSchema = z
+  .object({
+    task_ids: z.array(z.string().trim().min(1)).min(1).max(10),
+    checkout_time: z.string().trim().max(32).optional().nullable(),
+    checkin_time: z.string().trim().max(32).optional().nullable(),
+    old_code: z.string().trim().max(64).optional().nullable(),
+    new_code: z.string().trim().max(64).optional().nullable(),
+    guest_special_request: z.string().trim().max(1500).optional().nullable(),
+  })
+  .strict()
+
+async function handleManagerFields(req: any, res: any) {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const role = String(user.role || '')
+  if (role !== 'customer_service') return res.status(403).json({ message: 'forbidden' })
+  const parsed = managerFieldsSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureCleaningCustomerColumns()
+    const fields: string[] = []
+    const vals: any[] = []
+    const push = (sql: string, v: any) => {
+      vals.push(v)
+      fields.push(`${sql} = $${vals.length}`)
+    }
+    if (parsed.data.checkout_time !== undefined) push('checkout_time', parsed.data.checkout_time)
+    if (parsed.data.checkin_time !== undefined) push('checkin_time', parsed.data.checkin_time)
+    if (parsed.data.old_code !== undefined) push('old_code', parsed.data.old_code)
+    if (parsed.data.new_code !== undefined) push('new_code', parsed.data.new_code)
+    if (parsed.data.guest_special_request !== undefined) push('guest_special_request', parsed.data.guest_special_request)
+    if (!fields.length) return res.status(400).json({ message: 'no fields' })
+
+    vals.push(parsed.data.task_ids)
+    const sql = `UPDATE cleaning_tasks SET ${fields.join(', ')}, updated_at = now() WHERE id::text = ANY($${vals.length}::text[])`
+    await pgPool.query(sql, vals)
+    try {
+      const { broadcastCleaningEvent } = require('./events')
+      for (const id of parsed.data.task_ids) broadcastCleaningEvent({ event: 'cleaning_task_manager_fields_updated', task_id: String(id) })
+    } catch {}
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'manager_fields_failed' })
+  }
+}
+
+router.patch('/cleaning-tasks/manager-fields', handleManagerFields)
+router.post('/cleaning-tasks/manager-fields', handleManagerFields)
 
 router.get('/checklist-items', async (req, res) => {
   const user = (req as any).user
@@ -649,6 +970,7 @@ router.get('/work-tasks', async (req, res) => {
     await ensureCleaningTaskSortColumns()
     await ensureCleaningTaskMediaTable()
     await ensureCleaningCheckoutColumns()
+    await ensureCleaningCustomerColumns()
 
     const out: any[] = []
 
@@ -731,6 +1053,7 @@ router.get('/work-tasks', async (req, res) => {
             t.checkin_time,
             t.old_code,
             t.new_code,
+            t.guest_special_request,
             t.checked_out_at,
             (
               SELECT m.url
@@ -827,6 +1150,7 @@ router.get('/work-tasks', async (req, res) => {
             checkin_time: row.checkin_time,
             old_code: row.old_code,
             new_code: row.new_code,
+            guest_special_request: row.guest_special_request,
             checked_out_at: row.checked_out_at,
             key_photo_url: row.key_photo_url,
             lockbox_video_url: row.lockbox_video_url,
@@ -887,6 +1211,7 @@ router.get('/work-tasks', async (req, res) => {
 
           const oldCode = firstNonEmpty(p.a.old_code, p.b?.old_code, ...rows.map((x) => x.old_code))
           const newCode = firstNonEmpty(p.a.new_code, p.b?.new_code, ...rows.map((x) => x.new_code))
+          const guestSpecialRequest = firstNonEmpty(p.a.guest_special_request, p.b?.guest_special_request, ...rows.map((x) => x.guest_special_request))
           const checkedOutAt = firstNonEmpty(p.a.checked_out_at, p.b?.checked_out_at, ...rows.map((x) => x.checked_out_at))
           const keyPhotoUrl = firstNonEmpty(p.a.key_photo_url, p.b?.key_photo_url, ...rows.map((x) => x.key_photo_url))
           const lockboxVideoUrl = firstNonEmpty(p.a.lockbox_video_url, p.b?.lockbox_video_url, ...rows.map((x) => x.lockbox_video_url))
@@ -942,6 +1267,7 @@ router.get('/work-tasks', async (req, res) => {
             sort_index_inspector,
             old_code: oldCode,
             new_code: newCode,
+            guest_special_request: guestSpecialRequest,
             checked_out_at: checkedOutAt,
             key_photo_url: keyPhotoUrl,
             lockbox_video_url: lockboxVideoUrl,
@@ -966,6 +1292,100 @@ router.get('/work-tasks', async (req, res) => {
           out.push(buildMerged('inspector', rows, assigneeId))
         }
       }
+    }
+
+    if (allowAll && (role === 'customer_service' || role === 'admin' || role === 'offline_manager')) {
+      const merged: any[] = []
+      const byKey = new Map<string, any[]>()
+      for (const it of out) {
+        const isCleaning = String(it?.source_type || '') === 'cleaning_tasks'
+        const d = String(it?.scheduled_date || '').slice(0, 10)
+        const code = String(it?.property?.code || '').trim()
+        const pid = it?.property_id ? String(it.property_id) : ''
+        const propKey = code || pid || String(it?.title || '').trim()
+        if (!isCleaning || !d || !propKey) {
+          merged.push(it)
+          continue
+        }
+        const k = `${d}|${propKey}`
+        const arr = byKey.get(k) || []
+        arr.push(it)
+        byKey.set(k, arr)
+      }
+
+      const rankStatus = (s0: any) => {
+        const s = String(s0 || '').trim().toLowerCase()
+        if (!s) return 50
+        if (s === 'in_progress') return 10
+        if (s === 'to_inspect') return 15
+        if (s === 'to_clean') return 20
+        if (s === 'checked_out') return 25
+        if (s === 'keys_hung') return 80
+        if (s === 'done') return 90
+        return 60
+      }
+
+      for (const [k, arr0] of byKey) {
+        const arr = (arr0 || []).filter(Boolean)
+        if (!arr.length) continue
+        const preferred = arr.find((x) => String(x?.task_kind || '') === 'inspection') || arr[0]
+        const [d, propKey] = k.split('|')
+        const srcIds = Array.from(new Set(arr.flatMap((x) => (Array.isArray(x?.source_ids) ? x.source_ids : []))))
+        const cleaningTaskIds = Array.from(
+          new Set(arr.filter((x) => String(x?.task_kind || '') === 'cleaning').flatMap((x) => (Array.isArray(x?.source_ids) ? x.source_ids : []))),
+        )
+        const inspectionTaskIds = Array.from(
+          new Set(arr.filter((x) => String(x?.task_kind || '') === 'inspection').flatMap((x) => (Array.isArray(x?.source_ids) ? x.source_ids : []))),
+        )
+        const cleaningStatus = (arr.find((x) => String(x?.task_kind || '') === 'cleaning') || null)?.status || null
+        const inspectionStatus = (arr.find((x) => String(x?.task_kind || '') === 'inspection') || null)?.status || null
+        const startTime = firstNonEmpty(...arr.map((x) => x.start_time))
+        const endTime = firstNonEmpty(...arr.map((x) => x.end_time))
+        const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
+        const lockboxVideoUrl = firstNonEmpty(...arr.map((x) => x.lockbox_video_url))
+        const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
+        const inspectorName = firstNonEmpty(...arr.map((x) => x.inspector_name))
+        const restockItems: any[] = []
+        const seenRestock = new Set<string>()
+        for (const it of arr.flatMap((x) => (Array.isArray(x?.restock_items) ? x.restock_items : []))) {
+          const iid = String(it?.item_id || it?.label || '').trim()
+          if (!iid) continue
+          if (seenRestock.has(iid)) continue
+          seenRestock.add(iid)
+          restockItems.push(it)
+        }
+        const statusOut =
+          cleaningStatus && rankStatus(cleaningStatus) < 80
+            ? cleaningStatus
+            : inspectionStatus
+              ? inspectionStatus
+              : arr
+                  .map((x) => x.status)
+                  .sort((a: any, b: any) => rankStatus(a) - rankStatus(b))[0]
+
+        merged.push({
+          ...preferred,
+          id: `cleaning_tasks_merged:${d}:${propKey}`,
+          start_time: startTime || null,
+          end_time: endTime || null,
+          task_kind: arr.some((x) => String(x?.task_kind || '') === 'inspection') ? 'inspection' : 'cleaning',
+          source_ids: srcIds.length ? srcIds : (Array.isArray(preferred?.source_ids) ? preferred.source_ids : undefined),
+          cleaning_task_ids: cleaningTaskIds,
+          inspection_task_ids: inspectionTaskIds,
+          cleaning_status: cleaningStatus,
+          inspection_status: inspectionStatus,
+          assignee_id: null,
+          status: statusOut,
+          key_photo_url: keyPhotoUrl,
+          lockbox_video_url: lockboxVideoUrl,
+          cleaner_name: cleanerName,
+          inspector_name: inspectorName,
+          restock_items: restockItems,
+        })
+      }
+
+      out.length = 0
+      out.push(...merged)
     }
 
     out.sort((a, b) => {
@@ -996,6 +1416,467 @@ router.get('/work-tasks', async (req, res) => {
     return res.json(out)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'mzapp_work_tasks_failed' })
+  }
+})
+
+const feedbackCreateSchema = z.object({
+  kind: z.enum(['maintenance', 'deep_cleaning']),
+  property_id: z.string().min(1),
+  source_task_id: z.string().optional(),
+  area: z.string().optional(),
+  areas: z.array(z.string().min(1)).optional(),
+  category: z.string().optional(),
+  detail: z.string().min(1),
+  media_urls: z.array(z.string().min(1)).optional(),
+})
+
+function mapWorkStatus(raw: any): 'open' | 'in_progress' | 'resolved' | 'cancelled' {
+  const s = String(raw ?? '').trim().toLowerCase()
+  if (s === 'in_progress') return 'in_progress'
+  if (s === 'completed' || s === 'done' || s === 'ready') return 'resolved'
+  if (s === 'canceled' || s === 'cancelled') return 'cancelled'
+  return 'open'
+}
+
+const colTypeCache = new Map<string, 'jsonb' | 'text[]' | 'unknown'>()
+
+async function getColumnType(table: string, column: string): Promise<'jsonb' | 'text[]' | 'unknown'> {
+  if (!pgPool) return 'unknown'
+  const key = `${table}.${column}`
+  const cached = colTypeCache.get(key)
+  if (cached) return cached
+  try {
+    const r = await pgPool.query(
+      `SELECT data_type, udt_name
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name = $2
+        LIMIT 1`,
+      [table, column],
+    )
+    const row = r.rows?.[0]
+    const dataType = String(row?.data_type || '').trim().toLowerCase()
+    const udt = String(row?.udt_name || '').trim().toLowerCase()
+    const t: 'jsonb' | 'text[]' | 'unknown' =
+      dataType === 'jsonb' || udt === 'jsonb' ? 'jsonb' : udt === '_text' ? 'text[]' : 'unknown'
+    colTypeCache.set(key, t)
+    return t
+  } catch {
+    colTypeCache.set(key, 'unknown')
+    return 'unknown'
+  }
+}
+
+function sha256Hex(input: string) {
+  return crypto.createHash('sha256').update(input).digest('hex')
+}
+
+function normalizeForFingerprint(input: any) {
+  const s0 = String(input ?? '').trim()
+  if (!s0) return ''
+  const s1 = s0.replace(/\s+/g, ' ')
+  const s2 = s1.replace(/[，。！？、,.!?;:()（）【】\[\]{}'"“”‘’\-_/\\]+/g, ' ')
+  return s2.replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+function makeFeedbackFingerprint(args: {
+  kind: 'maintenance' | 'deep_cleaning'
+  property_id: string
+  area?: string
+  category_detail?: string
+  areas?: string[]
+  detail?: string
+}) {
+  const pid = String(args.property_id || '').trim()
+  const kind = args.kind
+  const detail = normalizeForFingerprint(args.detail).slice(0, 160)
+  if (kind === 'maintenance') {
+    const area = String(args.area || '').trim()
+    const cat = String(args.category_detail || '').trim()
+    return sha256Hex([pid, kind, area, cat, detail].join('|'))
+  }
+  const areas = (args.areas || []).map((s) => String(s || '').trim()).filter(Boolean).sort()
+  return sha256Hex([pid, kind, areas.join(','), detail].join('|'))
+}
+
+async function ensurePropertyMaintenanceColumns() {
+  if (!pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_maintenance (
+    id text PRIMARY KEY,
+    property_id text,
+    occurred_at date,
+    worker_name text,
+    details text,
+    notes text,
+    created_by text,
+    created_at timestamptz DEFAULT now()
+  );`)
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category_detail text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_maintenance_dedup ON property_maintenance(property_id, dedup_fingerprint, submitted_at);')
+}
+
+async function ensurePropertyDeepCleaningColumns() {
+  if (!pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_deep_cleaning (
+    id text PRIMARY KEY,
+    property_id text,
+    occurred_at date,
+    details text,
+    notes text,
+    created_by text,
+    created_at timestamptz DEFAULT now()
+  );`)
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS property_code text;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS status text;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS submitter_name text;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_desc text;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS work_no text;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_dedup ON property_deep_cleaning(property_id, dedup_fingerprint, submitted_at);')
+}
+
+router.get('/property-feedbacks', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const propertyId = String((req.query as any)?.property_id || '').trim()
+  const propertyCode = String((req.query as any)?.property_code || '').trim()
+  if (!propertyId && !propertyCode) return res.status(400).json({ message: 'missing property_id' })
+
+  const statusRaw = String((req.query as any)?.status || 'open,in_progress').trim()
+  const want = statusRaw
+    .split(',')
+    .map((s) => String(s || '').trim())
+    .filter(Boolean)
+
+  const wantOpen = want.length ? want.includes('open') : true
+  const wantInProgress = want.length ? want.includes('in_progress') : true
+  const wantResolved = want.length ? want.includes('resolved') : false
+  const wantCancelled = want.length ? want.includes('cancelled') : false
+  const openView = wantOpen && wantInProgress && !wantResolved && !wantCancelled
+
+  const limit0 = Number((req.query as any)?.limit || 20)
+  const limit = Number.isFinite(limit0) ? Math.max(1, Math.min(50, limit0)) : 20
+
+  try {
+    if (!hasPg || !pgPool) return res.json([])
+    const out: any[] = []
+    const errors: string[] = []
+
+    const unresolvedMaintSql = openView
+      ? `(m.status IS NULL OR lower(m.status) NOT IN ('completed','done','ready','canceled','cancelled'))`
+      : `true`
+    const unresolvedDeepSql = openView
+      ? `(d.status IS NULL OR lower(d.status) NOT IN ('completed','done','ready','canceled','cancelled'))`
+      : `true`
+    const unresolvedRepairSql = openView
+      ? `(r.status IS NULL OR lower(r.status) NOT IN ('completed','done','ready','canceled','cancelled'))`
+      : `true`
+
+    try {
+      try {
+        await ensurePropertyMaintenanceColumns()
+      } catch {}
+      const r = await pgPool.query(
+        `SELECT m.id, m.property_id, COALESCE(m.property_code, p.code) AS property_code,
+                m.area, m.category, m.category_detail, m.details, m.notes, m.photo_urls, m.submitter_name,
+                m.submitted_at, m.created_at, m.status
+           FROM property_maintenance m
+           LEFT JOIN properties p ON p.id = m.property_id
+          WHERE (
+              ($1::text IS NOT NULL AND m.property_id = $1)
+              OR (
+                $2::text IS NOT NULL
+                AND (
+                  COALESCE(m.property_code, p.code) = $2
+                  OR m.property_id = $2
+                  OR m.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
+                )
+              )
+            )
+            AND (${unresolvedMaintSql})
+          ORDER BY COALESCE(m.submitted_at, m.created_at) DESC
+          LIMIT $3`,
+        [propertyId || null, propertyCode || null, limit],
+      )
+      for (const row of (r?.rows || [])) {
+        const mapped = mapWorkStatus(row.status)
+        out.push({
+          id: String(row.id),
+          property_id: row.property_id ? String(row.property_id) : propertyId || null,
+          kind: 'maintenance',
+          area: row.area || null,
+          category: row.category_detail || row.category || null,
+          detail: String(row.notes || row.details || ''),
+          media_urls: Array.isArray(row.photo_urls) ? row.photo_urls : row.photo_urls ? row.photo_urls : [],
+          created_by_name: row.submitter_name || null,
+          created_at: row.submitted_at || row.created_at || null,
+          status: mapped,
+        })
+      }
+    } catch (e: any) {
+      errors.push(`maintenance:${String(e?.message || e)}`.slice(0, 220))
+    }
+
+    try {
+      const r = await pgPool.query(
+        `SELECT r.id, r.property_id, p.code AS property_code,
+                r.category, r.category_detail, r.detail, r.remark, r.attachment_urls, r.submitter_name,
+                r.submitted_at, r.created_at, r.status
+           FROM repair_orders r
+           LEFT JOIN properties p ON p.id = r.property_id
+          WHERE (($1::text IS NOT NULL AND r.property_id = $1) OR ($2::text IS NOT NULL AND p.code = $2))
+            AND (${unresolvedRepairSql})
+          ORDER BY COALESCE(r.submitted_at, r.created_at) DESC
+          LIMIT $3`,
+        [propertyId || null, propertyCode || null, limit],
+      )
+      for (const row of (r?.rows || [])) {
+        const mapped = mapWorkStatus(row.status)
+        out.push({
+          id: String(row.id),
+          property_id: row.property_id ? String(row.property_id) : propertyId || null,
+          kind: 'maintenance',
+          area: null,
+          category: row.category_detail || row.category || null,
+          detail: String(row.detail || row.remark || ''),
+          media_urls: Array.isArray(row.attachment_urls) ? row.attachment_urls : row.attachment_urls ? row.attachment_urls : [],
+          created_by_name: row.submitter_name || null,
+          created_at: row.submitted_at || row.created_at || null,
+          status: mapped,
+        })
+      }
+    } catch (e: any) {
+      errors.push(`repair_orders:${String(e?.message || e)}`.slice(0, 220))
+    }
+
+    try {
+      try {
+        await ensurePropertyDeepCleaningColumns()
+      } catch {}
+      const r = await pgPool.query(
+        `SELECT d.id, d.property_id, COALESCE(d.property_code, p.code) AS property_code,
+                d.project_desc, d.details, d.notes, d.photo_urls, d.attachment_urls, d.submitter_name,
+                d.submitted_at, d.created_at, d.status
+           FROM property_deep_cleaning d
+           LEFT JOIN properties p ON p.id = d.property_id
+          WHERE (
+              ($1::text IS NOT NULL AND d.property_id = $1)
+              OR (
+                $2::text IS NOT NULL
+                AND (
+                  COALESCE(d.property_code, p.code) = $2
+                  OR d.property_id = $2
+                  OR d.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
+                )
+              )
+            )
+            AND (${unresolvedDeepSql})
+          ORDER BY COALESCE(d.submitted_at, d.created_at) DESC
+          LIMIT $3`,
+        [propertyId || null, propertyCode || null, limit],
+      )
+      for (const row of (r?.rows || [])) {
+        const mapped = mapWorkStatus(row.status)
+        const areas = String(row.project_desc || '')
+          .split('、')
+          .map((s) => String(s || '').trim())
+          .filter(Boolean)
+        const media =
+          Array.isArray(row.attachment_urls) && row.attachment_urls.length
+            ? row.attachment_urls
+            : Array.isArray(row.photo_urls)
+              ? row.photo_urls
+              : []
+        out.push({
+          id: String(row.id),
+          property_id: row.property_id ? String(row.property_id) : propertyId || null,
+          kind: 'deep_cleaning',
+          areas,
+          detail: String(row.details || row.notes || ''),
+          media_urls: media,
+          created_by_name: row.submitter_name || null,
+          created_at: row.submitted_at || row.created_at || null,
+          status: mapped,
+        })
+      }
+    } catch (e: any) {
+      errors.push(`deep_cleaning:${String(e?.message || e)}`.slice(0, 220))
+    }
+
+    out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    if (!out.length && errors.length) return res.status(500).json({ message: 'property_feedbacks_failed', errors })
+    return res.json(out.slice(0, limit))
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'property_feedbacks_failed' })
+  }
+})
+
+router.post('/property-feedbacks', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = feedbackCreateSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+    const now = new Date()
+    const createdAt = now.toISOString()
+    const occurredAt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    const submitterName = String(user.username || user.sub || '').trim() || 'unknown'
+    const createdBy = String(user.sub || '').trim() || submitterName
+    const id = require('uuid').v4()
+    const duplicateWindowHours = 24
+
+    if (parsed.data.kind === 'maintenance') {
+      const area = String(parsed.data.area || '').trim()
+      const categoryLabel = String(parsed.data.category || '').trim()
+      if (!area) return res.status(400).json({ message: 'missing area' })
+      if (!categoryLabel) return res.status(400).json({ message: 'missing category' })
+      const detail = String(parsed.data.detail || '').trim()
+      const mediaUrls = parsed.data.media_urls || []
+      const details = detail
+
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+      const photoType = await getColumnType('property_maintenance', 'photo_urls')
+      const photoExpr = photoType === 'jsonb' ? '$13::jsonb' : photoType === 'text[]' ? '$13::text[]' : '$13'
+      const photoValue = photoType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
+      const workNo = makeWorkNo('R', occurredAt)
+      const fingerprint = makeFeedbackFingerprint({
+        kind: 'maintenance',
+        property_id: parsed.data.property_id,
+        area,
+        category_detail: categoryLabel,
+        detail,
+      })
+      const dup = await pgPool.query(
+        `SELECT id
+           FROM property_maintenance
+          WHERE property_id = $1
+            AND dedup_fingerprint = $2
+            AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
+            AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
+          ORDER BY COALESCE(submitted_at, created_at) DESC
+          LIMIT 1`,
+        [parsed.data.property_id, fingerprint, duplicateWindowHours],
+      )
+      if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+      await pgPool.query(
+        `INSERT INTO property_maintenance(
+          id, property_id, occurred_at, details, notes, created_by, created_at,
+          status, submitted_at, submitter_name, category, category_detail, photo_urls, work_no, area, dedup_fingerprint
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,${photoExpr},$14,$15,$16)
+        RETURNING id`,
+        [
+          id,
+          parsed.data.property_id,
+          occurredAt,
+          details,
+          detail,
+          createdBy,
+          createdAt,
+          'pending',
+          createdAt,
+          submitterName,
+          area,
+          categoryLabel,
+          photoValue,
+          workNo,
+          area,
+          fingerprint,
+        ],
+      )
+      try {
+        await pgPool.query(
+          `UPDATE property_maintenance
+              SET work_no = COALESCE(NULLIF(work_no, ''), $2)
+            WHERE id = $1`,
+          [id, workNo],
+        )
+      } catch {}
+      return res.status(201).json({ ok: true, id })
+    }
+
+    const areas = parsed.data.areas || []
+    if (!areas.length) return res.status(400).json({ message: 'missing areas' })
+    const mediaUrls = parsed.data.media_urls || []
+    if (!mediaUrls.length) return res.status(400).json({ message: 'missing photos' })
+    const detail = String(parsed.data.detail || '').trim()
+    const projectDesc = areas.join('、')
+    const deepPhotoType = await getColumnType('property_deep_cleaning', 'photo_urls')
+    const deepAttachType = await getColumnType('property_deep_cleaning', 'attachment_urls')
+    const photoExpr = deepPhotoType === 'jsonb' ? '$12::jsonb' : deepPhotoType === 'text[]' ? '$12::text[]' : '$12'
+    const attachExpr = deepAttachType === 'jsonb' ? '$13::jsonb' : deepAttachType === 'text[]' ? '$13::text[]' : '$13'
+    const photoValue = deepPhotoType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
+    const attachValue = deepAttachType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
+    const workNo = makeWorkNo('DC', occurredAt)
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+    const fingerprint = makeFeedbackFingerprint({
+      kind: 'deep_cleaning',
+      property_id: parsed.data.property_id,
+      areas,
+      detail,
+    })
+    const dup = await pgPool.query(
+      `SELECT id
+         FROM property_deep_cleaning
+        WHERE property_id = $1
+          AND dedup_fingerprint = $2
+          AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
+          AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
+        ORDER BY COALESCE(submitted_at, created_at) DESC
+        LIMIT 1`,
+      [parsed.data.property_id, fingerprint, duplicateWindowHours],
+    )
+    if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+    await pgPool.query(
+      `INSERT INTO property_deep_cleaning(
+        id, property_id, occurred_at, project_desc, details, created_by, created_at,
+        status, submitted_at, submitter_name, work_no, photo_urls, attachment_urls, review_status, dedup_fingerprint
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,${photoExpr},${attachExpr},$14,$15)
+      RETURNING id`,
+      [
+        id,
+        parsed.data.property_id,
+        occurredAt,
+        projectDesc,
+        detail,
+        createdBy,
+        createdAt,
+        'pending',
+        createdAt,
+        submitterName,
+        workNo,
+        photoValue,
+        attachValue,
+        'pending',
+        fingerprint,
+      ],
+    )
+    try {
+      await pgPool.query(
+        `UPDATE property_deep_cleaning
+            SET work_no = COALESCE(NULLIF(work_no, ''), $2)
+          WHERE id = $1`,
+        [id, workNo],
+      )
+    } catch {}
+    return res.status(201).json({ ok: true, id })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'property_feedbacks_create_failed' })
   }
 })
 

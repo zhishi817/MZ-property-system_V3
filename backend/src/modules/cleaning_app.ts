@@ -7,6 +7,8 @@ import path from 'path'
 import { hasR2, r2Upload } from '../r2'
 import { broadcastCleaningEvent } from './events'
 import { roleHasPermission } from '../store'
+import sharp from 'sharp'
+import fs from 'fs'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -327,6 +329,191 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
   }
 })
 
+async function ensureCleaningTaskMediaNote() {
+  try {
+    if (!hasPg) return
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return
+    await pgPool.query(`ALTER TABLE cleaning_task_media ADD COLUMN IF NOT EXISTS note text;`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type ON cleaning_task_media(task_id, type);`)
+  } catch {}
+}
+
+const inspectionPhotosSchema = z
+  .object({
+    items: z.array(
+      z.object({
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'unclean']),
+        url: z.string().trim().min(1),
+        note: z.string().trim().max(800).optional().nullable(),
+        captured_at: z.string().trim().max(64).optional(),
+      }),
+    ),
+  })
+  .strict()
+
+router.get('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+  const { id } = req.params
+  try {
+    if (hasPg) {
+      await ensureCleaningTaskMediaNote()
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      const r = await pgPool.query(
+        `SELECT type, url, note, captured_at, created_at
+         FROM cleaning_task_media
+         WHERE task_id=$1 AND type LIKE 'inspection_%'
+         ORDER BY created_at ASC`,
+        [id],
+      )
+      const items = (r?.rows || []).map((x: any) => {
+        const type = String(x.type || '')
+        const area = type.startsWith('inspection_') ? type.slice('inspection_'.length) : type
+        return {
+          area,
+          url: String(x.url || ''),
+          note: x.note == null ? null : String(x.note || ''),
+          captured_at: x.captured_at ? String(x.captured_at) : null,
+          created_at: x.created_at ? String(x.created_at) : null,
+        }
+      })
+      return res.json({ items })
+    }
+    return res.json({ items: [] })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+  const { id } = req.params
+  const parsed = inspectionPhotosSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, unclean: 12 }
+    const byArea = new Map<string, number>()
+    for (const it of parsed.data.items) {
+      const a = String(it.area)
+      byArea.set(a, (byArea.get(a) || 0) + 1)
+      const lim = limits[a] ?? 1
+      if ((byArea.get(a) || 0) > lim) return res.status(400).json({ message: '超出数量限制', area: a, limit: lim })
+    }
+    if (hasPg) {
+      await ensureCleaningTaskMediaNote()
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      const uuid = require('uuid')
+      await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
+      for (const it of parsed.data.items) {
+        const type = `inspection_${it.area}`
+        const cap = String(it.captured_at || '').trim()
+        const capturedAt = cap ? new Date(cap) : new Date()
+        await pgPool.query(
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString()],
+        )
+      }
+      try { broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id }) } catch {}
+      return res.status(201).json({ ok: true })
+    }
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+const restockProofSchema = z
+  .object({
+    items: z.array(
+      z.object({
+        item_id: z.string().trim().min(1).max(80),
+        status: z.enum(['restocked', 'unavailable']),
+        qty: z.number().int().min(1).optional().nullable(),
+        note: z.string().trim().max(800).optional().nullable(),
+        proof_url: z.string().trim().min(1).optional().nullable(),
+      }),
+    ),
+  })
+  .strict()
+
+router.get('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+  const { id } = req.params
+  try {
+    if (hasPg) {
+      await ensureCleaningTaskMediaNote()
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      const r = await pgPool.query(
+        `SELECT type, url, note, created_at
+         FROM cleaning_task_media
+         WHERE task_id=$1 AND type LIKE 'restock_proof:%'
+         ORDER BY created_at ASC`,
+        [id],
+      )
+      const items = (r?.rows || []).map((x: any) => {
+        const type = String(x.type || '')
+        const itemId = type.includes(':') ? type.split(':').slice(1).join(':') : type
+        let meta: any = null
+        try {
+          const raw = String(x.note || '').trim()
+          meta = raw && (raw.startsWith('{') || raw.startsWith('[')) ? JSON.parse(raw) : null
+        } catch {}
+        return {
+          item_id: itemId,
+          proof_url: (() => {
+            const u = String(x.url || '').trim()
+            return u && /^https?:\/\//i.test(u) ? u : null
+          })(),
+          status: meta?.status == null ? null : String(meta.status || ''),
+          qty: meta?.qty == null ? null : Number(meta.qty),
+          note: meta?.note == null ? null : String(meta.note || ''),
+          created_at: x.created_at ? String(x.created_at) : null,
+        }
+      })
+      return res.json({ items })
+    }
+    return res.json({ items: [] })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+router.post('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+  const { id } = req.params
+  const parsed = restockProofSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    const uniq = new Set<string>()
+    for (const it of parsed.data.items) {
+      const k = String(it.item_id || '').trim()
+      if (uniq.has(k)) return res.status(400).json({ message: '重复 item_id', item_id: k })
+      uniq.add(k)
+    }
+    if (hasPg) {
+      await ensureCleaningTaskMediaNote()
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      const uuid = require('uuid')
+      await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'restock_proof:%'`, [id])
+      for (const it of parsed.data.items) {
+        const meta = { status: it.status, qty: it.qty == null ? null : Number(it.qty), note: it.note == null ? null : String(it.note || '') }
+        const url = String(it.proof_url || '').trim()
+        await pgPool.query(
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
+           VALUES ($1,$2,$3,$4,$5,now())`,
+          [uuid.v4(), id, `restock_proof:${it.item_id}`, url || 'no_photo', JSON.stringify(meta)],
+        )
+      }
+      try { broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id }) } catch {}
+      return res.status(201).json({ ok: true })
+    }
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
 // Set ready
 router.patch('/tasks/:id/ready', requirePerm('cleaning_app.ready.set'), async (req, res) => {
   const { id } = req.params
@@ -343,18 +530,127 @@ router.patch('/tasks/:id/ready', requirePerm('cleaning_app.ready.set'), async (r
 })
 
 export default router
-router.post('/upload', requirePerm('cleaning_app.media.upload'), upload.single('file'), async (req, res) => {
+router.post(
+  '/upload',
+  requireAnyPerm(['cleaning_app.media.upload', 'cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.issues.report']),
+  upload.single('file'),
+  async (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'missing file' })
   try {
+    const user = (req as any).user || {}
+    const body: any = (req as any).body || {}
+    const isImage = String(req.file.mimetype || '').startsWith('image/')
+    const wantWatermark = String(body.watermark || '').trim() === '1' || String(body.purpose || '').trim() === 'key_photo'
+    const watermarkText = String(body.watermark_text || '').trim()
+    const propertyCode = String(body.property_code || '').trim()
+    const capturedAt = String(body.captured_at || '').trim()
+    const submitter = String(user.username || user.sub || '').trim()
+    const fmt = (iso: string) => {
+      const d = new Date(String(iso || ''))
+      if (Number.isNaN(d.getTime())) return ''
+      const pad2 = (n: number) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+    }
+    const fallbackLines =
+      wantWatermark && isImage
+        ? [
+            `${propertyCode || '未知房号'}${submitter ? `  ${submitter}` : ''}`.trim(),
+            fmt(capturedAt) || fmt(new Date().toISOString()),
+          ].filter(Boolean)
+        : []
+
+    const lines0 = (watermarkText ? watermarkText.split(/\r?\n/) : fallbackLines).map((x) => String(x || '').trim()).filter(Boolean)
+    const lines = lines0.length > 2 ? lines0.slice(0, 2) : lines0
+
     if (hasR2 && (req.file as any).buffer) {
-      const ext = path.extname(req.file.originalname) || ''
+      let buf: Buffer = (req.file as any).buffer
+      if (isImage && wantWatermark && lines.length) {
+        try {
+          const img = sharp(buf)
+          const meta = await img.metadata()
+          const w = Math.max(1, Number(meta.width || 0))
+          const h = Math.max(1, Number(meta.height || 0))
+          if (w && h) {
+            const esc = (s: string) =>
+              String(s || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+            const fontSize = Math.max(18, Math.round(Math.min(w, h) * 0.032))
+            const pad = Math.round(fontSize * 0.65)
+            const lineH = Math.round(fontSize * 1.25)
+            const xRight = w - pad
+            const strokeW = Math.max(2, Math.round(fontSize * 0.12))
+            const yBottom = h - pad - strokeW
+            const svg = `
+              <svg width="${w}" height="${h}">
+                <g font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}" text-anchor="end">
+                  ${lines
+                    .map((t, idx) => {
+                      const y = yBottom - (lines.length - 1 - idx) * lineH
+                      return `<text x="${xRight}" y="${y}" fill="#ffffff" stroke="rgba(0,0,0,0.65)" stroke-width="${strokeW}" paint-order="stroke">${esc(t)}</text>`
+                    })
+                    .join('')}
+                </g>
+              </svg>
+            `
+            buf = await img
+              .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+              .jpeg({ quality: 88 })
+              .toBuffer()
+          }
+        } catch {}
+      }
+      const ext = (isImage && wantWatermark && lines.length) ? '.jpg' : (path.extname(req.file.originalname) || '')
       const key = `cleaning/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-      const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+      const mime = (isImage && wantWatermark && lines.length) ? 'image/jpeg' : (req.file.mimetype || 'application/octet-stream')
+      const url = await r2Upload(key, mime, buf)
       return res.status(201).json({ url })
+    }
+    const filePath = (req.file as any).path ? String((req.file as any).path) : ''
+    if (filePath && isImage && wantWatermark && lines.length) {
+      try {
+        const buf = await fs.promises.readFile(filePath)
+        const img = sharp(buf)
+        const meta = await img.metadata()
+        const w = Math.max(1, Number(meta.width || 0))
+        const h = Math.max(1, Number(meta.height || 0))
+        if (w && h) {
+          const esc = (s: string) =>
+            String(s || '')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#39;')
+          const fontSize = Math.max(18, Math.round(Math.min(w, h) * 0.032))
+          const pad = Math.round(fontSize * 0.65)
+          const lineH = Math.round(fontSize * 1.25)
+          const xRight = w - pad
+          const strokeW = Math.max(2, Math.round(fontSize * 0.12))
+          const yBottom = h - pad - strokeW
+          const svg = `
+            <svg width="${w}" height="${h}">
+              <g font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}" text-anchor="end">
+                ${lines
+                  .map((t, idx) => {
+                    const y = yBottom - (lines.length - 1 - idx) * lineH
+                    return `<text x="${xRight}" y="${y}" fill="#ffffff" stroke="rgba(0,0,0,0.65)" stroke-width="${strokeW}" paint-order="stroke">${esc(t)}</text>`
+                  })
+                  .join('')}
+              </g>
+            </svg>
+          `
+          const out = await img.composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).jpeg({ quality: 88 }).toBuffer()
+          await fs.promises.writeFile(filePath, out)
+        }
+      } catch {}
     }
     const url = `/uploads/${req.file.filename}`
     return res.status(201).json({ url })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'upload failed' })
+    return res.status(500).json({ message: e?.message || 'upload_failed' })
   }
 })

@@ -1,5 +1,43 @@
 # Changelog
 
+## Dev (2026-03-25)
+
+- Version: (no bump)
+- Cleaning App: Saved avatar now renders on Home header and Contacts list/detail.
+- Cleaning App: Inspector notifications now use banner + Tab red dot, dedupe by stable ids, and exclude generic “系统通知”.
+- Cleaning App (Inspector): Add “检查与补充” panel (restock proof + inspection photos) and a separate “标记已完成” page for lockbox video + completion; inspection tasks on Home show 3 quick buttons.
+- Cleaning App (Inspector): Fix restock-proof / inspection-photos submissions by routing to `/cleaning-app/tasks/:id/*`; re-order steps and allow multi photos per area (toilet 3, living 1, sofa 2, bedroom 4, kitchen 2); adjust spacing and button heights; increase upload compression quality.
+- Cleaning App: Notices list/detail render photo thumbnails and full preview instead of showing photo URLs.
+- Cleaning App: Add in-app photo zoom for supplies reporting and loading states for key/restock/supplies uploads.
+- Cleaning App (Inspector): Tap inspection tasks to open “检查与补充” directly; restock photos show inline thumbnails; “无需补充” no longer requires a photo; auto-collapse to next step after submit/save.
+- Cleaning App (Inspector): Expand room photo limits (toilet 9, living 3, bedroom 8).
+- Backend: Relax restock proof schema to allow “unavailable” without photo (stores placeholder url).
+- MZApp Backend: For customer_service/admin/offline_manager (view=all), merge same-property same-day checkin+checkout tasks into one card to avoid duplicates.
+- Cleaning App (Manager): Add “每日清洁” manager detail screen; customer_service can edit times/codes/guest note; admin/customer_service/offline_manager can view inspection issue + room photos.
+- MZApp Backend: Add `PATCH /mzapp/cleaning-tasks/manager-fields`, add `cleaning_tasks.guest_special_request`, and include cleaning/inspection status + ids in merged work-tasks.
+- Cleaning App: Remove task card quick-action buttons on Tasks home for inspectors.
+- Cleaning App (Manager): Move “房源问题反馈” below “保存修改”; rename “媒体” to “钥匙与挂钥匙视频” with clearer empty state.
+- Cleaning App (Manager): Hide “清洁问题照片” for customer_service; only admin/offline_manager can view.
+- Cleaning App: Show inspection-only tasks as “待检查” instead of “待处理”.
+- Cleaning App (Customer Service): Add “标记已退房/取消已退房” in manager task page.
+- Cleaning App: Generate notices on refresh for check-out and manager field updates.
+- Cleaning App/Backend: Manager task edit now supports POST fallback when PATCH is unavailable.
+- Cleaning App (Manager): Show “标记已退房/房源问题反馈” under each cleaning/inspection task card on home.
+- Cleaning App: Show guest special request on task cards for all roles and include full details in notices.
+- Cleaning App (Inspector): Restore Home quick buttons and require confirming guest special request before completion.
+- MZApp Backend: Fix manager task list duplicates by merging same property/day regardless of time and id/code mismatches.
+- MZApp Backend: Add `GET/POST /mzapp/cleaning-tasks/:id/inspection-photos` and `GET/POST /mzapp/cleaning-tasks/:id/restock-proof`; extend `cleaning_task_media` with `note` and task+type index.
+
+## Dev (2026-03-24)
+
+- Version: `0.2.7-statement-pdf.20260324+build.5`
+- MZApp: `GET/POST /mzapp/property-feedbacks` supports mobile “问题反馈” and lists existing pending Maintenance/Deep Cleaning by property_id/property_code (joins properties and falls back to repair_orders), reducing duplicate submissions.
+- Cleaning App: `POST /cleaning-app/upload` watermark overlay supports bottom-right white text (with fallback lines when watermark_text missing).
+- DB: Add migration `20260324_property_maintenance_add_area.sql` (optional `property_maintenance.area`).
+- Maintenance records: Normalize `photo_urls` / `repair_photo_urls` payloads (accept jsonb-string/array) to prevent photo URLs from failing to persist; public maintenance-share page now parses jsonb-string on load.
+- Cleaning App: Watermark baseline padding adjusted to avoid text clipping on image bottom edge.
+- MZApp: Property feedback create generates and persists `work_no` for maintenance/deep cleaning.
+
 ## Dev (2026-03-23)
 
 - Version: `0.2.7-statement-pdf.20260316+build.7`
@@ -53,9 +91,20 @@ Author: MZ System Bot <dev@mzpropertygroup.com>
 
 ## Dev (2026-03-16)
 
+## Dev (2026-03-24)
+
+- Version: `0.2.7-statement-pdf.20260324+build.2`
+- MZApp: Add property feedback APIs (`GET/POST /mzapp/property-feedbacks`) to unify mobile “问题反馈” and to list existing pending Maintenance/Deep Cleaning by property_id/property_code, reducing duplicate submissions.
+- Cleaning App: Add optional bottom-right watermark support for uploads (`POST /cleaning-app/upload`) via form fields (e.g., `purpose=key_photo`, `watermark_text`).
+- DB: Add migration `20260324_property_maintenance_add_area.sql` (optional area field for maintenance records).
+
+Author: MZ System Bot <dev@mzpropertygroup.com>
+
 - Version: `0.2.7-statement-pdf.20260316+build.6`
 - Finance PDF: Fix monthly statement exports showing only 1 job photo when photosMode=thumbnail (applies to both print-based monthly statement PDF and template photo-only PDFs).
 - Finance PDF: In thumbnail mode, use `/public/r2-image` compression (w/q) to keep large photo months stable and smaller (avoid requesting non-existent `.thumb.jpg` keys that can 404).
+- Finance PDF: When photo count is too high, merge download generates base (no-photos) statement and relies on photo split PDFs to avoid Playwright timeouts.
+- Finance PDF: Monthly statement PDF generation now waits for root + data-loaded markers and reports clearer timeout diagnostics (no longer hard-blocked by monthly-statement-ready).
 - Finance PDF: When photo count is too high, merge download generates base (no-photos) statement and relies on photo split PDFs to avoid Playwright timeouts.
 - Finance PDF: Monthly statement PDF generation now waits for root + data-loaded markers and reports clearer timeout diagnostics (no longer hard-blocked by monthly-statement-ready).
 - Finance PDF: Add persistent merge job APIs (`POST/GET /finance/merge-monthly-pack`) and a DB-backed worker to generate merged outputs asynchronously, avoiding 502/504 for huge months.
