@@ -535,18 +535,14 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
     if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
 
-    const fixed = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen']
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, unclean: 12 }
     const byArea = new Map<string, number>()
-    let uncleanCount = 0
     for (const it of parsed.data.items) {
-      if (it.area === 'unclean') uncleanCount++
-      else byArea.set(it.area, (byArea.get(it.area) || 0) + 1)
+      const a = String(it.area)
+      byArea.set(a, (byArea.get(a) || 0) + 1)
+      const lim = limits[a] ?? 1
+      if ((byArea.get(a) || 0) > lim) return res.status(400).json({ message: '超出数量限制', area: a, limit: lim })
     }
-    for (const a of fixed) {
-      const n = byArea.get(a) || 0
-      if (n > 1) return res.status(400).json({ message: '每个区域最多 1 张', area: a })
-    }
-    if (uncleanCount > 3) return res.status(400).json({ message: '未清洁照片最多 3 张' })
 
     await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
     const uuid = require('uuid')
@@ -578,7 +574,7 @@ const restockProofSchema = z
         status: z.enum(['restocked', 'unavailable']),
         qty: z.number().int().min(1).optional().nullable(),
         note: z.string().trim().max(800).optional().nullable(),
-        proof_url: z.string().trim().min(1).max(800),
+        proof_url: z.string().trim().min(1).max(800).optional().nullable(),
       }),
     ),
   })
@@ -620,7 +616,10 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
       } catch {}
       return {
         item_id: itemId,
-        proof_url: String(x.url || ''),
+        proof_url: (() => {
+          const u = String(x.url || '').trim()
+          return u && /^https?:\/\//i.test(u) ? u : null
+        })(),
         status: String(meta?.status || ''),
         qty: meta?.qty == null ? null : Number(meta.qty),
         note: meta?.note == null ? null : String(meta.note || ''),
@@ -666,10 +665,11 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     const uuid = require('uuid')
     for (const it of parsed.data.items) {
       const meta = { status: it.status, qty: it.qty == null ? null : Number(it.qty), note: it.note == null ? null : String(it.note || '') }
+      const url = String(it.proof_url || '').trim()
       await pgPool.query(
         `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
          VALUES ($1,$2,$3,$4,$5,now(),$6)`,
-        [uuid.v4(), id, `restock_proof:${it.item_id}`, String(it.proof_url), JSON.stringify(meta), userId],
+        [uuid.v4(), id, `restock_proof:${it.item_id}`, url || 'no_photo', JSON.stringify(meta), userId],
       )
     }
     try {
@@ -1216,6 +1216,77 @@ router.get('/work-tasks', async (req, res) => {
           out.push(buildMerged('inspector', rows, assigneeId))
         }
       }
+    }
+
+    if (allowAll && (role === 'customer_service' || role === 'admin' || role === 'offline_manager')) {
+      const merged: any[] = []
+      const byKey = new Map<string, any[]>()
+      for (const it of out) {
+        const isCleaning = String(it?.source_type || '') === 'cleaning_tasks'
+        const d = String(it?.scheduled_date || '').slice(0, 10)
+        const pid = it?.property_id ? String(it.property_id) : ''
+        if (!isCleaning || !d || !pid) {
+          merged.push(it)
+          continue
+        }
+        const k = `${d}|${pid}|${String(it?.start_time || '')}|${String(it?.end_time || '')}`
+        const arr = byKey.get(k) || []
+        arr.push(it)
+        byKey.set(k, arr)
+      }
+
+      const rankStatus = (s0: any) => {
+        const s = String(s0 || '').trim().toLowerCase()
+        if (!s) return 50
+        if (s === 'in_progress') return 10
+        if (s === 'to_inspect') return 15
+        if (s === 'to_clean') return 20
+        if (s === 'checked_out') return 25
+        if (s === 'keys_hung') return 80
+        if (s === 'done') return 90
+        return 60
+      }
+
+      for (const [k, arr0] of byKey) {
+        const arr = (arr0 || []).filter(Boolean)
+        if (!arr.length) continue
+        const preferred = arr.find((x) => String(x?.task_kind || '') === 'inspection') || arr[0]
+        const [d, pid] = k.split('|')
+        const srcIds = Array.from(new Set(arr.flatMap((x) => (Array.isArray(x?.source_ids) ? x.source_ids : []))))
+        const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
+        const lockboxVideoUrl = firstNonEmpty(...arr.map((x) => x.lockbox_video_url))
+        const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
+        const inspectorName = firstNonEmpty(...arr.map((x) => x.inspector_name))
+        const restockItems: any[] = []
+        const seenRestock = new Set<string>()
+        for (const it of arr.flatMap((x) => (Array.isArray(x?.restock_items) ? x.restock_items : []))) {
+          const iid = String(it?.item_id || it?.label || '').trim()
+          if (!iid) continue
+          if (seenRestock.has(iid)) continue
+          seenRestock.add(iid)
+          restockItems.push(it)
+        }
+        const statusOut = arr
+          .map((x) => x.status)
+          .sort((a: any, b: any) => rankStatus(a) - rankStatus(b))[0]
+
+        merged.push({
+          ...preferred,
+          id: `cleaning_tasks_merged:${d}:${pid}:${String(preferred?.start_time || '')}:${String(preferred?.end_time || '')}`,
+          task_kind: arr.some((x) => String(x?.task_kind || '') === 'inspection') ? 'inspection' : 'cleaning',
+          source_ids: srcIds.length ? srcIds : (Array.isArray(preferred?.source_ids) ? preferred.source_ids : undefined),
+          assignee_id: null,
+          status: statusOut,
+          key_photo_url: keyPhotoUrl,
+          lockbox_video_url: lockboxVideoUrl,
+          cleaner_name: cleanerName,
+          inspector_name: inspectorName,
+          restock_items: restockItems,
+        })
+      }
+
+      out.length = 0
+      out.push(...merged)
     }
 
     out.sort((a, b) => {

@@ -7,6 +7,12 @@
 - Cleaning App: Inspector notifications now use banner + Tab red dot, dedupe by stable ids, and exclude generic “系统通知”.
 - Cleaning App (Inspector): Add “检查与补充” panel (restock proof + inspection photos) and a separate “标记已完成” page for lockbox video + completion; inspection tasks on Home show 3 quick buttons.
 - Cleaning App (Inspector): Fix restock-proof / inspection-photos submissions by routing to `/cleaning-app/tasks/:id/*`; re-order steps and allow multi photos per area (toilet 3, living 1, sofa 2, bedroom 4, kitchen 2); adjust spacing and button heights; increase upload compression quality.
+- Cleaning App: Notices list/detail render photo thumbnails and full preview instead of showing photo URLs.
+- Cleaning App: Add in-app photo zoom for supplies reporting and loading states for key/restock/supplies uploads.
+- Cleaning App (Inspector): Tap inspection tasks to open “检查与补充” directly; restock photos show inline thumbnails; “无需补充” no longer requires a photo; auto-collapse to next step after submit/save.
+- Cleaning App (Inspector): Expand room photo limits (toilet 9, living 3, bedroom 8).
+- Backend: Relax restock proof schema to allow “unavailable” without photo (stores placeholder url).
+- MZApp Backend: For customer_service/admin/offline_manager (view=all), merge same-property same-day checkin+checkout tasks into one card to avoid duplicates.
 - MZApp Backend: Add `GET/POST /mzapp/cleaning-tasks/:id/inspection-photos` and `GET/POST /mzapp/cleaning-tasks/:id/restock-proof`; extend `cleaning_task_media` with `note` and task+type index.
 
 ## Dev (2026-03-24)

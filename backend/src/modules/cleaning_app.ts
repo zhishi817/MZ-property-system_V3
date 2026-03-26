@@ -390,14 +390,13 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
   const parsed = inspectionPhotosSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
-    const limits: Record<string, number> = { toilet: 3, living: 1, sofa: 2, bedroom: 4, kitchen: 2, unclean: 12 }
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, unclean: 12 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
       const a = String(it.area)
       byArea.set(a, (byArea.get(a) || 0) + 1)
       const lim = limits[a] ?? 1
       if ((byArea.get(a) || 0) > lim) return res.status(400).json({ message: '超出数量限制', area: a, limit: lim })
-      if (a === 'unclean' && !String(it.note || '').trim()) return res.status(400).json({ message: '未清洁照片需要备注' })
     }
     if (hasPg) {
       await ensureCleaningTaskMediaNote()
@@ -432,7 +431,7 @@ const restockProofSchema = z
         status: z.enum(['restocked', 'unavailable']),
         qty: z.number().int().min(1).optional().nullable(),
         note: z.string().trim().max(800).optional().nullable(),
-        proof_url: z.string().trim().min(1),
+        proof_url: z.string().trim().min(1).optional().nullable(),
       }),
     ),
   })
@@ -462,7 +461,10 @@ router.get('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish'
         } catch {}
         return {
           item_id: itemId,
-          proof_url: String(x.url || ''),
+          proof_url: (() => {
+            const u = String(x.url || '').trim()
+            return u && /^https?:\/\//i.test(u) ? u : null
+          })(),
           status: meta?.status == null ? null : String(meta.status || ''),
           qty: meta?.qty == null ? null : Number(meta.qty),
           note: meta?.note == null ? null : String(meta.note || ''),
@@ -496,10 +498,11 @@ router.post('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish
       await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'restock_proof:%'`, [id])
       for (const it of parsed.data.items) {
         const meta = { status: it.status, qty: it.qty == null ? null : Number(it.qty), note: it.note == null ? null : String(it.note || '') }
+        const url = String(it.proof_url || '').trim()
         await pgPool.query(
           `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
            VALUES ($1,$2,$3,$4,$5,now())`,
-          [uuid.v4(), id, `restock_proof:${it.item_id}`, String(it.proof_url), JSON.stringify(meta)],
+          [uuid.v4(), id, `restock_proof:${it.item_id}`, url || 'no_photo', JSON.stringify(meta)],
         )
       }
       try { broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id }) } catch {}
