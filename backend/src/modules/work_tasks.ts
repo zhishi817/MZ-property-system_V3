@@ -293,9 +293,11 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
     const row = r1?.rows?.[0] || cur
     await propagateToSource(sourceType, sourceId, patch)
     try {
-      const { notifyExpoAll } = require('./notifications')
-      await notifyExpoAll({
-        exclude_user_id: String(user.sub || ''),
+      const { notifyExpoUsers, excludeUserIds } = require('./notifications')
+      const to0 = [String(row.assignee_id || '').trim()].filter(Boolean)
+      const to = excludeUserIds(to0, String(user.sub || ''))
+      await notifyExpoUsers({
+        user_ids: to,
         title: '任务有更新',
         body: `${String(row.title || '任务')} 已更新`,
         data: { kind: 'work_task_updated', task_id: String(row.id), source_type: String(row.source_type || ''), source_id: String(row.source_id || ''), event_id: `work_task_updated:${String(row.id)}:${Date.now()}` },

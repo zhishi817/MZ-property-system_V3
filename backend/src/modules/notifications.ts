@@ -137,4 +137,50 @@ export async function notifyExpoUsers(params: { user_ids: string[]; title: strin
   return await sendExpoPush(tokens, { title: params.title, body: params.body, data: params.data || {} })
 }
 
+export async function listCleaningTaskUserIds(task_id: string) {
+  if (!hasPg || !pgPool) return []
+  const id = String(task_id || '').trim()
+  if (!id) return []
+  const r = await pgPool.query(
+    `SELECT cleaner_id::text AS cleaner_id, inspector_id::text AS inspector_id, assignee_id::text AS assignee_id
+     FROM cleaning_tasks
+     WHERE id::text = $1
+     LIMIT 1`,
+    [id],
+  )
+  const row = r?.rows?.[0] || null
+  if (!row) return []
+  const ids = [row.cleaner_id, row.inspector_id, row.assignee_id]
+    .map((x: any) => String(x || '').trim())
+    .filter(Boolean)
+  return Array.from(new Set(ids))
+}
+
+export async function listCleaningTaskUserIdsBulk(task_ids: string[]) {
+  if (!hasPg || !pgPool) return []
+  const ids0 = Array.from(new Set((task_ids || []).map((x) => String(x || '').trim()).filter(Boolean)))
+  if (!ids0.length) return []
+  const r = await pgPool.query(
+    `SELECT cleaner_id::text AS cleaner_id, inspector_id::text AS inspector_id, assignee_id::text AS assignee_id
+     FROM cleaning_tasks
+     WHERE id::text = ANY($1::text[])`,
+    [ids0],
+  )
+  const out: string[] = []
+  for (const row of r?.rows || []) {
+    for (const v of [row.cleaner_id, row.inspector_id, row.assignee_id]) {
+      const s = String(v || '').trim()
+      if (s) out.push(s)
+    }
+  }
+  return Array.from(new Set(out))
+}
+
+export function excludeUserIds(user_ids: string[], exclude_user_id?: string) {
+  const ex = String(exclude_user_id || '').trim()
+  const ids = Array.from(new Set((user_ids || []).map((x) => String(x || '').trim()).filter(Boolean)))
+  if (!ex) return ids
+  return ids.filter((x) => x !== ex)
+}
+
 export default router

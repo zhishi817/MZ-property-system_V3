@@ -511,8 +511,9 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
       broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id })
     } catch {}
     try {
-      const { notifyExpoAll } = require('./notifications')
-      await notifyExpoAll({ exclude_user_id: userId, title: '挂钥匙视频已上传', body: '检查员已上传挂钥匙视频', data: { kind: 'lockbox_video_uploaded', task_id: id, event_id: `lockbox_video_uploaded:${id}:${Date.now()}` } })
+      const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+      const to = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+      await notifyExpoUsers({ user_ids: to, title: '挂钥匙视频已上传', body: '检查员已上传挂钥匙视频', data: { kind: 'lockbox_video_uploaded', task_id: id, event_id: `lockbox_video_uploaded:${id}:${Date.now()}` } })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -623,8 +624,9 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
       broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id })
     } catch {}
     try {
-      const { notifyExpoAll } = require('./notifications')
-      await notifyExpoAll({ exclude_user_id: userId, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, event_id: `inspection_photos_saved:${id}:${Date.now()}` } })
+      const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+      const to = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+      await notifyExpoUsers({ user_ids: to, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, event_id: `inspection_photos_saved:${id}:${Date.now()}` } })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -743,8 +745,9 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
       broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id })
     } catch {}
     try {
-      const { notifyExpoAll } = require('./notifications')
-      await notifyExpoAll({ exclude_user_id: userId, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, event_id: `restock_proof_saved:${id}:${Date.now()}` } })
+      const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+      const to = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+      await notifyExpoUsers({ user_ids: to, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, event_id: `restock_proof_saved:${id}:${Date.now()}` } })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -782,7 +785,7 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
         broadcastCleaningEvent({ event: 'guest_checked_out_cancelled', task_id: id })
       } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
+        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
         let propertyCode = ''
         try {
           const r = await pgPool.query(
@@ -795,8 +798,9 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
           )
           propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
         } catch {}
-        await notifyExpoAll({
-          exclude_user_id: userId,
+        const to = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+        await notifyExpoUsers({
+          user_ids: to,
           title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
           body: '已取消退房',
           data: { kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: `guest_checked_out_cancelled:${propertyCode || id}:${prevCheckedOutAt || ''}` },
@@ -817,7 +821,7 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
       broadcastCleaningEvent({ event: 'guest_checked_out', task_id: id })
     } catch {}
     try {
-      const { notifyExpoAll } = require('./notifications')
+      const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
       let checkedOutAt: string | null = null
       let propertyCode = ''
       try {
@@ -832,8 +836,9 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
         checkedOutAt = r?.rows?.[0]?.checked_out_at ? String(r.rows[0].checked_out_at) : null
         propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
       } catch {}
-      await notifyExpoAll({
-        exclude_user_id: userId,
+      const to = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+      await notifyExpoUsers({
+        user_ids: to,
         title: propertyCode ? `已退房：${propertyCode}` : '已退房',
         body: '已退房',
         data: { kind: 'guest_checked_out', task_id: id, property_code: propertyCode, checked_out_at: checkedOutAt, event_id: `guest_checked_out:${propertyCode || id}:${checkedOutAt || ''}` },
@@ -897,9 +902,10 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
         propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
       } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
-        await notifyExpoAll({
-          exclude_user_id: userId,
+        const { notifyExpoUsers, listCleaningTaskUserIdsBulk, excludeUserIds } = require('./notifications')
+        const to = excludeUserIds(await listCleaningTaskUserIdsBulk(ids), userId)
+        await notifyExpoUsers({
+          user_ids: to,
           title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
           body: '已取消退房',
           data: { kind: 'guest_checked_out_cancelled', task_ids: ids, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: `guest_checked_out_cancelled:${propertyCode || ids[0]}:${prevCheckedOutAt || ''}` },
@@ -937,9 +943,10 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
     } catch {}
     const eventId = `guest_checked_out:${propertyCode || ids[0]}:${checkedOutAt || ''}`
     try {
-      const { notifyExpoAll } = require('./notifications')
-      await notifyExpoAll({
-        exclude_user_id: userId,
+      const { notifyExpoUsers, listCleaningTaskUserIdsBulk, excludeUserIds } = require('./notifications')
+      const to = excludeUserIds(await listCleaningTaskUserIdsBulk(ids), userId)
+      await notifyExpoUsers({
+        user_ids: to,
         title: propertyCode ? `已退房：${propertyCode}` : '已退房',
         body: '已退房',
         data: { kind: 'guest_checked_out', task_ids: ids, property_code: propertyCode, checked_out_at: checkedOutAt, event_id: eventId },
@@ -1009,7 +1016,7 @@ async function handleManagerFields(req: any, res: any) {
       for (const id of parsed.data.task_ids) broadcastCleaningEvent({ event: 'cleaning_task_manager_fields_updated', task_id: String(id) })
     } catch {}
     try {
-      const { notifyExpoAll } = require('./notifications')
+      const { notifyExpoUsers, listCleaningTaskUserIdsBulk, excludeUserIds } = require('./notifications')
       const norm = (v: any) => String(v ?? '').replace(/\s+/g, ' ').trim()
       const fmt = (label: string, next: any, prev: any) => `${label}：${norm(next) || '-'}（原：${norm(prev) || '-'}）`
       const lines: string[] = []
@@ -1045,8 +1052,9 @@ async function handleManagerFields(req: any, res: any) {
         guest_special_request: afterRow?.guest_special_request == null ? null : String(afterRow.guest_special_request),
       }
       const fieldsKey = hashText(JSON.stringify(keyObj))
-      await notifyExpoAll({
-        exclude_user_id: String(user.sub || ''),
+      const to = excludeUserIds(await listCleaningTaskUserIdsBulk(parsed.data.task_ids), String(user.sub || ''))
+      await notifyExpoUsers({
+        user_ids: to,
         title: propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新',
         body: lines.length ? lines.join('\n') : '任务信息已更新',
         data: { kind: 'cleaning_task_manager_fields_updated', task_ids: parsed.data.task_ids, property_code: propertyCode, fields_key: fieldsKey, event_id: `manager_fields:${propertyCode || repId}:${fieldsKey}` },
