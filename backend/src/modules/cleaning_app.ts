@@ -307,11 +307,27 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       try { broadcastCleaningEvent({ event: 'consumables_submitted', task_id: id, restock_pending: needsRestock }) } catch {}
       try {
         const { notifyExpoAll } = require('./notifications')
+        let propertyCode = ''
+        try {
+          const { pgPool } = require('../dbAdapter')
+          if (pgPool) {
+            const r = await pgPool.query(
+              `SELECT COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+               FROM cleaning_tasks t
+               LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+               LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+               WHERE t.id=$1 LIMIT 1`,
+              [id],
+            )
+            propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
+          }
+        } catch {}
+        const eventId = `consumables_submitted:${propertyCode || id}:${String(patch.finished_at || '')}`
         await notifyExpoAll({
           exclude_user_id: String(user?.sub || ''),
-          title: '任务有更新',
+          title: propertyCode ? `清洁完成：${propertyCode}` : '清洁完成',
           body: needsRestock ? '清洁已完成，待补货' : '清洁已完成，待检查',
-          data: { kind: 'consumables_submitted', task_id: id, restock_pending: needsRestock, event_id: `consumables_submitted:${id}:${Date.now()}` },
+          data: { kind: 'consumables_submitted', task_id: id, restock_pending: needsRestock, property_code: propertyCode, event_id: eventId },
         })
       } catch {}
       return res.json(up || patch)
@@ -323,7 +339,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
 })
 
 // Restock done
-router.patch('/tasks/:id/restock', requirePerm('cleaning_app.restock.manage'), async (req, res) => {
+router.patch('/tasks/:id/restock', requireAnyPerm(['cleaning_app.restock.manage', 'cleaning_app.tasks.finish']), async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   try {
@@ -468,6 +484,219 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
   }
 })
 
+const completionPhotosSchema = z
+  .object({
+    items: z.array(
+      z.object({
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen']),
+        url: z.string().trim().min(1),
+        note: z.string().trim().max(800).optional().nullable(),
+        captured_at: z.string().trim().max(64).optional(),
+      }),
+    ),
+  })
+  .strict()
+
+router.get('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+  const { id } = req.params
+  try {
+    if (hasPg) {
+      await ensureCleaningTaskMediaNote()
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      const r = await pgPool.query(
+        `SELECT type, url, note, captured_at, created_at
+         FROM cleaning_task_media
+         WHERE task_id=$1 AND type LIKE 'completion_%'
+         ORDER BY created_at ASC`,
+        [id],
+      )
+      const items = (r?.rows || []).map((x: any) => {
+        const type = String(x.type || '')
+        const area = type.startsWith('completion_') ? type.slice('completion_'.length) : type
+        return {
+          area,
+          url: String(x.url || ''),
+          note: x.note == null ? null : String(x.note || ''),
+          captured_at: x.captured_at ? String(x.captured_at) : null,
+          created_at: x.created_at ? String(x.created_at) : null,
+        }
+      })
+      return res.json({ items })
+    }
+    return res.json({ items: [] })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+  const user = (req as any).user
+  const { id } = req.params
+  const parsed = completionPhotosSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2 }
+    const byArea = new Map<string, number>()
+    for (const it of parsed.data.items) {
+      const a = String(it.area)
+      byArea.set(a, (byArea.get(a) || 0) + 1)
+      const lim = limits[a] ?? 1
+      if ((byArea.get(a) || 0) > lim) return res.status(400).json({ message: '超出数量限制', area: a, limit: lim })
+    }
+    if (hasPg) {
+      await ensureCleaningTaskMediaNote()
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      const uuid = require('uuid')
+      await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'completion_%'`, [id])
+      for (const it of parsed.data.items) {
+        const type = `completion_${it.area}`
+        const cap = String(it.captured_at || '').trim()
+        const capturedAt = cap ? new Date(cap) : new Date()
+        await pgPool.query(
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString()],
+        )
+      }
+      try { broadcastCleaningEvent({ event: 'completion_photos_saved', task_id: id }) } catch {}
+      try {
+        const { notifyExpoAll } = require('./notifications')
+        await notifyExpoAll({
+          exclude_user_id: String(user?.sub || ''),
+          title: '房间完成照片已提交',
+          body: '清洁员已上传房间完成照片',
+          data: { kind: 'completion_photos_saved', task_id: id, event_id: `completion_photos_saved:${id}:${Date.now()}` },
+        })
+      } catch {}
+      return res.status(201).json({ ok: true })
+    }
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+const lockboxVideoSchema = z.object({ media_url: z.string().min(1), captured_at: z.string().optional(), lat: z.number().optional(), lng: z.number().optional() })
+router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+  const user = (req as any).user
+  const { id } = req.params
+  const parsed = lockboxVideoSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (hasPg) {
+      await ensureCleaningTaskMediaNote()
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      const uuid = require('uuid')
+      const now = new Date().toISOString()
+      await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type='lockbox_video'`, [id])
+      await pgPool.query(
+        `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng)
+         VALUES ($1,$2,'lockbox_video',$3,$4,$5,$6)`,
+        [uuid.v4(), id, String(parsed.data.media_url), String(parsed.data.captured_at || now), parsed.data.lat ?? null, parsed.data.lng ?? null],
+      )
+      const up = await pgUpdate('cleaning_tasks', id, { lockbox_video_uploaded_at: now } as any)
+      try { broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id }) } catch {}
+      try {
+        const { notifyExpoAll } = require('./notifications')
+        await notifyExpoAll({
+          exclude_user_id: String(user?.sub || ''),
+          title: '挂钥匙视频已上传',
+          body: '清洁员已上传挂钥匙视频',
+          data: { kind: 'lockbox_video_uploaded', task_id: id, event_id: `lockbox_video_uploaded:${id}:${Date.now()}` },
+        })
+      } catch {}
+      return res.status(201).json(up || { id, lockbox_video_uploaded_at: now })
+    }
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+  const user = (req as any).user
+  const { id } = req.params
+  try {
+    if (hasPg) {
+      await ensureCleaningTaskMediaNote()
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+
+      const rTask = await pgPool.query(
+        `SELECT id::text AS id, COALESCE(status,'') AS status, finished_at, lockbox_video_uploaded_at
+         FROM cleaning_tasks
+         WHERE id::text=$1
+         LIMIT 1`,
+        [String(id)],
+      )
+      const task = rTask?.rows?.[0] || null
+      if (!task) return res.status(404).json({ message: 'task not found' })
+      const st0 = String(task.status || '').trim().toLowerCase()
+      if (st0 === 'cancelled' || st0 === 'canceled') return res.status(400).json({ message: 'task is cancelled' })
+
+      const rLock = await pgPool.query(
+        `SELECT 1 FROM cleaning_task_media WHERE task_id=$1 AND type='lockbox_video' LIMIT 1`,
+        [String(id)],
+      )
+      const hasLock = !!rLock?.rowCount || !!task.lockbox_video_uploaded_at
+      if (!hasLock) return res.status(400).json({ message: '缺少挂钥匙视频' })
+
+      const rComp = await pgPool.query(
+        `SELECT type FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'completion_%'`,
+        [String(id)],
+      )
+      const requiredAreas = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen']
+      const got = new Set<string>()
+      for (const row of rComp?.rows || []) {
+        const type = String(row.type || '')
+        const a = type.startsWith('completion_') ? type.slice('completion_'.length) : type
+        if (a) got.add(a)
+      }
+      const missingAreas = requiredAreas.filter((a) => !got.has(a))
+      if (missingAreas.length) return res.status(400).json({ message: '房间完成照片未齐', missing_areas: missingAreas })
+
+      const rConsum = await pgPool.query(`SELECT 1 FROM cleaning_consumable_usages WHERE task_id=$1 LIMIT 1`, [String(id)])
+      const hasConsum = !!rConsum?.rowCount
+      if (!hasConsum) return res.status(400).json({ message: '请先完成消耗品补充' })
+
+      const rNeed = await pgPool.query(
+        `SELECT 1
+         FROM cleaning_consumable_usages
+         WHERE task_id=$1 AND (need_restock = true OR COALESCE(status,'') = 'low')
+         LIMIT 1`,
+        [String(id)],
+      )
+      const needsRestock = !!rNeed?.rowCount
+
+      const now = new Date().toISOString()
+      const patch: any = {}
+      if (st0 !== 'restocked' && st0 !== 'ready') patch.status = needsRestock ? 'restock_pending' : 'cleaned'
+      if (!task.finished_at) patch.finished_at = now
+      if (Object.keys(patch).length) {
+        const up = await pgUpdate('cleaning_tasks', id, patch)
+        try { broadcastCleaningEvent({ event: 'self_completed', task_id: id }) } catch {}
+        try {
+          const { notifyExpoAll } = require('./notifications')
+          await notifyExpoAll({
+            exclude_user_id: String(user?.sub || ''),
+            title: '任务已完成',
+            body: '清洁员已标记任务完成',
+            data: { kind: 'self_completed', task_id: id, event_id: `self_completed:${id}:${Date.now()}` },
+          })
+        } catch {}
+        return res.json(up || { id, ...patch })
+      }
+      return res.json({ ok: true, id: String(id) })
+    }
+    return res.json({ ok: true, id: String(id) })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
 const restockProofSchema = z
   .object({
     items: z.array(
@@ -482,7 +711,7 @@ const restockProofSchema = z
   })
   .strict()
 
-router.get('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+router.get('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.tasks.finish']), async (req, res) => {
   const { id } = req.params
   try {
     if (hasPg) {
@@ -524,7 +753,7 @@ router.get('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish'
   }
 })
 
-router.post('/tasks/:id/restock-proof', requirePerm('cleaning_app.inspect.finish'), async (req, res) => {
+router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.finish', 'cleaning_app.tasks.finish']), async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
   const parsed = restockProofSchema.safeParse(req.body || {})

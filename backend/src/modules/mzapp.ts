@@ -94,6 +94,43 @@ function cleaningType(taskType: any): 'checkout' | 'checkin' | 'stayover' | 'oth
   return 'other'
 }
 
+function parseYmd(s0: any) {
+  const s = String(s0 || '').trim().slice(0, 10)
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (!m) return null
+  const y = Number(m[1])
+  const mo = Number(m[2])
+  const d = Number(m[3])
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return null
+  return { y, m: mo, d }
+}
+
+function daysBetweenYmd(a0: any, b0: any) {
+  const a = parseYmd(a0)
+  const b = parseYmd(b0)
+  if (!a || !b) return null
+  const ta = Date.UTC(a.y, a.m - 1, a.d, 12, 0, 0)
+  const tb = Date.UTC(b.y, b.m - 1, b.d, 12, 0, 0)
+  return Math.round((tb - ta) / 86400000)
+}
+
+function clampInt(n0: any, min: number, max: number) {
+  const n = Number(n0)
+  if (!Number.isFinite(n)) return null
+  const v = Math.max(min, Math.min(max, Math.trunc(n)))
+  return v
+}
+
+function computeStayedRemaining(params: { checkin: any; checkout: any; taskDate: any; nightsTotal: any }) {
+  const total0 = params.nightsTotal == null ? daysBetweenYmd(params.checkin, params.checkout) : Number(params.nightsTotal)
+  if (!Number.isFinite(total0 as any)) return { stayed: null as number | null, remaining: null as number | null }
+  const total = Math.max(0, Math.trunc(total0 as any))
+  const stayed0 = daysBetweenYmd(params.checkin, params.taskDate)
+  const stayed = stayed0 == null ? null : clampInt(stayed0, 0, total)
+  const remaining = stayed == null ? null : Math.max(0, total - stayed)
+  return { stayed, remaining }
+}
+
 function firstNonEmpty(...vals: any[]) {
   for (const v of vals) {
     const s = String(v ?? '').trim()
@@ -730,6 +767,7 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
     const r0 = await pgPool.query('SELECT id, checked_out_at FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
+    const prevCheckedOutAt = row.checked_out_at ? String(row.checked_out_at) : null
     if (action === 'unset' || action === 'clear' || action === 'cancel') {
       await pgPool.query(
         `UPDATE cleaning_tasks
@@ -761,7 +799,7 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
           exclude_user_id: userId,
           title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
           body: '已取消退房',
-          data: { kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, event_id: `guest_checked_out_cancelled:${propertyCode || id}:${Date.now()}` },
+          data: { kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: `guest_checked_out_cancelled:${propertyCode || id}:${prevCheckedOutAt || ''}` },
         })
       } catch {}
       return res.status(201).json({ ok: true })
@@ -829,6 +867,11 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
     await ensureCleaningCheckoutColumns()
     const action = String(parsed.data.action || 'set').trim().toLowerCase()
     if (action === 'unset' || action === 'clear' || action === 'cancel') {
+      let prevCheckedOutAt: string | null = null
+      try {
+        const rPrev = await pgPool.query(`SELECT checked_out_at FROM cleaning_tasks WHERE id=$1 LIMIT 1`, [ids[0]])
+        prevCheckedOutAt = rPrev?.rows?.[0]?.checked_out_at ? String(rPrev.rows[0].checked_out_at) : null
+      } catch {}
       await pgPool.query(
         `UPDATE cleaning_tasks
          SET checked_out_at = NULL,
@@ -859,7 +902,7 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
           exclude_user_id: userId,
           title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
           body: '已取消退房',
-          data: { kind: 'guest_checked_out_cancelled', task_ids: ids, property_code: propertyCode, event_id: `guest_checked_out_cancelled:${propertyCode || ids[0]}:${Date.now()}` },
+          data: { kind: 'guest_checked_out_cancelled', task_ids: ids, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: `guest_checked_out_cancelled:${propertyCode || ids[0]}:${prevCheckedOutAt || ''}` },
         })
       } catch {}
       return res.status(201).json({ ok: true })
@@ -929,6 +972,22 @@ async function handleManagerFields(req: any, res: any) {
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningCustomerColumns()
+    const repId = String(parsed.data.task_ids[0] || '').trim()
+    let propertyCode = ''
+    let prevRow: any = null
+    try {
+      const r = await pgPool.query(
+        `SELECT t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request,
+                COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+         FROM cleaning_tasks t
+         LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+         LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+         WHERE t.id=$1 LIMIT 1`,
+        [repId],
+      )
+      prevRow = r?.rows?.[0] || null
+      propertyCode = String(prevRow?.property_code || '').trim()
+    } catch {}
     const fields: string[] = []
     const vals: any[] = []
     const push = (sql: string, v: any) => {
@@ -951,11 +1010,46 @@ async function handleManagerFields(req: any, res: any) {
     } catch {}
     try {
       const { notifyExpoAll } = require('./notifications')
+      const norm = (v: any) => String(v ?? '').replace(/\s+/g, ' ').trim()
+      const fmt = (label: string, next: any, prev: any) => `${label}：${norm(next) || '-'}（原：${norm(prev) || '-'}）`
+      const lines: string[] = []
+      if (parsed.data.checkout_time !== undefined) lines.push(fmt('退房时间', parsed.data.checkout_time, prevRow?.checkout_time))
+      if (parsed.data.checkin_time !== undefined) lines.push(fmt('入住时间', parsed.data.checkin_time, prevRow?.checkin_time))
+      if (parsed.data.old_code !== undefined) lines.push(fmt('旧密码', parsed.data.old_code, prevRow?.old_code))
+      if (parsed.data.new_code !== undefined) lines.push(fmt('新密码', parsed.data.new_code, prevRow?.new_code))
+      if (parsed.data.guest_special_request !== undefined) lines.push(fmt('客人需求', parsed.data.guest_special_request, prevRow?.guest_special_request))
+      const hashText = (s: string) => {
+        let h = 0
+        for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+        return String(h)
+      }
+      let afterRow: any = null
+      try {
+        const rAfter = await pgPool.query(
+          `SELECT t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request,
+                  COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+           FROM cleaning_tasks t
+           LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+           LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+           WHERE t.id=$1 LIMIT 1`,
+          [repId],
+        )
+        afterRow = rAfter?.rows?.[0] || null
+        if (!propertyCode) propertyCode = String(afterRow?.property_code || '').trim()
+      } catch {}
+      const keyObj = {
+        checkout_time: afterRow?.checkout_time == null ? null : String(afterRow.checkout_time),
+        checkin_time: afterRow?.checkin_time == null ? null : String(afterRow.checkin_time),
+        old_code: afterRow?.old_code == null ? null : String(afterRow.old_code),
+        new_code: afterRow?.new_code == null ? null : String(afterRow.new_code),
+        guest_special_request: afterRow?.guest_special_request == null ? null : String(afterRow.guest_special_request),
+      }
+      const fieldsKey = hashText(JSON.stringify(keyObj))
       await notifyExpoAll({
         exclude_user_id: String(user.sub || ''),
-        title: '任务信息更新',
-        body: '入住/退房时间、密码或客人需求已更新',
-        data: { kind: 'cleaning_task_manager_fields_updated', task_ids: parsed.data.task_ids, event_id: `cleaning_task_manager_fields_updated:${parsed.data.task_ids.join(',')}:${Date.now()}` },
+        title: propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新',
+        body: lines.length ? lines.join('\n') : '任务信息已更新',
+        data: { kind: 'cleaning_task_manager_fields_updated', task_ids: parsed.data.task_ids, property_code: propertyCode, fields_key: fieldsKey, event_id: `manager_fields:${propertyCode || repId}:${fieldsKey}` },
       })
     } catch {}
     return res.status(201).json({ ok: true })
@@ -1201,6 +1295,7 @@ router.get('/work-tasks', async (req, res) => {
           SELECT
             t.id,
             t.order_id,
+            t.nights_override,
             COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
             COALESCE(p_id.code::text, p_code.code::text) AS property_code,
             COALESCE(p_id.region::text, p_code.region::text) AS property_region,
@@ -1221,6 +1316,9 @@ router.get('/work-tasks', async (req, res) => {
             t.new_code,
             t.guest_special_request,
             t.checked_out_at,
+            o.checkin::text AS order_checkin,
+            o.checkout::text AS order_checkout,
+            COALESCE(t.nights_override, o.nights, (o.checkout - o.checkin)) AS order_nights,
             (
               SELECT m.url
               FROM cleaning_task_media m
@@ -1282,6 +1380,26 @@ router.get('/work-tasks', async (req, res) => {
             restockByTaskId.set(k, arr)
           }
         }
+        const completionAreasByTaskId = new Map<string, Set<string>>()
+        if (taskIds.length) {
+          const cr = await pgPool.query(
+            `SELECT task_id::text AS task_id, type
+             FROM cleaning_task_media
+             WHERE task_id::text = ANY($1::text[])
+               AND type LIKE 'completion_%'`,
+            [taskIds],
+          )
+          for (const x of cr?.rows || []) {
+            const tid = String(x.task_id || '').trim()
+            if (!tid) continue
+            const type = String(x.type || '')
+            const area = type.startsWith('completion_') ? type.slice('completion_'.length) : type
+            if (!area) continue
+            const set = completionAreasByTaskId.get(tid) || new Set<string>()
+            set.add(area)
+            completionAreasByTaskId.set(tid, set)
+          }
+        }
         const cleanerGroups = new Map<string, any[]>()
         const inspectorGroups = new Map<string, any[]>()
         for (const row of (r?.rows || [])) {
@@ -1321,6 +1439,11 @@ router.get('/work-tasks', async (req, res) => {
             key_photo_url: row.key_photo_url,
             lockbox_video_url: row.lockbox_video_url,
             restock_items: restockByTaskId.get(String(row.id)) || [],
+            completion_areas: Array.from(completionAreasByTaskId.get(String(row.id)) || []),
+            nights_override: row.nights_override == null ? null : Number(row.nights_override),
+            order_checkin: row.order_checkin,
+            order_checkout: row.order_checkout,
+            order_nights: row.order_nights == null ? null : Number(row.order_nights),
             cleaner_name: row.cleaner_name,
             inspector_name: row.inspector_name,
             sort_index_cleaner: row.sort_index_cleaner,
@@ -1383,6 +1506,21 @@ router.get('/work-tasks', async (req, res) => {
           const lockboxVideoUrl = firstNonEmpty(p.a.lockbox_video_url, p.b?.lockbox_video_url, ...rows.map((x) => x.lockbox_video_url))
           const cleanerName = firstNonEmpty(p.a.cleaner_name, p.b?.cleaner_name, ...rows.map((x) => x.cleaner_name))
           const inspectorName = firstNonEmpty(p.a.inspector_name, p.b?.inspector_name, ...rows.map((x) => x.inspector_name))
+          const inspectorAssigned = firstNonEmpty(p.a.__assignee_inspector, p.b?.__assignee_inspector, ...rows.map((x) => x.__assignee_inspector))
+          const requireSelfComplete =
+            roleKind === 'cleaner' &&
+            (p.kind === 'checkout' || p.kind === 'turnover') &&
+            !String(inspectorAssigned || '').trim()
+          const completionAreas = new Set<string>()
+          for (const sId of p.ids) {
+            const arr = rows.filter((x) => String(x.__raw_id) === String(sId)).flatMap((x) => (Array.isArray(x.completion_areas) ? x.completion_areas : []))
+            for (const a of arr) {
+              const k = String(a || '').trim()
+              if (k) completionAreas.add(k)
+            }
+          }
+          const requiredAreas = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen']
+          const completionPhotosOk = requiredAreas.every((a) => completionAreas.has(a))
           const restockItems: any[] = []
           const seen = new Set<string>()
           for (const sId of p.ids) {
@@ -1396,10 +1534,35 @@ router.get('/work-tasks', async (req, res) => {
             }
           }
           const raw = String(p.a.raw_status ?? '').trim().toLowerCase()
+          const isDoneLike = raw === 'cleaned' || raw === 'restock_pending' || raw === 'restocked' || raw === 'ready' || raw === 'inspected'
+          const nightsFor = (x: any) => {
+            const n0 =
+              x?.nights_override != null
+                ? Number(x.nights_override)
+                : x?.order_nights != null
+                  ? Number(x.order_nights)
+                  : null
+            if (Number.isFinite(n0 as any)) return Math.max(0, Math.trunc(n0 as any))
+            const d0 = daysBetweenYmd(x?.order_checkin, x?.order_checkout)
+            return d0 == null ? null : Math.max(0, Math.trunc(d0))
+          }
+          const stayedAndRemaining = (() => {
+            if (p.kind === 'turnover') return { stayed: nightsFor(p.a), remaining: nightsFor(p.b) }
+            if (p.kind === 'checkout') return { stayed: nightsFor(p.a), remaining: 0 }
+            if (p.kind === 'checkin') return { stayed: 0, remaining: nightsFor(p.a) }
+            if (p.kind === 'stayover') {
+              const total = nightsFor(p.a)
+              const r0 = computeStayedRemaining({ checkin: p.a.order_checkin, checkout: p.a.order_checkout, taskDate: date, nightsTotal: total })
+              return { stayed: r0.stayed, remaining: r0.remaining }
+            }
+            return { stayed: null as number | null, remaining: null as number | null }
+          })()
           const statusOut =
             roleKind === 'inspector'
               ? (lockboxVideoUrl ? 'keys_hung' : (raw === 'cleaned' || raw === 'restock_pending' ? 'to_inspect' : p.a.status))
-              : (raw === 'cleaned' || raw === 'restock_pending' ? 'done' : p.a.status)
+              : (requireSelfComplete && isDoneLike && !lockboxVideoUrl ? 'to_hang_keys'
+                  : requireSelfComplete && isDoneLike && !completionPhotosOk ? 'to_complete'
+                    : (raw === 'cleaned' || raw === 'restock_pending' ? 'done' : p.a.status))
           const sortIndex =
             roleKind === 'cleaner'
               ? Math.min(...rows.map((x) => (x.sort_index_cleaner == null ? Number.POSITIVE_INFINITY : Number(x.sort_index_cleaner))).filter((x) => Number.isFinite(x)))
@@ -1425,7 +1588,9 @@ router.get('/work-tasks', async (req, res) => {
             scheduled_date: date,
             start_time: checkoutTime || null,
             end_time: checkinTime || null,
+            task_type: p.kind === 'turnover' ? 'turnover' : String(p.a.task_type || ''),
             assignee_id: assigneeId,
+            inspector_id: inspectorAssigned ? String(inspectorAssigned) : null,
             status: statusOut,
             urgency: 'medium',
             sort_index,
@@ -1438,6 +1603,9 @@ router.get('/work-tasks', async (req, res) => {
             key_photo_url: keyPhotoUrl,
             lockbox_video_url: lockboxVideoUrl,
             restock_items: restockItems,
+            completion_photos_ok: completionPhotosOk,
+            stayed_nights: stayedAndRemaining.stayed,
+            remaining_nights: stayedAndRemaining.remaining,
             cleaner_name: cleanerName,
             inspector_name: inspectorName,
             property: prop,
@@ -1483,6 +1651,8 @@ router.get('/work-tasks', async (req, res) => {
         const s = String(s0 || '').trim().toLowerCase()
         if (!s) return 50
         if (s === 'in_progress') return 10
+        if (s === 'to_hang_keys') return 12
+        if (s === 'to_complete') return 13
         if (s === 'to_inspect') return 15
         if (s === 'to_clean') return 20
         if (s === 'checked_out') return 25

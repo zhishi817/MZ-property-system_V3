@@ -1,5 +1,15 @@
 # Changelog
 
+## Dev (2026-03-27)
+
+- Version: `MZ-property-system_V3`
+- Cleaning App: Add “自完成” flow for checkout/turnover cleaning tasks without inspector — “补充与完成” entry leads to a 4-step page (Consumables, Feedback, Completion Photos, Mark Complete).
+- Cleaning App: In Tasks list + Task detail + Manager Daily Task, show “自完成” tag and render inspector as “无” when self-complete applies; keep inspection-assigned tasks on the original flow.
+- Cleaning App: Add “已住晚数｜待住晚数” to task cards; show “待住晚数” on consumables pages (including self-complete step 1).
+- Backend: Add completion photos + lockbox-video + self-complete APIs for cleaners; relax restock proof + restock endpoints for cleaner finish permission.
+- MZApp Backend: work-tasks now includes inspector_id/task_type and computed stayed_nights/remaining_nights; derive “to_hang_keys/to_complete” status only for self-complete tasks.
+- Task Center: Add “自完成” filter for cleaning tasks without inspector; show self-complete tag only after assignment.
+
 ## Dev (2026-03-25)
 
 - Version: (no bump)
@@ -29,6 +39,9 @@
 - Cleaning App/Backend: Add Expo Push token register + send push on checkout/manager updates.
 - Cleaning App/Backend: Push notifications now also fire on key upload, inspection photos, restock proof, ready, issues, and work task updates; push messages are mirrored into 信息中心.
 - Push: Deduplicate checkout notifications and format as “已退房：房号 / 已退房” (no “请安排清洁”).
+- Push: Deduplicate task info update notifications and include room code + change details.
+- Tasks: For managers, show “待检查” after cleaning done until inspection completes.
+- Push: Include room code in “清洁完成” notification title; tapping notification opens its notice detail.
 - MZApp Backend: Fix manager task list duplicates by merging same property/day regardless of time and id/code mismatches.
 - Cleaning App: Deduplicate manager Home tasks client-side as a fallback for old backend.
 - MZApp Backend: Add `GET/POST /mzapp/cleaning-tasks/:id/inspection-photos` and `GET/POST /mzapp/cleaning-tasks/:id/restock-proof`; extend `cleaning_task_media` with `note` and task+type index.
