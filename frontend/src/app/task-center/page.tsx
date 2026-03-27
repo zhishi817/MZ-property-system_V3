@@ -84,7 +84,7 @@ export default function TaskCenterPage() {
   } | null>(null)
 
   const [filterText, setFilterText] = useState('')
-  const [poolView, setPoolView] = useState<'all' | 'cleaning' | 'inspection' | 'maintenance' | 'deep_cleaning' | 'other'>('all')
+  const [poolView, setPoolView] = useState<'all' | 'cleaning' | 'inspection' | 'self_complete' | 'maintenance' | 'deep_cleaning' | 'other'>('all')
   const [staffFilter, setStaffFilter] = useState<'all' | 'busy' | 'idle'>('all')
   const [staffSearch, setStaffSearch] = useState('')
   const [staffFocusId, setStaffFocusId] = useState<string | null>(null)
@@ -427,6 +427,19 @@ export default function TaskCenterPage() {
     return { region, code, detail: parts.join(' ') }
   }, [])
 
+  const isSelfCompleteCleaningItem = useCallback((it: CalendarItem) => {
+    if (String(it.source || '') !== 'cleaning_tasks') return false
+    if (String(it.inspector_id || '').trim()) return false
+    const type = String(it.task_type || '').toLowerCase()
+    const label = String(it.label || '')
+    const isStayover = type === 'stayover_clean' || label.includes('入住中清洁')
+    const isCheckin = (type === 'checkin_clean' || label.includes('入住')) && !isStayover
+    const isCheckout = type === 'checkout_clean' || label.includes('退房')
+    if (isStayover) return false
+    if (isCheckin && !isCheckout) return false
+    return isCheckout
+  }, [])
+
   const taskTextForCleaningItem = useCallback((it: CalendarItem) => {
     const region = String(it.property_region || '').trim()
     const code = String(it.property_code || '').trim() || String(it.property_id || '').trim()
@@ -629,12 +642,14 @@ export default function TaskCenterPage() {
         return !String(it.cleaner_id || it.assignee_id || '').trim()
       }
     })
+    const poolSelfComplete = poolCleaning.filter(isSelfCompleteCleaningItem)
     const poolOffline = offlineBase.filter((t) => !String(t.assignee_id || '').trim())
 
     type BoardItem = { source: 'cleaning'; it: CalendarItem } | { source: 'work'; it: WorkTask }
 
     const pool: BoardItem[] = (() => {
       if (poolView === 'other') return poolOffline.map((it) => ({ source: 'work' as const, it }))
+      if (poolView === 'self_complete') return poolSelfComplete.map((it) => ({ source: 'cleaning' as const, it }))
       if (poolView === 'cleaning' || poolView === 'inspection') return poolCleaning.map((it) => ({ source: 'cleaning' as const, it }))
       return [
         ...poolCleaning.map((it) => ({ source: 'cleaning' as const, it })),
@@ -703,6 +718,7 @@ export default function TaskCenterPage() {
                 { label: '全部', value: 'all' },
                 { label: '清洁', value: 'cleaning' },
                 { label: '检查', value: 'inspection' },
+                { label: '自完成', value: 'self_complete' },
                 { label: '维修', value: 'maintenance' },
                 { label: '深清', value: 'deep_cleaning' },
                 { label: '其他', value: 'other' },
@@ -714,6 +730,7 @@ export default function TaskCenterPage() {
                 if (val === 'deep_cleaning') { setPoolView('deep_cleaning'); setTab('deep_cleaning'); return }
                 if (val === 'inspection') { setPoolView('inspection'); setTab('inspection'); return }
                 if (val === 'cleaning') { setPoolView('cleaning'); setTab('cleaning'); return }
+                if (val === 'self_complete') { setPoolView('self_complete'); setTab('cleaning'); return }
                 if (val === 'other') { setPoolView('other'); return }
                 setPoolView('all')
               }}
@@ -935,6 +952,7 @@ export default function TaskCenterPage() {
                     const st = effectiveCleaningStatus(it)
                     const draggable = !dayLocked && (it.auto_sync_enabled !== false || !String(it.order_id || '').trim())
                     const isMerged = Array.isArray(it.entity_ids) && it.entity_ids.length > 1
+                    const isSelfComplete = isSelfCompleteCleaningItem(it)
                     return (
                       <div
                         key={`assigned:${it.entity_id}`}
@@ -954,6 +972,7 @@ export default function TaskCenterPage() {
                           <div className={styles.taskTopRow}>
                             <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
                             {isMerged ? <Tag>合并 {ids.length}</Tag> : null}
+                            {isSelfComplete ? <Tag color="blue">自完成</Tag> : null}
                           </div>
                           <div className={styles.taskTitleRow}>
                             {sum.region ? <span className={styles.taskRegion}>{sum.region}</span> : null}
@@ -975,7 +994,7 @@ export default function TaskCenterPage() {
         </div>
       </div>
     )
-  }, [activeCleaners, activeInspectors, dateStr, dayLocked, dragOverKey, effectiveCleaningStatus, entityIds, expandedStaff, filterCleanItems, filterOfflineItems, filterText, isCheckinLikeTaskType, kindOfCleaningItem, loading, mergedCleaningItems, parseDragPayload, poolView, propertyCodeById, staffFilter, staffFocusId, staffSearch, statusChipCls, statusText, stripeColorForKind, stripeColorForUrgency, summaryText, tab, taskCenterDay, taskTextForCleaningItem, updateCleaningTasks, updateWorkTask, workSummaryText])
+  }, [activeCleaners, activeInspectors, dateStr, dayLocked, dragOverKey, effectiveCleaningStatus, entityIds, expandedStaff, filterCleanItems, filterOfflineItems, filterText, isCheckinLikeTaskType, isSelfCompleteCleaningItem, kindOfCleaningItem, loading, mergedCleaningItems, parseDragPayload, poolView, propertyCodeById, staffFilter, staffFocusId, staffSearch, statusChipCls, statusText, stripeColorForKind, stripeColorForUrgency, summaryText, tab, taskCenterDay, taskTextForCleaningItem, updateCleaningTasks, updateWorkTask, workSummaryText])
 
   const TaskBoardMaintenance = useMemo(() => {
     if (tab !== 'maintenance') return null

@@ -1,5 +1,15 @@
 # Changelog
 
+## Dev (2026-03-27)
+
+- Version: `MZ-property-system_V3`
+- Cleaning App: Add “自完成” flow for checkout/turnover cleaning tasks without inspector — “补充与完成” entry leads to a 4-step page (Consumables, Feedback, Completion Photos, Mark Complete).
+- Cleaning App: In Tasks list + Task detail + Manager Daily Task, show “自完成” tag and render inspector as “无” when self-complete applies; keep inspection-assigned tasks on the original flow.
+- Cleaning App: Add “已住晚数｜待住晚数” to task cards; show “待住晚数” on consumables pages (including self-complete step 1).
+- Backend: Add completion photos + lockbox-video + self-complete APIs for cleaners; relax restock proof + restock endpoints for cleaner finish permission.
+- MZApp Backend: work-tasks now includes inspector_id/task_type and computed stayed_nights/remaining_nights; derive “to_hang_keys/to_complete” status only for self-complete tasks.
+- Task Center: Add “自完成” filter for cleaning tasks without inspector; show self-complete tag only after assignment.
+
 ## Dev (2026-03-25)
 
 - Version: (no bump)
