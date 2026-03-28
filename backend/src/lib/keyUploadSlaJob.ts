@@ -101,6 +101,9 @@ export async function runKeyUploadSlaCheck(position: number, level: Level) {
 
   if (!rows.length) return { ok: true, created: 0 }
 
+  const managers = await pgPool.query(`SELECT id, username, phone_au, role FROM users WHERE role IN ('admin','offline_manager')`)
+  const managersRows = managers?.rows || []
+
   for (const r of rows) {
     const cleanerId = String(r.cleaner_id || '')
     if (!cleanerId) continue
@@ -142,23 +145,29 @@ export async function runKeyUploadSlaCheck(position: number, level: Level) {
         } catch {}
       }
     } else {
-      const id = `${kind}:${date}:${position}:${level}:${cleanerId}`
-      const ins = await pgPool.query(
-        `INSERT INTO mzapp_alerts (id, kind, target_user_id, level, date, position, payload)
-         VALUES ($1,$2,$3,$4,$5::date,$6::int,$7::jsonb)
-         ON CONFLICT DO NOTHING`,
-        [id, kind, cleanerId, level, date, position, JSON.stringify(payload)],
-      )
-      if (ins?.rowCount) {
+      const notifyIds: string[] = []
+      for (const m of managersRows) {
+        const mid = String(m.id || '').trim()
+        if (!mid) continue
+        const id = `${kind}:${date}:${position}:${level}:${mid}:${cleanerId}`
+        const ins = await pgPool.query(
+          `INSERT INTO mzapp_alerts (id, kind, target_user_id, level, date, position, payload)
+           VALUES ($1,$2,$3,$4,$5::date,$6::int,$7::jsonb)
+           ON CONFLICT DO NOTHING`,
+          [id, kind, mid, level, date, position, JSON.stringify(payload)],
+        )
+        if (ins?.rowCount) notifyIds.push(mid)
+      }
+      if (notifyIds.length) {
         try {
           const { notifyExpoUsers } = require('../modules/notifications')
           const title = '上传钥匙超时提醒'
-          const body = `${property_code || '房源'}：请尽快上传钥匙照片（第 ${position} 个任务）`
+          const body = `${property_code || '房源'}：清洁员未按时上传钥匙照片（第 ${position} 个任务）`
           await notifyExpoUsers({
-            user_ids: [cleanerId],
+            user_ids: notifyIds,
             title,
             body,
-            data: { kind, level, position, event_id: id, cleaning_task_ids: task_ids, property_code, cleaner_id: cleanerId },
+            data: { kind, level, position, event_id: `${kind}:${date}:${position}:${level}:${cleanerId}`, cleaning_task_ids: task_ids, property_code, cleaner_id: cleanerId },
           })
         } catch {}
       }

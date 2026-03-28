@@ -10,6 +10,7 @@
 - MZApp Backend: work-tasks now includes inspector_id/task_type and computed stayed_nights/remaining_nights; derive “to_hang_keys/to_complete” status only for self-complete tasks.
 - Task Center: Add “自完成” filter for cleaning tasks without inspector; show self-complete tag only after assignment.
 - Notifications: Push notifications are now sent only to users involved in the task (cleaner/inspector/assignee). Removed broadcast-to-all behavior for task updates.
+- Notifications: Key photo SLA escalation continues to notify admin/offline_manager (exception).
 
 ## Dev (2026-03-25)
 
