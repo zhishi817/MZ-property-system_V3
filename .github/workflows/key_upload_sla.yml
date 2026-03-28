@@ -1,0 +1,51 @@
+name: Key Upload SLA
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: https://mz-property-system-v3-docker.onrender.com
+      JOB_CRON_TOKEN: ${{ secrets.JOB_CRON_TOKEN }}
+    steps:
+      - name: Run key-upload-sla checks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${JOB_CRON_TOKEN:-}" ]]; then
+            echo "Missing secrets.JOB_CRON_TOKEN"
+            exit 1
+          fi
+
+          now="$(TZ=Australia/Melbourne date +%H:%M)"
+          echo "Melbourne time: ${now}"
+
+          pos=""
+          level=""
+
+          case "${now}" in
+            "10:15") pos="1"; level="remind" ;;
+            "10:30") pos="1"; level="escalate" ;;
+            "11:45") pos="2"; level="remind" ;;
+            "12:00") pos="2"; level="escalate" ;;
+            "13:30") pos="3"; level="remind" ;;
+            "13:45") pos="3"; level="escalate" ;;
+            "14:15") pos="4"; level="remind" ;;
+            "14:30") pos="4"; level="escalate" ;;
+            *) echo "No SLA check at this time. Exiting."; exit 0 ;;
+          esac
+
+          url="${BASE_URL}/jobs/key-upload-sla/cron-trigger"
+          body="{\"position\": ${pos}, \"level\": \"${level}\"}"
+
+          echo "POST ${url} ${body}"
+          curl -sS -X POST "${url}" \
+            -H "Authorization: Bearer ${JOB_CRON_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${body}" \
+            --retry 3 --retry-all-errors --retry-delay 2
