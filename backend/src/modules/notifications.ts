@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { requireAnyPerm, requirePerm } from '../auth'
 import { hasPg, pgInsert, pgPool, pgSelect } from '../dbAdapter'
+import https from 'https'
 
 export const router = Router()
 
@@ -32,6 +33,49 @@ async function ensureExpoPushTokensTable() {
   return expoTokensEnsuring
 }
 
+async function postJson(urlStr: string, body: any) {
+  const u = new URL(urlStr)
+  const data = Buffer.from(JSON.stringify(body || {}), 'utf8')
+  return await new Promise<any>((resolve, reject) => {
+    const req = https.request(
+      {
+        protocol: u.protocol,
+        hostname: u.hostname,
+        port: u.port ? Number(u.port) : 443,
+        path: `${u.pathname}${u.search}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': String(data.length),
+        },
+        timeout: 15000,
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c))))
+        res.on('end', () => {
+          const txt = Buffer.concat(chunks).toString('utf8')
+          let parsed: any = null
+          try {
+            parsed = txt ? JSON.parse(txt) : null
+          } catch {
+            parsed = null
+          }
+          resolve({ status: res.statusCode || 0, json: parsed, text: txt })
+        })
+      },
+    )
+    req.on('timeout', () => {
+      try {
+        req.destroy(new Error('timeout'))
+      } catch {}
+    })
+    req.on('error', reject)
+    req.write(data)
+    req.end()
+  })
+}
+
 async function sendExpoPush(tokens: string[], payload: { title: string; body: string; data?: any }) {
   const list = (tokens || []).map((x) => String(x || '').trim()).filter(Boolean)
   if (!list.length) return { sent: 0, failed: 0 }
@@ -48,8 +92,8 @@ async function sendExpoPush(tokens: string[], payload: { title: string; body: st
       data: payload.data || {},
     }))
     try {
-      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(messages) })
-      const j = await res.json().catch(() => null)
+      const r = await postJson(url, messages)
+      const j = r?.json
       const arr = Array.isArray(j?.data) ? j.data : []
       sent += chunk.length
       for (const it of arr) {
