@@ -1,5 +1,13 @@
 # Changelog
 
+## Dev (2026-03-29)
+
+- Version: `0.2.7-statement-pdf.20260329+build.1`
+- Ops: Add Key Upload SLA GitHub Actions workflow (scheduled + manual dispatch) that triggers backend `/jobs/key-upload-sla/cron-trigger` by Melbourne time window.
+- Cleaning: `/cleaning/calendar-range` now includes key-photo upload status (`key_photo_uploaded_at` / `has_key_photo`) for UI rendering.
+- UI: Cleaning schedule and Task Center now show a red “钥匙未上传” indicator for assigned tasks missing key photo.
+- Inventory: Continue multi-warehouse inventory + PO work (backend + UI) and add migration `20260328_inventory_warehouses_po.sql`.
+
 ## Dev (2026-03-28)
 
 - Version: `MZ-property-system_V3` (no bump)

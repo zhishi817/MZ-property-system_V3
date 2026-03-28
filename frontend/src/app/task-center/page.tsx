@@ -27,6 +27,8 @@ type CalendarItem = {
   cleaner_id?: string | null
   inspector_id?: string | null
   scheduled_at: string | null
+  key_photo_uploaded_at?: string | null
+  has_key_photo?: boolean
   auto_sync_enabled?: boolean
   old_code?: string | null
   new_code?: string | null
@@ -331,6 +333,12 @@ export default function TaskCenterPage() {
     const isStayover = (x: CalendarItem) => String(x.task_type || '').toLowerCase() === 'stayover_clean' || String(x.label || '').includes('入住中清洁') || `${x.label}`.toLowerCase().includes('stayover')
     const isCheckin = (x: CalendarItem) => !isStayover(x) && (String(x.task_type || '').toLowerCase() === 'checkin_clean' || (String(x.label || '').includes('入住') && !String(x.label || '').includes('入住中清洁')) || `${x.label}`.toLowerCase().includes('checkin'))
     const isCheckout = (x: CalendarItem) => String(x.task_type || '').toLowerCase() === 'checkout_clean' || String(x.label || '').includes('退房') || `${x.label}`.toLowerCase().includes('checkout')
+    const keyUploaded = (x: CalendarItem) => !!(x?.has_key_photo || x?.key_photo_uploaded_at)
+    const anyKeyUploaded = (xs: CalendarItem[]) => xs.some((x) => keyUploaded(x))
+    const firstKeyUploadedAt = (xs: CalendarItem[]) => {
+      const hit = xs.find((x) => !!x?.key_photo_uploaded_at)
+      return hit?.key_photo_uploaded_at || null
+    }
     const preferOrderLinked = (xs: CalendarItem[]) => {
       const withOrder = xs.filter((x) => !!(x.order_id || x.order_code))
       return withOrder.length ? withOrder : xs
@@ -372,6 +380,8 @@ export default function TaskCenterPage() {
           cleaner_id: cleanerId,
           inspector_id: inspectorId,
           scheduled_at: sched,
+          key_photo_uploaded_at: firstKeyUploadedAt(all),
+          has_key_photo: anyKeyUploaded(all),
           auto_sync_enabled: autoSync,
           nights: all.find((x) => x.nights != null)?.nights ?? null,
           summary_checkout_time: checkout?.summary_checkout_time || null,
@@ -796,6 +806,9 @@ export default function TaskCenterPage() {
               const st = effectiveCleaningStatus(it)
               const draggable = !dayLocked && (it.auto_sync_enabled !== false || !String(it.order_id || '').trim())
               const isMerged = Array.isArray(it.entity_ids) && it.entity_ids.length > 1
+              const hasAssignee = !!String(it.cleaner_id || it.assignee_id || '').trim()
+              const isKeyUploaded = !!(it.has_key_photo || it.key_photo_uploaded_at)
+              const showKeyMissing = hasAssignee && !isKeyUploaded && String(st || '').toLowerCase() !== 'cancelled' && String(st || '').toLowerCase() !== 'done' && String(st || '').toLowerCase() !== 'completed'
               return (
                 <div
                   key={`cleaning:${it.entity_id}`}
@@ -815,6 +828,7 @@ export default function TaskCenterPage() {
                     <div className={styles.taskTopRow}>
                       <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
                       {isMerged ? <Tag>合并 {ids.length}</Tag> : null}
+                      {showKeyMissing ? <Tag color="red">钥匙未上传</Tag> : null}
                     </div>
                     <div className={styles.taskTitleRow}>
                       {sum.region ? <span className={styles.taskRegion}>{sum.region}</span> : null}

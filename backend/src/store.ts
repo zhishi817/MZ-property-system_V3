@@ -432,7 +432,10 @@ if (db.roles.length === 0) {
     { code: 'cleaning.task.assign' },
     { code: 'finance.payout' },
     { code: 'finance.tx.write' },
+    { code: 'inventory.view' },
     { code: 'inventory.move' },
+    { code: 'inventory.item.manage' },
+    { code: 'inventory.po.manage' },
     { code: 'landlord.manage' },
     { code: 'rbac.manage' },
     { code: 'users.password.reset' },
@@ -504,7 +507,7 @@ if (db.roles.length === 0) {
   // 财务人员：财务结算与交易录入、房东/房源管理
   grant(financeId, ['finance.payout','finance.tx.write','invoice.view','invoice.draft.create','invoice.issue','invoice.send','invoice.void','invoice.payment.record','invoice.company.manage','invoice.type.switch','order.deduction.manage','order.cancel','landlord.manage','property.write','property_maintenance.view','property_deep_cleaning.view','onboarding.manage','onboarding.read','menu.finance','menu.finance.invoices.visible','menu.landlords','menu.properties','menu.onboarding','menu.dashboard'])
   // 仓库管理员：仓库与钥匙管理
-  grant(inventoryId, ['inventory.move','keyset.manage','key.flow','menu.inventory','menu.keys','menu.dashboard'])
+  grant(inventoryId, ['inventory.view','inventory.move','inventory.item.manage','inventory.po.manage','keyset.manage','key.flow','menu.inventory','menu.keys','menu.dashboard'])
   // 维修人员：暂无写接口，预留
   grant(maintenanceId, ['invoice.view','invoice.draft.create','menu.dashboard'])
 }
@@ -516,7 +519,7 @@ const defaultPerms = [
   'cleaning.view','cleaning.schedule.manage','cleaning.task.assign',
   'finance.payout','finance.tx.write',
   'order.deduction.manage',
-  'inventory.move','landlord.manage',
+  'inventory.view','inventory.move','inventory.item.manage','inventory.po.manage','landlord.manage',
   'rbac.manage',
   'users.password.reset',
   'menu.dashboard','menu.landlords','menu.properties','menu.keys','menu.inventory','menu.finance','menu.cleaning','menu.rbac','menu.cms'
