@@ -877,6 +877,12 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            t.cleaner_id,
            t.inspector_id,
            t.scheduled_at,
+           t.key_photo_uploaded_at,
+           EXISTS(
+             SELECT 1
+             FROM cleaning_task_media m
+             WHERE m.task_id::text = t.id::text AND m.type = 'key_photo'
+           ) AS has_key_photo,
            t.checkout_time,
            t.checkin_time,
            t.nights_override,
@@ -928,6 +934,8 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
           cleaner_id: row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null),
           inspector_id: row.inspector_id ? String(row.inspector_id) : null,
           scheduled_at: row.scheduled_at ? String(row.scheduled_at) : null,
+          key_photo_uploaded_at: row.key_photo_uploaded_at ? String(row.key_photo_uploaded_at) : null,
+          has_key_photo: !!row.has_key_photo,
           auto_sync_enabled: row.auto_sync_enabled !== false,
           old_code: row.old_code != null ? String(row.old_code || '') : null,
           new_code: row.new_code != null ? String(row.new_code || '') : null,

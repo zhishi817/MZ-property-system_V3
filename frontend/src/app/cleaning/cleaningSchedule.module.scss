@@ -501,6 +501,12 @@
   flex: 0 0 auto;
 }
 
+.metaChipDanger {
+  background: rgba(239, 68, 68, 0.10);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  color: #b91c1c;
+}
+
 .metaText {
   display: inline-flex;
   align-items: center;

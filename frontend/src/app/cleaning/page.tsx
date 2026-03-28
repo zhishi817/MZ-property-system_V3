@@ -27,6 +27,8 @@ type CalendarItem = {
   cleaner_id?: string | null
   inspector_id?: string | null
   scheduled_at: string | null
+  key_photo_uploaded_at?: string | null
+  has_key_photo?: boolean
   auto_sync_enabled?: boolean
   old_code?: string | null
   new_code?: string | null
@@ -273,6 +275,12 @@ export default function CleaningPage() {
       const isStayover = (x: CalendarItem) => String(x.task_type || '').toLowerCase() === 'stayover_clean' || String(x.label || '').includes('入住中清洁') || `${x.label}`.toLowerCase().includes('stayover')
       const isCheckin = (x: CalendarItem) => !isStayover(x) && (String(x.task_type || '').toLowerCase() === 'checkin_clean' || (String(x.label || '').includes('入住') && !String(x.label || '').includes('入住中清洁')) || `${x.label}`.toLowerCase().includes('checkin'))
       const isCheckout = (x: CalendarItem) => String(x.task_type || '').toLowerCase() === 'checkout_clean' || String(x.label || '').includes('退房') || `${x.label}`.toLowerCase().includes('checkout')
+      const keyUploaded = (x: CalendarItem) => !!(x?.has_key_photo || x?.key_photo_uploaded_at)
+      const anyKeyUploaded = (xs: CalendarItem[]) => xs.some((x) => keyUploaded(x))
+      const firstKeyUploadedAt = (xs: CalendarItem[]) => {
+        const hit = xs.find((x) => !!x?.key_photo_uploaded_at)
+        return hit?.key_photo_uploaded_at || null
+      }
       const preferOrderLinked = (xs: CalendarItem[]) => {
         const withOrder = xs.filter((x) => !!(x.order_id || x.order_code))
         return withOrder.length ? withOrder : xs
@@ -312,6 +320,8 @@ export default function CleaningPage() {
             cleaner_id: cleanerId,
             inspector_id: inspectorId,
             scheduled_at: sched,
+            key_photo_uploaded_at: firstKeyUploadedAt(all),
+            has_key_photo: anyKeyUploaded(all),
             auto_sync_enabled: autoSync,
             nights: all.find((x) => x.nights != null)?.nights ?? null,
             summary_checkout_time: checkout?.summary_checkout_time || null,
@@ -351,6 +361,8 @@ export default function CleaningPage() {
             cleaner_id: cleanerId,
             inspector_id: inspectorId,
             scheduled_at: sched,
+            key_photo_uploaded_at: firstKeyUploadedAt(stayovers0),
+            has_key_photo: anyKeyUploaded(stayovers0),
             auto_sync_enabled: autoSync,
             summary_checkin_time: stayovers0[0].summary_checkin_time || null,
             checkin_order_id: null,
@@ -388,6 +400,8 @@ export default function CleaningPage() {
             cleaner_id: cleanerId,
             inspector_id: inspectorId,
             scheduled_at: sched,
+            key_photo_uploaded_at: firstKeyUploadedAt(checkins0),
+            has_key_photo: anyKeyUploaded(checkins0),
             auto_sync_enabled: autoSync,
             summary_checkin_time: checkins0[0].summary_checkin_time || null,
             checkin_order_id: null,
@@ -425,6 +439,8 @@ export default function CleaningPage() {
             cleaner_id: cleanerId,
             inspector_id: inspectorId,
             scheduled_at: sched,
+            key_photo_uploaded_at: firstKeyUploadedAt(checkouts0),
+            has_key_photo: anyKeyUploaded(checkouts0),
             auto_sync_enabled: autoSync,
             summary_checkout_time: checkouts0[0].summary_checkout_time || null,
             checkout_order_id: null,
@@ -1219,6 +1235,9 @@ export default function CleaningPage() {
               const checkinCode = orderDisplay(it.checkin_order_id, it.checkin_order_code)
               const checkoutPwd = String(isTurnover ? (it.checkout_old_code ?? it.old_code ?? '') : (it.old_code ?? '')).trim()
               const checkinPwd = String(isTurnover ? (it.checkin_new_code ?? it.new_code ?? '') : (it.new_code ?? '')).trim()
+              const hasAssignee = !!String(it.cleaner_id || it.assignee_id || '').trim()
+              const isKeyUploaded = !!(it.has_key_photo || it.key_photo_uploaded_at)
+              const showKeyMissing = it.source === 'cleaning_tasks' && hasAssignee && !isKeyUploaded && String(it.status || '').toLowerCase() !== 'cancelled'
               return (
                 <div key={`${it.source}:${it.entity_id}`} className={styles.missionCard}>
                   <div className={`${styles.accent} ${accentCls}`} style={{ backgroundColor: accentColor }} />
@@ -1265,6 +1284,7 @@ export default function CleaningPage() {
                   </div>
                   <div className={styles.metaRow}>
                     {it.nights != null ? <span className={styles.metaChip}>{`${it.nights}晚`}</span> : null}
+                    {showKeyMissing ? <span className={`${styles.metaChip} ${styles.metaChipDanger}`}>钥匙未上传</span> : null}
                     {checkoutCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>退房</span>{checkoutCode}</span> : null}
                     {isTurnover && checkinCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>入住</span>{checkinCode}</span> : null}
                     <span className={styles.metaText}><span className={styles.metaKey}>退房密码</span>{checkoutPwd || '-'}</span>

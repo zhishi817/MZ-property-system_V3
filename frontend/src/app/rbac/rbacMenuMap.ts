@@ -83,7 +83,7 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
   'menu.inventory': {
     label: '仓库库存',
     perms: [
-      'inventory.move',
+      'inventory.view',
     ],
   },
   'menu.keys': {
