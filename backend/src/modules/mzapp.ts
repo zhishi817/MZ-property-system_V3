@@ -1261,7 +1261,10 @@ router.get('/work-tasks', async (req, res) => {
           p.address AS property_address,
           p.type AS property_unit_type,
           p.region AS property_region,
-          p.access_guide_link AS property_access_guide_link
+          p.access_guide_link AS property_access_guide_link,
+          p.wifi_ssid AS property_wifi_ssid,
+          p.wifi_password AS property_wifi_password,
+          p.router_location AS property_router_location
         FROM work_tasks w
         LEFT JOIN properties p ON p.id = w.property_id
         WHERE ${where.join(' AND ')}
@@ -1290,6 +1293,9 @@ router.get('/work-tasks', async (req, res) => {
                 unit_type: x.property_unit_type ? String(x.property_unit_type) : '',
                 region: x.property_region ? String(x.property_region) : null,
                 access_guide_link: x.property_access_guide_link ? String(x.property_access_guide_link) : null,
+                wifi_ssid: x.property_wifi_ssid ? String(x.property_wifi_ssid) : null,
+                wifi_password: x.property_wifi_password ? String(x.property_wifi_password) : null,
+                router_location: x.property_router_location ? String(x.property_router_location) : null,
               }
             : null,
         })
@@ -1314,6 +1320,9 @@ router.get('/work-tasks', async (req, res) => {
             COALESCE(p_id.address::text, p_code.address::text) AS property_address,
             COALESCE(p_id.type::text, p_code.type::text) AS property_unit_type,
             COALESCE(p_id.access_guide_link::text, p_code.access_guide_link::text) AS property_access_guide_link,
+            COALESCE(p_id.wifi_ssid::text, p_code.wifi_ssid::text) AS property_wifi_ssid,
+            COALESCE(p_id.wifi_password::text, p_code.wifi_password::text) AS property_wifi_password,
+            COALESCE(p_id.router_location::text, p_code.router_location::text) AS property_router_location,
             t.task_type,
             COALESCE(t.task_date, t.date)::text AS task_date,
             t.status,
@@ -1425,6 +1434,9 @@ router.get('/work-tasks', async (req, res) => {
                 unit_type: row.property_unit_type ? String(row.property_unit_type) : '',
                 region: row.property_region ? String(row.property_region) : null,
                 access_guide_link: row.property_access_guide_link ? String(row.property_access_guide_link) : null,
+                wifi_ssid: row.property_wifi_ssid ? String(row.property_wifi_ssid) : null,
+                wifi_password: row.property_wifi_password ? String(row.property_wifi_password) : null,
+                router_location: row.property_router_location ? String(row.property_router_location) : null,
               }
             : null
 
