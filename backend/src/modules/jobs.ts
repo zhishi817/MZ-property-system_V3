@@ -885,6 +885,23 @@ router.post('/email-sync/cron-trigger', require('../auth').allowCronTokenOrPerm(
   }
 })
 
+router.post('/key-upload-sla/cron-trigger', allowCronTokenOrPerm('order.manage'), async (req, res) => {
+  try {
+    if (!hasPg) return res.status(400).json({ message: 'pg required' })
+    const body = req.body || {}
+    const rawPos = body.position ?? (req.query as any)?.position
+    const rawLevel = body.level ?? (req.query as any)?.level
+    const position = Math.max(1, Math.min(50, Number(rawPos || 1)))
+    const level0 = String(rawLevel || 'remind').trim().toLowerCase()
+    const level = level0 === 'escalate' ? 'escalate' : 'remind'
+    const { runKeyUploadSlaCheck } = require('../lib/keyUploadSlaJob')
+    const result = await runKeyUploadSlaCheck(position, level)
+    return res.json({ ok: true, result })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'cron_trigger_failed') })
+  }
+})
+
 const cleaningBackfillRunSchema = z.object({
   schedule_name: z.enum(['fast', 'slow', 'custom']).optional().default('fast'),
   past_days: z.coerce.number().optional(),
