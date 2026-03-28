@@ -1,5 +1,14 @@
 # Changelog
 
+## Dev (2026-03-28)
+
+- Version: `MZ-property-system_V3` (no bump)
+- Auth/RBAC: Add multi-role support via `user_roles` table; JWT and `/me` now include `roles[]` while keeping `role` as primary.
+- Auth: Permission checks (`requirePerm/requireAnyPerm`) now union permissions across `roles[]`.
+- RBAC: `/rbac/my-permissions` now unions permissions across `roles[]`.
+- MZApp/Jobs: `offline_manager` checks now respect `roles[]`; key photo SLA manager selection also includes `user_roles`.
+- Cleaning App: Store `roles[]` and add Tasks top mode switch “清洁/管理” with persisted selection.
+
 ## Dev (2026-03-27)
 
 - Version: `MZ-property-system_V3`
@@ -9,6 +18,8 @@
 - Backend: Add completion photos + lockbox-video + self-complete APIs for cleaners; relax restock proof + restock endpoints for cleaner finish permission.
 - MZApp Backend: work-tasks now includes inspector_id/task_type and computed stayed_nights/remaining_nights; derive “to_hang_keys/to_complete” status only for self-complete tasks.
 - Task Center: Add “自完成” filter for cleaning tasks without inspector; show self-complete tag only after assignment.
+- Notifications: Push notifications are now sent only to users involved in the task (cleaner/inspector/assignee). Removed broadcast-to-all behavior for task updates.
+- Notifications: Key photo SLA escalation continues to notify admin/offline_manager (exception).
 
 ## Dev (2026-03-25)
 

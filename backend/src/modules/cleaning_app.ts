@@ -175,9 +175,10 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
       try { broadcastCleaningEvent({ event: 'started', task_id: id }) } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
-        await notifyExpoAll({
-          exclude_user_id: String(user?.sub || ''),
+        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        await notifyExpoUsers({
+          user_ids: to,
           title: '钥匙已上传',
           body: '清洁员已上传钥匙照片',
           data: { kind: 'key_photo_uploaded', task_id: id, event_id: `key_photo_uploaded:${id}:${now}` },
@@ -208,9 +209,10 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
       }
       try { broadcastCleaningEvent({ event: 'issue', task_id: id }) } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
-        await notifyExpoAll({
-          exclude_user_id: String(user?.sub || ''),
+        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        await notifyExpoUsers({
+          user_ids: to,
           title: '任务有更新',
           body: '清洁员提交了问题',
           data: { kind: 'issue_reported', task_id: id, event_id: `issue_reported:${id}:${Date.now()}` },
@@ -306,7 +308,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       const up = await pgUpdate('cleaning_tasks', id, patch)
       try { broadcastCleaningEvent({ event: 'consumables_submitted', task_id: id, restock_pending: needsRestock }) } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
+        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
         let propertyCode = ''
         try {
           const { pgPool } = require('../dbAdapter')
@@ -323,8 +325,9 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
           }
         } catch {}
         const eventId = `consumables_submitted:${propertyCode || id}:${String(patch.finished_at || '')}`
-        await notifyExpoAll({
-          exclude_user_id: String(user?.sub || ''),
+        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        await notifyExpoUsers({
+          user_ids: to,
           title: propertyCode ? `清洁完成：${propertyCode}` : '清洁完成',
           body: needsRestock ? '清洁已完成，待补货' : '清洁已完成，待检查',
           data: { kind: 'consumables_submitted', task_id: id, restock_pending: needsRestock, property_code: propertyCode, event_id: eventId },
@@ -347,8 +350,9 @@ router.patch('/tasks/:id/restock', requireAnyPerm(['cleaning_app.restock.manage'
       const up = await pgUpdate('cleaning_tasks', id, { status: 'restocked' } as any)
       try { broadcastCleaningEvent({ event: 'restock_done', task_id: id }) } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
-        await notifyExpoAll({ exclude_user_id: String(user?.sub || ''), title: '任务有更新', body: '补货已完成，待检查', data: { kind: 'restock_done', task_id: id, event_id: `restock_done:${id}:${Date.now()}` } })
+        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        await notifyExpoUsers({ user_ids: to, title: '任务有更新', body: '补货已完成，待检查', data: { kind: 'restock_done', task_id: id, event_id: `restock_done:${id}:${Date.now()}` } })
       } catch {}
       return res.json(up || { id, status: 'restocked' })
     }
@@ -374,8 +378,9 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
       try { broadcastCleaningEvent({ event: 'inspected', task_id: id }) } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
-        await notifyExpoAll({ exclude_user_id: String(user?.sub || ''), title: '检查已完成', body: '检查员已提交挂钥匙视频并标记完成', data: { kind: 'inspection_complete', task_id: id, event_id: `inspection_complete:${id}:${now}` } })
+        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        await notifyExpoUsers({ user_ids: to, title: '检查已完成', body: '检查员已提交挂钥匙视频并标记完成', data: { kind: 'inspection_complete', task_id: id, event_id: `inspection_complete:${id}:${now}` } })
       } catch {}
       return res.json(up || patch)
     }
@@ -473,8 +478,9 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
       }
       try { broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id }) } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
-        await notifyExpoAll({ exclude_user_id: String(user?.sub || ''), title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, event_id: `inspection_photos_saved:${id}:${Date.now()}` } })
+        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        await notifyExpoUsers({ user_ids: to, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, event_id: `inspection_photos_saved:${id}:${Date.now()}` } })
       } catch {}
       return res.status(201).json({ ok: true })
     }
@@ -562,9 +568,10 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
       }
       try { broadcastCleaningEvent({ event: 'completion_photos_saved', task_id: id }) } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
-        await notifyExpoAll({
-          exclude_user_id: String(user?.sub || ''),
+        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        await notifyExpoUsers({
+          user_ids: to,
           title: '房间完成照片已提交',
           body: '清洁员已上传房间完成照片',
           data: { kind: 'completion_photos_saved', task_id: id, event_id: `completion_photos_saved:${id}:${Date.now()}` },
@@ -600,9 +607,10 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       const up = await pgUpdate('cleaning_tasks', id, { lockbox_video_uploaded_at: now } as any)
       try { broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id }) } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
-        await notifyExpoAll({
-          exclude_user_id: String(user?.sub || ''),
+        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        await notifyExpoUsers({
+          user_ids: to,
           title: '挂钥匙视频已上传',
           body: '清洁员已上传挂钥匙视频',
           data: { kind: 'lockbox_video_uploaded', task_id: id, event_id: `lockbox_video_uploaded:${id}:${Date.now()}` },
@@ -679,9 +687,10 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
         const up = await pgUpdate('cleaning_tasks', id, patch)
         try { broadcastCleaningEvent({ event: 'self_completed', task_id: id }) } catch {}
         try {
-          const { notifyExpoAll } = require('./notifications')
-          await notifyExpoAll({
-            exclude_user_id: String(user?.sub || ''),
+          const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+          const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+          await notifyExpoUsers({
+            user_ids: to,
             title: '任务已完成',
             body: '清洁员已标记任务完成',
             data: { kind: 'self_completed', task_id: id, event_id: `self_completed:${id}:${Date.now()}` },
@@ -782,8 +791,9 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
       }
       try { broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id }) } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
-        await notifyExpoAll({ exclude_user_id: String(user?.sub || ''), title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, event_id: `restock_proof_saved:${id}:${Date.now()}` } })
+        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        await notifyExpoUsers({ user_ids: to, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, event_id: `restock_proof_saved:${id}:${Date.now()}` } })
       } catch {}
       return res.status(201).json({ ok: true })
     }
@@ -802,8 +812,9 @@ router.patch('/tasks/:id/ready', requirePerm('cleaning_app.ready.set'), async (r
       const up = await pgUpdate('cleaning_tasks', id, { status: 'ready' } as any)
       try { broadcastCleaningEvent({ event: 'ready', task_id: id }) } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
-        await notifyExpoAll({ exclude_user_id: String(user?.sub || ''), title: '可入住', body: '房源已标记为可入住', data: { kind: 'ready', task_id: id, event_id: `ready:${id}:${Date.now()}` } })
+        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        await notifyExpoUsers({ user_ids: to, title: '可入住', body: '房源已标记为可入住', data: { kind: 'ready', task_id: id, event_id: `ready:${id}:${Date.now()}` } })
       } catch {}
       return res.json(up || { id, status: 'ready' })
     }

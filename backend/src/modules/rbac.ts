@@ -146,6 +146,17 @@ router.patch('/roles/:id', requirePerm('rbac.manage'), async (req, res) => {
             oldId,
           ])
           try { await client.query('UPDATE users SET role=$1 WHERE role=$2', [newName, oldName]) } catch {}
+          try {
+            await client.query(
+              `CREATE TABLE IF NOT EXISTS user_roles (
+                user_id text NOT NULL,
+                role_name text NOT NULL,
+                created_at timestamptz NOT NULL DEFAULT now(),
+                PRIMARY KEY (user_id, role_name)
+              );`,
+            )
+            await client.query('UPDATE user_roles SET role_name=$1 WHERE role_name=$2', [newName, oldName])
+          } catch {}
           try { await client.query('UPDATE role_permissions SET role_id=$1 WHERE role_id=$2 OR role_id=$3 OR role_id=$4', [newId, oldId, oldId.replace(/^role\./, ''), oldName]) } catch {}
         } else {
           const nextDesc = parsed.data.description !== undefined ? parsed.data.description : old.description
@@ -419,55 +430,74 @@ router.delete('/role-permissions', requirePerm('rbac.manage'), async (req, res) 
 router.get('/my-permissions', auth, async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const roleName = String(user.role || '')
-  if (roleName === 'admin') {
+  const roleNames: string[] = Array.from(
+    new Set<string>(
+      (Array.isArray(user.roles) ? (user.roles as any[]) : [user.role])
+        .map((x: any) => String(x || '').trim())
+        .filter(Boolean),
+    ),
+  )
+  if (roleNames.includes('admin')) {
     const all = (db.permissions || []).map((p: any) => String(p?.code || '')).filter(Boolean)
     const list = expandPermissionSynonyms(all)
     return res.json(Array.from(new Set(list)))
   }
-  let roleId = db.roles.find(r => r.name === roleName)?.id
+  const out = new Set<string>()
   try {
     if (hasPg) {
-      try {
-        await ensureRolesTable()
-        const rr = await pgSelect('roles', 'id,name', { name: roleName }) as any[] || []
-        if (rr && rr[0] && rr[0].id) roleId = String(rr[0].id)
-      } catch {}
-      const roleIds = Array.from(new Set([roleId, roleName].filter(Boolean))) as string[]
-      if (!roleIds.length) return res.json([])
-      let rows: any[] = []
-      for (const rid of roleIds) {
-        const r0 = await pgSelect('role_permissions', 'permission_code', { role_id: rid }) as any[] || []
-        if (r0 && r0.length) { rows = r0; break }
-      }
-      if (!rows || rows.length === 0) {
-        const altCandidates = roleIds.flatMap((rid) => (String(rid).startsWith('role.') ? [String(rid).replace(/^role\./, '')] : [`role.${rid}`]))
-        for (const rid of altCandidates) {
-          const r0 = await pgSelect('role_permissions', 'permission_code', { role_id: rid }) as any[] || []
+      const rolePerms = async (roleName: string) => {
+        let roleId = db.roles.find(r => r.name === roleName)?.id
+        try {
+          await ensureRolesTable()
+          const rr = (await pgSelect('roles', 'id,name', { name: roleName })) as any[] || []
+          if (rr && rr[0] && rr[0].id) roleId = String(rr[0].id)
+        } catch {}
+        const roleIds = Array.from(new Set([roleId, roleName].filter(Boolean))) as string[]
+        if (!roleIds.length) return [] as string[]
+        let rows: any[] = []
+        for (const rid of roleIds) {
+          const r0 = (await pgSelect('role_permissions', 'permission_code', { role_id: rid })) as any[] || []
           if (r0 && r0.length) { rows = r0; break }
         }
+        if (!rows || rows.length === 0) {
+          const altCandidates = roleIds.flatMap((rid) => (String(rid).startsWith('role.') ? [String(rid).replace(/^role\./, '')] : [`role.${rid}`]))
+          for (const rid of altCandidates) {
+            const r0 = (await pgSelect('role_permissions', 'permission_code', { role_id: rid })) as any[] || []
+            if (r0 && r0.length) { rows = r0; break }
+          }
+        }
+        return rows.map((r: any) => String(r.permission_code || '')).filter(Boolean)
       }
-      const list = expandPermissionSynonyms(rows.map((r: any) => r.permission_code))
-      const normalized = new Set<string>(list)
+      try {
+        await pgSelect('roles', 'id', { id: 'role.admin' })
+      } catch {}
+      for (const rn of roleNames) {
+        const codes = await rolePerms(rn)
+        const list = expandPermissionSynonyms(codes)
+        for (const c of list) out.add(String(c))
+      }
       ;['view','write','delete','archive'].forEach(act => {
         const plural = `orders.${act}`
         const singular = `order.${act}`
-        if (normalized.has(plural) && !normalized.has(singular)) normalized.add(singular)
+        if (out.has(plural) && !out.has(singular)) out.add(singular)
       })
-      return res.json(Array.from(normalized))
+      return res.json(Array.from(out))
     }
   } catch {
     return res.json([])
   }
-  if (!roleId) return res.json([])
-  const list = expandPermissionSynonyms(db.rolePermissions.filter(rp => rp.role_id === roleId).map(rp => rp.permission_code))
-  const normalized = new Set<string>(list)
+  for (const rn of roleNames) {
+    const roleId = db.roles.find(r => r.name === rn)?.id
+    if (!roleId) continue
+    const list = expandPermissionSynonyms(db.rolePermissions.filter(rp => rp.role_id === roleId).map(rp => rp.permission_code))
+    for (const c of list) out.add(String(c))
+  }
   ;['view','write','delete','archive'].forEach(act => {
     const plural = `orders.${act}`
     const singular = `order.${act}`
-    if (normalized.has(plural) && !normalized.has(singular)) normalized.add(singular)
+    if (out.has(plural) && !out.has(singular)) out.add(singular)
   })
-  return res.json(Array.from(normalized))
+  return res.json(Array.from(out))
 })
 
 // Users management
@@ -502,6 +532,7 @@ const userCreateSchema = z.object({
   }, z.string().email().optional()),
   phone_au: z.string().min(1),
   role: z.string().min(1),
+  roles: z.array(z.string().min(1)).optional(),
   password: z.string().min(6),
   color_hex: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
 }).transform((v) => {
@@ -518,6 +549,7 @@ const userUpdateSchema = z.object({
   }, z.string().email().optional()),
   phone_au: z.string().optional(),
   role: z.string().optional(),
+  roles: z.array(z.string().min(1)).optional(),
   password: z.string().min(6).optional(),
   color_hex: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
 }).transform((v) => {
@@ -530,9 +562,52 @@ const userUpdateSchema = z.object({
   return out
 })
 
+async function ensureUserRolesTable() {
+  if (!hasPg) return
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool) return
+  await pgPool.query(
+    `CREATE TABLE IF NOT EXISTS user_roles (
+      user_id text NOT NULL,
+      role_name text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, role_name)
+    );`,
+  )
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_user_roles_role_name ON user_roles(role_name);')
+}
+
+function normalizeRolesInput(params: { role?: any; roles?: any }) {
+  const primary = String(params.role ?? '').trim()
+  const rolesArr = Array.isArray(params.roles) ? params.roles : []
+  const roles = rolesArr.map((x: any) => String(x || '').trim()).filter(Boolean)
+  if (primary) roles.unshift(primary)
+  const uniq = Array.from(new Set(roles))
+  return { role: primary, roles: uniq }
+}
+
 router.get('/users', requirePerm('rbac.manage'), async (_req, res) => {
   try {
-    if (hasPg) { const rows = await pgSelect('users') as any[] || []; return res.json(rows) }
+    if (hasPg) {
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.json([])
+      await ensureUserRolesTable().catch(() => null)
+      const r = await pgPool.query(
+        `SELECT
+           u.*,
+           COALESCE(
+             ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL),
+             ARRAY[]::text[]
+           ) AS roles
+         FROM users u
+         LEFT JOIN user_roles ur ON ur.user_id = u.id::text
+         GROUP BY u.id
+         ORDER BY u.created_at DESC NULLS LAST, u.username ASC`,
+      )
+      const rows = (r?.rows || []).map((x: any) => ({ ...x, roles: Array.isArray(x.roles) ? x.roles : [] }))
+      return res.json(rows)
+    }
     // Supabase branch removed
     return res.json([])
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
@@ -543,10 +618,26 @@ router.get('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
   if (!id) return res.status(400).json({ message: 'id required' })
   try {
     if (hasPg) {
-      const rows = await pgSelect('users', '*', { id }) as any[] || []
-      const row = rows[0]
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+      await ensureUserRolesTable().catch(() => null)
+      const r = await pgPool.query(
+        `SELECT
+           u.*,
+           COALESCE(
+             ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL),
+             ARRAY[]::text[]
+           ) AS roles
+         FROM users u
+         LEFT JOIN user_roles ur ON ur.user_id = u.id::text
+         WHERE u.id::text = $1
+         GROUP BY u.id
+         LIMIT 1`,
+        [id],
+      )
+      const row = r?.rows?.[0] || null
       if (!row) return res.status(404).json({ message: 'user not found' })
-      return res.json(row)
+      return res.json({ ...row, roles: Array.isArray((row as any).roles) ? (row as any).roles : [] })
     }
     const row = db.users.find((u: any) => String(u.id) === id)
     if (!row) return res.status(404).json({ message: 'user not found' })
@@ -559,7 +650,10 @@ router.post('/users', requirePerm('rbac.manage'), async (req, res) => {
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const { v4: uuid } = require('uuid')
   const hash = await bcrypt.hash(parsed.data.password, 10)
-  const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, phone_au: parsed.data.phone_au, role: parsed.data.role, password_hash: hash, color_hex: parsed.data.color_hex || '#3B82F6' }
+  const norm = normalizeRolesInput({ role: parsed.data.role, roles: (parsed.data as any).roles })
+  const rolePrimary = norm.role || norm.roles[0] || parsed.data.role
+  const rolesAll = Array.from(new Set([rolePrimary, ...norm.roles].map((x) => String(x || '').trim()).filter(Boolean)))
+  const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, phone_au: parsed.data.phone_au, role: rolePrimary, password_hash: hash, color_hex: parsed.data.color_hex || '#3B82F6' }
   try {
     if (hasPg) {
       try {
@@ -587,6 +681,15 @@ router.post('/users', requirePerm('rbac.manage'), async (req, res) => {
       }
       try {
         const created = await pgInsert('users', row as any)
+        try {
+          await ensureUserRolesTable()
+          const { pgPool } = require('../dbAdapter')
+          if (pgPool && rolesAll.length) {
+            for (const rn of rolesAll) {
+              await pgPool.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(row.id), rn])
+            }
+          }
+        } catch {}
         return res.status(201).json(created || row)
       } catch (e: any) {
         const code = String((e && (e as any).code) || '')
@@ -622,7 +725,36 @@ router.patch('/users/:id', requirePerm('rbac.manage'), async (req, res) => {
           await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_phone_au ON users(phone_au);')
         }
       } catch {}
+      const rolesPayload = payload.roles
+      delete payload.roles
+      if (rolesPayload !== undefined) {
+        try {
+          const { pgPool } = require('../dbAdapter')
+          if (pgPool) {
+            const cur = await pgPool.query('SELECT role FROM users WHERE id::text=$1 LIMIT 1', [String(id)])
+            const curRole = String(cur?.rows?.[0]?.role || '').trim()
+            const norm = normalizeRolesInput({ role: payload.role != null ? payload.role : curRole, roles: rolesPayload })
+            const nextPrimary = String(payload.role || '').trim() || (norm.roles.includes(curRole) ? curRole : (norm.roles[0] || curRole))
+            payload.role = nextPrimary
+            const rolesAll = Array.from(new Set([nextPrimary, ...norm.roles].map((x) => String(x || '').trim()).filter(Boolean)))
+            await ensureUserRolesTable()
+            await pgPool.query('DELETE FROM user_roles WHERE user_id::text=$1', [String(id)])
+            for (const rn of rolesAll) {
+              await pgPool.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), rn])
+            }
+          }
+        } catch {}
+      }
       const updated = await pgUpdate('users', id, payload as any)
+      if (payload.role) {
+        try {
+          const { pgPool } = require('../dbAdapter')
+          if (pgPool) {
+            await ensureUserRolesTable()
+            await pgPool.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), String(payload.role)])
+          }
+        } catch {}
+      }
       if (didResetPassword) {
         try {
           const { pgPool } = require('../dbAdapter')

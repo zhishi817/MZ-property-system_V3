@@ -71,7 +71,8 @@ export async function login(req: Request, res: Response) {
         sid = String(sidNew)
       } catch {}
     }
-    const payload: any = { sub: row.id, role: row.role, username: row.username }
+    const roles = await fetchUserRolesForUserId(String(row.id), String(row.role || '').trim())
+    const payload: any = { sub: row.id, role: row.role, roles, username: row.username }
     if (sid) payload.sid = sid
     const token = jwt.sign(payload, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
     return res.json({ token, role: row.role })
@@ -102,7 +103,8 @@ export async function login(req: Request, res: Response) {
           sid = String(sidNew)
         } catch {}
       }
-      const payload: any = { sub: found.id, role: found.role, username: found.username || found.email }
+      const roles = await fetchUserRolesForUserId(String(found.id), String(found.role || '').trim())
+      const payload: any = { sub: found.id, role: found.role, roles, username: found.username || found.email }
       if (sid) payload.sid = sid
       const token = jwt.sign(payload, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
       return res.json({ token, role: found.role })
@@ -112,7 +114,7 @@ export async function login(req: Request, res: Response) {
   if (!hasPg) {
     const u = users[username]
     if (!u || u.password !== password) return res.status(401).json({ message: 'invalid credentials' })
-    const token = jwt.sign({ sub: u.id, role: u.role, username: u.username }, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
+    const token = jwt.sign({ sub: u.id, role: u.role, roles: [u.role], username: u.username }, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` })
     return res.json({ token, role: u.role })
   }
   return res.status(401).json({ message: 'invalid credentials' })
@@ -153,7 +155,8 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
           if (s.revoked) return res.status(401).json({ message: 'session revoked' })
           if (exp < now) return res.status(401).json({ message: 'session expired' })
           if (now - last > idleMs) return res.status(401).json({ message: 'session idle timeout' })
-          ;(req as any).user = decoded
+          const nextUser = await hydrateRolesIfMissing(decoded)
+          ;(req as any).user = nextUser
           try {
             const lastTouch = sessionLastSeenUpdateAt.get(String(sid)) || 0
             if (now - lastTouch >= SESSION_TOUCH_INTERVAL_MS) {
@@ -163,15 +166,55 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
             }
           } catch {}
         } catch (e: any) {
-          ;(req as any).user = decoded
+          const nextUser = await hydrateRolesIfMissing(decoded)
+          ;(req as any).user = nextUser
           ;(req as any).session_unverified = true
         }
       } else {
-        ;(req as any).user = decoded
+        const nextUser = await hydrateRolesIfMissing(decoded)
+        ;(req as any).user = nextUser
       }
     } catch {}
   }
   next()
+}
+
+async function ensureUserRolesTable() {
+  if (!hasPg) return
+  const { pgPool } = require('./dbAdapter')
+  if (!pgPool) return
+  await pgPool.query(
+    `CREATE TABLE IF NOT EXISTS user_roles (
+      user_id text NOT NULL,
+      role_name text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, role_name)
+    );`,
+  )
+}
+
+async function fetchUserRolesForUserId(userId: string, fallbackRole: string) {
+  let roles: string[] = []
+  try {
+    const { pgPool } = require('./dbAdapter')
+    if (hasPg && pgPool) {
+      await ensureUserRolesTable()
+      const rr = await pgPool.query('SELECT role_name FROM user_roles WHERE user_id=$1', [String(userId)])
+      roles = (rr?.rows || []).map((x: any) => String(x.role_name || '').trim()).filter(Boolean)
+    }
+  } catch {}
+  if (!roles.length) roles = [String(fallbackRole || '').trim()].filter(Boolean)
+  return Array.from(new Set(roles))
+}
+
+async function hydrateRolesIfMissing(decoded: any) {
+  const roles = Array.isArray(decoded?.roles) ? decoded.roles : null
+  if (roles && roles.length) return decoded
+  const sub = String(decoded?.sub || '').trim()
+  if (!sub) return decoded
+  const fallbackRole = String(decoded?.role || '').trim()
+  const fetched = await fetchUserRolesForUserId(sub, fallbackRole)
+  return { ...(decoded || {}), roles: fetched }
 }
 
 async function hasAnyPermViaPg(roleName: string, codes: string[]): Promise<boolean> {
@@ -199,20 +242,31 @@ async function hasAnyPermViaPg(roleName: string, codes: string[]): Promise<boole
   return false
 }
 
+function roleNamesOf(user: any) {
+  const arr = Array.isArray(user?.roles) ? (user.roles as any[]) : []
+  const ids = arr.map((x) => String(x || '').trim()).filter(Boolean)
+  const primary = String(user?.role || '').trim()
+  if (primary) ids.unshift(primary)
+  return Array.from(new Set(ids))
+}
+
 export function requirePerm(code: string) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const user = (req as any).user
     if (!user) return res.status(401).json({ message: 'unauthorized' })
-    const roleName = String(user.role || '')
-    if (roleName === 'admin') return next()
+    const roleNames = roleNamesOf(user)
+    if (roleNames.includes('admin')) return next()
     let ok = false
-    try {
-      const { hasPg, pgPool } = require('./dbAdapter')
-      if (hasPg && pgPool) {
-        ok = await hasAnyPermViaPg(roleName, [code])
-      }
-    } catch {}
-    if (!ok) ok = roleHasPermission(roleName, code)
+    for (const roleName of roleNames) {
+      try {
+        const { hasPg, pgPool } = require('./dbAdapter')
+        if (hasPg && pgPool) {
+          ok = await hasAnyPermViaPg(roleName, [code])
+        }
+      } catch {}
+      if (!ok) ok = roleHasPermission(roleName, code)
+      if (ok) break
+    }
     if (!ok) return res.status(403).json({ message: 'forbidden' })
     next()
   }
@@ -222,16 +276,19 @@ export function requireAnyPerm(codes: string[]) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const user = (req as any).user
     if (!user) return res.status(401).json({ message: 'unauthorized' })
-    const roleName = String(user.role || '')
-    if (roleName === 'admin') return next()
+    const roleNames = roleNamesOf(user)
+    if (roleNames.includes('admin')) return next()
     let ok = false
-    try {
-      const { hasPg, pgPool } = require('./dbAdapter')
-      if (hasPg && pgPool) {
-        ok = await hasAnyPermViaPg(roleName, codes)
-      }
-    } catch {}
-    if (!ok) ok = codes.some((c) => roleHasPermission(roleName, c))
+    for (const roleName of roleNames) {
+      try {
+        const { hasPg, pgPool } = require('./dbAdapter')
+        if (hasPg && pgPool) {
+          ok = await hasAnyPermViaPg(roleName, codes)
+        }
+      } catch {}
+      if (!ok) ok = codes.some((c) => roleHasPermission(roleName, c))
+      if (ok) break
+    }
     if (!ok) return res.status(403).json({ message: 'forbidden' })
     next()
   }
@@ -246,8 +303,8 @@ export function allowCronTokenOrPerm(code: string) {
     if (cron && token && token === cron) { return next() }
     const user = (req as any).user
     if (!user) return res.status(401).json({ message: 'unauthorized' })
-    const role = String(user.role || '')
-    if (!roleHasPermission(role, code)) return res.status(403).json({ message: 'forbidden' })
+    const roleNames = roleNamesOf(user)
+    if (!roleNames.some((r) => roleHasPermission(r, code))) return res.status(403).json({ message: 'forbidden' })
     next()
   }
 }
@@ -255,7 +312,18 @@ export function allowCronTokenOrPerm(code: string) {
 export function me(req: Request, res: Response) {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  res.json({ id: user.sub, role: user.role, username: user.username })
+  const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : undefined
+  if (roles && roles.length) return res.json({ id: user.sub, role: user.role, roles, username: user.username })
+  ;(async () => {
+    try {
+      const sub = String(user.sub || '').trim()
+      const fallbackRole = String(user.role || '').trim()
+      const fetched = await fetchUserRolesForUserId(sub, fallbackRole)
+      res.json({ id: user.sub, role: user.role, roles: fetched, username: user.username })
+    } catch {
+      res.json({ id: user.sub, role: user.role, roles: undefined, username: user.username })
+    }
+  })().catch(() => res.json({ id: user.sub, role: user.role, roles: undefined, username: user.username }))
 }
 
 export async function setDeletePassword(req: Request, res: Response) {

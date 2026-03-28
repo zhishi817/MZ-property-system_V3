@@ -163,9 +163,19 @@ exports.router.patch('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async
                     }
                     catch (_c) { }
                     try {
-                        await client.query('UPDATE role_permissions SET role_id=$1 WHERE role_id=$2 OR role_id=$3 OR role_id=$4', [newId, oldId, oldId.replace(/^role\./, ''), oldName]);
+                        await client.query(`CREATE TABLE IF NOT EXISTS user_roles (
+                user_id text NOT NULL,
+                role_name text NOT NULL,
+                created_at timestamptz NOT NULL DEFAULT now(),
+                PRIMARY KEY (user_id, role_name)
+              );`);
+                        await client.query('UPDATE user_roles SET role_name=$1 WHERE role_name=$2', [newName, oldName]);
                     }
                     catch (_d) { }
+                    try {
+                        await client.query('UPDATE role_permissions SET role_id=$1 WHERE role_id=$2 OR role_id=$3 OR role_id=$4', [newId, oldId, oldId.replace(/^role\./, ''), oldName]);
+                    }
+                    catch (_e) { }
                 }
                 else {
                     const nextDesc = parsed.data.description !== undefined ? parsed.data.description : old.description;
@@ -179,7 +189,7 @@ exports.router.patch('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async
                 try {
                     await client.query('ROLLBACK');
                 }
-                catch (_e) { }
+                catch (_f) { }
                 const code = String((e === null || e === void 0 ? void 0 : e.code) || '');
                 const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
                 if (code === '23505' || /duplicate key value|unique constraint/i.test(msg))
@@ -210,12 +220,12 @@ exports.router.patch('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async
         try {
             (0, persistence_1.saveRolePermissions)(store_1.db.rolePermissions);
         }
-        catch (_f) { }
+        catch (_g) { }
     }
     try {
         (0, persistence_1.saveRoles)(store_1.db.roles);
     }
-    catch (_g) { }
+    catch (_h) { }
     return res.json(store_1.db.roles[idx]);
 });
 exports.router.delete('/roles/:id', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
@@ -512,68 +522,89 @@ exports.router.get('/my-permissions', auth_1.auth, async (req, res) => {
     const user = req.user;
     if (!user)
         return res.status(401).json({ message: 'unauthorized' });
-    const roleName = String(user.role || '');
-    if (roleName === 'admin') {
+    const roleNames = Array.from(new Set((Array.isArray(user.roles) ? user.roles : [user.role])
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)));
+    if (roleNames.includes('admin')) {
         const all = (store_1.db.permissions || []).map((p) => String((p === null || p === void 0 ? void 0 : p.code) || '')).filter(Boolean);
         const list = expandPermissionSynonyms(all);
         return res.json(Array.from(new Set(list)));
     }
-    let roleId = (_a = store_1.db.roles.find(r => r.name === roleName)) === null || _a === void 0 ? void 0 : _a.id;
+    const out = new Set();
     try {
         if (dbAdapter_1.hasPg) {
-            try {
-                await ensureRolesTable();
-                const rr = await (0, dbAdapter_1.pgSelect)('roles', 'id,name', { name: roleName }) || [];
-                if (rr && rr[0] && rr[0].id)
-                    roleId = String(rr[0].id);
-            }
-            catch (_b) { }
-            const roleIds = Array.from(new Set([roleId, roleName].filter(Boolean)));
-            if (!roleIds.length)
-                return res.json([]);
-            let rows = [];
-            for (const rid of roleIds) {
-                const r0 = await (0, dbAdapter_1.pgSelect)('role_permissions', 'permission_code', { role_id: rid }) || [];
-                if (r0 && r0.length) {
-                    rows = r0;
-                    break;
+            const rolePerms = async (roleName) => {
+                var _a;
+                let roleId = (_a = store_1.db.roles.find(r => r.name === roleName)) === null || _a === void 0 ? void 0 : _a.id;
+                try {
+                    await ensureRolesTable();
+                    const rr = (await (0, dbAdapter_1.pgSelect)('roles', 'id,name', { name: roleName })) || [];
+                    if (rr && rr[0] && rr[0].id)
+                        roleId = String(rr[0].id);
                 }
-            }
-            if (!rows || rows.length === 0) {
-                const altCandidates = roleIds.flatMap((rid) => (String(rid).startsWith('role.') ? [String(rid).replace(/^role\./, '')] : [`role.${rid}`]));
-                for (const rid of altCandidates) {
-                    const r0 = await (0, dbAdapter_1.pgSelect)('role_permissions', 'permission_code', { role_id: rid }) || [];
+                catch (_b) { }
+                const roleIds = Array.from(new Set([roleId, roleName].filter(Boolean)));
+                if (!roleIds.length)
+                    return [];
+                let rows = [];
+                for (const rid of roleIds) {
+                    const r0 = (await (0, dbAdapter_1.pgSelect)('role_permissions', 'permission_code', { role_id: rid })) || [];
                     if (r0 && r0.length) {
                         rows = r0;
                         break;
                     }
                 }
+                if (!rows || rows.length === 0) {
+                    const altCandidates = roleIds.flatMap((rid) => (String(rid).startsWith('role.') ? [String(rid).replace(/^role\./, '')] : [`role.${rid}`]));
+                    for (const rid of altCandidates) {
+                        const r0 = (await (0, dbAdapter_1.pgSelect)('role_permissions', 'permission_code', { role_id: rid })) || [];
+                        if (r0 && r0.length) {
+                            rows = r0;
+                            break;
+                        }
+                    }
+                }
+                return rows.map((r) => String(r.permission_code || '')).filter(Boolean);
+            };
+            try {
+                await (0, dbAdapter_1.pgSelect)('roles', 'id', { id: 'role.admin' });
             }
-            const list = expandPermissionSynonyms(rows.map((r) => r.permission_code));
-            const normalized = new Set(list);
+            catch (_b) { }
+            for (const rn of roleNames) {
+                const codes = await rolePerms(rn);
+                const list = expandPermissionSynonyms(codes);
+                for (const c of list)
+                    out.add(String(c));
+            }
+            ;
             ['view', 'write', 'delete', 'archive'].forEach(act => {
                 const plural = `orders.${act}`;
                 const singular = `order.${act}`;
-                if (normalized.has(plural) && !normalized.has(singular))
-                    normalized.add(singular);
+                if (out.has(plural) && !out.has(singular))
+                    out.add(singular);
             });
-            return res.json(Array.from(normalized));
+            return res.json(Array.from(out));
         }
     }
     catch (_c) {
         return res.json([]);
     }
-    if (!roleId)
-        return res.json([]);
-    const list = expandPermissionSynonyms(store_1.db.rolePermissions.filter(rp => rp.role_id === roleId).map(rp => rp.permission_code));
-    const normalized = new Set(list);
+    for (const rn of roleNames) {
+        const roleId = (_a = store_1.db.roles.find(r => r.name === rn)) === null || _a === void 0 ? void 0 : _a.id;
+        if (!roleId)
+            continue;
+        const list = expandPermissionSynonyms(store_1.db.rolePermissions.filter(rp => rp.role_id === roleId).map(rp => rp.permission_code));
+        for (const c of list)
+            out.add(String(c));
+    }
+    ;
     ['view', 'write', 'delete', 'archive'].forEach(act => {
         const plural = `orders.${act}`;
         const singular = `order.${act}`;
-        if (normalized.has(plural) && !normalized.has(singular))
-            normalized.add(singular);
+        if (out.has(plural) && !out.has(singular))
+            out.add(singular);
     });
-    return res.json(Array.from(normalized));
+    return res.json(Array.from(out));
 });
 // Users management
 function normalizeAuPhone(v) {
@@ -613,6 +644,7 @@ const userCreateSchema = zod_1.z.object({
     }, zod_1.z.string().email().optional()),
     phone_au: zod_1.z.string().min(1),
     role: zod_1.z.string().min(1),
+    roles: zod_1.z.array(zod_1.z.string().min(1)).optional(),
     password: zod_1.z.string().min(6),
     color_hex: zod_1.z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
 }).transform((v) => {
@@ -631,6 +663,7 @@ const userUpdateSchema = zod_1.z.object({
     }, zod_1.z.string().email().optional()),
     phone_au: zod_1.z.string().optional(),
     role: zod_1.z.string().optional(),
+    roles: zod_1.z.array(zod_1.z.string().min(1)).optional(),
     password: zod_1.z.string().min(6).optional(),
     color_hex: zod_1.z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
 }).transform((v) => {
@@ -643,10 +676,49 @@ const userUpdateSchema = zod_1.z.object({
     }
     return out;
 });
+async function ensureUserRolesTable() {
+    if (!dbAdapter_1.hasPg)
+        return;
+    const { pgPool } = require('../dbAdapter');
+    if (!pgPool)
+        return;
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS user_roles (
+      user_id text NOT NULL,
+      role_name text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, role_name)
+    );`);
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id);');
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_user_roles_role_name ON user_roles(role_name);');
+}
+function normalizeRolesInput(params) {
+    var _a;
+    const primary = String((_a = params.role) !== null && _a !== void 0 ? _a : '').trim();
+    const rolesArr = Array.isArray(params.roles) ? params.roles : [];
+    const roles = rolesArr.map((x) => String(x || '').trim()).filter(Boolean);
+    if (primary)
+        roles.unshift(primary);
+    const uniq = Array.from(new Set(roles));
+    return { role: primary, roles: uniq };
+}
 exports.router.get('/users', (0, auth_1.requirePerm)('rbac.manage'), async (_req, res) => {
     try {
         if (dbAdapter_1.hasPg) {
-            const rows = await (0, dbAdapter_1.pgSelect)('users') || [];
+            const { pgPool } = require('../dbAdapter');
+            if (!pgPool)
+                return res.json([]);
+            await ensureUserRolesTable().catch(() => null);
+            const r = await pgPool.query(`SELECT
+           u.*,
+           COALESCE(
+             ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL),
+             ARRAY[]::text[]
+           ) AS roles
+         FROM users u
+         LEFT JOIN user_roles ur ON ur.user_id = u.id::text
+         GROUP BY u.id
+         ORDER BY u.created_at DESC NULLS LAST, u.username ASC`);
+            const rows = ((r === null || r === void 0 ? void 0 : r.rows) || []).map((x) => ({ ...x, roles: Array.isArray(x.roles) ? x.roles : [] }));
             return res.json(rows);
         }
         // Supabase branch removed
@@ -657,16 +729,31 @@ exports.router.get('/users', (0, auth_1.requirePerm)('rbac.manage'), async (_req
     }
 });
 exports.router.get('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+    var _a;
     const id = String(req.params.id || '').trim();
     if (!id)
         return res.status(400).json({ message: 'id required' });
     try {
         if (dbAdapter_1.hasPg) {
-            const rows = await (0, dbAdapter_1.pgSelect)('users', '*', { id }) || [];
-            const row = rows[0];
+            const { pgPool } = require('../dbAdapter');
+            if (!pgPool)
+                return res.status(500).json({ message: 'pg not available' });
+            await ensureUserRolesTable().catch(() => null);
+            const r = await pgPool.query(`SELECT
+           u.*,
+           COALESCE(
+             ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL),
+             ARRAY[]::text[]
+           ) AS roles
+         FROM users u
+         LEFT JOIN user_roles ur ON ur.user_id = u.id::text
+         WHERE u.id::text = $1
+         GROUP BY u.id
+         LIMIT 1`, [id]);
+            const row = ((_a = r === null || r === void 0 ? void 0 : r.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
             if (!row)
                 return res.status(404).json({ message: 'user not found' });
-            return res.json(row);
+            return res.json({ ...row, roles: Array.isArray(row.roles) ? row.roles : [] });
         }
         const row = store_1.db.users.find((u) => String(u.id) === id);
         if (!row)
@@ -683,7 +770,10 @@ exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req
         return res.status(400).json(parsed.error.format());
     const { v4: uuid } = require('uuid');
     const hash = await bcryptjs_1.default.hash(parsed.data.password, 10);
-    const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, phone_au: parsed.data.phone_au, role: parsed.data.role, password_hash: hash, color_hex: parsed.data.color_hex || '#3B82F6' };
+    const norm = normalizeRolesInput({ role: parsed.data.role, roles: parsed.data.roles });
+    const rolePrimary = norm.role || norm.roles[0] || parsed.data.role;
+    const rolesAll = Array.from(new Set([rolePrimary, ...norm.roles].map((x) => String(x || '').trim()).filter(Boolean)));
+    const row = { id: uuid(), username: parsed.data.username, email: parsed.data.email, phone_au: parsed.data.phone_au, role: rolePrimary, password_hash: hash, color_hex: parsed.data.color_hex || '#3B82F6' };
     try {
         if (dbAdapter_1.hasPg) {
             try {
@@ -715,6 +805,16 @@ exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req
             }
             try {
                 const created = await (0, dbAdapter_1.pgInsert)('users', row);
+                try {
+                    await ensureUserRolesTable();
+                    const { pgPool } = require('../dbAdapter');
+                    if (pgPool && rolesAll.length) {
+                        for (const rn of rolesAll) {
+                            await pgPool.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(row.id), rn]);
+                        }
+                    }
+                }
+                catch (_b) { }
                 return res.status(201).json(created || row);
             }
             catch (e) {
@@ -737,6 +837,7 @@ exports.router.post('/users', (0, auth_1.requirePerm)('rbac.manage'), async (req
     }
 });
 exports.router.patch('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async (req, res) => {
+    var _a, _b;
     const parsed = userUpdateSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -757,8 +858,39 @@ exports.router.patch('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async
                     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_users_phone_au ON users(phone_au);');
                 }
             }
-            catch (_a) { }
+            catch (_c) { }
+            const rolesPayload = payload.roles;
+            delete payload.roles;
+            if (rolesPayload !== undefined) {
+                try {
+                    const { pgPool } = require('../dbAdapter');
+                    if (pgPool) {
+                        const cur = await pgPool.query('SELECT role FROM users WHERE id::text=$1 LIMIT 1', [String(id)]);
+                        const curRole = String(((_b = (_a = cur === null || cur === void 0 ? void 0 : cur.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.role) || '').trim();
+                        const norm = normalizeRolesInput({ role: payload.role != null ? payload.role : curRole, roles: rolesPayload });
+                        const nextPrimary = String(payload.role || '').trim() || (norm.roles.includes(curRole) ? curRole : (norm.roles[0] || curRole));
+                        payload.role = nextPrimary;
+                        const rolesAll = Array.from(new Set([nextPrimary, ...norm.roles].map((x) => String(x || '').trim()).filter(Boolean)));
+                        await ensureUserRolesTable();
+                        await pgPool.query('DELETE FROM user_roles WHERE user_id::text=$1', [String(id)]);
+                        for (const rn of rolesAll) {
+                            await pgPool.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), rn]);
+                        }
+                    }
+                }
+                catch (_d) { }
+            }
             const updated = await (0, dbAdapter_1.pgUpdate)('users', id, payload);
+            if (payload.role) {
+                try {
+                    const { pgPool } = require('../dbAdapter');
+                    if (pgPool) {
+                        await ensureUserRolesTable();
+                        await pgPool.query('INSERT INTO user_roles (user_id, role_name) VALUES ($1,$2) ON CONFLICT (user_id, role_name) DO NOTHING', [String(id), String(payload.role)]);
+                    }
+                }
+                catch (_e) { }
+            }
             if (didResetPassword) {
                 try {
                     const { pgPool } = require('../dbAdapter');
@@ -780,7 +912,7 @@ exports.router.patch('/users/:id', (0, auth_1.requirePerm)('rbac.manage'), async
                         await pgPool.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [id]);
                     }
                 }
-                catch (_b) { }
+                catch (_f) { }
             }
             return res.json(updated || { id, ...payload });
         }

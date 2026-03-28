@@ -101,7 +101,12 @@ export async function runKeyUploadSlaCheck(position: number, level: Level) {
 
   if (!rows.length) return { ok: true, created: 0 }
 
-  const managers = await pgPool.query(`SELECT id, username, phone_au, role FROM users WHERE role IN ('admin','offline_manager')`)
+  const managers = await pgPool.query(
+    `SELECT DISTINCT u.id, u.username, u.phone_au, u.role
+     FROM users u
+     LEFT JOIN user_roles ur ON ur.user_id = u.id::text
+     WHERE u.role IN ('admin','offline_manager') OR ur.role_name IN ('admin','offline_manager')`,
+  )
   const managersRows = managers?.rows || []
 
   for (const r of rows) {

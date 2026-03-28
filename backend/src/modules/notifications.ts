@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { requireAnyPerm, requirePerm } from '../auth'
 import { hasPg, pgInsert, pgPool, pgSelect } from '../dbAdapter'
+import https from 'https'
 
 export const router = Router()
 
@@ -32,6 +33,49 @@ async function ensureExpoPushTokensTable() {
   return expoTokensEnsuring
 }
 
+async function postJson(urlStr: string, body: any) {
+  const u = new URL(urlStr)
+  const data = Buffer.from(JSON.stringify(body || {}), 'utf8')
+  return await new Promise<any>((resolve, reject) => {
+    const req = https.request(
+      {
+        protocol: u.protocol,
+        hostname: u.hostname,
+        port: u.port ? Number(u.port) : 443,
+        path: `${u.pathname}${u.search}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': String(data.length),
+        },
+        timeout: 15000,
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c))))
+        res.on('end', () => {
+          const txt = Buffer.concat(chunks).toString('utf8')
+          let parsed: any = null
+          try {
+            parsed = txt ? JSON.parse(txt) : null
+          } catch {
+            parsed = null
+          }
+          resolve({ status: res.statusCode || 0, json: parsed, text: txt })
+        })
+      },
+    )
+    req.on('timeout', () => {
+      try {
+        req.destroy(new Error('timeout'))
+      } catch {}
+    })
+    req.on('error', reject)
+    req.write(data)
+    req.end()
+  })
+}
+
 async function sendExpoPush(tokens: string[], payload: { title: string; body: string; data?: any }) {
   const list = (tokens || []).map((x) => String(x || '').trim()).filter(Boolean)
   if (!list.length) return { sent: 0, failed: 0 }
@@ -48,8 +92,8 @@ async function sendExpoPush(tokens: string[], payload: { title: string; body: st
       data: payload.data || {},
     }))
     try {
-      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(messages) })
-      const j = await res.json().catch(() => null)
+      const r = await postJson(url, messages)
+      const j = r?.json
       const arr = Array.isArray(j?.data) ? j.data : []
       sent += chunk.length
       for (const it of arr) {
@@ -135,6 +179,52 @@ export async function notifyExpoUsers(params: { user_ids: string[]; title: strin
   const rows = await pgPool.query(`SELECT token FROM expo_push_tokens WHERE user_id = ANY($1::text[])`, [ids])
   const tokens = (rows?.rows || []).map((x: any) => String(x.token || '').trim()).filter(Boolean)
   return await sendExpoPush(tokens, { title: params.title, body: params.body, data: params.data || {} })
+}
+
+export async function listCleaningTaskUserIds(task_id: string) {
+  if (!hasPg || !pgPool) return []
+  const id = String(task_id || '').trim()
+  if (!id) return []
+  const r = await pgPool.query(
+    `SELECT cleaner_id::text AS cleaner_id, inspector_id::text AS inspector_id, assignee_id::text AS assignee_id
+     FROM cleaning_tasks
+     WHERE id::text = $1
+     LIMIT 1`,
+    [id],
+  )
+  const row = r?.rows?.[0] || null
+  if (!row) return []
+  const ids = [row.cleaner_id, row.inspector_id, row.assignee_id]
+    .map((x: any) => String(x || '').trim())
+    .filter(Boolean)
+  return Array.from(new Set(ids))
+}
+
+export async function listCleaningTaskUserIdsBulk(task_ids: string[]) {
+  if (!hasPg || !pgPool) return []
+  const ids0 = Array.from(new Set((task_ids || []).map((x) => String(x || '').trim()).filter(Boolean)))
+  if (!ids0.length) return []
+  const r = await pgPool.query(
+    `SELECT cleaner_id::text AS cleaner_id, inspector_id::text AS inspector_id, assignee_id::text AS assignee_id
+     FROM cleaning_tasks
+     WHERE id::text = ANY($1::text[])`,
+    [ids0],
+  )
+  const out: string[] = []
+  for (const row of r?.rows || []) {
+    for (const v of [row.cleaner_id, row.inspector_id, row.assignee_id]) {
+      const s = String(v || '').trim()
+      if (s) out.push(s)
+    }
+  }
+  return Array.from(new Set(out))
+}
+
+export function excludeUserIds(user_ids: string[], exclude_user_id?: string) {
+  const ex = String(exclude_user_id || '').trim()
+  const ids = Array.from(new Set((user_ids || []).map((x) => String(x || '').trim()).filter(Boolean)))
+  if (!ex) return ids
+  return ids.filter((x) => x !== ex)
 }
 
 export default router

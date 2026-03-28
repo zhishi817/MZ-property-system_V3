@@ -81,7 +81,8 @@ async function login(req, res) {
             }
             catch (_c) { }
         }
-        const payload = { sub: row.id, role: row.role, username: row.username };
+        const roles = await fetchUserRolesForUserId(String(row.id), String(row.role || '').trim());
+        const payload = { sub: row.id, role: row.role, roles, username: row.username };
         if (sid)
             payload.sid = sid;
         const token = jsonwebtoken_1.default.sign(payload, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` });
@@ -113,7 +114,8 @@ async function login(req, res) {
                 }
                 catch (_d) { }
             }
-            const payload = { sub: found.id, role: found.role, username: found.username || found.email };
+            const roles = await fetchUserRolesForUserId(String(found.id), String(found.role || '').trim());
+            const payload = { sub: found.id, role: found.role, roles, username: found.username || found.email };
             if (sid)
                 payload.sid = sid;
             const token = jsonwebtoken_1.default.sign(payload, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` });
@@ -125,7 +127,7 @@ async function login(req, res) {
         const u = exports.users[username];
         if (!u || u.password !== password)
             return res.status(401).json({ message: 'invalid credentials' });
-        const token = jsonwebtoken_1.default.sign({ sub: u.id, role: u.role, username: u.username }, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` });
+        const token = jsonwebtoken_1.default.sign({ sub: u.id, role: u.role, roles: [u.role], username: u.username }, SECRET, { expiresIn: `${SESSION_MAX_AGE_HOURS}h` });
         return res.json({ token, role: u.role });
     }
     return res.status(401).json({ message: 'invalid credentials' });
@@ -176,7 +178,8 @@ async function auth(req, res, next) {
                         return res.status(401).json({ message: 'session expired' });
                     if (now - last > idleMs)
                         return res.status(401).json({ message: 'session idle timeout' });
-                    req.user = decoded;
+                    const nextUser = await hydrateRolesIfMissing(decoded);
+                    req.user = nextUser;
                     try {
                         const lastTouch = sessionLastSeenUpdateAt.get(String(sid)) || 0;
                         if (now - lastTouch >= SESSION_TOUCH_INTERVAL_MS) {
@@ -189,19 +192,58 @@ async function auth(req, res, next) {
                     catch (_b) { }
                 }
                 catch (e) {
-                    ;
-                    req.user = decoded;
+                    const nextUser = await hydrateRolesIfMissing(decoded);
+                    req.user = nextUser;
                     req.session_unverified = true;
                 }
             }
             else {
-                ;
-                req.user = decoded;
+                const nextUser = await hydrateRolesIfMissing(decoded);
+                req.user = nextUser;
             }
         }
         catch (_c) { }
     }
     next();
+}
+async function ensureUserRolesTable() {
+    if (!dbAdapter_1.hasPg)
+        return;
+    const { pgPool } = require('./dbAdapter');
+    if (!pgPool)
+        return;
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS user_roles (
+      user_id text NOT NULL,
+      role_name text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, role_name)
+    );`);
+}
+async function fetchUserRolesForUserId(userId, fallbackRole) {
+    let roles = [];
+    try {
+        const { pgPool } = require('./dbAdapter');
+        if (dbAdapter_1.hasPg && pgPool) {
+            await ensureUserRolesTable();
+            const rr = await pgPool.query('SELECT role_name FROM user_roles WHERE user_id=$1', [String(userId)]);
+            roles = ((rr === null || rr === void 0 ? void 0 : rr.rows) || []).map((x) => String(x.role_name || '').trim()).filter(Boolean);
+        }
+    }
+    catch (_a) { }
+    if (!roles.length)
+        roles = [String(fallbackRole || '').trim()].filter(Boolean);
+    return Array.from(new Set(roles));
+}
+async function hydrateRolesIfMissing(decoded) {
+    const roles = Array.isArray(decoded === null || decoded === void 0 ? void 0 : decoded.roles) ? decoded.roles : null;
+    if (roles && roles.length)
+        return decoded;
+    const sub = String((decoded === null || decoded === void 0 ? void 0 : decoded.sub) || '').trim();
+    if (!sub)
+        return decoded;
+    const fallbackRole = String((decoded === null || decoded === void 0 ? void 0 : decoded.role) || '').trim();
+    const fetched = await fetchUserRolesForUserId(sub, fallbackRole);
+    return { ...(decoded || {}), roles: fetched };
 }
 async function hasAnyPermViaPg(roleName, codes) {
     var _a;
@@ -239,24 +281,36 @@ async function hasAnyPermViaPg(roleName, codes) {
     }
     return false;
 }
+function roleNamesOf(user) {
+    const arr = Array.isArray(user === null || user === void 0 ? void 0 : user.roles) ? user.roles : [];
+    const ids = arr.map((x) => String(x || '').trim()).filter(Boolean);
+    const primary = String((user === null || user === void 0 ? void 0 : user.role) || '').trim();
+    if (primary)
+        ids.unshift(primary);
+    return Array.from(new Set(ids));
+}
 function requirePerm(code) {
     return async (req, res, next) => {
         const user = req.user;
         if (!user)
             return res.status(401).json({ message: 'unauthorized' });
-        const roleName = String(user.role || '');
-        if (roleName === 'admin')
+        const roleNames = roleNamesOf(user);
+        if (roleNames.includes('admin'))
             return next();
         let ok = false;
-        try {
-            const { hasPg, pgPool } = require('./dbAdapter');
-            if (hasPg && pgPool) {
-                ok = await hasAnyPermViaPg(roleName, [code]);
+        for (const roleName of roleNames) {
+            try {
+                const { hasPg, pgPool } = require('./dbAdapter');
+                if (hasPg && pgPool) {
+                    ok = await hasAnyPermViaPg(roleName, [code]);
+                }
             }
+            catch (_a) { }
+            if (!ok)
+                ok = (0, store_1.roleHasPermission)(roleName, code);
+            if (ok)
+                break;
         }
-        catch (_a) { }
-        if (!ok)
-            ok = (0, store_1.roleHasPermission)(roleName, code);
         if (!ok)
             return res.status(403).json({ message: 'forbidden' });
         next();
@@ -267,19 +321,23 @@ function requireAnyPerm(codes) {
         const user = req.user;
         if (!user)
             return res.status(401).json({ message: 'unauthorized' });
-        const roleName = String(user.role || '');
-        if (roleName === 'admin')
+        const roleNames = roleNamesOf(user);
+        if (roleNames.includes('admin'))
             return next();
         let ok = false;
-        try {
-            const { hasPg, pgPool } = require('./dbAdapter');
-            if (hasPg && pgPool) {
-                ok = await hasAnyPermViaPg(roleName, codes);
+        for (const roleName of roleNames) {
+            try {
+                const { hasPg, pgPool } = require('./dbAdapter');
+                if (hasPg && pgPool) {
+                    ok = await hasAnyPermViaPg(roleName, codes);
+                }
             }
+            catch (_a) { }
+            if (!ok)
+                ok = codes.some((c) => (0, store_1.roleHasPermission)(roleName, c));
+            if (ok)
+                break;
         }
-        catch (_a) { }
-        if (!ok)
-            ok = codes.some((c) => (0, store_1.roleHasPermission)(roleName, c));
         if (!ok)
             return res.status(403).json({ message: 'forbidden' });
         next();
@@ -297,8 +355,8 @@ function allowCronTokenOrPerm(code) {
         const user = req.user;
         if (!user)
             return res.status(401).json({ message: 'unauthorized' });
-        const role = String(user.role || '');
-        if (!(0, store_1.roleHasPermission)(role, code))
+        const roleNames = roleNamesOf(user);
+        if (!roleNames.some((r) => (0, store_1.roleHasPermission)(r, code)))
             return res.status(403).json({ message: 'forbidden' });
         next();
     };
@@ -307,7 +365,20 @@ function me(req, res) {
     const user = req.user;
     if (!user)
         return res.status(401).json({ message: 'unauthorized' });
-    res.json({ id: user.sub, role: user.role, username: user.username });
+    const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : undefined;
+    if (roles && roles.length)
+        return res.json({ id: user.sub, role: user.role, roles, username: user.username });
+    (async () => {
+        try {
+            const sub = String(user.sub || '').trim();
+            const fallbackRole = String(user.role || '').trim();
+            const fetched = await fetchUserRolesForUserId(sub, fallbackRole);
+            res.json({ id: user.sub, role: user.role, roles: fetched, username: user.username });
+        }
+        catch (_a) {
+            res.json({ id: user.sub, role: user.role, roles: undefined, username: user.username });
+        }
+    })().catch(() => res.json({ id: user.sub, role: user.role, roles: undefined, username: user.username }));
 }
 async function setDeletePassword(req, res) {
     const user = req.user;

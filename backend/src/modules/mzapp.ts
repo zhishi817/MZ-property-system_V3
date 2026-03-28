@@ -51,20 +51,34 @@ function makeWorkNo(prefix: string, occurredAt?: string) {
   return `${String(prefix || 'R').trim()}-${ymd}-${randomBase62(4)}`
 }
 
-function canViewAll(role: string) {
-  return role === 'admin' || role === 'offline_manager' || role === 'customer_service'
+function roleNamesOf(user: any) {
+  const arr = Array.isArray(user?.roles) ? (user.roles as any[]) : []
+  const ids = arr.map((x) => String(x || '').trim()).filter(Boolean)
+  const primary = String(user?.role || '').trim()
+  if (primary) ids.unshift(primary)
+  return Array.from(new Set(ids))
 }
 
-function isCleanerRole(role: string) {
-  return role === 'cleaner'
+function hasRole(user: any, roleName: string) {
+  const rn = String(roleName || '').trim()
+  if (!rn) return false
+  return roleNamesOf(user).includes(rn)
 }
 
-function isInspectorRole(role: string) {
-  return role === 'cleaning_inspector'
+function canViewAll(user: any) {
+  return hasRole(user, 'admin') || hasRole(user, 'offline_manager') || hasRole(user, 'customer_service')
 }
 
-function isCleanerInspectorRole(role: string) {
-  return role === 'cleaner_inspector'
+function isCleanerRole(user: any) {
+  return hasRole(user, 'cleaner')
+}
+
+function isInspectorRole(user: any) {
+  return hasRole(user, 'cleaning_inspector')
+}
+
+function isCleanerInspectorRole(user: any) {
+  return hasRole(user, 'cleaner_inspector')
 }
 
 function mapCleaningTaskStatus(v: any): string {
@@ -421,7 +435,6 @@ async function ensureCleaningTaskSortColumns() {
 router.post('/cleaning-tasks/reorder', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const kind = String(req.body?.kind || '').trim().toLowerCase()
   const date = dayOnly(req.body?.date)
@@ -431,9 +444,9 @@ router.post('/cleaning-tasks/reorder', async (req, res) => {
   if (!groups || !groups.length) return res.status(400).json({ message: 'groups required' })
 
   if (kind === 'cleaner') {
-    if (!(isCleanerRole(role) || isCleanerInspectorRole(role))) return res.status(403).json({ message: 'forbidden' })
+    if (!(isCleanerRole(user) || isCleanerInspectorRole(user))) return res.status(403).json({ message: 'forbidden' })
   } else {
-    if (!(isInspectorRole(role) || isCleanerInspectorRole(role))) return res.status(403).json({ message: 'forbidden' })
+    if (!(isInspectorRole(user) || isCleanerInspectorRole(user))) return res.status(403).json({ message: 'forbidden' })
   }
 
   try {
@@ -478,13 +491,12 @@ router.post('/cleaning-tasks/reorder', async (req, res) => {
 router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   const mediaUrl = String(req.body?.media_url || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
   if (!mediaUrl) return res.status(400).json({ message: 'missing media_url' })
-  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningTaskMediaTable()
@@ -492,7 +504,7 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
     const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
-    if (!canViewAll(role) && inspectorId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canViewAll(user) && inspectorId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const uuid = require('uuid')
     await pgPool.query(
@@ -511,8 +523,9 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
       broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id })
     } catch {}
     try {
-      const { notifyExpoAll } = require('./notifications')
-      await notifyExpoAll({ exclude_user_id: userId, title: '挂钥匙视频已上传', body: '检查员已上传挂钥匙视频', data: { kind: 'lockbox_video_uploaded', task_id: id, event_id: `lockbox_video_uploaded:${id}:${Date.now()}` } })
+      const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+      const to = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+      await notifyExpoUsers({ user_ids: to, title: '挂钥匙视频已上传', body: '检查员已上传挂钥匙视频', data: { kind: 'lockbox_video_uploaded', task_id: id, event_id: `lockbox_video_uploaded:${id}:${Date.now()}` } })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -536,11 +549,10 @@ const inspectionPhotosSchema = z
 router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningTaskMediaTable()
@@ -550,7 +562,7 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
     const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
     const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const r = await pgPool.query(
       `SELECT type, url, note, captured_at, created_at
@@ -579,11 +591,10 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
 router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   const parsed = inspectionPhotosSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -595,7 +606,7 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
     const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
     const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, unclean: 12 }
     const byArea = new Map<string, number>()
@@ -623,8 +634,9 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
       broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id })
     } catch {}
     try {
-      const { notifyExpoAll } = require('./notifications')
-      await notifyExpoAll({ exclude_user_id: userId, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, event_id: `inspection_photos_saved:${id}:${Date.now()}` } })
+      const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+      const to = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+      await notifyExpoUsers({ user_ids: to, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, event_id: `inspection_photos_saved:${id}:${Date.now()}` } })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -649,11 +661,10 @@ const restockProofSchema = z
 router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningTaskMediaTable()
@@ -663,7 +674,7 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
     const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
     const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const r = await pgPool.query(
       `SELECT type, url, note, created_at
@@ -701,11 +712,10 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
 router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   const parsed = restockProofSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -717,7 +727,7 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
     const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
     const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const uniq = new Set<string>()
     for (const it of parsed.data.items) {
@@ -743,8 +753,9 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
       broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id })
     } catch {}
     try {
-      const { notifyExpoAll } = require('./notifications')
-      await notifyExpoAll({ exclude_user_id: userId, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, event_id: `restock_proof_saved:${id}:${Date.now()}` } })
+      const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+      const to = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+      await notifyExpoUsers({ user_ids: to, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, event_id: `restock_proof_saved:${id}:${Date.now()}` } })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -755,9 +766,8 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
 router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
-  if (role !== 'customer_service' && role !== 'admin' && role !== 'offline_manager') return res.status(403).json({ message: 'forbidden' })
+  if (!(hasRole(user, 'customer_service') || hasRole(user, 'admin') || hasRole(user, 'offline_manager'))) return res.status(403).json({ message: 'forbidden' })
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -782,7 +792,7 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
         broadcastCleaningEvent({ event: 'guest_checked_out_cancelled', task_id: id })
       } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
+        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
         let propertyCode = ''
         try {
           const r = await pgPool.query(
@@ -795,8 +805,9 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
           )
           propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
         } catch {}
-        await notifyExpoAll({
-          exclude_user_id: userId,
+        const to = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+        await notifyExpoUsers({
+          user_ids: to,
           title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
           body: '已取消退房',
           data: { kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: `guest_checked_out_cancelled:${propertyCode || id}:${prevCheckedOutAt || ''}` },
@@ -817,7 +828,7 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
       broadcastCleaningEvent({ event: 'guest_checked_out', task_id: id })
     } catch {}
     try {
-      const { notifyExpoAll } = require('./notifications')
+      const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
       let checkedOutAt: string | null = null
       let propertyCode = ''
       try {
@@ -832,8 +843,9 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
         checkedOutAt = r?.rows?.[0]?.checked_out_at ? String(r.rows[0].checked_out_at) : null
         propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
       } catch {}
-      await notifyExpoAll({
-        exclude_user_id: userId,
+      const to = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+      await notifyExpoUsers({
+        user_ids: to,
         title: propertyCode ? `已退房：${propertyCode}` : '已退房',
         body: '已退房',
         data: { kind: 'guest_checked_out', task_id: id, property_code: propertyCode, checked_out_at: checkedOutAt, event_id: `guest_checked_out:${propertyCode || id}:${checkedOutAt || ''}` },
@@ -855,9 +867,8 @@ const guestCheckedOutBulkSchema = z
 router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
-  if (role !== 'customer_service' && role !== 'admin' && role !== 'offline_manager') return res.status(403).json({ message: 'forbidden' })
+  if (!(hasRole(user, 'customer_service') || hasRole(user, 'admin') || hasRole(user, 'offline_manager'))) return res.status(403).json({ message: 'forbidden' })
   const parsed = guestCheckedOutBulkSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -897,9 +908,10 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
         propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
       } catch {}
       try {
-        const { notifyExpoAll } = require('./notifications')
-        await notifyExpoAll({
-          exclude_user_id: userId,
+        const { notifyExpoUsers, listCleaningTaskUserIdsBulk, excludeUserIds } = require('./notifications')
+        const to = excludeUserIds(await listCleaningTaskUserIdsBulk(ids), userId)
+        await notifyExpoUsers({
+          user_ids: to,
           title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
           body: '已取消退房',
           data: { kind: 'guest_checked_out_cancelled', task_ids: ids, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: `guest_checked_out_cancelled:${propertyCode || ids[0]}:${prevCheckedOutAt || ''}` },
@@ -937,9 +949,10 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
     } catch {}
     const eventId = `guest_checked_out:${propertyCode || ids[0]}:${checkedOutAt || ''}`
     try {
-      const { notifyExpoAll } = require('./notifications')
-      await notifyExpoAll({
-        exclude_user_id: userId,
+      const { notifyExpoUsers, listCleaningTaskUserIdsBulk, excludeUserIds } = require('./notifications')
+      const to = excludeUserIds(await listCleaningTaskUserIdsBulk(ids), userId)
+      await notifyExpoUsers({
+        user_ids: to,
         title: propertyCode ? `已退房：${propertyCode}` : '已退房',
         body: '已退房',
         data: { kind: 'guest_checked_out', task_ids: ids, property_code: propertyCode, checked_out_at: checkedOutAt, event_id: eventId },
@@ -1009,7 +1022,7 @@ async function handleManagerFields(req: any, res: any) {
       for (const id of parsed.data.task_ids) broadcastCleaningEvent({ event: 'cleaning_task_manager_fields_updated', task_id: String(id) })
     } catch {}
     try {
-      const { notifyExpoAll } = require('./notifications')
+      const { notifyExpoUsers, listCleaningTaskUserIdsBulk, excludeUserIds } = require('./notifications')
       const norm = (v: any) => String(v ?? '').replace(/\s+/g, ' ').trim()
       const fmt = (label: string, next: any, prev: any) => `${label}：${norm(next) || '-'}（原：${norm(prev) || '-'}）`
       const lines: string[] = []
@@ -1045,8 +1058,9 @@ async function handleManagerFields(req: any, res: any) {
         guest_special_request: afterRow?.guest_special_request == null ? null : String(afterRow.guest_special_request),
       }
       const fieldsKey = hashText(JSON.stringify(keyObj))
-      await notifyExpoAll({
-        exclude_user_id: String(user.sub || ''),
+      const to = excludeUserIds(await listCleaningTaskUserIdsBulk(parsed.data.task_ids), String(user.sub || ''))
+      await notifyExpoUsers({
+        user_ids: to,
         title: propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新',
         body: lines.length ? lines.join('\n') : '任务信息已更新',
         data: { kind: 'cleaning_task_manager_fields_updated', task_ids: parsed.data.task_ids, property_code: propertyCode, fields_key: fieldsKey, event_id: `manager_fields:${propertyCode || repId}:${fieldsKey}` },
@@ -1167,7 +1181,6 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 router.post('/work-tasks/:id/mark', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   const action = String(req.body?.action || '').trim().toLowerCase()
@@ -1185,7 +1198,7 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
     const assignee = row.assignee_id == null ? '' : String(row.assignee_id)
-    if (!canViewAll(role) && assignee !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canViewAll(user) && assignee !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const parts: string[] = []
     if (photoUrl) parts.push(`照片: ${photoUrl}`)
@@ -1219,10 +1232,9 @@ router.get('/work-tasks', async (req, res) => {
 
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
 
-  const allowAll = view === 'all' && canViewAll(role)
+  const allowAll = view === 'all' && canViewAll(user)
 
   try {
     if (!hasPg || !pgPool) return res.json([])
@@ -1249,7 +1261,10 @@ router.get('/work-tasks', async (req, res) => {
           p.address AS property_address,
           p.type AS property_unit_type,
           p.region AS property_region,
-          p.access_guide_link AS property_access_guide_link
+          p.access_guide_link AS property_access_guide_link,
+          p.wifi_ssid AS property_wifi_ssid,
+          p.wifi_password AS property_wifi_password,
+          p.router_location AS property_router_location
         FROM work_tasks w
         LEFT JOIN properties p ON p.id = w.property_id
         WHERE ${where.join(' AND ')}
@@ -1278,6 +1293,9 @@ router.get('/work-tasks', async (req, res) => {
                 unit_type: x.property_unit_type ? String(x.property_unit_type) : '',
                 region: x.property_region ? String(x.property_region) : null,
                 access_guide_link: x.property_access_guide_link ? String(x.property_access_guide_link) : null,
+                wifi_ssid: x.property_wifi_ssid ? String(x.property_wifi_ssid) : null,
+                wifi_password: x.property_wifi_password ? String(x.property_wifi_password) : null,
+                router_location: x.property_router_location ? String(x.property_router_location) : null,
               }
             : null,
         })
@@ -1285,8 +1303,8 @@ router.get('/work-tasks', async (req, res) => {
     }
 
     {
-      const isCleanerView = isCleanerRole(role) || isCleanerInspectorRole(role)
-      const isInspectorView = isInspectorRole(role) || isCleanerInspectorRole(role)
+      const isCleanerView = isCleanerRole(user) || isCleanerInspectorRole(user)
+      const isInspectorView = isInspectorRole(user) || isCleanerInspectorRole(user)
       const wantCleaner = allowAll || isCleanerView
       const wantInspector = allowAll || isInspectorView
 
@@ -1302,6 +1320,9 @@ router.get('/work-tasks', async (req, res) => {
             COALESCE(p_id.address::text, p_code.address::text) AS property_address,
             COALESCE(p_id.type::text, p_code.type::text) AS property_unit_type,
             COALESCE(p_id.access_guide_link::text, p_code.access_guide_link::text) AS property_access_guide_link,
+            COALESCE(p_id.wifi_ssid::text, p_code.wifi_ssid::text) AS property_wifi_ssid,
+            COALESCE(p_id.wifi_password::text, p_code.wifi_password::text) AS property_wifi_password,
+            COALESCE(p_id.router_location::text, p_code.router_location::text) AS property_router_location,
             t.task_type,
             COALESCE(t.task_date, t.date)::text AS task_date,
             t.status,
@@ -1413,6 +1434,9 @@ router.get('/work-tasks', async (req, res) => {
                 unit_type: row.property_unit_type ? String(row.property_unit_type) : '',
                 region: row.property_region ? String(row.property_region) : null,
                 access_guide_link: row.property_access_guide_link ? String(row.property_access_guide_link) : null,
+                wifi_ssid: row.property_wifi_ssid ? String(row.property_wifi_ssid) : null,
+                wifi_password: row.property_wifi_password ? String(row.property_wifi_password) : null,
+                router_location: row.property_router_location ? String(row.property_router_location) : null,
               }
             : null
 
@@ -1628,7 +1652,7 @@ router.get('/work-tasks', async (req, res) => {
       }
     }
 
-    if (allowAll && (role === 'customer_service' || role === 'admin' || role === 'offline_manager')) {
+    if (allowAll && (hasRole(user, 'customer_service') || hasRole(user, 'admin') || hasRole(user, 'offline_manager'))) {
       const merged: any[] = []
       const byKey = new Map<string, any[]>()
       for (const it of out) {

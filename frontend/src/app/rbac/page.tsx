@@ -18,7 +18,7 @@ type PermissionMeta = {
   privacyRisk: string[]
 }
 type Permission = { code: string; name?: string; meta?: PermissionMeta }
-type User = { id: string; username: string; email?: string; phone_au?: string; role: string; color_hex?: string | null }
+type User = { id: string; username: string; email?: string; phone_au?: string; role: string; roles?: string[]; color_hex?: string | null }
 
 export default function RBACPage() {
   const [roles, setRoles] = useState<Role[]>([])
@@ -46,6 +46,14 @@ export default function RBACPage() {
   const [menuSearch, setMenuSearch] = useState<string>('')
   const [activeMenuKey, setActiveMenuKey] = useState<string>('')
   const [advancedSearch, setAdvancedSearch] = useState<string>('')
+
+  function normalizeRoles(primaryRole: any, extraRoles: any) {
+    const role = String(primaryRole || '').trim()
+    const extras = Array.isArray(extraRoles) ? extraRoles : []
+    const roles = extras.map((x: any) => String(x || '').trim()).filter(Boolean)
+    if (role) roles.unshift(role)
+    return Array.from(new Set(roles))
+  }
 
   function normalizeAuPhone(v: any) {
     const raw = String(v || '').trim()
@@ -218,6 +226,8 @@ export default function RBACPage() {
     const v = await userForm.validateFields()
     const payload: any = { ...v }
     if (!payload.email) delete payload.email
+    payload.roles = normalizeRoles(payload.role, payload.extra_roles)
+    delete payload.extra_roles
     if (payload.color_hex) payload.color_hex = String(payload.color_hex).trim().toUpperCase()
     if (payload.phone_au) payload.phone_au = normalizeAuPhone(payload.phone_au)
     const res = await fetch(`${API_BASE}/rbac/users`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
@@ -227,7 +237,10 @@ export default function RBACPage() {
   function openEditUser(u: User) {
     setEditUser(u)
     setEditUserOpen(true)
-    editUserForm.setFieldsValue({ username: u.username, email: u.email || '', phone_au: u.phone_au || '', role: u.role, color_hex: (u.color_hex || '#3B82F6') })
+    const roles = Array.isArray((u as any).roles) ? ((u as any).roles as any[]) : []
+    const all = Array.from(new Set([String(u.role || '').trim(), ...roles.map((x) => String(x || '').trim())].filter(Boolean)))
+    const extra = all.filter((x) => x !== String(u.role || '').trim())
+    editUserForm.setFieldsValue({ username: u.username, email: u.email || '', phone_au: u.phone_au || '', role: u.role, extra_roles: extra, color_hex: (u.color_hex || '#3B82F6') })
   }
 
   async function submitEditUser() {
@@ -237,6 +250,8 @@ export default function RBACPage() {
     const payload: any = { ...v }
     if (!payload.email) delete payload.email
     if (payload.phone_au) payload.phone_au = normalizeAuPhone(payload.phone_au)
+    payload.roles = normalizeRoles(payload.role, payload.extra_roles)
+    delete payload.extra_roles
     if (!payload.color_hex) delete payload.color_hex
     if (payload.color_hex) payload.color_hex = String(payload.color_hex).trim().toUpperCase()
     const res = await fetch(`${API_BASE}/rbac/users/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
@@ -361,7 +376,24 @@ export default function RBACPage() {
     { title: '用户名', dataIndex: 'username' },
     { title: '邮箱', dataIndex: 'email' },
     { title: '澳洲手机号', dataIndex: 'phone_au' },
-    { title: '角色', dataIndex: 'role' },
+    {
+      title: '主角色',
+      dataIndex: 'role',
+      render: (v: any) => <Tag>{String(v || '')}</Tag>,
+    },
+    {
+      title: '多角色',
+      render: (_: any, r: User) => {
+        const roles = Array.isArray((r as any).roles) ? ((r as any).roles as any[]) : []
+        const list = Array.from(new Set(roles.map((x) => String(x || '').trim()).filter(Boolean)))
+        if (!list.length) return <Typography.Text type="secondary">-</Typography.Text>
+        return (
+          <Space size={[6, 6]} wrap>
+            {list.map((x) => <Tag key={x}>{x}</Tag>)}
+          </Space>
+        )
+      },
+    },
     { title: '操作', render: (_: any, r: User) => (
       <Space>
         {hasPerm('rbac.manage') && <Button onClick={() => openEditUser(r)}>编辑</Button>}
@@ -908,7 +940,10 @@ export default function RBACPage() {
           >
             <Input placeholder="+61412345678 或 0412345678" />
           </Form.Item>
-          <Form.Item name="role" label="角色" rules={[{ required: true }]}><Select options={roles.map(r => ({ value: r.name, label: r.name }))} /></Form.Item>
+          <Form.Item name="role" label="主角色" rules={[{ required: true }]}><Select options={roles.map(r => ({ value: r.name, label: r.name }))} /></Form.Item>
+          <Form.Item name="extra_roles" label="其他角色">
+            <Select mode="multiple" options={roles.map(r => ({ value: r.name, label: r.name }))} />
+          </Form.Item>
           <Form.Item
             name="color_hex"
             label="颜色"
@@ -945,7 +980,10 @@ export default function RBACPage() {
           >
             <Input placeholder="+61412345678 或 0412345678" />
           </Form.Item>
-          <Form.Item name="role" label="角色" rules={[{ required: true }]}><Select options={roles.map(r => ({ value: r.name, label: r.name }))} /></Form.Item>
+          <Form.Item name="role" label="主角色" rules={[{ required: true }]}><Select options={roles.map(r => ({ value: r.name, label: r.name }))} /></Form.Item>
+          <Form.Item name="extra_roles" label="其他角色">
+            <Select mode="multiple" options={roles.map(r => ({ value: r.name, label: r.name }))} />
+          </Form.Item>
           <Form.Item
             name="color_hex"
             label="颜色"
