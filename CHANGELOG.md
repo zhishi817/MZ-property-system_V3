@@ -1,5 +1,14 @@
 # Changelog
 
+## Dev (2026-03-28)
+
+- Version: `MZ-property-system_V3` (no bump)
+- Auth/RBAC: Add multi-role support via `user_roles` table; JWT and `/me` now include `roles[]` while keeping `role` as primary.
+- Auth: Permission checks (`requirePerm/requireAnyPerm`) now union permissions across `roles[]`.
+- RBAC: `/rbac/my-permissions` now unions permissions across `roles[]`.
+- MZApp/Jobs: `offline_manager` checks now respect `roles[]`; key photo SLA manager selection also includes `user_roles`.
+- Cleaning App: Store `roles[]` and add Tasks top mode switch “清洁/管理” with persisted selection.
+
 ## Dev (2026-03-27)
 
 - Version: `MZ-property-system_V3`

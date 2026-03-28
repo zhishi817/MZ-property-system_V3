@@ -51,20 +51,34 @@ function makeWorkNo(prefix: string, occurredAt?: string) {
   return `${String(prefix || 'R').trim()}-${ymd}-${randomBase62(4)}`
 }
 
-function canViewAll(role: string) {
-  return role === 'admin' || role === 'offline_manager' || role === 'customer_service'
+function roleNamesOf(user: any) {
+  const arr = Array.isArray(user?.roles) ? (user.roles as any[]) : []
+  const ids = arr.map((x) => String(x || '').trim()).filter(Boolean)
+  const primary = String(user?.role || '').trim()
+  if (primary) ids.unshift(primary)
+  return Array.from(new Set(ids))
 }
 
-function isCleanerRole(role: string) {
-  return role === 'cleaner'
+function hasRole(user: any, roleName: string) {
+  const rn = String(roleName || '').trim()
+  if (!rn) return false
+  return roleNamesOf(user).includes(rn)
 }
 
-function isInspectorRole(role: string) {
-  return role === 'cleaning_inspector'
+function canViewAll(user: any) {
+  return hasRole(user, 'admin') || hasRole(user, 'offline_manager') || hasRole(user, 'customer_service')
 }
 
-function isCleanerInspectorRole(role: string) {
-  return role === 'cleaner_inspector'
+function isCleanerRole(user: any) {
+  return hasRole(user, 'cleaner')
+}
+
+function isInspectorRole(user: any) {
+  return hasRole(user, 'cleaning_inspector')
+}
+
+function isCleanerInspectorRole(user: any) {
+  return hasRole(user, 'cleaner_inspector')
 }
 
 function mapCleaningTaskStatus(v: any): string {
@@ -421,7 +435,6 @@ async function ensureCleaningTaskSortColumns() {
 router.post('/cleaning-tasks/reorder', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const kind = String(req.body?.kind || '').trim().toLowerCase()
   const date = dayOnly(req.body?.date)
@@ -431,9 +444,9 @@ router.post('/cleaning-tasks/reorder', async (req, res) => {
   if (!groups || !groups.length) return res.status(400).json({ message: 'groups required' })
 
   if (kind === 'cleaner') {
-    if (!(isCleanerRole(role) || isCleanerInspectorRole(role))) return res.status(403).json({ message: 'forbidden' })
+    if (!(isCleanerRole(user) || isCleanerInspectorRole(user))) return res.status(403).json({ message: 'forbidden' })
   } else {
-    if (!(isInspectorRole(role) || isCleanerInspectorRole(role))) return res.status(403).json({ message: 'forbidden' })
+    if (!(isInspectorRole(user) || isCleanerInspectorRole(user))) return res.status(403).json({ message: 'forbidden' })
   }
 
   try {
@@ -478,13 +491,12 @@ router.post('/cleaning-tasks/reorder', async (req, res) => {
 router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   const mediaUrl = String(req.body?.media_url || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
   if (!mediaUrl) return res.status(400).json({ message: 'missing media_url' })
-  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningTaskMediaTable()
@@ -492,7 +504,7 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
     const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
-    if (!canViewAll(role) && inspectorId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canViewAll(user) && inspectorId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const uuid = require('uuid')
     await pgPool.query(
@@ -537,11 +549,10 @@ const inspectionPhotosSchema = z
 router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningTaskMediaTable()
@@ -551,7 +562,7 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
     const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
     const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const r = await pgPool.query(
       `SELECT type, url, note, captured_at, created_at
@@ -580,11 +591,10 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
 router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   const parsed = inspectionPhotosSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -596,7 +606,7 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
     const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
     const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, unclean: 12 }
     const byArea = new Map<string, number>()
@@ -651,11 +661,10 @@ const restockProofSchema = z
 router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningTaskMediaTable()
@@ -665,7 +674,7 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
     const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
     const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const r = await pgPool.query(
       `SELECT type, url, note, created_at
@@ -703,11 +712,10 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
 router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
-  if (!(isInspectorRole(role) || isCleanerInspectorRole(role) || canViewAll(role))) return res.status(403).json({ message: 'forbidden' })
+  if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   const parsed = restockProofSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -719,7 +727,7 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
     const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
     const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
-    if (!canViewAll(role) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const uniq = new Set<string>()
     for (const it of parsed.data.items) {
@@ -758,9 +766,8 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
 router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
-  if (role !== 'customer_service' && role !== 'admin' && role !== 'offline_manager') return res.status(403).json({ message: 'forbidden' })
+  if (!(hasRole(user, 'customer_service') || hasRole(user, 'admin') || hasRole(user, 'offline_manager'))) return res.status(403).json({ message: 'forbidden' })
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'missing id' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -860,9 +867,8 @@ const guestCheckedOutBulkSchema = z
 router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
-  if (role !== 'customer_service' && role !== 'admin' && role !== 'offline_manager') return res.status(403).json({ message: 'forbidden' })
+  if (!(hasRole(user, 'customer_service') || hasRole(user, 'admin') || hasRole(user, 'offline_manager'))) return res.status(403).json({ message: 'forbidden' })
   const parsed = guestCheckedOutBulkSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -1175,7 +1181,6 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 router.post('/work-tasks/:id/mark', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
   const id = String(req.params.id || '').trim()
   const action = String(req.body?.action || '').trim().toLowerCase()
@@ -1193,7 +1198,7 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
     const assignee = row.assignee_id == null ? '' : String(row.assignee_id)
-    if (!canViewAll(role) && assignee !== userId) return res.status(403).json({ message: 'forbidden' })
+    if (!canViewAll(user) && assignee !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const parts: string[] = []
     if (photoUrl) parts.push(`照片: ${photoUrl}`)
@@ -1227,10 +1232,9 @@ router.get('/work-tasks', async (req, res) => {
 
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
   const userId = String(user.sub || '')
 
-  const allowAll = view === 'all' && canViewAll(role)
+  const allowAll = view === 'all' && canViewAll(user)
 
   try {
     if (!hasPg || !pgPool) return res.json([])
@@ -1293,8 +1297,8 @@ router.get('/work-tasks', async (req, res) => {
     }
 
     {
-      const isCleanerView = isCleanerRole(role) || isCleanerInspectorRole(role)
-      const isInspectorView = isInspectorRole(role) || isCleanerInspectorRole(role)
+      const isCleanerView = isCleanerRole(user) || isCleanerInspectorRole(user)
+      const isInspectorView = isInspectorRole(user) || isCleanerInspectorRole(user)
       const wantCleaner = allowAll || isCleanerView
       const wantInspector = allowAll || isInspectorView
 
@@ -1636,7 +1640,7 @@ router.get('/work-tasks', async (req, res) => {
       }
     }
 
-    if (allowAll && (role === 'customer_service' || role === 'admin' || role === 'offline_manager')) {
+    if (allowAll && (hasRole(user, 'customer_service') || hasRole(user, 'admin') || hasRole(user, 'offline_manager'))) {
       const merged: any[] = []
       const byKey = new Map<string, any[]>()
       for (const it of out) {
