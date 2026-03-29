@@ -364,6 +364,15 @@ const patchTaskSchema = z.object({
   assignee_id: z.union([z.string().min(1), z.null()]).optional(),
   cleaner_id: z.union([z.string().min(1), z.null()]).optional(),
   inspector_id: z.union([z.string().min(1), z.null()]).optional(),
+  keys_required: z
+    .preprocess((v) => {
+      if (v == null) return v
+      if (typeof v === 'number') return v
+      const n = Number(v)
+      return Number.isFinite(n) ? n : v
+    }, z.number().int().min(1).max(2))
+    .optional()
+    .nullable(),
   nights_override: z.union([z.number().int().nonnegative(), z.null()]).optional(),
   old_code: z.union([z.string(), z.null()]).optional(),
   new_code: z.union([z.string(), z.null()]).optional(),
@@ -490,6 +499,15 @@ const createTaskSchema = z.object({
   new_code: z.union([z.string(), z.null()]).optional(),
   checkout_time: z.union([z.string(), z.null()]).optional(),
   checkin_time: z.union([z.string(), z.null()]).optional(),
+  keys_required: z
+    .preprocess((v) => {
+      if (v == null) return v
+      if (typeof v === 'number') return v
+      const n = Number(v)
+      return Number.isFinite(n) ? n : v
+    }, z.number().int().min(1).max(2))
+    .optional()
+    .nullable(),
   nights_override: z.union([z.number().int().nonnegative(), z.null()]).optional(),
   note: z.union([z.string(), z.null()]).optional(),
 }).strict()
@@ -543,6 +561,7 @@ router.post('/tasks', requirePerm('cleaning.task.assign'), async (req, res) => {
       new_code: parsed.data.new_code ?? null,
       checkout_time: parsed.data.checkout_time ?? null,
       checkin_time: parsed.data.checkin_time ?? null,
+      keys_required: parsed.data.keys_required ?? null,
       nights_override: (parsed.data as any).nights_override ?? null,
       note: (parsed.data as any).note ?? null,
       auto_sync_enabled: true,
