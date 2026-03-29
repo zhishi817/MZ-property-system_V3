@@ -224,13 +224,6 @@ async function insertTask(row: any, client?: any): Promise<any> {
     const exec = client || pgPool!
     let keysRequired = row?.keys_required == null ? null : Number(row.keys_required)
     if (!Number.isFinite(keysRequired as any) || !(keysRequired as any)) keysRequired = null
-    if (!keysRequired && row?.order_id) {
-      try {
-        const rr = await exec.query(`SELECT MAX(keys_required) AS k FROM cleaning_tasks WHERE order_id::text = $1::text`, [String(row.order_id)])
-        const k = rr?.rows?.[0]?.k == null ? null : Number(rr.rows[0].k)
-        if (k != null && Number.isFinite(k) && k > 0) keysRequired = k
-      } catch {}
-    }
     if (!keysRequired) keysRequired = 1
     const sql = `
       INSERT INTO cleaning_tasks(

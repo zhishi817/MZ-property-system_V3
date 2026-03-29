@@ -11,6 +11,7 @@
 - Cleaning App: Allow cleaner to delete uploaded key photo; managers can view key photo in task detail; stabilize push `event_id` + in-app notice dedupe; clearer login/timeout errors.
 - Cleaning App: Support “2把钥匙” flag (customer service editable, included in checkout notify, visible to cleaner).
 - MZApp Backend: Fix manager edit “需挂钥匙套数”保存 1 套仍落库为 2（合并任务/同订单任务一起正确更新）。
+- MZApp Backend: “需挂钥匙套数”改为按当天任务（同一天+同房源）更新与展示，不再跨日期/跨订单串值。
 - Cleaning App: Add end-of-day “备用钥匙放回照片” upload (multi photos, compressed upload) backed by `cleaning_day_end_media`.
 
 ## Dev (2026-03-28)

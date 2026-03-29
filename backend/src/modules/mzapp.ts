@@ -1034,7 +1034,6 @@ async function handleManagerFields(req: any, res: any) {
     }
     const norm = (v: any) => String(v ?? '').replace(/\s+/g, ' ').trim()
     const eqNorm = (a: any, b: any) => norm(a) === norm(b)
-    const repOrderId = String(prevRow?.order_id || '').trim() || null
     let nextKeysRequired: number | null = null
     let prevKeysRequiredMin: number | null = null
     let prevKeysRequiredMax: number | null = null
@@ -1106,89 +1105,64 @@ async function handleManagerFields(req: any, res: any) {
     const affectedTaskIds = new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean))
     if (nextKeysRequired != null) {
       const idsForLookup = Array.from(affectedTaskIds)
-      const orderIds: string[] = []
       try {
         const rr = await pgPool.query(
           `SELECT id::text AS id,
-                  order_id::text AS order_id,
-                  COALESCE(task_type,'') AS task_type,
                   COALESCE(property_id::text,'') AS property_id,
                   COALESCE(COALESCE(task_date, date)::text,'') AS task_date
            FROM cleaning_tasks
            WHERE id::text = ANY($1::text[])`,
           [idsForLookup],
         )
-        const checkinOrderIds = Array.from(
+        const pairs = Array.from(
           new Set(
             (rr?.rows || [])
-              .filter((x: any) => cleaningType(x.task_type) === 'checkin')
-              .map((x: any) => String(x.order_id || '').trim())
-              .filter(Boolean),
+              .map((x: any) => `${String(x.task_date || '').slice(0, 10)}|${String(x.property_id || '').trim()}`)
+              .filter((k: string) => /^\d{4}-\d{2}-\d{2}\|/.test(k) && !k.endsWith('|')),
           ),
         )
-        if (checkinOrderIds.length) orderIds.push(...checkinOrderIds)
-        else {
-          const pairs = Array.from(
-            new Set(
-              (rr?.rows || [])
-                .map((x: any) => `${String(x.task_date || '').slice(0, 10)}|${String(x.property_id || '').trim()}`)
-                .filter((k: string) => /^\d{4}-\d{2}-\d{2}\|/.test(k) && !k.endsWith('|')),
-            ),
+        if (pairs.length) {
+          const dates: string[] = []
+          const props: string[] = []
+          for (const p of pairs) {
+            const [d, prop] = p.split('|')
+            dates.push(d)
+            props.push(prop)
+          }
+          await pgPool.query(
+            `WITH pairs AS (
+               SELECT unnest($1::date[]) AS d, unnest($2::text[]) AS prop
+             )
+             UPDATE cleaning_tasks t
+             SET keys_required = $3, updated_at = now()
+             FROM pairs p
+             WHERE (COALESCE(t.task_date, t.date)::date) = p.d
+               AND COALESCE(t.property_id::text,'') = p.prop
+               AND COALESCE(t.status,'') <> 'cancelled'
+               AND t.keys_required <> $3`,
+            [dates, props, nextKeysRequired],
           )
-          if (pairs.length) {
-            const dates: string[] = []
-            const props: string[] = []
-            for (const p of pairs) {
-              const [d, prop] = p.split('|')
-              dates.push(d)
-              props.push(prop)
-            }
-            try {
-              const rr2 = await pgPool.query(
-                `WITH pairs AS (
-                   SELECT unnest($1::date[]) AS d, unnest($2::text[]) AS prop
-                 )
-                 SELECT DISTINCT t.order_id::text AS order_id
-                 FROM cleaning_tasks t
-                 JOIN pairs p ON (COALESCE(t.task_date, t.date)::date) = p.d AND COALESCE(t.property_id::text,'') = p.prop
-                 WHERE lower(COALESCE(t.task_type,'')) = 'checkin_clean'`,
-                [dates, props],
-              )
-              const inferred = Array.from(new Set((rr2?.rows || []).map((x: any) => String(x.order_id || '').trim()).filter(Boolean)))
-              if (inferred.length) orderIds.push(...inferred)
-            } catch {}
-          }
-          if (!orderIds.length) {
-            const anyOrderIds = Array.from(new Set((rr?.rows || []).map((x: any) => String(x.order_id || '').trim()).filter(Boolean)))
-            if (anyOrderIds.length) orderIds.push(...anyOrderIds)
-          }
-        }
-      } catch {}
-      if (!orderIds.length && repOrderId) orderIds.push(repOrderId)
-
-      for (const oid of Array.from(new Set(orderIds)).filter(Boolean)) {
-        await pgPool.query(
-          `UPDATE cleaning_tasks SET keys_required = $1, updated_at = now()
-           WHERE order_id::text = $2::text AND keys_required <> $1`,
-          [nextKeysRequired, oid],
-        )
-        try {
-          const r2 = await pgPool.query(`SELECT id::text AS id FROM cleaning_tasks WHERE order_id::text = $1::text`, [oid])
-          for (const x of r2?.rows || []) {
+          const rIds = await pgPool.query(
+            `WITH pairs AS (
+               SELECT unnest($1::date[]) AS d, unnest($2::text[]) AS prop
+             )
+             SELECT t.id::text AS id
+             FROM cleaning_tasks t
+             JOIN pairs p ON (COALESCE(t.task_date, t.date)::date) = p.d AND COALESCE(t.property_id::text,'') = p.prop`,
+            [dates, props],
+          )
+          for (const x of rIds?.rows || []) {
             const id2 = String(x?.id || '').trim()
             if (id2) affectedTaskIds.add(id2)
           }
-        } catch {}
-      }
-
-      try {
-        await pgPool.query(
-          `UPDATE cleaning_tasks SET keys_required = $1, updated_at = now()
-           WHERE id::text = ANY($2::text[])
-             AND order_id IS NULL
-             AND keys_required <> $1`,
-          [nextKeysRequired, idsForLookup],
-        )
+        } else {
+          await pgPool.query(
+            `UPDATE cleaning_tasks SET keys_required = $1, updated_at = now()
+             WHERE id::text = ANY($2::text[])
+               AND keys_required <> $1`,
+            [nextKeysRequired, idsForLookup],
+          )
+        }
       } catch {}
     }
 
@@ -1563,24 +1537,6 @@ router.get('/work-tasks', async (req, res) => {
             )
           ORDER BY COALESCE(t.task_date, t.date) ASC, COALESCE(p_id.code, p_code.code) NULLS LAST, t.id`
         const r = await pgPool.query(sql, [dateFrom, dateTo])
-        const orderKeysById = new Map<string, number>()
-        try {
-          const orderIds = Array.from(new Set((r?.rows || []).map((x: any) => (x.order_id ? String(x.order_id) : '')).filter(Boolean)))
-          if (orderIds.length) {
-            const rr0 = await pgPool.query(
-              `SELECT order_id::text AS order_id, MAX(keys_required) AS k
-               FROM cleaning_tasks
-               WHERE order_id::text = ANY($1::text[])
-               GROUP BY order_id`,
-              [orderIds],
-            )
-            for (const x of rr0?.rows || []) {
-              const oid = String(x.order_id || '').trim()
-              const k = x.k == null ? null : Number(x.k)
-              if (oid && k != null && Number.isFinite(k) && k > 0) orderKeysById.set(oid, Math.trunc(k))
-            }
-          }
-        } catch {}
         const taskIds = Array.from(new Set((r?.rows || []).map((x: any) => String(x.id || '')).filter(Boolean)))
         const restockByTaskId = new Map<string, any[]>()
         if (taskIds.length) {
@@ -1651,7 +1607,7 @@ router.get('/work-tasks', async (req, res) => {
           const effectiveCleanerId = row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null)
           const inspectorId = row.inspector_id ? String(row.inspector_id) : null
           const orderId = row.order_id ? String(row.order_id) : null
-          const orderKeysRequired = orderId ? (orderKeysById.get(orderId) || null) : null
+          const orderKeysRequired = null
 
           const base = {
             __raw_id: String(row.id),
@@ -1812,13 +1768,13 @@ router.get('/work-tasks', async (req, res) => {
           const primarySourceId = String(p.a.__raw_id)
           const checkoutKeys =
             p.kind === 'turnover' || p.kind === 'checkout'
-              ? Math.max(p.a?.order_keys_required == null ? 0 : Number(p.a.order_keys_required), p.a?.keys_required == null ? 1 : Number(p.a.keys_required), 1)
+              ? (p.a?.keys_required == null ? 1 : Number(p.a.keys_required))
               : null
           const checkinKeys =
             p.kind === 'turnover'
-              ? Math.max(p.b?.order_keys_required == null ? 0 : Number(p.b.order_keys_required), p.b?.keys_required == null ? 1 : Number(p.b.keys_required), 1)
+              ? (p.b?.keys_required == null ? 1 : Number(p.b.keys_required))
               : p.kind === 'checkin'
-                ? Math.max(p.a?.order_keys_required == null ? 0 : Number(p.a.order_keys_required), p.a?.keys_required == null ? 1 : Number(p.a.keys_required), 1)
+                ? (p.a?.keys_required == null ? 1 : Number(p.a.keys_required))
                 : null
 
           return {
