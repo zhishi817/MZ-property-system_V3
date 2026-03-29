@@ -50,6 +50,13 @@ async function hasPerm(roleName: string, code: string): Promise<boolean> {
   return roleHasPermission(roleName, code)
 }
 
+async function notifyRecipientsForTask(taskId: string, actorId: string) {
+  const { listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
+  const taskUsers = excludeUserIds(await listCleaningTaskUserIds(taskId), actorId)
+  const managerUsers = await listManagerUserIds()
+  return Array.from(new Set([...taskUsers, ...managerUsers]))
+}
+
 // List tasks for app (self or all)
 router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_app.tasks.view.self']), async (req, res) => {
   const { assignee_id, date_from, date_to, status } = req.query as { assignee_id?: string; date_from?: string; date_to?: string; status?: string }
@@ -175,11 +182,8 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
       try { broadcastCleaningEvent({ event: 'started', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(
-          [...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())],
-          String(user?.sub || ''),
-        )
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({
           user_ids: to,
           title: '钥匙已上传',
@@ -212,11 +216,8 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
       }
       try { broadcastCleaningEvent({ event: 'issue', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(
-          [...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())],
-          String(user?.sub || ''),
-        )
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({
           user_ids: to,
           title: '任务有更新',
@@ -314,7 +315,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       const up = await pgUpdate('cleaning_tasks', id, patch)
       try { broadcastCleaningEvent({ event: 'consumables_submitted', task_id: id, restock_pending: needsRestock }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
+        const { notifyExpoUsers } = require('./notifications')
         let propertyCode = ''
         try {
           const { pgPool } = require('../dbAdapter')
@@ -331,10 +332,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
           }
         } catch {}
         const eventId = `consumables_submitted:${propertyCode || id}:${String(patch.finished_at || '')}`
-        const to = excludeUserIds(
-          [...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())],
-          String(user?.sub || ''),
-        )
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({
           user_ids: to,
           title: propertyCode ? `清洁完成：${propertyCode}` : '清洁完成',
@@ -359,11 +357,8 @@ router.patch('/tasks/:id/restock', requireAnyPerm(['cleaning_app.restock.manage'
       const up = await pgUpdate('cleaning_tasks', id, { status: 'restocked' } as any)
       try { broadcastCleaningEvent({ event: 'restock_done', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(
-          [...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())],
-          String(user?.sub || ''),
-        )
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({ user_ids: to, title: '任务有更新', body: '补货已完成，待检查', data: { kind: 'restock_done', task_id: id, event_id: `restock_done:${id}:${Date.now()}` } })
       } catch {}
       return res.json(up || { id, status: 'restocked' })
@@ -390,11 +385,8 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
       try { broadcastCleaningEvent({ event: 'inspected', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(
-          [...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())],
-          String(user?.sub || ''),
-        )
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({ user_ids: to, title: '检查已完成', body: '检查员已提交挂钥匙视频并标记完成', data: { kind: 'inspection_complete', task_id: id, event_id: `inspection_complete:${id}:${now}` } })
       } catch {}
       return res.json(up || patch)
@@ -493,11 +485,8 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
       }
       try { broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(
-          [...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())],
-          String(user?.sub || ''),
-        )
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({ user_ids: to, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, event_id: `inspection_photos_saved:${id}:${Date.now()}` } })
       } catch {}
       return res.status(201).json({ ok: true })
@@ -586,11 +575,8 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
       }
       try { broadcastCleaningEvent({ event: 'completion_photos_saved', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(
-          [...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())],
-          String(user?.sub || ''),
-        )
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({
           user_ids: to,
           title: '房间完成照片已提交',
@@ -628,11 +614,8 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       const up = await pgUpdate('cleaning_tasks', id, { lockbox_video_uploaded_at: now } as any)
       try { broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(
-          [...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())],
-          String(user?.sub || ''),
-        )
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({
           user_ids: to,
           title: '挂钥匙视频已上传',
@@ -711,11 +694,8 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
         const up = await pgUpdate('cleaning_tasks', id, patch)
         try { broadcastCleaningEvent({ event: 'self_completed', task_id: id }) } catch {}
         try {
-          const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-          const to = excludeUserIds(
-            [...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())],
-            String(user?.sub || ''),
-          )
+          const { notifyExpoUsers } = require('./notifications')
+          const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
           await notifyExpoUsers({
             user_ids: to,
             title: '任务已完成',
@@ -818,11 +798,8 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
       }
       try { broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(
-          [...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())],
-          String(user?.sub || ''),
-        )
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({ user_ids: to, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, event_id: `restock_proof_saved:${id}:${Date.now()}` } })
       } catch {}
       return res.status(201).json({ ok: true })
@@ -842,11 +819,8 @@ router.patch('/tasks/:id/ready', requirePerm('cleaning_app.ready.set'), async (r
       const up = await pgUpdate('cleaning_tasks', id, { status: 'ready' } as any)
       try { broadcastCleaningEvent({ event: 'ready', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(
-          [...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())],
-          String(user?.sub || ''),
-        )
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({ user_ids: to, title: '可入住', body: '房源已标记为可入住', data: { kind: 'ready', task_id: id, event_id: `ready:${id}:${Date.now()}` } })
       } catch {}
       return res.json(up || { id, status: 'ready' })

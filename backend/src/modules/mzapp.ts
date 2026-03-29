@@ -524,7 +524,9 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     } catch {}
     try {
       const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-      const to = excludeUserIds([...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())], userId)
+      const taskUsers = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+      const managerUsers = await listManagerUserIds()
+      const to = Array.from(new Set([...taskUsers, ...managerUsers]))
       await notifyExpoUsers({ user_ids: to, title: '挂钥匙视频已上传', body: '检查员已上传挂钥匙视频', data: { kind: 'lockbox_video_uploaded', task_id: id, event_id: `lockbox_video_uploaded:${id}:${Date.now()}` } })
     } catch {}
     return res.status(201).json({ ok: true })
@@ -635,7 +637,9 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     } catch {}
     try {
       const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-      const to = excludeUserIds([...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())], userId)
+      const taskUsers = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+      const managerUsers = await listManagerUserIds()
+      const to = Array.from(new Set([...taskUsers, ...managerUsers]))
       await notifyExpoUsers({ user_ids: to, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, event_id: `inspection_photos_saved:${id}:${Date.now()}` } })
     } catch {}
     return res.status(201).json({ ok: true })
@@ -754,7 +758,9 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     } catch {}
     try {
       const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
-      const to = excludeUserIds([...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())], userId)
+      const taskUsers = excludeUserIds(await listCleaningTaskUserIds(id), userId)
+      const managerUsers = await listManagerUserIds()
+      const to = Array.from(new Set([...taskUsers, ...managerUsers]))
       await notifyExpoUsers({ user_ids: to, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, event_id: `restock_proof_saved:${id}:${Date.now()}` } })
     } catch {}
     return res.status(201).json({ ok: true })
