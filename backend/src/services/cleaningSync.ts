@@ -136,6 +136,9 @@ export async function ensureCleaningSchemaV2(): Promise<void> {
       err.code = 'CLEANING_SCHEMA_MISSING'
       throw err
     }
+    try {
+      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
+    } catch {}
   })().catch((e) => {
     schemaEnsured = null
     throw e
@@ -219,6 +222,16 @@ async function insertTask(row: any, client?: any): Promise<any> {
   if (hasPg && (client || pgPool)) {
     await ensureCleaningSchemaV2()
     const exec = client || pgPool!
+    let keysRequired = row?.keys_required == null ? null : Number(row.keys_required)
+    if (!Number.isFinite(keysRequired as any) || !(keysRequired as any)) keysRequired = null
+    if (!keysRequired && row?.order_id) {
+      try {
+        const rr = await exec.query(`SELECT MAX(keys_required) AS k FROM cleaning_tasks WHERE order_id::text = $1::text`, [String(row.order_id)])
+        const k = rr?.rows?.[0]?.k == null ? null : Number(rr.rows[0].k)
+        if (k != null && Number.isFinite(k) && k > 0) keysRequired = k
+      } catch {}
+    }
+    if (!keysRequired) keysRequired = 1
     const sql = `
       INSERT INTO cleaning_tasks(
         id, order_id, property_id,
@@ -227,10 +240,11 @@ async function insertTask(row: any, client?: any): Promise<any> {
         status, assignee_id, scheduled_at,
         checkout_time, checkin_time,
         cleaner_id, inspector_id,
+        keys_required,
         auto_sync_enabled, sync_fingerprint, source,
         updated_at
       )
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now())
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,now())
       ON CONFLICT ON CONSTRAINT uniq_cleaning_tasks_order_task_type_v3
       DO UPDATE SET
         property_id = EXCLUDED.property_id,
@@ -256,6 +270,7 @@ async function insertTask(row: any, client?: any): Promise<any> {
       row.checkin_time != null ? String(row.checkin_time) : null,
       row.cleaner_id != null ? String(row.cleaner_id) : null,
       row.inspector_id != null ? String(row.inspector_id) : null,
+      keysRequired,
       row.auto_sync_enabled !== false,
       row.sync_fingerprint ? String(row.sync_fingerprint) : null,
       row.source ? String(row.source) : 'auto',

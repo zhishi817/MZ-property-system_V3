@@ -1034,7 +1034,7 @@ async function handleManagerFields(req: any, res: any) {
     }
     const norm = (v: any) => String(v ?? '').replace(/\s+/g, ' ').trim()
     const eqNorm = (a: any, b: any) => norm(a) === norm(b)
-    const orderId = String(prevRow?.order_id || '').trim() || null
+    const repOrderId = String(prevRow?.order_id || '').trim() || null
     let nextKeysRequired: number | null = null
     if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) push('checkout_time', parsed.data.checkout_time)
     if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) push('checkin_time', parsed.data.checkin_time)
@@ -1056,19 +1056,41 @@ async function handleManagerFields(req: any, res: any) {
     await pgPool.query(sql, vals)
 
     const affectedTaskIds = new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean))
-    if (nextKeysRequired != null && orderId) {
-      await pgPool.query(
-        `UPDATE cleaning_tasks SET keys_required = $1, updated_at = now()
-         WHERE order_id::text = $2::text AND keys_required <> $1`,
-        [nextKeysRequired, orderId],
-      )
+    if (nextKeysRequired != null) {
+      const idsForLookup = Array.from(affectedTaskIds)
+      const orderIds: string[] = []
       try {
-        const r2 = await pgPool.query(`SELECT id::text AS id FROM cleaning_tasks WHERE order_id::text = $1::text`, [orderId])
-        for (const x of r2?.rows || []) {
-          const id2 = String(x?.id || '').trim()
-          if (id2) affectedTaskIds.add(id2)
+        const rr = await pgPool.query(`SELECT id::text AS id, order_id::text AS order_id, COALESCE(task_type,'') AS task_type FROM cleaning_tasks WHERE id::text = ANY($1::text[])`, [idsForLookup])
+        const checkinOrderIds = Array.from(
+          new Set(
+            (rr?.rows || [])
+              .filter((x: any) => String(x.task_type || '').trim().toLowerCase() === 'checkin_clean')
+              .map((x: any) => String(x.order_id || '').trim())
+              .filter(Boolean),
+          ),
+        )
+        if (checkinOrderIds.length) orderIds.push(...checkinOrderIds)
+        else {
+          const anyOrderIds = Array.from(new Set((rr?.rows || []).map((x: any) => String(x.order_id || '').trim()).filter(Boolean)))
+          if (anyOrderIds.length) orderIds.push(...anyOrderIds)
         }
       } catch {}
+      if (!orderIds.length && repOrderId) orderIds.push(repOrderId)
+
+      for (const oid of Array.from(new Set(orderIds)).filter(Boolean)) {
+        await pgPool.query(
+          `UPDATE cleaning_tasks SET keys_required = $1, updated_at = now()
+           WHERE order_id::text = $2::text AND keys_required <> $1`,
+          [nextKeysRequired, oid],
+        )
+        try {
+          const r2 = await pgPool.query(`SELECT id::text AS id FROM cleaning_tasks WHERE order_id::text = $1::text`, [oid])
+          for (const x of r2?.rows || []) {
+            const id2 = String(x?.id || '').trim()
+            if (id2) affectedTaskIds.add(id2)
+          }
+        } catch {}
+      }
     }
 
     try {
