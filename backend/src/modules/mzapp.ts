@@ -982,13 +982,21 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
 
 const managerFieldsSchema = z
   .object({
-    task_ids: z.array(z.string().trim().min(1)).min(1).max(10),
+    task_ids: z.array(z.string().trim().min(1)).min(1).max(50),
     checkout_time: z.string().trim().max(32).optional().nullable(),
     checkin_time: z.string().trim().max(32).optional().nullable(),
     old_code: z.string().trim().max(64).optional().nullable(),
     new_code: z.string().trim().max(64).optional().nullable(),
     guest_special_request: z.string().trim().max(1500).optional().nullable(),
-    keys_required: z.number().int().min(1).max(2).optional().nullable(),
+    keys_required: z
+      .preprocess((v) => {
+        if (v == null) return v
+        if (typeof v === 'number') return v
+        const n = Number(v)
+        return Number.isFinite(n) ? n : v
+      }, z.number().int().min(1).max(2))
+      .optional()
+      .nullable(),
   })
   .strict()
 

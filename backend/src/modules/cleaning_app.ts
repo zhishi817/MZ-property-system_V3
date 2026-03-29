@@ -199,7 +199,7 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
   }
 })
 
-router.delete('/tasks/:id/key-photo', requirePerm('cleaning_app.tasks.start'), async (req, res) => {
+async function handleDeleteKeyPhoto(req: any, res: any) {
   const user = (req as any).user
   const { id } = req.params
   try {
@@ -232,7 +232,10 @@ router.delete('/tasks/:id/key-photo', requirePerm('cleaning_app.tasks.start'), a
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'error' })
   }
-})
+}
+
+router.delete('/tasks/:id/key-photo', requirePerm('cleaning_app.tasks.start'), handleDeleteKeyPhoto)
+router.post('/tasks/:id/key-photo/delete', requirePerm('cleaning_app.tasks.start'), handleDeleteKeyPhoto)
 
 // Report issue
 const issueSchema = z.object({ title: z.string().min(1), detail: z.string().optional(), severity: z.string().optional(), media_url: z.string().optional() })
