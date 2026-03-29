@@ -40,7 +40,7 @@ import recurringRouter from './modules/recurring'
 import { router as invoicesRouter } from './modules/invoices'
 import { router as cmsCompanyRouter } from './modules/cms_company'
 import { router as cmsCompanySecretsRouter } from './modules/cms_company_secrets'
-import { runKeyUploadSlaCheck } from './lib/keyUploadSlaJob'
+import { runKeyUploadReminder } from './lib/keyUploadReminderJob'
 import { auth } from './auth'
 import publicRouter from './modules/public'
 import publicAdminRouter from './modules/public_admin'
@@ -607,7 +607,7 @@ app.listen(port, () => {
   ;(async () => {
     try {
       const defaultEnabled = process.env.NODE_ENV === 'production'
-      const enabled = String(process.env.KEY_UPLOAD_SLA_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true'
+      const enabled = String(process.env.KEY_UPLOAD_SLA_ENABLED || 'false').toLowerCase() === 'true'
       const featureCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true'
       if (!enabled) {
         console.log('[key-upload-sla][schedule] disabled')
@@ -622,35 +622,54 @@ app.listen(port, () => {
         return
       }
 
-      const schedules: Array<{ expr: string; position: number; level: 'remind' | 'escalate' }> = [
-        { expr: '15 10 * * *', position: 1, level: 'remind' },
-        { expr: '30 10 * * *', position: 1, level: 'escalate' },
-        { expr: '45 11 * * *', position: 2, level: 'remind' },
-        { expr: '0 12 * * *', position: 2, level: 'escalate' },
-        { expr: '30 13 * * *', position: 3, level: 'remind' },
-        { expr: '45 13 * * *', position: 3, level: 'escalate' },
-        { expr: '15 14 * * *', position: 4, level: 'remind' },
-        { expr: '30 14 * * *', position: 4, level: 'escalate' },
+    } catch (e: any) {
+      console.error(`[key-upload-sla][schedule] init error message=${String(e?.message || '')}`)
+    }
+  })()
+
+  ;(async () => {
+    try {
+      const defaultEnabled = process.env.NODE_ENV === 'production'
+      const enabled = String(process.env.KEY_UPLOAD_REMINDER_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true'
+      const featureCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true'
+      if (!enabled) {
+        console.log('[key-upload-reminder][schedule] disabled')
+        return
+      }
+      if (!featureCleaning) {
+        console.log('[key-upload-reminder][schedule] skipped_reason=feature_cleaning_app_disabled')
+        return
+      }
+      if (!hasPg || !pgPool) {
+        console.log('[key-upload-reminder][schedule] skipped_reason=pg=false')
+        return
+      }
+
+      const schedules: Array<{ expr: string; at: string }> = [
+        { expr: '0 10 * * *', at: '10:00' },
+        { expr: '30 11 * * *', at: '11:30' },
+        { expr: '0 13 * * *', at: '13:00' },
+        { expr: '0 14 * * *', at: '14:00' },
       ]
 
       for (const s of schedules) {
-        console.log(`[key-upload-sla][schedule] enabled cron=${s.expr} tz=Australia/Melbourne position=${s.position} level=${s.level}`)
+        console.log(`[key-upload-reminder][schedule] enabled cron=${s.expr} tz=Australia/Melbourne at=${s.at}`)
         const task = cron.schedule(
           s.expr,
           async () => {
             const started = Date.now()
             try {
-              const lockKey = 135791357 + (s.position * 10) + (s.level === 'escalate' ? 1 : 0)
+              const lockKey = 246802468 + Number(s.at.replace(':', ''))
               const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey])
               const ok = !!(lock?.rows?.[0]?.ok)
               if (!ok) return
-              const r = await runKeyUploadSlaCheck(s.position, s.level)
+              const r = await runKeyUploadReminder({ at: s.at })
               const dur = Date.now() - started
-              if ((r as any)?.skipped) console.log(`[key-upload-sla][schedule] skipped_reason=${String((r as any).skipped)}`)
-              else console.log(`[key-upload-sla][schedule] ok position=${s.position} level=${s.level} created=${Number((r as any).created || 0)} duration_ms=${dur}`)
+              if ((r as any)?.skipped) console.log(`[key-upload-reminder][schedule] skipped_reason=${String((r as any).skipped)}`)
+              else console.log(`[key-upload-reminder][schedule] ok at=${s.at} duration_ms=${dur}`)
               try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [lockKey]) } catch {}
             } catch (e: any) {
-              console.error(`[key-upload-sla][schedule] error position=${s.position} level=${s.level} message=${String(e?.message || '')}`)
+              console.error(`[key-upload-reminder][schedule] error at=${s.at} message=${String(e?.message || '')}`)
             }
           },
           { scheduled: true, timezone: 'Australia/Melbourne' },
@@ -658,7 +677,7 @@ app.listen(port, () => {
         task.start()
       }
     } catch (e: any) {
-      console.error(`[key-upload-sla][schedule] init error message=${String(e?.message || '')}`)
+      console.error(`[key-upload-reminder][schedule] init error message=${String(e?.message || '')}`)
     }
   })()
   })
