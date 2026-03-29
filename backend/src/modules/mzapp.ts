@@ -1036,16 +1036,47 @@ async function handleManagerFields(req: any, res: any) {
     const eqNorm = (a: any, b: any) => norm(a) === norm(b)
     const repOrderId = String(prevRow?.order_id || '').trim() || null
     let nextKeysRequired: number | null = null
+    let prevKeysRequiredMin: number | null = null
+    let prevKeysRequiredMax: number | null = null
     if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) push('checkout_time', parsed.data.checkout_time)
     if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) push('checkin_time', parsed.data.checkin_time)
     if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) push('old_code', parsed.data.old_code)
     if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) push('new_code', parsed.data.new_code)
     if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) push('guest_special_request', parsed.data.guest_special_request)
     if (parsed.data.keys_required !== undefined) {
-      const prevK = prevRow?.keys_required == null ? 1 : Number(prevRow.keys_required)
       const nextK = parsed.data.keys_required == null ? 1 : Number(parsed.data.keys_required)
-      if (Number.isFinite(nextK) && nextK !== prevK) {
-        nextKeysRequired = Math.max(1, Math.min(2, Math.trunc(nextK)))
+      if (Number.isFinite(nextK)) {
+        const nextK2 = Math.max(1, Math.min(2, Math.trunc(nextK)))
+        try {
+          const rrk =
+            repOrderId
+              ? await pgPool.query(
+                  `SELECT
+                     MIN(COALESCE(keys_required, 1)) AS min_k,
+                     MAX(COALESCE(keys_required, 1)) AS max_k
+                   FROM cleaning_tasks
+                   WHERE order_id::text = $1::text`,
+                  [repOrderId],
+                )
+              : await pgPool.query(
+                  `SELECT
+                     MIN(COALESCE(keys_required, 1)) AS min_k,
+                     MAX(COALESCE(keys_required, 1)) AS max_k
+                   FROM cleaning_tasks
+                   WHERE id::text = ANY($1::text[])`,
+                  [parsed.data.task_ids],
+                )
+          const minK = rrk?.rows?.[0]?.min_k == null ? 1 : Number(rrk.rows[0].min_k)
+          const maxK = rrk?.rows?.[0]?.max_k == null ? 1 : Number(rrk.rows[0].max_k)
+          prevKeysRequiredMin = Number.isFinite(minK) ? Math.max(1, Math.min(2, Math.trunc(minK))) : 1
+          prevKeysRequiredMax = Number.isFinite(maxK) ? Math.max(1, Math.min(2, Math.trunc(maxK))) : 1
+        } catch {
+          const fallback = prevRow?.keys_required == null ? 1 : Number(prevRow.keys_required)
+          const k0 = Number.isFinite(fallback) ? Math.max(1, Math.min(2, Math.trunc(fallback))) : 1
+          prevKeysRequiredMin = k0
+          prevKeysRequiredMax = k0
+        }
+        if (prevKeysRequiredMin !== nextK2 || prevKeysRequiredMax !== nextK2) nextKeysRequired = nextK2
       }
     }
     if (!fields.length && nextKeysRequired == null) return res.json({ ok: true, skipped: 'no_change' })
@@ -1159,9 +1190,14 @@ async function handleManagerFields(req: any, res: any) {
       if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) lines.push(fmt('新密码', parsed.data.new_code, prevRow?.new_code))
       if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) lines.push(fmt('客人需求', parsed.data.guest_special_request, prevRow?.guest_special_request))
       if (parsed.data.keys_required !== undefined) {
-        const prevK = prevRow?.keys_required == null ? 1 : Number(prevRow.keys_required)
         const nextK = parsed.data.keys_required == null ? 1 : Number(parsed.data.keys_required)
-        if (Number.isFinite(nextK) && nextK !== prevK) lines.push(fmt('需挂钥匙套数', nextK, prevK))
+        if (Number.isFinite(nextK) && nextKeysRequired != null) {
+          const prevLabel =
+            prevKeysRequiredMin != null && prevKeysRequiredMax != null && prevKeysRequiredMin !== prevKeysRequiredMax
+              ? `${prevKeysRequiredMin}/${prevKeysRequiredMax}`
+              : (prevKeysRequiredMax != null ? String(prevKeysRequiredMax) : (prevRow?.keys_required == null ? '1' : String(prevRow.keys_required)))
+          lines.push(fmt('需挂钥匙套数', nextKeysRequired, prevLabel))
+        }
       }
       if (!lines.length) return res.json({ ok: true, skipped: 'no_change' })
       const hashText = (s: string) => {
