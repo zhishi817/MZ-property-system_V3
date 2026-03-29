@@ -1048,35 +1048,51 @@ async function handleManagerFields(req: any, res: any) {
       if (Number.isFinite(nextK)) {
         const nextK2 = Math.max(1, Math.min(2, Math.trunc(nextK)))
         try {
-          const rrk =
-            repOrderId
-              ? await pgPool.query(
-                  `SELECT
-                     MIN(COALESCE(keys_required, 1)) AS min_k,
-                     MAX(COALESCE(keys_required, 1)) AS max_k
-                   FROM cleaning_tasks
-                   WHERE order_id::text = $1::text`,
-                  [repOrderId],
-                )
-              : await pgPool.query(
-                  `SELECT
-                     MIN(COALESCE(keys_required, 1)) AS min_k,
-                     MAX(COALESCE(keys_required, 1)) AS max_k
-                   FROM cleaning_tasks
-                   WHERE id::text = ANY($1::text[])`,
-                  [parsed.data.task_ids],
-                )
-          const minK = rrk?.rows?.[0]?.min_k == null ? 1 : Number(rrk.rows[0].min_k)
-          const maxK = rrk?.rows?.[0]?.max_k == null ? 1 : Number(rrk.rows[0].max_k)
-          prevKeysRequiredMin = Number.isFinite(minK) ? Math.max(1, Math.min(2, Math.trunc(minK))) : 1
-          prevKeysRequiredMax = Number.isFinite(maxK) ? Math.max(1, Math.min(2, Math.trunc(maxK))) : 1
+          const ids0 = Array.from(new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean)))
+          const rrIds = await pgPool.query(
+            `SELECT id::text AS id, order_id::text AS order_id
+             FROM cleaning_tasks
+             WHERE id::text = ANY($1::text[])`,
+            [ids0],
+          )
+          const orderIds = Array.from(new Set((rrIds?.rows || []).map((x: any) => String(x.order_id || '').trim()).filter(Boolean)))
+          const nullIds = Array.from(
+            new Set(
+              (rrIds?.rows || [])
+                .filter((x: any) => !String(x.order_id || '').trim())
+                .map((x: any) => String(x.id || '').trim())
+                .filter(Boolean),
+            ),
+          )
+          if (!orderIds.length && !nullIds.length) {
+            prevKeysRequiredMin = 1
+            prevKeysRequiredMax = 1
+          } else {
+            const rrk = await pgPool.query(
+              `WITH o AS (SELECT unnest($1::text[]) AS order_id),
+                    i AS (SELECT unnest($2::text[]) AS id)
+               SELECT
+                 MIN(COALESCE(t.keys_required, 1)) AS min_k,
+                 MAX(COALESCE(t.keys_required, 1)) AS max_k,
+                 SUM(CASE WHEN COALESCE(t.keys_required, 1) <> $3 THEN 1 ELSE 0 END) AS diff_count
+               FROM cleaning_tasks t
+               WHERE (t.order_id::text IN (SELECT order_id FROM o))
+                  OR (t.order_id IS NULL AND t.id::text IN (SELECT id FROM i))`,
+              [orderIds, nullIds, nextK2],
+            )
+            const minK = rrk?.rows?.[0]?.min_k == null ? 1 : Number(rrk.rows[0].min_k)
+            const maxK = rrk?.rows?.[0]?.max_k == null ? 1 : Number(rrk.rows[0].max_k)
+            const diffCount = rrk?.rows?.[0]?.diff_count == null ? 0 : Number(rrk.rows[0].diff_count)
+            prevKeysRequiredMin = Number.isFinite(minK) ? Math.max(1, Math.min(2, Math.trunc(minK))) : 1
+            prevKeysRequiredMax = Number.isFinite(maxK) ? Math.max(1, Math.min(2, Math.trunc(maxK))) : 1
+            if (Number.isFinite(diffCount) && diffCount > 0) nextKeysRequired = nextK2
+          }
         } catch {
           const fallback = prevRow?.keys_required == null ? 1 : Number(prevRow.keys_required)
           const k0 = Number.isFinite(fallback) ? Math.max(1, Math.min(2, Math.trunc(fallback))) : 1
           prevKeysRequiredMin = k0
           prevKeysRequiredMax = k0
         }
-        if (prevKeysRequiredMin !== nextK2 || prevKeysRequiredMax !== nextK2) nextKeysRequired = nextK2
       }
     }
     if (!fields.length && nextKeysRequired == null) return res.json({ ok: true, skipped: 'no_change' })
