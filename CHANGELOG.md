@@ -2,11 +2,14 @@
 
 ## Dev (2026-03-29)
 
-- Version: `0.2.7-statement-pdf.20260329+build.1`
+- Version: `0.2.7-statement-pdf.20260329+build.2`
 - Ops: Add Key Upload SLA GitHub Actions workflow (scheduled + manual dispatch) that triggers backend `/jobs/key-upload-sla/cron-trigger` by Melbourne time window.
 - Cleaning: `/cleaning/calendar-range` now includes key-photo upload status (`key_photo_uploaded_at` / `has_key_photo`) for UI rendering.
 - UI: Cleaning schedule and Task Center now show a red “钥匙未上传” indicator for assigned tasks missing key photo.
 - Inventory: Continue multi-warehouse inventory + PO work (backend + UI) and add migration `20260328_inventory_warehouses_po.sql`.
+- Cleaning App: Allow cleaner to delete uploaded key photo; managers can view key photo in task detail; stabilize push `event_id` + in-app notice dedupe; clearer login/timeout errors.
+- Cleaning App: Support “2把钥匙” flag (customer service editable, included in checkout notify, visible to cleaner).
+- Cleaning App: Add end-of-day “备用钥匙放回照片” upload (multi photos, compressed upload) backed by `cleaning_day_end_media`.
 
 ## Dev (2026-03-28)
 

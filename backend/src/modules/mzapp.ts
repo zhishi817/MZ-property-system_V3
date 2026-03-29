@@ -322,6 +322,7 @@ async function ensureCleaningCustomerColumns() {
   cleaningCustomerEnsuring = (async () => {
     try {
       await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS guest_special_request text;`)
+      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
     } finally {
       cleaningCustomerEnsured = true
     }
@@ -507,10 +508,11 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     if (!canViewAll(user) && inspectorId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const uuid = require('uuid')
+    const mediaId = uuid.v4()
     await pgPool.query(
       `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, uploader_id)
        VALUES ($1,$2,'lockbox_video',$3,now(),$4)`,
-      [uuid.v4(), id, mediaUrl, userId],
+      [mediaId, id, mediaUrl, userId],
     )
     await pgPool.query(
       `UPDATE cleaning_tasks
@@ -527,7 +529,7 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
       const taskUsers = excludeUserIds(await listCleaningTaskUserIds(id), userId)
       const managerUsers = await listManagerUserIds()
       const to = Array.from(new Set([...taskUsers, ...managerUsers]))
-      await notifyExpoUsers({ user_ids: to, title: '挂钥匙视频已上传', body: '检查员已上传挂钥匙视频', data: { kind: 'lockbox_video_uploaded', task_id: id, event_id: `lockbox_video_uploaded:${id}:${Date.now()}` } })
+      await notifyExpoUsers({ user_ids: to, title: '挂钥匙视频已上传', body: '检查员已上传挂钥匙视频', data: { kind: 'lockbox_video_uploaded', task_id: id, media_id: mediaId, event_id: `lockbox_video_uploaded:${id}:${mediaId}` } })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -621,6 +623,7 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
 
     await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
     const uuid = require('uuid')
+    const batchId = uuid.v4()
     for (const it of parsed.data.items) {
       const type = `inspection_${it.area}`
       const cap = String(it.captured_at || '').trim()
@@ -640,7 +643,7 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
       const taskUsers = excludeUserIds(await listCleaningTaskUserIds(id), userId)
       const managerUsers = await listManagerUserIds()
       const to = Array.from(new Set([...taskUsers, ...managerUsers]))
-      await notifyExpoUsers({ user_ids: to, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, event_id: `inspection_photos_saved:${id}:${Date.now()}` } })
+      await notifyExpoUsers({ user_ids: to, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, batch_id: batchId, event_id: `inspection_photos_saved:${id}:${batchId}` } })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -743,6 +746,7 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
 
     await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'restock_proof:%'`, [id])
     const uuid = require('uuid')
+    const batchId = uuid.v4()
     for (const it of parsed.data.items) {
       const meta = { status: it.status, qty: it.qty == null ? null : Number(it.qty), note: it.note == null ? null : String(it.note || '') }
       const url = String(it.proof_url || '').trim()
@@ -761,7 +765,7 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
       const taskUsers = excludeUserIds(await listCleaningTaskUserIds(id), userId)
       const managerUsers = await listManagerUserIds()
       const to = Array.from(new Set([...taskUsers, ...managerUsers]))
-      await notifyExpoUsers({ user_ids: to, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, event_id: `restock_proof_saved:${id}:${Date.now()}` } })
+      await notifyExpoUsers({ user_ids: to, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, batch_id: batchId, event_id: `restock_proof_saved:${id}:${batchId}` } })
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -837,9 +841,10 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
       const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds } = require('./notifications')
       let checkedOutAt: string | null = null
       let propertyCode = ''
+      let keysRequired: number | null = null
       try {
         const r = await pgPool.query(
-          `SELECT t.checked_out_at, COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+          `SELECT t.checked_out_at, t.keys_required, COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
            FROM cleaning_tasks t
            LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
            LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
@@ -848,13 +853,15 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
         )
         checkedOutAt = r?.rows?.[0]?.checked_out_at ? String(r.rows[0].checked_out_at) : null
         propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
+        keysRequired = r?.rows?.[0]?.keys_required == null ? null : Number(r.rows[0].keys_required)
       } catch {}
       const to = Array.from(new Set([...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())]))
+      const body = keysRequired && keysRequired >= 2 ? `已退房（${keysRequired}把钥匙）` : '已退房'
       await notifyExpoUsers({
         user_ids: to,
         title: propertyCode ? `已退房：${propertyCode}` : '已退房',
-        body: '已退房',
-        data: { kind: 'guest_checked_out', task_id: id, property_code: propertyCode, checked_out_at: checkedOutAt, event_id: `guest_checked_out:${propertyCode || id}:${checkedOutAt || ''}` },
+        body,
+        data: { kind: 'guest_checked_out', task_id: id, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: `guest_checked_out:${propertyCode || id}:${checkedOutAt || ''}` },
       })
     } catch {}
     return res.status(201).json({ ok: true })
@@ -941,9 +948,10 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
 
     let checkedOutAt: string | null = null
     let propertyCode = ''
+    let keysRequired: number | null = null
     try {
       const r = await pgPool.query(
-        `SELECT t.checked_out_at, COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+        `SELECT t.checked_out_at, t.keys_required, COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
          FROM cleaning_tasks t
          LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
          LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
@@ -952,16 +960,18 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
       )
       checkedOutAt = r?.rows?.[0]?.checked_out_at ? String(r.rows[0].checked_out_at) : null
       propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
+      keysRequired = r?.rows?.[0]?.keys_required == null ? null : Number(r.rows[0].keys_required)
     } catch {}
     const eventId = `guest_checked_out:${propertyCode || ids[0]}:${checkedOutAt || ''}`
     try {
       const { notifyExpoUsers, listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
       const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(ids)), ...(await listManagerUserIds())]))
+      const body = keysRequired && keysRequired >= 2 ? `已退房（${keysRequired}把钥匙）` : '已退房'
       await notifyExpoUsers({
         user_ids: to,
         title: propertyCode ? `已退房：${propertyCode}` : '已退房',
-        body: '已退房',
-        data: { kind: 'guest_checked_out', task_ids: ids, property_code: propertyCode, checked_out_at: checkedOutAt, event_id: eventId },
+        body,
+        data: { kind: 'guest_checked_out', task_ids: ids, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: eventId },
       })
     } catch {}
     return res.status(201).json({ ok: true })
@@ -978,6 +988,7 @@ const managerFieldsSchema = z
     old_code: z.string().trim().max(64).optional().nullable(),
     new_code: z.string().trim().max(64).optional().nullable(),
     guest_special_request: z.string().trim().max(1500).optional().nullable(),
+    keys_required: z.number().int().min(1).max(2).optional().nullable(),
   })
   .strict()
 
@@ -996,7 +1007,7 @@ async function handleManagerFields(req: any, res: any) {
     let prevRow: any = null
     try {
       const r = await pgPool.query(
-        `SELECT t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request,
+        `SELECT t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
                 COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
          FROM cleaning_tasks t
          LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
@@ -1018,6 +1029,7 @@ async function handleManagerFields(req: any, res: any) {
     if (parsed.data.old_code !== undefined) push('old_code', parsed.data.old_code)
     if (parsed.data.new_code !== undefined) push('new_code', parsed.data.new_code)
     if (parsed.data.guest_special_request !== undefined) push('guest_special_request', parsed.data.guest_special_request)
+    if (parsed.data.keys_required !== undefined) push('keys_required', parsed.data.keys_required)
     if (!fields.length) return res.status(400).json({ message: 'no fields' })
 
     vals.push(parsed.data.task_ids)
@@ -1037,6 +1049,7 @@ async function handleManagerFields(req: any, res: any) {
       if (parsed.data.old_code !== undefined) lines.push(fmt('旧密码', parsed.data.old_code, prevRow?.old_code))
       if (parsed.data.new_code !== undefined) lines.push(fmt('新密码', parsed.data.new_code, prevRow?.new_code))
       if (parsed.data.guest_special_request !== undefined) lines.push(fmt('客人需求', parsed.data.guest_special_request, prevRow?.guest_special_request))
+      if (parsed.data.keys_required !== undefined) lines.push(fmt('钥匙数量', parsed.data.keys_required, prevRow?.keys_required))
       const hashText = (s: string) => {
         let h = 0
         for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
@@ -1045,7 +1058,7 @@ async function handleManagerFields(req: any, res: any) {
       let afterRow: any = null
       try {
         const rAfter = await pgPool.query(
-          `SELECT t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request,
+          `SELECT t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
                   COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
            FROM cleaning_tasks t
            LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
@@ -1062,6 +1075,7 @@ async function handleManagerFields(req: any, res: any) {
         old_code: afterRow?.old_code == null ? null : String(afterRow.old_code),
         new_code: afterRow?.new_code == null ? null : String(afterRow.new_code),
         guest_special_request: afterRow?.guest_special_request == null ? null : String(afterRow.guest_special_request),
+        keys_required: afterRow?.keys_required == null ? 1 : Number(afterRow.keys_required),
       }
       const fieldsKey = hashText(JSON.stringify(keyObj))
       const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(parsed.data.task_ids)), ...(await listManagerUserIds())]))
@@ -1342,6 +1356,7 @@ router.get('/work-tasks', async (req, res) => {
             t.old_code,
             t.new_code,
             t.guest_special_request,
+            t.keys_required,
             t.checked_out_at,
             o.checkin::text AS order_checkin,
             o.checkout::text AS order_checkout,
@@ -1465,6 +1480,7 @@ router.get('/work-tasks', async (req, res) => {
             old_code: row.old_code,
             new_code: row.new_code,
             guest_special_request: row.guest_special_request,
+            keys_required: row.keys_required == null ? 1 : Number(row.keys_required),
             checked_out_at: row.checked_out_at,
             key_photo_url: row.key_photo_url,
             lockbox_video_url: row.lockbox_video_url,
@@ -1534,6 +1550,7 @@ router.get('/work-tasks', async (req, res) => {
           const checkedOutAt = firstNonEmpty(p.a.checked_out_at, p.b?.checked_out_at, ...rows.map((x) => x.checked_out_at))
           const keyPhotoUrl = firstNonEmpty(p.a.key_photo_url, p.b?.key_photo_url, ...rows.map((x) => x.key_photo_url))
           const lockboxVideoUrl = firstNonEmpty(p.a.lockbox_video_url, p.b?.lockbox_video_url, ...rows.map((x) => x.lockbox_video_url))
+          const keysRequired = Math.max(...rows.map((x) => (x.keys_required == null ? 1 : Number(x.keys_required))).filter((x) => Number.isFinite(x) && x > 0), 1)
           const cleanerName = firstNonEmpty(p.a.cleaner_name, p.b?.cleaner_name, ...rows.map((x) => x.cleaner_name))
           const inspectorName = firstNonEmpty(p.a.inspector_name, p.b?.inspector_name, ...rows.map((x) => x.inspector_name))
           const inspectorAssigned = firstNonEmpty(p.a.__assignee_inspector, p.b?.__assignee_inspector, ...rows.map((x) => x.__assignee_inspector))
@@ -1629,6 +1646,7 @@ router.get('/work-tasks', async (req, res) => {
             old_code: oldCode,
             new_code: newCode,
             guest_special_request: guestSpecialRequest,
+            keys_required: keysRequired,
             checked_out_at: checkedOutAt,
             key_photo_url: keyPhotoUrl,
             lockbox_video_url: lockboxVideoUrl,
@@ -1709,6 +1727,7 @@ router.get('/work-tasks', async (req, res) => {
         const endTime = firstNonEmpty(...arr.map((x) => x.end_time))
         const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
         const lockboxVideoUrl = firstNonEmpty(...arr.map((x) => x.lockbox_video_url))
+        const keysRequired = Math.max(...arr.map((x) => (x?.keys_required == null ? 1 : Number(x.keys_required))).filter((x) => Number.isFinite(x) && x > 0), 1)
         const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
         const inspectorName = firstNonEmpty(...arr.map((x) => x.inspector_name))
         const restockItems: any[] = []
@@ -1744,6 +1763,7 @@ router.get('/work-tasks', async (req, res) => {
           status: statusOut,
           key_photo_url: keyPhotoUrl,
           lockbox_video_url: lockboxVideoUrl,
+          keys_required: keysRequired,
           cleaner_name: cleanerName,
           inspector_name: inspectorName,
           restock_items: restockItems,
