@@ -48,16 +48,21 @@ import { r2Status } from './r2'
 import { getPlaywrightDiagnostics } from './lib/playwright'
  
  
-// 环境保险锁（允许缺省采用智能默认，不再抛错）
+// 环境保险锁（Render 上用 RENDER_ENV=dev/prod 显式区分，避免误判）
 let appEnv = process.env.APP_ENV
 let dbRole = process.env.DATABASE_ROLE
+const renderEnv = String(process.env.RENDER_ENV || '').trim().toLowerCase()
 if (!appEnv) {
-  appEnv = process.env.NODE_ENV === 'production' ? 'prod' : 'dev'
+  appEnv = renderEnv === 'dev' || renderEnv === 'prod' ? renderEnv : (process.env.NODE_ENV === 'production' ? 'prod' : 'dev')
   process.env.APP_ENV = appEnv
 }
 if (!dbRole) {
-  const url = process.env.DATABASE_URL || ''
-  dbRole = url ? (/localhost/i.test(url) ? 'dev' : 'prod') : 'none'
+  if (renderEnv === 'dev' || renderEnv === 'prod') {
+    dbRole = renderEnv
+  } else {
+    const url = process.env.DATABASE_URL || ''
+    dbRole = url ? (/localhost/i.test(url) ? 'dev' : 'prod') : 'none'
+  }
   process.env.DATABASE_ROLE = dbRole
 }
 if (dbRole !== 'none') {
@@ -76,7 +81,7 @@ if (isProd && hasPg) {
   const url = process.env.DATABASE_URL || ''
   if (!url) throw new Error('DATABASE_URL 未设置')
   if (/localhost/i.test(url)) throw new Error('DATABASE_URL 不能使用 localhost')
-  if (!/[?&]sslmode=require/.test(url)) throw new Error('DATABASE_URL 需包含 sslmode=require')
+  if (!/[?&](sslmode=require|sslmode=verify-full|ssl=true|ssl=1)\b/i.test(url)) throw new Error('DATABASE_URL 需开启 SSL（例如 sslmode=require）')
 }
 
 const app = express()
