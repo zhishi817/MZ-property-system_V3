@@ -1459,6 +1459,24 @@ router.get('/work-tasks', async (req, res) => {
             )
           ORDER BY COALESCE(t.task_date, t.date) ASC, COALESCE(p_id.code, p_code.code) NULLS LAST, t.id`
         const r = await pgPool.query(sql, [dateFrom, dateTo])
+        const orderKeysById = new Map<string, number>()
+        try {
+          const orderIds = Array.from(new Set((r?.rows || []).map((x: any) => (x.order_id ? String(x.order_id) : '')).filter(Boolean)))
+          if (orderIds.length) {
+            const rr0 = await pgPool.query(
+              `SELECT order_id::text AS order_id, MAX(keys_required) AS k
+               FROM cleaning_tasks
+               WHERE order_id::text = ANY($1::text[])
+               GROUP BY order_id`,
+              [orderIds],
+            )
+            for (const x of rr0?.rows || []) {
+              const oid = String(x.order_id || '').trim()
+              const k = x.k == null ? null : Number(x.k)
+              if (oid && k != null && Number.isFinite(k) && k > 0) orderKeysById.set(oid, Math.trunc(k))
+            }
+          }
+        } catch {}
         const taskIds = Array.from(new Set((r?.rows || []).map((x: any) => String(x.id || '')).filter(Boolean)))
         const restockByTaskId = new Map<string, any[]>()
         if (taskIds.length) {
@@ -1528,6 +1546,8 @@ router.get('/work-tasks', async (req, res) => {
 
           const effectiveCleanerId = row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null)
           const inspectorId = row.inspector_id ? String(row.inspector_id) : null
+          const orderId = row.order_id ? String(row.order_id) : null
+          const orderKeysRequired = orderId ? (orderKeysById.get(orderId) || null) : null
 
           const base = {
             __raw_id: String(row.id),
@@ -1535,6 +1555,8 @@ router.get('/work-tasks', async (req, res) => {
             __prop_id: propId,
             __assignee_cleaner: effectiveCleanerId,
             __assignee_inspector: inspectorId,
+            order_id: orderId,
+            order_keys_required: orderKeysRequired,
             raw_status,
             task_type: String(row.task_type || ''),
             checkout_time: row.checkout_time,
@@ -1684,6 +1706,16 @@ router.get('/work-tasks', async (req, res) => {
 
           const outId = p.kind === 'turnover' ? `cleaning_tasks_${roleKind}_turnover:${date}:${propId || 'unknown'}:${assigneeId}` : `cleaning_tasks_${roleKind}:${p.ids.join(',')}`
           const primarySourceId = String(p.a.__raw_id)
+          const checkoutKeys =
+            p.kind === 'turnover' || p.kind === 'checkout'
+              ? Math.max(p.a?.order_keys_required == null ? 0 : Number(p.a.order_keys_required), p.a?.keys_required == null ? 1 : Number(p.a.keys_required), 1)
+              : null
+          const checkinKeys =
+            p.kind === 'turnover'
+              ? Math.max(p.b?.order_keys_required == null ? 0 : Number(p.b.order_keys_required), p.b?.keys_required == null ? 1 : Number(p.b.keys_required), 1)
+              : p.kind === 'checkin'
+                ? Math.max(p.a?.order_keys_required == null ? 0 : Number(p.a.order_keys_required), p.a?.keys_required == null ? 1 : Number(p.a.keys_required), 1)
+                : null
 
           return {
             id: outId,
@@ -1709,6 +1741,8 @@ router.get('/work-tasks', async (req, res) => {
             new_code: newCode,
             guest_special_request: guestSpecialRequest,
             keys_required: keysRequired,
+            keys_required_checkout: checkoutKeys == null || !Number.isFinite(checkoutKeys) ? null : Math.max(1, Math.min(2, Math.trunc(checkoutKeys))),
+            keys_required_checkin: checkinKeys == null || !Number.isFinite(checkinKeys) ? null : Math.max(1, Math.min(2, Math.trunc(checkinKeys))),
             checked_out_at: checkedOutAt,
             key_photo_url: keyPhotoUrl,
             lockbox_video_url: lockboxVideoUrl,
@@ -1790,6 +1824,14 @@ router.get('/work-tasks', async (req, res) => {
         const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
         const lockboxVideoUrl = firstNonEmpty(...arr.map((x) => x.lockbox_video_url))
         const keysRequired = Math.max(...arr.map((x) => (x?.keys_required == null ? 1 : Number(x.keys_required))).filter((x) => Number.isFinite(x) && x > 0), 1)
+        const checkoutKeys = Math.max(
+          ...arr.map((x) => (x?.keys_required_checkout == null ? 0 : Number(x.keys_required_checkout))).filter((x) => Number.isFinite(x) && x > 0),
+          0,
+        )
+        const checkinKeys = Math.max(
+          ...arr.map((x) => (x?.keys_required_checkin == null ? 0 : Number(x.keys_required_checkin))).filter((x) => Number.isFinite(x) && x > 0),
+          0,
+        )
         const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
         const inspectorName = firstNonEmpty(...arr.map((x) => x.inspector_name))
         const restockItems: any[] = []
@@ -1826,6 +1868,8 @@ router.get('/work-tasks', async (req, res) => {
           key_photo_url: keyPhotoUrl,
           lockbox_video_url: lockboxVideoUrl,
           keys_required: keysRequired,
+          keys_required_checkout: checkoutKeys || null,
+          keys_required_checkin: checkinKeys || null,
           cleaner_name: cleanerName,
           inspector_name: inspectorName,
           restock_items: restockItems,
