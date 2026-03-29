@@ -1060,19 +1060,60 @@ async function handleManagerFields(req: any, res: any) {
       const idsForLookup = Array.from(affectedTaskIds)
       const orderIds: string[] = []
       try {
-        const rr = await pgPool.query(`SELECT id::text AS id, order_id::text AS order_id, COALESCE(task_type,'') AS task_type FROM cleaning_tasks WHERE id::text = ANY($1::text[])`, [idsForLookup])
+        const rr = await pgPool.query(
+          `SELECT id::text AS id,
+                  order_id::text AS order_id,
+                  COALESCE(task_type,'') AS task_type,
+                  COALESCE(property_id::text,'') AS property_id,
+                  COALESCE(COALESCE(task_date, date)::text,'') AS task_date
+           FROM cleaning_tasks
+           WHERE id::text = ANY($1::text[])`,
+          [idsForLookup],
+        )
         const checkinOrderIds = Array.from(
           new Set(
             (rr?.rows || [])
-              .filter((x: any) => String(x.task_type || '').trim().toLowerCase() === 'checkin_clean')
+              .filter((x: any) => cleaningType(x.task_type) === 'checkin')
               .map((x: any) => String(x.order_id || '').trim())
               .filter(Boolean),
           ),
         )
         if (checkinOrderIds.length) orderIds.push(...checkinOrderIds)
         else {
-          const anyOrderIds = Array.from(new Set((rr?.rows || []).map((x: any) => String(x.order_id || '').trim()).filter(Boolean)))
-          if (anyOrderIds.length) orderIds.push(...anyOrderIds)
+          const pairs = Array.from(
+            new Set(
+              (rr?.rows || [])
+                .map((x: any) => `${String(x.task_date || '').slice(0, 10)}|${String(x.property_id || '').trim()}`)
+                .filter((k: string) => /^\d{4}-\d{2}-\d{2}\|/.test(k) && !k.endsWith('|')),
+            ),
+          )
+          if (pairs.length) {
+            const dates: string[] = []
+            const props: string[] = []
+            for (const p of pairs) {
+              const [d, prop] = p.split('|')
+              dates.push(d)
+              props.push(prop)
+            }
+            try {
+              const rr2 = await pgPool.query(
+                `WITH pairs AS (
+                   SELECT unnest($1::date[]) AS d, unnest($2::text[]) AS prop
+                 )
+                 SELECT DISTINCT t.order_id::text AS order_id
+                 FROM cleaning_tasks t
+                 JOIN pairs p ON (COALESCE(t.task_date, t.date)::date) = p.d AND COALESCE(t.property_id::text,'') = p.prop
+                 WHERE lower(COALESCE(t.task_type,'')) = 'checkin_clean'`,
+                [dates, props],
+              )
+              const inferred = Array.from(new Set((rr2?.rows || []).map((x: any) => String(x.order_id || '').trim()).filter(Boolean)))
+              if (inferred.length) orderIds.push(...inferred)
+            } catch {}
+          }
+          if (!orderIds.length) {
+            const anyOrderIds = Array.from(new Set((rr?.rows || []).map((x: any) => String(x.order_id || '').trim()).filter(Boolean)))
+            if (anyOrderIds.length) orderIds.push(...anyOrderIds)
+          }
         }
       } catch {}
       if (!orderIds.length && repOrderId) orderIds.push(repOrderId)
