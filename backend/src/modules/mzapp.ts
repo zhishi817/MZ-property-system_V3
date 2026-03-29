@@ -1133,6 +1133,16 @@ async function handleManagerFields(req: any, res: any) {
           }
         } catch {}
       }
+
+      try {
+        await pgPool.query(
+          `UPDATE cleaning_tasks SET keys_required = $1, updated_at = now()
+           WHERE id::text = ANY($2::text[])
+             AND order_id IS NULL
+             AND keys_required <> $1`,
+          [nextKeysRequired, idsForLookup],
+        )
+      } catch {}
     }
 
     try {
