@@ -1046,14 +1046,15 @@ async function handleManagerFields(req: any, res: any) {
       const nextK = parsed.data.keys_required == null ? 1 : Number(parsed.data.keys_required)
       if (Number.isFinite(nextK) && nextK !== prevK) {
         nextKeysRequired = Math.max(1, Math.min(2, Math.trunc(nextK)))
-        push('keys_required', nextKeysRequired)
       }
     }
-    if (!fields.length) return res.json({ ok: true, skipped: 'no_change' })
+    if (!fields.length && nextKeysRequired == null) return res.json({ ok: true, skipped: 'no_change' })
 
-    vals.push(parsed.data.task_ids)
-    const sql = `UPDATE cleaning_tasks SET ${fields.join(', ')}, updated_at = now() WHERE id::text = ANY($${vals.length}::text[])`
-    await pgPool.query(sql, vals)
+    if (fields.length) {
+      vals.push(parsed.data.task_ids)
+      const sql = `UPDATE cleaning_tasks SET ${fields.join(', ')}, updated_at = now() WHERE id::text = ANY($${vals.length}::text[])`
+      await pgPool.query(sql, vals)
+    }
 
     const affectedTaskIds = new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean))
     if (nextKeysRequired != null) {
