@@ -1015,7 +1015,7 @@ async function handleManagerFields(req: any, res: any) {
     let prevRow: any = null
     try {
       const r = await pgPool.query(
-        `SELECT t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
+        `SELECT t.order_id::text AS order_id, t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
                 COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
          FROM cleaning_tasks t
          LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
@@ -1032,32 +1032,64 @@ async function handleManagerFields(req: any, res: any) {
       vals.push(v)
       fields.push(`${sql} = $${vals.length}`)
     }
-    if (parsed.data.checkout_time !== undefined) push('checkout_time', parsed.data.checkout_time)
-    if (parsed.data.checkin_time !== undefined) push('checkin_time', parsed.data.checkin_time)
-    if (parsed.data.old_code !== undefined) push('old_code', parsed.data.old_code)
-    if (parsed.data.new_code !== undefined) push('new_code', parsed.data.new_code)
-    if (parsed.data.guest_special_request !== undefined) push('guest_special_request', parsed.data.guest_special_request)
-    if (parsed.data.keys_required !== undefined) push('keys_required', parsed.data.keys_required)
-    if (!fields.length) return res.status(400).json({ message: 'no fields' })
+    const norm = (v: any) => String(v ?? '').replace(/\s+/g, ' ').trim()
+    const eqNorm = (a: any, b: any) => norm(a) === norm(b)
+    const orderId = String(prevRow?.order_id || '').trim() || null
+    let nextKeysRequired: number | null = null
+    if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) push('checkout_time', parsed.data.checkout_time)
+    if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) push('checkin_time', parsed.data.checkin_time)
+    if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) push('old_code', parsed.data.old_code)
+    if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) push('new_code', parsed.data.new_code)
+    if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) push('guest_special_request', parsed.data.guest_special_request)
+    if (parsed.data.keys_required !== undefined) {
+      const prevK = prevRow?.keys_required == null ? 1 : Number(prevRow.keys_required)
+      const nextK = parsed.data.keys_required == null ? 1 : Number(parsed.data.keys_required)
+      if (Number.isFinite(nextK) && nextK !== prevK) {
+        nextKeysRequired = Math.max(1, Math.min(2, Math.trunc(nextK)))
+        push('keys_required', nextKeysRequired)
+      }
+    }
+    if (!fields.length) return res.json({ ok: true, skipped: 'no_change' })
 
     vals.push(parsed.data.task_ids)
     const sql = `UPDATE cleaning_tasks SET ${fields.join(', ')}, updated_at = now() WHERE id::text = ANY($${vals.length}::text[])`
     await pgPool.query(sql, vals)
+
+    const affectedTaskIds = new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean))
+    if (nextKeysRequired != null && orderId) {
+      await pgPool.query(
+        `UPDATE cleaning_tasks SET keys_required = $1, updated_at = now()
+         WHERE order_id::text = $2::text AND keys_required <> $1`,
+        [nextKeysRequired, orderId],
+      )
+      try {
+        const r2 = await pgPool.query(`SELECT id::text AS id FROM cleaning_tasks WHERE order_id::text = $1::text`, [orderId])
+        for (const x of r2?.rows || []) {
+          const id2 = String(x?.id || '').trim()
+          if (id2) affectedTaskIds.add(id2)
+        }
+      } catch {}
+    }
+
     try {
       const { broadcastCleaningEvent } = require('./events')
-      for (const id of parsed.data.task_ids) broadcastCleaningEvent({ event: 'cleaning_task_manager_fields_updated', task_id: String(id) })
+      for (const id of Array.from(affectedTaskIds)) broadcastCleaningEvent({ event: 'cleaning_task_manager_fields_updated', task_id: String(id) })
     } catch {}
     try {
       const { notifyExpoUsers, listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
-      const norm = (v: any) => String(v ?? '').replace(/\s+/g, ' ').trim()
       const fmt = (label: string, next: any, prev: any) => `${label}：${norm(next) || '-'}（原：${norm(prev) || '-'}）`
       const lines: string[] = []
-      if (parsed.data.checkout_time !== undefined) lines.push(fmt('退房时间', parsed.data.checkout_time, prevRow?.checkout_time))
-      if (parsed.data.checkin_time !== undefined) lines.push(fmt('入住时间', parsed.data.checkin_time, prevRow?.checkin_time))
-      if (parsed.data.old_code !== undefined) lines.push(fmt('旧密码', parsed.data.old_code, prevRow?.old_code))
-      if (parsed.data.new_code !== undefined) lines.push(fmt('新密码', parsed.data.new_code, prevRow?.new_code))
-      if (parsed.data.guest_special_request !== undefined) lines.push(fmt('客人需求', parsed.data.guest_special_request, prevRow?.guest_special_request))
-      if (parsed.data.keys_required !== undefined) lines.push(fmt('钥匙数量', parsed.data.keys_required, prevRow?.keys_required))
+      if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) lines.push(fmt('退房时间', parsed.data.checkout_time, prevRow?.checkout_time))
+      if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) lines.push(fmt('入住时间', parsed.data.checkin_time, prevRow?.checkin_time))
+      if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) lines.push(fmt('旧密码', parsed.data.old_code, prevRow?.old_code))
+      if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) lines.push(fmt('新密码', parsed.data.new_code, prevRow?.new_code))
+      if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) lines.push(fmt('客人需求', parsed.data.guest_special_request, prevRow?.guest_special_request))
+      if (parsed.data.keys_required !== undefined) {
+        const prevK = prevRow?.keys_required == null ? 1 : Number(prevRow.keys_required)
+        const nextK = parsed.data.keys_required == null ? 1 : Number(parsed.data.keys_required)
+        if (Number.isFinite(nextK) && nextK !== prevK) lines.push(fmt('需挂钥匙套数', nextK, prevK))
+      }
+      if (!lines.length) return res.json({ ok: true, skipped: 'no_change' })
       const hashText = (s: string) => {
         let h = 0
         for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
@@ -1086,12 +1118,12 @@ async function handleManagerFields(req: any, res: any) {
         keys_required: afterRow?.keys_required == null ? 1 : Number(afterRow.keys_required),
       }
       const fieldsKey = hashText(JSON.stringify(keyObj))
-      const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(parsed.data.task_ids)), ...(await listManagerUserIds())]))
+      const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(Array.from(affectedTaskIds))), ...(await listManagerUserIds())]))
       await notifyExpoUsers({
         user_ids: to,
         title: propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新',
         body: lines.length ? lines.join('\n') : '任务信息已更新',
-        data: { kind: 'cleaning_task_manager_fields_updated', task_ids: parsed.data.task_ids, property_code: propertyCode, fields_key: fieldsKey, event_id: `manager_fields:${propertyCode || repId}:${fieldsKey}` },
+        data: { kind: 'cleaning_task_manager_fields_updated', task_ids: Array.from(affectedTaskIds), property_code: propertyCode, fields_key: fieldsKey, event_id: `manager_fields:${propertyCode || repId}:${fieldsKey}` },
       })
     } catch {}
     return res.status(201).json({ ok: true })
