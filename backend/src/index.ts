@@ -631,7 +631,7 @@ app.listen(port, () => {
     try {
       const defaultEnabled = process.env.NODE_ENV === 'production'
       const enabled = String(process.env.KEY_UPLOAD_REMINDER_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true'
-      const featureCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true'
+      const featureCleaning = String(process.env.FEATURE_CLEANING_APP || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true'
       if (!enabled) {
         console.log('[key-upload-reminder][schedule] disabled')
         return
