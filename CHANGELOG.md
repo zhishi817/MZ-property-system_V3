@@ -12,9 +12,8 @@
 - Cleaning App: Support “2把钥匙” flag (customer service editable, included in checkout notify, visible to cleaner).
 - MZApp Backend: Fix manager edit “需挂钥匙套数”保存 1 套仍落库为 2（合并任务/同订单任务一起正确更新）。
 - Cleaning App: Add end-of-day “备用钥匙放回照片” upload (multi photos, compressed upload) backed by `cleaning_day_end_media`.
-- Cleaning App: “本周”支持左右滑动翻到上一周/下一周；“本月”也支持排序。
-- Cleaning App: Fix production system notifications missing by registering push only after token is ready.
-- Keys: Fix “入住两套钥匙”误影响同日其他订单退房的 keys_required 传播逻辑（合并任务只应用到入住单，并按同订单同步到对应退房日）。
+- Keys: Fix “入住两套钥匙”误影响同日其他订单退房的 keys_required 传播逻辑（合并任务 keys_required 仅以入住单为准，并按同订单同步）。
+- Inventory UI: Add warehouse management pages (overview/category/warehouses/suppliers/region rules/PO & deliveries views).
 
 ## Dev (2026-03-28)
 
