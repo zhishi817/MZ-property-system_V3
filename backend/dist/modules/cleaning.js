@@ -385,6 +385,17 @@ const patchTaskSchema = zod_1.z.object({
     assignee_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     cleaner_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     inspector_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
+    keys_required: zod_1.z
+        .preprocess((v) => {
+        if (v == null)
+            return v;
+        if (typeof v === 'number')
+            return v;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : v;
+    }, zod_1.z.number().int().min(1).max(2))
+        .optional()
+        .nullable(),
     nights_override: zod_1.z.union([zod_1.z.number().int().nonnegative(), zod_1.z.null()]).optional(),
     old_code: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
     new_code: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
@@ -435,6 +446,8 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             if (!before)
                 return res.status(404).json({ message: 'task not found' });
             const patch = { ...parsed.data };
+            if (patch.keys_required === null)
+                patch.keys_required = 1;
             if (patch.cleaner_id !== undefined && patch.assignee_id === undefined)
                 patch.assignee_id = patch.cleaner_id;
             if (patch.assignee_id !== undefined && patch.cleaner_id === undefined)
@@ -459,12 +472,30 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
             const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`;
             const r1 = await dbAdapter_1.pgPool.query(sql, [...values, String(id)]);
-            return res.json(((_j = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _j === void 0 ? void 0 : _j[0]) || before);
+            const updated = ((_j = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _j === void 0 ? void 0 : _j[0]) || before;
+            if (parsed.data.keys_required !== undefined) {
+                const orderId = String((updated === null || updated === void 0 ? void 0 : updated.order_id) || '').trim();
+                const nextK0 = (updated === null || updated === void 0 ? void 0 : updated.keys_required) == null ? null : Number(updated.keys_required);
+                const nextK = Number.isFinite(nextK0) ? Math.max(1, Math.min(2, Math.trunc(nextK0))) : null;
+                if (orderId && nextK != null) {
+                    try {
+                        await dbAdapter_1.pgPool.query(`UPDATE cleaning_tasks
+               SET keys_required = $1, updated_at = now()
+               WHERE order_id::text = $2::text
+                 AND COALESCE(status,'') <> 'cancelled'
+                 AND COALESCE(keys_required, 1) <> $1`, [nextK, orderId]);
+                    }
+                    catch (_k) { }
+                }
+            }
+            return res.json(updated);
         }
         const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
         if (!task)
             return res.status(404).json({ message: 'task not found' });
         const before = { ...task };
+        if (parsed.data.keys_required === null)
+            parsed.data.keys_required = 1;
         if (parsed.data.property_id !== undefined)
             task.property_id = parsed.data.property_id;
         if (parsed.data.task_date !== undefined) {
@@ -477,6 +508,8 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             task.cleaner_id = parsed.data.cleaner_id;
         if (parsed.data.inspector_id !== undefined)
             task.inspector_id = parsed.data.inspector_id;
+        if (parsed.data.keys_required !== undefined)
+            task.keys_required = parsed.data.keys_required;
         if (parsed.data.nights_override !== undefined)
             task.nights_override = parsed.data.nights_override;
         if (parsed.data.old_code !== undefined)
@@ -509,6 +542,20 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                 task.status = cleaner && inspector ? 'assigned' : 'pending';
             }
         }
+        if (parsed.data.keys_required !== undefined) {
+            const orderId = String(task.order_id || '').trim();
+            const nextK0 = task.keys_required == null ? null : Number(task.keys_required);
+            const nextK = Number.isFinite(nextK0) ? Math.max(1, Math.min(2, Math.trunc(nextK0))) : null;
+            if (orderId && nextK != null) {
+                for (const t of store_1.db.cleaningTasks) {
+                    if (String(t.order_id || '').trim() !== orderId)
+                        continue;
+                    if (String(t.status || '') === 'cancelled')
+                        continue;
+                    t.keys_required = nextK;
+                }
+            }
+        }
         return res.json(task);
     }
     catch (e) {
@@ -528,11 +575,22 @@ const createTaskSchema = zod_1.z.object({
     new_code: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
     checkout_time: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
     checkin_time: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
+    keys_required: zod_1.z
+        .preprocess((v) => {
+        if (v == null)
+            return v;
+        if (typeof v === 'number')
+            return v;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : v;
+    }, zod_1.z.number().int().min(1).max(2))
+        .optional()
+        .nullable(),
     nights_override: zod_1.z.union([zod_1.z.number().int().nonnegative(), zod_1.z.null()]).optional(),
     note: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
 }).strict();
 exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s;
     const parsed = createTaskSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -562,7 +620,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
                     return res.status(400).json({ message: '无效的房源' });
                 normalizedPropertyId = id;
             }
-            catch (_s) { }
+            catch (_t) { }
         }
         else {
             const anyDb = store_1.db;
@@ -587,8 +645,9 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
             new_code: (_l = parsed.data.new_code) !== null && _l !== void 0 ? _l : null,
             checkout_time: (_m = parsed.data.checkout_time) !== null && _m !== void 0 ? _m : null,
             checkin_time: (_o = parsed.data.checkin_time) !== null && _o !== void 0 ? _o : null,
-            nights_override: (_p = parsed.data.nights_override) !== null && _p !== void 0 ? _p : null,
-            note: (_q = parsed.data.note) !== null && _q !== void 0 ? _q : null,
+            keys_required: (_p = parsed.data.keys_required) !== null && _p !== void 0 ? _p : null,
+            nights_override: (_q = parsed.data.nights_override) !== null && _q !== void 0 ? _q : null,
+            note: (_r = parsed.data.note) !== null && _r !== void 0 ? _r : null,
             auto_sync_enabled: true,
             source: 'manual',
         };
@@ -604,7 +663,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
                     const values = keys.map((k) => row[k]);
                     const sql = `INSERT INTO cleaning_tasks(${cols}) VALUES(${args}) RETURNING *`;
                     const r = await client.query(sql, values);
-                    createdRows.push(((_r = r === null || r === void 0 ? void 0 : r.rows) === null || _r === void 0 ? void 0 : _r[0]) || row);
+                    createdRows.push(((_s = r === null || r === void 0 ? void 0 : r.rows) === null || _s === void 0 ? void 0 : _s[0]) || row);
                 }
                 await client.query('COMMIT');
             }
@@ -612,7 +671,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
                 try {
                     await client.query('ROLLBACK');
                 }
-                catch (_t) { }
+                catch (_u) { }
                 throw e;
             }
             finally {
@@ -730,12 +789,15 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
         return res.status(400).json({ message: '无效的检查人员' });
     const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)));
     const basePatch = { ...parsed.data.patch };
+    if (basePatch.keys_required === null)
+        basePatch.keys_required = 1;
     if (basePatch.cleaner_id !== undefined && basePatch.assignee_id === undefined)
         basePatch.assignee_id = basePatch.cleaner_id;
     if (basePatch.assignee_id !== undefined && basePatch.cleaner_id === undefined)
         basePatch.cleaner_id = basePatch.assignee_id;
     try {
         const updated = [];
+        const orderIdsForKeys = new Set();
         for (const id of ids) {
             const r = await (async () => {
                 var _a, _b, _c, _d, _e, _f, _g;
@@ -767,7 +829,13 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
                     const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`;
                     const r1 = await dbAdapter_1.pgPool.query(sql, [...values, id]);
-                    return ((_g = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _g === void 0 ? void 0 : _g[0]) || before;
+                    const row = ((_g = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _g === void 0 ? void 0 : _g[0]) || before;
+                    if (basePatch.keys_required !== undefined) {
+                        const oid = String((row === null || row === void 0 ? void 0 : row.order_id) || '').trim();
+                        if (oid)
+                            orderIdsForKeys.add(oid);
+                    }
+                    return row;
                 }
                 const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
                 if (!task)
@@ -786,6 +854,8 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     task.inspector_id = basePatch.inspector_id;
                 if (basePatch.assignee_id !== undefined)
                     task.assignee_id = basePatch.assignee_id;
+                if (basePatch.keys_required !== undefined)
+                    task.keys_required = basePatch.keys_required;
                 if (basePatch.scheduled_at !== undefined)
                     task.scheduled_at = basePatch.scheduled_at;
                 if (basePatch.note !== undefined)
@@ -802,10 +872,42 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                         task.status = cleaner && inspector ? 'assigned' : 'pending';
                     }
                 }
+                if (basePatch.keys_required !== undefined) {
+                    const oid = String(task.order_id || '').trim();
+                    if (oid)
+                        orderIdsForKeys.add(oid);
+                }
                 return task;
             })();
             if (r)
                 updated.push(r);
+        }
+        if (basePatch.keys_required !== undefined) {
+            const nextK0 = basePatch.keys_required == null ? null : Number(basePatch.keys_required);
+            const nextK = Number.isFinite(nextK0) ? Math.max(1, Math.min(2, Math.trunc(nextK0))) : null;
+            if (nextK != null && orderIdsForKeys.size) {
+                if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
+                    try {
+                        await dbAdapter_1.pgPool.query(`UPDATE cleaning_tasks
+               SET keys_required = $1, updated_at = now()
+               WHERE order_id::text = ANY($2::text[])
+                 AND COALESCE(status,'') <> 'cancelled'
+                 AND COALESCE(keys_required, 1) <> $1`, [nextK, Array.from(orderIdsForKeys)]);
+                    }
+                    catch (_c) { }
+                }
+                else {
+                    for (const oid of Array.from(orderIdsForKeys)) {
+                        for (const t of store_1.db.cleaningTasks) {
+                            if (String(t.order_id || '').trim() !== oid)
+                                continue;
+                            if (String(t.status || '') === 'cancelled')
+                                continue;
+                            t.keys_required = nextK;
+                        }
+                    }
+                }
+            }
         }
         return res.json({ ok: true, updated: updated.length });
     }

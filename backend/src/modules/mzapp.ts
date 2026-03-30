@@ -1037,6 +1037,8 @@ async function handleManagerFields(req: any, res: any) {
     let nextKeysRequired: number | null = null
     let prevKeysRequiredMin: number | null = null
     let prevKeysRequiredMax: number | null = null
+    let keysOrderIds: string[] = []
+    let keysNullIds: string[] = []
     if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) push('checkout_time', parsed.data.checkout_time)
     if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) push('checkin_time', parsed.data.checkin_time)
     if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) push('old_code', parsed.data.old_code)
@@ -1049,21 +1051,22 @@ async function handleManagerFields(req: any, res: any) {
         try {
           const ids0 = Array.from(new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean)))
           const rrIds = await pgPool.query(
-            `SELECT id::text AS id, order_id::text AS order_id
+            `SELECT id::text AS id, order_id::text AS order_id, task_type::text AS task_type
              FROM cleaning_tasks
              WHERE id::text = ANY($1::text[])`,
             [ids0],
           )
-          const orderIds = Array.from(new Set((rrIds?.rows || []).map((x: any) => String(x.order_id || '').trim()).filter(Boolean)))
-          const nullIds = Array.from(
-            new Set(
-              (rrIds?.rows || [])
-                .filter((x: any) => !String(x.order_id || '').trim())
-                .map((x: any) => String(x.id || '').trim())
-                .filter(Boolean),
-            ),
-          )
-          if (!orderIds.length && !nullIds.length) {
+          const pickedRows = (() => {
+            const rows = (rrIds?.rows || []) as any[]
+            const checkins = rows.filter((x: any) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')
+            if (checkins.length) return checkins
+            const checkouts = rows.filter((x: any) => String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean')
+            if (checkouts.length) return checkouts
+            return rows
+          })()
+          keysOrderIds = Array.from(new Set(pickedRows.map((x: any) => String(x.order_id || '').trim()).filter(Boolean)))
+          keysNullIds = Array.from(new Set(pickedRows.filter((x: any) => !String(x.order_id || '').trim()).map((x: any) => String(x.id || '').trim()).filter(Boolean)))
+          if (!keysOrderIds.length && !keysNullIds.length) {
             prevKeysRequiredMin = 1
             prevKeysRequiredMax = 1
           } else {
@@ -1077,7 +1080,7 @@ async function handleManagerFields(req: any, res: any) {
                FROM cleaning_tasks t
                WHERE (t.order_id::text IN (SELECT order_id FROM o))
                   OR (t.order_id IS NULL AND t.id::text IN (SELECT id FROM i))`,
-              [orderIds, nullIds, nextK2],
+              [keysOrderIds, keysNullIds, nextK2],
             )
             const minK = rrk?.rows?.[0]?.min_k == null ? 1 : Number(rrk.rows[0].min_k)
             const maxK = rrk?.rows?.[0]?.max_k == null ? 1 : Number(rrk.rows[0].max_k)
@@ -1104,65 +1107,45 @@ async function handleManagerFields(req: any, res: any) {
 
     const affectedTaskIds = new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean))
     if (nextKeysRequired != null) {
-      const idsForLookup = Array.from(affectedTaskIds)
+      const pool = pgPool
+      if (!pool) return res.status(500).json({ message: 'pg not available' })
       try {
-        const rr = await pgPool.query(
-          `SELECT id::text AS id,
-                  COALESCE(property_id::text,'') AS property_id,
-                  COALESCE(COALESCE(task_date, date)::text,'') AS task_date
-           FROM cleaning_tasks
-           WHERE id::text = ANY($1::text[])`,
-          [idsForLookup],
-        )
-        const pairs = Array.from(
-          new Set(
-            (rr?.rows || [])
-              .map((x: any) => `${String(x.task_date || '').slice(0, 10)}|${String(x.property_id || '').trim()}`)
-              .filter((k: string) => /^\d{4}-\d{2}-\d{2}\|/.test(k) && !k.endsWith('|')),
-          ),
-        )
-        if (pairs.length) {
-          const dates: string[] = []
-          const props: string[] = []
-          for (const p of pairs) {
-            const [d, prop] = p.split('|')
-            dates.push(d)
-            props.push(prop)
-          }
-          await pgPool.query(
-            `WITH pairs AS (
-               SELECT unnest($1::date[]) AS d, unnest($2::text[]) AS prop
-             )
-             UPDATE cleaning_tasks t
-             SET keys_required = $3, updated_at = now()
-             FROM pairs p
-             WHERE (COALESCE(t.task_date, t.date)::date) = p.d
-               AND COALESCE(t.property_id::text,'') = p.prop
-               AND COALESCE(t.status,'') <> 'cancelled'
-               AND t.keys_required <> $3`,
-            [dates, props, nextKeysRequired],
+        const doUpdateOrder = async () => {
+          if (!keysOrderIds.length) return
+          await pool.query(
+            `UPDATE cleaning_tasks
+             SET keys_required = $1, updated_at = now()
+             WHERE order_id::text = ANY($2::text[])
+               AND COALESCE(status,'') <> 'cancelled'
+               AND COALESCE(keys_required, 1) <> $1`,
+            [nextKeysRequired, keysOrderIds],
           )
-          const rIds = await pgPool.query(
-            `WITH pairs AS (
-               SELECT unnest($1::date[]) AS d, unnest($2::text[]) AS prop
-             )
-             SELECT t.id::text AS id
-             FROM cleaning_tasks t
-             JOIN pairs p ON (COALESCE(t.task_date, t.date)::date) = p.d AND COALESCE(t.property_id::text,'') = p.prop`,
-            [dates, props],
+          const rIds = await pool.query(
+            `SELECT id::text AS id
+             FROM cleaning_tasks
+             WHERE order_id::text = ANY($1::text[])`,
+            [keysOrderIds],
           )
           for (const x of rIds?.rows || []) {
             const id2 = String(x?.id || '').trim()
             if (id2) affectedTaskIds.add(id2)
           }
-        } else {
-          await pgPool.query(
-            `UPDATE cleaning_tasks SET keys_required = $1, updated_at = now()
-             WHERE id::text = ANY($2::text[])
-               AND keys_required <> $1`,
-            [nextKeysRequired, idsForLookup],
-          )
         }
+        const doUpdateNull = async () => {
+          if (!keysNullIds.length) return
+          await pool.query(
+            `UPDATE cleaning_tasks
+             SET keys_required = $1, updated_at = now()
+             WHERE order_id IS NULL
+               AND id::text = ANY($2::text[])
+               AND COALESCE(status,'') <> 'cancelled'
+               AND COALESCE(keys_required, 1) <> $1`,
+            [nextKeysRequired, keysNullIds],
+          )
+          for (const id2 of keysNullIds) affectedTaskIds.add(String(id2))
+        }
+        await doUpdateOrder()
+        await doUpdateNull()
       } catch {}
     }
 

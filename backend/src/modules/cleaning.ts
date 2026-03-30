@@ -421,6 +421,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       if (!before) return res.status(404).json({ message: 'task not found' })
 
       const patch: any = { ...parsed.data }
+      if (patch.keys_required === null) patch.keys_required = 1
       if (patch.cleaner_id !== undefined && patch.assignee_id === undefined) patch.assignee_id = patch.cleaner_id
       if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) patch.cleaner_id = patch.assignee_id
       if (patch.task_date != null) patch.date = patch.task_date
@@ -445,17 +446,37 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]))
       const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
       const r1 = await pgPool.query(sql, [...values, String(id)])
-      return res.json(r1?.rows?.[0] || before)
+      const updated = r1?.rows?.[0] || before
+      if (parsed.data.keys_required !== undefined) {
+        const orderId = String(updated?.order_id || '').trim()
+        const nextK0 = updated?.keys_required == null ? null : Number(updated.keys_required)
+        const nextK = Number.isFinite(nextK0 as any) ? Math.max(1, Math.min(2, Math.trunc(nextK0 as any))) : null
+        if (orderId && nextK != null) {
+          try {
+            await pgPool.query(
+              `UPDATE cleaning_tasks
+               SET keys_required = $1, updated_at = now()
+               WHERE order_id::text = $2::text
+                 AND COALESCE(status,'') <> 'cancelled'
+                 AND COALESCE(keys_required, 1) <> $1`,
+              [nextK, orderId],
+            )
+          } catch {}
+        }
+      }
+      return res.json(updated)
     }
 
     const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
     if (!task) return res.status(404).json({ message: 'task not found' })
     const before = { ...task }
+    if ((parsed.data as any).keys_required === null) (parsed.data as any).keys_required = 1
     if (parsed.data.property_id !== undefined) task.property_id = parsed.data.property_id
     if (parsed.data.task_date !== undefined) { task.task_date = parsed.data.task_date; task.date = parsed.data.task_date }
     if (parsed.data.status !== undefined) task.status = parsed.data.status
     if ((parsed.data as any).cleaner_id !== undefined) task.cleaner_id = (parsed.data as any).cleaner_id
     if ((parsed.data as any).inspector_id !== undefined) task.inspector_id = (parsed.data as any).inspector_id
+    if ((parsed.data as any).keys_required !== undefined) task.keys_required = (parsed.data as any).keys_required
     if ((parsed.data as any).nights_override !== undefined) task.nights_override = (parsed.data as any).nights_override
     if ((parsed.data as any).old_code !== undefined) task.old_code = (parsed.data as any).old_code
     if ((parsed.data as any).new_code !== undefined) task.new_code = (parsed.data as any).new_code
@@ -478,6 +499,18 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
         const cleaner = String(task.cleaner_id || task.assignee_id || '').trim()
         const inspector = String(task.inspector_id || '').trim()
         task.status = cleaner && inspector ? 'assigned' : 'pending'
+      }
+    }
+    if ((parsed.data as any).keys_required !== undefined) {
+      const orderId = String((task as any).order_id || '').trim()
+      const nextK0 = (task as any).keys_required == null ? null : Number((task as any).keys_required)
+      const nextK = Number.isFinite(nextK0 as any) ? Math.max(1, Math.min(2, Math.trunc(nextK0 as any))) : null
+      if (orderId && nextK != null) {
+        for (const t of (db.cleaningTasks as any[])) {
+          if (String((t as any).order_id || '').trim() !== orderId) continue
+          if (String((t as any).status || '') === 'cancelled') continue
+          ;(t as any).keys_required = nextK
+        }
       }
     }
     return res.json(task)
@@ -682,10 +715,12 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
   if (!(await isValidStaffId((parsed.data.patch as any).inspector_id ?? null, 'inspector'))) return res.status(400).json({ message: '无效的检查人员' })
   const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)))
   const basePatch: any = { ...parsed.data.patch }
+  if (basePatch.keys_required === null) basePatch.keys_required = 1
   if (basePatch.cleaner_id !== undefined && basePatch.assignee_id === undefined) basePatch.assignee_id = basePatch.cleaner_id
   if (basePatch.assignee_id !== undefined && basePatch.cleaner_id === undefined) basePatch.cleaner_id = basePatch.assignee_id
   try {
     const updated: any[] = []
+    const orderIdsForKeys = new Set<string>()
     for (const id of ids) {
       const r = await (async () => {
         if (hasPg && pgPool) {
@@ -714,7 +749,12 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
           const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]))
           const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`
           const r1 = await pgPool.query(sql, [...values, id])
-          return r1?.rows?.[0] || before
+          const row = r1?.rows?.[0] || before
+          if ((basePatch as any).keys_required !== undefined) {
+            const oid = String(row?.order_id || '').trim()
+            if (oid) orderIdsForKeys.add(oid)
+          }
+          return row
         }
         const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
         if (!task) return null
@@ -724,6 +764,7 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
         if (basePatch.cleaner_id !== undefined) task.cleaner_id = basePatch.cleaner_id
         if (basePatch.inspector_id !== undefined) task.inspector_id = basePatch.inspector_id
         if (basePatch.assignee_id !== undefined) task.assignee_id = basePatch.assignee_id
+        if (basePatch.keys_required !== undefined) task.keys_required = basePatch.keys_required
         if (basePatch.scheduled_at !== undefined) task.scheduled_at = basePatch.scheduled_at
         if (basePatch.note !== undefined) task.note = basePatch.note
         {
@@ -739,9 +780,39 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
             ;(task as any).status = cleaner && inspector ? 'assigned' : 'pending'
           }
         }
+        if (basePatch.keys_required !== undefined) {
+          const oid = String((task as any).order_id || '').trim()
+          if (oid) orderIdsForKeys.add(oid)
+        }
         return task
       })()
       if (r) updated.push(r)
+    }
+    if ((basePatch as any).keys_required !== undefined) {
+      const nextK0 = basePatch.keys_required == null ? null : Number(basePatch.keys_required)
+      const nextK = Number.isFinite(nextK0 as any) ? Math.max(1, Math.min(2, Math.trunc(nextK0 as any))) : null
+      if (nextK != null && orderIdsForKeys.size) {
+        if (hasPg && pgPool) {
+          try {
+            await pgPool.query(
+              `UPDATE cleaning_tasks
+               SET keys_required = $1, updated_at = now()
+               WHERE order_id::text = ANY($2::text[])
+                 AND COALESCE(status,'') <> 'cancelled'
+                 AND COALESCE(keys_required, 1) <> $1`,
+              [nextK, Array.from(orderIdsForKeys)],
+            )
+          } catch {}
+        } else {
+          for (const oid of Array.from(orderIdsForKeys)) {
+            for (const t of (db.cleaningTasks as any[])) {
+              if (String((t as any).order_id || '').trim() !== oid) continue
+              if (String((t as any).status || '') === 'cancelled') continue
+              ;(t as any).keys_required = nextK
+            }
+          }
+        }
+      }
     }
     return res.json({ ok: true, updated: updated.length })
   } catch (e: any) {

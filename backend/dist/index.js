@@ -45,22 +45,28 @@ const recurring_1 = __importDefault(require("./modules/recurring"));
 const invoices_1 = require("./modules/invoices");
 const cms_company_1 = require("./modules/cms_company");
 const cms_company_secrets_1 = require("./modules/cms_company_secrets");
-const keyUploadSlaJob_1 = require("./lib/keyUploadSlaJob");
+const keyUploadReminderJob_1 = require("./lib/keyUploadReminderJob");
 const auth_2 = require("./auth");
 const public_1 = __importDefault(require("./modules/public"));
 const public_admin_1 = __importDefault(require("./modules/public_admin"));
 const r2_1 = require("./r2");
 const playwright_1 = require("./lib/playwright");
-// 环境保险锁（允许缺省采用智能默认，不再抛错）
+// 环境保险锁（Render 上用 RENDER_ENV=dev/prod 显式区分，避免误判）
 let appEnv = process.env.APP_ENV;
 let dbRole = process.env.DATABASE_ROLE;
+const renderEnv = String(process.env.RENDER_ENV || '').trim().toLowerCase();
 if (!appEnv) {
-    appEnv = process.env.NODE_ENV === 'production' ? 'prod' : 'dev';
+    appEnv = renderEnv === 'dev' || renderEnv === 'prod' ? renderEnv : (process.env.NODE_ENV === 'production' ? 'prod' : 'dev');
     process.env.APP_ENV = appEnv;
 }
 if (!dbRole) {
-    const url = process.env.DATABASE_URL || '';
-    dbRole = url ? (/localhost/i.test(url) ? 'dev' : 'prod') : 'none';
+    if (renderEnv === 'dev' || renderEnv === 'prod') {
+        dbRole = renderEnv;
+    }
+    else {
+        const url = process.env.DATABASE_URL || '';
+        dbRole = url ? (/localhost/i.test(url) ? 'dev' : 'prod') : 'none';
+    }
     process.env.DATABASE_ROLE = dbRole;
 }
 if (dbRole !== 'none') {
@@ -81,8 +87,8 @@ if (isProd && dbAdapter_1.hasPg) {
         throw new Error('DATABASE_URL 未设置');
     if (/localhost/i.test(url))
         throw new Error('DATABASE_URL 不能使用 localhost');
-    if (!/[?&]sslmode=require/.test(url))
-        throw new Error('DATABASE_URL 需包含 sslmode=require');
+    if (!/[?&](sslmode=require|sslmode=verify-full|ssl=true|ssl=1)\b/i.test(url))
+        throw new Error('DATABASE_URL 需开启 SSL（例如 sslmode=require）');
 }
 const app = (0, express_1.default)();
 const allowList = String(process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -714,7 +720,7 @@ app.listen(port, () => {
     (async () => {
         try {
             const defaultEnabled = process.env.NODE_ENV === 'production';
-            const enabled = String(process.env.KEY_UPLOAD_SLA_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true';
+            const enabled = String(process.env.KEY_UPLOAD_SLA_ENABLED || 'false').toLowerCase() === 'true';
             const featureCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true';
             if (!enabled) {
                 console.log('[key-upload-sla][schedule] disabled');
@@ -728,47 +734,65 @@ app.listen(port, () => {
                 console.log('[key-upload-sla][schedule] skipped_reason=pg=false');
                 return;
             }
+        }
+        catch (e) {
+            console.error(`[key-upload-sla][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+        }
+    })();
+    (async () => {
+        try {
+            const defaultEnabled = process.env.NODE_ENV === 'production';
+            const enabled = String(process.env.KEY_UPLOAD_REMINDER_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true';
+            const featureCleaning = String(process.env.FEATURE_CLEANING_APP || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true';
+            if (!enabled) {
+                console.log('[key-upload-reminder][schedule] disabled');
+                return;
+            }
+            if (!featureCleaning) {
+                console.log('[key-upload-reminder][schedule] skipped_reason=feature_cleaning_app_disabled');
+                return;
+            }
+            if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool) {
+                console.log('[key-upload-reminder][schedule] skipped_reason=pg=false');
+                return;
+            }
             const schedules = [
-                { expr: '15 10 * * *', position: 1, level: 'remind' },
-                { expr: '30 10 * * *', position: 1, level: 'escalate' },
-                { expr: '45 11 * * *', position: 2, level: 'remind' },
-                { expr: '0 12 * * *', position: 2, level: 'escalate' },
-                { expr: '30 13 * * *', position: 3, level: 'remind' },
-                { expr: '45 13 * * *', position: 3, level: 'escalate' },
-                { expr: '15 14 * * *', position: 4, level: 'remind' },
-                { expr: '30 14 * * *', position: 4, level: 'escalate' },
+                { expr: '0 10 * * *', at: '10:00' },
+                { expr: '30 11 * * *', at: '11:30' },
+                { expr: '0 13 * * *', at: '13:00' },
+                { expr: '0 14 * * *', at: '14:00' },
             ];
             for (const s of schedules) {
-                console.log(`[key-upload-sla][schedule] enabled cron=${s.expr} tz=Australia/Melbourne position=${s.position} level=${s.level}`);
+                console.log(`[key-upload-reminder][schedule] enabled cron=${s.expr} tz=Australia/Melbourne at=${s.at}`);
                 const task = node_cron_1.default.schedule(s.expr, async () => {
                     var _a, _b;
                     const started = Date.now();
                     try {
-                        const lockKey = 135791357 + (s.position * 10) + (s.level === 'escalate' ? 1 : 0);
+                        const lockKey = 246802468 + Number(s.at.replace(':', ''));
                         const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey]);
                         const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
                         if (!ok)
                             return;
-                        const r = await (0, keyUploadSlaJob_1.runKeyUploadSlaCheck)(s.position, s.level);
+                        const r = await (0, keyUploadReminderJob_1.runKeyUploadReminder)({ at: s.at });
                         const dur = Date.now() - started;
                         if (r === null || r === void 0 ? void 0 : r.skipped)
-                            console.log(`[key-upload-sla][schedule] skipped_reason=${String(r.skipped)}`);
+                            console.log(`[key-upload-reminder][schedule] skipped_reason=${String(r.skipped)}`);
                         else
-                            console.log(`[key-upload-sla][schedule] ok position=${s.position} level=${s.level} created=${Number(r.created || 0)} duration_ms=${dur}`);
+                            console.log(`[key-upload-reminder][schedule] ok at=${s.at} duration_ms=${dur}`);
                         try {
                             await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [lockKey]);
                         }
                         catch (_c) { }
                     }
                     catch (e) {
-                        console.error(`[key-upload-sla][schedule] error position=${s.position} level=${s.level} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                        console.error(`[key-upload-reminder][schedule] error at=${s.at} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
                     }
                 }, { scheduled: true, timezone: 'Australia/Melbourne' });
                 task.start();
             }
         }
         catch (e) {
-            console.error(`[key-upload-sla][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+            console.error(`[key-upload-reminder][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
         }
     })();
 });

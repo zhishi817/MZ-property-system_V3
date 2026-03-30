@@ -1,6 +1,6 @@
 "use client"
 
-import { Alert, Button, Checkbox, Col, DatePicker, Divider, Empty, Form, Input, InputNumber, Modal, Row, Segmented, Select, Skeleton, Space, message } from 'antd'
+import { Alert, Button, Checkbox, Col, DatePicker, Divider, Drawer, Empty, Form, Input, InputNumber, Modal, Row, Segmented, Select, Skeleton, Space, message } from 'antd'
 import { DeleteOutlined, EditOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -1357,12 +1357,20 @@ export default function CleaningPage() {
           </div>
         </div>
 
-      <Modal
+      <Drawer
         open={editOpen}
         title="编辑清洁任务"
-        okText="保存"
-        onOk={() => submitEdit().catch((e) => message.error(e?.message || '保存失败'))}
-        onCancel={() => { setEditOpen(false); setEditForm(null) }}
+        width={860}
+        placement="right"
+        onClose={() => { setEditOpen(false); setEditForm(null) }}
+        footer={
+          <div style={{ textAlign: 'right' }}>
+            <Space>
+              <Button onClick={() => { setEditOpen(false); setEditForm(null) }}>取消</Button>
+              <Button type="primary" onClick={() => submitEdit().catch((e) => message.error(e?.message || '保存失败'))}>保存</Button>
+            </Space>
+          </div>
+        }
       >
         {editForm ? (
           <Form layout="vertical">
@@ -1376,19 +1384,6 @@ export default function CleaningPage() {
               <Col span={8}>
                 <Form.Item label="状态">
                   <Select value={editForm.status} onChange={(v) => setEditForm((p) => (p ? { ...p, status: v } : p))} style={{ width: '100%' }} options={statusOptions} />
-                </Form.Item>
-              </Col>
-              <Col span={8}>
-                <Form.Item label="需挂钥匙套数">
-                  <Select
-                    value={editForm.keys_required}
-                    onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required: (Number(v) >= 2 ? 2 : 1) } : p))}
-                    style={{ width: '100%' }}
-                    options={[
-                      { label: '1 套', value: 1 },
-                      { label: '2 套', value: 2 },
-                    ]}
-                  />
                 </Form.Item>
               </Col>
               <Col span={12}>
@@ -1440,79 +1435,41 @@ export default function CleaningPage() {
                 <Row gutter={[16, 16]}>
                   <Col span={24}>
                     <Form.Item label="新增/取消">
-                      <Space wrap>
-                        {editForm.checkout_ids.length ? (
-                          <Button
-                            danger
-                            onClick={() => {
-                              Modal.confirm({
-                                title: '确认取消退房任务？',
-                                content: `将取消 ${editForm.checkout_ids.length} 个退房任务`,
-                                okText: '取消退房',
-                                okButtonProps: { danger: true },
-                                onOk: () => cancelTasksInEdit(editForm.checkout_ids, '退房').catch((e) => message.error(e?.message || '取消失败')),
-                              })
-                            }}
-                          >
-                            取消退房
-                          </Button>
-                        ) : (
-                          <Button
-                            disabled={!editForm.can_add_checkout && !editForm.pending_add_checkout}
-                            onClick={() =>
-                              setEditForm((p) => {
-                                if (!p) return p
-                                const next = !p.pending_add_checkout
-                                if (!next) return { ...p, pending_add_checkout: false, checkout_password: '', checkout_time: '10am' }
-                                return { ...p, pending_add_checkout: true, checkout_time: p.checkout_time || '10am' }
-                              })
-                            }
-                          >
-                            {editForm.pending_add_checkout ? '取消新增退房' : '新增退房'}
-                          </Button>
-                        )}
-
-                        {editForm.checkin_ids.length ? (
-                          <Button
-                            danger
-                            onClick={() => {
-                              Modal.confirm({
-                                title: '确认取消入住任务？',
-                                content: `将取消 ${editForm.checkin_ids.length} 个入住任务`,
-                                okText: '取消入住',
-                                okButtonProps: { danger: true },
-                                onOk: () => cancelTasksInEdit(editForm.checkin_ids, '入住').catch((e) => message.error(e?.message || '取消失败')),
-                              })
-                            }}
-                          >
-                            取消入住
-                          </Button>
-                        ) : (
-                          <Button
-                            disabled={!editForm.can_add_checkin && !editForm.pending_add_checkin}
-                            onClick={() =>
-                              setEditForm((p) => {
-                                if (!p) return p
-                                const next = !p.pending_add_checkin
-                                if (!next) return { ...p, pending_add_checkin: false, checkin_password: '', nights_override: null, checkin_time: '3pm', checkin_task_date: p.task_date }
-                                return { ...p, pending_add_checkin: true, checkin_time: p.checkin_time || '3pm', checkin_task_date: p.checkin_task_date || p.task_date }
-                              })
-                            }
-                          >
-                            {editForm.pending_add_checkin ? '取消新增入住' : '新增入住'}
-                          </Button>
-                        )}
-                      </Space>
+                      {editForm.checkout_ids.length ? (
+                        <Button
+                          danger
+                          onClick={() => {
+                            Modal.confirm({
+                              title: '确认取消退房任务？',
+                              content: `将取消 ${editForm.checkout_ids.length} 个退房任务`,
+                              okText: '取消退房',
+                              okButtonProps: { danger: true },
+                              onOk: () => cancelTasksInEdit(editForm.checkout_ids, '退房').catch((e) => message.error(e?.message || '取消失败')),
+                            })
+                          }}
+                        >
+                          取消退房
+                        </Button>
+                      ) : (
+                        <Button
+                          disabled={!editForm.can_add_checkout && !editForm.pending_add_checkout}
+                          onClick={() =>
+                            setEditForm((p) => {
+                              if (!p) return p
+                              const next = !p.pending_add_checkout
+                              if (!next) return { ...p, pending_add_checkout: false, checkout_password: '', checkout_time: '10am' }
+                              return { ...p, pending_add_checkout: true, checkout_time: p.checkout_time || '10am' }
+                            })
+                          }
+                        >
+                          {editForm.pending_add_checkout ? '取消新增退房' : '新增退房'}
+                        </Button>
+                      )}
                     </Form.Item>
                   </Col>
                   {editForm.pending_add_checkout ? (
                     <Col span={24}>
                       <Alert type="info" showIcon message="保存时将新增退房任务" />
-                    </Col>
-                  ) : null}
-                  {editForm.pending_add_checkin ? (
-                    <Col span={24}>
-                      <Alert type="info" showIcon message="保存时将新增入住任务" />
                     </Col>
                   ) : null}
                   {!editForm.property_id ? (
@@ -1543,45 +1500,104 @@ export default function CleaningPage() {
                 </Row>
 
                 <Divider orientation="left">入住</Divider>
-                {editForm.checkin_ids.length || editForm.pending_add_checkin ? (
-                  <Row gutter={[16, 16]}>
-                    <Col span={12}>
-                      <Form.Item label="入住日期">
-                        <DatePicker value={editForm.checkin_task_date} onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_task_date: v || p.task_date } : p))} style={{ width: '100%' }} />
-                      </Form.Item>
-                      {editForm.checkin_task_date && !editForm.checkin_task_date.isSame(editForm.task_date, 'day') ? <Alert type="info" showIcon message="已标记为隔天入住（入住任务会移动到所选日期）" /> : null}
+                <Row gutter={[16, 16]}>
+                  <Col span={12}>
+                    <Form.Item label="新增/取消">
+                      {editForm.checkin_ids.length ? (
+                        <Button
+                          danger
+                          onClick={() => {
+                            Modal.confirm({
+                              title: '确认取消入住任务？',
+                              content: `将取消 ${editForm.checkin_ids.length} 个入住任务`,
+                              okText: '取消入住',
+                              okButtonProps: { danger: true },
+                              onOk: () => cancelTasksInEdit(editForm.checkin_ids, '入住').catch((e) => message.error(e?.message || '取消失败')),
+                            })
+                          }}
+                        >
+                          取消入住
+                        </Button>
+                      ) : (
+                        <Button
+                          disabled={!editForm.can_add_checkin && !editForm.pending_add_checkin}
+                          onClick={() =>
+                            setEditForm((p) => {
+                              if (!p) return p
+                              const next = !p.pending_add_checkin
+                              if (!next) return { ...p, pending_add_checkin: false, checkin_password: '', nights_override: null, checkin_time: '3pm', checkin_task_date: p.task_date }
+                              return { ...p, pending_add_checkin: true, checkin_time: p.checkin_time || '3pm', checkin_task_date: p.checkin_task_date || p.task_date }
+                            })
+                          }
+                        >
+                          {editForm.pending_add_checkin ? '取消新增入住' : '新增入住'}
+                        </Button>
+                      )}
+                    </Form.Item>
+                  </Col>
+                  <Col span={12}>
+                    <Form.Item label="需挂钥匙套数">
+                      <Select
+                        value={editForm.keys_required}
+                        onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required: (Number(v) >= 2 ? 2 : 1) } : p))}
+                        style={{ width: '100%' }}
+                        options={[
+                          { label: '1 套', value: 1 },
+                          { label: '2 套', value: 2 },
+                        ]}
+                      />
+                    </Form.Item>
+                  </Col>
+                  {editForm.pending_add_checkin ? (
+                    <Col span={24}>
+                      <Alert type="info" showIcon message="保存时将新增入住任务" />
                     </Col>
-                    <Col span={12}>
-                      <Form.Item label="入住时间">
-                        <Select
-                          allowClear
-                          showSearch
-                          optionFilterProp="label"
-                          value={editForm.checkin_time || undefined}
-                          onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
-                          style={{ width: '100%' }}
-                          options={timeOptions}
-                        />
-                      </Form.Item>
+                  ) : null}
+                  {!editForm.property_id ? (
+                    <Col span={24}>
+                      <Alert type="warning" showIcon message="该任务缺少 property_id，无法新增退房/入住" />
                     </Col>
-                    <Col span={12}>
-                      <Form.Item label="入住天数">
-                        <InputNumber
-                          style={{ width: '100%' }}
-                          min={0}
-                          placeholder="例如 2"
-                          value={editForm.nights_override ?? undefined}
-                          onChange={(v) => setEditForm((p) => (p ? { ...p, nights_override: v == null ? null : Number(v) } : p))}
-                        />
-                      </Form.Item>
-                    </Col>
-                    <Col span={12}>
-                      <Form.Item label="入住密码（新密码）">
-                        <Input value={editForm.checkin_password} onChange={(e) => setEditForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))} placeholder="入住密码" />
-                      </Form.Item>
-                    </Col>
-                  </Row>
-                ) : null}
+                  ) : null}
+                  {editForm.checkin_ids.length || editForm.pending_add_checkin ? (
+                    <>
+                      <Col span={12}>
+                        <Form.Item label="入住日期">
+                          <DatePicker value={editForm.checkin_task_date} onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_task_date: v || p.task_date } : p))} style={{ width: '100%' }} />
+                        </Form.Item>
+                        {editForm.checkin_task_date && !editForm.checkin_task_date.isSame(editForm.task_date, 'day') ? <Alert type="info" showIcon message="已标记为隔天入住（入住任务会移动到所选日期）" /> : null}
+                      </Col>
+                      <Col span={12}>
+                        <Form.Item label="入住时间">
+                          <Select
+                            allowClear
+                            showSearch
+                            optionFilterProp="label"
+                            value={editForm.checkin_time || undefined}
+                            onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
+                            style={{ width: '100%' }}
+                            options={timeOptions}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col span={12}>
+                        <Form.Item label="入住天数">
+                          <InputNumber
+                            style={{ width: '100%' }}
+                            min={0}
+                            placeholder="例如 2"
+                            value={editForm.nights_override ?? undefined}
+                            onChange={(v) => setEditForm((p) => (p ? { ...p, nights_override: v == null ? null : Number(v) } : p))}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col span={12}>
+                        <Form.Item label="入住密码（新密码）">
+                          <Input value={editForm.checkin_password} onChange={(e) => setEditForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))} placeholder="入住密码" />
+                        </Form.Item>
+                      </Col>
+                    </>
+                  ) : null}
+                </Row>
               </>
             ) : null}
 
@@ -1600,7 +1616,7 @@ export default function CleaningPage() {
             </Row>
           </Form>
         ) : null}
-      </Modal>
+      </Drawer>
 
       <Modal
         open={manualCreateOpen}
