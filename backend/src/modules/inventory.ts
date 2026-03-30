@@ -608,6 +608,8 @@ router.get('/movements', requirePerm('inventory.view'), async (req, res) => {
       const item = String(q.item_id || '').trim()
       const prop = String(q.property_id || '').trim()
       const type = String(q.type || '').trim()
+      const category = String(q.category || '').trim()
+      const reason = String(q.reason || '').trim()
       const from = String(q.from || '').trim()
       const to = String(q.to || '').trim()
       const limit = Math.min(500, Math.max(1, Number(q.limit || 100)))
@@ -618,6 +620,8 @@ router.get('/movements', requirePerm('inventory.view'), async (req, res) => {
       if (item) { values.push(item); where.push(`m.item_id = $${values.length}`) }
       if (prop) { values.push(prop); where.push(`m.property_id = $${values.length}`) }
       if (type) { values.push(type); where.push(`m.type = $${values.length}`) }
+      if (category) { values.push(category); where.push(`i.category = $${values.length}`) }
+      if (reason) { values.push(reason); where.push(`m.reason = $${values.length}`) }
       if (from) { values.push(from); where.push(`m.created_at >= $${values.length}::timestamptz`) }
       if (to) { values.push(to); where.push(`m.created_at <= $${values.length}::timestamptz`) }
       values.push(limit)
@@ -643,6 +647,85 @@ router.get('/movements', requirePerm('inventory.view'), async (req, res) => {
       return res.json(rows.rows || [])
     }
     return res.json(db.stockMovements || [])
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+async function ensureDailyNecessitiesSchema() {
+  if (!pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_daily_necessities (
+    id text PRIMARY KEY,
+    property_id text,
+    created_by text,
+    created_at timestamptz DEFAULT now()
+  );`)
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS property_code text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS status text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS item_name text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS quantity integer;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS note text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS source_task_id text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitter_name text;')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_prop ON property_daily_necessities(property_id);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_status ON property_daily_necessities(status);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_created_at ON property_daily_necessities(created_at);')
+}
+
+router.get('/daily-replacements', requirePerm('inventory.view'), async (req, res) => {
+  try {
+    if (hasPg && pgPool) {
+      await ensureInventorySchema()
+      await ensureDailyNecessitiesSchema()
+      const q: any = req.query || {}
+      const statusRaw = String(q.status || '').trim()
+      const statuses = statusRaw
+        ? statusRaw
+            .split(',')
+            .map((s) => String(s || '').trim())
+            .filter(Boolean)
+        : []
+      const prop = String(q.property_id || '').trim()
+      const code = String(q.property_code || '').trim()
+      const from = String(q.from || '').trim()
+      const to = String(q.to || '').trim()
+      const limit = Math.min(500, Math.max(1, Number(q.limit || 100)))
+
+      const where: string[] = []
+      const values: any[] = []
+      if (prop) { values.push(prop); where.push(`n.property_id = $${values.length}`) }
+      if (code) { values.push(code); where.push(`COALESCE(n.property_code, p.code) = $${values.length}`) }
+      if (statuses.length) { values.push(statuses); where.push(`COALESCE(n.status,'') = ANY($${values.length}::text[])`) }
+      if (from) { values.push(from); where.push(`COALESCE(n.submitted_at, n.created_at) >= $${values.length}::timestamptz`) }
+      if (to) { values.push(to); where.push(`COALESCE(n.submitted_at, n.created_at) <= $${values.length}::timestamptz`) }
+      values.push(limit)
+
+      const sql = `
+        SELECT
+          n.id,
+          n.property_id,
+          COALESCE(n.property_code, p.code) AS property_code,
+          p.address AS property_address,
+          n.status,
+          n.item_name,
+          n.quantity,
+          n.note,
+          n.photo_urls,
+          n.submitter_name,
+          n.submitted_at,
+          n.created_at
+        FROM property_daily_necessities n
+        LEFT JOIN properties p ON p.id = n.property_id
+        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        ORDER BY COALESCE(n.submitted_at, n.created_at) DESC
+        LIMIT $${values.length}
+      `
+      const r = await pgPool.query(sql, values)
+      return res.json(r.rows || [])
+    }
+    return res.json([])
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
   }

@@ -181,6 +181,30 @@ export async function notifyExpoUsers(params: { user_ids: string[]; title: strin
   return await sendExpoPush(tokens, { title: params.title, body: params.body, data: params.data || {} })
 }
 
+export async function listUserIdsByRoles(roles0: string[]) {
+  if (!hasPg || !pgPool) return []
+  const roles = Array.from(new Set((roles0 || []).map((x) => String(x || '').trim()).filter(Boolean)))
+  if (!roles.length) return []
+  const r = await pgPool.query(
+    `SELECT DISTINCT u.id::text AS id
+     FROM users u
+     LEFT JOIN user_roles ur ON ur.user_id = u.id::text
+     WHERE u.role = ANY($1::text[]) OR ur.role_name = ANY($1::text[])`,
+    [roles],
+  )
+  return Array.from(new Set((r?.rows || []).map((x: any) => String(x.id || '').trim()).filter(Boolean)))
+}
+
+export async function listManagerUserIds(params?: { roles?: string[] }) {
+  if (!hasPg || !pgPool) return []
+  const roles0 = Array.isArray(params?.roles) && params!.roles.length ? params!.roles : ['admin', 'offline_manager', 'customer_service']
+  return await listUserIdsByRoles(roles0)
+}
+
+export async function listCleanerUserIds() {
+  return await listUserIdsByRoles(['cleaner', 'cleaner_inspector'])
+}
+
 export async function listCleaningTaskUserIds(task_id: string) {
   if (!hasPg || !pgPool) return []
   const id = String(task_id || '').trim()

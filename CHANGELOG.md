@@ -1,12 +1,40 @@
 # Changelog
 
+## Dev (2026-03-30)
+
+### build.6
+
+- Version: `0.2.7-statement-pdf.20260330+build.6`
+- MZApp Backend: Extend `/mzapp/property-feedbacks` to support maintenance `items[]` (bulk create by area) and new `daily_necessities` kind (status/item/qty/note/photos) with dedupe.
+- Backend: Add migration `20260330_property_daily_necessities.sql` for `property_daily_necessities` (daily replacements).
+- Backend: Inventory `GET /inventory/daily-replacements` lists daily replacements; `GET /inventory/movements` supports category/reason filter.
+- Admin UI: Restructure “仓库管理” menu into collapsible groups (linen/daily/consumable/other/suppliers), add “日用品更换记录” page, and fix `/inventory/movements` build (Suspense for useSearchParams).
+- Cleaning App: Problem feedback supports 3 kinds (maintenance/deep cleaning/daily), maintenance multi-item list with edit/delete, daily necessities form fields and list/detail rendering.
+
+### build.5
+
+- Version: `0.2.7-statement-pdf.20260330+build.5`
+- DB: Add `orders.keys_required` (source of truth) + backfill migration `20260330_orders_keys_required.sql`.
+- DB: Make `20260330_orders_keys_required.sql` production-safe (conditional backfill if `cleaning_tasks.keys_required` exists).
+- MZApp Backend: Add `/mzapp/cleaning-tasks/order-keys-required` (write orders, sync tasks) and `/mzapp/cleaning-tasks/order-checked-out` (checkout-only by order).
+- MZApp Backend: Block legacy keys_required updates via `/mzapp/cleaning-tasks/manager-fields` to prevent merged-card cross-order mutation.
+- MZApp Backend: work-tasks now includes `order_id_checkin/order_id_checkout` and computes keys_required from `orders.keys_required`.
+- Backend: `/cleaning/tasks` returns keys_required from orders for order-linked tasks; `/cleaning/tasks/:id` and bulk-patch reject keys_required updates for order-linked tasks.
+
 ## Dev (2026-03-29)
 
-- Version: `0.2.7-statement-pdf.20260329+build.1`
+- Version: `0.2.7-statement-pdf.20260329+build.3`
 - Ops: Add Key Upload SLA GitHub Actions workflow (scheduled + manual dispatch) that triggers backend `/jobs/key-upload-sla/cron-trigger` by Melbourne time window.
 - Cleaning: `/cleaning/calendar-range` now includes key-photo upload status (`key_photo_uploaded_at` / `has_key_photo`) for UI rendering.
 - UI: Cleaning schedule and Task Center now show a red “钥匙未上传” indicator for assigned tasks missing key photo.
+- UI: Cleaning schedule “编辑清洁任务”弹窗改为与房源编辑页一致的栅格排列，并新增“需挂钥匙套数”选择（1/2）。
 - Inventory: Continue multi-warehouse inventory + PO work (backend + UI) and add migration `20260328_inventory_warehouses_po.sql`.
+- Cleaning App: Allow cleaner to delete uploaded key photo; managers can view key photo in task detail; stabilize push `event_id` + in-app notice dedupe; clearer login/timeout errors.
+- Cleaning App: Support “2把钥匙” flag (customer service editable, included in checkout notify, visible to cleaner).
+- MZApp Backend: Fix manager edit “需挂钥匙套数”保存 1 套仍落库为 2（合并任务/同订单任务一起正确更新）。
+- Cleaning App: Add end-of-day “备用钥匙放回照片” upload (multi photos, compressed upload) backed by `cleaning_day_end_media`.
+- Keys: Fix “入住两套钥匙”误影响同日其他订单退房的 keys_required 传播逻辑（合并任务 keys_required 仅以入住单为准，并按同订单同步）。
+- Inventory UI: Add warehouse management pages (overview/category/warehouses/suppliers/region rules/PO & deliveries views).
 
 ## Dev (2026-03-28)
 

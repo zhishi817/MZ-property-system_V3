@@ -1,10 +1,8 @@
 "use client"
-import { Card, Table, Space, Select, Button, DatePicker, message, Tag, Input } from 'antd'
-import Link from 'next/link'
-import { Suspense, useEffect, useMemo, useState } from 'react'
+import { Card, Table, Space, Select, Button, DatePicker, message, Tag } from 'antd'
+import { useEffect, useMemo, useState } from 'react'
 import dayjs from 'dayjs'
 import { getJSON } from '../../../lib/api'
-import { useSearchParams } from 'next/navigation'
 
 type Warehouse = { id: string; code: string; name: string; active: boolean }
 type Item = { id: string; name: string; sku: string; unit: string; category: string; active: boolean }
@@ -30,9 +28,17 @@ type MovementRow = {
   property_address?: string | null
 }
 
-function InventoryMovementsInner() {
-  const searchParams = useSearchParams()
-  const category = String(searchParams?.get('category') || '').trim()
+export type MovementsListViewProps = {
+  title: string
+  category?: string
+  fixedType?: 'in' | 'out' | 'adjust'
+  fixedReason?: string
+  initialReason?: string
+  showReasonFilter?: boolean
+}
+
+export default function MovementsListView(props: MovementsListViewProps) {
+  const { title, category, fixedType, fixedReason, initialReason, showReasonFilter } = props
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
   const [items, setItems] = useState<Item[]>([])
   const [properties, setProperties] = useState<PropertyRow[]>([])
@@ -40,14 +46,14 @@ function InventoryMovementsInner() {
   const [warehouseId, setWarehouseId] = useState<string>('')
   const [itemId, setItemId] = useState<string>('')
   const [propertyId, setPropertyId] = useState<string>('')
-  const [type, setType] = useState<string>('')
-  const [q, setQ] = useState<string>('')
+  const [type, setType] = useState<string>(fixedType || '')
+  const [reason, setReason] = useState<string>(fixedReason || initialReason || '')
   const [range, setRange] = useState<[any, any] | null>(null)
 
   async function loadBase() {
     const [ws, its, ps] = await Promise.all([
       getJSON<Warehouse[]>('/inventory/warehouses'),
-      getJSON<Item[]>('/inventory/items?active=true'),
+      getJSON<Item[]>(`/inventory/items?active=true${category ? `&category=${encodeURIComponent(category)}` : ''}`),
       getJSON<PropertyRow[]>('/properties'),
     ])
     setWarehouses(ws || [])
@@ -62,23 +68,23 @@ function InventoryMovementsInner() {
     if (propertyId) params.property_id = propertyId
     if (type) params.type = type
     if (category) params.category = category
+    if (reason) params.reason = reason
     if (range?.[0]) params.from = dayjs(range[0]).toISOString()
     if (range?.[1]) params.to = dayjs(range[1]).toISOString()
     const data = await getJSON<MovementRow[]>(`/inventory/movements?${new URLSearchParams(params as any).toString()}`)
-    const filtered = q
-      ? (data || []).filter(r => `${r.item_name} ${r.item_sku} ${r.property_code || ''} ${r.property_address || ''}`.toLowerCase().includes(q.toLowerCase()))
-      : (data || [])
-    setRows(filtered)
+    setRows(data || [])
   }
 
-  useEffect(() => { loadBase().then(() => load()).catch((e) => message.error(e?.message || '加载失败')) }, [])
+  useEffect(() => { loadBase().then(load).catch((e) => message.error(e?.message || '加载失败')) }, [])
 
   const whOptions = useMemo(() => [{ value: '', label: '全部仓库' }, ...(warehouses || []).filter(w => w.active).map(w => ({ value: w.id, label: `${w.code} - ${w.name}` }))], [warehouses])
-  const itemOptions = useMemo(() => {
-    const xs = category ? (items || []).filter((i) => String(i.category || '').trim() === category) : (items || [])
-    return [{ value: '', label: '全部物料' }, ...xs.map(i => ({ value: i.id, label: `${i.name} (${i.sku})` }))]
-  }, [items, category])
+  const itemOptions = useMemo(() => [{ value: '', label: '全部物料' }, ...(items || []).map(i => ({ value: i.id, label: `${i.name} (${i.sku})` }))], [items])
   const propOptions = useMemo(() => [{ value: '', label: '全部房源' }, ...(properties || []).map(p => ({ value: p.id, label: `${p.code || ''} ${p.address || ''}`.trim() }))], [properties])
+  const typeOptions = useMemo(() => {
+    const base = [{ value: '', label: '全部类型' }, { value: 'in', label: '入库' }, { value: 'out', label: '出库' }, { value: 'adjust', label: '调整' }]
+    if (fixedType) return base.filter(x => !x.value || x.value === fixedType)
+    return base
+  }, [fixedType])
 
   const columns: any[] = [
     { title: '时间', dataIndex: 'created_at', render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm') },
@@ -92,35 +98,33 @@ function InventoryMovementsInner() {
   ]
 
   return (
-    <Card
-      title={category ? `${category === 'daily' ? '日用品' : category}库存流水` : '库存流水'}
-      extra={
-        <Space>
-          <Link href="/inventory/stocks" prefetch={false}><Button type="link">库存</Button></Link>
-          <Link href="/inventory/movements" prefetch={false}><Button type="link">流水</Button></Link>
-          <Link href="/inventory/purchase-orders" prefetch={false}><Button type="link">采购单</Button></Link>
-          <Link href="/inventory/items" prefetch={false}><Button type="link">物料</Button></Link>
-        </Space>
-      }
-    >
+    <Card title={title}>
       <Space wrap style={{ marginBottom: 12 }}>
         <Select value={warehouseId} options={whOptions} onChange={setWarehouseId} style={{ minWidth: 200 }} />
         <Select value={itemId} options={itemOptions} onChange={setItemId} style={{ minWidth: 240 }} showSearch optionFilterProp="label" />
         <Select value={propertyId} options={propOptions} onChange={setPropertyId} style={{ minWidth: 240 }} showSearch optionFilterProp="label" />
-        <Select value={type} options={[{ value: '', label: '全部类型' }, { value: 'in', label: '入库' }, { value: 'out', label: '出库' }, { value: 'adjust', label: '调整' }]} onChange={setType} style={{ width: 140 }} />
+        <Select value={type} options={typeOptions} onChange={(v) => setType(v)} style={{ width: 140 }} disabled={!!fixedType} />
+        {showReasonFilter ? (
+          <Select
+            value={reason}
+            onChange={(v) => setReason(v)}
+            style={{ width: 180 }}
+            options={[
+              { value: '', label: '全部原因' },
+              { value: 'manual', label: '手工' },
+              { value: 'property_issue', label: '房源领用' },
+              { value: 'purchase_delivery', label: '到货入库' },
+              { value: 'transfer', label: '调拨' },
+              { value: 'return_to_supplier', label: '退货' },
+              { value: 'damage', label: '报损' },
+            ]}
+            disabled={!!fixedReason}
+          />
+        ) : null}
         <DatePicker.RangePicker value={range as any} onChange={(v) => setRange(v as any)} allowClear />
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="关键字筛选" style={{ width: 180 }} allowClear />
         <Button type="primary" onClick={() => load().catch((e) => message.error(e?.message || '加载失败'))}>查询</Button>
       </Space>
       <Table rowKey={(r) => r.id} columns={columns} dataSource={rows} pagination={{ pageSize: 20 }} />
     </Card>
-  )
-}
-
-export default function InventoryMovementsPage() {
-  return (
-    <Suspense fallback={<Card title="库存流水" loading />}>
-      <InventoryMovementsInner />
-    </Suspense>
   )
 }

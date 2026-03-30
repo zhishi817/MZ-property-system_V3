@@ -887,15 +887,19 @@ router.post('/email-sync/cron-trigger', require('../auth').allowCronTokenOrPerm(
 
 router.post('/key-upload-sla/cron-trigger', allowCronTokenOrPerm('order.manage'), async (req, res) => {
   try {
+    return res.status(410).json({ message: 'key-upload-sla disabled' })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'cron_trigger_failed') })
+  }
+})
+
+router.post('/key-upload-reminder/cron-trigger', allowCronTokenOrPerm('order.manage'), async (req, res) => {
+  try {
     if (!hasPg) return res.status(400).json({ message: 'pg required' })
     const body = req.body || {}
-    const rawPos = body.position ?? (req.query as any)?.position
-    const rawLevel = body.level ?? (req.query as any)?.level
-    const position = Math.max(1, Math.min(50, Number(rawPos || 1)))
-    const level0 = String(rawLevel || 'remind').trim().toLowerCase()
-    const level = level0 === 'escalate' ? 'escalate' : 'remind'
-    const { runKeyUploadSlaCheck } = require('../lib/keyUploadSlaJob')
-    const result = await runKeyUploadSlaCheck(position, level)
+    const at = String(body.at ?? (req.query as any)?.at ?? '').trim() || 'manual'
+    const { runKeyUploadReminder } = require('../lib/keyUploadReminderJob')
+    const result = await runKeyUploadReminder({ at })
     return res.json({ ok: true, result })
   } catch (e: any) {
     return res.status(500).json({ message: String(e?.message || 'cron_trigger_failed') })

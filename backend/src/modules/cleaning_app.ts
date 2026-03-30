@@ -50,6 +50,13 @@ async function hasPerm(roleName: string, code: string): Promise<boolean> {
   return roleHasPermission(roleName, code)
 }
 
+async function notifyRecipientsForTask(taskId: string, actorId: string) {
+  const { listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
+  const taskUsers = excludeUserIds(await listCleaningTaskUserIds(taskId), actorId)
+  const managerUsers = await listManagerUserIds()
+  return Array.from(new Set([...taskUsers, ...managerUsers]))
+}
+
 // List tasks for app (self or all)
 router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_app.tasks.view.self']), async (req, res) => {
   const { assignee_id, date_from, date_to, status } = req.query as { assignee_id?: string; date_from?: string; date_to?: string; status?: string }
@@ -175,8 +182,8 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
       try { broadcastCleaningEvent({ event: 'started', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({
           user_ids: to,
           title: '钥匙已上传',
@@ -191,6 +198,44 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
     return res.status(500).json({ message: e?.message || 'error' })
   }
 })
+
+async function handleDeleteKeyPhoto(req: any, res: any) {
+  const user = (req as any).user
+  const { id } = req.params
+  try {
+    if (!hasPg) return res.json({ ok: true })
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.json({ ok: true })
+    const userId = String(user?.sub || '').trim()
+    if (!userId) return res.status(401).json({ message: 'unauthorized' })
+
+    const r = await pgPool.query(
+      `SELECT COALESCE(cleaner_id, assignee_id)::text AS cleaner_id
+       FROM cleaning_tasks
+       WHERE id::text = $1::text`,
+      [String(id || '').trim()],
+    )
+    const cleanerId = String(r?.rows?.[0]?.cleaner_id || '').trim()
+    if (!cleanerId || cleanerId !== userId) return res.status(403).json({ message: 'forbidden' })
+
+    await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'key_photo'`, [String(id || '').trim()])
+    await pgPool.query(`UPDATE cleaning_tasks SET key_photo_uploaded_at = NULL WHERE id::text = $1::text`, [String(id || '').trim()])
+
+    try { broadcastCleaningEvent({ event: 'key_photo_deleted', task_id: id }) } catch {}
+    try {
+      const now = new Date().toISOString()
+      const { notifyExpoUsers } = require('./notifications')
+      const to = await notifyRecipientsForTask(id, userId)
+      await notifyExpoUsers({ user_ids: to, title: '钥匙照片已删除', body: '清洁员删除了已上传的钥匙照片', data: { kind: 'key_photo_deleted', task_id: id, event_id: `key_photo_deleted:${id}:${now}` } })
+    } catch {}
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+}
+
+router.delete('/tasks/:id/key-photo', requirePerm('cleaning_app.tasks.start'), handleDeleteKeyPhoto)
+router.post('/tasks/:id/key-photo/delete', requirePerm('cleaning_app.tasks.start'), handleDeleteKeyPhoto)
 
 // Report issue
 const issueSchema = z.object({ title: z.string().min(1), detail: z.string().optional(), severity: z.string().optional(), media_url: z.string().optional() })
@@ -209,13 +254,13 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
       }
       try { broadcastCleaningEvent({ event: 'issue', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({
           user_ids: to,
           title: '任务有更新',
           body: '清洁员提交了问题',
-          data: { kind: 'issue_reported', task_id: id, event_id: `issue_reported:${id}:${Date.now()}` },
+          data: { kind: 'issue_reported', task_id: id, issue_id: issue.id, event_id: `issue_reported:${issue.id}` },
         })
       } catch {}
       return res.status(201).json(issue)
@@ -308,7 +353,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       const up = await pgUpdate('cleaning_tasks', id, patch)
       try { broadcastCleaningEvent({ event: 'consumables_submitted', task_id: id, restock_pending: needsRestock }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
+        const { notifyExpoUsers } = require('./notifications')
         let propertyCode = ''
         try {
           const { pgPool } = require('../dbAdapter')
@@ -325,7 +370,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
           }
         } catch {}
         const eventId = `consumables_submitted:${propertyCode || id}:${String(patch.finished_at || '')}`
-        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({
           user_ids: to,
           title: propertyCode ? `清洁完成：${propertyCode}` : '清洁完成',
@@ -350,9 +395,10 @@ router.patch('/tasks/:id/restock', requireAnyPerm(['cleaning_app.restock.manage'
       const up = await pgUpdate('cleaning_tasks', id, { status: 'restocked' } as any)
       try { broadcastCleaningEvent({ event: 'restock_done', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
-        await notifyExpoUsers({ user_ids: to, title: '任务有更新', body: '补货已完成，待检查', data: { kind: 'restock_done', task_id: id, event_id: `restock_done:${id}:${Date.now()}` } })
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
+        const now = new Date().toISOString()
+        await notifyExpoUsers({ user_ids: to, title: '任务有更新', body: '补货已完成，待检查', data: { kind: 'restock_done', task_id: id, event_id: `restock_done:${id}:${now}` } })
       } catch {}
       return res.json(up || { id, status: 'restocked' })
     }
@@ -378,8 +424,8 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
       try { broadcastCleaningEvent({ event: 'inspected', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({ user_ids: to, title: '检查已完成', body: '检查员已提交挂钥匙视频并标记完成', data: { kind: 'inspection_complete', task_id: id, event_id: `inspection_complete:${id}:${now}` } })
       } catch {}
       return res.json(up || patch)
@@ -397,6 +443,25 @@ async function ensureCleaningTaskMediaNote() {
     if (!pgPool) return
     await pgPool.query(`ALTER TABLE cleaning_task_media ADD COLUMN IF NOT EXISTS note text;`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type ON cleaning_task_media(task_id, type);`)
+  } catch {}
+}
+
+async function ensureCleaningDayEndMediaTable() {
+  try {
+    if (!hasPg) return
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_day_end_media (
+      id text PRIMARY KEY,
+      user_id text NOT NULL,
+      date date NOT NULL,
+      kind text NOT NULL DEFAULT 'backup_key_return',
+      url text NOT NULL,
+      captured_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_day_end_media_user_date ON cleaning_day_end_media(user_id, date);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_day_end_media_date ON cleaning_day_end_media(date);`)
   } catch {}
 }
 
@@ -465,6 +530,7 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       const uuid = require('uuid')
+      const batchId = uuid.v4()
       await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
       for (const it of parsed.data.items) {
         const type = `inspection_${it.area}`
@@ -478,9 +544,9 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
       }
       try { broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
-        await notifyExpoUsers({ user_ids: to, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, event_id: `inspection_photos_saved:${id}:${Date.now()}` } })
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
+        await notifyExpoUsers({ user_ids: to, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, batch_id: batchId, event_id: `inspection_photos_saved:${id}:${batchId}` } })
       } catch {}
       return res.status(201).json({ ok: true })
     }
@@ -555,6 +621,7 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       const uuid = require('uuid')
+      const batchId = uuid.v4()
       await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'completion_%'`, [id])
       for (const it of parsed.data.items) {
         const type = `completion_${it.area}`
@@ -568,13 +635,13 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
       }
       try { broadcastCleaningEvent({ event: 'completion_photos_saved', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({
           user_ids: to,
           title: '房间完成照片已提交',
           body: '清洁员已上传房间完成照片',
-          data: { kind: 'completion_photos_saved', task_id: id, event_id: `completion_photos_saved:${id}:${Date.now()}` },
+          data: { kind: 'completion_photos_saved', task_id: id, batch_id: batchId, event_id: `completion_photos_saved:${id}:${batchId}` },
         })
       } catch {}
       return res.status(201).json({ ok: true })
@@ -607,13 +674,13 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       const up = await pgUpdate('cleaning_tasks', id, { lockbox_video_uploaded_at: now } as any)
       try { broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
         await notifyExpoUsers({
           user_ids: to,
           title: '挂钥匙视频已上传',
           body: '清洁员已上传挂钥匙视频',
-          data: { kind: 'lockbox_video_uploaded', task_id: id, event_id: `lockbox_video_uploaded:${id}:${Date.now()}` },
+          data: { kind: 'lockbox_video_uploaded', task_id: id, event_id: `lockbox_video_uploaded:${id}:${now}` },
         })
       } catch {}
       return res.status(201).json(up || { id, lockbox_video_uploaded_at: now })
@@ -687,13 +754,13 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
         const up = await pgUpdate('cleaning_tasks', id, patch)
         try { broadcastCleaningEvent({ event: 'self_completed', task_id: id }) } catch {}
         try {
-          const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
-          const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
+          const { notifyExpoUsers } = require('./notifications')
+          const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
           await notifyExpoUsers({
             user_ids: to,
             title: '任务已完成',
             body: '清洁员已标记任务完成',
-            data: { kind: 'self_completed', task_id: id, event_id: `self_completed:${id}:${Date.now()}` },
+            data: { kind: 'self_completed', task_id: id, event_id: `self_completed:${id}:${now}` },
           })
         } catch {}
         return res.json(up || { id, ...patch })
@@ -779,6 +846,7 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       const uuid = require('uuid')
+      const batchId = uuid.v4()
       await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'restock_proof:%'`, [id])
       for (const it of parsed.data.items) {
         const meta = { status: it.status, qty: it.qty == null ? null : Number(it.qty), note: it.note == null ? null : String(it.note || '') }
@@ -791,9 +859,9 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
       }
       try { broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
-        await notifyExpoUsers({ user_ids: to, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, event_id: `restock_proof_saved:${id}:${Date.now()}` } })
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
+        await notifyExpoUsers({ user_ids: to, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, batch_id: batchId, event_id: `restock_proof_saved:${id}:${batchId}` } })
       } catch {}
       return res.status(201).json({ ok: true })
     }
@@ -812,13 +880,86 @@ router.patch('/tasks/:id/ready', requirePerm('cleaning_app.ready.set'), async (r
       const up = await pgUpdate('cleaning_tasks', id, { status: 'ready' } as any)
       try { broadcastCleaningEvent({ event: 'ready', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, excludeUserIds } = require('./notifications')
-        const to = excludeUserIds(await listCleaningTaskUserIds(id), String(user?.sub || ''))
-        await notifyExpoUsers({ user_ids: to, title: '可入住', body: '房源已标记为可入住', data: { kind: 'ready', task_id: id, event_id: `ready:${id}:${Date.now()}` } })
+        const { notifyExpoUsers } = require('./notifications')
+        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
+        const now = new Date().toISOString()
+        await notifyExpoUsers({ user_ids: to, title: '可入住', body: '房源已标记为可入住', data: { kind: 'ready', task_id: id, event_id: `ready:${id}:${now}` } })
       } catch {}
       return res.json(up || { id, status: 'ready' })
     }
     return res.json({ id, status: 'ready' })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+const dayEndBackupKeysListSchema = z.object({ date: z.string().trim().min(10).max(32).optional(), user_id: z.string().trim().max(80).optional() })
+
+router.get('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.calendar.view.all']), async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = dayEndBackupKeysListSchema.safeParse(req.query || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!hasPg) return res.json({ items: [] })
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.json({ items: [] })
+    await ensureCleaningDayEndMediaTable()
+    const date = String(parsed.data.date || '').slice(0, 10)
+    const canAll = String(user?.role || '') === 'admin' || String(user?.role || '') === 'offline_manager' || String(user?.role || '') === 'customer_service'
+    const userId = canAll && parsed.data.user_id ? String(parsed.data.user_id) : String(user.sub || '')
+    if (!userId) return res.status(401).json({ message: 'unauthorized' })
+    const r = await pgPool.query(
+      `SELECT id, url, captured_at, created_at
+       FROM cleaning_day_end_media
+       WHERE user_id = $1::text
+         AND ($2::date IS NULL OR date = $2::date)
+         AND kind = 'backup_key_return'
+       ORDER BY created_at ASC`,
+      [userId, date ? date : null],
+    )
+    const items = (r?.rows || []).map((x: any) => ({
+      id: String(x.id || ''),
+      url: String(x.url || ''),
+      captured_at: x.captured_at ? String(x.captured_at) : null,
+      created_at: x.created_at ? String(x.created_at) : null,
+    }))
+    return res.json({ items })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+const dayEndBackupKeysPostSchema = z
+  .object({
+    date: z.string().trim().min(10).max(32),
+    items: z.array(z.object({ url: z.string().trim().min(1).max(800), captured_at: z.string().trim().max(64).optional() })).min(1).max(30),
+  })
+  .strict()
+
+router.post('/day-end/backup-keys', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = dayEndBackupKeysPostSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!hasPg) return res.status(201).json({ ok: true })
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+    await ensureCleaningDayEndMediaTable()
+    const uuid = require('uuid')
+    const userId = String(user.sub || '').trim()
+    const date = String(parsed.data.date || '').slice(0, 10)
+    for (const it of parsed.data.items) {
+      const cap = String(it.captured_at || '').trim()
+      const capturedAt = cap ? new Date(cap) : null
+      await pgPool.query(
+        `INSERT INTO cleaning_day_end_media (id, user_id, date, kind, url, captured_at)
+         VALUES ($1,$2,$3,'backup_key_return',$4,$5)`,
+        [uuid.v4(), userId, date, String(it.url), capturedAt ? capturedAt.toISOString() : null],
+      )
+    }
+    return res.status(201).json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'error' })
   }

@@ -300,7 +300,7 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
         user_ids: to,
         title: '任务有更新',
         body: `${String(row.title || '任务')} 已更新`,
-        data: { kind: 'work_task_updated', task_id: String(row.id), source_type: String(row.source_type || ''), source_id: String(row.source_id || ''), event_id: `work_task_updated:${String(row.id)}:${Date.now()}` },
+        data: { kind: 'work_task_updated', task_id: String(row.id), source_type: String(row.source_type || ''), source_id: String(row.source_id || ''), event_id: `work_task_updated:${String(row.id)}:${String(row.updated_at || '').trim() || new Date().toISOString()}` },
       })
     } catch {}
     return res.json({

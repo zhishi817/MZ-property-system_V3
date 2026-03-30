@@ -293,17 +293,43 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
     if (hasPg && pgPool) {
       if (date) {
         const r = await pgPool.query(
-          'SELECT * FROM cleaning_tasks WHERE (COALESCE(task_date, date)::date) = ($1::date) ORDER BY property_id NULLS LAST, id',
+          `SELECT t.*, o.keys_required AS order_keys_required
+           FROM cleaning_tasks t
+           LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
+           WHERE (COALESCE(t.task_date, t.date)::date) = ($1::date)
+           ORDER BY t.property_id NULLS LAST, t.id`,
           [date]
         )
-        return res.json(r?.rows || [])
+        return res.json((r?.rows || []).map((x: any) => {
+          if (x?.order_id && x?.order_keys_required != null) x.keys_required = Number(x.order_keys_required)
+          delete x.order_keys_required
+          return x
+        }))
       }
-      const r = await pgPool.query('SELECT * FROM cleaning_tasks ORDER BY COALESCE(task_date, date) NULLS LAST, property_id NULLS LAST, id')
-      return res.json(r?.rows || [])
+      const r = await pgPool.query(
+        `SELECT t.*, o.keys_required AS order_keys_required
+         FROM cleaning_tasks t
+         LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
+         ORDER BY COALESCE(t.task_date, t.date) NULLS LAST, t.property_id NULLS LAST, t.id`,
+      )
+      return res.json((r?.rows || []).map((x: any) => {
+        if (x?.order_id && x?.order_keys_required != null) x.keys_required = Number(x.order_keys_required)
+        delete x.order_keys_required
+        return x
+      }))
     }
     const rows = (db.cleaningTasks as any[]).slice()
     if (!date) return res.json(rows)
-    return res.json(rows.filter((t: any) => String(t.task_date || t.date || '').slice(0, 10) === date))
+    const orders = (db.orders || []) as any[]
+    const byId = new Map<string, any>()
+    for (const o of orders) byId.set(String(o.id), o)
+    return res.json(rows.filter((t: any) => String(t.task_date || t.date || '').slice(0, 10) === date).map((t: any) => {
+      const out = { ...t }
+      const oid = String(out.order_id || '').trim()
+      const o = oid ? byId.get(oid) : null
+      if (o && o.keys_required != null) out.keys_required = Number(o.keys_required) >= 2 ? 2 : 1
+      return out
+    }))
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'query_failed' })
   }
@@ -364,6 +390,15 @@ const patchTaskSchema = z.object({
   assignee_id: z.union([z.string().min(1), z.null()]).optional(),
   cleaner_id: z.union([z.string().min(1), z.null()]).optional(),
   inspector_id: z.union([z.string().min(1), z.null()]).optional(),
+  keys_required: z
+    .preprocess((v) => {
+      if (v == null) return v
+      if (typeof v === 'number') return v
+      const n = Number(v)
+      return Number.isFinite(n) ? n : v
+    }, z.number().int().min(1).max(2))
+    .optional()
+    .nullable(),
   nights_override: z.union([z.number().int().nonnegative(), z.null()]).optional(),
   old_code: z.union([z.string(), z.null()]).optional(),
   new_code: z.union([z.string(), z.null()]).optional(),
@@ -411,7 +446,12 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       const before = r0?.rows?.[0] || null
       if (!before) return res.status(404).json({ message: 'task not found' })
 
+      if (parsed.data.keys_required !== undefined && before.order_id) {
+        return res.status(400).json({ message: '该任务关联订单，钥匙套数请按订单更新（orders.keys_required）' })
+      }
+
       const patch: any = { ...parsed.data }
+      if (patch.keys_required === null) patch.keys_required = 1
       if (patch.cleaner_id !== undefined && patch.assignee_id === undefined) patch.assignee_id = patch.cleaner_id
       if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) patch.cleaner_id = patch.assignee_id
       if (patch.task_date != null) patch.date = patch.task_date
@@ -436,17 +476,40 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]))
       const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
       const r1 = await pgPool.query(sql, [...values, String(id)])
-      return res.json(r1?.rows?.[0] || before)
+      const updated = r1?.rows?.[0] || before
+      if (parsed.data.keys_required !== undefined) {
+        const orderId = String(updated?.order_id || '').trim()
+        const nextK0 = updated?.keys_required == null ? null : Number(updated.keys_required)
+        const nextK = Number.isFinite(nextK0 as any) ? Math.max(1, Math.min(2, Math.trunc(nextK0 as any))) : null
+        if (orderId && nextK != null) {
+          try {
+            await pgPool.query(
+              `UPDATE cleaning_tasks
+               SET keys_required = $1, updated_at = now()
+               WHERE order_id::text = $2::text
+                 AND COALESCE(status,'') <> 'cancelled'
+                 AND COALESCE(keys_required, 1) <> $1`,
+              [nextK, orderId],
+            )
+          } catch {}
+        }
+      }
+      return res.json(updated)
     }
 
     const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
     if (!task) return res.status(404).json({ message: 'task not found' })
     const before = { ...task }
+    if ((parsed.data as any).keys_required !== undefined && String((task as any).order_id || '').trim()) {
+      return res.status(400).json({ message: '该任务关联订单，钥匙套数请按订单更新（orders.keys_required）' })
+    }
+    if ((parsed.data as any).keys_required === null) (parsed.data as any).keys_required = 1
     if (parsed.data.property_id !== undefined) task.property_id = parsed.data.property_id
     if (parsed.data.task_date !== undefined) { task.task_date = parsed.data.task_date; task.date = parsed.data.task_date }
     if (parsed.data.status !== undefined) task.status = parsed.data.status
     if ((parsed.data as any).cleaner_id !== undefined) task.cleaner_id = (parsed.data as any).cleaner_id
     if ((parsed.data as any).inspector_id !== undefined) task.inspector_id = (parsed.data as any).inspector_id
+    if ((parsed.data as any).keys_required !== undefined) task.keys_required = (parsed.data as any).keys_required
     if ((parsed.data as any).nights_override !== undefined) task.nights_override = (parsed.data as any).nights_override
     if ((parsed.data as any).old_code !== undefined) task.old_code = (parsed.data as any).old_code
     if ((parsed.data as any).new_code !== undefined) task.new_code = (parsed.data as any).new_code
@@ -471,6 +534,18 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
         task.status = cleaner && inspector ? 'assigned' : 'pending'
       }
     }
+    if ((parsed.data as any).keys_required !== undefined) {
+      const orderId = String((task as any).order_id || '').trim()
+      const nextK0 = (task as any).keys_required == null ? null : Number((task as any).keys_required)
+      const nextK = Number.isFinite(nextK0 as any) ? Math.max(1, Math.min(2, Math.trunc(nextK0 as any))) : null
+      if (orderId && nextK != null) {
+        for (const t of (db.cleaningTasks as any[])) {
+          if (String((t as any).order_id || '').trim() !== orderId) continue
+          if (String((t as any).status || '') === 'cancelled') continue
+          ;(t as any).keys_required = nextK
+        }
+      }
+    }
     return res.json(task)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update_failed' })
@@ -490,6 +565,15 @@ const createTaskSchema = z.object({
   new_code: z.union([z.string(), z.null()]).optional(),
   checkout_time: z.union([z.string(), z.null()]).optional(),
   checkin_time: z.union([z.string(), z.null()]).optional(),
+  keys_required: z
+    .preprocess((v) => {
+      if (v == null) return v
+      if (typeof v === 'number') return v
+      const n = Number(v)
+      return Number.isFinite(n) ? n : v
+    }, z.number().int().min(1).max(2))
+    .optional()
+    .nullable(),
   nights_override: z.union([z.number().int().nonnegative(), z.null()]).optional(),
   note: z.union([z.string(), z.null()]).optional(),
 }).strict()
@@ -543,6 +627,7 @@ router.post('/tasks', requirePerm('cleaning.task.assign'), async (req, res) => {
       new_code: parsed.data.new_code ?? null,
       checkout_time: parsed.data.checkout_time ?? null,
       checkin_time: parsed.data.checkin_time ?? null,
+      keys_required: parsed.data.keys_required ?? null,
       nights_override: (parsed.data as any).nights_override ?? null,
       note: (parsed.data as any).note ?? null,
       auto_sync_enabled: true,
@@ -663,10 +748,30 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
   if (!(await isValidStaffId((parsed.data.patch as any).inspector_id ?? null, 'inspector'))) return res.status(400).json({ message: '无效的检查人员' })
   const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)))
   const basePatch: any = { ...parsed.data.patch }
+  if (basePatch.keys_required === null) basePatch.keys_required = 1
   if (basePatch.cleaner_id !== undefined && basePatch.assignee_id === undefined) basePatch.assignee_id = basePatch.cleaner_id
   if (basePatch.assignee_id !== undefined && basePatch.cleaner_id === undefined) basePatch.cleaner_id = basePatch.assignee_id
   try {
     const updated: any[] = []
+    if (basePatch.keys_required !== undefined) {
+      if (hasPg && pgPool) {
+        const r = await pgPool.query(
+          `SELECT COUNT(1) AS cnt
+           FROM cleaning_tasks
+           WHERE id::text = ANY($1::text[])
+             AND order_id IS NOT NULL`,
+          [ids],
+        )
+        const cnt = r?.rows?.[0]?.cnt == null ? 0 : Number(r.rows[0].cnt)
+        if (Number.isFinite(cnt) && cnt > 0) return res.status(400).json({ message: '批量任务包含关联订单的任务，钥匙套数请按订单更新（orders.keys_required）' })
+      } else {
+        const hasOrder = ids.some((id) => {
+          const t = (db.cleaningTasks as any[]).find((x: any) => String(x.id) === String(id))
+          return !!String((t as any)?.order_id || '').trim()
+        })
+        if (hasOrder) return res.status(400).json({ message: '批量任务包含关联订单的任务，钥匙套数请按订单更新（orders.keys_required）' })
+      }
+    }
     for (const id of ids) {
       const r = await (async () => {
         if (hasPg && pgPool) {
@@ -705,6 +810,7 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
         if (basePatch.cleaner_id !== undefined) task.cleaner_id = basePatch.cleaner_id
         if (basePatch.inspector_id !== undefined) task.inspector_id = basePatch.inspector_id
         if (basePatch.assignee_id !== undefined) task.assignee_id = basePatch.assignee_id
+        if (basePatch.keys_required !== undefined) task.keys_required = basePatch.keys_required
         if (basePatch.scheduled_at !== undefined) task.scheduled_at = basePatch.scheduled_at
         if (basePatch.note !== undefined) task.note = basePatch.note
         {
