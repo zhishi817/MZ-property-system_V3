@@ -75,7 +75,12 @@ type EditTaskForm = {
   status: string
   cleaner_id: string | null
   inspector_id: string | null
-  keys_required: 1 | 2
+  keys_required_checkin: 1 | 2
+  keys_required_checkout: 1 | 2
+  checkin_order_id: string | null
+  checkout_order_id: string | null
+  checkin_manual_ids: string[]
+  checkout_manual_ids: string[]
   note: string
   nights_override: number | null
   checkout_ids: string[]
@@ -630,7 +635,15 @@ export default function CleaningPage() {
       if (!Number.isFinite(n)) return 1
       return n >= 2 ? 2 : 1
     }
-    const keysRequired: 1 | 2 = (selectedRows || []).length ? (Math.max(...selectedRows.map(keysVal), 1) >= 2 ? 2 : 1) : 1
+    const keysRequiredCheckin: 1 | 2 = checkinRows.length ? (Math.max(...checkinRows.map(keysVal), 1) >= 2 ? 2 : 1) : 1
+    const keysRequiredCheckout: 1 | 2 = checkoutRows.length ? (Math.max(...checkoutRows.map(keysVal), 1) >= 2 ? 2 : 1) : 1
+    const uniq = (xs: (string | null | undefined)[]) => Array.from(new Set(xs.map((x) => String(x || '').trim()).filter(Boolean)))
+    const checkinOrderIds = uniq(checkinRows.map((r) => (r as any)?.order_id))
+    const checkoutOrderIds = uniq(checkoutRows.map((r) => (r as any)?.order_id))
+    const checkinOrderId = checkinOrderIds.length === 1 ? checkinOrderIds[0] : null
+    const checkoutOrderId = checkoutOrderIds.length === 1 ? checkoutOrderIds[0] : null
+    const checkinManualIds = checkinRows.filter((r) => !String((r as any)?.order_id || '').trim()).map((r) => String((r as any)?.id || '').trim()).filter(Boolean)
+    const checkoutManualIds = checkoutRows.filter((r) => !String((r as any)?.order_id || '').trim()).map((r) => String((r as any)?.id || '').trim()).filter(Boolean)
     setEditForm({
       mode: stayoverMode ? 'stayover' : 'default',
       ids,
@@ -639,7 +652,12 @@ export default function CleaningPage() {
       status,
       cleaner_id: cleanerId,
       inspector_id: inspectorId,
-      keys_required: keysRequired,
+      keys_required_checkin: keysRequiredCheckin,
+      keys_required_checkout: keysRequiredCheckout,
+      checkin_order_id: stayoverMode ? null : checkinOrderId,
+      checkout_order_id: stayoverMode ? null : checkoutOrderId,
+      checkin_manual_ids: stayoverMode ? [] : checkinManualIds,
+      checkout_manual_ids: stayoverMode ? [] : checkoutManualIds,
       note,
       nights_override: stayoverMode ? null : nightsOverride,
       checkout_ids: stayoverMode ? [] : checkoutIdsAll,
@@ -664,7 +682,6 @@ export default function CleaningPage() {
     const base: any = {
       task_date: editForm.task_date.format('YYYY-MM-DD'),
       status: editForm.status,
-      keys_required: editForm.keys_required,
     }
     if (editForm.ids.length === 1 || editForm.cleaner_id !== null) base.cleaner_id = editForm.cleaner_id
     if (editForm.ids.length === 1 || editForm.inspector_id !== null) base.inspector_id = editForm.inspector_id
@@ -684,6 +701,22 @@ export default function CleaningPage() {
       return
     }
 
+    const keyUpdates: Promise<any>[] = []
+    if (editForm.checkin_order_id) {
+      keyUpdates.push(postJSON('/mzapp/cleaning-tasks/order-keys-required', { order_id: editForm.checkin_order_id, keys_required: editForm.keys_required_checkin }))
+    } else if (editForm.checkin_manual_ids.length) {
+      for (const id of editForm.checkin_manual_ids) {
+        keyUpdates.push(patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, { keys_required: editForm.keys_required_checkin }))
+      }
+    }
+    if (editForm.checkout_order_id) {
+      keyUpdates.push(postJSON('/mzapp/cleaning-tasks/order-keys-required', { order_id: editForm.checkout_order_id, keys_required: editForm.keys_required_checkout }))
+    } else if (editForm.checkout_manual_ids.length) {
+      for (const id of editForm.checkout_manual_ids) {
+        keyUpdates.push(patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, { keys_required: editForm.keys_required_checkout }))
+      }
+    }
+
     if (editForm.pending_add_checkout && editForm.property_id) {
       await postJSON('/cleaning/tasks', {
         task_type: 'checkout_clean',
@@ -692,7 +725,7 @@ export default function CleaningPage() {
         status: editForm.status,
         cleaner_id: editForm.cleaner_id,
         inspector_id: editForm.inspector_id,
-        keys_required: editForm.keys_required,
+        keys_required: editForm.keys_required_checkout,
         old_code: toNull(editForm.checkout_password),
         checkout_time: toNull(editForm.checkout_time),
       })
@@ -705,7 +738,7 @@ export default function CleaningPage() {
         status: editForm.status,
         cleaner_id: editForm.cleaner_id,
         inspector_id: editForm.inspector_id,
-        keys_required: editForm.keys_required,
+        keys_required: editForm.keys_required_checkin,
         new_code: toNull(editForm.checkin_password),
         nights_override: editForm.nights_override ?? null,
         checkin_time: toNull(editForm.checkin_time),
@@ -726,7 +759,7 @@ export default function CleaningPage() {
       }
       return patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, p)
     })
-    await Promise.all(patches)
+    await Promise.all([...patches, ...keyUpdates])
     setEditOpen(false)
     setEditForm(null)
     message.success('已更新')
@@ -1497,6 +1530,19 @@ export default function CleaningPage() {
                       </Form.Item>
                     </Col>
                   ) : null}
+                  <Col span={12}>
+                    <Form.Item label="需确认已退钥匙套数">
+                      <Select
+                        value={editForm.keys_required_checkout}
+                        onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required_checkout: (Number(v) >= 2 ? 2 : 1) } : p))}
+                        style={{ width: '100%' }}
+                        options={[
+                          { label: '1 套', value: 1 },
+                          { label: '2 套', value: 2 },
+                        ]}
+                      />
+                    </Form.Item>
+                  </Col>
                 </Row>
 
                 <Divider orientation="left">入住</Divider>
@@ -1538,8 +1584,8 @@ export default function CleaningPage() {
                   <Col span={12}>
                     <Form.Item label="需挂钥匙套数">
                       <Select
-                        value={editForm.keys_required}
-                        onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required: (Number(v) >= 2 ? 2 : 1) } : p))}
+                        value={editForm.keys_required_checkin}
+                        onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required_checkin: (Number(v) >= 2 ? 2 : 1) } : p))}
                         style={{ width: '100%' }}
                         options={[
                           { label: '1 套', value: 1 },

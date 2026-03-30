@@ -2,8 +2,9 @@
 
 ## Dev (2026-03-30)
 
-- Version: `0.2.7-statement-pdf.20260330+build.4`
+- Version: `0.2.7-statement-pdf.20260330+build.5`
 - DB: Add `orders.keys_required` (source of truth) + backfill migration `20260330_orders_keys_required.sql`.
+- DB: Make `20260330_orders_keys_required.sql` production-safe (conditional backfill if `cleaning_tasks.keys_required` exists).
 - MZApp Backend: Add `/mzapp/cleaning-tasks/order-keys-required` (write orders, sync tasks) and `/mzapp/cleaning-tasks/order-checked-out` (checkout-only by order).
 - MZApp Backend: Block legacy keys_required updates via `/mzapp/cleaning-tasks/manager-fields` to prevent merged-card cross-order mutation.
 - MZApp Backend: work-tasks now includes `order_id_checkin/order_id_checkout` and computes keys_required from `orders.keys_required`.
