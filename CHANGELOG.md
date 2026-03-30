@@ -2,6 +2,17 @@
 
 ## Dev (2026-03-30)
 
+### build.6
+
+- Version: `0.2.7-statement-pdf.20260330+build.6`
+- MZApp Backend: Extend `/mzapp/property-feedbacks` to support maintenance `items[]` (bulk create by area) and new `daily_necessities` kind (status/item/qty/note/photos) with dedupe.
+- Backend: Add migration `20260330_property_daily_necessities.sql` for `property_daily_necessities` (daily replacements).
+- Backend: Inventory `GET /inventory/daily-replacements` lists daily replacements; `GET /inventory/movements` supports category/reason filter.
+- Admin UI: Restructure “仓库管理” menu into collapsible groups (linen/daily/consumable/other/suppliers), add “日用品更换记录” page, and fix `/inventory/movements` build (Suspense for useSearchParams).
+- Cleaning App: Problem feedback supports 3 kinds (maintenance/deep cleaning/daily), maintenance multi-item list with edit/delete, daily necessities form fields and list/detail rendering.
+
+### build.5
+
 - Version: `0.2.7-statement-pdf.20260330+build.5`
 - DB: Add `orders.keys_required` (source of truth) + backfill migration `20260330_orders_keys_required.sql`.
 - DB: Make `20260330_orders_keys_required.sql` production-safe (conditional backfill if `cleaning_tasks.keys_required` exists).

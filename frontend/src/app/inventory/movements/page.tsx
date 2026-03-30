@@ -1,9 +1,10 @@
 "use client"
 import { Card, Table, Space, Select, Button, DatePicker, message, Tag, Input } from 'antd'
 import Link from 'next/link'
-import { useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useState } from 'react'
 import dayjs from 'dayjs'
 import { getJSON } from '../../../lib/api'
+import { useSearchParams } from 'next/navigation'
 
 type Warehouse = { id: string; code: string; name: string; active: boolean }
 type Item = { id: string; name: string; sku: string; unit: string; category: string; active: boolean }
@@ -29,7 +30,9 @@ type MovementRow = {
   property_address?: string | null
 }
 
-export default function InventoryMovementsPage() {
+function InventoryMovementsInner() {
+  const searchParams = useSearchParams()
+  const category = String(searchParams?.get('category') || '').trim()
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
   const [items, setItems] = useState<Item[]>([])
   const [properties, setProperties] = useState<PropertyRow[]>([])
@@ -58,6 +61,7 @@ export default function InventoryMovementsPage() {
     if (itemId) params.item_id = itemId
     if (propertyId) params.property_id = propertyId
     if (type) params.type = type
+    if (category) params.category = category
     if (range?.[0]) params.from = dayjs(range[0]).toISOString()
     if (range?.[1]) params.to = dayjs(range[1]).toISOString()
     const data = await getJSON<MovementRow[]>(`/inventory/movements?${new URLSearchParams(params as any).toString()}`)
@@ -70,7 +74,10 @@ export default function InventoryMovementsPage() {
   useEffect(() => { loadBase().then(() => load()).catch((e) => message.error(e?.message || '加载失败')) }, [])
 
   const whOptions = useMemo(() => [{ value: '', label: '全部仓库' }, ...(warehouses || []).filter(w => w.active).map(w => ({ value: w.id, label: `${w.code} - ${w.name}` }))], [warehouses])
-  const itemOptions = useMemo(() => [{ value: '', label: '全部物料' }, ...(items || []).map(i => ({ value: i.id, label: `${i.name} (${i.sku})` }))], [items])
+  const itemOptions = useMemo(() => {
+    const xs = category ? (items || []).filter((i) => String(i.category || '').trim() === category) : (items || [])
+    return [{ value: '', label: '全部物料' }, ...xs.map(i => ({ value: i.id, label: `${i.name} (${i.sku})` }))]
+  }, [items, category])
   const propOptions = useMemo(() => [{ value: '', label: '全部房源' }, ...(properties || []).map(p => ({ value: p.id, label: `${p.code || ''} ${p.address || ''}`.trim() }))], [properties])
 
   const columns: any[] = [
@@ -86,7 +93,7 @@ export default function InventoryMovementsPage() {
 
   return (
     <Card
-      title="库存流水"
+      title={category ? `${category === 'daily' ? '日用品' : category}库存流水` : '库存流水'}
       extra={
         <Space>
           <Link href="/inventory/stocks" prefetch={false}><Button type="link">库存</Button></Link>
@@ -110,3 +117,10 @@ export default function InventoryMovementsPage() {
   )
 }
 
+export default function InventoryMovementsPage() {
+  return (
+    <Suspense fallback={<Card title="库存流水" loading />}>
+      <InventoryMovementsInner />
+    </Suspense>
+  )
+}

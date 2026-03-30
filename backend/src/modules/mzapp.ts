@@ -2237,16 +2237,44 @@ router.get('/work-tasks', async (req, res) => {
   }
 })
 
-const feedbackCreateSchema = z.object({
-  kind: z.enum(['maintenance', 'deep_cleaning']),
-  property_id: z.string().min(1),
-  source_task_id: z.string().optional(),
-  area: z.string().optional(),
-  areas: z.array(z.string().min(1)).optional(),
-  category: z.string().optional(),
-  detail: z.string().min(1),
-  media_urls: z.array(z.string().min(1)).optional(),
-})
+const dailyNecessitiesStatusSchema = z.enum(['need_replace', 'in_progress', 'replaced', 'no_action'])
+
+const feedbackCreateSchema = z
+  .object({
+    kind: z.enum(['maintenance', 'deep_cleaning', 'daily_necessities']),
+    property_id: z.string().min(1),
+    source_task_id: z.string().optional(),
+
+    area: z.string().optional(),
+    areas: z.array(z.string().min(1)).optional(),
+    category: z.string().optional(),
+    detail: z.string().optional(),
+    media_urls: z.array(z.string().min(1)).optional(),
+
+    items: z
+      .array(
+        z.object({
+          area: z.string().min(1),
+          category: z.string().min(1),
+          detail: z.string().min(1),
+          media_urls: z.array(z.string().min(1)).optional(),
+        }),
+      )
+      .optional(),
+
+    status: dailyNecessitiesStatusSchema.optional(),
+    item_name: z.string().optional(),
+    quantity: z
+      .preprocess((v) => {
+        if (v == null) return v
+        if (typeof v === 'number') return v
+        const n = Number(v)
+        return Number.isFinite(n) ? n : v
+      }, z.number().int())
+      .optional(),
+    note: z.string().optional(),
+  })
+  .strict()
 
 function mapWorkStatus(raw: any): 'open' | 'in_progress' | 'resolved' | 'cancelled' {
   const s = String(raw ?? '').trim().toLowerCase()
@@ -2366,6 +2394,29 @@ async function ensurePropertyDeepCleaningColumns() {
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_dedup ON property_deep_cleaning(property_id, dedup_fingerprint, submitted_at);')
 }
 
+async function ensurePropertyDailyNecessitiesColumns() {
+  if (!pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_daily_necessities (
+    id text PRIMARY KEY,
+    property_id text,
+    created_by text,
+    created_at timestamptz DEFAULT now()
+  );`)
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS property_code text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS status text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS item_name text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS quantity integer;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS note text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS source_task_id text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitter_name text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_prop ON property_daily_necessities(property_id);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_status ON property_daily_necessities(status);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_created_at ON property_daily_necessities(created_at);')
+}
+
 router.get('/property-feedbacks', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
@@ -2384,6 +2435,10 @@ router.get('/property-feedbacks', async (req, res) => {
   const wantResolved = want.length ? want.includes('resolved') : false
   const wantCancelled = want.length ? want.includes('cancelled') : false
   const openView = wantOpen && wantInProgress && !wantResolved && !wantCancelled
+
+  const dailyStatusSet = new Set(['need_replace', 'in_progress', 'replaced', 'no_action'])
+  const dailyWanted = want.filter((s) => dailyStatusSet.has(String(s || '').trim()))
+  const dailyFilter = dailyWanted.length ? dailyWanted : ['need_replace', 'in_progress']
 
   const limit0 = Number((req.query as any)?.limit || 20)
   const limit = Number.isFinite(limit0) ? Math.max(1, Math.min(50, limit0)) : 20
@@ -2534,6 +2589,52 @@ router.get('/property-feedbacks', async (req, res) => {
       errors.push(`deep_cleaning:${String(e?.message || e)}`.slice(0, 220))
     }
 
+    try {
+      try {
+        await ensurePropertyDailyNecessitiesColumns()
+      } catch {}
+      const params: any[] = [propertyId || null, propertyCode || null, dailyFilter, limit]
+      const r = await pgPool.query(
+        `SELECT n.id, n.property_id, COALESCE(n.property_code, p.code) AS property_code,
+                n.status, n.item_name, n.quantity, n.note, n.photo_urls, n.submitter_name,
+                n.submitted_at, n.created_at
+           FROM property_daily_necessities n
+           LEFT JOIN properties p ON p.id = n.property_id
+          WHERE (
+              ($1::text IS NOT NULL AND n.property_id = $1)
+              OR (
+                $2::text IS NOT NULL
+                AND (
+                  COALESCE(n.property_code, p.code) = $2
+                  OR n.property_id = $2
+                  OR n.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
+                )
+              )
+            )
+            AND COALESCE(n.status, '') = ANY($3::text[])
+          ORDER BY COALESCE(n.submitted_at, n.created_at) DESC
+          LIMIT $4`,
+        params,
+      )
+      for (const row of (r?.rows || [])) {
+        out.push({
+          id: String(row.id),
+          property_id: row.property_id ? String(row.property_id) : propertyId || null,
+          kind: 'daily_necessities',
+          status: String(row.status || '').trim(),
+          item_name: row.item_name ? String(row.item_name) : null,
+          quantity: row.quantity == null ? null : Number(row.quantity),
+          note: row.note ? String(row.note) : null,
+          detail: String(row.note || ''),
+          media_urls: Array.isArray(row.photo_urls) ? row.photo_urls : row.photo_urls ? row.photo_urls : [],
+          created_by_name: row.submitter_name || null,
+          created_at: row.submitted_at || row.created_at || null,
+        })
+      }
+    } catch (e: any) {
+      errors.push(`daily_necessities:${String(e?.message || e)}`.slice(0, 220))
+    }
+
     out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
     if (!out.length && errors.length) return res.status(500).json({ message: 'property_feedbacks_failed', errors })
     return res.json(out.slice(0, limit))
@@ -2558,19 +2659,97 @@ router.post('/property-feedbacks', async (req, res) => {
     const duplicateWindowHours = 24
 
     if (parsed.data.kind === 'maintenance') {
-      const area = String(parsed.data.area || '').trim()
-      const categoryLabel = String(parsed.data.category || '').trim()
-      if (!area) return res.status(400).json({ message: 'missing area' })
-      if (!categoryLabel) return res.status(400).json({ message: 'missing category' })
-      const detail = String(parsed.data.detail || '').trim()
-      const mediaUrls = parsed.data.media_urls || []
-      const details = detail
-
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+      try {
+        await ensurePropertyMaintenanceColumns()
+      } catch {}
       const photoType = await getColumnType('property_maintenance', 'photo_urls')
       const photoExpr = photoType === 'jsonb' ? '$13::jsonb' : photoType === 'text[]' ? '$13::text[]' : '$13'
+
+      const items = Array.isArray((parsed.data as any).items) && (parsed.data as any).items.length ? ((parsed.data as any).items as any[]) : null
+      const prepared = (items || []).map((x) => ({
+        area: String(x?.area || '').trim(),
+        category: String(x?.category || '').trim(),
+        detail: String(x?.detail || '').trim(),
+        media_urls: Array.isArray(x?.media_urls) ? (x.media_urls as any[]) : [],
+      }))
+
+      if (items) {
+        for (const it of prepared) {
+          if (!it.area) return res.status(400).json({ message: 'missing area' })
+          if (!it.category) return res.status(400).json({ message: 'missing category' })
+          if (!it.detail) return res.status(400).json({ message: 'missing detail' })
+        }
+        for (const it of prepared) {
+          const fingerprint = makeFeedbackFingerprint({
+            kind: 'maintenance',
+            property_id: parsed.data.property_id,
+            area: it.area,
+            category_detail: it.category,
+            detail: it.detail,
+          })
+          const dup = await pgPool.query(
+            `SELECT id
+               FROM property_maintenance
+              WHERE property_id = $1
+                AND dedup_fingerprint = $2
+                AND (status IS NULL OR lower(status) NOT IN ('completed','done','ready','canceled','cancelled'))
+                AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
+              ORDER BY COALESCE(submitted_at, created_at) DESC
+              LIMIT 1`,
+            [parsed.data.property_id, fingerprint, duplicateWindowHours],
+          )
+          if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+        }
+
+        const createdIds: string[] = []
+        for (const it of prepared) {
+          const rowId = require('uuid').v4()
+          const workNo = makeWorkNo('R', occurredAt)
+          const fingerprint = makeFeedbackFingerprint({
+            kind: 'maintenance',
+            property_id: parsed.data.property_id,
+            area: it.area,
+            category_detail: it.category,
+            detail: it.detail,
+          })
+          const photoValue = photoType === 'jsonb' ? JSON.stringify(it.media_urls || []) : (it.media_urls || [])
+          await pgPool.query(
+            `INSERT INTO property_maintenance(
+              id, property_id, occurred_at, details, notes, created_by, created_at,
+              status, submitted_at, submitter_name, category, category_detail, photo_urls, work_no, area, dedup_fingerprint
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,${photoExpr},$14,$15,$16)
+            RETURNING id`,
+            [
+              rowId,
+              parsed.data.property_id,
+              occurredAt,
+              it.detail,
+              it.detail,
+              createdBy,
+              createdAt,
+              'pending',
+              createdAt,
+              submitterName,
+              it.area,
+              it.category,
+              photoValue,
+              workNo,
+              it.area,
+              fingerprint,
+            ],
+          )
+          createdIds.push(rowId)
+        }
+        return res.status(201).json({ ok: true, ids: createdIds })
+      }
+
+      const area = String(parsed.data.area || '').trim()
+      const categoryLabel = String(parsed.data.category || '').trim()
+      const detail = String((parsed.data as any).detail || '').trim()
+      if (!area) return res.status(400).json({ message: 'missing area' })
+      if (!categoryLabel) return res.status(400).json({ message: 'missing category' })
+      if (!detail) return res.status(400).json({ message: 'missing detail' })
+      const mediaUrls = (parsed.data as any).media_urls || []
       const photoValue = photoType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
       const workNo = makeWorkNo('R', occurredAt)
       const fingerprint = makeFeedbackFingerprint({
@@ -2602,7 +2781,7 @@ router.post('/property-feedbacks', async (req, res) => {
           id,
           parsed.data.property_id,
           occurredAt,
-          details,
+          detail,
           detail,
           createdBy,
           createdAt,
@@ -2617,14 +2796,59 @@ router.post('/property-feedbacks', async (req, res) => {
           fingerprint,
         ],
       )
+      return res.status(201).json({ ok: true, id })
+    }
+
+    if (parsed.data.kind === 'daily_necessities') {
       try {
-        await pgPool.query(
-          `UPDATE property_maintenance
-              SET work_no = COALESCE(NULLIF(work_no, ''), $2)
-            WHERE id = $1`,
-          [id, workNo],
-        )
+        await ensurePropertyDailyNecessitiesColumns()
       } catch {}
+      const status = String((parsed.data as any).status || '').trim()
+      const itemName = String((parsed.data as any).item_name || '').trim()
+      const quantity0 = (parsed.data as any).quantity
+      const quantity = quantity0 == null ? NaN : Number(quantity0)
+      const note = String((parsed.data as any).note || '').trim()
+      const mediaUrls = Array.isArray((parsed.data as any).media_urls) ? (parsed.data as any).media_urls : []
+      if (!dailyNecessitiesStatusSchema.safeParse(status).success) return res.status(400).json({ message: 'invalid status' })
+      if (!itemName) return res.status(400).json({ message: 'missing item_name' })
+      if (!Number.isFinite(quantity) || quantity < 1) return res.status(400).json({ message: 'invalid quantity' })
+      if (!note && !mediaUrls.length) return res.status(400).json({ message: 'missing note' })
+
+      const fingerprint = sha256Hex([parsed.data.property_id, status, normalizeForFingerprint(itemName), String(quantity), normalizeForFingerprint(note)].join('|'))
+      const dup = await pgPool.query(
+        `SELECT id
+           FROM property_daily_necessities
+          WHERE property_id = $1
+            AND dedup_fingerprint = $2
+            AND COALESCE(submitted_at, created_at) >= now() - ($3::int * interval '1 hour')
+          ORDER BY COALESCE(submitted_at, created_at) DESC
+          LIMIT 1`,
+        [parsed.data.property_id, fingerprint, duplicateWindowHours],
+      )
+      if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
+
+      await pgPool.query(
+        `INSERT INTO property_daily_necessities(
+          id, property_id, status, item_name, quantity, note, photo_urls,
+          source_task_id, created_by, created_at, submitted_at, submitter_name, dedup_fingerprint
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13)
+        RETURNING id`,
+        [
+          id,
+          parsed.data.property_id,
+          status,
+          itemName,
+          Math.trunc(quantity),
+          note || null,
+          JSON.stringify(mediaUrls),
+          (parsed.data as any).source_task_id || null,
+          createdBy,
+          createdAt,
+          createdAt,
+          submitterName,
+          fingerprint,
+        ],
+      )
       return res.status(201).json({ ok: true, id })
     }
 
@@ -2632,7 +2856,8 @@ router.post('/property-feedbacks', async (req, res) => {
     if (!areas.length) return res.status(400).json({ message: 'missing areas' })
     const mediaUrls = parsed.data.media_urls || []
     if (!mediaUrls.length) return res.status(400).json({ message: 'missing photos' })
-    const detail = String(parsed.data.detail || '').trim()
+    const detail = String((parsed.data as any).detail || '').trim()
+    if (!detail) return res.status(400).json({ message: 'missing detail' })
     const projectDesc = areas.join('、')
     const deepPhotoType = await getColumnType('property_deep_cleaning', 'photo_urls')
     const deepAttachType = await getColumnType('property_deep_cleaning', 'attachment_urls')
