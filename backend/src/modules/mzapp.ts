@@ -1824,7 +1824,7 @@ router.get('/work-tasks', async (req, res) => {
         const cleanerGroups = new Map<string, any[]>()
         const inspectorGroups = new Map<string, any[]>()
         for (const row of (r?.rows || [])) {
-          const d = String(row.task_date || '').slice(0, 10)
+          const d = String(row.task_date || row.date || '').slice(0, 10)
           const propId = row.property_id ? String(row.property_id) : null
           const prop = propId
             ? {
@@ -2022,6 +2022,10 @@ router.get('/work-tasks', async (req, res) => {
               ? (p.b?.order_id ? String(p.b.order_id) : null)
               : (p.kind === 'checkin' && p.a?.order_id ? String(p.a.order_id) : null)
           const singleOrderId = p.kind === 'turnover' ? null : (p.a?.order_id ? String(p.a.order_id) : null)
+          const checkoutKeysOut =
+            checkoutOrderId && checkoutKeys != null && Number.isFinite(checkoutKeys) ? Math.max(1, Math.min(2, Math.trunc(checkoutKeys))) : null
+          const checkinKeysOut =
+            checkinOrderId && checkinKeys != null && Number.isFinite(checkinKeys) ? Math.max(1, Math.min(2, Math.trunc(checkinKeys))) : null
 
           return {
             id: outId,
@@ -2050,8 +2054,8 @@ router.get('/work-tasks', async (req, res) => {
             new_code: newCode,
             guest_special_request: guestSpecialRequest,
             keys_required: keysRequired,
-            keys_required_checkout: checkoutKeys == null || !Number.isFinite(checkoutKeys) ? null : Math.max(1, Math.min(2, Math.trunc(checkoutKeys))),
-            keys_required_checkin: checkinKeys == null || !Number.isFinite(checkinKeys) ? null : Math.max(1, Math.min(2, Math.trunc(checkinKeys))),
+            keys_required_checkout: checkoutKeysOut,
+            keys_required_checkin: checkinKeysOut,
             checked_out_at: checkedOutAt,
             key_photo_url: keyPhotoUrl,
             lockbox_video_url: lockboxVideoUrl,
@@ -2149,6 +2153,8 @@ router.get('/work-tasks', async (req, res) => {
           ...arr.map((x) => x.order_id_checkout),
           ...arr.map((x) => (String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean' ? x.order_id : null)),
         )
+        const checkoutKeysOut = orderIdCheckout && checkoutKeys ? checkoutKeys : null
+        const checkinKeysOut = orderIdCheckin && checkinKeys ? checkinKeys : null
         const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
         const inspectorName = firstNonEmpty(...arr.map((x) => x.inspector_name))
         const restockItems: any[] = []
@@ -2188,8 +2194,8 @@ router.get('/work-tasks', async (req, res) => {
           order_id_checkin: orderIdCheckin || null,
           order_id_checkout: orderIdCheckout || null,
           keys_required: keysRequired,
-          keys_required_checkout: checkoutKeys || null,
-          keys_required_checkin: checkinKeys || null,
+          keys_required_checkout: checkoutKeysOut,
+          keys_required_checkin: checkinKeysOut,
           cleaner_name: cleanerName,
           inspector_name: inspectorName,
           restock_items: restockItems,
