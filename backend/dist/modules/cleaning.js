@@ -313,16 +313,44 @@ exports.router.get('/tasks', (0, auth_1.requireAnyPerm)(['cleaning.view', 'clean
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             if (date) {
-                const r = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE (COALESCE(task_date, date)::date) = ($1::date) ORDER BY property_id NULLS LAST, id', [date]);
-                return res.json((r === null || r === void 0 ? void 0 : r.rows) || []);
+                const r = await dbAdapter_1.pgPool.query(`SELECT t.*, o.keys_required AS order_keys_required
+           FROM cleaning_tasks t
+           LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
+           WHERE (COALESCE(t.task_date, t.date)::date) = ($1::date)
+           ORDER BY t.property_id NULLS LAST, t.id`, [date]);
+                return res.json(((r === null || r === void 0 ? void 0 : r.rows) || []).map((x) => {
+                    if ((x === null || x === void 0 ? void 0 : x.order_id) && (x === null || x === void 0 ? void 0 : x.order_keys_required) != null)
+                        x.keys_required = Number(x.order_keys_required);
+                    delete x.order_keys_required;
+                    return x;
+                }));
             }
-            const r = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks ORDER BY COALESCE(task_date, date) NULLS LAST, property_id NULLS LAST, id');
-            return res.json((r === null || r === void 0 ? void 0 : r.rows) || []);
+            const r = await dbAdapter_1.pgPool.query(`SELECT t.*, o.keys_required AS order_keys_required
+         FROM cleaning_tasks t
+         LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
+         ORDER BY COALESCE(t.task_date, t.date) NULLS LAST, t.property_id NULLS LAST, t.id`);
+            return res.json(((r === null || r === void 0 ? void 0 : r.rows) || []).map((x) => {
+                if ((x === null || x === void 0 ? void 0 : x.order_id) && (x === null || x === void 0 ? void 0 : x.order_keys_required) != null)
+                    x.keys_required = Number(x.order_keys_required);
+                delete x.order_keys_required;
+                return x;
+            }));
         }
         const rows = store_1.db.cleaningTasks.slice();
         if (!date)
             return res.json(rows);
-        return res.json(rows.filter((t) => String(t.task_date || t.date || '').slice(0, 10) === date));
+        const orders = (store_1.db.orders || []);
+        const byId = new Map();
+        for (const o of orders)
+            byId.set(String(o.id), o);
+        return res.json(rows.filter((t) => String(t.task_date || t.date || '').slice(0, 10) === date).map((t) => {
+            const out = { ...t };
+            const oid = String(out.order_id || '').trim();
+            const o = oid ? byId.get(oid) : null;
+            if (o && o.keys_required != null)
+                out.keys_required = Number(o.keys_required) >= 2 ? 2 : 1;
+            return out;
+        }));
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'query_failed' });
@@ -445,6 +473,9 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             const before = ((_c = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _c === void 0 ? void 0 : _c[0]) || null;
             if (!before)
                 return res.status(404).json({ message: 'task not found' });
+            if (parsed.data.keys_required !== undefined && before.order_id) {
+                return res.status(400).json({ message: '该任务关联订单，钥匙套数请按订单更新（orders.keys_required）' });
+            }
             const patch = { ...parsed.data };
             if (patch.keys_required === null)
                 patch.keys_required = 1;
@@ -494,6 +525,9 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
         if (!task)
             return res.status(404).json({ message: 'task not found' });
         const before = { ...task };
+        if (parsed.data.keys_required !== undefined && String(task.order_id || '').trim()) {
+            return res.status(400).json({ message: '该任务关联订单，钥匙套数请按订单更新（orders.keys_required）' });
+        }
         if (parsed.data.keys_required === null)
             parsed.data.keys_required = 1;
         if (parsed.data.property_id !== undefined)
@@ -779,7 +813,7 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
 });
 const bulkPatchSchema = zod_1.z.object({ ids: zod_1.z.array(zod_1.z.string().min(1)).min(1), patch: patchTaskSchema }).strict();
 exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b;
+    var _a, _b, _c, _d;
     const parsed = bulkPatchSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -797,7 +831,25 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
         basePatch.cleaner_id = basePatch.assignee_id;
     try {
         const updated = [];
-        const orderIdsForKeys = new Set();
+        if (basePatch.keys_required !== undefined) {
+            if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
+                const r = await dbAdapter_1.pgPool.query(`SELECT COUNT(1) AS cnt
+           FROM cleaning_tasks
+           WHERE id::text = ANY($1::text[])
+             AND order_id IS NOT NULL`, [ids]);
+                const cnt = ((_d = (_c = r === null || r === void 0 ? void 0 : r.rows) === null || _c === void 0 ? void 0 : _c[0]) === null || _d === void 0 ? void 0 : _d.cnt) == null ? 0 : Number(r.rows[0].cnt);
+                if (Number.isFinite(cnt) && cnt > 0)
+                    return res.status(400).json({ message: '批量任务包含关联订单的任务，钥匙套数请按订单更新（orders.keys_required）' });
+            }
+            else {
+                const hasOrder = ids.some((id) => {
+                    const t = store_1.db.cleaningTasks.find((x) => String(x.id) === String(id));
+                    return !!String((t === null || t === void 0 ? void 0 : t.order_id) || '').trim();
+                });
+                if (hasOrder)
+                    return res.status(400).json({ message: '批量任务包含关联订单的任务，钥匙套数请按订单更新（orders.keys_required）' });
+            }
+        }
         for (const id of ids) {
             const r = await (async () => {
                 var _a, _b, _c, _d, _e, _f, _g;
@@ -829,13 +881,7 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
                     const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`;
                     const r1 = await dbAdapter_1.pgPool.query(sql, [...values, id]);
-                    const row = ((_g = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _g === void 0 ? void 0 : _g[0]) || before;
-                    if (basePatch.keys_required !== undefined) {
-                        const oid = String((row === null || row === void 0 ? void 0 : row.order_id) || '').trim();
-                        if (oid)
-                            orderIdsForKeys.add(oid);
-                    }
-                    return row;
+                    return ((_g = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _g === void 0 ? void 0 : _g[0]) || before;
                 }
                 const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
                 if (!task)
@@ -872,42 +918,10 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                         task.status = cleaner && inspector ? 'assigned' : 'pending';
                     }
                 }
-                if (basePatch.keys_required !== undefined) {
-                    const oid = String(task.order_id || '').trim();
-                    if (oid)
-                        orderIdsForKeys.add(oid);
-                }
                 return task;
             })();
             if (r)
                 updated.push(r);
-        }
-        if (basePatch.keys_required !== undefined) {
-            const nextK0 = basePatch.keys_required == null ? null : Number(basePatch.keys_required);
-            const nextK = Number.isFinite(nextK0) ? Math.max(1, Math.min(2, Math.trunc(nextK0))) : null;
-            if (nextK != null && orderIdsForKeys.size) {
-                if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
-                    try {
-                        await dbAdapter_1.pgPool.query(`UPDATE cleaning_tasks
-               SET keys_required = $1, updated_at = now()
-               WHERE order_id::text = ANY($2::text[])
-                 AND COALESCE(status,'') <> 'cancelled'
-                 AND COALESCE(keys_required, 1) <> $1`, [nextK, Array.from(orderIdsForKeys)]);
-                    }
-                    catch (_c) { }
-                }
-                else {
-                    for (const oid of Array.from(orderIdsForKeys)) {
-                        for (const t of store_1.db.cleaningTasks) {
-                            if (String(t.order_id || '').trim() !== oid)
-                                continue;
-                            if (String(t.status || '') === 'cancelled')
-                                continue;
-                            t.keys_required = nextK;
-                        }
-                    }
-                }
-            }
         }
         return res.json({ ok: true, updated: updated.length });
     }

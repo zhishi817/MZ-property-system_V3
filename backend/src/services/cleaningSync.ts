@@ -139,6 +139,9 @@ export async function ensureCleaningSchemaV2(): Promise<void> {
     try {
       await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
     } catch {}
+    try {
+      await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
+    } catch {}
   })().catch((e) => {
     schemaEnsured = null
     throw e
@@ -304,8 +307,9 @@ async function syncOneTask(params: {
   statusLower: string
   propertyId: string | null
   derivedCode?: string | null
+  keysRequired: 1 | 2
 }) {
-  const { jobId, orderId, deleted, client, taskType, date, statusLower, propertyId, derivedCode } = params
+  const { jobId, orderId, deleted, client, taskType, date, statusLower, propertyId, derivedCode, keysRequired } = params
   const beforeTask = await loadTaskByOrder(orderId, taskType, client)
 
   if (deleted || !date) {
@@ -318,7 +322,7 @@ async function syncOneTask(params: {
     return { action: 'no_change' as const }
   }
 
-  const fingerprint = sha256([propertyId || '', date, statusLower, taskType, derivedCode || ''].join('|'))
+  const fingerprint = sha256([propertyId || '', date, statusLower, taskType, derivedCode || '', String(keysRequired)].join('|'))
 
   if (!beforeTask) {
     const row = {
@@ -336,6 +340,7 @@ async function syncOneTask(params: {
       checkin_time: taskType === CHECKIN_TASK_TYPE ? DEFAULT_CHECKIN_TIME : null,
       old_code: taskType === CHECKOUT_TASK_TYPE ? (derivedCode || null) : null,
       new_code: taskType === CHECKIN_TASK_TYPE ? (derivedCode || null) : null,
+      keys_required: keysRequired,
       auto_sync_enabled: true,
       sync_fingerprint: fingerprint,
       source: 'auto',
@@ -366,6 +371,7 @@ async function syncOneTask(params: {
     sync_fingerprint: fingerprint,
     source: 'auto',
     auto_sync_enabled: true,
+    keys_required: keysRequired,
   }
   if (derivedCode) {
     if (taskType === CHECKOUT_TASK_TYPE) patch.old_code = derivedCode
@@ -394,18 +400,22 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
   const startedAt = Date.now()
   try {
     await ensureCleaningSchemaV2()
+    const keysRequiredFallback: 1 | 2 = 1
     if (deleted) {
-      const r1 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null, derivedCode: null })
-      const r2 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null, derivedCode: null })
+      const r1 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
+      const r2 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
     }
 
     const order = await loadOrder(id, client)
     if (!order) {
-      const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null, derivedCode: null })
-      const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null, derivedCode: null })
+      const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
+      const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
     }
+
+    const keysRequired0 = order?.keys_required == null ? 1 : Number(order.keys_required)
+    const keysRequired = (Number.isFinite(keysRequired0) && keysRequired0 >= 2 ? 2 : 1) as 1 | 2
 
     const digits = String(order.guest_phone || '').replace(/\D/g, '')
     const derivedCode = digits.length >= 4 ? digits.slice(-4) : null
@@ -418,13 +428,13 @@ export async function syncOrderToCleaningTasks(orderId: string, opts?: SyncOrder
     const valid = isValidStatus(statusLower)
 
     if (!valid) {
-      const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower, propertyId, derivedCode: null })
-      const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower, propertyId, derivedCode: null })
+      const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower, propertyId, derivedCode: null, keysRequired })
+      const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower, propertyId, derivedCode: null, keysRequired })
       return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
     }
 
-    const rCheckout = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: checkoutDay, statusLower, propertyId, derivedCode })
-    const rCheckin = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId, derivedCode })
+    const rCheckout = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: checkoutDay, statusLower, propertyId, derivedCode, keysRequired })
+    const rCheckin = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId, derivedCode, keysRequired })
     const actions = [rCheckout.action, rCheckin.action]
     if (actions.includes('created')) return { action: 'created' as const }
     if (actions.includes('updated')) return { action: 'updated' as const }
