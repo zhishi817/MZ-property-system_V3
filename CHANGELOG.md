@@ -2,6 +2,12 @@
 
 ## Dev (2026-03-31)
 
+### build.9
+
+- Version: `0.2.7-statement-pdf.20260331+build.9`
+- Keys tag: Make keys labels consistent across roles by having `/mzapp/work-tasks` compute `key_tags` (show/sets) from `keys_required_checkout/checkin`.
+- Keys tag: Turnover supports independent checkout/checkin labels; removes client-side inference from `keys_required` max value.
+
 ### build.8
 
 - Version: `0.2.7-statement-pdf.20260331+build.8`
