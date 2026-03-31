@@ -2,6 +2,14 @@
 
 ## Dev (2026-03-31)
 
+### build.8
+
+- Version: `0.2.7-statement-pdf.20260331+build.8`
+- Inbox: Fix duplicated notices by using deterministic `event_id` in push payload and using `event_id` as client-side notice key.
+- Inbox: Fix NaN time rendering by adding invalid-date fallback formatting.
+- Cleaning App: Turnover tasks no longer show “请确认已退2套钥匙” due to check-in keys; checkout label now depends only on `keys_required_checkout`.
+- Cleaning App: When editing “需挂钥匙套数” on turnover cards, require `order_id_checkin` to avoid updating checkout order by mistake.
+
 ### build.7
 
 - Version: `0.2.7-statement-pdf.20260331+build.7`

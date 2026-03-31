@@ -257,6 +257,7 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
   const baseData = params.data || {}
   const data = {
     ...(typeof baseData === 'object' && baseData ? baseData : {}),
+    event_id: eventId,
     entity,
     entityId,
   }
