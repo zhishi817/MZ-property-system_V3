@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { requireAnyPerm, requirePerm } from '../auth'
 import { hasPg, pgPool } from '../dbAdapter'
 import { v4 as uuid } from 'uuid'
+import { emitNotificationEvent } from '../services/notificationEvents'
 
 export const router = Router()
 
@@ -293,15 +294,28 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
     const row = r1?.rows?.[0] || cur
     await propagateToSource(sourceType, sourceId, patch)
     try {
-      const { notifyExpoUsers, excludeUserIds } = require('./notifications')
-      const to0 = [String(row.assignee_id || '').trim()].filter(Boolean)
-      const to = excludeUserIds(to0, String(user.sub || ''))
-      await notifyExpoUsers({
-        user_ids: to,
-        title: '任务有更新',
-        body: `${String(row.title || '任务')} 已更新`,
-        data: { kind: 'work_task_updated', task_id: String(row.id), source_type: String(row.source_type || ''), source_id: String(row.source_id || ''), event_id: `work_task_updated:${String(row.id)}:${String(row.updated_at || '').trim() || new Date().toISOString()}` },
-      })
+      const operationId = uuid()
+      const assigneeId = String(row.assignee_id || '').trim()
+      const actorId = String(user.sub || '').trim()
+      const to = assigneeId && assigneeId !== actorId ? [assigneeId] : []
+      const propertyId = row.property_id ? String(row.property_id) : ''
+      if (to.length && propertyId) {
+        await emitNotificationEvent(
+          {
+            type: 'WORK_TASK_UPDATED',
+            entity: 'work_task',
+            entityId: String(row.id),
+            propertyId,
+            updatedAt: String(row.updated_at || '').trim() || new Date().toISOString(),
+            title: '任务有更新',
+            body: `${String(row.title || '任务')} 已更新`,
+            data: { entity: 'work_task', entityId: String(row.id), action: 'open_work_task', kind: 'work_task_updated', task_id: String(row.id) },
+            actorUserId: actorId,
+            recipientUserIds: to,
+          },
+          { operationId },
+        )
+      }
     } catch {}
     return res.json({
       ...row,

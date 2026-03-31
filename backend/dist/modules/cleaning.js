@@ -8,6 +8,7 @@ const store_1 = require("../store");
 const dbAdapter_1 = require("../dbAdapter");
 const cleaningSync_1 = require("../services/cleaningSync");
 const uuid_1 = require("uuid");
+const notificationEvents_1 = require("../services/notificationEvents");
 exports.router = (0, express_1.Router)();
 const DEFAULT_SUMMARY_CHECKOUT_TIME = '10am';
 const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm';
@@ -458,8 +459,10 @@ async function isValidStaffId(id, kind) {
     return !!found;
 }
 exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q;
     const { id } = req.params;
+    const operationId = (0, uuid_1.v4)();
+    const opNow = new Date().toISOString();
     const parsed = patchTaskSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -516,9 +519,40 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                  AND COALESCE(status,'') <> 'cancelled'
                  AND COALESCE(keys_required, 1) <> $1`, [nextK, orderId]);
                     }
-                    catch (_k) { }
+                    catch (_r) { }
                 }
             }
+            try {
+                const changes = [];
+                if (String(before.old_code || '') !== String(updated.old_code || ''))
+                    changes.push('password');
+                if (String(before.new_code || '') !== String(updated.new_code || ''))
+                    changes.push('password');
+                if (String(before.checkout_time || '') !== String(updated.checkout_time || ''))
+                    changes.push('time');
+                if (String(before.checkin_time || '') !== String(updated.checkin_time || ''))
+                    changes.push('time');
+                if (String(before.note || '') !== String(updated.note || ''))
+                    changes.push('note');
+                if (String(before.status || '') !== String(updated.status || ''))
+                    changes.push('status');
+                if (String((_k = before.keys_required) !== null && _k !== void 0 ? _k : '') !== String((_l = updated.keys_required) !== null && _l !== void 0 ? _l : ''))
+                    changes.push('keys');
+                const propertyId = String(updated.property_id || '').trim();
+                if (changes.length && propertyId) {
+                    await (0, notificationEvents_1.emitNotificationEvent)({
+                        type: 'CLEANING_TASK_UPDATED',
+                        entity: 'cleaning_task',
+                        entityId: String(id),
+                        propertyId,
+                        updatedAt: opNow,
+                        changes,
+                        data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
+                        actorUserId: (_m = req.user) === null || _m === void 0 ? void 0 : _m.sub,
+                    }, { operationId });
+                }
+            }
+            catch (_s) { }
             return res.json(updated);
         }
         const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
@@ -590,6 +624,37 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                 }
             }
         }
+        try {
+            const changes = [];
+            if (String(before.old_code || '') !== String(task.old_code || ''))
+                changes.push('password');
+            if (String(before.new_code || '') !== String(task.new_code || ''))
+                changes.push('password');
+            if (String(before.checkout_time || '') !== String(task.checkout_time || ''))
+                changes.push('time');
+            if (String(before.checkin_time || '') !== String(task.checkin_time || ''))
+                changes.push('time');
+            if (String(before.note || '') !== String(task.note || ''))
+                changes.push('note');
+            if (String(before.status || '') !== String(task.status || ''))
+                changes.push('status');
+            if (String((_o = before.keys_required) !== null && _o !== void 0 ? _o : '') !== String((_p = task.keys_required) !== null && _p !== void 0 ? _p : ''))
+                changes.push('keys');
+            const propertyId = String(task.property_id || '').trim();
+            if (changes.length && propertyId) {
+                await (0, notificationEvents_1.emitNotificationEvent)({
+                    type: 'CLEANING_TASK_UPDATED',
+                    entity: 'cleaning_task',
+                    entityId: String(id),
+                    propertyId,
+                    updatedAt: opNow,
+                    changes,
+                    data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
+                    actorUserId: (_q = req.user) === null || _q === void 0 ? void 0 : _q.sub,
+                }, { operationId });
+            }
+        }
+        catch (_t) { }
         return res.json(task);
     }
     catch (e) {

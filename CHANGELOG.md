@@ -1,5 +1,36 @@
 # Changelog
 
+## Dev (2026-03-31)
+
+### build.10
+
+- Version: `0.2.7-statement-pdf.20260331+build.10`
+- Keys tag: Fix missing “请确认已退2套钥匙” when checkout task lacks order_id by computing checkout/checkin sets independent of order_id.
+- Keys tag: Determine checkout tag visibility using merged group checked_out_at (not preferred row).
+
+### build.9
+
+- Version: `0.2.7-statement-pdf.20260331+build.9`
+- Keys tag: Make keys labels consistent across roles by having `/mzapp/work-tasks` compute `key_tags` (show/sets) from `keys_required_checkout/checkin`.
+- Keys tag: Turnover supports independent checkout/checkin labels; removes client-side inference from `keys_required` max value.
+
+### build.8
+
+- Version: `0.2.7-statement-pdf.20260331+build.8`
+- Inbox: Fix duplicated notices by using deterministic `event_id` in push payload and using `event_id` as client-side notice key.
+- Inbox: Fix NaN time rendering by adding invalid-date fallback formatting.
+- Cleaning App: Turnover tasks no longer show “请确认已退2套钥匙” due to check-in keys; checkout label now depends only on `keys_required_checkout`.
+- Cleaning App: When editing “需挂钥匙套数” on turnover cards, require `order_id_checkin` to avoid updating checkout order by mistake.
+
+### build.7
+
+- Version: `0.2.7-statement-pdf.20260331+build.7`
+- Notifications: Introduce unified `emitNotificationEvent` (deterministic event_id + per-request operationId) and centralize delivery rules with `users.property_scope` filtering (NULL = all properties; array = scoped).
+- Notifications: Add server-side inbox (`user_notifications`) and async delivery queue (`event_queue`) with worker processing (`FOR UPDATE SKIP LOCKED`) and cleanup policy.
+- API: Add `/notifications/inbox`, `/notifications/unread-count`, `/notifications/mark-read` for the Cleaning App info center.
+- Orders/Cleaning: Backfill missing notify points — order updates (time/note), cleaning task manager edits (codes/time/note/keys), and core cleaning flows (key upload, consumables submitted, inspection complete, issue reported).
+- Cleaning App: Notices now sync from server inbox (keeps local fallback), supports marking read, and supports tap-to-open cleaning task detail.
+
 ## Dev (2026-03-30)
 
 ### build.6

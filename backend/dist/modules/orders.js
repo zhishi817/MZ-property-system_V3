@@ -8,6 +8,8 @@ const zod_1 = require("zod");
 const auth_1 = require("../auth");
 // Supabase removed
 const dbAdapter_1 = require("../dbAdapter");
+const uuid_1 = require("uuid");
+const notificationEvents_1 = require("../services/notificationEvents");
 exports.router = (0, express_1.Router)();
 function dayOnly(s) {
     if (!s)
@@ -820,8 +822,10 @@ exports.router.post('/validate-duplicate', (0, auth_1.requireAnyPerm)(['order.cr
     }
 });
 exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const { id } = req.params;
+    const operationId = (0, uuid_1.v4)();
+    const opNow = new Date().toISOString();
     const parsed = updateOrderSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -835,7 +839,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
             const rows = (await (0, dbAdapter_1.pgSelect)('orders', '*', { id })) || [];
             base = Array.isArray(rows) ? rows[0] : undefined;
         }
-        catch (_g) { }
+        catch (_j) { }
     }
     if (!base)
         return res.status(404).json({ message: 'order not found' });
@@ -850,7 +854,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
         if (ci0 && co0 && !(ci0 < co0))
             return res.status(400).json({ message: '入住日期必须早于退房日期' });
     }
-    catch (_h) { }
+    catch (_k) { }
     if (!nights && checkin && checkout) {
         try {
             const ci = new Date(checkin);
@@ -858,7 +862,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
             const ms = co.getTime() - ci.getTime();
             nights = ms > 0 ? Math.round(ms / (1000 * 60 * 60 * 24)) : 0;
         }
-        catch (_j) {
+        catch (_l) {
             nights = 0;
         }
     }
@@ -976,11 +980,42 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
                 const action = bs !== as ? 'status_changed' : 'update';
                 (0, store_1.addAudit)('Order', String(id), action, base, row, (_d = req.user) === null || _d === void 0 ? void 0 : _d.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
             }
-            catch (_k) { }
+            catch (_m) { }
             try {
                 (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
             }
-            catch (_l) { }
+            catch (_o) { }
+            try {
+                const beforeRow = base || {};
+                const afterRow = row || {};
+                const changes = [];
+                const beforeCi = String(beforeRow.checkin || '').slice(0, 10);
+                const afterCi = String(afterRow.checkin || '').slice(0, 10);
+                const beforeCo = String(beforeRow.checkout || '').slice(0, 10);
+                const afterCo = String(afterRow.checkout || '').slice(0, 10);
+                if (beforeCi !== afterCi || beforeCo !== afterCo)
+                    changes.push('time');
+                if (String(beforeRow.checkin_time || '') !== String(afterRow.checkin_time || ''))
+                    changes.push('time');
+                if (String(beforeRow.checkout_time || '') !== String(afterRow.checkout_time || ''))
+                    changes.push('time');
+                if (String(beforeRow.note || '') !== String(afterRow.note || ''))
+                    changes.push('note');
+                const propertyId = String(afterRow.property_id || '').trim();
+                if (changes.length && propertyId) {
+                    await (0, notificationEvents_1.emitNotificationEvent)({
+                        type: 'ORDER_UPDATED',
+                        entity: 'order',
+                        entityId: String(id),
+                        propertyId,
+                        updatedAt: opNow,
+                        changes,
+                        data: { entity: 'order', entityId: String(id), action: 'open_order' },
+                        actorUserId: (_e = req.user) === null || _e === void 0 ? void 0 : _e.sub,
+                    }, { operationId });
+                }
+            }
+            catch (_p) { }
             return res.json(row);
         }
         catch (e) {
@@ -1025,9 +1060,40 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
                         const bs = String((base === null || base === void 0 ? void 0 : base.status) || '');
                         const as = String((row === null || row === void 0 ? void 0 : row.status) || '');
                         const action = bs !== as ? 'status_changed' : 'update';
-                        (0, store_1.addAudit)('Order', String(id), action, base, row, (_e = req.user) === null || _e === void 0 ? void 0 : _e.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+                        (0, store_1.addAudit)('Order', String(id), action, base, row, (_f = req.user) === null || _f === void 0 ? void 0 : _f.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
                     }
-                    catch (_m) { }
+                    catch (_q) { }
+                    try {
+                        const beforeRow = base || {};
+                        const afterRow = row || {};
+                        const changes = [];
+                        const beforeCi = String(beforeRow.checkin || '').slice(0, 10);
+                        const afterCi = String(afterRow.checkin || '').slice(0, 10);
+                        const beforeCo = String(beforeRow.checkout || '').slice(0, 10);
+                        const afterCo = String(afterRow.checkout || '').slice(0, 10);
+                        if (beforeCi !== afterCi || beforeCo !== afterCo)
+                            changes.push('time');
+                        if (String(beforeRow.checkin_time || '') !== String(afterRow.checkin_time || ''))
+                            changes.push('time');
+                        if (String(beforeRow.checkout_time || '') !== String(afterRow.checkout_time || ''))
+                            changes.push('time');
+                        if (String(beforeRow.note || '') !== String(afterRow.note || ''))
+                            changes.push('note');
+                        const propertyId = String(afterRow.property_id || '').trim();
+                        if (changes.length && propertyId) {
+                            await (0, notificationEvents_1.emitNotificationEvent)({
+                                type: 'ORDER_UPDATED',
+                                entity: 'order',
+                                entityId: String(id),
+                                propertyId,
+                                updatedAt: opNow,
+                                changes,
+                                data: { entity: 'order', entityId: String(id), action: 'open_order' },
+                                actorUserId: (_g = req.user) === null || _g === void 0 ? void 0 : _g.sub,
+                            }, { operationId });
+                        }
+                    }
+                    catch (_r) { }
                     return res.json(row);
                 }
                 catch (e2) {
@@ -1046,13 +1112,13 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('order.write'), async (req,
         const bs = String((base === null || base === void 0 ? void 0 : base.status) || '');
         const as = String((updated === null || updated === void 0 ? void 0 : updated.status) || '');
         const action = bs !== as ? 'status_changed' : 'update';
-        (0, store_1.addAudit)('Order', String(id), action, base, updated, (_f = req.user) === null || _f === void 0 ? void 0 : _f.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
+        (0, store_1.addAudit)('Order', String(id), action, base, updated, (_h = req.user) === null || _h === void 0 ? void 0 : _h.sub, { ip: req.ip, user_agent: req.headers['user-agent'] });
     }
-    catch (_o) { }
+    catch (_s) { }
     try {
         (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
     }
-    catch (_p) { }
+    catch (_t) { }
     syncCleaningTasksForOrderId(String(id)).catch(() => { });
     return res.json(updated);
 });
