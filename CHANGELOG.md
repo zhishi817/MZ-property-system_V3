@@ -2,6 +2,12 @@
 
 ## Dev (2026-03-31)
 
+### build.10
+
+- Version: `0.2.7-statement-pdf.20260331+build.10`
+- Keys tag: Fix missing “请确认已退2套钥匙” when checkout task lacks order_id by computing checkout/checkin sets independent of order_id.
+- Keys tag: Determine checkout tag visibility using merged group checked_out_at (not preferred row).
+
 ### build.9
 
 - Version: `0.2.7-statement-pdf.20260331+build.9`

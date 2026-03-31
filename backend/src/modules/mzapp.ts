@@ -2120,10 +2120,8 @@ router.get('/work-tasks', async (req, res) => {
               ? (p.b?.order_id ? String(p.b.order_id) : null)
               : (p.kind === 'checkin' && p.a?.order_id ? String(p.a.order_id) : null)
           const singleOrderId = p.kind === 'turnover' ? null : (p.a?.order_id ? String(p.a.order_id) : null)
-          const checkoutKeysOut =
-            checkoutOrderId && checkoutKeys != null && Number.isFinite(checkoutKeys) ? Math.max(1, Math.min(2, Math.trunc(checkoutKeys))) : null
-          const checkinKeysOut =
-            checkinOrderId && checkinKeys != null && Number.isFinite(checkinKeys) ? Math.max(1, Math.min(2, Math.trunc(checkinKeys))) : null
+          const checkoutKeysOut = checkoutKeys != null && Number.isFinite(checkoutKeys) ? Math.max(1, Math.min(2, Math.trunc(checkoutKeys))) : null
+          const checkinKeysOut = checkinKeys != null && Number.isFinite(checkinKeys) ? Math.max(1, Math.min(2, Math.trunc(checkinKeys))) : null
 
           return {
             id: outId,
@@ -2257,8 +2255,9 @@ router.get('/work-tasks', async (req, res) => {
           ...arr.map((x) => x.order_id_checkout),
           ...arr.map((x) => (String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean' ? x.order_id : null)),
         )
-        const checkoutKeysOut = orderIdCheckout && checkoutKeys ? checkoutKeys : null
-        const checkinKeysOut = orderIdCheckin && checkinKeys ? checkinKeys : null
+        const checkoutKeysOut = checkoutKeys ? clampInt(checkoutKeys, 1, 2) : null
+        const checkinKeysOut = checkinKeys ? clampInt(checkinKeys, 1, 2) : null
+        const checkedOutAtMerged = firstNonEmpty(...arr.map((x) => x.checked_out_at))
         const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
         const inspectorName = firstNonEmpty(...arr.map((x) => x.inspector_name))
         const restockItems: any[] = []
@@ -2303,7 +2302,7 @@ router.get('/work-tasks', async (req, res) => {
           key_tags: {
             checkout_sets: checkoutKeysOut,
             checkin_sets: checkinKeysOut,
-            show_checkout: (checkoutKeysOut ?? 0) >= 2 && !String((preferred as any)?.checked_out_at || '').trim(),
+            show_checkout: (checkoutKeysOut ?? 0) >= 2 && !String(checkedOutAtMerged || '').trim(),
             show_checkin: (checkinKeysOut ?? 0) >= 2,
           },
           cleaner_name: cleanerName,
