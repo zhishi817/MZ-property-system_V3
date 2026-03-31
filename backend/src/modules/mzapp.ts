@@ -501,10 +501,11 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureCleaningTaskMediaTable()
-    const r0 = await pgPool.query('SELECT id, inspector_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const r0 = await pgPool.query('SELECT id, inspector_id, property_id::text AS property_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
     const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
+    const propertyId = row.property_id ? String(row.property_id) : ''
     if (!canViewAll(user) && inspectorId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const uuid = require('uuid')
@@ -525,11 +526,29 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
       broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id })
     } catch {}
     try {
-      const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
+      const { listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
+      const { emitNotificationEvent } = require('../services/notificationEvents')
+      const operationId = require('uuid').v4()
       const taskUsers = excludeUserIds(await listCleaningTaskUserIds(id), userId)
       const managerUsers = await listManagerUserIds()
       const to = Array.from(new Set([...taskUsers, ...managerUsers]))
-      await notifyExpoUsers({ user_ids: to, title: '挂钥匙视频已上传', body: '检查员已上传挂钥匙视频', data: { kind: 'lockbox_video_uploaded', task_id: id, media_id: mediaId, event_id: `lockbox_video_uploaded:${id}:${mediaId}` } })
+      if (propertyId && to.length) {
+        await emitNotificationEvent(
+          {
+            type: 'INSPECTION_COMPLETED',
+            entity: 'cleaning_task',
+            entityId: String(id),
+            propertyId,
+            updatedAt: new Date().toISOString(),
+            title: '挂钥匙视频已上传',
+            body: '检查员已上传挂钥匙视频',
+            data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'lockbox_video_uploaded', task_id: id, media_id: mediaId },
+            actorUserId: userId,
+            recipientUserIds: to,
+          },
+          { operationId },
+        )
+      }
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -639,11 +658,34 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
       broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id })
     } catch {}
     try {
-      const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
+      const { listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
+      const { emitNotificationEvent } = require('../services/notificationEvents')
+      const operationId = require('uuid').v4()
       const taskUsers = excludeUserIds(await listCleaningTaskUserIds(id), userId)
       const managerUsers = await listManagerUserIds()
       const to = Array.from(new Set([...taskUsers, ...managerUsers]))
-      await notifyExpoUsers({ user_ids: to, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, batch_id: batchId, event_id: `inspection_photos_saved:${id}:${batchId}` } })
+      let propertyId = ''
+      try {
+        const r2 = await pgPool.query(`SELECT property_id::text AS property_id FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
+        propertyId = String(r2?.rows?.[0]?.property_id || '').trim()
+      } catch {}
+      if (propertyId && to.length) {
+        await emitNotificationEvent(
+          {
+            type: 'CLEANING_TASK_UPDATED',
+            entity: 'cleaning_task',
+            entityId: String(id),
+            propertyId,
+            updatedAt: new Date().toISOString(),
+            title: '检查照片已提交',
+            body: '检查员已上传检查照片',
+            data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'inspection_photos_saved', task_id: id, batch_id: batchId },
+            actorUserId: userId,
+            recipientUserIds: to,
+          },
+          { operationId },
+        )
+      }
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -761,11 +803,34 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
       broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id })
     } catch {}
     try {
-      const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
+      const { listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
+      const { emitNotificationEvent } = require('../services/notificationEvents')
+      const operationId = require('uuid').v4()
       const taskUsers = excludeUserIds(await listCleaningTaskUserIds(id), userId)
       const managerUsers = await listManagerUserIds()
       const to = Array.from(new Set([...taskUsers, ...managerUsers]))
-      await notifyExpoUsers({ user_ids: to, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, batch_id: batchId, event_id: `restock_proof_saved:${id}:${batchId}` } })
+      let propertyId = ''
+      try {
+        const r2 = await pgPool.query(`SELECT property_id::text AS property_id FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
+        propertyId = String(r2?.rows?.[0]?.property_id || '').trim()
+      } catch {}
+      if (propertyId && to.length) {
+        await emitNotificationEvent(
+          {
+            type: 'CLEANING_TASK_UPDATED',
+            entity: 'cleaning_task',
+            entityId: String(id),
+            propertyId,
+            updatedAt: new Date().toISOString(),
+            title: '补货凭证已提交',
+            body: '检查员已提交补货凭证',
+            data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'restock_proof_saved', task_id: id, batch_id: batchId },
+            actorUserId: userId,
+            recipientUserIds: to,
+          },
+          { operationId },
+        )
+      }
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -1096,11 +1161,13 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
 
     let checkedOutAt: string | null = null
     let propertyCode = ''
+    let propertyId = ''
     let keysRequired: number | null = null
     try {
       const r = await pgPool.query(
         `SELECT t.checked_out_at,
                 COALESCE(o.keys_required, 1) AS keys_required,
+                t.property_id::text AS property_id,
                 COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
          FROM cleaning_tasks t
          LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
@@ -1110,20 +1177,35 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
         [taskIds[0]],
       )
       checkedOutAt = r?.rows?.[0]?.checked_out_at ? String(r.rows[0].checked_out_at) : null
+      propertyId = String(r?.rows?.[0]?.property_id || '').trim()
       propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
       keysRequired = r?.rows?.[0]?.keys_required == null ? null : Number(r.rows[0].keys_required)
     } catch {}
     const eventId = `guest_checked_out:${propertyCode || taskIds[0]}:${checkedOutAt || ''}`
     try {
-      const { notifyExpoUsers, listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
+      const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
+      const { emitNotificationEvent } = require('../services/notificationEvents')
+      const operationId = require('uuid').v4()
       const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(taskIds)), ...(await listManagerUserIds())]))
       const body = keysRequired && keysRequired >= 2 ? `已退房（${keysRequired}把钥匙）` : '已退房'
-      await notifyExpoUsers({
-        user_ids: to,
-        title: propertyCode ? `已退房：${propertyCode}` : '已退房',
-        body,
-        data: { kind: 'guest_checked_out', task_ids: taskIds, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: eventId },
-      })
+      if (propertyId && to.length) {
+        await emitNotificationEvent(
+          {
+            type: 'CLEANING_TASK_UPDATED',
+            entity: 'cleaning_task',
+            entityId: String(taskIds[0]),
+            propertyId,
+            updatedAt: checkedOutAt || new Date().toISOString(),
+            changes: ['status', 'keys'],
+            title: propertyCode ? `已退房：${propertyCode}` : '已退房',
+            body,
+            data: { entity: 'cleaning_task', entityId: String(taskIds[0]), action: 'open_task', kind: 'guest_checked_out', task_ids: taskIds, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: eventId },
+            actorUserId: userId,
+            recipientUserIds: to,
+          },
+          { operationId },
+        )
+      }
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -1195,9 +1277,11 @@ router.post('/cleaning-tasks/order-keys-required', async (req, res) => {
 
     try {
       let propertyCode = ''
+      let propertyId = ''
       try {
         const r = await pgPool.query(
-          `SELECT COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+          `SELECT t.property_id::text AS property_id,
+                  COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
            FROM cleaning_tasks t
            LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
            LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
@@ -1206,17 +1290,29 @@ router.post('/cleaning-tasks/order-keys-required', async (req, res) => {
            LIMIT 1`,
           [orderId],
         )
+        propertyId = String(r?.rows?.[0]?.property_id || '').trim()
         propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
       } catch {}
-      const { notifyExpoUsers, listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
-      const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(allTaskIds)), ...(await listManagerUserIds())]))
+      const { emitNotificationEvent } = require('../services/notificationEvents')
+      const operationId = require('uuid').v4()
       const body = `需挂钥匙套数：${nextK}（原：${prevK}）`
-      await notifyExpoUsers({
-        user_ids: to,
-        title: propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新',
-        body,
-        data: { kind: 'cleaning_task_manager_fields_updated', task_ids: allTaskIds, property_code: propertyCode, event_id: `order_keys_required:${propertyCode || orderId}:${prevK}->${nextK}` },
-      })
+      if (propertyId) {
+        await emitNotificationEvent(
+          {
+            type: 'ORDER_UPDATED',
+            entity: 'order',
+            entityId: String(orderId),
+            propertyId,
+            updatedAt: new Date().toISOString(),
+            changes: ['keys'],
+            title: propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新',
+            body,
+            data: { entity: 'order', entityId: String(orderId), action: 'open_order', kind: 'cleaning_task_manager_fields_updated', task_ids: allTaskIds, property_code: propertyCode },
+            actorUserId: String(user?.sub || ''),
+          },
+          { operationId },
+        )
+      }
     } catch {}
 
     return res.status(201).json({ ok: true, updated: touched.length })

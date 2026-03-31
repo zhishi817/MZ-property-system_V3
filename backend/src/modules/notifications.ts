@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { requireAnyPerm, requirePerm } from '../auth'
 import { hasPg, pgInsert, pgPool, pgSelect } from '../dbAdapter'
 import https from 'https'
+import { ensureNotificationStorage } from '../services/notificationEvents'
 
 export const router = Router()
 
@@ -143,6 +144,95 @@ router.post('/expo/register', async (req, res) => {
     return res.json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'expo_register_failed' })
+  }
+})
+
+router.get('/inbox', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!hasPg || !pgPool) return res.json({ items: [], next_cursor: null })
+  await ensureNotificationStorage()
+
+  const userId = String(user.sub || '').trim()
+  const limit0 = Number((req.query as any)?.limit || 50)
+  const limit = Math.max(1, Math.min(200, Number.isFinite(limit0) ? limit0 : 50))
+  const unreadOnly = String((req.query as any)?.unread_only || '').toLowerCase() === 'true'
+  const cursorRaw = String((req.query as any)?.cursor || '').trim()
+  const cursorParts = cursorRaw ? cursorRaw.split('|') : []
+  const cursorCreatedAt = cursorParts[0] ? String(cursorParts[0]) : ''
+  const cursorId = cursorParts[1] ? String(cursorParts[1]) : ''
+
+  const wh: string[] = [`user_id = $1`]
+  const args: any[] = [userId]
+  if (unreadOnly) wh.push('read_at IS NULL')
+  if (cursorCreatedAt && cursorId) {
+    args.push(cursorCreatedAt)
+    args.push(cursorId)
+    wh.push(`(created_at, id) < ($${args.length - 1}::timestamptz, $${args.length}::text)`)
+  }
+
+  const sql = `
+    SELECT id, event_id, type, entity, entity_id, changes, title, body, data, priority, created_at, read_at
+    FROM user_notifications
+    WHERE ${wh.join(' AND ')}
+    ORDER BY created_at DESC, id DESC
+    LIMIT $${args.length + 1}`
+  const r = await pgPool.query(sql, [...args, limit])
+  const items = (r?.rows || []).map((x: any) => ({
+    id: String(x.id || ''),
+    event_id: String(x.event_id || ''),
+    type: String(x.type || ''),
+    entity: String(x.entity || ''),
+    entity_id: String(x.entity_id || ''),
+    changes: Array.isArray(x.changes) ? x.changes.map((v: any) => String(v || '').trim()).filter(Boolean) : [],
+    title: String(x.title || ''),
+    body: String(x.body || ''),
+    data: x.data || {},
+    priority: String(x.priority || 'low'),
+    created_at: x.created_at ? String(x.created_at) : null,
+    read_at: x.read_at ? String(x.read_at) : null,
+  }))
+  const last = items[items.length - 1] || null
+  const nextCursor = last && last.created_at && last.id ? `${last.created_at}|${last.id}` : null
+  return res.json({ items, next_cursor: nextCursor })
+})
+
+router.get('/unread-count', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!hasPg || !pgPool) return res.json({ unread: 0 })
+  await ensureNotificationStorage()
+  const userId = String(user.sub || '').trim()
+  const r = await pgPool.query(`SELECT COUNT(1) AS c FROM user_notifications WHERE user_id=$1 AND read_at IS NULL`, [userId])
+  const unread = Number(r?.rows?.[0]?.c || 0)
+  return res.json({ unread: Number.isFinite(unread) ? unread : 0 })
+})
+
+router.post('/mark-read', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!hasPg || !pgPool) return res.json({ ok: true })
+  await ensureNotificationStorage()
+  const userId = String(user.sub || '').trim()
+  const body = req.body || {}
+  const all = body?.all === true
+  const ids0 = Array.isArray(body?.ids) ? body.ids : []
+  const ids = Array.from(new Set(ids0.map((x: any) => String(x || '').trim()).filter(Boolean)))
+  if (!all && !ids.length) return res.status(400).json({ message: 'missing ids' })
+  try {
+    if (all) {
+      await pgPool.query(`UPDATE user_notifications SET read_at = COALESCE(read_at, now()), updated_at=now() WHERE user_id=$1`, [userId])
+      return res.json({ ok: true })
+    }
+    await pgPool.query(
+      `UPDATE user_notifications
+       SET read_at = COALESCE(read_at, now()), updated_at=now()
+       WHERE user_id=$1 AND id = ANY($2::text[])`,
+      [userId, ids],
+    )
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'update_failed') })
   }
 })
 

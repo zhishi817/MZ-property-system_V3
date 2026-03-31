@@ -51,6 +51,7 @@ const public_1 = __importDefault(require("./modules/public"));
 const public_admin_1 = __importDefault(require("./modules/public_admin"));
 const r2_1 = require("./r2");
 const playwright_1 = require("./lib/playwright");
+const notificationQueueWorker_1 = require("./services/notificationQueueWorker");
 // 环境保险锁（Render 上用 RENDER_ENV=dev/prod 显式区分，避免误判）
 let appEnv = process.env.APP_ENV;
 let dbRole = process.env.DATABASE_ROLE;
@@ -453,6 +454,28 @@ app.listen(port, () => {
     catch (e) {
         console.error(`[email-sync][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
     }
+    try {
+        const enabled = String(process.env.NOTIFICATION_WORKER_ENABLED || 'true').toLowerCase() === 'true';
+        const intervalMs = Math.max(800, Math.min(30000, Number(process.env.NOTIFICATION_WORKER_INTERVAL_MS || 2500)));
+        const batchSize = Math.max(1, Math.min(200, Number(process.env.NOTIFICATION_WORKER_BATCH_SIZE || 50)));
+        if (enabled && dbAdapter_1.hasPg) {
+            console.log(`[notifications][worker] enabled interval_ms=${intervalMs} batch_size=${batchSize}`);
+            (0, notificationQueueWorker_1.startNotificationQueueWorker)({ intervalMs, batchSize });
+            const expr = String(process.env.NOTIFICATION_CLEANUP_CRON || '15 3 * * *');
+            const task = node_cron_1.default.schedule(expr, async () => {
+                try {
+                    await (0, notificationQueueWorker_1.runNotificationQueueCleanup)();
+                }
+                catch (_a) { }
+            }, { scheduled: true });
+            task.start();
+            console.log(`[notifications][cleanup] enabled cron=${expr}`);
+        }
+        else {
+            console.log('[notifications][worker] disabled');
+        }
+    }
+    catch (_b) { }
     ;
     (async () => {
         var _a, _b, _c, _d, _e, _f, _g, _h;

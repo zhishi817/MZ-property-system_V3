@@ -9,6 +9,7 @@ import { broadcastCleaningEvent } from './events'
 import { roleHasPermission } from '../store'
 import sharp from 'sharp'
 import fs from 'fs'
+import { emitNotificationEvent } from '../services/notificationEvents'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -182,14 +183,24 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
       try { broadcastCleaningEvent({ event: 'started', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers } = require('./notifications')
-        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
-        await notifyExpoUsers({
-          user_ids: to,
-          title: '钥匙已上传',
-          body: '清洁员已上传钥匙照片',
-          data: { kind: 'key_photo_uploaded', task_id: id, event_id: `key_photo_uploaded:${id}:${now}` },
-        })
+        const operationId = require('uuid').v4()
+        const propertyId = String((up as any)?.property_id || '').trim()
+        if (propertyId) {
+          await emitNotificationEvent(
+            {
+              type: 'KEY_PHOTO_UPLOADED',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: now,
+              title: '钥匙已上传',
+              body: '清洁员已上传钥匙照片',
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'key_photo_uploaded', task_id: id },
+              actorUserId: String(user?.sub || ''),
+            },
+            { operationId },
+          )
+        }
       } catch {}
       return res.json(up || patch)
     }
@@ -211,11 +222,13 @@ async function handleDeleteKeyPhoto(req: any, res: any) {
 
     const r = await pgPool.query(
       `SELECT COALESCE(cleaner_id, assignee_id)::text AS cleaner_id
+          , property_id::text AS property_id
        FROM cleaning_tasks
        WHERE id::text = $1::text`,
       [String(id || '').trim()],
     )
     const cleanerId = String(r?.rows?.[0]?.cleaner_id || '').trim()
+    const propertyId = String(r?.rows?.[0]?.property_id || '').trim()
     if (!cleanerId || cleanerId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'key_photo'`, [String(id || '').trim()])
@@ -224,9 +237,24 @@ async function handleDeleteKeyPhoto(req: any, res: any) {
     try { broadcastCleaningEvent({ event: 'key_photo_deleted', task_id: id }) } catch {}
     try {
       const now = new Date().toISOString()
-      const { notifyExpoUsers } = require('./notifications')
-      const to = await notifyRecipientsForTask(id, userId)
-      await notifyExpoUsers({ user_ids: to, title: '钥匙照片已删除', body: '清洁员删除了已上传的钥匙照片', data: { kind: 'key_photo_deleted', task_id: id, event_id: `key_photo_deleted:${id}:${now}` } })
+      const operationId = require('uuid').v4()
+      if (propertyId) {
+        await emitNotificationEvent(
+          {
+            type: 'CLEANING_TASK_UPDATED',
+            entity: 'cleaning_task',
+            entityId: String(id),
+            propertyId,
+            updatedAt: now,
+            changes: ['keys'],
+            title: '钥匙照片已删除',
+            body: '清洁员删除了已上传的钥匙照片',
+            data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'key_photo_deleted', task_id: id },
+            actorUserId: userId,
+          },
+          { operationId },
+        )
+      }
     } catch {}
     return res.json({ ok: true })
   } catch (e: any) {
@@ -254,14 +282,31 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
       }
       try { broadcastCleaningEvent({ event: 'issue', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers } = require('./notifications')
-        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
-        await notifyExpoUsers({
-          user_ids: to,
-          title: '任务有更新',
-          body: '清洁员提交了问题',
-          data: { kind: 'issue_reported', task_id: id, issue_id: issue.id, event_id: `issue_reported:${issue.id}` },
-        })
+        const operationId = require('uuid').v4()
+        let propertyId = ''
+        try {
+          const { pgPool } = require('../dbAdapter')
+          if (pgPool) {
+            const r = await pgPool.query(`SELECT property_id::text AS property_id FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
+            propertyId = String(r?.rows?.[0]?.property_id || '').trim()
+          }
+        } catch {}
+        if (propertyId) {
+          await emitNotificationEvent(
+            {
+              type: 'ISSUE_REPORTED',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: new Date().toISOString(),
+              title: '房源问题反馈',
+              body: `收到新的问题反馈：${String(issue.title || '').trim() || '问题'}`.slice(0, 240),
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'issue_reported', task_id: id, issue_id: issue.id },
+              actorUserId: String(user?.sub || ''),
+            },
+            { operationId },
+          )
+        }
       } catch {}
       return res.status(201).json(issue)
     }
@@ -353,7 +398,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       const up = await pgUpdate('cleaning_tasks', id, patch)
       try { broadcastCleaningEvent({ event: 'consumables_submitted', task_id: id, restock_pending: needsRestock }) } catch {}
       try {
-        const { notifyExpoUsers } = require('./notifications')
+        const operationId = require('uuid').v4()
         let propertyCode = ''
         try {
           const { pgPool } = require('../dbAdapter')
@@ -369,14 +414,23 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
             propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
           }
         } catch {}
-        const eventId = `consumables_submitted:${propertyCode || id}:${String(patch.finished_at || '')}`
-        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
-        await notifyExpoUsers({
-          user_ids: to,
-          title: propertyCode ? `清洁完成：${propertyCode}` : '清洁完成',
-          body: needsRestock ? '清洁已完成，待补货' : '清洁已完成，待检查',
-          data: { kind: 'consumables_submitted', task_id: id, restock_pending: needsRestock, property_code: propertyCode, event_id: eventId },
-        })
+        const propertyId = String((up as any)?.property_id || '').trim()
+        if (propertyId) {
+          await emitNotificationEvent(
+            {
+              type: 'CLEANING_COMPLETED',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: String(patch.finished_at || ''),
+              title: propertyCode ? `清洁完成：${propertyCode}` : '清洁完成',
+              body: needsRestock ? '清洁已完成，待补货' : '清洁已完成，待检查',
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'consumables_submitted', task_id: id, restock_pending: needsRestock, property_code: propertyCode },
+              actorUserId: String(user?.sub || ''),
+            },
+            { operationId },
+          )
+        }
       } catch {}
       return res.json(up || patch)
     }
@@ -395,10 +449,26 @@ router.patch('/tasks/:id/restock', requireAnyPerm(['cleaning_app.restock.manage'
       const up = await pgUpdate('cleaning_tasks', id, { status: 'restocked' } as any)
       try { broadcastCleaningEvent({ event: 'restock_done', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers } = require('./notifications')
-        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
+        const operationId = require('uuid').v4()
         const now = new Date().toISOString()
-        await notifyExpoUsers({ user_ids: to, title: '任务有更新', body: '补货已完成，待检查', data: { kind: 'restock_done', task_id: id, event_id: `restock_done:${id}:${now}` } })
+        const propertyId = String((up as any)?.property_id || '').trim()
+        if (propertyId) {
+          await emitNotificationEvent(
+            {
+              type: 'CLEANING_TASK_UPDATED',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: now,
+              changes: ['status'],
+              title: '任务有更新',
+              body: '补货已完成，待检查',
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'restock_done', task_id: id },
+              actorUserId: String(user?.sub || ''),
+            },
+            { operationId },
+          )
+        }
       } catch {}
       return res.json(up || { id, status: 'restocked' })
     }
@@ -424,9 +494,24 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
       try { broadcastCleaningEvent({ event: 'inspected', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers } = require('./notifications')
-        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
-        await notifyExpoUsers({ user_ids: to, title: '检查已完成', body: '检查员已提交挂钥匙视频并标记完成', data: { kind: 'inspection_complete', task_id: id, event_id: `inspection_complete:${id}:${now}` } })
+        const operationId = require('uuid').v4()
+        const propertyId = String((up as any)?.property_id || '').trim()
+        if (propertyId) {
+          await emitNotificationEvent(
+            {
+              type: 'INSPECTION_COMPLETED',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: now,
+              title: '检查已完成',
+              body: '检查员已提交挂钥匙视频并标记完成',
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'inspection_complete', task_id: id },
+              actorUserId: String(user?.sub || ''),
+            },
+            { operationId },
+          )
+        }
       } catch {}
       return res.json(up || patch)
     }
@@ -544,9 +629,28 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
       }
       try { broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers } = require('./notifications')
-        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
-        await notifyExpoUsers({ user_ids: to, title: '检查照片已提交', body: '检查员已上传检查照片', data: { kind: 'inspection_photos_saved', task_id: id, batch_id: batchId, event_id: `inspection_photos_saved:${id}:${batchId}` } })
+        const operationId = require('uuid').v4()
+        let propertyId = ''
+        try {
+          const r2 = await pgPool.query(`SELECT property_id::text AS property_id FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
+          propertyId = String(r2?.rows?.[0]?.property_id || '').trim()
+        } catch {}
+        if (propertyId) {
+          await emitNotificationEvent(
+            {
+              type: 'CLEANING_TASK_UPDATED',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: new Date().toISOString(),
+              title: '检查照片已提交',
+              body: '检查员已上传检查照片',
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'inspection_photos_saved', task_id: id, batch_id: batchId },
+              actorUserId: String(user?.sub || ''),
+            },
+            { operationId },
+          )
+        }
       } catch {}
       return res.status(201).json({ ok: true })
     }
@@ -635,14 +739,28 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
       }
       try { broadcastCleaningEvent({ event: 'completion_photos_saved', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers } = require('./notifications')
-        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
-        await notifyExpoUsers({
-          user_ids: to,
-          title: '房间完成照片已提交',
-          body: '清洁员已上传房间完成照片',
-          data: { kind: 'completion_photos_saved', task_id: id, batch_id: batchId, event_id: `completion_photos_saved:${id}:${batchId}` },
-        })
+        const operationId = require('uuid').v4()
+        let propertyId = ''
+        try {
+          const r2 = await pgPool.query(`SELECT property_id::text AS property_id FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
+          propertyId = String(r2?.rows?.[0]?.property_id || '').trim()
+        } catch {}
+        if (propertyId) {
+          await emitNotificationEvent(
+            {
+              type: 'CLEANING_TASK_UPDATED',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: new Date().toISOString(),
+              title: '房间完成照片已提交',
+              body: '清洁员已上传房间完成照片',
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'completion_photos_saved', task_id: id, batch_id: batchId },
+              actorUserId: String(user?.sub || ''),
+            },
+            { operationId },
+          )
+        }
       } catch {}
       return res.status(201).json({ ok: true })
     }
@@ -674,14 +792,24 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       const up = await pgUpdate('cleaning_tasks', id, { lockbox_video_uploaded_at: now } as any)
       try { broadcastCleaningEvent({ event: 'lockbox_video_uploaded', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers } = require('./notifications')
-        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
-        await notifyExpoUsers({
-          user_ids: to,
-          title: '挂钥匙视频已上传',
-          body: '清洁员已上传挂钥匙视频',
-          data: { kind: 'lockbox_video_uploaded', task_id: id, event_id: `lockbox_video_uploaded:${id}:${now}` },
-        })
+        const operationId = require('uuid').v4()
+        const propertyId = String((up as any)?.property_id || '').trim()
+        if (propertyId) {
+          await emitNotificationEvent(
+            {
+              type: 'CLEANING_TASK_UPDATED',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: now,
+              title: '挂钥匙视频已上传',
+              body: '清洁员已上传挂钥匙视频',
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'lockbox_video_uploaded', task_id: id },
+              actorUserId: String(user?.sub || ''),
+            },
+            { operationId },
+          )
+        }
       } catch {}
       return res.status(201).json(up || { id, lockbox_video_uploaded_at: now })
     }
@@ -754,14 +882,24 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
         const up = await pgUpdate('cleaning_tasks', id, patch)
         try { broadcastCleaningEvent({ event: 'self_completed', task_id: id }) } catch {}
         try {
-          const { notifyExpoUsers } = require('./notifications')
-          const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
-          await notifyExpoUsers({
-            user_ids: to,
-            title: '任务已完成',
-            body: '清洁员已标记任务完成',
-            data: { kind: 'self_completed', task_id: id, event_id: `self_completed:${id}:${now}` },
-          })
+          const operationId = require('uuid').v4()
+          const propertyId = String((up as any)?.property_id || '').trim()
+          if (propertyId) {
+            await emitNotificationEvent(
+              {
+                type: 'CLEANING_COMPLETED',
+                entity: 'cleaning_task',
+                entityId: String(id),
+                propertyId,
+                updatedAt: now,
+                title: '任务已完成',
+                body: '清洁员已标记任务完成',
+                data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'self_completed', task_id: id },
+                actorUserId: String(user?.sub || ''),
+              },
+              { operationId },
+            )
+          }
         } catch {}
         return res.json(up || { id, ...patch })
       }
@@ -859,9 +997,28 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
       }
       try { broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers } = require('./notifications')
-        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
-        await notifyExpoUsers({ user_ids: to, title: '补货凭证已提交', body: '检查员已提交补货凭证', data: { kind: 'restock_proof_saved', task_id: id, batch_id: batchId, event_id: `restock_proof_saved:${id}:${batchId}` } })
+        const operationId = require('uuid').v4()
+        let propertyId = ''
+        try {
+          const r2 = await pgPool.query(`SELECT property_id::text AS property_id FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
+          propertyId = String(r2?.rows?.[0]?.property_id || '').trim()
+        } catch {}
+        if (propertyId) {
+          await emitNotificationEvent(
+            {
+              type: 'CLEANING_TASK_UPDATED',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: new Date().toISOString(),
+              title: '补货凭证已提交',
+              body: '检查员已提交补货凭证',
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'restock_proof_saved', task_id: id, batch_id: batchId },
+              actorUserId: String(user?.sub || ''),
+            },
+            { operationId },
+          )
+        }
       } catch {}
       return res.status(201).json({ ok: true })
     }
@@ -880,10 +1037,26 @@ router.patch('/tasks/:id/ready', requirePerm('cleaning_app.ready.set'), async (r
       const up = await pgUpdate('cleaning_tasks', id, { status: 'ready' } as any)
       try { broadcastCleaningEvent({ event: 'ready', task_id: id }) } catch {}
       try {
-        const { notifyExpoUsers } = require('./notifications')
-        const to = await notifyRecipientsForTask(id, String(user?.sub || ''))
+        const operationId = require('uuid').v4()
         const now = new Date().toISOString()
-        await notifyExpoUsers({ user_ids: to, title: '可入住', body: '房源已标记为可入住', data: { kind: 'ready', task_id: id, event_id: `ready:${id}:${now}` } })
+        const propertyId = String((up as any)?.property_id || '').trim()
+        if (propertyId) {
+          await emitNotificationEvent(
+            {
+              type: 'CLEANING_TASK_UPDATED',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: now,
+              changes: ['status'],
+              title: '可入住',
+              body: '房源已标记为可入住',
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'ready', task_id: id },
+              actorUserId: String(user?.sub || ''),
+            },
+            { operationId },
+          )
+        }
       } catch {}
       return res.json(up || { id, status: 'ready' })
     }

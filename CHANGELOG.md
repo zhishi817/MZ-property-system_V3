@@ -1,5 +1,16 @@
 # Changelog
 
+## Dev (2026-03-31)
+
+### build.7
+
+- Version: `0.2.7-statement-pdf.20260331+build.7`
+- Notifications: Introduce unified `emitNotificationEvent` (deterministic event_id + per-request operationId) and centralize delivery rules with `users.property_scope` filtering (NULL = all properties; array = scoped).
+- Notifications: Add server-side inbox (`user_notifications`) and async delivery queue (`event_queue`) with worker processing (`FOR UPDATE SKIP LOCKED`) and cleanup policy.
+- API: Add `/notifications/inbox`, `/notifications/unread-count`, `/notifications/mark-read` for the Cleaning App info center.
+- Orders/Cleaning: Backfill missing notify points — order updates (time/note), cleaning task manager edits (codes/time/note/keys), and core cleaning flows (key upload, consumables submitted, inspection complete, issue reported).
+- Cleaning App: Notices now sync from server inbox (keeps local fallback), supports marking read, and supports tap-to-open cleaning task detail.
+
 ## Dev (2026-03-30)
 
 ### build.6

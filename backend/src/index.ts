@@ -46,6 +46,7 @@ import publicRouter from './modules/public'
 import publicAdminRouter from './modules/public_admin'
 import { r2Status } from './r2'
 import { getPlaywrightDiagnostics } from './lib/playwright'
+import { runNotificationQueueCleanup, startNotificationQueueWorker } from './services/notificationQueueWorker'
  
  
 // 环境保险锁（Render 上用 RENDER_ENV=dev/prod 显式区分，避免误判）
@@ -384,6 +385,25 @@ app.listen(port, () => {
   } catch (e: any) {
     console.error(`[email-sync][schedule] init error message=${String(e?.message || '')}`)
   }
+  try {
+    const enabled = String(process.env.NOTIFICATION_WORKER_ENABLED || 'true').toLowerCase() === 'true'
+    const intervalMs = Math.max(800, Math.min(30000, Number(process.env.NOTIFICATION_WORKER_INTERVAL_MS || 2500)))
+    const batchSize = Math.max(1, Math.min(200, Number(process.env.NOTIFICATION_WORKER_BATCH_SIZE || 50)))
+    if (enabled && hasPg) {
+      console.log(`[notifications][worker] enabled interval_ms=${intervalMs} batch_size=${batchSize}`)
+      startNotificationQueueWorker({ intervalMs, batchSize })
+      const expr = String(process.env.NOTIFICATION_CLEANUP_CRON || '15 3 * * *')
+      const task = cron.schedule(expr, async () => {
+        try {
+          await runNotificationQueueCleanup()
+        } catch {}
+      }, { scheduled: true })
+      task.start()
+      console.log(`[notifications][cleanup] enabled cron=${expr}`)
+    } else {
+      console.log('[notifications][worker] disabled')
+    }
+  } catch {}
   ;(async () => {
     try {
       if (hasPg) {

@@ -5,6 +5,7 @@ import { addAudit, db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
 import { backfillCleaningTasks, syncOrderToCleaningTasks } from '../services/cleaningSync'
 import { v4 as uuid } from 'uuid'
+import { emitNotificationEvent } from '../services/notificationEvents'
 
 export const router = Router()
 
@@ -436,6 +437,8 @@ async function isValidStaffId(id: any, kind: 'cleaner' | 'inspector'): Promise<b
 
 router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res) => {
   const { id } = req.params
+  const operationId = uuid()
+  const opNow = new Date().toISOString()
   const parsed = patchTaskSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!(await isValidStaffId((parsed.data as any).cleaner_id ?? null, 'cleaner'))) return res.status(400).json({ message: '无效的清洁人员' })
@@ -494,6 +497,32 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
           } catch {}
         }
       }
+      try {
+        const changes: string[] = []
+        if (String(before.old_code || '') !== String(updated.old_code || '')) changes.push('password')
+        if (String(before.new_code || '') !== String(updated.new_code || '')) changes.push('password')
+        if (String(before.checkout_time || '') !== String(updated.checkout_time || '')) changes.push('time')
+        if (String(before.checkin_time || '') !== String(updated.checkin_time || '')) changes.push('time')
+        if (String(before.note || '') !== String(updated.note || '')) changes.push('note')
+        if (String(before.status || '') !== String(updated.status || '')) changes.push('status')
+        if (String(before.keys_required ?? '') !== String(updated.keys_required ?? '')) changes.push('keys')
+        const propertyId = String(updated.property_id || '').trim()
+        if (changes.length && propertyId) {
+          await emitNotificationEvent(
+            {
+              type: 'CLEANING_TASK_UPDATED',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: opNow,
+              changes,
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
+              actorUserId: (req as any).user?.sub,
+            },
+            { operationId },
+          )
+        }
+      } catch {}
       return res.json(updated)
     }
 
@@ -546,6 +575,32 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
         }
       }
     }
+    try {
+      const changes: string[] = []
+      if (String((before as any).old_code || '') !== String((task as any).old_code || '')) changes.push('password')
+      if (String((before as any).new_code || '') !== String((task as any).new_code || '')) changes.push('password')
+      if (String((before as any).checkout_time || '') !== String((task as any).checkout_time || '')) changes.push('time')
+      if (String((before as any).checkin_time || '') !== String((task as any).checkin_time || '')) changes.push('time')
+      if (String((before as any).note || '') !== String((task as any).note || '')) changes.push('note')
+      if (String((before as any).status || '') !== String((task as any).status || '')) changes.push('status')
+      if (String((before as any).keys_required ?? '') !== String((task as any).keys_required ?? '')) changes.push('keys')
+      const propertyId = String((task as any).property_id || '').trim()
+      if (changes.length && propertyId) {
+        await emitNotificationEvent(
+          {
+            type: 'CLEANING_TASK_UPDATED',
+            entity: 'cleaning_task',
+            entityId: String(id),
+            propertyId,
+            updatedAt: opNow,
+            changes,
+            data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
+            actorUserId: (req as any).user?.sub,
+          },
+          { operationId },
+        )
+      }
+    } catch {}
     return res.json(task)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'update_failed' })
