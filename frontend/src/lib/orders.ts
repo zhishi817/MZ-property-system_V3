@@ -104,11 +104,11 @@ export function calcOrderMonthAmounts(o: OrderLike, monthStart: any) {
   const deductionTotal = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0)
   const deductionMonth = isDeductionMonth ? deductionTotal : 0
   const priceMonth = Number((netMonth + cleanMonth).toFixed(2))
-  const avgMonth = nightsMonth ? Number((netMonth / nightsMonth).toFixed(2)) : 0
   const statusRaw = String((o as any).status || '').toLowerCase()
   const isCanceled = statusRaw.includes('cancel')
   const include = (!isCanceled) || !!((o as any).count_in_income)
   const visibleNetMonth = include ? Number((netMonth - deductionMonth).toFixed(2)) : 0
+  const avgMonth = nightsMonth ? Number((visibleNetMonth / nightsMonth).toFixed(2)) : 0
   return { nightsMonth, netMonth, cleanMonth, priceMonth, avgMonth, deductionMonth, visibleNetMonth }
 }
 

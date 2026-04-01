@@ -1000,7 +1000,18 @@ export default function OrdersPage() {
       const ded = Number((r as any).internal_deduction_total ?? (r as any).internal_deduction ?? 0)
       return money(include ? Number((net - ded).toFixed(2)) : 0)
     } },
-    { title: '晚均价', dataIndex: 'avg_nightly_price', render: (_:any, r:Order)=> monthFilter ? money(calcOrderMonthAmounts(r as any, monthFilter).avgMonth) : money((r as any).avg_nightly_price ?? r.avg_nightly_price) },
+    { title: '晚均价', dataIndex: 'avg_nightly_price', render: (_:any, r:Order)=> {
+      if (monthFilter) return money(calcOrderMonthAmounts(r as any, monthFilter).avgMonth)
+      const nights = Number((r as any).__src_nights ?? r.nights ?? 0) || 0
+      if (nights <= 0) return money(0)
+      const st = String((r as any).status || '').toLowerCase()
+      const isCanceled = st.includes('cancel')
+      const include = (!isCanceled) || !!((r as any).count_in_income)
+      const net = Number((r as any).net_income ?? r.net_income ?? 0)
+      const ded = Number((r as any).internal_deduction_total ?? (r as any).internal_deduction ?? 0)
+      const visible = include ? Math.max(0, Number((net - ded).toFixed(2))) : 0
+      return money(visible / nights)
+    } },
     { title: '状态', dataIndex: 'status', render: (v:any)=> {
       const s = String(v||'').toLowerCase()
       const isConfirmed = s === 'confirmed'
