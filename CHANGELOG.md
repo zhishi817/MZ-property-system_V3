@@ -2,6 +2,12 @@
 
 ## Dev (2026-04-01)
 
+### build.8
+
+- Version: `0.2.7-statement-pdf.20260401+build.8`
+- Finance: Fixed payments “mark paid” is now concurrency-safe on production by using atomic upsert for (fixed_expense_id, month_key) snapshots in CRUD (prevents unique constraint failures).
+- Finance: Fixed payments “已付/取消已付” interaction now suppresses background ensure-snapshot refresh briefly to avoid a “page refresh” feel on first click.
+
 ### build.7
 
 - Version: `0.2.7-statement-pdf.20260401+build.7`

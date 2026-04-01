@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { requireAnyPerm, requireResourcePerm } from '../auth'
-import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
+import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
 import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } from '../fingerprint'
 import { db, addAudit } from '../store'
 import { normalizeUrlList } from '../lib/normalizeUrlList'
@@ -1955,15 +1955,21 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             const fixedId = String((toInsert as any).fixed_expense_id || '').trim()
             const monthKey = String((toInsert as any).month_key || '').trim()
             if (fixedId && monthKey) {
-              const dup: any[] = await pgSelect(resource, '*', { fixed_expense_id: fixedId, month_key: monthKey }) as any[] || []
-              if (Array.isArray(dup) && dup[0]) {
-                const existing: any = dup[0]
-                const upd: any = { ...(toInsert as any) }
-                delete upd.id
-                const rowUp = await pgUpdate(resource, String(existing.id), upd as any)
-                const after = rowUp || { ...existing, ...upd }
-                addAudit(resource, String(existing.id), 'upsert', existing, after, (req as any).user?.sub)
-                return res.json(after)
+              const cols = Object.keys(toInsert as any).filter((k) => (toInsert as any)[k] !== undefined)
+              const vals = cols.map((k) => (toInsert as any)[k])
+              const place = cols.map((_, i) => `$${i + 1}`)
+              const updCols = cols.filter((k) => k !== 'id')
+              const updSets = updCols.map((k) => `${k} = EXCLUDED.${k}`)
+              const wherePred = `fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> ''`
+              const sql = `INSERT INTO ${resource} (${cols.join(',')}) VALUES (${place.join(',')})
+                ON CONFLICT (fixed_expense_id, month_key) WHERE ${wherePred}
+                DO UPDATE SET ${updSets.join(', ')}
+                RETURNING *`
+              const up = await pgPool!.query(sql, vals)
+              const rowUp = up?.rows?.[0] || null
+              if (rowUp) {
+                try { addAudit(resource, String(rowUp.id), 'upsert', null, rowUp, (req as any).user?.sub) } catch {}
+                return res.status(201).json(rowUp)
               }
             }
           }
@@ -1971,6 +1977,9 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
         }
       } catch (e: any) {
         const msg = String(e?.message || '')
+        if (/duplicate key value violates unique constraint/i.test(msg)) {
+          return res.status(409).json({ message: msg })
+        }
         if (resource === 'fixed_expenses' && /relation\s+"?fixed_expenses"?\s+does\s+not\s+exist/i.test(msg)) {
           try {
             const { pgPool } = require('../dbAdapter')
