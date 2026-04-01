@@ -4,7 +4,7 @@ import path from 'node:path'
 
 describe('monthly statement split pdf', () => {
   it('uses base sections for no-photos monthly statement', () => {
-    const p = path.join(process.cwd(), 'src', 'app', 'finance', 'company-overview', 'page.tsx')
+    const p = path.join(process.cwd(), 'src', 'app', 'finance', 'properties-overview', 'page.tsx')
     const s = fs.readFileSync(p, 'utf8')
     expect(s).toContain("const sectionsApi = photosMode === 'off' ? 'base' : 'all'")
     expect(s).toContain('/finance/merge-monthly-pack')

@@ -30,6 +30,11 @@ export default function PropertyRevenuePage() {
   const pathname = usePathname()
   const [month, setMonth] = useState<any>(getDefaultRevenueMonth())
   const [orders, setOrders] = useState<Order[]>([])
+  const [rentIncomeByMonth, setRentIncomeByMonth] = useState<Record<string, Record<string, number>>>({})
+  const rentIncomeByMonthRef = useRef<Record<string, Record<string, number>>>({})
+  const rangeRef = useRef<{ start: any; end: any } | null>(null)
+  const [rentSegByKey, setRentSegByKey] = useState<Record<string, { loading: boolean; segments: any[]; rent_income: number; error?: string }>>({})
+  const rentKey = (pid: string, monthKey: string) => `${String(pid)}__${String(monthKey)}`
   const [txs, setTxs] = useState<Tx[]>([])
   const [deepCleaningExpenseTxs, setDeepCleaningExpenseTxs] = useState<Tx[]>([])
   const [pageLoading, setPageLoading] = useState<boolean>(true)
@@ -67,6 +72,7 @@ export default function PropertyRevenuePage() {
   const reloadTimerRef = useRef<any>(null)
   const reloadInFlightRef = useRef<boolean>(false)
   const reloadOrdersOnlyRef = useRef<null | (() => void)>(null)
+  useEffect(() => { rentIncomeByMonthRef.current = rentIncomeByMonth }, [rentIncomeByMonth])
   const closeExportPreview = () => {
     setExportPreview((prev) => {
       try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
@@ -145,6 +151,55 @@ export default function PropertyRevenuePage() {
     })
   }
 
+  const fetchRentIncomeByProperty = async (monthKey: string, force = false) => {
+    const mk = String(monthKey || '').trim()
+    if (!/^\d{4}-\d{2}$/.test(mk)) return
+    if (!force && rentIncomeByMonthRef.current[mk]) return
+    const qs = new URLSearchParams({ month: mk }).toString()
+    const resp = await getJSON<any>(`/finance/rent-income-by-property?${qs}`).catch(() => null as any)
+    const map: Record<string, number> = {}
+    const rows = Array.isArray(resp?.rows) ? resp.rows : []
+    for (const r of rows) {
+      const pid = String(r?.property_id || '').trim()
+      if (!pid) continue
+      map[pid] = Number(r?.rent_income || 0) || 0
+    }
+    setRentIncomeByMonth((prev) => ({ ...prev, [mk]: map }))
+  }
+
+  const refreshRentIncomeForRange = async (force = false) => {
+    const rr = rangeRef.current
+    if (!rr?.start || !rr?.end) return
+    const monthKeys: string[] = []
+    let cur = rr.start.startOf('month')
+    const last = rr.end.startOf('month')
+    while (cur.isSame(last, 'month') || cur.isBefore(last, 'month')) {
+      monthKeys.push(cur.format('YYYY-MM'))
+      cur = cur.add(1, 'month')
+    }
+    await Promise.all(monthKeys.map((mk) => fetchRentIncomeByProperty(mk, force)))
+  }
+
+  const fetchRentSegments = async (pidRaw: string, monthKeyRaw: string) => {
+    const pid = String(pidRaw || '').trim()
+    const mk = String(monthKeyRaw || '').trim()
+    if (!pid || !/^\d{4}-\d{2}$/.test(mk)) return
+    const k = rentKey(pid, mk)
+    const cur = rentSegByKey[k]
+    if (cur?.loading) return
+    if (Array.isArray(cur?.segments) && cur.segments.length) return
+    setRentSegByKey((m) => ({ ...m, [k]: { loading: true, segments: [], rent_income: 0 } }))
+    try {
+      const qs = new URLSearchParams({ month: mk, property_id: pid }).toString()
+      const resp = await getJSON<any>(`/finance/rent-segments?${qs}`)
+      const segs = Array.isArray(resp?.segments) ? resp.segments : []
+      const rentIncome = Number(resp?.rent_income || 0) || 0
+      setRentSegByKey((m) => ({ ...m, [k]: { loading: false, segments: segs, rent_income: rentIncome } }))
+    } catch (e: any) {
+      setRentSegByKey((m) => ({ ...m, [k]: { loading: false, segments: [], rent_income: 0, error: String(e?.message || '加载失败') } }))
+    }
+  }
+
   useEffect(() => {
     mountedRef.current = true
     const reload = async (opts?: { ordersOnly?: boolean }) => {
@@ -157,6 +212,7 @@ export default function PropertyRevenuePage() {
           const ordersRes = await getJSON<Order[]>('/orders').catch(() => [] as any[])
           if (!mountedRef.current) return
           setOrders(Array.isArray(ordersRes) ? ordersRes : [])
+          await refreshRentIncomeForRange(true).catch(() => {})
           return
         }
         setPageLoading(true)
@@ -192,6 +248,7 @@ export default function PropertyRevenuePage() {
           message.destroy('orphanFixedExpenseSnapshots')
         }
         setTxs(built.txs)
+        await refreshRentIncomeForRange(true).catch(() => {})
       } finally {
         if (mountedRef.current) {
           setPageLoading(false)
@@ -269,6 +326,15 @@ export default function PropertyRevenuePage() {
     if (period === 'half-year') return (startMonth || base).startOf('month').add(5, 'month').endOf('month')
     return base.endOf('month')
   }, [month, period, startMonth])
+
+  useEffect(() => {
+    if (!start || !end) { rangeRef.current = null; return }
+    rangeRef.current = { start, end }
+  }, [start, end])
+
+  useEffect(() => {
+    refreshRentIncomeForRange(false).catch(() => {})
+  }, [start?.format('YYYY-MM'), end?.format('YYYY-MM')])
 
   const statusRange = useMemo(() => {
     if (!start || !end) return null
@@ -598,8 +664,8 @@ export default function PropertyRevenuePage() {
     for (const p of list) {
       for (const rm of rangeMonths) {
         const related = getMonthSegmentsForProperty(orders as any, rm.start, String(p.id))
-        const rentIncome = related.reduce((sum, seg) => sum + Number(((seg as any).visible_net_income ?? (seg as any).net_income ?? 0)), 0)
         const mk = rm.start.format('YYYY-MM')
+        const rentIncome = Number(rentIncomeByMonth[mk]?.[String(p.id)] ?? 0) || 0
         const b = txBucketIndex.get(String(p.id))?.get(mk)
         const otherIncome = Number(b?.otherIncome || 0)
         const otherIncomeDesc = b?.otherIncomeCats ? Array.from(b.otherIncomeCats).filter(Boolean).join('、') || '-' : '-'
@@ -859,9 +925,16 @@ export default function PropertyRevenuePage() {
           fixed: 'left' as const,
           rowExpandable: () => true,
           columnWidth: 40,
+          onExpand: (expanded: boolean, r: any) => {
+            if (!expanded) return
+            try { fetchRentSegments(String(r?.pid || ''), String(r?.monthKey || '')) } catch {}
+          },
           expandedRowRender: (r: any) => {
-            const mStart = dayjs(r.month, 'MM/YYYY').startOf('month')
-            const segsRaw: any[] = monthSegments(orders.filter(o => o.property_id===r.pid), mStart)
+            const pid = String(r?.pid || '').trim()
+            const monthKey = String(r?.monthKey || '').trim()
+            const k = rentKey(pid, monthKey)
+            const cached = rentSegByKey[k]
+            const segsRaw: any[] = Array.isArray(cached?.segments) ? cached.segments : []
             const segs = [...segsRaw].sort((a: any, b: any) => {
               const aci = a?.checkin ? dayjs(toDayStr(a.checkin)).valueOf() : 0
               const bci = b?.checkin ? dayjs(toDayStr(b.checkin)).valueOf() : 0
@@ -874,7 +947,7 @@ export default function PropertyRevenuePage() {
               return aid.localeCompare(bid)
             })
             const fmt2 = (n: number) => (n||0).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 })
-            const sumNet = segs.reduce((s,x)=> s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
+            const rentIncome = Number(cached?.rent_income || 0) || 0
             const childColumns = [
               { title: '入住', dataIndex: 'check_in', width: 130, fixed: 'left' as const, align: 'left' as const, ellipsis: true, render: (v: any)=> dayjs(v).format('DD/MM/YYYY') },
               { title: '退房', dataIndex: 'check_out', width: 130, align: 'left' as const, ellipsis: true, render: (v: any)=> dayjs(v).format('DD/MM/YYYY') },
@@ -885,6 +958,7 @@ export default function PropertyRevenuePage() {
               <div className={styles.childContainer}>
                 <div className={styles.leftBar} />
                 <div className={styles.childHeader}>分段明细</div>
+                {cached?.error ? <div style={{ padding: '8px 0', color: '#cf1322' }}>{cached.error}</div> : null}
                 <Table
                   className={styles.childTable}
                   columns={childColumns as any}
@@ -893,11 +967,12 @@ export default function PropertyRevenuePage() {
                   size="small"
                   tableLayout="fixed"
                   scroll={{ x: 480 }}
+                  loading={!!cached?.loading}
                   summary={() => (
                     <Table.Summary>
                       <Table.Summary.Row>
                         <Table.Summary.Cell index={0} colSpan={3}>分段合计净租金</Table.Summary.Cell>
-                        <Table.Summary.Cell index={3} align="right"><strong>${fmt2(sumNet)}</strong></Table.Summary.Cell>
+                        <Table.Summary.Cell index={3} align="right"><strong>${fmt2(rentIncome)}</strong></Table.Summary.Cell>
                       </Table.Summary.Row>
                     </Table.Summary>
                   )}

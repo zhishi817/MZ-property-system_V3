@@ -24,6 +24,7 @@ const uploadImageResize_1 = require("../lib/uploadImageResize");
 const uuid_1 = require("uuid");
 const pdfJobsSchema_1 = require("../services/pdfJobsSchema");
 const r2_2 = require("../r2");
+const orderMonthSegments_1 = require("../lib/orderMonthSegments");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -2488,6 +2489,94 @@ exports.router.get('/property-revenue', async (req, res) => {
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'property-revenue failed' });
+    }
+});
+function parseMonthKeyOrNull(monthKey) {
+    const ym = String(monthKey || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(ym))
+        return null;
+    const y = Number(ym.slice(0, 4));
+    const m = Number(ym.slice(5, 7));
+    if (!y || !m)
+        return null;
+    const start = `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-01`;
+    const next = new Date(Date.UTC(y, m, 1));
+    const ny = next.getUTCFullYear();
+    const nm = next.getUTCMonth() + 1;
+    const nextStart = `${String(ny).padStart(4, '0')}-${String(nm).padStart(2, '0')}-01`;
+    return { monthKey: ym, start, nextStart };
+}
+exports.router.get('/rent-segments', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+    var _a, _b;
+    try {
+        const m = parseMonthKeyOrNull((_a = req.query) === null || _a === void 0 ? void 0 : _a.month);
+        const property_id = String(((_b = req.query) === null || _b === void 0 ? void 0 : _b.property_id) || '').trim();
+        if (!m)
+            return res.status(400).json({ message: 'invalid month' });
+        if (!property_id)
+            return res.status(400).json({ message: 'missing property_id' });
+        if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
+            return res.status(400).json({ message: 'pg required' });
+        const ordersRs = await dbAdapter_2.pgPool.query('SELECT * FROM orders WHERE property_id = $1 AND checkin < $3::date AND checkout > $2::date', [property_id, m.start, m.nextStart]);
+        const orders = ordersRs.rows || [];
+        const ids = orders.map((o) => String(o.id || '')).filter(Boolean);
+        const totals = {};
+        if (ids.length) {
+            try {
+                const dRs = await dbAdapter_2.pgPool.query('SELECT order_id, COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id = ANY($1) GROUP BY order_id', [ids]);
+                const arr = ((dRs === null || dRs === void 0 ? void 0 : dRs.rows) || []);
+                arr.forEach((r) => { totals[String(r.order_id)] = Number(r.total || 0); });
+            }
+            catch (_c) { }
+        }
+        const enriched = orders.map((o) => ({ ...o, internal_deduction_total: Number((totals[String(o.id)] || 0).toFixed(2)) }));
+        const segments = (0, orderMonthSegments_1.computeMonthSegmentsForOrders)(enriched, m.monthKey);
+        const rent_income = (0, orderMonthSegments_1.sumSegmentsVisibleNetIncome)(segments);
+        return res.json({ month: m.monthKey, property_id, segments, rent_income });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'rent-segments failed' });
+    }
+});
+exports.router.get('/rent-income-by-property', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+    var _a;
+    try {
+        const m = parseMonthKeyOrNull((_a = req.query) === null || _a === void 0 ? void 0 : _a.month);
+        if (!m)
+            return res.status(400).json({ message: 'invalid month' });
+        if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
+            return res.status(400).json({ message: 'pg required' });
+        const ordersRs = await dbAdapter_2.pgPool.query('SELECT * FROM orders WHERE property_id IS NOT NULL AND checkin < $2::date AND checkout > $1::date', [m.start, m.nextStart]);
+        const orders = ordersRs.rows || [];
+        const ids = orders.map((o) => String(o.id || '')).filter(Boolean);
+        const totals = {};
+        if (ids.length) {
+            try {
+                const dRs = await dbAdapter_2.pgPool.query('SELECT order_id, COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id = ANY($1) GROUP BY order_id', [ids]);
+                const arr = ((dRs === null || dRs === void 0 ? void 0 : dRs.rows) || []);
+                arr.forEach((r) => { totals[String(r.order_id)] = Number(r.total || 0); });
+            }
+            catch (_b) { }
+        }
+        const enriched = orders.map((o) => ({ ...o, internal_deduction_total: Number((totals[String(o.id)] || 0).toFixed(2)) }));
+        const segments = (0, orderMonthSegments_1.computeMonthSegmentsForOrders)(enriched, m.monthKey);
+        const byProp = {};
+        for (const s of segments) {
+            const pid = String(s.property_id || '').trim();
+            if (!pid)
+                continue;
+            if (!byProp[pid])
+                byProp[pid] = [];
+            byProp[pid].push(s);
+        }
+        const rows = Object.entries(byProp).map(([property_id, segs]) => ({
+            property_id,
+            rent_income: (0, orderMonthSegments_1.sumSegmentsVisibleNetIncome)(segs),
+        }));
+        return res.json({ month: m.monthKey, rows });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'rent-income-by-property failed' });
     }
 });
 // Auto-calc management fee for a property and month, persist into property_expenses and finance_transactions
