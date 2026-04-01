@@ -19,10 +19,41 @@ export default function SinglePropertyAnalysisPage() {
   const [properties, setProperties] = useState<Property[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
   useEffect(() => {
-    getJSON<Order[]>('/orders').then((j)=> setOrders(Array.isArray(j)?j:[])).catch(()=>setOrders([]))
-    getJSON<Tx[]>('/finance').then((j)=> setTxs(Array.isArray(j)?j:[])).catch(()=>setTxs([]))
-    getJSON<Property[]>('/properties').then((j)=> setProperties(Array.isArray(j)?j:[])).catch(()=>setProperties([]))
-    getJSON<Landlord[]>('/landlords').then((j)=> setLandlords(Array.isArray(j)?j:[])).catch(()=>setLandlords([]))
+    const mountedRef = { current: true }
+    const timerRef = { current: null as any }
+    const reloadOrdersOnly = async () => {
+      const j = await getJSON<Order[]>('/orders').catch(() => [] as any[])
+      if (!mountedRef.current) return
+      setOrders(Array.isArray(j) ? j : [])
+    }
+    const reloadAll = async () => {
+      const [o, f, p, l] = await Promise.all([
+        getJSON<Order[]>('/orders').catch(() => [] as any[]),
+        getJSON<Tx[]>('/finance').catch(() => [] as any[]),
+        getJSON<Property[]>('/properties').catch(() => [] as any[]),
+        getJSON<Landlord[]>('/landlords').catch(() => [] as any[]),
+      ])
+      if (!mountedRef.current) return
+      setOrders(Array.isArray(o) ? o : [])
+      setTxs(Array.isArray(f) ? f : [])
+      setProperties(Array.isArray(p) ? p : [])
+      setLandlords(Array.isArray(l) ? l : [])
+    }
+    const scheduleReloadOrders = () => {
+      try { if (timerRef.current) clearTimeout(timerRef.current) } catch {}
+      timerRef.current = setTimeout(() => { reloadOrdersOnly() }, 350)
+    }
+    const onVis = () => { if (document.visibilityState === 'visible') scheduleReloadOrders() }
+    const onFocus = () => { scheduleReloadOrders() }
+    reloadAll()
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      mountedRef.current = false
+      try { if (timerRef.current) clearTimeout(timerRef.current) } catch {}
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', onFocus)
+    }
   }, [])
   return (
     <Card title="单房源分析">

@@ -2012,7 +2012,7 @@ router.post('/:id/internal-deductions', requirePerm('order.deduction.manage'), a
   const row: any = { id: uuid(), order_id: id, amount, currency: parsed.data.currency || 'AUD', item_desc: parsed.data.item_desc, note: parsed.data.note, created_by: (req as any).user?.sub, created_at: now, is_active: true }
   addAudit('OrderInternalDeduction', row.id, 'create', null, row, (req as any).user?.sub)
   if (hasPg) {
-    try { const inserted = await pgInsert('order_internal_deductions', row as any); return res.status(201).json(inserted || row) } catch (e: any) {
+    try { const inserted = await pgInsert('order_internal_deductions', row as any); try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}; return res.status(201).json(inserted || row) } catch (e: any) {
       const msg = String(e?.message || '')
       try {
         const { pgPool } = require('../dbAdapter')
@@ -2037,6 +2037,7 @@ router.post('/:id/internal-deductions', requirePerm('order.deduction.manage'), a
           await pgPool?.query('ALTER TABLE order_internal_deductions ALTER COLUMN note DROP NOT NULL')
         }
         const inserted2 = await pgInsert('order_internal_deductions', row as any)
+        try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
         return res.status(201).json(inserted2 || row)
       } catch (e2: any) {
         return res.status(500).json({ message: e2?.message || msg || 'insert failed' })
@@ -2044,6 +2045,7 @@ router.post('/:id/internal-deductions', requirePerm('order.deduction.manage'), a
     }
   }
   ;(db as any).orderInternalDeductions.push(row)
+  try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
   return res.status(201).json(row)
 })
 
@@ -2067,7 +2069,7 @@ router.patch('/:id/internal-deductions/:did', requirePerm('order.deduction.manag
   const updated: any = { ...prev, ...parsed.data }
   addAudit('OrderInternalDeduction', did, 'update', prev, updated, (req as any).user?.sub)
   if (hasPg) {
-    try { const row = await pgUpdate('order_internal_deductions', did, updated as any); return res.json(row || updated) } catch (e: any) {
+    try { const row = await pgUpdate('order_internal_deductions', did, updated as any); try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}; return res.json(row || updated) } catch (e: any) {
       const msg = String(e?.message || '')
       try {
         const { pgPool } = require('../dbAdapter')
@@ -2078,6 +2080,7 @@ router.patch('/:id/internal-deductions/:did', requirePerm('order.deduction.manag
           await pgPool?.query('ALTER TABLE order_internal_deductions ALTER COLUMN note DROP NOT NULL')
         }
         const row2 = await pgUpdate('order_internal_deductions', did, updated as any)
+        try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
         return res.json(row2 || updated)
       } catch (e2: any) {
         try { await pgInsert('order_internal_deductions', updated as any); return res.json(updated) } catch (e3: any) { return res.status(500).json({ message: e3?.message || e2?.message || msg || 'update failed' }) }
@@ -2086,6 +2089,7 @@ router.patch('/:id/internal-deductions/:did', requirePerm('order.deduction.manag
   }
   const idx = (db as any).orderInternalDeductions.findIndex((d: any) => d.id === did)
   if (idx !== -1) (db as any).orderInternalDeductions[idx] = updated
+  try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
   return res.json(updated)
 })
 
@@ -2104,10 +2108,11 @@ router.delete('/:id/internal-deductions/:did', requirePerm('order.deduction.mana
   if (!prev) return res.status(404).json({ message: 'deduction not found' })
   addAudit('OrderInternalDeduction', did, 'delete', prev, null, (req as any).user?.sub)
   if (hasPg) {
-    try { await pgDelete('order_internal_deductions', did); return res.json({ ok: true }) } catch (e: any) { return res.status(500).json({ message: e?.message || 'delete failed' }) }
+    try { await pgDelete('order_internal_deductions', did); try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}; return res.json({ ok: true }) } catch (e: any) { return res.status(500).json({ message: e?.message || 'delete failed' }) }
   }
   const idx = (db as any).orderInternalDeductions.findIndex((d: any) => d.id === did)
   if (idx !== -1) (db as any).orderInternalDeductions.splice(idx, 1)
+  try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
   return res.json({ ok: true })
 })
 router.post('/:id/confirm-payment', requirePerm('order.confirm_payment'), async (req, res) => {

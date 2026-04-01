@@ -2,6 +2,13 @@
 
 ## Dev (2026-04-01)
 
+### build.5
+
+- Version: `0.2.7-statement-pdf.20260401+build.5`
+- Finance: Rename route folder `company-overview` -> `properties-overview` (URL becomes `/finance/properties-overview`) and update revenue view import.
+- Finance: Property revenue and single-property analysis auto-refresh orders when returning to page (focus/visibilitychange), ensuring stats follow latest order edits.
+- Orders: Internal deduction CRUD now broadcasts orders updated event (future-proofing refresh consistency).
+
 ### build.4
 
 - Version: `0.2.7-statement-pdf.20260401+build.4`
