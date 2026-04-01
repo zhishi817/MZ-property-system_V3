@@ -2,6 +2,13 @@
 
 ## Dev (2026-04-01)
 
+### build.7
+
+- Version: `0.2.7-statement-pdf.20260401+build.7`
+- Finance: Property revenue “rentIncome” and segment details now come from backend order aggregation endpoints (`/finance/rent-income-by-property`, `/finance/rent-segments`); UI no longer derives or re-sums segments.
+- Finance: Internal deductions are deducted before allocating and then prorated by nights across month segments (fixes cross-month segments still showing pre-deduction amounts).
+- Backend: Add regression test script for deduction proration in month segments.
+
 ### build.6
 
 - Version: `0.2.7-statement-pdf.20260401+build.6`

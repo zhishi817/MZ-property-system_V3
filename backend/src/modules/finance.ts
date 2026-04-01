@@ -18,6 +18,7 @@ import { resizeUploadImage } from '../lib/uploadImageResize'
 import { v4 as uuidv4 } from 'uuid'
 import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
 import { r2Status, r2GetObjectByKey } from '../r2'
+import { computeMonthSegmentsForOrders, sumSegmentsVisibleNetIncome } from '../lib/orderMonthSegments'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -2242,6 +2243,94 @@ router.get('/property-revenue', async (req, res) => {
     return res.json(payload)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'property-revenue failed' })
+  }
+})
+
+function parseMonthKeyOrNull(monthKey: any): { monthKey: string; start: string; nextStart: string } | null {
+  const ym = String(monthKey || '').trim()
+  if (!/^\d{4}-\d{2}$/.test(ym)) return null
+  const y = Number(ym.slice(0, 4))
+  const m = Number(ym.slice(5, 7))
+  if (!y || !m) return null
+  const start = `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-01`
+  const next = new Date(Date.UTC(y, m, 1))
+  const ny = next.getUTCFullYear()
+  const nm = next.getUTCMonth() + 1
+  const nextStart = `${String(ny).padStart(4, '0')}-${String(nm).padStart(2, '0')}-01`
+  return { monthKey: ym, start, nextStart }
+}
+
+router.get('/rent-segments', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+  try {
+    const m = parseMonthKeyOrNull((req.query as any)?.month)
+    const property_id = String(((req.query as any)?.property_id) || '').trim()
+    if (!m) return res.status(400).json({ message: 'invalid month' })
+    if (!property_id) return res.status(400).json({ message: 'missing property_id' })
+    if (!hasPg || !pgPool) return res.status(400).json({ message: 'pg required' })
+    const ordersRs = await pgPool.query(
+      'SELECT * FROM orders WHERE property_id = $1 AND checkin < $3::date AND checkout > $2::date',
+      [property_id, m.start, m.nextStart]
+    )
+    const orders: any[] = ordersRs.rows || []
+    const ids = orders.map((o) => String(o.id || '')).filter(Boolean)
+    const totals: Record<string, number> = {}
+    if (ids.length) {
+      try {
+        const dRs = await pgPool.query(
+          'SELECT order_id, COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id = ANY($1) GROUP BY order_id',
+          [ids]
+        )
+        const arr = (dRs?.rows || []) as any[]
+        arr.forEach((r) => { totals[String(r.order_id)] = Number(r.total || 0) })
+      } catch {}
+    }
+    const enriched = orders.map((o) => ({ ...o, internal_deduction_total: Number((totals[String(o.id)] || 0).toFixed(2)) }))
+    const segments = computeMonthSegmentsForOrders(enriched, m.monthKey)
+    const rent_income = sumSegmentsVisibleNetIncome(segments)
+    return res.json({ month: m.monthKey, property_id, segments, rent_income })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'rent-segments failed' })
+  }
+})
+
+router.get('/rent-income-by-property', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+  try {
+    const m = parseMonthKeyOrNull((req.query as any)?.month)
+    if (!m) return res.status(400).json({ message: 'invalid month' })
+    if (!hasPg || !pgPool) return res.status(400).json({ message: 'pg required' })
+    const ordersRs = await pgPool.query(
+      'SELECT * FROM orders WHERE property_id IS NOT NULL AND checkin < $2::date AND checkout > $1::date',
+      [m.start, m.nextStart]
+    )
+    const orders: any[] = ordersRs.rows || []
+    const ids = orders.map((o) => String(o.id || '')).filter(Boolean)
+    const totals: Record<string, number> = {}
+    if (ids.length) {
+      try {
+        const dRs = await pgPool.query(
+          'SELECT order_id, COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id = ANY($1) GROUP BY order_id',
+          [ids]
+        )
+        const arr = (dRs?.rows || []) as any[]
+        arr.forEach((r) => { totals[String(r.order_id)] = Number(r.total || 0) })
+      } catch {}
+    }
+    const enriched = orders.map((o) => ({ ...o, internal_deduction_total: Number((totals[String(o.id)] || 0).toFixed(2)) }))
+    const segments = computeMonthSegmentsForOrders(enriched, m.monthKey)
+    const byProp: Record<string, any[]> = {}
+    for (const s of segments) {
+      const pid = String((s as any).property_id || '').trim()
+      if (!pid) continue
+      if (!byProp[pid]) byProp[pid] = []
+      byProp[pid].push(s)
+    }
+    const rows = Object.entries(byProp).map(([property_id, segs]) => ({
+      property_id,
+      rent_income: sumSegmentsVisibleNetIncome(segs),
+    }))
+    return res.json({ month: m.monthKey, rows })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'rent-income-by-property failed' })
   }
 })
 

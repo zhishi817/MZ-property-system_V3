@@ -40,7 +40,8 @@ export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string }
   if (totalNights <= 0) return []
   const totalPrice = Number(o.price || 0)
   const totalCleaning = Number(o.cleaning_fee || 0)
-  const dailyNet = totalNights ? (Number((totalPrice - totalCleaning).toFixed(2)) / totalNights) : 0
+  const netTotal = Math.max(0, Number(((o as any).net_income ?? (totalPrice - totalCleaning))))
+  const dailyNet = totalNights ? (Number(netTotal.toFixed(2)) / totalNights) : 0
   const segments: (OrderLike & { __rid: string })[] = []
   const deductionTotal = Number((o as any).internal_deduction_total || 0)
   let s = ci
@@ -65,7 +66,7 @@ export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string }
       __src_checkout: o.checkout,
       __src_price: totalPrice,
       __src_cleaning_fee: totalCleaning,
-      __src_net_income: Number((totalPrice - totalCleaning).toFixed(2)),
+      __src_net_income: Number(netTotal.toFixed(2)),
       __src_nights: totalNights,
       checkin: s.format('YYYY-MM-DD') + 'T12:00:00',
       checkout: e.format('YYYY-MM-DD') + 'T11:59:59',
@@ -95,7 +96,7 @@ export function calcOrderMonthAmounts(o: OrderLike, monthStart: any) {
   const totalNightsAll = Number((o as any).__src_nights ?? Math.max(0, co.diff(ci, 'day')))
   const totalPrice = Number((o as any).__src_price ?? o.price ?? 0)
   const totalCleaning = Number((o as any).__src_cleaning_fee ?? o.cleaning_fee ?? 0)
-  const netTotal = Math.max(0, Number((totalPrice - totalCleaning).toFixed(2)))
+  const netTotal = Math.max(0, Number(((o as any).__src_net_income ?? (o as any).net_income ?? (totalPrice - totalCleaning))))
   const dailyNet = totalNightsAll ? netTotal / totalNightsAll : 0
   const netMonth = Number((dailyNet * nightsMonth).toFixed(2))
   const lastNight = totalNightsAll > 0 ? co.subtract(1, 'day') : co

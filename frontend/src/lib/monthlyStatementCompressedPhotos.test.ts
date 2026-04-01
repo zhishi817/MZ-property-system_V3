@@ -4,7 +4,7 @@ import path from 'node:path'
 
 describe('monthly statement compressed photos', () => {
   it('supports compressed photos mode and passes photo_w/photo_q', () => {
-    const p = path.join(process.cwd(), 'src', 'app', 'finance', 'company-overview', 'page.tsx')
+    const p = path.join(process.cwd(), 'src', 'app', 'finance', 'properties-overview', 'page.tsx')
     const s = fs.readFileSync(p, 'utf8')
     expect(s).toContain("'compressed'")
     expect(s).toContain('photo_w')
@@ -20,4 +20,3 @@ describe('monthly statement compressed photos', () => {
     expect(s).toContain('&q=')
   })
 })
-

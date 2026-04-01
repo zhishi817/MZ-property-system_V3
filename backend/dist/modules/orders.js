@@ -2520,6 +2520,11 @@ exports.router.post('/:id/internal-deductions', (0, auth_1.requirePerm)('order.d
     if (dbAdapter_1.hasPg) {
         try {
             const inserted = await (0, dbAdapter_1.pgInsert)('order_internal_deductions', row);
+            try {
+                (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
+            }
+            catch (_e) { }
+            ;
             return res.status(201).json(inserted || row);
         }
         catch (e) {
@@ -2547,6 +2552,10 @@ exports.router.post('/:id/internal-deductions', (0, auth_1.requirePerm)('order.d
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE order_internal_deductions ALTER COLUMN note DROP NOT NULL'));
                 }
                 const inserted2 = await (0, dbAdapter_1.pgInsert)('order_internal_deductions', row);
+                try {
+                    (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
+                }
+                catch (_f) { }
                 return res.status(201).json(inserted2 || row);
             }
             catch (e2) {
@@ -2556,6 +2565,10 @@ exports.router.post('/:id/internal-deductions', (0, auth_1.requirePerm)('order.d
     }
     ;
     store_1.db.orderInternalDeductions.push(row);
+    try {
+        (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
+    }
+    catch (_g) { }
     return res.status(201).json(row);
 });
 exports.router.patch('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('order.deduction.manage'), async (req, res) => {
@@ -2596,6 +2609,11 @@ exports.router.patch('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('o
     if (dbAdapter_1.hasPg) {
         try {
             const row = await (0, dbAdapter_1.pgUpdate)('order_internal_deductions', did, updated);
+            try {
+                (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
+            }
+            catch (_e) { }
+            ;
             return res.json(row || updated);
         }
         catch (e) {
@@ -2609,6 +2627,10 @@ exports.router.patch('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('o
                     await (pgPool === null || pgPool === void 0 ? void 0 : pgPool.query('ALTER TABLE order_internal_deductions ALTER COLUMN note DROP NOT NULL'));
                 }
                 const row2 = await (0, dbAdapter_1.pgUpdate)('order_internal_deductions', did, updated);
+                try {
+                    (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
+                }
+                catch (_f) { }
                 return res.json(row2 || updated);
             }
             catch (e2) {
@@ -2625,6 +2647,10 @@ exports.router.patch('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('o
     const idx = store_1.db.orderInternalDeductions.findIndex((d) => d.id === did);
     if (idx !== -1)
         store_1.db.orderInternalDeductions[idx] = updated;
+    try {
+        (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
+    }
+    catch (_g) { }
     return res.json(updated);
 });
 exports.router.delete('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('order.deduction.manage'), async (req, res) => {
@@ -2661,6 +2687,11 @@ exports.router.delete('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('
     if (dbAdapter_1.hasPg) {
         try {
             await (0, dbAdapter_1.pgDelete)('order_internal_deductions', did);
+            try {
+                (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
+            }
+            catch (_e) { }
+            ;
             return res.json({ ok: true });
         }
         catch (e) {
@@ -2670,6 +2701,10 @@ exports.router.delete('/:id/internal-deductions/:did', (0, auth_1.requirePerm)('
     const idx = store_1.db.orderInternalDeductions.findIndex((d) => d.id === did);
     if (idx !== -1)
         store_1.db.orderInternalDeductions.splice(idx, 1);
+    try {
+        (0, events_1.broadcastOrdersUpdated)({ action: 'update', id });
+    }
+    catch (_f) { }
     return res.json({ ok: true });
 });
 exports.router.post('/:id/confirm-payment', (0, auth_1.requirePerm)('order.confirm_payment'), async (req, res) => {

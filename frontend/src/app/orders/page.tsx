@@ -82,6 +82,32 @@ export default function OrdersPage() {
     }, 0)
     return Number(sum.toFixed(2))
   }
+  function computeVisibleNetIncomeForOrder(o: any, deductionTotal: number): number {
+    const st = String(o?.status || '').toLowerCase()
+    const isCanceled = st.includes('cancel')
+    const include = (!isCanceled) || !!(o?.count_in_income)
+    if (!include) return 0
+    const net = Number(o?.net_income ?? 0) || 0
+    return Math.max(0, Number((net - Number(deductionTotal || 0)).toFixed(2)))
+  }
+  function applyDeductionTotalsToLocalOrder(orderId: string, deductions: any[]) {
+    const sum = sumActiveDeductions(deductions)
+    setData(prev => prev.map(x => {
+      if (String(x.id) !== String(orderId)) return x
+      const visible = computeVisibleNetIncomeForOrder(x as any, sum)
+      return { ...(x as any), internal_deduction_total: sum, visible_net_income: visible } as any
+    }))
+    setCurrent(prev => {
+      if (!prev || String(prev.id) !== String(orderId)) return prev
+      const visible = computeVisibleNetIncomeForOrder(prev as any, sum)
+      return { ...(prev as any), internal_deduction_total: sum, visible_net_income: visible } as any
+    })
+    setDetail(prev => {
+      if (!prev || String(prev.id) !== String(orderId)) return prev
+      const visible = computeVisibleNetIncomeForOrder(prev as any, sum)
+      return { ...(prev as any), internal_deduction_total: sum, visible_net_income: visible } as any
+    })
+  }
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewSamples, setPreviewSamples] = useState<any[]>([])
@@ -685,6 +711,7 @@ export default function OrdersPage() {
       ])
       if (o) setDetail(o)
       setDetailDeductions(Array.isArray(ds) ? ds : [])
+      try { applyDeductionTotalsToLocalOrder(id, Array.isArray(ds) ? ds : []) } catch {}
     } finally { setDetailLoading(false) }
   }
 
@@ -761,13 +788,17 @@ export default function OrdersPage() {
         payment_currency: (full as any).payment_currency || 'AUD',
         guest_phone: (full as any).guest_phone || ''
       })
-      setEditDeductions(Array.isArray(ds) ? ds : [])
+      const arr = Array.isArray(ds) ? ds : []
+      setEditDeductions(arr)
+      try { applyDeductionTotalsToLocalOrder(o.id, arr) } catch {}
       setDeductAmountEdit(0); setDeductDescEdit(''); setDeductNoteEdit('')
     } catch {
       message.warning('加载订单详情失败，使用列表数据进行编辑')
       try {
         const ds = await fetch(`${API_BASE}/orders/${o.id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json()).catch(() => [])
-        setEditDeductions(Array.isArray(ds) ? ds : [])
+        const arr = Array.isArray(ds) ? ds : []
+        setEditDeductions(arr)
+        try { applyDeductionTotalsToLocalOrder(o.id, arr) } catch {}
       } catch {}
     }
   }
@@ -2025,9 +2056,9 @@ export default function OrdersPage() {
                   const stNorm = String(v.status || '').toLowerCase()
                   const isCanceled = stNorm === 'canceled' || stNorm === 'cancelled'
                   const net = Math.max(0, (isCanceled ? 0 : price) + lateFee + cancelFee - cleaning)
-                  const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
                   const dedSum = sumActiveDeductions(editDeductions)
                   const visible = Math.max(0, Number((net - dedSum).toFixed(2)))
+                  const avg = nights > 0 ? Number((visible / nights).toFixed(2)) : 0
                   return (
                     <Card size="small" style={{ background: '#f5f5f5' }}>
                       <Space wrap>
@@ -2070,8 +2101,9 @@ export default function OrdersPage() {
                           setDeductAmountEdit(0); setDeductDescEdit(''); setDeductNoteEdit('')
                         }
                         const ds = await fetch(`${API_BASE}/orders/${current.id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(rr => rr.json()).catch(() => [])
-                        setEditDeductions(Array.isArray(ds) ? ds : [])
-                        load()
+                        const arr = Array.isArray(ds) ? ds : []
+                        setEditDeductions(arr)
+                        applyDeductionTotalsToLocalOrder(current.id, arr)
                       } else {
                         const j = await resp.json().catch(() => ({}))
                         message.error((j as any)?.message || '删除失败')
@@ -2106,9 +2138,10 @@ export default function OrdersPage() {
                   setEditDeductionEditing(null)
                   try {
                     const ds = await fetch(`${API_BASE}/orders/${current.id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json()).catch(() => [])
-                    setEditDeductions(Array.isArray(ds) ? ds : [])
+                    const arr = Array.isArray(ds) ? ds : []
+                    setEditDeductions(arr)
+                    applyDeductionTotalsToLocalOrder(current.id, arr)
                   } catch {}
-                  load()
                 } else { const j = await resp.json().catch(()=>({})); message.error(j?.message || '保存失败') }
               }}>{editDeductionEditing ? '保存修改' : '新增扣减'}</Button>
                 {editDeductionEditing ? <Button onClick={() => { setEditDeductionEditing(null); setDeductAmountEdit(0); setDeductDescEdit(''); setDeductNoteEdit('') }}>取消编辑</Button> : null}
