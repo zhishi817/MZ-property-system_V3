@@ -3,6 +3,7 @@ import { Card, DatePicker, Table, Select, Button, Modal, message, Switch, Progre
 import styles from './ExpandedRow.module.css'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { usePathname } from 'next/navigation'
 import { getJSON, apiList, API_BASE, authHeaders, patchJSON } from '../../../lib/api'
 import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/properties'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
@@ -26,6 +27,7 @@ type MergeUiStatus = 'active' | 'exception' | 'success'
 
 export default function PropertyRevenuePage() {
   const getDefaultRevenueMonth = (now = dayjs()) => (now.date() < 6 ? now.subtract(1, 'month') : now)
+  const pathname = usePathname()
   const [month, setMonth] = useState<any>(getDefaultRevenueMonth())
   const [orders, setOrders] = useState<Order[]>([])
   const [txs, setTxs] = useState<Tx[]>([])
@@ -64,6 +66,7 @@ export default function PropertyRevenuePage() {
   const mountedRef = useRef<boolean>(true)
   const reloadTimerRef = useRef<any>(null)
   const reloadInFlightRef = useRef<boolean>(false)
+  const reloadOrdersOnlyRef = useRef<null | (() => void)>(null)
   const closeExportPreview = () => {
     setExportPreview((prev) => {
       try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
@@ -201,6 +204,7 @@ export default function PropertyRevenuePage() {
       try { if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current) } catch {}
       reloadTimerRef.current = setTimeout(() => { reload({ ordersOnly: true }) }, 350)
     }
+    reloadOrdersOnlyRef.current = scheduleReloadOrders
     const onVis = () => { if (document.visibilityState === 'visible') scheduleReloadOrders() }
     const onFocus = () => { scheduleReloadOrders() }
 
@@ -214,6 +218,13 @@ export default function PropertyRevenuePage() {
       window.removeEventListener('focus', onFocus)
     }
   }, [])
+
+  useEffect(() => {
+    const p = String(pathname || '')
+    if (p === '/finance/properties-overview' || p === '/finance/performance/revenue') {
+      try { reloadOrdersOnlyRef.current?.() } catch {}
+    }
+  }, [pathname])
 
   useEffect(() => {
     const raw = rawRef.current
