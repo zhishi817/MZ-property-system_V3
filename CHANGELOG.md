@@ -2,6 +2,11 @@
 
 ## Dev (2026-04-01)
 
+### build.2
+
+- Version: `0.2.7-statement-pdf.20260401+build.2`
+- Orders: Allow creating cancelled orders even when time overlaps existing active orders (keeps historical cancelled records).
+
 ### build.1
 
 - Version: `0.2.7-statement-pdf.20260401+build.1`

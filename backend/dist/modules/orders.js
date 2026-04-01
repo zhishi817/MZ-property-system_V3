@@ -647,9 +647,12 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
     }
     catch (_p) { }
     // overlap guard
-    const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout);
-    if (conflict)
-        return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' });
+    const incomingInactive = isInactiveOrderStatus(newOrder.status);
+    if (!incomingInactive) {
+        const conflict = await hasOrderOverlap(newOrder.property_id, newOrder.checkin, newOrder.checkout);
+        if (conflict)
+            return res.status(409).json({ message: '订单时间冲突：同一房源在该时段已有订单' });
+    }
     // confirmation_code 唯一性（PG）
     try {
         const cc = newOrder.confirmation_code;
