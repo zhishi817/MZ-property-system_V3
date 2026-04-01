@@ -2,6 +2,11 @@
 
 ## Dev (2026-04-01)
 
+### build.2
+
+- Version: `0.2.7-statement-pdf.20260401+build.2`
+- Orders: Allow creating cancelled orders even when time overlaps existing active orders (keeps historical cancelled records).
+
 ### build.1
 
 - Version: `0.2.7-statement-pdf.20260401+build.1`
@@ -10,6 +15,7 @@
 - Orders: Orders page adds “有减扣” filter and fixes `internal_deduction_total` computation in non-PG list branch for consistent display.
 - Orders: Allow creating same-slot orders when existing ones are cancelled by ignoring inactive statuses in idempotency check.
 - Orders: Creating cancelled orders no longer forces status to confirmed; cancelled orders net-income calculation no longer double-counts rent + cancel fee.
+- Orders: Fix avg nightly price for deducted orders — use visible net (after deductions) / nights.
 - Finance: Company expenses invoice_url is now persisted (CRUD allowlist + schema ensure); company-revenue expense list sorts newest first so uploaded invoices are immediately discoverable.
 - Infra: Fix PG client MaxListenersExceededWarning by de-duplicating client error listener; add regression scripts for MaxListeners and cancelled-idempotency.
 

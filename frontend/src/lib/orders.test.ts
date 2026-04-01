@@ -18,6 +18,7 @@ describe('calcOrderMonthAmounts', () => {
     expect(r.nightsMonth).toBe(2)
     expect(r.netMonth).toBeCloseTo(182.86, 2)
     expect(r.visibleNetMonth).toBeCloseTo(132.86, 2)
+    expect(r.avgMonth).toBeCloseTo(66.43, 2)
   })
 
   it('applies deduction to previous month when checkout is first day', () => {
