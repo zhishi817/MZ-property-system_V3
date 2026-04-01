@@ -72,9 +72,13 @@ export async function pgRunInTransaction<T>(cb: (client: any) => Promise<T>) {
   if (!pgPool) return null
   const client = await pgPool.connect()
   try {
-    client.on('error', (err: any) => {
-      try { console.error(`[pg] client_error message=${String(err?.message || '')} code=${String(err?.code || '')}`) } catch {}
-    })
+    const k = Symbol.for('mz_pg_client_error_listener_attached')
+    if (!(client as any)[k]) {
+      ;(client as any)[k] = true
+      client.on('error', (err: any) => {
+        try { console.error(`[pg] client_error message=${String(err?.message || '')} code=${String(err?.code || '')}`) } catch {}
+      })
+    }
   } catch {}
   try {
     await client.query('BEGIN')

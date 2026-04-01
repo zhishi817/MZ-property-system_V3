@@ -37,16 +37,17 @@ export default function CompanyRevenuePage() {
   const [sharePwdValue, setSharePwdValue] = useState('')
   const [sharePwdLoading, setSharePwdLoading] = useState(false)
   const [sharePwdSaving, setSharePwdSaving] = useState(false)
+  function sortCompanyExpenses(rows: any[]) {
+    const arr = Array.isArray(rows) ? [...rows] : []
+    arr.sort((a: any, b: any) => String(b.occurred_at || '').localeCompare(String(a.occurred_at || '')))
+    return arr
+  }
   async function loadAll() {
     getJSON<Order[]>('/orders').then(setOrders).catch(()=>setOrders([]))
     apiList<any[]>('company_incomes').then((rows)=> setCompanyIncomes(Array.isArray(rows)?rows:[]) ).catch(()=>setCompanyIncomes([]))
     getJSON<Landlord[]>('/landlords').then(setLandlords).catch(()=>setLandlords([]))
     getJSON<any>('/properties').then((j)=>setProperties(j||[])).catch(()=>setProperties([]))
-    apiList<any[]>('company_expenses').then((rows)=>{
-      const arr = Array.isArray(rows) ? rows : []
-      arr.sort((a:any,b:any)=> String(b.occurred_at).localeCompare(String(a.occurred_at)))
-      setCompanyExpenses(arr)
-    }).catch(()=>setCompanyExpenses([]))
+    apiList<any[]>('company_expenses').then((rows)=> setCompanyExpenses(sortCompanyExpenses(rows as any)) ).catch(()=>setCompanyExpenses([]))
   }
 
   function openEditIncomeRow(r: any) {
@@ -68,7 +69,7 @@ export default function CompanyRevenuePage() {
     if (ym) {
       fetch(`${API_BASE}/finance/company-incomes/backfill`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ month: ym }) }).catch(()=>{})
     }
-    apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(Array.isArray(rows)?rows:[])).catch(()=>{})
+    apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(sortCompanyExpenses(rows as any))).catch(()=>{})
     apiList<any[]>('company_incomes').then((rows)=>setCompanyIncomes(Array.isArray(rows)?rows:[])).catch(()=>{})
   }, [month])
   const ym = month ? { y: month.year(), m: month.month()+1 } : null

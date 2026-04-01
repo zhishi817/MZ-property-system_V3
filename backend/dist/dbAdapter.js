@@ -84,12 +84,17 @@ async function pgRunInTransaction(cb) {
         return null;
     const client = await exports.pgPool.connect();
     try {
-        client.on('error', (err) => {
-            try {
-                console.error(`[pg] client_error message=${String((err === null || err === void 0 ? void 0 : err.message) || '')} code=${String((err === null || err === void 0 ? void 0 : err.code) || '')}`);
-            }
-            catch (_a) { }
-        });
+        const k = Symbol.for('mz_pg_client_error_listener_attached');
+        if (!client[k]) {
+            ;
+            client[k] = true;
+            client.on('error', (err) => {
+                try {
+                    console.error(`[pg] client_error message=${String((err === null || err === void 0 ? void 0 : err.message) || '')} code=${String((err === null || err === void 0 ? void 0 : err.code) || '')}`);
+                }
+                catch (_a) { }
+            });
+        }
     }
     catch (_a) { }
     try {

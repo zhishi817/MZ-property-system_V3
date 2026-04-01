@@ -387,6 +387,7 @@ async function ensureAutoExpenseSchema(client: any) {
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS invoice_url text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
@@ -1907,7 +1908,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             } catch {}
             toInsert = cleaned
           } else if (resource === 'company_expenses') {
-            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','ref_type','ref_id']
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','ref_type','ref_id']
             const cleaned: any = { id: payload.id }
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -2048,9 +2049,10 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;')
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;')
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS invoice_url text;')
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
-              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','ref_type','ref_id']
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','ref_type','ref_id']
               const cleaned: any = { id: payload.id }
               for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
               if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -2069,9 +2071,10 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             const { pgPool } = require('../dbAdapter')
             if (pgPool) {
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+              await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS invoice_url text;')
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
               await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
-              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','ref_type','ref_id']
+              const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','ref_type','ref_id']
               const cleaned: any = { id: payload.id }
               for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
               if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -2628,7 +2631,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         } catch {}
         toUpdate = cleaned
       } else if (resource === 'company_expenses') {
-        const allow = ['occurred_at','amount','currency','category','category_detail','note','fixed_expense_id','month_key','due_date','paid_date','status']
+        const allow = ['occurred_at','amount','currency','category','category_detail','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status']
         const cleaned: any = {}
         for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
         if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
