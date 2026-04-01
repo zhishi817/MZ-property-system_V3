@@ -2,6 +2,12 @@
 
 ## Dev (2026-04-01)
 
+### build.6
+
+- Version: `0.2.7-statement-pdf.20260401+build.6`
+- Finance: Property revenue auto-refresh now triggers on route return (not only focus/visibility); applies to `/finance/performance/revenue` and `/finance/properties-overview`.
+- Finance: Fixed payments “mark paid” is idempotent — fixed_expense snapshots in CRUD now upsert by (fixed_expense_id, month_key) to avoid unique constraint failures.
+
 ### build.5
 
 - Version: `0.2.7-statement-pdf.20260401+build.5`

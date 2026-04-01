@@ -1496,10 +1496,10 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
   try {
     if (hasPg) {
       if (resource === 'company_expenses') {
-        const dup = payload.fixed_expense_id && payload.month_key
-          ? await pgSelect(resource, '*', { fixed_expense_id: payload.fixed_expense_id, month_key: payload.month_key })
-          : await pgSelect(resource, '*', { occurred_at: payload.occurred_at, category: payload.category, amount: payload.amount, note: payload.note })
-        if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '重复记录：公司支出已存在' })
+        if (!(payload.fixed_expense_id && payload.month_key)) {
+          const dup = await pgSelect(resource, '*', { occurred_at: payload.occurred_at, category: payload.category, amount: payload.amount, note: payload.note })
+          if (Array.isArray(dup) && dup[0]) return res.status(409).json({ message: '重复记录：公司支出已存在' })
+        }
       }
       if (resource === 'property_expenses') {
         const started = Date.now()
@@ -1513,6 +1513,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
         } catch {}
         const fpExact = buildExpenseFingerprint(payload, 'exact')
         const fpFuzzy = buildExpenseFingerprint(payload, 'fuzzy')
+        const isFixedExpenseSnapshot = !!(payload.fixed_expense_id && payload.month_key)
         try {
           const { pgPool } = require('../dbAdapter')
           if (pgPool) {
@@ -1525,25 +1526,25 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               return res.status(409).json({ message: '创建冲突：资源锁定中' })
             }
             try {
-              if (await hasFingerprint(fpExact)) {
+              if (!isFixedExpenseSnapshot && await hasFingerprint(fpExact)) {
                 await addDedupLog({ resource: 'property_expenses', fingerprint: fpExact, mode: 'exact', result: 'hit', operator_id: (req as any).user?.sub || null, latency_ms: Date.now() - started })
                 return res.status(409).json({ message: '重复记录：指纹存在（24小时内）', fingerprint: fpExact })
               }
               const dup = payload.fixed_expense_id && payload.month_key
                 ? await pgSelect(resource, '*', { fixed_expense_id: payload.fixed_expense_id, month_key: payload.month_key })
                 : await pgSelect(resource, '*', { property_id: payload.property_id, month_key: payload.month_key, category: payload.category, amount: payload.amount })
-              if (Array.isArray(dup) && dup[0]) {
+              if (!isFixedExpenseSnapshot && Array.isArray(dup) && dup[0]) {
                 await addDedupLog({ resource: 'property_expenses', fingerprint: fpExact, mode: 'exact', result: 'hit', operator_id: (req as any).user?.sub || null, reasons: ['unique_match'], latency_ms: Date.now() - started })
                 return res.status(409).json({ message: '重复记录：房源支出已存在（同房源、同月份、同类别、同金额）', existing_id: dup[0]?.id })
               }
               const occ = String(payload.paid_date || payload.occurred_at || '')
               const sql = `SELECT id FROM property_expenses WHERE property_id=$1 AND category=$2 AND abs(amount - $3) <= 1 AND occurred_at BETWEEN (to_date($4,'YYYY-MM-DD') - interval '1 day') AND (to_date($4,'YYYY-MM-DD') + interval '1 day') LIMIT 1`
               const rs = await pgPool.query(sql, [payload.property_id, payload.category, Number(payload.amount||0), occ.slice(0,10)])
-              if (rs.rowCount) {
+              if (!isFixedExpenseSnapshot && rs.rowCount) {
                 await addDedupLog({ resource: 'property_expenses', fingerprint: fpFuzzy, mode: 'fuzzy', result: 'hit', operator_id: (req as any).user?.sub || null, reasons: ['fuzzy_window'], latency_ms: Date.now() - started })
                 return res.status(409).json({ message: '重复记录：模糊匹配（±1天、±$1）', fingerprint: fpFuzzy, existing_id: rs.rows[0]?.id })
               }
-              await setFingerprint(fpExact, 24 * 3600)
+              if (!isFixedExpenseSnapshot) await setFingerprint(fpExact, 24 * 3600)
             } finally {
               try { await pgPool.query('SELECT pg_advisory_unlock($1, $2)', [key1, key2]) } catch {}
             }
@@ -1949,6 +1950,22 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
             toInsert = cleaned
+          }
+          if ((resource === 'property_expenses' || resource === 'company_expenses') && (toInsert as any)?.fixed_expense_id && (toInsert as any)?.month_key) {
+            const fixedId = String((toInsert as any).fixed_expense_id || '').trim()
+            const monthKey = String((toInsert as any).month_key || '').trim()
+            if (fixedId && monthKey) {
+              const dup: any[] = await pgSelect(resource, '*', { fixed_expense_id: fixedId, month_key: monthKey }) as any[] || []
+              if (Array.isArray(dup) && dup[0]) {
+                const existing: any = dup[0]
+                const upd: any = { ...(toInsert as any) }
+                delete upd.id
+                const rowUp = await pgUpdate(resource, String(existing.id), upd as any)
+                const after = rowUp || { ...existing, ...upd }
+                addAudit(resource, String(existing.id), 'upsert', existing, after, (req as any).user?.sub)
+                return res.json(after)
+              }
+            }
           }
           row = await pgInsert(resource, toInsert)
         }

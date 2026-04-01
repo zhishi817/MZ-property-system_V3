@@ -1,7 +1,8 @@
 "use client"
 import { Card, Select, DatePicker } from 'antd'
 import dayjs from 'dayjs'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { usePathname } from 'next/navigation'
 import { getJSON } from '../../../../lib/api'
 import { sortProperties } from '../../../../lib/properties'
 import MonthlyStatementView from '../../../../components/MonthlyStatement'
@@ -12,15 +13,17 @@ type Property = { id: string; code?: string; address?: string }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
 
 export default function SinglePropertyAnalysisPage() {
+  const pathname = usePathname()
   const [month, setMonth] = useState<any>(dayjs())
   const [pid, setPid] = useState<string | undefined>(undefined)
   const [orders, setOrders] = useState<Order[]>([])
   const [txs, setTxs] = useState<Tx[]>([])
   const [properties, setProperties] = useState<Property[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
+  const reloadTimerRef = useRef<any>(null)
+  const reloadOrdersOnlyRef = useRef<null | (() => void)>(null)
   useEffect(() => {
     const mountedRef = { current: true }
-    const timerRef = { current: null as any }
     const reloadOrdersOnly = async () => {
       const j = await getJSON<Order[]>('/orders').catch(() => [] as any[])
       if (!mountedRef.current) return
@@ -40,9 +43,10 @@ export default function SinglePropertyAnalysisPage() {
       setLandlords(Array.isArray(l) ? l : [])
     }
     const scheduleReloadOrders = () => {
-      try { if (timerRef.current) clearTimeout(timerRef.current) } catch {}
-      timerRef.current = setTimeout(() => { reloadOrdersOnly() }, 350)
+      try { if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current) } catch {}
+      reloadTimerRef.current = setTimeout(() => { reloadOrdersOnly() }, 350)
     }
+    reloadOrdersOnlyRef.current = scheduleReloadOrders
     const onVis = () => { if (document.visibilityState === 'visible') scheduleReloadOrders() }
     const onFocus = () => { scheduleReloadOrders() }
     reloadAll()
@@ -50,11 +54,16 @@ export default function SinglePropertyAnalysisPage() {
     window.addEventListener('focus', onFocus)
     return () => {
       mountedRef.current = false
-      try { if (timerRef.current) clearTimeout(timerRef.current) } catch {}
+      try { if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current) } catch {}
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('focus', onFocus)
     }
   }, [])
+  useEffect(() => {
+    if (String(pathname || '') === '/finance/performance/property') {
+      try { reloadOrdersOnlyRef.current?.() } catch {}
+    }
+  }, [pathname])
   return (
     <Card title="单房源分析">
       <div style={{ display:'flex', gap:12, alignItems:'center', marginBottom: 12 }}>
