@@ -34,6 +34,7 @@ export default function OrdersPage() {
   const [codeQuery, setCodeQuery] = useState('')
   const [confQuery, setConfQuery] = useState('')
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
+  const [hasDeductionOnly, setHasDeductionOnly] = useState(false)
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [importOpen, setImportOpen] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -778,7 +779,9 @@ export default function OrdersPage() {
     const cleaning = Number(v.cleaning_fee || 0)
     const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
     const cancelFee = Number(v.cancel_fee || 0)
-    const net = Math.max(0, price + lateFee + cancelFee - cleaning)
+    const stNorm = String(v.status || '').toLowerCase()
+    const isCanceled = stNorm === 'canceled' || stNorm === 'cancelled'
+    const net = Math.max(0, (isCanceled ? 0 : price) + lateFee + cancelFee - cleaning)
     const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
     const selectedNew = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
         const payload = {
@@ -846,7 +849,11 @@ export default function OrdersPage() {
     const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
     const price = Number(v.price || 0)
     const cleaning = Number(v.cleaning_fee || 0)
-    const net = Math.max(0, price - cleaning)
+    const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+    const cancelFee = Number(v.cancel_fee || 0)
+    const stNorm = String(v.status || '').toLowerCase()
+    const isCanceled = stNorm === 'canceled' || stNorm === 'cancelled'
+    const net = Math.max(0, (isCanceled ? 0 : price) + lateFee + cancelFee - cleaning)
     const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
     const selectedEdit = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
     const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net, avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg, price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price, cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning, payment_currency: (v.payment_currency || 'AUD'), count_in_income: v.count_in_income != null ? !!v.count_in_income : ((v.status || '') === 'canceled' ? false : true) }
@@ -887,7 +894,9 @@ export default function OrdersPage() {
     const cleaning = Number(v.cleaning_fee || 0)
     const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
     const cancelFee = Number(v.cancel_fee || 0)
-    const net = Math.max(0, price + lateFee + cancelFee - cleaning)
+    const stNorm = String(v.status || '').toLowerCase()
+    const isCanceled = stNorm === 'canceled' || stNorm === 'cancelled'
+    const net = Math.max(0, (isCanceled ? 0 : price) + lateFee + cancelFee - cleaning)
     const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
     const selectedNew = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
     const payload = {
@@ -1294,6 +1303,7 @@ export default function OrdersPage() {
             <Button onClick={() => jumpToCalendarByConfirmationCode(confQuery)}>跳转日历</Button>
             <DatePicker picker="month" value={monthFilter as any} onChange={setMonthFilter as any} allowClear placeholder="选择月份(可选)" />
             <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} format="DD/MM/YYYY" />
+            <Checkbox checked={hasDeductionOnly} onChange={(e) => setHasDeductionOnly(!!e.target.checked)}>有减扣</Checkbox>
           </>
         ) : (
           <>
@@ -1369,7 +1379,9 @@ export default function OrdersPage() {
                 const okText = !input || codeText.includes(input) || listingText.includes(input) || sourceText.includes(input) || guestText.includes(input)
                 const confText = String((o as any).confirmation_code || '').toLowerCase()
                 const okConf = confText.includes(confInput)
-                return okText && okConf
+                const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0) || 0
+                const okDed = !hasDeductionOnly || ded > 0
+                return okText && okConf && okDed
               })
               return applySort(filtered1)
             }
@@ -1387,7 +1399,9 @@ export default function OrdersPage() {
                   (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
                   (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
                 )
-                return okText && okConf && rangeOk
+                const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0) || 0
+                const okDed = !hasDeductionOnly || ded > 0
+                return okText && okConf && rangeOk && okDed
               })
               if (rowsPrimary.length) return applySort(rowsPrimary)
             }
@@ -1419,7 +1433,9 @@ export default function OrdersPage() {
                 (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
                 (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
               )
-              return okText && okConf && monthOverlap && rangeOk
+              const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0) || 0
+              const okDed = !hasDeductionOnly || ded > 0
+              return okText && okConf && monthOverlap && rangeOk && okDed
             })
             return applySort(filtered2)
           })()}
@@ -1654,7 +1670,9 @@ export default function OrdersPage() {
             const cleaning = Number(v.cleaning_fee || 0)
             const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
             const cancelFee = Number(v.cancel_fee || 0)
-            const net = Math.max(0, price + lateFee + cancelFee - cleaning)
+            const stNorm = String(v.status || '').toLowerCase()
+            const isCanceled = stNorm === 'canceled' || stNorm === 'cancelled'
+            const net = Math.max(0, (isCanceled ? 0 : price) + lateFee + cancelFee - cleaning)
             const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
             return (
               <Card size="small" style={{ marginTop: 8 }}>
@@ -1983,7 +2001,9 @@ export default function OrdersPage() {
                   const cleaning = Number(v.cleaning_fee || 0)
                   const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
                   const cancelFee = Number(v.cancel_fee || 0)
-                  const net = Math.max(0, price + lateFee + cancelFee - cleaning)
+                  const stNorm = String(v.status || '').toLowerCase()
+                  const isCanceled = stNorm === 'canceled' || stNorm === 'cancelled'
+                  const net = Math.max(0, (isCanceled ? 0 : price) + lateFee + cancelFee - cleaning)
                   const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
                   const visible = Math.max(0, net - Number(deductAmountEdit || 0))
                   return (

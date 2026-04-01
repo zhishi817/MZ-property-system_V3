@@ -299,7 +299,7 @@ app.use('/cms', cmsCompanyRouter)
 app.use('/cms', cmsCompanySecretsRouter)
 
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001)
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Server listening on port ${port}`)
   console.log(`[DataSources] pg=${hasPg}`)
   try {
@@ -701,6 +701,15 @@ app.listen(port, () => {
     }
   })()
   })
+server.on('error', (err: any) => {
+  const code = String(err?.code || '')
+  if (code === 'EADDRINUSE') {
+    console.error(`❌ Port ${port} is already in use (EADDRINUSE).`)
+    process.exit(1)
+  }
+  console.error(`❌ Server failed to start. code=${code} message=${String(err?.message || '')}`)
+  process.exit(1)
+})
   app.get('/health/login', async (_req, res) => {
     const started = Date.now()
     try {

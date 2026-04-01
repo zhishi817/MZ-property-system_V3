@@ -282,9 +282,9 @@ exports.router.get('/', async (_req, res) => {
             const label = (o.property_code || (prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || o.property_id || '');
             const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) };
             const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
-            const t = 0;
+            const t = (store_1.db.orderInternalDeductions || []).filter((d) => String(d.order_id || '') === String(o.id) && (d.is_active !== false)).reduce((s, x) => s + Number(x.amount || 0), 0);
             const vn = Number(row.net_income || 0) - t;
-            return { ...row, internal_deduction_total: 0, visible_net_income: Number(vn.toFixed(2)) };
+            return { ...row, internal_deduction_total: Number(Number(t || 0).toFixed(2)), visible_net_income: Number(vn.toFixed(2)) };
         });
         return res.json(out);
     }
@@ -295,9 +295,9 @@ exports.router.get('/', async (_req, res) => {
             const label = (o.property_code || (prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || o.property_id || '');
             const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) };
             const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
-            const t = 0;
+            const t = (store_1.db.orderInternalDeductions || []).filter((d) => String(d.order_id || '') === String(o.id) && (d.is_active !== false)).reduce((s, x) => s + Number(x.amount || 0), 0);
             const vn = Number(row.net_income || 0) - t;
-            return { ...row, internal_deduction_total: 0, visible_net_income: Number(vn.toFixed(2)) };
+            return { ...row, internal_deduction_total: Number(Number(t || 0).toFixed(2)), visible_net_income: Number(vn.toFixed(2)) };
         });
         return res.json(out2);
     }
@@ -599,7 +599,7 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
         catch (_m) { }
     }
     const key = o.idempotency_key || `${propertyId || ''}-${o.checkin || ''}-${o.checkout || ''}`;
-    const exists = store_1.db.orders.find((x) => x.idempotency_key === key);
+    const exists = store_1.db.orders.find((x) => x.idempotency_key === key && !isInactiveOrderStatus(x.status));
     if (exists)
         return res.status(409).json({ message: '订单已存在：同一房源同时间段重复创建', order: exists });
     const { v4: uuid } = require('uuid');
@@ -630,7 +630,9 @@ exports.router.post('/sync', (0, auth_1.requireAnyPerm)(['order.create', 'order.
     }
     const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0));
     const avg = o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0);
-    const newOrder = { id: uuid(), ...o, property_id: propertyId, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key, status: 'confirmed' };
+    const statusRaw = String(o.status || '').trim().toLowerCase();
+    const status = statusRaw || 'confirmed';
+    const newOrder = { id: uuid(), ...o, status, property_id: propertyId, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key };
     newOrder.total_payment_raw = totalPaymentRaw;
     newOrder.processed_status = processedStatus;
     newOrder.payment_currency = o.payment_currency || 'AUD';

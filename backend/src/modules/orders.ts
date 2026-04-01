@@ -240,9 +240,9 @@ router.get('/', async (_req, res) => {
       const label = (o.property_code || prop?.code || prop?.address || o.property_id || '')
       const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) }
       const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label }
-      const t = 0
+      const t = (db.orderInternalDeductions || []).filter((d: any) => String(d.order_id || '') === String(o.id) && (d.is_active !== false)).reduce((s: number, x: any) => s + Number(x.amount || 0), 0)
       const vn = Number(row.net_income || 0) - t
-      return { ...row, internal_deduction_total: 0, visible_net_income: Number(vn.toFixed(2)) }
+      return { ...row, internal_deduction_total: Number(Number(t || 0).toFixed(2)), visible_net_income: Number(vn.toFixed(2)) }
     })
     return res.json(out)
   } catch {
@@ -252,9 +252,9 @@ router.get('/', async (_req, res) => {
       const label = (o.property_code || prop?.code || prop?.address || o.property_id || '')
       const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) }
       const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label }
-      const t = 0
+      const t = (db.orderInternalDeductions || []).filter((d: any) => String(d.order_id || '') === String(o.id) && (d.is_active !== false)).reduce((s: number, x: any) => s + Number(x.amount || 0), 0)
       const vn = Number(row.net_income || 0) - t
-      return { ...row, internal_deduction_total: 0, visible_net_income: Number(vn.toFixed(2)) }
+      return { ...row, internal_deduction_total: Number(Number(t || 0).toFixed(2)), visible_net_income: Number(vn.toFixed(2)) }
     })
     return res.json(out2)
   }
@@ -507,7 +507,7 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
     } catch {}
   }
   const key = o.idempotency_key || `${propertyId || ''}-${o.checkin || ''}-${o.checkout || ''}`
-  const exists = db.orders.find((x) => x.idempotency_key === key)
+  const exists = db.orders.find((x) => x.idempotency_key === key && !isInactiveOrderStatus((x as any).status))
   if (exists) return res.status(409).json({ message: '订单已存在：同一房源同时间段重复创建', order: exists })
   const { v4: uuid } = require('uuid')
   // derive values if not provided
@@ -534,7 +534,9 @@ router.post('/sync', requireAnyPerm(['order.create','order.manage']), async (req
   }
   const net = o.net_income != null ? (round2(o.net_income) || 0) : ((round2(price - cleaning) || 0))
   const avg = o.avg_nightly_price != null ? (round2(o.avg_nightly_price) || 0) : (nights && nights > 0 ? (round2(net / nights) || 0) : 0)
-  const newOrder: Order = { id: uuid(), ...o, property_id: propertyId, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key, status: 'confirmed' }
+  const statusRaw = String((o as any).status || '').trim().toLowerCase()
+  const status = statusRaw || 'confirmed'
+  const newOrder: Order = { id: uuid(), ...o, status, property_id: propertyId, price, cleaning_fee: cleaning, nights, net_income: net, avg_nightly_price: avg, idempotency_key: key }
   ;(newOrder as any).total_payment_raw = totalPaymentRaw
   ;(newOrder as any).processed_status = processedStatus
   ;(newOrder as any).payment_currency = o.payment_currency || 'AUD'

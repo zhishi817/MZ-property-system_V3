@@ -3,7 +3,7 @@ const isDev = process.env.NODE_ENV !== 'production' || process.env.VERCEL_ENV ==
 const envName = process.env.RENDER_ENV || (isDev ? 'dev' : 'prod')
 const vercelEnv = process.env.VERCEL_ENV
 const apiBase = (() => {
-  if (isDev) return process.env.NEXT_PUBLIC_API_BASE_DEV || 'http://localhost:4001'
+  if (isDev) return process.env.NEXT_PUBLIC_API_BASE_DEV || '/api'
   if (process.env.NEXT_PUBLIC_API_BASE) return process.env.NEXT_PUBLIC_API_BASE
   if (vercelEnv === 'preview') return process.env.NEXT_PUBLIC_API_BASE_PREVIEW || 'https://mz-property-system-v3-1.onrender.com'
   if (vercelEnv === 'production') return process.env.NEXT_PUBLIC_API_BASE_PROD || 'https://mz-property-system-v3.onrender.com'
@@ -28,6 +28,12 @@ const nextConfig = {
   env: {
     NEXT_PUBLIC_API_BASE: apiBase,
     NEXT_PUBLIC_COMMIT_SHA: process.env.VERCEL_GIT_COMMIT_SHA || process.env.COMMIT_REF || process.env.RENDER_GIT_COMMIT || '',
+  },
+  async rewrites() {
+    if (!isDev) return []
+    return [
+      { source: '/api/:path*', destination: 'http://localhost:4002/:path*' },
+    ]
   },
   async redirects() {
     return [

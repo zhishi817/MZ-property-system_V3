@@ -4,10 +4,40 @@ const API_BASE_ENV =
   process.env.NEXT_PUBLIC_API_BASE ||
   ''
 
-export const API_BASE = API_BASE_ENV
+function isNonLocalAbsoluteUrl(s: string) {
+  try {
+    const u = new URL(String(s))
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
+    return u.hostname !== 'localhost' && u.hostname !== '127.0.0.1'
+  } catch {
+    return false
+  }
+}
+
+function isLocalAbsoluteUrl(s: string) {
+  try {
+    const u = new URL(String(s))
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
+    return u.hostname === 'localhost' || u.hostname === '127.0.0.1'
+  } catch {
+    return false
+  }
+}
+
+const IS_DEV = process.env.NODE_ENV !== 'production'
+const API_BASE = (() => {
+  const raw = String(API_BASE_ENV || '').trim()
+  if (!raw) return IS_DEV ? '/api' : ''
+  if (raw.startsWith('/')) return raw.replace(/\/+$/g, '')
+  if (IS_DEV && isLocalAbsoluteUrl(raw)) return '/api'
+  if (isNonLocalAbsoluteUrl(raw)) return raw.replace(/\/+$/g, '')
+  return raw.replace(/\/+$/g, '')
+})()
+
+export { API_BASE }
 
 function assertApiBase() {
-  if (!API_BASE) throw new Error('Missing NEXT_PUBLIC_API_BASE_URL')
+  if (!API_BASE) throw new Error('Missing NEXT_PUBLIC_API_BASE (or NEXT_PUBLIC_API_BASE_DEV / NEXT_PUBLIC_API_BASE_URL)')
 }
 
 export type FetchTimeoutOptions = { timeoutMs?: number }

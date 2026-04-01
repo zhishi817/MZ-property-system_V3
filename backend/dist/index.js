@@ -340,7 +340,7 @@ app.use('/invoices', invoices_1.router);
 app.use('/cms', cms_company_1.router);
 app.use('/cms', cms_company_secrets_1.router);
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001);
-app.listen(port, () => {
+const server = app.listen(port, () => {
     console.log(`Server listening on port ${port}`);
     console.log(`[DataSources] pg=${dbAdapter_1.hasPg}`);
     try {
@@ -818,6 +818,15 @@ app.listen(port, () => {
             console.error(`[key-upload-reminder][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
         }
     })();
+});
+server.on('error', (err) => {
+    const code = String((err === null || err === void 0 ? void 0 : err.code) || '');
+    if (code === 'EADDRINUSE') {
+        console.error(`❌ Port ${port} is already in use (EADDRINUSE).`);
+        process.exit(1);
+    }
+    console.error(`❌ Server failed to start. code=${code} message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
+    process.exit(1);
 });
 app.get('/health/login', async (_req, res) => {
     var _a, _b;

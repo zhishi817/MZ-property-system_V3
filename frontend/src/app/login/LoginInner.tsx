@@ -26,8 +26,9 @@ export default function LoginInner() {
     const base = String(API_BASE || '').trim().replace(/\/+$/g, '')
     if (!base) return []
     const raw = base
-    const stripAuth = raw.replace(/\/auth\/?$/g, '')
-    const stripApi = stripAuth.replace(/\/api\/?$/g, '')
+    const isRelative = raw.startsWith('/')
+    const stripAuth = isRelative ? raw : raw.replace(/\/auth\/?$/g, '')
+    const stripApi = isRelative ? raw : stripAuth.replace(/\/api\/?$/g, '')
     const paths = endpoint === 'login' ? ['auth/login', 'login'] : ['auth/forgot', 'forgot']
     const candidates = [
       ...paths.map(p => `${raw}/${p}`),
@@ -52,7 +53,7 @@ export default function LoginInner() {
       const timer = setTimeout(() => { try { controller.abort() } catch {} }, 15000)
       try {
         const urls = buildAuthUrlCandidates('login')
-        if (!urls.length) { msg.error('后端地址未配置（NEXT_PUBLIC_API_BASE_URL）'); setLoading(false); return }
+        if (!urls.length) { msg.error('后端地址未配置（NEXT_PUBLIC_API_BASE）'); setLoading(false); return }
         let last: Response | null = null
         for (const url of urls) {
           last = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(v), signal: controller.signal })
@@ -130,7 +131,7 @@ export default function LoginInner() {
           const timer = setTimeout(() => { try { controller.abort() } catch {} }, 15000)
           try {
             const urls = buildAuthUrlCandidates('forgot')
-            if (!urls.length) { msg.error('后端地址未配置（NEXT_PUBLIC_API_BASE_URL）'); return }
+            if (!urls.length) { msg.error('后端地址未配置（NEXT_PUBLIC_API_BASE）'); return }
             let last: Response | null = null
             for (const url of urls) {
               last = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: v.email }), signal: controller.signal })
