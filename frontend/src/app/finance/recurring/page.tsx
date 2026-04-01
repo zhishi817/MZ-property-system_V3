@@ -248,6 +248,7 @@ export default function RecurringPage() {
                     onOk: async () => {
                       const id = String(r.id)
                       if (rowMutating[id]) return
+                      setSuppressSnapUntil(Date.now() + 4000)
                       const monthKey = m.format('YYYY-MM')
                       const fixedId = String((r as any).fixed_expense_id || r.id)
                       const prevExpenses = (expenses||[]).filter(e => String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId)
@@ -283,6 +284,7 @@ export default function RecurringPage() {
               <Button type="primary" loading={rowMutating[String(r.id)]==='pay'} disabled={!!rowMutating[String(r.id)]} onClick={async ()=>{
               const id = String(r.id)
               if (rowMutating[id]) return
+              setSuppressSnapUntil(Date.now() + 4000)
               const todayISO = nowAU().format('YYYY-MM-DD')
               const dueDay = Number(r.due_day_of_month || 1)
               const freq = Number(r.frequency_months || 1)
