@@ -2,6 +2,11 @@
 
 ## Dev (2026-04-01)
 
+### build.3
+
+- Version: `0.2.7-statement-pdf.20260401+build.3`
+- Cleaning: Cancelled orders no longer enqueue cleaning sync jobs; any pending jobs are marked skipped and any existing cleaning tasks are cancelled.
+
 ### build.2
 
 - Version: `0.2.7-statement-pdf.20260401+build.2`

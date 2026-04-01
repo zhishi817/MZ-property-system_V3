@@ -49,6 +49,45 @@ export async function enqueueCleaningSyncJobTx(
   if (!orderId) throw new Error('order_id_required')
   if (!action || !['created', 'updated', 'deleted'].includes(action)) throw new Error('action_required')
 
+  const isInactiveOrderStatus = (raw: any): boolean => {
+    const s = String(raw || '').trim().toLowerCase()
+    if (!s) return false
+    if (s.includes('cancel')) return true
+    if (s === 'void') return true
+    if (s === 'invalid') return true
+    return false
+  }
+
+  if (action !== 'deleted') {
+    try {
+      const rs = await client.query(
+        'SELECT lower(coalesce(status, \'\')) AS s FROM orders WHERE (id::text) = $1 LIMIT 1',
+        [orderId]
+      )
+      const statusLower = String(rs?.rows?.[0]?.s || '')
+      if (isInactiveOrderStatus(statusLower)) {
+        try {
+          await client.query(
+            `UPDATE cleaning_sync_jobs
+             SET status='skipped', updated_at=now(),
+                 last_error_code='order_cancelled', last_error_message='order_status_cancelled'
+             WHERE order_id=$1 AND status IN ('pending','running') AND action IN ('created','updated')`,
+            [orderId]
+          )
+        } catch {}
+        try {
+          await client.query(
+            `UPDATE cleaning_tasks
+             SET status='cancelled', updated_at=now()
+             WHERE (order_id::text) = $1 AND status <> 'cancelled'`,
+            [orderId]
+          )
+        } catch {}
+        return { id: '', merged: false }
+      }
+    } catch {}
+  }
+
   const fp = fingerprintOf(action, orderId, snapshot)
 
   if (action === 'deleted') {

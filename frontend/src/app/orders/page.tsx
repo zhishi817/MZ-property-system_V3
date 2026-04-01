@@ -1023,6 +1023,7 @@ export default function OrdersPage() {
       const cs: any = (r as any).cleaning_sync
       if (!cs) return <Tag>-</Tag>
       const st = String(cs.status || '')
+      if (st === 'skipped') return <Tag>-</Tag>
       const color = st === 'done' ? 'green' : (st === 'failed' ? 'red' : (st === 'running' ? 'blue' : 'gold'))
       const txt = st ? `${st}${cs.attempts != null ? `(${Number(cs.attempts)})` : ''}` : '-'
       return <Tag color={color}>{txt}</Tag>
