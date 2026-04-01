@@ -2,6 +2,11 @@
 
 ## Dev (2026-04-01)
 
+### build.4
+
+- Version: `0.2.7-statement-pdf.20260401+build.4`
+- Orders: Edit modal “可见净额” now matches detail view by subtracting sum of active internal deductions (not the currently edited row).
+
 ### build.3
 
 - Version: `0.2.7-statement-pdf.20260401+build.3`

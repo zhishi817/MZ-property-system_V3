@@ -73,6 +73,15 @@ export default function OrdersPage() {
   const [editDeductions, setEditDeductions] = useState<any[]>([])
   const [editDeductionEditing, setEditDeductionEditing] = useState<any | null>(null)
   const [detailLoading, setDetailLoading] = useState<boolean>(false)
+  function sumActiveDeductions(rows: any[]): number {
+    const arr = Array.isArray(rows) ? rows : []
+    const sum = arr.reduce((s, r) => {
+      const active = (r as any)?.is_active !== false
+      if (!active) return s
+      return s + (Number((r as any)?.amount || 0) || 0)
+    }, 0)
+    return Number(sum.toFixed(2))
+  }
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewSamples, setPreviewSamples] = useState<any[]>([])
@@ -2017,7 +2026,8 @@ export default function OrdersPage() {
                   const isCanceled = stNorm === 'canceled' || stNorm === 'cancelled'
                   const net = Math.max(0, (isCanceled ? 0 : price) + lateFee + cancelFee - cleaning)
                   const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
-                  const visible = Math.max(0, net - Number(deductAmountEdit || 0))
+                  const dedSum = sumActiveDeductions(editDeductions)
+                  const visible = Math.max(0, Number((net - dedSum).toFixed(2)))
                   return (
                     <Card size="small" style={{ background: '#f5f5f5' }}>
                       <Space wrap>
