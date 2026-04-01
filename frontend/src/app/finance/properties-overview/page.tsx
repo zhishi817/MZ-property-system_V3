@@ -61,6 +61,9 @@ export default function PropertyRevenuePage() {
   const rawRef = useRef<{ fin: any[]; pexp: any[]; recurs: any[] } | null>(null)
   const deepCleaningCacheRef = useRef<Map<string, Tx[]>>(new Map())
   const monthPhotoStatsSigRef = useRef<string>('')
+  const mountedRef = useRef<boolean>(true)
+  const reloadTimerRef = useRef<any>(null)
+  const reloadInFlightRef = useRef<boolean>(false)
   const closeExportPreview = () => {
     setExportPreview((prev) => {
       try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
@@ -140,10 +143,20 @@ export default function PropertyRevenuePage() {
   }
 
   useEffect(() => {
-    let alive = true
-    ;(async () => {
-      setPageLoading(true)
+    mountedRef.current = true
+    const reload = async (opts?: { ordersOnly?: boolean }) => {
+      const ordersOnly = !!opts?.ordersOnly
+      if (reloadInFlightRef.current) return
+      reloadInFlightRef.current = true
       try {
+        if (ordersOnly) {
+          setRangeLoading(true)
+          const ordersRes = await getJSON<Order[]>('/orders').catch(() => [] as any[])
+          if (!mountedRef.current) return
+          setOrders(Array.isArray(ordersRes) ? ordersRes : [])
+          return
+        }
+        setPageLoading(true)
         const [ordersRes, propsRes, landlordsRes, finRes, pexpRes, recursRes] = await Promise.all([
           getJSON<Order[]>('/orders').catch(() => [] as any[]),
           getJSON<any>('/properties').catch(() => [] as any[]),
@@ -152,7 +165,7 @@ export default function PropertyRevenuePage() {
           apiList<any[]>('property_expenses').catch(() => [] as any[]),
           apiList<any[]>('recurring_payments').catch(() => [] as any[]),
         ])
-        if (!alive) return
+        if (!mountedRef.current) return
         const propsArr = Array.isArray(propsRes) ? propsRes : []
         setOrders(Array.isArray(ordersRes) ? ordersRes : [])
         setProperties(propsArr)
@@ -177,10 +190,29 @@ export default function PropertyRevenuePage() {
         }
         setTxs(built.txs)
       } finally {
-        if (alive) setPageLoading(false)
+        if (mountedRef.current) {
+          setPageLoading(false)
+          setRangeLoading(false)
+        }
+        reloadInFlightRef.current = false
       }
-    })()
-    return () => { alive = false }
+    }
+    const scheduleReloadOrders = () => {
+      try { if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current) } catch {}
+      reloadTimerRef.current = setTimeout(() => { reload({ ordersOnly: true }) }, 350)
+    }
+    const onVis = () => { if (document.visibilityState === 'visible') scheduleReloadOrders() }
+    const onFocus = () => { scheduleReloadOrders() }
+
+    reload()
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      mountedRef.current = false
+      try { if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current) } catch {}
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', onFocus)
+    }
   }, [])
 
   useEffect(() => {
