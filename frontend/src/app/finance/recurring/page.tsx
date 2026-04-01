@@ -257,12 +257,20 @@ export default function RecurringPage() {
                       message.open({ type:'loading', content:'正在切换为未付…', key: msgKey, duration: 0 })
                       setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, status:'unpaid', paid_date: null } as any) : e))
                       try {
-                        const resType = (r.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
-                        const qs = new URLSearchParams({ fixed_expense_id: fixedId, month_key: monthKey })
-                        const listRes = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
-                        const arr = listRes.ok ? await listRes.json().catch(()=>[]) : []
-                        const rows = Array.isArray(arr) ? arr : []
-                        await Promise.all(rows.filter((it:any)=>it?.id).map((it:any)=> fetch(`${API_BASE}/crud/${resType}/${it.id}`, { method:'PATCH', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ status:'unpaid', paid_date: null }) })))
+                        const resp = await fetch(`${API_BASE}/recurring/payments/${id}/unmark-paid`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                          body: JSON.stringify({ month_key: monthKey }),
+                        })
+                        if (!resp.ok) {
+                          const txt = await resp.text().catch(() => '')
+                          throw new Error(txt || `HTTP ${resp.status}`)
+                        }
+                        const data = await resp.json().catch(() => null as any)
+                        const keepId = String(data?.expense_id || prevExpenses?.[0]?.id || '')
+                        if (keepId) {
+                          setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, id: keepId } as any) : e))
+                        }
                         message.open({ type:'success', content:'已切换为未付', key: msgKey })
                         void refreshMonth()
                       } catch (e:any) {
@@ -314,55 +322,19 @@ export default function RecurringPage() {
               })
               setList(prev => prev.map(x => String(x.id)===id ? ({ ...x, last_paid_date: todayISO, status:'active' } as any) : x))
               try {
-                const resType = (r.scope||'company')==='property' ? 'property_expenses' : 'company_expenses'
-                const qs = new URLSearchParams({ fixed_expense_id: fixedId, month_key: monthKey })
-                const patchRows = async (rows: any[]) => {
-                  await Promise.all(
-                    rows
-                      .filter((it: any) => it?.id)
-                      .map((it: any) =>
-                        fetch(`${API_BASE}/crud/${resType}/${it.id}`, {
-                          method: 'PATCH',
-                          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                          body: JSON.stringify({ paid_date: todayISO, status: 'paid', amount: Number(r.amount || 0), due_date: dueISO }),
-                        })
-                      )
-                  )
+                const resp = await fetch(`${API_BASE}/recurring/payments/${id}/mark-paid`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                  body: JSON.stringify({ month_key: monthKey, paid_date: todayISO }),
+                })
+                if (!resp.ok) {
+                  const txt = await resp.text().catch(() => '')
+                  throw new Error(txt || `HTTP ${resp.status}`)
                 }
-
-                const listRes1 = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
-                const arr1 = listRes1.ok ? await listRes1.json().catch(()=>[]) : []
-                const rows1 = Array.isArray(arr1) ? arr1 : []
-
-                if (rows1.length) {
-                  await patchRows(rows1)
-                  const keepId = String(rows1[0]?.id || '')
-                  if (keepId) {
-                    setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, id: keepId } as any) : e))
-                  }
-                } else {
-                  const createBody = { occurred_at: todayISO, amount: Number(r.amount||0), currency: 'AUD', category: r.category || 'other', note: 'Fixed payment', generated_from: 'recurring_payments', fixed_expense_id: fixedId, month_key: monthKey, due_date: dueISO, paid_date: todayISO, status: 'paid', property_id: r.property_id }
-                  const createResp = await fetch(`${API_BASE}/crud/${resType}`, { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(createBody) })
-                  if (createResp.ok) {
-                    const created = await createResp.json().catch(()=>null)
-                    if (created?.id) {
-                      setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, id: String(created.id) } as any) : e))
-                    }
-                  } else if (createResp.status === 409) {
-                    const listRes2 = await fetch(`${API_BASE}/crud/${resType}?${qs.toString()}`, { headers: authHeaders() })
-                    const arr2 = listRes2.ok ? await listRes2.json().catch(()=>[]) : []
-                    const rows2 = Array.isArray(arr2) ? arr2 : []
-                    if (rows2.length) {
-                      await patchRows(rows2)
-                      const keepId = String(rows2[0]?.id || '')
-                      if (keepId) {
-                        setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, id: keepId } as any) : e))
-                      }
-                    }
-                  } else {
-                    const txt = await createResp.text().catch(()=> '')
-                    throw new Error(txt || `HTTP ${createResp.status}`)
-                  }
+                const data = await resp.json().catch(() => null as any)
+                const keepId = String(data?.expense_id || prevExpenses?.[0]?.id || '')
+                if (keepId) {
+                  setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, id: keepId } as any) : e))
                 }
 
                 const nextBase = m.add(freq,'month')

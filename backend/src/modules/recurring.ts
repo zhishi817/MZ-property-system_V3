@@ -174,6 +174,8 @@ const createPaymentSchema = z.object({
   initial_mark: z.enum(['paid', 'unpaid']).optional().default('unpaid'),
 })
 const resumeSchema = z.object({ month_key: monthKeySchema.optional() })
+const markPaidSchema = z.object({ month_key: monthKeySchema, paid_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'invalid paid_date') })
+const unmarkPaidSchema = z.object({ month_key: monthKeySchema })
 
 function round2(n: number): number {
   return Number(Number(n || 0).toFixed(2))
@@ -803,6 +805,140 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
     return res.json({ ok: true, ...result })
   } catch (e: any) {
     const msg = String(e?.message || 'ensure failed')
+    if (/timeout exceeded when trying to connect/i.test(msg)) return res.status(503).json({ message: msg })
+    if (/lock timeout/i.test(msg)) return res.status(503).json({ message: msg })
+    return res.status(500).json({ message: msg })
+  }
+})
+
+router.post('/payments/:id/mark-paid', requireAnyPerm(['recurring_payments.write', 'finance.tx.write']), async (req, res) => {
+  if (!hasPg) return res.status(500).json({ message: 'pg not available' })
+  const { id } = req.params
+  const parsed = markPaidSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const monthKey = String(parsed.data.month_key)
+  const paidDate = toISODate(parsed.data.paid_date)
+  if (!paidDate) return res.status(400).json({ message: 'invalid paid_date' })
+  try {
+    const result = await pgRunInTransaction(async (client) => {
+      await applyTxTimeouts(client)
+      await ensureSchemasOnce()
+      await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202604, `${id}:${monthKey}`])
+      const payRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
+      const payment = payRes.rows?.[0] || null
+      if (!payment) return { notFound: true }
+      const scope = String(payment.scope || 'company')
+      const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
+      const dueDay = Number(payment.due_day_of_month || 1)
+      const dueISO = payment.payment_type === 'rent_deduction' ? `${monthKey}-01` : computeDueISO(monthKey, dueDay)
+      const existing = await client.query(`SELECT id FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
+      let expenseId = existing.rows?.[0]?.id ? String(existing.rows[0].id) : ''
+      if (!expenseId) {
+        const wantAmount = await computeSnapshotAmountTx(client, payment, monthKey)
+        const { v4: uuid } = require('uuid')
+        const payload: any = {
+          id: uuid(),
+          occurred_at: dueISO,
+          amount: wantAmount,
+          currency: 'AUD',
+          category: payment.category || 'other',
+          category_detail: payment.category_detail || null,
+          note: 'Fixed payment snapshot',
+          generated_from: 'recurring_payments',
+          fixed_expense_id: id,
+          month_key: monthKey,
+          due_date: dueISO,
+          paid_date: null,
+          status: 'unpaid',
+        }
+        if (scope === 'property') payload.property_id = payment.property_id || null
+        await client.query(
+          `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})
+           ON CONFLICT DO NOTHING`,
+          scope === 'property'
+            ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
+            : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
+        )
+        const afterRes = await client.query(`SELECT id FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
+        expenseId = afterRes.rows?.[0]?.id ? String(afterRes.rows[0].id) : ''
+      }
+      if (!expenseId) return { failed: true }
+      await client.query(`UPDATE ${table} SET status = 'paid', paid_date = $1 WHERE id = $2`, [paidDate, expenseId])
+      return { ok: true, expense_id: expenseId, month_key: monthKey }
+    })
+    if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
+    if ((result as any)?.failed) return res.status(500).json({ message: 'mark paid failed' })
+    return res.json(result)
+  } catch (e: any) {
+    const msg = String(e?.message || 'mark paid failed')
+    if (/duplicate key value violates unique constraint/i.test(msg)) return res.status(409).json({ message: msg })
+    if (/timeout exceeded when trying to connect/i.test(msg)) return res.status(503).json({ message: msg })
+    if (/lock timeout/i.test(msg)) return res.status(503).json({ message: msg })
+    return res.status(500).json({ message: msg })
+  }
+})
+
+router.post('/payments/:id/unmark-paid', requireAnyPerm(['recurring_payments.write', 'finance.tx.write']), async (req, res) => {
+  if (!hasPg) return res.status(500).json({ message: 'pg not available' })
+  const { id } = req.params
+  const parsed = unmarkPaidSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const monthKey = String(parsed.data.month_key)
+  try {
+    const result = await pgRunInTransaction(async (client) => {
+      await applyTxTimeouts(client)
+      await ensureSchemasOnce()
+      await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202604, `${id}:${monthKey}`])
+      const payRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
+      const payment = payRes.rows?.[0] || null
+      if (!payment) return { notFound: true }
+      const scope = String(payment.scope || 'company')
+      const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
+      const dueDay = Number(payment.due_day_of_month || 1)
+      const dueISO = payment.payment_type === 'rent_deduction' ? `${monthKey}-01` : computeDueISO(monthKey, dueDay)
+      const existing = await client.query(`SELECT id FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
+      let expenseId = existing.rows?.[0]?.id ? String(existing.rows[0].id) : ''
+      if (!expenseId) {
+        const wantAmount = await computeSnapshotAmountTx(client, payment, monthKey)
+        const { v4: uuid } = require('uuid')
+        const payload: any = {
+          id: uuid(),
+          occurred_at: dueISO,
+          amount: wantAmount,
+          currency: 'AUD',
+          category: payment.category || 'other',
+          category_detail: payment.category_detail || null,
+          note: 'Fixed payment snapshot',
+          generated_from: 'recurring_payments',
+          fixed_expense_id: id,
+          month_key: monthKey,
+          due_date: dueISO,
+          paid_date: null,
+          status: 'unpaid',
+        }
+        if (scope === 'property') payload.property_id = payment.property_id || null
+        await client.query(
+          `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})
+           ON CONFLICT DO NOTHING`,
+          scope === 'property'
+            ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
+            : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
+        )
+        const afterRes = await client.query(`SELECT id FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
+        expenseId = afterRes.rows?.[0]?.id ? String(afterRes.rows[0].id) : ''
+      }
+      if (!expenseId) return { failed: true }
+      await client.query(`UPDATE ${table} SET status = 'unpaid', paid_date = NULL WHERE id = $1`, [expenseId])
+      return { ok: true, expense_id: expenseId, month_key: monthKey }
+    })
+    if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
+    if ((result as any)?.failed) return res.status(500).json({ message: 'unmark paid failed' })
+    return res.json(result)
+  } catch (e: any) {
+    const msg = String(e?.message || 'unmark paid failed')
+    if (/duplicate key value violates unique constraint/i.test(msg)) return res.status(409).json({ message: msg })
     if (/timeout exceeded when trying to connect/i.test(msg)) return res.status(503).json({ message: msg })
     if (/lock timeout/i.test(msg)) return res.status(503).json({ message: msg })
     return res.status(500).json({ message: msg })

@@ -2,6 +2,12 @@
 
 ## Dev (2026-04-01)
 
+### build.9
+
+- Version: `0.2.7-statement-pdf.20260401+build.9`
+- Finance: Add dedicated endpoints to mark fixed payment snapshots paid/unpaid (only updates `status` and `paid_date`); no longer uses generic CRUD to upsert/update full rows.
+- Finance: Recurring page “已付/取消已付” now calls the dedicated endpoints and no longer submits full record fields.
+
 ### build.8
 
 - Version: `0.2.7-statement-pdf.20260401+build.8`
