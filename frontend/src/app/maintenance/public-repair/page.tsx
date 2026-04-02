@@ -12,6 +12,7 @@
    const canViewPwd = hasPerm('rbac.manage')
    const [pwdInfo, setPwdInfo] = useState<{ configured: boolean; password_updated_at: string | null } | null>(null)
    const [pwdCurrent, setPwdCurrent] = useState<{ configured: boolean; password: string | null; password_updated_at: string | null; reason?: string } | null>(null)
+  const [pwdVisible, setPwdVisible] = useState(false)
 
    async function safeAdminGet<T>(path: string): Promise<T | null> {
      try {
@@ -59,7 +60,8 @@
              </Typography.Text>
              {pwdCurrent?.password ? (
                <Space.Compact style={{ width:'100%' }}>
-                 <Input.Password readOnly value={pwdCurrent.password} style={{ width:'100%' }} />
+                 <Input readOnly type={pwdVisible ? 'text' : 'password'} value={pwdCurrent.password} style={{ width:'100%' }} />
+                 <Button onClick={() => setPwdVisible(v => !v)}>{pwdVisible ? '隐藏密码' : '查看密码'}</Button>
                  <Button onClick={async () => {
                    try { await navigator.clipboard?.writeText(String(pwdCurrent.password || '')); message.success('已复制') } catch { message.error('复制失败') }
                  }}>复制</Button>

@@ -1,6 +1,6 @@
 "use client"
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { App, Button, Card, DatePicker, Drawer, Form, Grid, Image, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, TimePicker, Typography, Upload } from 'antd'
+import { App, Button, Card, DatePicker, Descriptions, Divider, Drawer, Form, Grid, Image, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, TimePicker, Typography, Upload } from 'antd'
 import type { UploadFile, UploadProps } from 'antd'
 import dayjs from 'dayjs'
 import { CheckCircleOutlined, EnvironmentOutlined, InfoCircleOutlined, PictureOutlined, ShareAltOutlined } from '@ant-design/icons'
@@ -1177,129 +1177,102 @@ export default function DeepCleaningRecordsPage() {
           </div>
         }
       >
-        <Space direction="vertical" style={{ width: '100%' }}>
-          <Typography.Title level={4} style={{ margin: 0 }}>深度清洁详情</Typography.Title>
-          <Typography.Text type="secondary">工单号：{viewing?.work_no || viewing?.id || '-'}</Typography.Text>
+        {viewing ? (
+          <>
+            <Descriptions title="基本信息" bordered column={2} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="工单号">{String(viewing?.work_no || viewing?.id || '-')}</Descriptions.Item>
+              <Descriptions.Item label="状态">{statusTag(viewing?.status)}</Descriptions.Item>
+              <Descriptions.Item label="房号">{String(viewing?.code || viewing?.property_code || viewing?.property_id || '-')}</Descriptions.Item>
+              <Descriptions.Item label="区域">{String(viewing?.category || '-')}</Descriptions.Item>
+              <Descriptions.Item label="清洁日期">{viewing?.occurred_at ? dayjs(viewing.occurred_at).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
+              <Descriptions.Item label="清洁人员">{String(viewing?.worker_name || viewing?.submitter_name || viewing?.created_by || '-')}</Descriptions.Item>
+              <Descriptions.Item label="提交时间">{(viewing?.submitted_at || viewing?.created_at) ? dayjs(viewing?.submitted_at || viewing?.created_at).format('YYYY-MM-DD HH:mm') : '-'}</Descriptions.Item>
+              <Descriptions.Item label="总费用">{fmtAmount(viewing?.total_cost !== undefined && viewing?.total_cost !== null ? viewing?.total_cost : computeTotalCost((viewing as any)?.labor_cost, (viewing as any)?.consumables))}</Descriptions.Item>
+              <Descriptions.Item label="扣款方式">{payMethodLabel((viewing as any)?.pay_method)}</Descriptions.Item>
+              <Descriptions.Item label="GST">{gstTypeLabel((viewing as any)?.gst_type)}</Descriptions.Item>
+            </Descriptions>
 
-          <div style={{ background:'#eef6ff', border:'1px solid #d5e9ff', borderRadius:16, padding:16 }}>
-            <Space style={{ marginBottom:12 }}>
-              <EnvironmentOutlined style={{ color:'#1677ff' }} />
-              <Typography.Text style={{ color:'#1d39c4', fontWeight:600 }}>基本信息</Typography.Text>
-            </Space>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
-              <div>
-                <Typography.Text type="secondary">房号</Typography.Text>
-                <div style={{ fontSize:18, fontWeight:700, color:'#0b1738', marginTop:6 }}>{String(viewing?.code || viewing?.property_code || viewing?.property_id || '-')}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">状态</Typography.Text>
-                <div style={{ marginTop:6 }}>{statusTag(viewing?.status)}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">清洁日期</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{viewing?.occurred_at ? dayjs(viewing.occurred_at).format('YYYY-MM-DD') : '-'}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">区域</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{String(viewing?.category || '-')}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">清洁人员</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{String(viewing?.worker_name || viewing?.submitter_name || viewing?.created_by || '-')}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">提交时间</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{(viewing?.submitted_at || viewing?.created_at) ? dayjs(viewing?.submitted_at || viewing?.created_at).format('YYYY-MM-DD HH:mm') : '-'}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">总费用</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{fmtAmount(viewing?.total_cost !== undefined && viewing?.total_cost !== null ? viewing?.total_cost : computeTotalCost((viewing as any)?.labor_cost, (viewing as any)?.consumables))}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">扣款方式</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{payMethodLabel((viewing as any)?.pay_method)}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">GST</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{gstTypeLabel((viewing as any)?.gst_type)}</div>
-              </div>
-            </div>
-          </div>
+            <Divider orientation="left">清洁项目</Divider>
+            <Descriptions bordered column={2} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="项目描述" span={2} style={{ whiteSpace: 'pre-wrap' }}>
+                {String(viewing?.project_desc || summaryFromDetails(viewing?.details) || viewing?.details || '') || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="开始时间">{viewing?.started_at ? dayjs(viewing.started_at).format('HH:mm') : '-'}</Descriptions.Item>
+              <Descriptions.Item label="结束时间">{viewing?.ended_at ? dayjs(viewing.ended_at).format('HH:mm') : '-'}</Descriptions.Item>
+              <Descriptions.Item label="清洁时长">{fmtMinutes(viewing?.duration_minutes)}</Descriptions.Item>
+              <Descriptions.Item label="审核">{reviewTag(viewing?.review_status)}</Descriptions.Item>
+              <Descriptions.Item label="备注" span={2} style={{ whiteSpace: 'pre-wrap' }}>{String(viewing?.notes || '-')}</Descriptions.Item>
+            </Descriptions>
 
-          <div style={{ background:'#fff', border:'1px solid #eaeef5', borderRadius:16, padding:16 }}>
-            <Space style={{ marginBottom:12 }}>
-              <InfoCircleOutlined style={{ color:'#f0a500' }} />
-              <Typography.Text style={{ color:'#0b1738', fontWeight:600 }}>清洁项目</Typography.Text>
-            </Space>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
-              <div style={{ gridColumn:'1 / span 2' }}>
-                <Typography.Text type="secondary">项目描述</Typography.Text>
-                <div style={{ whiteSpace:'pre-wrap', border:'1px solid #eef2f8', background:'#f7f9fc', padding:12, borderRadius:12, marginTop:6 }}>
-                  {String(viewing?.project_desc || summaryFromDetails(viewing?.details) || viewing?.details || '') || '-'}
-                </div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">开始时间</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{viewing?.started_at ? dayjs(viewing.started_at).format('HH:mm') : '-'}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">结束时间</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{viewing?.ended_at ? dayjs(viewing.ended_at).format('HH:mm') : '-'}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">清洁时长</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{fmtMinutes(viewing?.duration_minutes)}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">审核</Typography.Text>
-                <div style={{ marginTop:6 }}>{reviewTag(viewing?.review_status)}</div>
-              </div>
-              <div style={{ gridColumn:'1 / span 2' }}>
-                <Typography.Text type="secondary">备注</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6, whiteSpace:'pre-wrap' }}>{String(viewing?.notes || '-')}</div>
-              </div>
-            </div>
-          </div>
+            <Divider orientation="left">清洁前照片</Divider>
+            <Descriptions bordered column={1} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="照片">
+                {(() => {
+                  const arr = Array.isArray(viewing?.photo_urls) ? viewing!.photo_urls! : []
+                  if (!arr.length) return '-'
+                  const images = arr.filter(isImageUrl)
+                  const files = arr.filter(u => !isImageUrl(u))
+                  return (
+                    <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                      {images.length ? (
+                        <Image.PreviewGroup>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                            {images.map((u, i) => (
+                              <Image key={`${u}-${i}`} src={u} width="100%" height={140} style={{ objectFit: 'cover', borderRadius: 8 }} />
+                            ))}
+                          </div>
+                        </Image.PreviewGroup>
+                      ) : null}
+                      {files.length ? (
+                        <Space direction="vertical" size={4}>
+                          {files.map((u, i) => (
+                            <a key={`${u}-${i}`} href={u} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>
+                          ))}
+                        </Space>
+                      ) : null}
+                    </Space>
+                  )
+                })()}
+              </Descriptions.Item>
+            </Descriptions>
 
-          {(Array.isArray(viewing?.photo_urls) && viewing!.photo_urls!.length) ? (
-            <div style={{ background:'#fff', border:'1px solid #eaeef5', borderRadius:16, padding:16 }}>
-              <Space style={{ marginBottom:12 }}>
-                <PictureOutlined style={{ color:'#9254de' }} />
-                <Typography.Text style={{ color:'#0b1738', fontWeight:600 }}>清洁前照片</Typography.Text>
-              </Space>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:16 }}>
-                {(Array.isArray(viewing?.photo_urls) ? viewing!.photo_urls! : []).map((u: string, i: number) => (
-                  <div key={i} style={{ border:'1px solid #eaeef5', background:'#f1f6fb', borderRadius:12, padding:8 }}>
-                    {isImageUrl(u) ? <Image src={u} width="100%" height={140} style={{ objectFit:'cover', borderRadius:8 }} /> : <a href={u} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
+            <Divider orientation="left">清洁后照片</Divider>
+            <Descriptions bordered column={1} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="照片">
+                {(() => {
+                  const arr = Array.isArray(viewing?.repair_photo_urls) ? viewing!.repair_photo_urls! : []
+                  if (!arr.length) return '-'
+                  const images = arr.filter(isImageUrl)
+                  const files = arr.filter(u => !isImageUrl(u))
+                  return (
+                    <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                      {images.length ? (
+                        <Image.PreviewGroup>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                            {images.map((u, i) => (
+                              <Image key={`${u}-${i}`} src={u} width="100%" height={140} style={{ objectFit: 'cover', borderRadius: 8 }} />
+                            ))}
+                          </div>
+                        </Image.PreviewGroup>
+                      ) : null}
+                      {files.length ? (
+                        <Space direction="vertical" size={4}>
+                          {files.map((u, i) => (
+                            <a key={`${u}-${i}`} href={u} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>
+                          ))}
+                        </Space>
+                      ) : null}
+                    </Space>
+                  )
+                })()}
+              </Descriptions.Item>
+            </Descriptions>
 
-          {(Array.isArray(viewing?.repair_photo_urls) && viewing!.repair_photo_urls!.length) ? (
-            <div style={{ background:'#fff', border:'1px solid #eaeef5', borderRadius:16, padding:16 }}>
-              <Space style={{ marginBottom:12 }}>
-                <CheckCircleOutlined style={{ color:'#52c41a' }} />
-                <Typography.Text style={{ color:'#0b1738', fontWeight:600 }}>清洁后照片</Typography.Text>
-              </Space>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:16 }}>
-                {(Array.isArray(viewing?.repair_photo_urls) ? viewing!.repair_photo_urls! : []).map((u: string, i: number) => (
-                  <div key={i} style={{ border:'1px solid #eaeef5', background:'#f1f6fb', borderRadius:12, padding:8 }}>
-                    {isImageUrl(u) ? <Image src={u} width="100%" height={140} style={{ objectFit:'cover', borderRadius:8 }} /> : <a href={u} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>}
-                  </div>
-                ))}
-              </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+              <Button icon={<ShareAltOutlined />} onClick={() => shareLink(viewing)}>分享</Button>
             </div>
-          ) : null}
-
-          {viewing ? (
-            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
-              <Button onClick={()=>setViewing(null)}>关闭</Button>
-              <Button icon={<ShareAltOutlined />} onClick={()=>shareLink(viewing)}>分享</Button>
-            </div>
-          ) : null}
-        </Space>
+          </>
+        ) : null}
       </Drawer>
     </Space>
   )

@@ -59,6 +59,14 @@ export function authHeaders(): Record<string, string> {
   return h
 }
 
+export function clearAuth() {
+  if (typeof window === 'undefined') return
+  try { localStorage.removeItem('token'); sessionStorage.removeItem('token') } catch {}
+  try { localStorage.removeItem('role'); sessionStorage.removeItem('role') } catch {}
+  try { document.cookie = 'auth=; path=/; max-age=0; SameSite=Lax' } catch {}
+  try { document.cookie = 'auth=; path=/; max-age=0' } catch {}
+}
+
 export async function fetchWithTimeout(input: any, init?: any, options?: FetchTimeoutOptions): Promise<Response> {
   const timeoutMs = Math.max(0, Number(options?.timeoutMs || 0))
   if (!timeoutMs) return fetch(input, init)
@@ -82,6 +90,7 @@ export async function getJSON<T>(path: string, options?: FetchTimeoutOptions): P
   assertApiBase()
   const res = await fetchWithTimeout(`${API_BASE}${path}`, { cache: 'no-store', headers: authHeaders() }, options)
   if (res.status === 401) {
+    clearAuth()
     if (typeof window !== 'undefined') window.location.href = '/login'
     throw new Error('HTTP 401')
   }
@@ -108,6 +117,7 @@ export async function postJSON<T>(path: string, body: any, options?: FetchTimeou
   assertApiBase()
   const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) }, options)
   if (res.status === 401) {
+    clearAuth()
     if (typeof window !== 'undefined') window.location.href = '/login'
     throw new Error('HTTP 401')
   }
@@ -134,6 +144,7 @@ export async function patchJSON<T>(path: string, body: any, options?: FetchTimeo
   assertApiBase()
   const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) }, options)
   if (res.status === 401) {
+    clearAuth()
     if (typeof window !== 'undefined') window.location.href = '/login'
     throw new Error('HTTP 401')
   }
@@ -160,6 +171,7 @@ export async function deleteJSON<T>(path: string, options?: FetchTimeoutOptions)
   assertApiBase()
   const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: 'DELETE', headers: { ...authHeaders() } }, options)
   if (res.status === 401) {
+    clearAuth()
     if (typeof window !== 'undefined') window.location.href = '/login'
     throw new Error('HTTP 401')
   }
