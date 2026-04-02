@@ -181,12 +181,23 @@ function calcMaintenanceTotal(row: any): number {
   const base = toNum(row?.maintenance_amount)
   const baseN = Number.isFinite(base) ? base : 0
   const hasParts = row?.has_parts === true
-  if (!hasParts) return Math.round((baseN + Number.EPSILON) * 100) / 100
+  const hasGst = row?.has_gst === true
+  const includesGst = row?.maintenance_amount_includes_gst === true
+  let subtotal = baseN
+  if (!hasParts) {
+    if (hasGst && !includesGst) subtotal = subtotal + subtotal * 0.1
+    return Math.round((subtotal + Number.EPSILON) * 100) / 100
+  }
   const includesParts = row?.maintenance_amount_includes_parts === true
-  if (includesParts) return Math.round((baseN + Number.EPSILON) * 100) / 100
+  if (includesParts) {
+    if (hasGst && !includesGst) subtotal = subtotal + subtotal * 0.1
+    return Math.round((subtotal + Number.EPSILON) * 100) / 100
+  }
   const parts = toNum(row?.parts_amount)
   const partsN = Number.isFinite(parts) ? parts : 0
-  return Math.round(((baseN + partsN) + Number.EPSILON) * 100) / 100
+  subtotal = subtotal + partsN
+  if (hasGst && !includesGst) subtotal = subtotal + subtotal * 0.1
+  return Math.round((subtotal + Number.EPSILON) * 100) / 100
 }
 
 async function upsertFallbackPropertyExpense(client: any, input: { propertyId: string, occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string, sourceTitle?: string, sourceSummary?: string }) {
@@ -2537,24 +2548,46 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
       } catch {}
       let toUpdate: any = payload
       if (resource === 'property_maintenance') {
-        try {
-          const { pgPool } = require('../dbAdapter')
-          if (pgPool) {
-            const colRes = await pgPool.query(
-              `SELECT column_name
-               FROM information_schema.columns
-               WHERE table_schema='public' AND table_name='property_maintenance'`
-            )
-            const cols = new Set<string>((colRes.rows || []).map((r: any) => String(r?.column_name || '')))
-            const requested = Object.keys(toUpdate || {}).filter(k => (toUpdate as any)[k] !== undefined)
-            const missing = requested.filter(k => !cols.has(String(k)))
-            if (missing.length) {
-              return res.status(409).json({
-                message: `数据库缺少维修表字段：${missing.join(', ')}。请先执行后端迁移脚本 backend/scripts/migrations/20260402_fix_property_maintenance_schema.sql`,
-              })
-            }
+        const boolFields = ['has_parts', 'maintenance_amount_includes_parts', 'has_gst', 'maintenance_amount_includes_gst']
+        for (const k of boolFields) {
+          if (!Object.prototype.hasOwnProperty.call(toUpdate, k)) continue
+          const v = (toUpdate as any)[k]
+          if (v === null || v === undefined || v === '') { (toUpdate as any)[k] = null; continue }
+          if (v === true || v === false) continue
+          if (typeof v === 'number') {
+            if (v === 1) { (toUpdate as any)[k] = true; continue }
+            if (v === 0) { (toUpdate as any)[k] = false; continue }
+            return res.status(400).json({ message: `字段 ${k} 格式不正确` })
           }
-        } catch {}
+          if (typeof v === 'string') {
+            const s = v.trim().toLowerCase()
+            if (s === 'true' || s === '1') { (toUpdate as any)[k] = true; continue }
+            if (s === 'false' || s === '0') { (toUpdate as any)[k] = false; continue }
+            return res.status(400).json({ message: `字段 ${k} 格式不正确` })
+          }
+          return res.status(400).json({ message: `字段 ${k} 格式不正确` })
+        }
+        const numFields = ['maintenance_amount', 'parts_amount']
+        for (const k of numFields) {
+          if (!Object.prototype.hasOwnProperty.call(toUpdate, k)) continue
+          const v = (toUpdate as any)[k]
+          if (v === null || v === undefined || v === '') { (toUpdate as any)[k] = null; continue }
+          const n = Number(v)
+          if (!Number.isFinite(n)) return res.status(400).json({ message: `字段 ${k} 金额格式不正确` })
+          ;(toUpdate as any)[k] = n
+        }
+        if (Object.prototype.hasOwnProperty.call(toUpdate, 'occurred_at')) {
+          const v = (toUpdate as any).occurred_at
+          ;(toUpdate as any).occurred_at = (v === null || v === undefined || v === '') ? null : String(v).slice(0, 10)
+        }
+        if (Object.prototype.hasOwnProperty.call(toUpdate, 'eta')) {
+          const v = (toUpdate as any).eta
+          ;(toUpdate as any).eta = (v === null || v === undefined || v === '') ? null : String(v).slice(0, 10)
+        }
+        if (Object.prototype.hasOwnProperty.call(toUpdate, 'pay_method')) {
+          const v = String((toUpdate as any).pay_method || '').trim()
+          ;(toUpdate as any).pay_method = v ? v : null
+        }
         if (toUpdate.details && typeof toUpdate.details !== 'string') {
           try { toUpdate.details = JSON.stringify(toUpdate.details) } catch {}
         }
@@ -2728,6 +2761,27 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
               }
               return { row: cur || null, autoExpenseSync: { ok: true, skipped: true, error: 'no_fields' } }
             }
+            try {
+              const colRes = await client.query(
+                `SELECT column_name
+                 FROM information_schema.columns
+                 WHERE table_schema='public' AND table_name='property_maintenance'
+                   AND column_name = ANY($1::text[])`,
+                [keys]
+              )
+              const cols = new Set<string>((colRes.rows || []).map((r: any) => String(r?.column_name || '')))
+              const missing = keys.filter(k => !cols.has(String(k)))
+              if (missing.length) {
+                const err: any = new Error(`missing_columns:${missing.join(',')}`)
+                err.status = 409
+                throw err
+              }
+            } catch (e: any) {
+              if (String(e?.message || '').startsWith('missing_columns:')) throw e
+              const err: any = new Error(`missing_columns_check_failed:${String(e?.message || e || '')}`)
+              err.status = 500
+              throw err
+            }
             let photoUrlsCast: 'text[]' | 'jsonb' = 'text[]'
             let repairPhotoUrlsCast: 'text[]' | 'jsonb' = 'jsonb'
             try {
@@ -2891,7 +2945,24 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
     addAudit(resource, id, action, before, merged, actor, meta)
     return res.json(merged)
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'update failed' })
+    const msg = String(e?.message || '')
+    const mlow = msg.toLowerCase()
+    if (mlow.startsWith('missing_columns:')) {
+      const cols = msg.slice('missing_columns:'.length).split(',').map(s => s.trim()).filter(Boolean)
+      return res.status(409).json({ message: `数据库缺少维修表字段：${cols.join(', ')}。请先执行后端迁移脚本 backend/scripts/migrations/20260402_fix_property_maintenance_schema.sql` })
+    }
+    if (mlow.startsWith('missing_columns_check_failed:')) {
+      return res.status(500).json({ message: `维修更新前置检查失败：${msg.slice('missing_columns_check_failed:'.length) || 'unknown'}` })
+    }
+    if (mlow.includes('invalid input syntax') && mlow.includes('numeric')) return res.status(400).json({ message: '金额格式不正确' })
+    if (mlow.includes('invalid input syntax') && mlow.includes('boolean')) return res.status(400).json({ message: '开关字段格式不正确' })
+    if (mlow.includes('invalid input syntax') && mlow.includes('date')) return res.status(400).json({ message: '日期格式不正确' })
+    if (mlow.includes('violates foreign key constraint')) return res.status(409).json({ message: '关联数据不存在（请确认房源/记录是否存在）' })
+    if (mlow.includes('permission denied')) return res.status(500).json({ message: '数据库权限不足（请检查生产账号权限/迁移执行情况）' })
+    if (mlow.includes('column') && mlow.includes('does not exist') && resource === 'property_maintenance') {
+      return res.status(409).json({ message: `数据库缺少维修表字段。请先执行后端迁移脚本 backend/scripts/migrations/20260402_fix_property_maintenance_schema.sql` })
+    }
+    return res.status(500).json({ message: msg || 'update failed' })
   }
 })
 

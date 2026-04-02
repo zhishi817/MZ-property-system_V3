@@ -298,6 +298,34 @@ app.use('/invoices', invoicesRouter)
 app.use('/cms', cmsCompanyRouter)
 app.use('/cms', cmsCompanySecretsRouter)
 
+process.on('unhandledRejection', (reason: any) => {
+  try {
+    const msg = String((reason as any)?.message || reason || '')
+    console.error(`[unhandledRejection] message=${msg}`)
+  } catch {}
+})
+process.on('uncaughtException', (err: any) => {
+  try {
+    const msg = String(err?.message || '')
+    console.error(`[uncaughtException] message=${msg}`)
+  } catch {}
+})
+
+app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  try {
+    if (res.headersSent) return next(err)
+    const msg = String(err?.message || 'Internal Server Error')
+    const type = String(err?.type || '')
+    if (type === 'entity.parse.failed') return res.status(400).json({ message: 'invalid_json' })
+    const status = Number(err?.status || err?.statusCode || 500)
+    const code = Number.isFinite(status) && status >= 400 && status <= 599 ? status : 500
+    return res.status(code).json({ message: msg })
+  } catch {
+    try { return res.status(500).json({ message: 'Internal Server Error' }) } catch {}
+    return next(err)
+  }
+})
+
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001)
 const server = app.listen(port, () => {
   console.log(`Server listening on port ${port}`)
