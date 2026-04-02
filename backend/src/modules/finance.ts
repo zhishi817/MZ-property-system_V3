@@ -230,12 +230,23 @@ function autoCalcMaintenanceTotal(row: any): number {
   const base = autoToNum(row?.maintenance_amount)
   const baseN = Number.isFinite(base) ? base : 0
   const hasParts = row?.has_parts === true
-  if (!hasParts) return Math.round((baseN + Number.EPSILON) * 100) / 100
+  const hasGst = row?.has_gst === true
+  const includesGst = row?.maintenance_amount_includes_gst === true
+  let subtotal = baseN
+  if (!hasParts) {
+    if (hasGst && !includesGst) subtotal = subtotal + subtotal * 0.1
+    return Math.round((subtotal + Number.EPSILON) * 100) / 100
+  }
   const includesParts = row?.maintenance_amount_includes_parts === true
-  if (includesParts) return Math.round((baseN + Number.EPSILON) * 100) / 100
+  if (includesParts) {
+    if (hasGst && !includesGst) subtotal = subtotal + subtotal * 0.1
+    return Math.round((subtotal + Number.EPSILON) * 100) / 100
+  }
   const parts = autoToNum(row?.parts_amount)
   const partsN = Number.isFinite(parts) ? parts : 0
-  return Math.round(((baseN + partsN) + Number.EPSILON) * 100) / 100
+  subtotal = subtotal + partsN
+  if (hasGst && !includesGst) subtotal = subtotal + subtotal * 0.1
+  return Math.round((subtotal + Number.EPSILON) * 100) / 100
 }
 
 function autoComputeDeepCleaningTotalCost(laborCostRaw: any, consumablesRaw: any) {

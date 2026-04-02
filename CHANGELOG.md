@@ -2,6 +2,13 @@
 
 ## Dev (2026-04-02)
 
+### build.2
+
+- Version: `0.2.7-statement-pdf.20260402+build.2`
+- Maintenance: Revenue sync now matches UI total when GST is enabled — maintenance total amount includes GST (when GST is extra) in both CRUD sync and `/finance/auto-expenses/backfill`.
+- Maintenance: Harden `PATCH /crud/property_maintenance/:id` payload parsing (booleans/numbers/dates) and map common PG errors to readable 400/409 instead of opaque 500.
+- Backend: Add global error handlers to avoid “Internal Server Error” plain-text responses and improve crash visibility (uncaughtException/unhandledRejection).
+
 ### build.1
 
 - Version: `0.2.7-statement-pdf.20260402+build.1`
