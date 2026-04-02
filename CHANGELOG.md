@@ -1,5 +1,15 @@
 # Changelog
 
+## Dev (2026-04-02)
+
+### build.1
+
+- Version: `0.2.7-statement-pdf.20260402+build.1`
+- Auth: Clear auth state on 401 (including session idle timeout) to avoid stuck “logged-in but all requests 401” state; AdminLayout now redirects to `/login` on 401.
+- Maintenance: Fix `PATCH /crud/property_maintenance/:id` instability by removing request-path schema DDL, supporting both `jsonb` and `text[]` URL columns, and returning normalized `photo_urls`/`repair_photo_urls` as `string[]`. Work-task upsert is now non-blocking to reduce save latency.
+- Maintenance: Landlord-pay expense sync now uses maintenance total amount (supports maintenance_amount=0 + parts_amount>0); add migration `20260402_fix_property_maintenance_schema.sql` to backfill missing columns safely.
+- UI: Maintenance and Deep Cleaning record detail drawers now use the same “property info table” style (Descriptions + Divider); maintenance edit keeps existing parts fields from disappearing.
+
 ## Dev (2026-04-01)
 
 ### build.9

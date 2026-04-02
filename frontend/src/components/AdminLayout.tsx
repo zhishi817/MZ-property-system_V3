@@ -15,7 +15,7 @@ const AdminMenu = dynamic(() => import('./AdminMenu'), { ssr: false })
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { getRole, hasPerm, preloadRolePerms } from '../lib/auth'
-import { API_BASE, authHeaders } from '../lib/api'
+import { API_BASE, authHeaders, clearAuth } from '../lib/api'
 import { VersionBadge } from './VersionBadge'
 import { pickHomeRoute } from '../lib/homeRoute'
 
@@ -68,12 +68,17 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     ;(async () => {
       try {
         const res = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() })
+        if (res.status === 401) {
+          clearAuth()
+          try { router.replace('/login') } catch {}
+          return
+        }
         const j = res.ok ? await res.json() : null
         setUsername((j as any)?.username || null)
         setRole((j as any)?.role || getRole())
       } catch {}
     })()
-  }, [mounted, authed])
+  }, [mounted, authed, router])
   useEffect(() => {
     if (!mounted) return
     if (!isLogin && !isPublic && !authed) {

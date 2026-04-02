@@ -33,6 +33,7 @@ export default function DeepCleaningUploadPage() {
   const [shareForm] = Form.useForm()
   const [sharePwdInfo, setSharePwdInfo] = useState<{ configured: boolean; password_updated_at: string | null } | null>(null)
   const [sharePwdCurrent, setSharePwdCurrent] = useState<{ configured: boolean; password: string | null; password_updated_at: string | null; reason?: string } | null>(null)
+  const [sharePwdVisible, setSharePwdVisible] = useState(false)
   const [preFiles, setPreFiles] = useState<Record<number, UploadFile[]>>({})
   const [preUrls, setPreUrls] = useState<Record<number, string[]>>({})
   const [postFiles, setPostFiles] = useState<Record<number, UploadFile[]>>({})
@@ -193,7 +194,8 @@ export default function DeepCleaningUploadPage() {
             </Typography.Text>
             {sharePwdCurrent?.password ? (
               <Space.Compact style={{ width:'100%' }}>
-                <Input.Password readOnly value={sharePwdCurrent.password} style={{ width:'100%' }} />
+                <Input readOnly type={sharePwdVisible ? 'text' : 'password'} value={sharePwdCurrent.password} style={{ width:'100%' }} />
+                <Button onClick={() => setSharePwdVisible(v => !v)}>{sharePwdVisible ? '隐藏密码' : '查看密码'}</Button>
                 <Button onClick={async () => {
                   try { await navigator.clipboard?.writeText(String(sharePwdCurrent.password || '')); message.success('已复制') } catch { message.error('复制失败') }
                 }}>复制</Button>

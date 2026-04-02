@@ -760,7 +760,7 @@ async function upsertMaintenancePropertyExpenseInSavepoint(client: any, row: any
     }
 
     if (payMethod === 'landlord_pay') {
-      if (!propertyId || !(base > 0)) { await client.query('RELEASE SAVEPOINT auto_expense'); return { ok: true, error: '', skipped: true } }
+      if (!propertyId) { await client.query('RELEASE SAVEPOINT auto_expense'); return { ok: true, error: '', skipped: true } }
       await client.query(
         `UPDATE company_expenses SET status='void'
          WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
@@ -2538,10 +2538,23 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
       let toUpdate: any = payload
       if (resource === 'property_maintenance') {
         try {
-          await ensurePropertyMaintenanceSchema()
-        } catch (e: any) {
-          return res.status(500).json({ message: String(e?.message || 'schema ensure failed') })
-        }
+          const { pgPool } = require('../dbAdapter')
+          if (pgPool) {
+            const colRes = await pgPool.query(
+              `SELECT column_name
+               FROM information_schema.columns
+               WHERE table_schema='public' AND table_name='property_maintenance'`
+            )
+            const cols = new Set<string>((colRes.rows || []).map((r: any) => String(r?.column_name || '')))
+            const requested = Object.keys(toUpdate || {}).filter(k => (toUpdate as any)[k] !== undefined)
+            const missing = requested.filter(k => !cols.has(String(k)))
+            if (missing.length) {
+              return res.status(409).json({
+                message: `数据库缺少维修表字段：${missing.join(', ')}。请先执行后端迁移脚本 backend/scripts/migrations/20260402_fix_property_maintenance_schema.sql`,
+              })
+            }
+          }
+        } catch {}
         if (toUpdate.details && typeof toUpdate.details !== 'string') {
           try { toUpdate.details = JSON.stringify(toUpdate.details) } catch {}
         }
@@ -2705,14 +2718,51 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         if (resource === 'property_maintenance') {
           const result: any = await pgRunInTransaction(async (client) => {
             const keys = Object.keys(toUpdate).filter(k => toUpdate[k] !== undefined)
+            if (!keys.length) {
+              let cur: any = before
+              if (!cur) {
+                try {
+                  const r0 = await client.query('SELECT * FROM property_maintenance WHERE id = $1 LIMIT 1', [id])
+                  cur = r0.rows && r0.rows[0]
+                } catch {}
+              }
+              return { row: cur || null, autoExpenseSync: { ok: true, skipped: true, error: 'no_fields' } }
+            }
+            let photoUrlsCast: 'text[]' | 'jsonb' = 'text[]'
+            let repairPhotoUrlsCast: 'text[]' | 'jsonb' = 'jsonb'
+            try {
+              const q = await client.query(
+                `SELECT column_name, data_type, udt_name
+                 FROM information_schema.columns
+                 WHERE table_schema='public'
+                   AND table_name='property_maintenance'
+                   AND column_name IN ('photo_urls','repair_photo_urls')`
+              )
+              const rows = Array.isArray(q?.rows) ? q.rows : []
+              const byName: any = Object.fromEntries(rows.map((r: any) => [String(r.column_name || ''), r]))
+              const p = byName.photo_urls
+              const r = byName.repair_photo_urls
+              const isTextArray = (x: any) => String(x?.data_type || '') === 'ARRAY' && String(x?.udt_name || '') === '_text'
+              const isJsonb = (x: any) => String(x?.data_type || '') === 'jsonb'
+              if (p) photoUrlsCast = isJsonb(p) ? 'jsonb' : (isTextArray(p) ? 'text[]' : 'text[]')
+              if (r) repairPhotoUrlsCast = isTextArray(r) ? 'text[]' : (isJsonb(r) ? 'jsonb' : 'jsonb')
+            } catch {}
             const set = keys.map((k, i) => {
-              if (k === 'repair_photo_urls') return `"${k}" = $${i + 1}::jsonb`
-              if (k === 'photo_urls') return `"${k}" = $${i + 1}::text[]`
+              if (k === 'repair_photo_urls') return `"${k}" = $${i + 1}::${repairPhotoUrlsCast}`
+              if (k === 'photo_urls') return `"${k}" = $${i + 1}::${photoUrlsCast}`
               return `"${k}" = $${i + 1}`
             }).join(', ')
             const values = keys.map((k) => {
-              if (k === 'repair_photo_urls') return JSON.stringify(Array.isArray(toUpdate[k]) ? toUpdate[k] : [])
-              if (k === 'photo_urls') return Array.isArray(toUpdate[k]) ? toUpdate[k].filter((x: any) => typeof x === 'string') : []
+              if (k === 'repair_photo_urls') {
+                if (toUpdate[k] === null) return null
+                const arr = Array.isArray(toUpdate[k]) ? toUpdate[k].filter((x: any) => typeof x === 'string') : []
+                return repairPhotoUrlsCast === 'jsonb' ? JSON.stringify(arr) : arr
+              }
+              if (k === 'photo_urls') {
+                if (toUpdate[k] === null) return null
+                const arr = Array.isArray(toUpdate[k]) ? toUpdate[k].filter((x: any) => typeof x === 'string') : []
+                return photoUrlsCast === 'jsonb' ? JSON.stringify(arr) : arr
+              }
               return toUpdate[k]
             })
             const sql = `UPDATE property_maintenance SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
@@ -2798,6 +2848,8 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         const syncOk = autoExpenseSync?.ok === true
         const syncSkipped = autoExpenseSync?.skipped === true
         const body: any = row || { id, ...payload }
+        try { body.photo_urls = normalizeUrlList(body.photo_urls) } catch {}
+        try { body.repair_photo_urls = normalizeUrlList(body.repair_photo_urls) } catch {}
         body.auto_expense_sync = syncSkipped ? 'skipped' : (syncOk ? 'ok' : 'failed')
         const syncErr = String(autoExpenseSync?.error || '')
         if (!syncOk && !syncSkipped) body.auto_expense_error = syncErr
@@ -2809,7 +2861,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
             if (body.auto_expense_error && process.env.NODE_ENV !== 'production') res.setHeader('x-auto-expense-error', String(body.auto_expense_error).slice(0, 180))
           }
         } catch {}
-        try { await upsertWorkTaskFromMaintenanceRow(row) } catch {}
+        try { Promise.resolve(upsertWorkTaskFromMaintenanceRow(row)).catch(() => {}) } catch {}
         return res.json(body)
       }
       return res.json(row || { id, ...payload })

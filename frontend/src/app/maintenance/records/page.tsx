@@ -1,5 +1,5 @@
 "use client"
-import { Card, Table, Space, Button, Input, Select, DatePicker, Modal, Form, App, Upload, Grid, Drawer, Image, InputNumber, Switch, Typography, Tag, Row, Col, Divider, Spin } from 'antd'
+import { Card, Table, Space, Button, Input, Select, DatePicker, Modal, Form, App, Upload, Grid, Drawer, Image, InputNumber, Switch, Typography, Tag, Row, Col, Divider, Spin, Descriptions } from 'antd'
 import { AppstoreOutlined, CreditCardOutlined, EnvironmentOutlined, InfoCircleOutlined, PercentageOutlined, DollarCircleOutlined, PictureOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import html2canvas from 'html2canvas'
 import type { UploadFile } from 'antd/es/upload/interface'
@@ -895,145 +895,86 @@ export default function MaintenanceRecordsUnified() {
           </div>
         }
       >
-        <Space direction="vertical" style={{ width: '100%' }}>
-          <Typography.Title level={4} style={{ margin: 0 }}>维修详情</Typography.Title>
-          <Typography.Text type="secondary">工单编号：{(viewRow as any)?.work_no || viewRow?.id}</Typography.Text>
-          <div style={{ background:'#eef6ff', border:'1px solid #d5e9ff', borderRadius:16, padding:16 }}>
-            <Space style={{ marginBottom:12 }}>
-              <EnvironmentOutlined style={{ color:'#1677ff' }} />
-              <Typography.Text style={{ color:'#1d39c4', fontWeight:600 }}>基本信息</Typography.Text>
-            </Space>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
-              <div>
-                <Typography.Text type="secondary">房号</Typography.Text>
-                <div style={{ fontSize:18, fontWeight:700, color:'#0b1738', marginTop:6 }}>{String((viewRow as any)?.code || viewRow?.property_id || '-')}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">紧急程度</Typography.Text>
-                <div style={{ marginTop:6 }}>{urgencyTag(viewRow?.urgency)}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">问题区域</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{issueAreaLabel(viewRow) || '-'}</div>
-              </div>
-              <div>
-                <Typography.Text type="secondary">提交人</Typography.Text>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{String((viewRow as any)?.submitter_name || (viewRow as any)?.worker_name || (viewRow as any)?.created_by || '-')}</div>
-              </div>
-              <div style={{ gridColumn:'1 / span 2' }}>
-                <Space>
-                  <CheckCircleOutlined style={{ color:'#52c41a' }} />
-                  <Typography.Text type="secondary">完成日期</Typography.Text>
-                </Space>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{(viewRow as any)?.completed_at ? dayjs((viewRow as any).completed_at).format('YYYY-MM-DD') : '-'}</div>
-              </div>
-              <div style={{ gridColumn:'1 / span 2' }}>
-                <Space>
-                  <InfoCircleOutlined style={{ color:'#1677ff' }} />
-                  <Typography.Text type="secondary">提交时间</Typography.Text>
-                </Space>
-                <div style={{ color:'#0b1738', marginTop:6 }}>{((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at) ? dayjs((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at).format('YYYY-MM-DD') : '-'}</div>
-              </div>
-            </div>
-          </div>
-          <div style={{ background:'#fff', border:'1px solid #eaeef5', borderRadius:16, padding:16 }}>
-            <Space style={{ marginBottom:12 }}>
-              <InfoCircleOutlined style={{ color:'#f0a500' }} />
-              <Typography.Text style={{ color:'#0b1738', fontWeight:600 }}>问题详情</Typography.Text>
-            </Space>
-            <div style={{ whiteSpace:'pre-wrap', border:'1px solid #eef2f8', background:'#f7f9fc', padding:12, borderRadius:12 }}>
-              {summaryFromDetails(viewRow?.details) || viewRow?.detail || ''}
-            </div>
-          </div>
-          <div style={{ background:'#fff', border:'1px solid #eaeef5', borderRadius:16, padding:16 }}>
-            <Space style={{ marginBottom:12 }}>
-              <DollarCircleOutlined style={{ color:'#16c784' }} />
-              <Typography.Text style={{ color:'#0b1738', fontWeight:600 }}>费用信息</Typography.Text>
-            </Space>
+        {viewRow ? (
+          <>
+            <Descriptions title="基本信息" bordered column={2} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="工单号">{String((viewRow as any)?.work_no || viewRow?.id || '-')}</Descriptions.Item>
+              <Descriptions.Item label="状态">{statusTag((viewRow as any)?.status)}</Descriptions.Item>
+              <Descriptions.Item label="房号">{String((viewRow as any)?.code || (viewRow as any)?.property_code || viewRow?.property_id || '-')}</Descriptions.Item>
+              <Descriptions.Item label="紧急程度">{urgencyTag((viewRow as any)?.urgency)}</Descriptions.Item>
+              <Descriptions.Item label="问题区域">{issueAreaLabel(viewRow) || '-'}</Descriptions.Item>
+              <Descriptions.Item label="提交人">{String((viewRow as any)?.submitter_name || (viewRow as any)?.worker_name || (viewRow as any)?.created_by || '-')}</Descriptions.Item>
+              <Descriptions.Item label="提交时间">{((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at) ? dayjs((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
+              <Descriptions.Item label="完成日期">{(viewRow as any)?.completed_at ? dayjs((viewRow as any).completed_at).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
+            </Descriptions>
+
+            <Divider orientation="left">问题详情</Divider>
+            <Descriptions bordered column={1} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="问题摘要" style={{ whiteSpace: 'pre-wrap' }}>
+                {summaryFromDetails(viewRow?.details) || (viewRow as any)?.detail || '-'}
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Divider orientation="left">费用信息</Divider>
             {(() => {
               const c = calcTotalAmount(viewRow)
+              const partsHint = (viewRow as any)?.has_parts === true ? (c?.includesParts ? '包含' : '额外') : '-'
+              const gstText = (viewRow as any)?.has_gst === true ? (c?.includesGst ? '包含' : fmtAmount(c?.gstExtra)) : '-'
               return (
-                <>
-                  <div>
-                    <Typography.Text type="secondary">总金额</Typography.Text>
-                    <div style={{ fontSize:22, fontWeight:700, color:'#1677ff', marginTop:6 }}>{fmtAmount(c?.total)}</div>
-                  </div>
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, alignItems:'end', marginTop: 14 }}>
-                    <div>
-                      <Typography.Text type="secondary">维修金额</Typography.Text>
-                      <div style={{ fontSize:16, fontWeight:600, color:'#0b1738', marginTop:6 }}>{fmtAmount((viewRow as any)?.maintenance_amount)}</div>
-                    </div>
-                    <div>
-                      <Typography.Text type="secondary">配件费</Typography.Text>
-                      <div style={{ fontSize:16, fontWeight:600, color:'#0b1738', marginTop:6 }}>
-                        {fmtAmount((viewRow as any)?.parts_amount)}
-                        {(viewRow as any)?.has_parts === true ? (
-                          <span style={{ marginLeft: 8, color: '#64748b', fontWeight: 500 }}>
-                            {c?.includesParts ? '包含' : '额外'}
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div>
-                      <Typography.Text type="secondary">GST</Typography.Text>
-                      <div style={{ fontSize:16, fontWeight:600, color:'#0b1738', marginTop:6 }}>
-                        {(viewRow as any)?.has_gst === true
-                          ? (c?.includesGst ? '包含' : fmtAmount(c?.gstExtra))
-                          : '-'}
-                      </div>
-                    </div>
-                    <div>
-                      <Typography.Text type="secondary">扣款方式</Typography.Text>
-                      <div style={{ color:'#0b1738', marginTop:6 }}>{payMethodLabel((viewRow as any)?.pay_method)}</div>
-                    </div>
-                  </div>
-                </>
+                <Descriptions bordered column={2} labelStyle={{ width: '120px' }}>
+                  <Descriptions.Item label="总金额">{fmtAmount(c?.total)}</Descriptions.Item>
+                  <Descriptions.Item label="扣款方式">{payMethodLabel((viewRow as any)?.pay_method)}</Descriptions.Item>
+                  <Descriptions.Item label="维修金额">{fmtAmount((viewRow as any)?.maintenance_amount)}</Descriptions.Item>
+                  <Descriptions.Item label="配件费">{fmtAmount((viewRow as any)?.parts_amount)}（{partsHint}）</Descriptions.Item>
+                  <Descriptions.Item label="GST">{gstText}</Descriptions.Item>
+                  <Descriptions.Item label="其他人备注">{String((viewRow as any)?.pay_method || '') === 'other_pay' ? String((viewRow as any)?.pay_other_note || '-') : '-'}</Descriptions.Item>
+                </Descriptions>
               )
             })()}
-            {String((viewRow as any)?.pay_method || '') === 'other_pay' ? (
-              <div style={{ marginTop:12 }}>
-                <Typography.Text type="secondary">其他人备注</Typography.Text>
-                <div style={{ color:'#0b1738' }}>{String((viewRow as any)?.pay_other_note || '-')}</div>
-              </div>
-            ) : null}
-          </div>
-          <div style={{ background:'#fff', border:'1px solid #eaeef5', borderRadius:16, padding:16 }}>
-            <Space style={{ marginBottom:12 }}>
-              <PictureOutlined style={{ color:'#9254de' }} />
-              <Typography.Text style={{ color:'#0b1738', fontWeight:600 }}>维修前照片</Typography.Text>
-            </Space>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:16 }}>
-              {(Array.isArray((viewRow as any)?.photo_urls) ? (viewRow as any)!.photo_urls! : []).map((u: string, i: number) => (
-                <div key={i} aria-label={`维修前照片 ${i+1}`} style={{ border:'1px solid #eaeef5', background:'#f1f6fb', borderRadius:12, padding:8 }}>
-                  <Image src={u} width="100%" height={140} style={{ objectFit:'cover', borderRadius:8 }} />
-                </div>
-              ))}
-            </div>
-          </div>
-          <div style={{ background:'#fff', border:'1px solid #eaeef5', borderRadius:16, padding:16 }}>
-            <Space style={{ marginBottom:12 }}>
-              <CheckCircleOutlined style={{ color:'#52c41a' }} />
-              <Typography.Text style={{ color:'#0b1738', fontWeight:600 }}>维修后照片</Typography.Text>
-            </Space>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:16 }}>
-              {(() => {
-                const raw: any = (viewRow as any)?.repair_photo_urls
-                let arr: string[] = Array.isArray(raw) ? raw : []
-                if (!arr.length && typeof raw === 'string') {
-                  try {
-                    const j = JSON.parse(raw)
-                    if (Array.isArray(j)) arr = j
-                  } catch {}
-                }
-                return arr
-              })().map((u, i) => (
-                <div key={i} aria-label={`维修后照片 ${i+1}`} style={{ border:'1px solid #eaeef5', background:'#f1f6fb', borderRadius:12, padding:8 }}>
-                  <Image src={u} width="100%" height={140} style={{ objectFit:'cover', borderRadius:8 }} />
-                </div>
-              ))}
-            </div>
-          </div>
-        </Space>
+
+            <Divider orientation="left">维修前照片</Divider>
+            <Descriptions bordered column={1} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="照片">
+                {(() => {
+                  const arr = Array.isArray((viewRow as any)?.photo_urls) ? (viewRow as any).photo_urls : []
+                  if (!arr.length) return '-'
+                  return (
+                    <Image.PreviewGroup>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                        {arr.map((u: string, i: number) => (
+                          <Image key={i} src={u} width="100%" height={140} style={{ objectFit: 'cover', borderRadius: 8 }} />
+                        ))}
+                      </div>
+                    </Image.PreviewGroup>
+                  )
+                })()}
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Divider orientation="left">维修后照片</Divider>
+            <Descriptions bordered column={1} labelStyle={{ width: '120px' }}>
+              <Descriptions.Item label="照片">
+                {(() => {
+                  const raw: any = (viewRow as any)?.repair_photo_urls
+                  let arr: string[] = Array.isArray(raw) ? raw : []
+                  if (!arr.length && typeof raw === 'string') {
+                    try { const j = JSON.parse(raw); if (Array.isArray(j)) arr = j } catch {}
+                  }
+                  if (!arr.length) return '-'
+                  return (
+                    <Image.PreviewGroup>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                        {arr.map((u: string, i: number) => (
+                          <Image key={i} src={u} width="100%" height={140} style={{ objectFit: 'cover', borderRadius: 8 }} />
+                        ))}
+                      </div>
+                    </Image.PreviewGroup>
+                  )
+                })()}
+              </Descriptions.Item>
+            </Descriptions>
+          </>
+        ) : null}
       </Drawer>
       <Modal open={pwdOpen} onCancel={()=>setPwdOpen(false)} onOk={async ()=>{
         const v = await pwdForm.validateFields()
@@ -1384,7 +1325,7 @@ export default function MaintenanceRecordsUnified() {
                     <div className={styles.feeDashedRow}>
                       <div>
                         <div className={styles.feeInlineLabel}>配件费金额（AUD）</div>
-                        <Form.Item name="parts_amount" preserve={false} noStyle>
+                        <Form.Item name="parts_amount" noStyle>
                           <InputNumber
                             min={0}
                             step={1}
@@ -1400,7 +1341,7 @@ export default function MaintenanceRecordsUnified() {
                       <div>
                         <div className={styles.feeInlineLabel}>维修金额是否包含配件费</div>
                         <div className={styles.feeToggleLine}>
-                          <Form.Item name="maintenance_amount_includes_parts" valuePropName="checked" preserve={false} noStyle>
+                          <Form.Item name="maintenance_amount_includes_parts" valuePropName="checked" noStyle>
                             <Switch />
                           </Form.Item>
                           <span className={styles.feeHint}>额外支付</span>

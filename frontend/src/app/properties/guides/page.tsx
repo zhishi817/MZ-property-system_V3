@@ -69,6 +69,7 @@ export default function Page() {
 
   const [pwdInfo, setPwdInfo] = useState<{ configured: boolean; password_updated_at: string | null }>({ configured: false, password_updated_at: null })
   const [pwdCurrent, setPwdCurrent] = useState<{ configured: boolean; password: string | null; password_updated_at: string | null; reason?: string } | null>(null)
+  const [pwdVisible, setPwdVisible] = useState(false)
 
   const propertyOptions = useMemo(
     () =>
@@ -418,7 +419,8 @@ export default function Page() {
               <Tag color={pwdInfo.configured ? 'green' : 'default'}>{pwdInfo.configured ? '已配置' : '未配置'}</Tag>
               {pwdCurrent?.password ? (
                 <Space.Compact style={{ width: isMobile ? '100%' : 240 }}>
-                  <Input.Password readOnly value={pwdCurrent.password} style={{ width: '100%' }} />
+                  <Input readOnly type={pwdVisible ? 'text' : 'password'} value={pwdCurrent.password} style={{ width: '100%' }} />
+                  <Button onClick={() => setPwdVisible(v => !v)}>{pwdVisible ? '隐藏密码' : '查看密码'}</Button>
                   <Button onClick={async () => {
                     try { await navigator.clipboard?.writeText(String(pwdCurrent.password || '')); message.success('已复制') } catch { message.error('复制失败') }
                   }}>复制</Button>
