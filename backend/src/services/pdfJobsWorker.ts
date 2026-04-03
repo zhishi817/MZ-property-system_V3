@@ -23,6 +23,12 @@ const SECRET = process.env.JWT_SECRET || 'dev-secret'
 
 let schemaMissingLogged = false
 
+type PdfJobHandler = (job: any, ctx: { workerId: string }) => Promise<void>
+
+const handlers: Record<string, PdfJobHandler> = {
+  merge_monthly_pack: async (job, ctx) => runMergeMonthlyPack(job, ctx.workerId),
+}
+
 function msEnv(name: string, defMs: number): number {
   const raw = Number(process.env[name] || defMs)
   if (!Number.isFinite(raw)) return defMs
@@ -82,12 +88,7 @@ async function claimJobs(limit: number, workerId: string): Promise<any[]> {
   if (!hasPg || !pgPool) return []
   const n = Math.max(1, Math.min(10, Number(limit || 3)))
   const client = await pgPool.connect()
-  let locked = false
   try {
-    const lockKey = Number(process.env.PDF_JOBS_LOCK_KEY || 864209135)
-    const got = await client.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey])
-    locked = !!(got?.rows?.[0]?.ok)
-    if (!locked) return []
     await client.query('BEGIN')
     await applyTxTimeouts(client)
     const leaseSec = Math.max(30, Math.min(30 * 60, Number(process.env.PDF_JOBS_LEASE_SECONDS || 8 * 60)))
@@ -120,7 +121,6 @@ async function claimJobs(limit: number, workerId: string): Promise<any[]> {
     try { await client.query('ROLLBACK') } catch {}
     throw e
   } finally {
-    try { if (locked) await client.query('SELECT pg_advisory_unlock($1)', [Number(process.env.PDF_JOBS_LOCK_KEY || 864209135)]) } catch {}
     try { client.release() } catch {}
   }
 }
@@ -493,6 +493,8 @@ async function markFailedOrRetry(job: any, info: { retriable: boolean; code: str
   await pgPool!.query(
     `UPDATE pdf_jobs
      SET status='failed',
+         progress=100,
+         stage='failed',
          locked_by=NULL,
          lease_expires_at=NULL,
          last_error_code=$2,
@@ -526,11 +528,9 @@ export async function processPdfJobsOnce(opts: { limit?: number } = {}): Promise
     const kind = String(job?.kind || '')
     try {
       console.log(`[pdf-jobs][worker] run start jobId=${jobId} kind=${kind} attempts=${Number(job?.attempts || 0)}`)
-      if (kind === 'merge_monthly_pack') {
-        await runMergeMonthlyPack(job, workerId)
-      } else {
-        throw Object.assign(new Error('unsupported_job_kind'), { code: 'JOB_INVALID' })
-      }
+      const handler = handlers[kind]
+      if (!handler) throw Object.assign(new Error('unsupported_job_kind'), { code: 'JOB_INVALID' })
+      await handler(job, { workerId })
       console.log(`[pdf-jobs][worker] run done jobId=${jobId} kind=${kind}`)
       ok++
     } catch (e: any) {

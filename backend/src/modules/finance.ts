@@ -1265,9 +1265,14 @@ router.get('/merge-monthly-pack/:id/download', requireAnyPerm(['finance.payout',
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
     if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
     await ensurePdfJobsSchema()
-    const r = await pgPool.query('SELECT id, status, result_files FROM pdf_jobs WHERE id=$1 LIMIT 1', [id])
+    const r = await pgPool.query('SELECT id, status, stage, result_files FROM pdf_jobs WHERE id=$1 LIMIT 1', [id])
     const row = r.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not_found' })
+    const st = String(row?.status || '')
+    const stage = String(row?.stage || '')
+    if (st !== 'success' || stage !== 'done') {
+      return res.status(409).json({ message: 'job_not_done', status: st || null, stage: stage || null })
+    }
     const files = Array.isArray(row?.result_files) ? row.result_files : []
     const pick = (k: string) => files.find((x: any) => String(x?.kind || '') === k)
     const merged = pick('statement_merged_invoices')

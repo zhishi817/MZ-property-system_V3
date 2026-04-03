@@ -1,5 +1,14 @@
 # Changelog
 
+## Dev (2026-04-03)
+
+### build.1
+
+- Version: `0.2.7-statement-pdf.20260403+build.1`
+- Finance PDF jobs: Fix jobs stuck in queued by removing session advisory lock in `claimJobs()` and keeping `FOR UPDATE SKIP LOCKED`; introduce handler registry for job kind dispatch.
+- Finance merge monthly pack: `/finance/merge-monthly-pack/:id/download` now requires `status=success && stage=done` (returns 409 otherwise); worker writes `stage=failed` on final failure for a consistent state machine.
+- UI: Properties revenue “合并PDF下载” polling now relies on `stage` only (`done` downloads, `failed` shows error) and adds a retry button.
+
 ## Dev (2026-04-02)
 
 ### build.2

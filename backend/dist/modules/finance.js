@@ -278,14 +278,26 @@ function autoCalcMaintenanceTotal(row) {
     const base = autoToNum(row === null || row === void 0 ? void 0 : row.maintenance_amount);
     const baseN = Number.isFinite(base) ? base : 0;
     const hasParts = (row === null || row === void 0 ? void 0 : row.has_parts) === true;
-    if (!hasParts)
-        return Math.round((baseN + Number.EPSILON) * 100) / 100;
+    const hasGst = (row === null || row === void 0 ? void 0 : row.has_gst) === true;
+    const includesGst = (row === null || row === void 0 ? void 0 : row.maintenance_amount_includes_gst) === true;
+    let subtotal = baseN;
+    if (!hasParts) {
+        if (hasGst && !includesGst)
+            subtotal = subtotal + subtotal * 0.1;
+        return Math.round((subtotal + Number.EPSILON) * 100) / 100;
+    }
     const includesParts = (row === null || row === void 0 ? void 0 : row.maintenance_amount_includes_parts) === true;
-    if (includesParts)
-        return Math.round((baseN + Number.EPSILON) * 100) / 100;
+    if (includesParts) {
+        if (hasGst && !includesGst)
+            subtotal = subtotal + subtotal * 0.1;
+        return Math.round((subtotal + Number.EPSILON) * 100) / 100;
+    }
     const parts = autoToNum(row === null || row === void 0 ? void 0 : row.parts_amount);
     const partsN = Number.isFinite(parts) ? parts : 0;
-    return Math.round(((baseN + partsN) + Number.EPSILON) * 100) / 100;
+    subtotal = subtotal + partsN;
+    if (hasGst && !includesGst)
+        subtotal = subtotal + subtotal * 0.1;
+    return Math.round((subtotal + Number.EPSILON) * 100) / 100;
 }
 function autoComputeDeepCleaningTotalCost(laborCostRaw, consumablesRaw) {
     const labor = autoToNum(laborCostRaw);
@@ -1338,10 +1350,15 @@ exports.router.get('/merge-monthly-pack/:id/download', (0, auth_1.requireAnyPerm
         if (!r2_1.hasR2)
             return res.status(500).json({ message: 'R2 not configured' });
         await (0, pdfJobsSchema_1.ensurePdfJobsSchema)();
-        const r = await dbAdapter_2.pgPool.query('SELECT id, status, result_files FROM pdf_jobs WHERE id=$1 LIMIT 1', [id]);
+        const r = await dbAdapter_2.pgPool.query('SELECT id, status, stage, result_files FROM pdf_jobs WHERE id=$1 LIMIT 1', [id]);
         const row = ((_c = r.rows) === null || _c === void 0 ? void 0 : _c[0]) || null;
         if (!row)
             return res.status(404).json({ message: 'not_found' });
+        const st = String((row === null || row === void 0 ? void 0 : row.status) || '');
+        const stage = String((row === null || row === void 0 ? void 0 : row.stage) || '');
+        if (st !== 'success' || stage !== 'done') {
+            return res.status(409).json({ message: 'job_not_done', status: st || null, stage: stage || null });
+        }
         const files = Array.isArray(row === null || row === void 0 ? void 0 : row.result_files) ? row.result_files : [];
         const pick = (k) => files.find((x) => String((x === null || x === void 0 ? void 0 : x.kind) || '') === k);
         const merged = pick('statement_merged_invoices');
