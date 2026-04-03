@@ -156,6 +156,15 @@ function internalAuthToken() {
 function frontBaseUrl(): string {
   const front = String(process.env.FRONTEND_BASE_URL || '').trim()
   if (!front) throw new Error('missing FRONTEND_BASE_URL')
+  try {
+    let local = false
+    try {
+      const u = new URL(front)
+      const h = String(u.hostname || '').toLowerCase()
+      local = h === 'localhost' || h === '127.0.0.1'
+    } catch {}
+    console.log(`[pdf-jobs][worker] FRONTEND_BASE_URL=${front} is_local=${local ? '1' : '0'}`)
+  } catch {}
   return front
 }
 
@@ -203,6 +212,7 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
     u.searchParams.set('exclude_orphan_fixed', opts.excludeOrphanFixedSnapshots ? '1' : '0')
     return u.toString()
   })()
+  try { console.log(`[pdf-jobs][worker] goto_url=${url}`) } catch {}
   const apiBase = apiBaseForAssets()
   const browser = await getChromiumBrowser()
   let context: any = null

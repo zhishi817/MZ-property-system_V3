@@ -8,6 +8,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN cd backend && npm ci
 
 COPY backend/ ./backend/
+RUN rm -f /app/backend/.env.local /app/.env.local
 RUN cd backend && npm run build
 RUN cd backend && npm prune --omit=dev
 
