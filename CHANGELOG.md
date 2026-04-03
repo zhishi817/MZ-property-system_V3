@@ -2,6 +2,12 @@
 
 ## Dev (2026-04-03)
 
+### build.4
+
+- Version: `0.2.7-statement-pdf.20260403+build.4`
+- Finance merge monthly pack: Support `forceNew` to guarantee a brand-new job on retry; only reuses an existing job when it is actively `running` (lease valid).
+- UI: Merge PDF creation now sends `forceNew: true` to avoid reusing stale jobs when users click retry.
+
 ### build.3
 
 - Version: `0.2.7-statement-pdf.20260403+build.3`

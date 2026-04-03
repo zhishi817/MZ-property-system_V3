@@ -1225,7 +1225,7 @@ router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', '
 
 router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
   try {
-    const { month, property_id, showChinese, excludeOrphanFixedSnapshots, exportQuality, mergeInvoices } = req.body || {}
+    const { month, property_id, showChinese, excludeOrphanFixedSnapshots, exportQuality, mergeInvoices, forceNew } = req.body || {}
     const monthKey = String(month || '').trim()
     const pid = String(property_id || '').trim()
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
@@ -1234,6 +1234,27 @@ router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx
     if (!String(process.env.FRONTEND_BASE_URL || '').trim()) return res.status(500).json({ message: 'missing FRONTEND_BASE_URL' })
     if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
     await ensurePdfJobsSchema()
+    const wantNew = forceNew === true || forceNew === 1 || forceNew === '1'
+    if (!wantNew) {
+      try {
+        const r0 = await pgPool.query(
+          `SELECT id, status, stage, progress, attempts, locked_by, lease_expires_at, created_at
+           FROM pdf_jobs
+           WHERE kind='merge_monthly_pack'
+             AND status='running'
+             AND (lease_expires_at IS NULL OR lease_expires_at > now())
+             AND COALESCE(params->>'month', params->>'month_key') = $1
+             AND COALESCE(params->>'property_id', params->>'pid') = $2
+           ORDER BY created_at DESC
+           LIMIT 1`,
+          [monthKey, pid]
+        )
+        const existing = r0.rows?.[0] || null
+        if (existing?.id) {
+          return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true })
+        }
+      } catch {}
+    }
     const id = uuidv4()
     const params = {
       month: monthKey,
@@ -1249,7 +1270,7 @@ router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx
       [id, JSON.stringify(params)]
     )
     kickPdfJobsSoon('create_merge_monthly_pack')
-    return res.json({ job_id: id, status: 'queued' })
+    return res.json({ job_id: id, status: 'queued', reused: false })
   } catch (e: any) {
     const code = String(e?.code || '')
     if (code === 'PDF_JOBS_SCHEMA_MISSING') return res.status(500).json({ message: 'pdf_jobs table missing (apply migration)' })

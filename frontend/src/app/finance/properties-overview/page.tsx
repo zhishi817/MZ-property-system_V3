@@ -1301,6 +1301,7 @@ export default function PropertyRevenuePage() {
                     excludeOrphanFixedSnapshots,
                     exportQuality,
                     mergeInvoices: true,
+                    forceNew: true,
                   }),
                 })
                 if (!create.ok) {
