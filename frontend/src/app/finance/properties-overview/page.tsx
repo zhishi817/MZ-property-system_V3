@@ -1324,8 +1324,15 @@ export default function PropertyRevenuePage() {
                   const jobStage = String(s?.stage || '')
                   const stage = jobStage || '处理中...'
                   const detail = String(s?.detail || '')
+                  const attempts = Number(s?.attempts || 0)
+                  const nextRetryAtRaw = String(s?.next_retry_at || '')
+                  const nextRetryAt = nextRetryAtRaw ? Date.parse(nextRetryAtRaw) : NaN
                   updateMerge(Number.isFinite(percent) ? percent : 0, stage, detail)
                   if (jobStage === 'failed') throw new Error(String(s?.last_error_message || s?.detail || '合并失败'))
+                  if (jobStage === 'queued' && attempts > 0 && Number.isFinite(nextRetryAt) && nextRetryAt - Date.now() > 12_000) {
+                    const when = new Date(nextRetryAt).toLocaleString()
+                    throw new Error(`任务已进入重试队列（attempts=${attempts}），下次重试时间：${when}。请点击“重试”创建新任务立即执行。`)
+                  }
                   if (jobStage === 'done') {
                     const files = Array.isArray(s?.result_files) ? s.result_files : []
                     const pick = (k: string) => files.find((x: any) => String(x?.kind || '') === k)

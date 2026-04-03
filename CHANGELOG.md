@@ -2,6 +2,11 @@
 
 ## Dev (2026-04-03)
 
+### build.5
+
+- Version: `0.2.7-statement-pdf.20260403+build.5`
+- UI: When a merge job is queued but already in backoff (attempts>0 and next_retry_at in the future), stop waiting and show an error with a “Retry” action that creates a new job immediately.
+
 ### build.4
 
 - Version: `0.2.7-statement-pdf.20260403+build.4`
