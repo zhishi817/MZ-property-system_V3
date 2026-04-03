@@ -2,6 +2,12 @@
 
 ## Dev (2026-04-03)
 
+### build.13
+
+- Version: `0.2.7-statement-pdf.20260403+build.13`
+- Monthly statement photos PDF: Allow `deep-cleaning-upload/` R2 keys to be normalized/proxied so deep-cleaning photo packs no longer fail with “no photos to render”.
+- Public R2 image proxy: Extend `/public/r2-image` allowlist to include `deep-cleaning-upload/`.
+
 ### build.12
 
 - Version: `0.2.7-statement-pdf.20260403+build.12`

@@ -10,6 +10,7 @@ import { addAudit } from '../store'
 import crypto from 'crypto'
 import sharp from 'sharp'
 import { resizeUploadImage } from '../lib/uploadImageResize'
+import { isAllowedR2ImageKey } from '../lib/r2ImageProxyPolicy'
 
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
 const DEFAULT_PUBLIC_CLEANING_PASSWORD = process.env.PUBLIC_CLEANING_PASSWORD || 'mz-cleaning'
@@ -30,8 +31,7 @@ router.get('/r2-image', async (req, res) => {
     if (!hasR2) return res.status(404).json({ message: 'r2_not_configured' })
     const key = r2KeyFromUrl(u)
     if (!key) return res.status(400).json({ message: 'invalid_r2_url' })
-    const allowedPrefixes = ['invoice-company-logos/', 'deep-cleaning/', 'maintenance/']
-    if (!allowedPrefixes.some(p => key.startsWith(p))) return res.status(403).json({ message: 'forbidden_key' })
+    if (!isAllowedR2ImageKey(key)) return res.status(403).json({ message: 'forbidden_key' })
 
     const qW = Number((req.query as any)?.w || 0)
     const qQ = Number((req.query as any)?.q || 0)

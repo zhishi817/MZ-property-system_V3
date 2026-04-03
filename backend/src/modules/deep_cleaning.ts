@@ -10,6 +10,7 @@ import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
 import { waitForImages } from '../lib/waitForImages'
 import { renderWorkRecordPdfHtml } from '../lib/workRecordPdfTemplate'
 import { resizeUploadImage } from '../lib/uploadImageResize'
+import { normalizePhotoUrlForPdf } from '../lib/normalizePhotoUrlForPdf'
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
@@ -238,19 +239,11 @@ router.post('/pdf/:id', requireAnyPerm(['property_deep_cleaning.view','property_
       const proto = String((req.headers['x-forwarded-proto'] as any) || req.protocol || 'https').split(',')[0].trim()
       return host ? `${proto}://${host}` : ''
     })()
-    const isR2 = (u: string) => u.includes('.r2.dev/') || u.includes('r2.cloudflarestorage.com/')
-    const proxyR2 = (u: string) => apiBase ? `${apiBase}/public/r2-image?url=${encodeURIComponent(u)}` : u
-    const normalizePhotoUrl = (u: string) => {
-      const s = String(u || '').trim()
-      if (!s) return ''
-      if (/^https?:\/\//i.test(s)) return isR2(s) ? proxyR2(s) : s
-      if (s.startsWith('//')) {
-        const abs = `https:${s}`
-        return isR2(abs) ? proxyR2(abs) : abs
-      }
-      if (s.startsWith('/')) return apiBase ? `${apiBase}${s}` : ''
-      return ''
-    }
+    const normalizePhotoUrl = (u: string) => normalizePhotoUrlForPdf(u, {
+      apiBase,
+      allowR2KeyPrefixes: ['deep-cleaning/', 'deep-cleaning-upload/'],
+      photosMode: 'full',
+    })
     const normUrlList = (raw: any): string[] => {
       if (!raw) return []
       let arr: any[] = []
