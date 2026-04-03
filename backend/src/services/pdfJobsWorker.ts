@@ -229,7 +229,7 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
   for (let attempt = 0; attempt < 2; attempt++) {
     const browser = await getChromiumBrowser()
     let context: any = null
-    const diag: any = { url, console: [] as string[], pageErrors: [] as string[], requestFails: [] as string[] }
+    const diag: any = { url, console: [] as string[], pageErrors: [] as string[], requestFails: [] as string[], badResponses: [] as string[], stats: null as any }
     try {
       const extraHTTPHeaders = bypass ? { 'x-vercel-protection-bypass': bypass, 'x-vercel-set-bypass-cookie': 'true' } : undefined
       try { context = await browser.newContext(extraHTTPHeaders ? { extraHTTPHeaders } : undefined) } catch (e: any) {
@@ -255,6 +255,12 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
           if (t === 'error' || t === 'warning') pushCap(diag.console, `${t}: ${String(msg?.text?.() || '')}`)
         })
         page.on('pageerror', (err: any) => pushCap(diag.pageErrors, String(err?.message || err || 'pageerror')))
+        page.on('response', (resp: any) => {
+          try {
+            const st = Number(resp?.status?.() || 0)
+            if (st >= 400) pushCap(diag.badResponses, `${String(resp?.url?.() || '')} (${st})`)
+          } catch {}
+        })
         page.on('requestfailed', (req: any) => {
           const u = String(req?.url?.() || '')
           const ft = String(req?.failure?.()?.errorText || '')
@@ -288,6 +294,15 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
           const ready = String(el.getAttribute('data-monthly-statement-ready') || '') === '1'
           return ready
         }, { timeout: waitTimeoutMs } as any)
+        try {
+          diag.stats = await page.evaluate(() => {
+            const root = document.querySelector('[data-monthly-statement-root="1"]') as HTMLElement | null
+            const rows = document.querySelectorAll('[data-monthly-statement-root="1"] [data-statement-row="1"]').length
+            const tables = document.querySelectorAll('[data-monthly-statement-root="1"] table').length
+            const cookieHasAuth = typeof document !== 'undefined' ? (document.cookie || '').includes('auth=') : false
+            return { hasRoot: !!root, statementRows: rows, tables, cookieHasAuth, href: String(location?.href || '') }
+          })
+        } catch {}
       } catch (e: any) {
         try {
           const pu = String(page.url?.() || '')
@@ -350,10 +365,14 @@ async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promis
     try {
       const r2 = await pgPool.query(
         `SELECT invoice_url FROM finance_transactions
-         WHERE kind='expense' AND property_id=$1 AND substring(occurred_at::text,1,7)=$2 AND invoice_url IS NOT NULL
+         WHERE kind='expense' AND property_id=$1 AND invoice_url IS NOT NULL
+           AND (
+             substring(occurred_at::text,1,7)=$2
+             OR (occurred_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
+           )
          ORDER BY created_at ASC
          LIMIT 500`,
-        [pid, mm]
+        [pid, mm, start, end]
       )
       urls = (r2.rows || []).map((x: any) => String(x?.invoice_url || '').trim()).filter(Boolean)
     } catch {}
@@ -368,7 +387,7 @@ async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promis
 function allowedHostsSet(): Set<string> {
   const hosts = new Set<string>()
   const addHost = (h: string) => { if (h) hosts.add(h.toLowerCase()) }
-  const envs = [process.env.API_BASE, process.env.NEXT_PUBLIC_API_BASE_URL, process.env.NEXT_PUBLIC_API_BASE_DEV, process.env.NEXT_PUBLIC_API_BASE, process.env.R2_PUBLIC_BASE_URL, process.env.R2_PUBLIC_BASE]
+  const envs = [process.env.API_BASE, process.env.NEXT_PUBLIC_API_BASE_URL, process.env.NEXT_PUBLIC_API_BASE_DEV, process.env.NEXT_PUBLIC_API_BASE, process.env.R2_PUBLIC_BASE_URL, process.env.R2_PUBLIC_BASE, process.env.R2_ENDPOINT]
   for (const e of envs) {
     try { if (e) addHost(new URL(String(e)).host) } catch {}
   }
@@ -478,6 +497,28 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
   const gen = await generateStatementBasePdf({ jobId: id, month: monthKey, property_id: pid, showChinese, excludeOrphanFixedSnapshots: excludeOrphans })
   const statementPdf = gen.pdf
   const statementPages = await pdfPageCount(statementPdf)
+  const diag = (gen as any)?.diagnostics || null
+  const diagSummary = (() => {
+    try {
+      if (!diag) return ''
+      const parts: string[] = []
+      const rf = Array.isArray(diag?.requestFails) ? diag.requestFails.length : 0
+      const br = Array.isArray(diag?.badResponses) ? diag.badResponses.length : 0
+      const ce = Array.isArray(diag?.console) ? diag.console.length : 0
+      const pe = Array.isArray(diag?.pageErrors) ? diag.pageErrors.length : 0
+      const rows = Number(diag?.stats?.statementRows || 0) || 0
+      const cookie = diag?.stats?.cookieHasAuth === false ? 'cookie_auth=0' : ''
+      if (rows) parts.push(`rows=${rows}`)
+      if (rf) parts.push(`request_fail=${rf}`)
+      if (br) parts.push(`http>=400=${br}`)
+      if (ce) parts.push(`console=${ce}`)
+      if (pe) parts.push(`pageerror=${pe}`)
+      if (cookie) parts.push(cookie)
+      return parts.length ? `；渲染诊断：${parts.join(',')}` : ''
+    } catch {
+      return ''
+    }
+  })()
   const baseKey = `monthly-pack/${monthKey}/${pid}/${id}/statement_base.pdf`
   const baseUrl = await r2Upload(baseKey, 'application/pdf', statementPdf)
   const files: PdfJobFile[] = [{
@@ -490,7 +531,7 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
     part_no: 1,
     source_count: 1,
   }]
-  await updateJob(id, { progress: 20, stage: 'statement_uploaded', detail: `主报表已生成（${statementPages}页）`, result_files: files, locked_by: workerId })
+  await updateJob(id, { progress: 20, stage: 'statement_uploaded', detail: `主报表已生成（${statementPages}页）${diagSummary}`, result_files: files, locked_by: workerId })
   if (!mergeInvoices) {
     await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: '已生成主报表（未合并附件）', result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
     return

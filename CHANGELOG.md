@@ -2,6 +2,14 @@
 
 ## Dev (2026-04-03)
 
+### build.8
+
+- Version: `0.2.7-statement-pdf.20260403+build.8`
+- PDF: Fix merge-monthly-pack empty statement by automatically allowing `FRONTEND_BASE_URL` origin in backend CORS (prevents print page API fetches being blocked).
+- PDF: Merge-monthly-pack invoice URL fallback now also supports `finance_transactions.created_at` when `occurred_at` is NULL.
+- PDF: Merge-monthly-pack attachment fetch allowlist now includes `R2_ENDPOINT` host.
+- PDF: Merge jobs now surface a concise render diagnostics summary in job detail (row count + request failures + bad HTTP responses).
+
 ### build.7
 
 - Version: `0.2.7-statement-pdf.20260403+build.7`

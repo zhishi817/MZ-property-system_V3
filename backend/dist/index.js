@@ -92,12 +92,29 @@ if (isProd && dbAdapter_1.hasPg) {
         throw new Error('DATABASE_URL 需开启 SSL（例如 sslmode=require）');
 }
 const app = (0, express_1.default)();
-const allowList = String(process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+const allowListSet = new Set(String(process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean));
+const tryOrigin = (raw) => {
+    try {
+        const s = String(raw || '').trim();
+        if (!s)
+            return '';
+        const u = new URL(s);
+        return String(u.origin || '').trim();
+    }
+    catch (_a) {
+        return '';
+    }
+};
+for (const v of [process.env.FRONTEND_BASE_URL, process.env.FRONTEND_URL, process.env.NEXT_PUBLIC_FRONTEND_BASE_URL]) {
+    const o = tryOrigin(v);
+    if (o)
+        allowListSet.add(o);
+}
 const corsOpts = {
     origin: (origin, cb) => {
-        if (!allowList.length)
+        if (!allowListSet.size)
             return cb(null, true);
-        const ok = !origin || allowList.includes(origin);
+        const ok = !origin || allowListSet.has(origin);
         cb(null, ok);
     },
     credentials: true,
@@ -339,6 +356,40 @@ app.use('/onboarding', propertyOnboarding_1.router);
 app.use('/invoices', invoices_1.router);
 app.use('/cms', cms_company_1.router);
 app.use('/cms', cms_company_secrets_1.router);
+process.on('unhandledRejection', (reason) => {
+    try {
+        const msg = String((reason === null || reason === void 0 ? void 0 : reason.message) || reason || '');
+        console.error(`[unhandledRejection] message=${msg}`);
+    }
+    catch (_a) { }
+});
+process.on('uncaughtException', (err) => {
+    try {
+        const msg = String((err === null || err === void 0 ? void 0 : err.message) || '');
+        console.error(`[uncaughtException] message=${msg}`);
+    }
+    catch (_a) { }
+});
+app.use((err, _req, res, next) => {
+    try {
+        if (res.headersSent)
+            return next(err);
+        const msg = String((err === null || err === void 0 ? void 0 : err.message) || 'Internal Server Error');
+        const type = String((err === null || err === void 0 ? void 0 : err.type) || '');
+        if (type === 'entity.parse.failed')
+            return res.status(400).json({ message: 'invalid_json' });
+        const status = Number((err === null || err === void 0 ? void 0 : err.status) || (err === null || err === void 0 ? void 0 : err.statusCode) || 500);
+        const code = Number.isFinite(status) && status >= 400 && status <= 599 ? status : 500;
+        return res.status(code).json({ message: msg });
+    }
+    catch (_a) {
+        try {
+            return res.status(500).json({ message: 'Internal Server Error' });
+        }
+        catch (_b) { }
+        return next(err);
+    }
+});
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001);
 const server = app.listen(port, () => {
     console.log(`Server listening on port ${port}`);

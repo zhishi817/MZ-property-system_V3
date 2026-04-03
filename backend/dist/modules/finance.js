@@ -1302,8 +1302,9 @@ exports.router.get('/monthly-statement-photo-stats', (0, auth_1.requireAnyPerm)(
     }
 });
 exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
+    var _a;
     try {
-        const { month, property_id, showChinese, excludeOrphanFixedSnapshots, exportQuality, mergeInvoices } = req.body || {};
+        const { month, property_id, showChinese, excludeOrphanFixedSnapshots, exportQuality, mergeInvoices, forceNew } = req.body || {};
         const monthKey = String(month || '').trim();
         const pid = String(property_id || '').trim();
         if (!/^\d{4}-\d{2}$/.test(monthKey))
@@ -1317,6 +1318,25 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
         if (!r2_1.hasR2)
             return res.status(500).json({ message: 'R2 not configured' });
         await (0, pdfJobsSchema_1.ensurePdfJobsSchema)();
+        const wantNew = forceNew === true || forceNew === 1 || forceNew === '1';
+        if (!wantNew) {
+            try {
+                const r0 = await dbAdapter_2.pgPool.query(`SELECT id, status, stage, progress, attempts, locked_by, lease_expires_at, created_at
+           FROM pdf_jobs
+           WHERE kind='merge_monthly_pack'
+             AND status='running'
+             AND (lease_expires_at IS NULL OR lease_expires_at > now())
+             AND COALESCE(params->>'month', params->>'month_key') = $1
+             AND COALESCE(params->>'property_id', params->>'pid') = $2
+           ORDER BY created_at DESC
+           LIMIT 1`, [monthKey, pid]);
+                const existing = ((_a = r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
+                if (existing === null || existing === void 0 ? void 0 : existing.id) {
+                    return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true });
+                }
+            }
+            catch (_b) { }
+        }
         const id = (0, uuid_1.v4)();
         const params = {
             month: monthKey,
@@ -1329,7 +1349,7 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
         await dbAdapter_2.pgPool.query(`INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
        VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`, [id, JSON.stringify(params)]);
         kickPdfJobsSoon('create_merge_monthly_pack');
-        return res.json({ job_id: id, status: 'queued' });
+        return res.json({ job_id: id, status: 'queued', reused: false });
     }
     catch (e) {
         const code = String((e === null || e === void 0 ? void 0 : e.code) || '');

@@ -86,11 +86,25 @@ if (isProd && hasPg) {
 }
 
 const app = express()
-const allowList = String(process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean)
+const allowListSet = new Set(String(process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean))
+const tryOrigin = (raw: any) => {
+  try {
+    const s = String(raw || '').trim()
+    if (!s) return ''
+    const u = new URL(s)
+    return String(u.origin || '').trim()
+  } catch {
+    return ''
+  }
+}
+for (const v of [process.env.FRONTEND_BASE_URL, process.env.FRONTEND_URL, process.env.NEXT_PUBLIC_FRONTEND_BASE_URL]) {
+  const o = tryOrigin(v)
+  if (o) allowListSet.add(o)
+}
 const corsOpts: cors.CorsOptions = {
   origin: (origin, cb) => {
-    if (!allowList.length) return cb(null, true)
-    const ok = !origin || allowList.includes(origin)
+    if (!allowListSet.size) return cb(null, true)
+    const ok = !origin || allowListSet.has(origin)
     cb(null, ok)
   },
   credentials: true,
