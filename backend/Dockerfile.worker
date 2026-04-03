@@ -2,14 +2,14 @@ FROM mcr.microsoft.com/playwright:v1.58.2-jammy
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+COPY backend/package.json backend/package-lock.json ./backend/
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npm ci
+RUN cd backend && npm ci
 
-COPY . .
-RUN npm run build
-RUN npm prune --omit=dev
+COPY backend/ ./backend/
+RUN cd backend && npm run build
+RUN cd backend && npm prune --omit=dev
 
 ENV NODE_ENV=production
-CMD ["node", "dist/worker_pdf_jobs.js"]
+CMD ["node", "backend/dist/worker_pdf_jobs.js"]

@@ -2,6 +2,11 @@
 
 ## Dev (2026-04-03)
 
+### build.3
+
+- Version: `0.2.7-statement-pdf.20260403+build.3`
+- Docker: Fix pdf-jobs worker Dockerfile context (`backend/Dockerfile.worker`) to copy `backend/package*.json` and start `node backend/dist/worker_pdf_jobs.js` under repo-root build context.
+
 ### build.2
 
 - Version: `0.2.7-statement-pdf.20260403+build.2`
