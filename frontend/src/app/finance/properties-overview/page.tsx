@@ -1357,7 +1357,7 @@ export default function PropertyRevenuePage() {
                     carryStartMonth: DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH,
                     exportQuality,
                     mergeInvoices: true,
-                    forceNew: true,
+                    forceNew: false,
                   }),
                 })
                 if (!create.ok) {
@@ -1368,11 +1368,14 @@ export default function PropertyRevenuePage() {
                 const j = await create.json() as any
                 const jobId = String(j?.job_id || j?.id || '').trim()
                 if (!jobId) throw new Error('创建任务失败（missing job_id）')
-                updateMerge(15, '任务已创建，正在生成...', `任务ID：${jobId}`)
+                updateMerge(15, j?.reused ? '已复用后台任务，正在生成...' : '任务已创建，正在生成...', `任务ID：${jobId}`)
                 const t0 = Date.now()
-                const pollMs = Math.max(800, Math.min(4000, Number((window as any).__mergePollMs || 1500)))
+                const basePollMs = Math.max(1200, Math.min(6000, Number((window as any).__mergePollMs || 2000)))
+                let pollCount = 0
                 while (Date.now() - t0 < 12 * 60 * 1000) {
+                  const pollMs = Math.min(8000, basePollMs + pollCount * 500)
                   await new Promise(r => setTimeout(r, pollMs))
+                  pollCount += 1
                   const st = await fetch(`${API_BASE}/finance/merge-monthly-pack/${encodeURIComponent(jobId)}`, { headers: authHeaders() })
                   if (!st.ok) continue
                   const s = await st.json() as any
