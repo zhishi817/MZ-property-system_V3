@@ -2,6 +2,12 @@
 
 ## Dev (2026-04-03)
 
+### build.10
+
+- Version: `0.2.7-statement-pdf.20260403+build.10`
+- Worker: Preserve render diagnostics in final job `detail`, and include API host samples to quickly detect FRONTEND/API environment mismatch.
+- PDF: Merge-monthly-pack invoice collection also considers `property_expenses.due_date` month when `month_key/occurred_at/created_at` are not usable.
+
 ### build.9
 
 - Version: `0.2.7-statement-pdf.20260403+build.9`

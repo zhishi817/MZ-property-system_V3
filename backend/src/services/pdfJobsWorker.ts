@@ -229,7 +229,7 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
   for (let attempt = 0; attempt < 2; attempt++) {
     const browser = await getChromiumBrowser()
     let context: any = null
-    const diag: any = { url, console: [] as string[], pageErrors: [] as string[], requestFails: [] as string[], badResponses: [] as string[], stats: null as any }
+    const diag: any = { url, console: [] as string[], pageErrors: [] as string[], requestFails: [] as string[], badResponses: [] as string[], apiCalls: [] as string[], stats: null as any }
     try {
       const extraHTTPHeaders = bypass ? { 'x-vercel-protection-bypass': bypass, 'x-vercel-set-bypass-cookie': 'true' } : undefined
       try { context = await browser.newContext(extraHTTPHeaders ? { extraHTTPHeaders } : undefined) } catch (e: any) {
@@ -258,7 +258,9 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
         page.on('response', (resp: any) => {
           try {
             const st = Number(resp?.status?.() || 0)
-            if (st >= 400) pushCap(diag.badResponses, `${String(resp?.url?.() || '')} (${st})`)
+            const u = String(resp?.url?.() || '')
+            if (st >= 400) pushCap(diag.badResponses, `${u} (${st})`)
+            if (/\/(orders|finance|properties|landlords)(\?|\/|$)/i.test(u)) pushCap(diag.apiCalls, `${u} (${st})`, 12)
           } catch {}
         })
         page.on('requestfailed', (req: any) => {
@@ -362,6 +364,8 @@ async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promis
          AND (
            e.month_key = $2
            OR (
+             substring(e.due_date::text,1,7) = $2
+             OR
              (e.occurred_at >= $3 AND e.occurred_at < $4)
              OR (e.occurred_at IS NULL AND e.created_at >= $3::date AND e.created_at < $4::date)
            )
@@ -518,12 +522,24 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
       const pe = Array.isArray(diag?.pageErrors) ? diag.pageErrors.length : 0
       const rows = Number(diag?.stats?.statementRows || 0) || 0
       const cookie = diag?.stats?.cookieHasAuth === false ? 'cookie_auth=0' : ''
+      const hosts = (() => {
+        try {
+          const arr: string[] = []
+          const pushHost = (u: string) => { try { arr.push(new URL(u).host) } catch {} }
+          for (const s of ([] as string[]).concat(diag?.apiCalls || [], diag?.badResponses || [], diag?.requestFails || [])) {
+            const u = String(s || '').split(' (')[0]
+            if (/^https?:\/\//i.test(u)) pushHost(u)
+          }
+          return Array.from(new Set(arr.map(h => h.toLowerCase()).filter(Boolean)))
+        } catch { return [] as string[] }
+      })()
       parts.push(`rows=${rows}`)
       if (rf) parts.push(`request_fail=${rf}`)
       if (br) parts.push(`http>=400=${br}`)
       if (ce) parts.push(`console=${ce}`)
       if (pe) parts.push(`pageerror=${pe}`)
       if (cookie) parts.push(cookie)
+      if (hosts.length) parts.push(`api_hosts=${hosts.slice(0, 3).join('|')}${hosts.length > 3 ? `(+${hosts.length - 3})` : ''}`)
       return parts.length ? `；渲染诊断：${parts.join(',')}` : ''
     } catch {
       return ''
@@ -545,14 +561,14 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
   }]
   await updateJob(id, { progress: 20, stage: 'statement_uploaded', detail: `主报表已生成（${statementPages}页）${diagSummary}`, result_files: files, locked_by: workerId })
   if (!mergeInvoices) {
-    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: '已生成主报表（未合并附件）', result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
+    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: `已生成主报表（未合并附件）${diagSummary}`, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
     return
   }
-  await updateJob(id, { progress: 25, stage: 'collect_invoices', detail: '正在收集发票附件...', result_files: files, locked_by: workerId })
+  await updateJob(id, { progress: 25, stage: 'collect_invoices', detail: `正在收集发票附件...${diagSummary}`, result_files: files, locked_by: workerId })
   const invoiceUrls = await collectInvoiceUrlsForMonth(pid, monthKey)
-  await updateJob(id, { progress: 35, stage: 'merge_invoices', detail: `正在合并附件（${invoiceUrls.length}）...`, result_files: files, locked_by: workerId })
+  await updateJob(id, { progress: 35, stage: 'merge_invoices', detail: `正在合并附件（${invoiceUrls.length}）...${diagSummary}`, result_files: files, locked_by: workerId })
   if (!invoiceUrls.length) {
-    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: '未找到可合并的附件，已生成主报表', result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
+    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: `未找到可合并的附件，已生成主报表${diagSummary}`, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
     return
   }
   const maxPerPart = Math.max(5, Math.min(60, Number(process.env.MERGE_INVOICE_MAX_PER_PART || 25)))
@@ -579,7 +595,7 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
   }
   const failN = merged.failed.length
   const failSample = merged.failed.slice(0, 3).join(' | ')
-  const detail = failN ? `合并完成（部分附件失败：${failN}，样例：${failSample}）` : '合并完成'
+  const detail = failN ? `合并完成（部分附件失败：${failN}，样例：${failSample}）${diagSummary}` : `合并完成${diagSummary}`
   await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
 }
 
