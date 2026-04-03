@@ -2,11 +2,12 @@
 import dayjs from 'dayjs'
 import { monthSegments, toDayStr, parseDateOnly, isOwnerStay } from '../lib/orders'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../lib/financeTx'
-import { computeMonthlyStatementBalance, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../lib/statementBalances'
+import { computeMonthlyStatementBalanceDebug, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../lib/statementBalances'
 import { formatStatementDesc } from '../lib/statementDesc'
 import { Table } from 'antd'
 import { forwardRef, useEffect, useRef, useState } from 'react'
 import { API_BASE, authHeaders, fetchWithTimeout } from '../lib/api'
+import { DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH } from '../lib/monthlyStatementPrint'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; invoice_url?: string; ref_type?: string; ref_id?: string }
@@ -508,14 +509,16 @@ export default forwardRef<HTMLDivElement, {
     lang: 'en',
   })
   const totalExpense = (managementFee + catElectricity + catWater + catGas + catInternet + catConsumable + catCarpark + catOwnerCorp + catCouncil + catOther)
-  const balance = (propertyId ? computeMonthlyStatementBalance({
+  const balanceDebug = (propertyId ? computeMonthlyStatementBalanceDebug({
     month,
     propertyId,
     propertyCode: property?.code,
     orders,
     txs: (txs as any).concat(deepCleanOwnerTxs as any),
     managementFeeRate: landlord?.management_fee_rate,
+    carryStartMonth: DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH,
   }) : null)
+  const balance = balanceDebug?.result || null
   const netIncome = balance ? balance.operating_net_income : Math.round(((totalIncome - totalExpense) + Number.EPSILON) * 100) / 100
   const hasCarry = !!balance && ([
     balance.opening_carry_net,
@@ -665,6 +668,12 @@ export default forwardRef<HTMLDivElement, {
       data-deep-clean-count={String((deepCleanings || []).length)}
       data-maint-loaded={maintenancesLoaded ? '1' : '0'}
       data-maint-count={String((maintenances || []).length)}
+      data-balance-show={balanceDebug?.summary?.showBalance ? '1' : '0'}
+      data-balance-opening-carry={String(Number(balance?.opening_carry_net || 0))}
+      data-balance-closing-carry={String(Number(balance?.closing_carry_net || 0))}
+      data-balance-payable={String(Number(balance?.payable_to_owner || 0))}
+      data-balance-carry-source={String(balanceDebug?.summary?.carrySourceKind || 'none')}
+      data-balance-carry-start-month={DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH}
       style={{ padding: 24, fontFamily: "StatementFont, serif" }}
     >
       <style>{`

@@ -16,6 +16,7 @@ import { MailOutlined, CreditCardOutlined, CheckOutlined } from '@ant-design/ico
 import { nextToggleValue } from '../../../lib/toggleStatus'
 import { exportElementToPdfBlob } from '../../../lib/pdfExport'
 import { buildStatementTxs, type StatementTx } from '../../../lib/statementTx'
+import { DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH } from '../../../lib/monthlyStatementPrint'
 import { canDownloadSplitPart, pickSplitPhotosMode, splitPartPhotoCount, type MergeSplitInfo } from '../../../lib/monthlyStatementPhotoSplit'
 
 type Order = { id: string; property_id?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
@@ -509,6 +510,7 @@ export default function PropertyRevenuePage() {
       orders,
       txs: txsAll,
       managementFeeRate: landlord?.management_fee_rate,
+      carryStartMonth: DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH,
     })
   }, [previewPid, period, month, properties, landlords, orders, txsAll])
 
@@ -1128,7 +1130,7 @@ export default function PropertyRevenuePage() {
               const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: cfg.photosMode, sections: cfg.sectionsApi, ...(cfg.photoCfg || {}), excludeOrphanFixedSnapshots }),
+                body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: cfg.photosMode, sections: cfg.sectionsApi, ...(cfg.photoCfg || {}), excludeOrphanFixedSnapshots, carryStartMonth: DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH }),
               })
               if (!resp.ok) {
                 let msg = `HTTP ${resp.status}`
@@ -1315,7 +1317,7 @@ export default function PropertyRevenuePage() {
               const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: photosMode, sections, ...(photoCfg || {}), excludeOrphanFixedSnapshots }),
+                body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: photosMode, sections, ...(photoCfg || {}), excludeOrphanFixedSnapshots, carryStartMonth: DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH }),
               })
               if (!resp.ok) {
                 let msg = `HTTP ${resp.status}`
@@ -1352,6 +1354,7 @@ export default function PropertyRevenuePage() {
                     property_id: previewPid,
                     showChinese,
                     excludeOrphanFixedSnapshots,
+                    carryStartMonth: DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH,
                     exportQuality,
                     mergeInvoices: true,
                     forceNew: true,

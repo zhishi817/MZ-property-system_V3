@@ -1102,7 +1102,7 @@ router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', '
 
 router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
   try {
-    const { month, property_id, showChinese, excludeOrphanFixedSnapshots, exportQuality, mergeInvoices, forceNew } = req.body || {}
+    const { month, property_id, showChinese, excludeOrphanFixedSnapshots, carryStartMonth, exportQuality, mergeInvoices, forceNew } = req.body || {}
     const monthKey = String(month || '').trim()
     const pid = String(property_id || '').trim()
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
@@ -1137,7 +1137,11 @@ router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx
       month: monthKey,
       property_id: pid,
       showChinese: !(showChinese === false || showChinese === '0'),
-      excludeOrphanFixedSnapshots: !!(excludeOrphanFixedSnapshots === true || excludeOrphanFixedSnapshots === 1 || excludeOrphanFixedSnapshots === '1'),
+      excludeOrphanFixedSnapshots:
+        excludeOrphanFixedSnapshots === false || excludeOrphanFixedSnapshots === 0 || excludeOrphanFixedSnapshots === '0'
+          ? false
+          : true,
+      carryStartMonth: /^\d{4}-\d{2}$/.test(String(carryStartMonth || '').trim()) ? String(carryStartMonth).trim() : '2026-01',
       exportQuality: String(exportQuality || '').trim() || null,
       mergeInvoices: mergeInvoices === false ? false : true,
     }
@@ -1380,7 +1384,7 @@ router.post(
 
 router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req: any, res: any) => {
   try {
-    const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q, excludeOrphanFixedSnapshots } = req.body || {}
+    const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q, excludeOrphanFixedSnapshots, carryStartMonth } = req.body || {}
     const monthKey = String(month || '').trim()
     const pid = String(property_id || '').trim()
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
@@ -1417,7 +1421,7 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
     const excludeOrphans = (() => {
       if (excludeOrphanFixedSnapshots === true || excludeOrphanFixedSnapshots === 1 || excludeOrphanFixedSnapshots === '1') return true
       if (excludeOrphanFixedSnapshots === false || excludeOrphanFixedSnapshots === 0 || excludeOrphanFixedSnapshots === '0') return false
-      return false
+      return true
     })()
     const url = (() => {
       const u = new URL('/public/monthly-statement-print', front)
@@ -1428,6 +1432,7 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
       u.searchParams.set('photos', photos)
       u.searchParams.set('sections', sec || 'all')
       u.searchParams.set('exclude_orphan_fixed', excludeOrphans ? '1' : '0')
+      u.searchParams.set('carry_start_month', /^\d{4}-\d{2}$/.test(String(carryStartMonth || '').trim()) ? String(carryStartMonth).trim() : '2026-01')
       if (photos === 'compressed') {
         if (compress.w) u.searchParams.set('photo_w', String(compress.w))
         if (compress.q) u.searchParams.set('photo_q', String(compress.q))
@@ -1506,6 +1511,11 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
             deepCount: String(el.getAttribute('data-deep-clean-count') || ''),
             maintLoaded: String(el.getAttribute('data-maint-loaded') || ''),
             maintCount: String(el.getAttribute('data-maint-count') || ''),
+            balanceShow: String(el.getAttribute('data-balance-show') || ''),
+            openingCarry: String(el.getAttribute('data-balance-opening-carry') || ''),
+            closingCarry: String(el.getAttribute('data-balance-closing-carry') || ''),
+            payable: String(el.getAttribute('data-balance-payable') || ''),
+            carrySource: String(el.getAttribute('data-balance-carry-source') || ''),
           }
         }).catch(() => null)
         return { curUrl, title, hasRoot, attrs }

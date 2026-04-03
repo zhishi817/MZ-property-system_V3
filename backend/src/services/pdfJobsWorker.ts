@@ -207,7 +207,7 @@ async function pdfPageCount(buf: Buffer): Promise<number> {
   }
 }
 
-async function generateStatementBasePdf(opts: { jobId: string; month: string; property_id: string; showChinese: boolean; excludeOrphanFixedSnapshots: boolean }): Promise<{ pdf: Buffer; diagnostics: any }> {
+async function generateStatementBasePdf(opts: { jobId: string; month: string; property_id: string; showChinese: boolean; excludeOrphanFixedSnapshots: boolean; carryStartMonth?: string }): Promise<{ pdf: Buffer; diagnostics: any }> {
   const front = frontBaseUrl()
   const token = internalAuthToken()
   const bypass = vercelBypassSecret()
@@ -220,6 +220,7 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
     u.searchParams.set('photos', 'off')
     u.searchParams.set('sections', 'base')
     u.searchParams.set('exclude_orphan_fixed', opts.excludeOrphanFixedSnapshots ? '1' : '0')
+    u.searchParams.set('carry_start_month', /^\d{4}-\d{2}$/.test(String(opts.carryStartMonth || '').trim()) ? String(opts.carryStartMonth).trim() : '2026-01')
     if (bypass) u.searchParams.set('x-vercel-protection-bypass', bypass)
     return u.toString()
   })()
@@ -506,9 +507,10 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
   if (!id || !/^\d{4}-\d{2}$/.test(monthKey) || !pid) throw Object.assign(new Error('invalid_job_params'), { code: 'JOB_INVALID' })
   const showChinese = params?.showChinese !== false
   const excludeOrphans = !!params?.excludeOrphanFixedSnapshots
+  const carryStartMonth = /^\d{4}-\d{2}$/.test(String(params?.carryStartMonth || '').trim()) ? String(params.carryStartMonth).trim() : '2026-01'
   const mergeInvoices = params?.mergeInvoices !== false
   await updateJob(id, { progress: 3, stage: 'render_statement', detail: '正在生成主报表（无照片版）...', locked_by: workerId })
-  const gen = await generateStatementBasePdf({ jobId: id, month: monthKey, property_id: pid, showChinese, excludeOrphanFixedSnapshots: excludeOrphans })
+  const gen = await generateStatementBasePdf({ jobId: id, month: monthKey, property_id: pid, showChinese, excludeOrphanFixedSnapshots: excludeOrphans, carryStartMonth })
   const statementPdf = gen.pdf
   const statementPages = await pdfPageCount(statementPdf)
   const diag = (gen as any)?.diagnostics || null

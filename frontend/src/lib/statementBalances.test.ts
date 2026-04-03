@@ -76,6 +76,9 @@ describe('computeMonthlyStatementBalance', () => {
     expect(debug.summary.hasCarry).toBe(true)
     expect(debug.summary.carrySourceKind).toBe('prior_operating_loss')
     expect(debug.months.map(x => x.month)).toEqual(['2026-01', '2026-02', '2026-03', '2026-04', '2026-05'])
+    const apr = debug.months.find(x => x.month === '2026-04')
+    expect(apr?.negative_carry_trigger?.id).toBe('fx-apr-exp')
+    expect(apr?.contributing_expense_tx_ids).toContain('fx-apr-exp')
   })
 
   it('distinguishes furniture offset from carry-over when carry stays at zero', () => {
@@ -97,5 +100,30 @@ describe('computeMonthlyStatementBalance', () => {
     expect(jan.summary.hasCarry).toBe(false)
     expect(jan.summary.hasFurniture).toBe(true)
     expect(jan.summary.carrySourceKind).toBe('none')
+  })
+
+  it('ignores carry-over before the configured carry start month', () => {
+    const pid = 'p3'
+    const orders: any[] = [
+      { id: 'o-jan', property_id: pid, checkin: '2026-01-01T12:00:00', checkout: '2026-02-01T11:59:59', price: 3000, cleaning_fee: 0 },
+      { id: 'o-mar', property_id: pid, checkin: '2026-03-01T12:00:00', checkout: '2026-04-01T11:59:59', price: 2000, cleaning_fee: 0 },
+    ]
+    const txs: any[] = [
+      { id: 'hist-dec-exp', kind: 'expense', amount: 800, currency: 'AUD', property_id: pid, occurred_at: '2025-12-28', category: 'other', note: 'legacy expense' },
+    ]
+
+    const mar = computeMonthlyStatementBalanceDebug({
+      month: '2026-03',
+      propertyId: pid,
+      orders,
+      txs,
+      managementFeeRate: 0,
+      carryStartMonth: '2026-01',
+    })
+
+    expect(mar.result.opening_carry_net).toBe(0)
+    expect(mar.result.closing_carry_net).toBe(0)
+    expect(mar.summary.hasCarry).toBe(false)
+    expect(mar.months.some(x => x.month === '2025-12')).toBe(false)
   })
 })
