@@ -635,7 +635,7 @@ const server = app.listen(port, () => {
   })()
   ;(async () => {
     try {
-      const enabled = String(process.env.PDF_JOBS_SCHEDULE_ENABLED || 'true').toLowerCase() === 'true'
+      const enabled = String(process.env.PDF_JOBS_SCHEDULE_ENABLED || 'false').toLowerCase() === 'true'
       if (enabled && hasPg) {
         const expr = String(process.env.PDF_JOBS_CRON || '*/1 * * * *')
         console.log(`[pdf-jobs][schedule] enabled cron=${expr}`)

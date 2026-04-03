@@ -2,6 +2,12 @@
 
 ## Dev (2026-04-03)
 
+### build.11
+
+- Version: `0.2.7-statement-pdf.20260403+build.11`
+- PDF Jobs: Web API no longer triggers on-demand job processing for merge-monthly-pack (POST/GET are side-effect-free; `kick` stays null for compatibility).
+- PDF Jobs: Disable pdf-jobs schedule inside the web server by default (`PDF_JOBS_SCHEDULE_ENABLED=false` unless explicitly enabled), to enforce “worker-only” execution.
+
 ### build.10
 
 - Version: `0.2.7-statement-pdf.20260403+build.10`

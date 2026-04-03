@@ -81,66 +81,6 @@ function isPlaywrightClosedError(e) {
     const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
     return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg);
 }
-let pdfJobsKickInFlight = false;
-let pdfJobsKickLastAt = 0;
-function pdfJobsOnDemandEnabled() {
-    return String(process.env.PDF_JOBS_ON_DEMAND_ENABLED || 'true').toLowerCase() === 'true';
-}
-async function kickPdfJobsNow(reason) {
-    if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
-        return { attempted: false, error: 'no_db' };
-    if (!pdfJobsOnDemandEnabled())
-        return { attempted: false, error: 'disabled' };
-    const now = Date.now();
-    if (pdfJobsKickInFlight)
-        return { attempted: false, error: 'in_flight' };
-    if (now - pdfJobsKickLastAt < 2000)
-        return { attempted: false, error: 'throttled' };
-    pdfJobsKickLastAt = now;
-    pdfJobsKickInFlight = true;
-    try {
-        const { processPdfJobsOnce } = require('../services/pdfJobsWorker');
-        const r = await Promise.race([
-            processPdfJobsOnce({ limit: 1 }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('kick_timeout')), 1800)),
-        ]);
-        return { attempted: true, processed: Number((r === null || r === void 0 ? void 0 : r.processed) || 0), ok: Number((r === null || r === void 0 ? void 0 : r.ok) || 0), failed: Number((r === null || r === void 0 ? void 0 : r.failed) || 0), reclaimed: Number((r === null || r === void 0 ? void 0 : r.reclaimed) || 0) };
-    }
-    catch (e) {
-        return { attempted: true, error: String((e === null || e === void 0 ? void 0 : e.message) || e || '') || 'kick_failed' };
-    }
-    finally {
-        pdfJobsKickInFlight = false;
-    }
-}
-function kickPdfJobsSoon(reason) {
-    if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
-        return;
-    if (!pdfJobsOnDemandEnabled())
-        return;
-    const now = Date.now();
-    if (pdfJobsKickInFlight)
-        return;
-    if (now - pdfJobsKickLastAt < 8000)
-        return;
-    pdfJobsKickLastAt = now;
-    pdfJobsKickInFlight = true;
-    setTimeout(async () => {
-        try {
-            const { processPdfJobsOnce } = require('../services/pdfJobsWorker');
-            await processPdfJobsOnce({ limit: 1 });
-        }
-        catch (e) {
-            try {
-                console.error(`[pdf-jobs][kick] failed reason=${String(reason || '')} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-            }
-            catch (_a) { }
-        }
-        finally {
-            pdfJobsKickInFlight = false;
-        }
-    }, 0);
-}
 function monthRangeISO(monthKey) {
     const m = String(monthKey || '').trim();
     const mm = m.match(/^(\d{4})-(\d{2})$/);
@@ -1348,7 +1288,6 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
         };
         await dbAdapter_2.pgPool.query(`INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
        VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`, [id, JSON.stringify(params)]);
-        kickPdfJobsSoon('create_merge_monthly_pack');
         return res.json({ job_id: id, status: 'queued', reused: false });
     }
     catch (e) {
@@ -1417,27 +1356,6 @@ exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finan
         let row = await loadRow();
         if (!row)
             return res.status(404).json({ message: 'not_found' });
-        const createdMs0 = row.created_at ? new Date(row.created_at).getTime() : NaN;
-        const ageMs0 = Number.isFinite(createdMs0) ? (Date.now() - createdMs0) : NaN;
-        const shouldKick = String(row.status || '') === 'queued' &&
-            Number.isFinite(ageMs0) &&
-            ageMs0 > 15000 &&
-            Number(row.attempts || 0) === 0 &&
-            !row.locked_by;
-        let kick = null;
-        if (shouldKick) {
-            kick = await kickPdfJobsNow('poll_merge_monthly_pack');
-            try {
-                if (kick === null || kick === void 0 ? void 0 : kick.attempted)
-                    row = await loadRow();
-            }
-            catch (_b) { }
-            try {
-                if (!(kick === null || kick === void 0 ? void 0 : kick.attempted))
-                    kickPdfJobsSoon('poll_merge_monthly_pack');
-            }
-            catch (_c) { }
-        }
         const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN;
         const updatedMs = row.updated_at ? new Date(row.updated_at).getTime() : NaN;
         const ageSec = Number.isFinite(createdMs) ? Math.max(0, Math.round((Date.now() - createdMs) / 1000)) : null;
@@ -1457,7 +1375,7 @@ exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finan
             next_retry_at: row.next_retry_at || null,
             locked_by: row.locked_by || null,
             lease_expires_at: row.lease_expires_at || null,
-            kick: kick || null,
+            kick: null,
             params: row.params || null,
             result_files: row.result_files || [],
             last_error_code: row.last_error_code || null,
