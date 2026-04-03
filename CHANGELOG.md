@@ -2,6 +2,11 @@
 
 ## Dev (2026-04-03)
 
+### build.6
+
+- Version: `0.2.7-statement-pdf.20260403+build.6`
+- Worker: Improve Playwright resilience and debugging for monthly statement rendering: retry once on TargetClosed/browser-disconnected errors and print page URL + truncated HTML content on render wait failures.
+
 ### build.5
 
 - Version: `0.2.7-statement-pdf.20260403+build.5`

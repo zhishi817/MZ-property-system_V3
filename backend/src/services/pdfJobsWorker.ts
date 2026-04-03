@@ -214,63 +214,84 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
   })()
   try { console.log(`[pdf-jobs][worker] goto_url=${url}`) } catch {}
   const apiBase = apiBaseForAssets()
-  const browser = await getChromiumBrowser()
-  let context: any = null
-  try { context = await browser.newContext() } catch (e: any) {
-    if (!/(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(String(e?.message || ''))) throw e
-    await resetChromiumBrowser()
-    const b2 = await getChromiumBrowser()
-    context = await b2.newContext()
-  }
-  const diag: any = { url, console: [] as string[], pageErrors: [] as string[], requestFails: [] as string[] }
-  try {
-    const cookieTargets = Array.from(new Set([front, apiBase].map(s => String(s || '').trim()).filter(Boolean)))
-    if (cookieTargets.length) {
-      await context.addCookies(cookieTargets.map((base) => cookieBase(base, token)) as any)
-    }
-    const page = await context.newPage()
-    const pushCap = (arr: string[], s: string, cap = 30) => {
-      const v = String(s || '').slice(0, 500)
-      if (!v) return
-      arr.push(v)
-      if (arr.length > cap) arr.splice(0, arr.length - cap)
-    }
+  const isTargetClosed = (e: any) => /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(String(e?.message || ''))
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const browser = await getChromiumBrowser()
+    let context: any = null
+    const diag: any = { url, console: [] as string[], pageErrors: [] as string[], requestFails: [] as string[] }
     try {
-      page.on('console', (msg: any) => {
-        const t = String(msg?.type?.() || '')
-        if (t === 'error' || t === 'warning') pushCap(diag.console, `${t}: ${String(msg?.text?.() || '')}`)
-      })
-      page.on('pageerror', (err: any) => pushCap(diag.pageErrors, String(err?.message || err || 'pageerror')))
-      page.on('requestfailed', (req: any) => {
-        const u = String(req?.url?.() || '')
-        const ft = String(req?.failure?.()?.errorText || '')
-        pushCap(diag.requestFails, ft ? `${u} (${ft})` : u)
-      })
-    } catch {}
-    const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)))
-    const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
-    page.setDefaultTimeout(waitTimeoutMs)
-    page.setDefaultNavigationTimeout(navTimeoutMs)
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
-    await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
-    await page.waitForSelector('[data-monthly-statement-root="1"]', { timeout: waitTimeoutMs })
-    const u0 = String(page.url?.() || '')
-    if (u0.includes('/login')) throw new Error('print page redirected to /login')
-    await page.waitForFunction(() => {
-      const el = document.querySelector('[data-monthly-statement-root="1"]') as any
-      if (!el) return false
-      const ready = String(el.getAttribute('data-monthly-statement-ready') || '') === '1'
-      return ready
-    }, { timeout: waitTimeoutMs } as any)
-    await waitForImages(page, { timeoutMs: 20000, scroll: true, maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
-    await page.waitForTimeout(200)
-    await page.emulateMedia({ media: 'print' } as any)
-    const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
-    return { pdf: Buffer.from(pdf), diagnostics: diag }
-  } finally {
-    try { await context.close() } catch {}
+      try { context = await browser.newContext() } catch (e: any) {
+        if (!isTargetClosed(e)) throw e
+        await resetChromiumBrowser()
+        const b2 = await getChromiumBrowser()
+        context = await b2.newContext()
+      }
+      const cookieTargets = Array.from(new Set([front, apiBase].map(s => String(s || '').trim()).filter(Boolean)))
+      if (cookieTargets.length) {
+        await context.addCookies(cookieTargets.map((base) => cookieBase(base, token)) as any)
+      }
+      const page = await context.newPage()
+      const pushCap = (arr: string[], s: string, cap = 30) => {
+        const v = String(s || '').slice(0, 500)
+        if (!v) return
+        arr.push(v)
+        if (arr.length > cap) arr.splice(0, arr.length - cap)
+      }
+      try {
+        page.on('console', (msg: any) => {
+          const t = String(msg?.type?.() || '')
+          if (t === 'error' || t === 'warning') pushCap(diag.console, `${t}: ${String(msg?.text?.() || '')}`)
+        })
+        page.on('pageerror', (err: any) => pushCap(diag.pageErrors, String(err?.message || err || 'pageerror')))
+        page.on('requestfailed', (req: any) => {
+          const u = String(req?.url?.() || '')
+          const ft = String(req?.failure?.()?.errorText || '')
+          pushCap(diag.requestFails, ft ? `${u} (${ft})` : u)
+        })
+      } catch {}
+      const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)))
+      const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
+      page.setDefaultTimeout(waitTimeoutMs)
+      page.setDefaultNavigationTimeout(navTimeoutMs)
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+        await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
+        await page.waitForSelector('[data-monthly-statement-root="1"]', { timeout: waitTimeoutMs })
+        const u0 = String(page.url?.() || '')
+        if (u0.includes('/login')) throw new Error('print page redirected to /login')
+        await page.waitForFunction(() => {
+          const el = document.querySelector('[data-monthly-statement-root="1"]') as any
+          if (!el) return false
+          const ready = String(el.getAttribute('data-monthly-statement-ready') || '') === '1'
+          return ready
+        }, { timeout: waitTimeoutMs } as any)
+      } catch (e: any) {
+        try {
+          const pu = String(page.url?.() || '')
+          const html = await page.content().catch(() => '')
+          console.log(`[pdf-jobs][worker] page_debug attempt=${attempt + 1} page_url=${pu}`)
+          if (html) console.log(String(html).slice(0, 2000))
+        } catch {}
+        throw e
+      }
+      await waitForImages(page, { timeoutMs: 20000, scroll: true, maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
+      await page.waitForTimeout(200)
+      await page.emulateMedia({ media: 'print' } as any)
+      const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
+      return { pdf: Buffer.from(pdf), diagnostics: diag }
+    } catch (e: any) {
+      if (attempt === 0 && isTargetClosed(e)) {
+        try { console.log(`[pdf-jobs][worker] target_closed_retry message=${String(e?.message || '')}`) } catch {}
+        await resetChromiumBrowser().catch(() => {})
+      } else {
+        throw e
+      }
+    } finally {
+      try { await context?.close?.() } catch {}
+    }
   }
+  throw new Error('generateStatementBasePdf failed')
 }
 
 async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promise<string[]> {
