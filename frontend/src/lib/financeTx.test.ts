@@ -9,27 +9,33 @@ describe('shouldIncludeIncomeTxInPropertyOtherIncome', () => {
     expect(ok).toBe(false)
   })
 
-  it('includes cancel_fee for cancelled order when count_in_income is true', () => {
+  it('still excludes cancel_fee for cancelled order when count_in_income is true', () => {
     const orderById = new Map([['o1', { id: 'o1', status: 'cancelled', count_in_income: true }]])
     const ok = shouldIncludeIncomeTxInPropertyOtherIncome({ category: 'cancel_fee', ref_type: 'order', ref_id: 'o1' }, orderById)
-    expect(ok).toBe(true)
+    expect(ok).toBe(false)
   })
 
-  it('includes cancel_fee for non-cancelled order', () => {
+  it('excludes cancel_fee for non-cancelled order too', () => {
     const orderById = new Map([['o1', { id: 'o1', status: 'confirmed', count_in_income: false }]])
     const ok = shouldIncludeIncomeTxInPropertyOtherIncome({ category: 'cancel_fee', ref_type: 'order', ref_id: 'o1' }, orderById)
-    expect(ok).toBe(true)
+    expect(ok).toBe(false)
   })
 
-  it('includes cancel_fee if order not found', () => {
+  it('excludes cancel_fee if order not found', () => {
     const orderById = new Map()
     const ok = shouldIncludeIncomeTxInPropertyOtherIncome({ category: 'cancel_fee', ref_type: 'order', ref_id: 'missing' }, orderById)
-    expect(ok).toBe(true)
+    expect(ok).toBe(false)
   })
 
-  it('includes non-cancel_fee income categories', () => {
+  it('excludes late_checkout from property other income', () => {
     const orderById = new Map([['o1', { id: 'o1', status: 'cancelled', count_in_income: false }]])
     const ok = shouldIncludeIncomeTxInPropertyOtherIncome({ category: 'late_checkout', ref_type: 'order', ref_id: 'o1' }, orderById)
+    expect(ok).toBe(false)
+  })
+
+  it('includes non-late-checkout non-cancel-fee income categories', () => {
+    const orderById = new Map([['o1', { id: 'o1', status: 'cancelled', count_in_income: false }]])
+    const ok = shouldIncludeIncomeTxInPropertyOtherIncome({ category: 'other', ref_type: 'order', ref_id: 'o1' }, orderById)
     expect(ok).toBe(true)
   })
 })

@@ -114,6 +114,18 @@ function joinItemDesc(title: any, content: any) {
   return `${t}\n${c}`
 }
 
+function formatInvoiceConflictMessage(err: any) {
+  const msg = String(err?.message || '')
+  const conflictNo = String(err?.conflict_invoice_no || '').trim()
+  if (msg === 'duplicate_invoice_no') {
+    return conflictNo ? `发票号重复，编号 ${conflictNo} 已存在，请更换后再提交` : '发票号重复，请更换发票号后再提交'
+  }
+  if (msg === 'duplicate_invoice_content' || msg === 'duplicate_invoice') {
+    return conflictNo ? `发票内容重复，系统中已存在发票 ${conflictNo}` : '发票内容重复，系统中已存在相同发票'
+  }
+  return ''
+}
+
 export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string }) {
   const { mode } = props
   const router = useRouter()
@@ -434,10 +446,10 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       }
       return invoiceId
     } catch (e: any) {
-      const msg = String(e?.message || '')
+      const msg = formatInvoiceConflictMessage(e)
       if (!params?.silent) {
-        if (msg === 'duplicate_invoice') message.error('发票重复，不可提交')
-        else message.error(msg || '保存失败')
+        if (msg) message.error(msg)
+        else message.error(String(e?.message || '保存失败'))
       }
       return invoiceId
     }
@@ -461,9 +473,9 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       message.success('已提交')
       try { router.push(`/finance/invoices/${id}/preview`) } catch {}
     } catch (e: any) {
-      const msg = String(e?.message || '')
-      if (msg === 'duplicate_invoice') message.error('发票重复，不可提交')
-      else message.error(msg || '提交失败')
+      const msg = formatInvoiceConflictMessage(e)
+      if (msg) message.error(msg)
+      else message.error(String(e?.message || '提交失败'))
     } finally {
       setSaving(false)
     }

@@ -23,14 +23,9 @@ export function normalizeReportCategory(raw?: any) {
 
 export function shouldIncludeIncomeTxInPropertyOtherIncome(tx: IncomeTxLike, orderById: Map<string, OrderIncomeFlag>) {
   const cat = String(tx.category || '').toLowerCase()
-  if (cat !== 'cancel_fee') return true
-  if (String(tx.ref_type || '') !== 'order') return true
-  const oid = String(tx.ref_id || '')
-  if (!oid) return true
-  const o = orderById.get(oid)
-  const st = String(o?.status || '').toLowerCase()
-  const isCanceled = st.includes('cancel')
-  return (!isCanceled) || !!o?.count_in_income
+  if (cat === 'late_checkout' || cat === 'cancel_fee') return false
+  void orderById
+  return true
 }
 
 export function txInMonth(tx: TxDateLike, monthStart: any) {
