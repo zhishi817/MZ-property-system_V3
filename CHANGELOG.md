@@ -2,6 +2,13 @@
 
 ## Dev (2026-04-03)
 
+### build.12
+
+- Version: `0.2.7-statement-pdf.20260403+build.12`
+- Monthly statement: Fix “Total rent income 总租金” to display rent income (not total income).
+- Monthly statement preview/print: Use backend `/finance/rent-segments` segments to render orders, aligning preview totals with property revenue table (internal deductions split consistently).
+- Property revenue: Exclude `rent_deduction` / non-landlord pay items from “其他支出” aggregation; auto expense sync pay_method normalization now prioritizes rent deduction over landlord keywords.
+
 ### build.11
 
 - Version: `0.2.7-statement-pdf.20260403+build.11`
