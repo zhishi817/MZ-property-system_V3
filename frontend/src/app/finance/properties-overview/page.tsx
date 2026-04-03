@@ -16,6 +16,7 @@ import { MailOutlined, CreditCardOutlined, CheckOutlined } from '@ant-design/ico
 import { nextToggleValue } from '../../../lib/toggleStatus'
 import { exportElementToPdfBlob } from '../../../lib/pdfExport'
 import { buildStatementTxs, type StatementTx } from '../../../lib/statementTx'
+import { canDownloadSplitPart, splitPartPhotoCount, type MergeSplitInfo } from '../../../lib/monthlyStatementPhotoSplit'
 
 type Order = { id: string; property_id?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = StatementTx
@@ -52,7 +53,7 @@ export default function PropertyRevenuePage() {
   const [, setStatementPdfMode] = useState(false)
   const [exportQuality, setExportQuality] = useState<'standard' | 'high' | 'ultra'>('ultra')
   const [mergeUi, setMergeUi] = useState<{ open: boolean; percent: number; status: MergeUiStatus; stage: string; detail?: string }>({ open: false, percent: 0, status: 'active', stage: '', detail: '' })
-  const [mergeSplit, setMergeSplit] = useState<null | { maintenancePhotoCount: number; deepCleaningPhotoCount: number; totalPhotoCount: number; shouldSplit: boolean; hardSplit: boolean; threshold: number; hardThreshold: number }>(null)
+  const [mergeSplit, setMergeSplit] = useState<MergeSplitInfo | null>(null)
   const [mergeNoPhotos, setMergeNoPhotos] = useState<boolean>(false)
   const [splitDl, setSplitDl] = useState<{ maintenance: boolean; deepCleaning: boolean }>({ maintenance: false, deepCleaning: false })
   const [exportPreview, setExportPreview] = useState<{ open: boolean; url: string; pageCount: number; filename: string; loading: boolean }>({ open: false, url: '', pageCount: 0, filename: '', loading: false })
@@ -94,6 +95,11 @@ export default function PropertyRevenuePage() {
   }
   const downloadSplitPart = async (kind: 'maintenance' | 'deep_cleaning') => {
     if (!previewPid) return
+    const partCount = splitPartPhotoCount(mergeSplit, kind)
+    if (mergeSplit && partCount <= 0) {
+      message.warning(kind === 'maintenance' ? '本月没有可下载的维修照片分卷' : '本月没有可下载的深清照片分卷')
+      return
+    }
     const key = kind === 'maintenance' ? 'maintenance' : 'deepCleaning'
     setSplitDl((prev) => ({ ...prev, [key]: true }))
     try {
@@ -111,7 +117,18 @@ export default function PropertyRevenuePage() {
       })
       if (!resp.ok) {
         let msg = `HTTP ${resp.status}`
-        try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
+        try {
+          const j = await resp.json() as any
+          const diagParts = [
+            j?.diagnosticKind ? `kind=${String(j.diagnosticKind)}` : '',
+            j?.reqId ? `reqId=${String(j.reqId)}` : '',
+            j?.rawUrls !== undefined ? `raw=${Number(j.rawUrls || 0)}` : '',
+            j?.cleanedUrls !== undefined ? `cleaned=${Number(j.cleanedUrls || 0)}` : '',
+            j?.imageCount !== undefined ? `images=${Number(j.imageCount || 0)}` : '',
+          ].filter(Boolean)
+          msg = String(j?.message || msg)
+          if (diagParts.length) msg = `${msg} (${diagParts.join(', ')})`
+        } catch {}
         throw new Error(msg)
       }
       const blob = await resp.blob()
@@ -1624,8 +1641,20 @@ export default function PropertyRevenuePage() {
               本次下载的报表不包含照片，可在这里下载照片分卷{mergeSplit && Number(mergeSplit.totalPhotoCount || 0) === 0 ? '（本月无照片）' : ''}：
             </div>
             <div style={{ display:'flex', flexWrap:'wrap', gap: 10 }}>
-              <Button onClick={() => downloadSplitPart('maintenance')} loading={splitDl.maintenance} disabled={!!mergeSplit && Number(mergeSplit.totalPhotoCount || 0) === 0}>下载维修照片分卷</Button>
-              <Button onClick={() => downloadSplitPart('deep_cleaning')} loading={splitDl.deepCleaning} disabled={!!mergeSplit && Number(mergeSplit.totalPhotoCount || 0) === 0}>下载深清照片分卷</Button>
+              <Button
+                onClick={() => downloadSplitPart('maintenance')}
+                loading={splitDl.maintenance}
+                disabled={!!mergeSplit && !canDownloadSplitPart(mergeSplit, 'maintenance')}
+              >
+                下载维修照片分卷
+              </Button>
+              <Button
+                onClick={() => downloadSplitPart('deep_cleaning')}
+                loading={splitDl.deepCleaning}
+                disabled={!!mergeSplit && !canDownloadSplitPart(mergeSplit, 'deep_cleaning')}
+              >
+                下载深清照片分卷
+              </Button>
             </div>
           </div>
         ) : null}

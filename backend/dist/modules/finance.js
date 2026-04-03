@@ -21,10 +21,12 @@ const pdfTaskLimiter_1 = require("../lib/pdfTaskLimiter");
 const monthlyStatementPdfTemplate_1 = require("../lib/monthlyStatementPdfTemplate");
 const waitForImages_1 = require("../lib/waitForImages");
 const uploadImageResize_1 = require("../lib/uploadImageResize");
+const normalizePhotoUrlForPdf_1 = require("../lib/normalizePhotoUrlForPdf");
 const uuid_1 = require("uuid");
 const pdfJobsSchema_1 = require("../services/pdfJobsSchema");
 const r2_2 = require("../r2");
 const orderMonthSegments_1 = require("../lib/orderMonthSegments");
+const monthlyStatementPhotoRecords_1 = require("../lib/monthlyStatementPhotoRecords");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -93,44 +95,6 @@ function monthRangeISO(monthKey) {
     const start = new Date(Date.UTC(y, mo - 1, 1));
     const end = new Date(Date.UTC(y, mo, 1));
     return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
-}
-function r2PublicBaseForKey() {
-    const st = (0, r2_2.r2Status)();
-    const endpoint = String(st.endpoint || '').replace(/\/$/, '');
-    const bucket = String(st.bucket || '').trim();
-    const pb = String(st.publicBase || '').replace(/\/$/, '');
-    const cleaned = pb && /\.r2\.dev($|\/)/.test(pb) ? pb.replace(new RegExp(`/${bucket}$`), '') : pb;
-    return cleaned || (endpoint && bucket ? `${endpoint}/${bucket}` : '');
-}
-function countUrlList(v) {
-    if (!v)
-        return 0;
-    if (Array.isArray(v))
-        return v.map(x => String(x || '').trim()).filter(Boolean).length;
-    if (typeof v === 'string') {
-        const s = v.trim();
-        if (!s)
-            return 0;
-        try {
-            const j = JSON.parse(s);
-            if (Array.isArray(j))
-                return j.map(x => String(x || '').trim()).filter(Boolean).length;
-        }
-        catch (_a) { }
-    }
-    if (typeof v === 'object') {
-        const anyV = v;
-        if (Array.isArray(anyV.urls))
-            return anyV.urls.map((x) => String(x || '').trim()).filter(Boolean).length;
-    }
-    return 0;
-}
-function allowPhotosInReportOfRecord(r) {
-    return (countUrlList(r === null || r === void 0 ? void 0 : r.photo_urls) + countUrlList(r === null || r === void 0 ? void 0 : r.repair_photo_urls)) > 0;
-}
-function recordMonthKey(r) {
-    const raw = (r === null || r === void 0 ? void 0 : r.occurred_at) || (r === null || r === void 0 ? void 0 : r.completed_at) || (r === null || r === void 0 ? void 0 : r.started_at) || (r === null || r === void 0 ? void 0 : r.submitted_at) || (r === null || r === void 0 ? void 0 : r.created_at);
-    return String(raw || '').slice(0, 7);
 }
 exports.router.get('/', async (_req, res) => {
     try {
@@ -1158,73 +1122,31 @@ exports.router.get('/monthly-statement-photo-stats', (0, auth_1.requireAnyPerm)(
             const t = s.split(/\s+/)[0].trim();
             return t || s || propertyCodeRaw;
         })();
-        const loadRowsPg = async (table) => {
-            if (!dbAdapter_2.pgPool)
-                return [];
-            const cols = await dbAdapter_2.pgPool.query(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`, [table]);
-            const colSet = new Set((cols.rows || []).map((r) => String(r.column_name || '').toLowerCase()));
-            const hasPropCode = colSet.has('property_code');
-            const dateCols = ['occurred_at', 'completed_at', 'started_at', 'submitted_at', 'created_at'].filter(c => colSet.has(c));
-            if (!dateCols.length)
-                return [];
-            const dateExpr = (c) => `substring(t.${c}::text, 1, 10)`;
-            const dateCond = `(${dateCols.map(c => `(${dateExpr(c)} >= $2 AND ${dateExpr(c)} < $3)`).join(' OR ')})`;
-            const parts = [];
-            const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND ${dateCond} LIMIT 8000`;
-            const r1 = await dbAdapter_2.pgPool.query(q1, [pid, range.start, range.end]);
-            parts.push(...(r1.rows || []).map((x) => x.row));
-            if (propertyCode || propertyCodeRaw) {
-                const codes = Array.from(new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean)));
-                if (codes.length) {
-                    if (hasPropCode) {
-                        const q2 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_code = ANY($1::text[]) AND ${dateCond} LIMIT 8000`;
-                        const r2 = await dbAdapter_2.pgPool.query(q2, [codes, range.start, range.end]);
-                        parts.push(...(r2.rows || []).map((x) => x.row));
-                    }
-                    const q3 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id = ANY($1::text[]) AND ${dateCond} LIMIT 8000`;
-                    const r3 = await dbAdapter_2.pgPool.query(q3, [codes, range.start, range.end]);
-                    parts.push(...(r3.rows || []).map((x) => x.row));
-                }
-            }
-            const map = new Map();
-            for (const rr of parts) {
-                const id = String((rr === null || rr === void 0 ? void 0 : rr.id) || '');
-                if (id)
-                    map.set(id, rr);
-            }
-            return Array.from(map.values());
-        };
-        const loadRowsMem = (table) => {
-            const list = Array.isArray(store_1.db[table]) ? store_1.db[table] : [];
-            const codes = new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean));
-            const inRange = (r) => {
-                const m = recordMonthKey(r);
-                return m === monthKey;
-            };
-            const map = new Map();
-            for (const r of list) {
-                const pidOk = String((r === null || r === void 0 ? void 0 : r.property_id) || '') === pid;
-                const codeOk = codes.size ? codes.has(String((r === null || r === void 0 ? void 0 : r.property_code) || '').trim()) : false;
-                const legacyOk = codes.size ? codes.has(String((r === null || r === void 0 ? void 0 : r.property_id) || '').trim()) : false;
-                if ((pidOk || codeOk || legacyOk) && inRange(r)) {
-                    const id = String((r === null || r === void 0 ? void 0 : r.id) || '');
-                    if (id)
-                        map.set(id, r);
-                }
-            }
-            return Array.from(map.values());
-        };
-        const maint = dbAdapter_1.hasPg ? await loadRowsPg('property_maintenance') : loadRowsMem('property_maintenance');
-        const deep = dbAdapter_1.hasPg ? await loadRowsPg('property_deep_cleaning') : loadRowsMem('property_deep_cleaning');
+        const maint = await (0, monthlyStatementPhotoRecords_1.loadMonthlyStatementPhotoRows)({
+            table: 'property_maintenance',
+            pid,
+            monthKey,
+            range,
+            propertyCode,
+            propertyCodeRaw,
+        });
+        const deep = await (0, monthlyStatementPhotoRecords_1.loadMonthlyStatementPhotoRows)({
+            table: 'property_deep_cleaning',
+            pid,
+            monthKey,
+            range,
+            propertyCode,
+            propertyCodeRaw,
+        });
         const maintenancePhotoCount = maint.reduce((n, r) => {
-            if (!allowPhotosInReportOfRecord(r))
+            if (!(0, monthlyStatementPhotoRecords_1.recordHasPhotoUrls)(r))
                 return n;
-            return n + countUrlList(r === null || r === void 0 ? void 0 : r.photo_urls) + countUrlList(r === null || r === void 0 ? void 0 : r.repair_photo_urls);
+            return n + (0, monthlyStatementPhotoRecords_1.countPhotoUrls)(r === null || r === void 0 ? void 0 : r.photo_urls) + (0, monthlyStatementPhotoRecords_1.countPhotoUrls)(r === null || r === void 0 ? void 0 : r.repair_photo_urls);
         }, 0);
         const deepCleaningPhotoCount = deep.reduce((n, r) => {
-            if (!allowPhotosInReportOfRecord(r))
+            if (!(0, monthlyStatementPhotoRecords_1.recordHasPhotoUrls)(r))
                 return n;
-            return n + countUrlList(r === null || r === void 0 ? void 0 : r.photo_urls) + countUrlList(r === null || r === void 0 ? void 0 : r.repair_photo_urls);
+            return n + (0, monthlyStatementPhotoRecords_1.countPhotoUrls)(r === null || r === void 0 ? void 0 : r.photo_urls) + (0, monthlyStatementPhotoRecords_1.countPhotoUrls)(r === null || r === void 0 ? void 0 : r.repair_photo_urls);
         }, 0);
         const totalPhotoCount = maintenancePhotoCount + deepCleaningPhotoCount;
         return res.json({
@@ -1820,62 +1742,28 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
             const t = s.split(/\s+/)[0].trim();
             return t || s || codeRaw;
         })();
-        const codes = Array.from(new Set([codeNorm, codeRaw].map(s => String(s || '').trim()).filter(Boolean)));
         const wantDeep = photosMode !== 'off' && /(all|deep_cleaning|deepcleaning)/i.test(sec || 'all');
         const wantMaint = photosMode !== 'off' && /(all|maintenance)/i.test(sec || 'all');
-        const qDeep = wantDeep ? dbAdapter_2.pgPool.query(`SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
-       FROM property_deep_cleaning
-       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
-         AND (
-           (occurred_at >= $3::date AND occurred_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
-         )
-       ORDER BY occurred_at ASC, created_at ASC
-       LIMIT 5000`, [pid, codes, range.start, range.end]).then(r => r.rows || []).catch(() => []) : Promise.resolve([]);
-        const qMaint = wantMaint ? (async () => {
-            const baseWhere = `
-        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
-          AND (
-            (occurred_at >= $3::date AND occurred_at < $4::date)
-            OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
-            OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
-            OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
-          )`;
-            const sql0 = `
-        SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
-        FROM property_maintenance
-        ${baseWhere}
-        ORDER BY occurred_at ASC, created_at ASC
-        LIMIT 5000`;
-            const sql1 = `
-        SELECT id, work_no, occurred_at, completed_at, started_at, submitted_at, created_at, photo_urls, repair_photo_urls
-        FROM property_maintenance
-        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
-          AND (
-            (occurred_at >= $3::date AND occurred_at < $4::date)
-            OR (completed_at >= $3::date AND completed_at < $4::date)
-            OR (started_at >= $3::date AND started_at < $4::date)
-            OR (submitted_at >= $3::date AND submitted_at < $4::date)
-            OR (created_at >= $3::date AND created_at < $4::date)
-          )
-        ORDER BY occurred_at ASC, created_at ASC
-        LIMIT 5000`;
-            try {
-                const r = await dbAdapter_2.pgPool.query(sql1, [pid, codes, range.start, range.end]);
-                return r.rows || [];
-            }
-            catch (e) {
-                const code = String((e === null || e === void 0 ? void 0 : e.code) || '');
-                const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
-                if (code === '42703' || /submitted_at/i.test(msg)) {
-                    const r = await dbAdapter_2.pgPool.query(sql0, [pid, codes, range.start, range.end]);
-                    return r.rows || [];
-                }
-                throw e;
-            }
-        })().catch(() => []) : Promise.resolve([]);
+        const qDeep = wantDeep
+            ? (0, monthlyStatementPhotoRecords_1.loadMonthlyStatementPhotoRows)({
+                table: 'property_deep_cleaning',
+                pid,
+                monthKey,
+                range,
+                propertyCode: codeNorm,
+                propertyCodeRaw: codeRaw,
+            }).catch(() => [])
+            : Promise.resolve([]);
+        const qMaint = wantMaint
+            ? (0, monthlyStatementPhotoRecords_1.loadMonthlyStatementPhotoRows)({
+                table: 'property_maintenance',
+                pid,
+                monthKey,
+                range,
+                propertyCode: codeNorm,
+                propertyCodeRaw: codeRaw,
+            }).catch(() => [])
+            : Promise.resolve([]);
         const [deepRows0, maintRows0, llName] = await Promise.all([qDeep, qMaint, landlordName]);
         const apiBase = (() => {
             const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
@@ -1889,83 +1777,28 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
             const q = Math.max(40, Math.min(85, Number.isFinite(q0) && q0 > 0 ? q0 : 72));
             return { w, q };
         })();
-        const normUrlList = (raw) => {
-            if (!raw)
-                return [];
-            let arr = [];
-            if (Array.isArray(raw))
-                arr = raw;
-            else if (typeof raw === 'string') {
-                try {
-                    const j = JSON.parse(raw);
-                    arr = Array.isArray(j) ? j : [];
-                }
-                catch (_a) {
-                    arr = [];
-                }
-            }
-            return arr
-                .map((x) => {
-                if (!x)
-                    return '';
-                if (typeof x === 'string')
-                    return x;
-                if (typeof x === 'object')
-                    return String(x.url || x.src || x.path || '');
-                return String(x || '');
-            })
-                .map((s) => String(s || '').trim())
-                .filter(Boolean);
-        };
         const countRawUrls = (rows) => {
             let n = 0;
             for (const r of rows || []) {
-                n += normUrlList(r === null || r === void 0 ? void 0 : r.photo_urls).length;
-                n += normUrlList(r === null || r === void 0 ? void 0 : r.repair_photo_urls).length;
+                n += (0, monthlyStatementPhotoRecords_1.listPhotoUrls)(r === null || r === void 0 ? void 0 : r.photo_urls).length;
+                n += (0, monthlyStatementPhotoRecords_1.listPhotoUrls)(r === null || r === void 0 ? void 0 : r.repair_photo_urls).length;
             }
             return n;
         };
-        const isR2 = (u) => u.includes('.r2.dev/') || u.includes('r2.cloudflarestorage.com/');
-        const proxyR2 = (u) => {
-            if (!apiBase)
-                return u;
-            const base = `${apiBase}/public/r2-image?url=${encodeURIComponent(u)}`;
+        const normalizePhotosMode = (() => {
             if (photosMode === 'compressed' || photosMode === 'thumbnail')
-                return `${base}&fmt=jpeg&w=${compress.w}&q=${compress.q}`;
-            return base;
-        };
-        const normalizeR2Key = (key) => {
-            const k = String(key || '').trim().replace(/^\/+/, '');
-            if (!k)
-                return '';
-            if (!/^(maintenance|deep-cleaning|invoice-company-logos)\//i.test(k))
-                return '';
-            const base = r2PublicBaseForKey();
-            if (!base)
-                return '';
-            const u = `${base}/${k}`;
-            return isR2(u) ? proxyR2(u) : u;
-        };
-        const normalizePhotoUrl = (u) => {
-            const s = String(u || '').trim();
-            if (!s)
-                return '';
-            if (/^https?:\/\//i.test(s))
-                return isR2(s) ? proxyR2(s) : s;
-            if (s.startsWith('//')) {
-                const abs = `https:${s}`;
-                return isR2(abs) ? proxyR2(abs) : abs;
-            }
-            if (s.startsWith('/'))
-                return apiBase ? `${apiBase}${s}` : '';
-            const maybeKey = normalizeR2Key(s);
-            if (maybeKey)
-                return maybeKey;
-            return '';
-        };
+                return photosMode;
+            return 'full';
+        })();
+        const normalizePhotoUrl = (u) => (0, normalizePhotoUrlForPdf_1.normalizePhotoUrlForPdf)(u, {
+            apiBase,
+            allowR2KeyPrefixes: ['maintenance/', 'deep-cleaning/', 'deep-cleaning-upload/', 'invoice-company-logos/'],
+            photosMode: normalizePhotosMode,
+            compress,
+        });
         const mapRowUrls = (r) => {
-            const before = normUrlList(r === null || r === void 0 ? void 0 : r.photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u));
-            const after = normUrlList(r === null || r === void 0 ? void 0 : r.repair_photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u));
+            const before = (0, monthlyStatementPhotoRecords_1.listPhotoUrls)(r === null || r === void 0 ? void 0 : r.photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u));
+            const after = (0, monthlyStatementPhotoRecords_1.listPhotoUrls)(r === null || r === void 0 ? void 0 : r.repair_photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u));
             return { ...r, photo_urls: before, repair_photo_urls: after };
         };
         const deepRows = Array.isArray(deepRows0) ? deepRows0.map(mapRowUrls) : [];
@@ -2002,7 +1835,12 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
         const wantsBase = /(all|base)/i.test(sec || 'all');
         if (photosMode !== 'off' && tplImageCount === 0 && !wantsBase) {
             try {
-                console.error(`[monthly-statement-photos-pdf][no-images] reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec || 'all'} photosMode=${photosMode}` +
+                const diagKind = rawUrls === 0
+                    ? 'no-record-photo-urls'
+                    : cleanedUrls === 0
+                        ? 'all-photo-urls-filtered-after-normalize'
+                        : 'template-produced-zero-images';
+                console.error(`[monthly-statement-photos-pdf][no-images] kind=${diagKind} reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec || 'all'} photosMode=${photosMode}` +
                     ` deepRows=${Array.isArray(deepRows0) ? deepRows0.length : 0} maintRows=${Array.isArray(maintRows0) ? maintRows0.length : 0}` +
                     ` rawUrls=${rawUrls} cleanedUrls=${cleanedUrls}`);
             }
@@ -2015,6 +1853,11 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
             res.setHeader('X-MSP-ImageCount', String(tplImageCount));
             return res.status(422).json({
                 message: 'no photos to render for requested sections',
+                diagnosticKind: rawUrls === 0
+                    ? 'no-record-photo-urls'
+                    : cleanedUrls === 0
+                        ? 'all-photo-urls-filtered-after-normalize'
+                        : 'template-produced-zero-images',
                 reqId,
                 month: monthKey,
                 property_id: pid,
