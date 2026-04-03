@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeMonthlyStatementBalance } from './statementBalances'
+import { computeMonthlyStatementBalance, computeMonthlyStatementBalanceDebug } from './statementBalances'
 
 describe('computeMonthlyStatementBalance', () => {
   it('offsets furniture outstanding across months and carries forward negative net', () => {
@@ -50,5 +50,52 @@ describe('computeMonthlyStatementBalance', () => {
     expect(may.closing_carry_net).toBe(-200)
     expect(may.payable_to_owner).toBe(0)
   })
-})
 
+  it('returns month-by-month diagnostics that match the final monthly result', () => {
+    const pid = 'p1'
+    const orders: any[] = [
+      { id: 'o-jan', property_id: pid, checkin: '2026-01-01T12:00:00', checkout: '2026-02-01T11:59:59', price: 3000, cleaning_fee: 0 },
+      { id: 'o-feb', property_id: pid, checkin: '2026-02-01T12:00:00', checkout: '2026-03-01T11:59:59', price: 2000, cleaning_fee: 0 },
+      { id: 'o-mar', property_id: pid, checkin: '2026-03-01T12:00:00', checkout: '2026-04-01T11:59:59', price: 4000, cleaning_fee: 0 },
+      { id: 'o-may', property_id: pid, checkin: '2026-05-01T12:00:00', checkout: '2026-06-01T11:59:59', price: 300, cleaning_fee: 0 },
+    ]
+    const txs: any[] = [
+      { id: 'fx-jan-charge', kind: 'expense', amount: 10000, currency: 'AUD', property_id: pid, occurred_at: '2026-01-05', category: 'furniture_recoverable', note: 'furniture recoverable' },
+      { id: 'fx-feb-paid', kind: 'income', amount: 5000, currency: 'AUD', property_id: pid, occurred_at: '2026-02-10', category: 'furniture_owner_payment', note: 'owner paid furniture' },
+      { id: 'fx-apr-exp', kind: 'expense', amount: 500, currency: 'AUD', property_id: pid, occurred_at: '2026-04-15', category: 'other', note: 'operating loss' },
+    ]
+
+    const base = computeMonthlyStatementBalance({ month: '2026-05', propertyId: pid, orders, txs, managementFeeRate: 0 })
+    const debug = computeMonthlyStatementBalanceDebug({ month: '2026-05', propertyId: pid, orders, txs, managementFeeRate: 0 })
+
+    expect(debug.result).toEqual(base)
+    expect(debug.target.month).toBe('2026-05')
+    expect(debug.target.opening_carry_net).toBe(-500)
+    expect(debug.target.closing_carry_net).toBe(-200)
+    expect(debug.target.carry_source_kind).toBe('prior_operating_loss')
+    expect(debug.summary.hasCarry).toBe(true)
+    expect(debug.summary.carrySourceKind).toBe('prior_operating_loss')
+    expect(debug.months.map(x => x.month)).toEqual(['2026-01', '2026-02', '2026-03', '2026-04', '2026-05'])
+  })
+
+  it('distinguishes furniture offset from carry-over when carry stays at zero', () => {
+    const pid = 'p2'
+    const orders: any[] = [
+      { id: 'o-jan', property_id: pid, checkin: '2026-01-01T12:00:00', checkout: '2026-02-01T11:59:59', price: 1200, cleaning_fee: 0 },
+    ]
+    const txs: any[] = [
+      { id: 'fx-jan-charge', kind: 'expense', amount: 800, currency: 'AUD', property_id: pid, occurred_at: '2026-01-05', category: 'furniture_recoverable', note: 'furniture recoverable' },
+    ]
+
+    const jan = computeMonthlyStatementBalanceDebug({ month: '2026-01', propertyId: pid, orders, txs, managementFeeRate: 0 })
+
+    expect(jan.result.opening_carry_net).toBe(0)
+    expect(jan.result.closing_carry_net).toBe(0)
+    expect(jan.result.furniture_offset_from_rent).toBe(800)
+    expect(jan.result.payable_before_furniture).toBe(1200)
+    expect(jan.result.payable_to_owner).toBe(400)
+    expect(jan.summary.hasCarry).toBe(false)
+    expect(jan.summary.hasFurniture).toBe(true)
+    expect(jan.summary.carrySourceKind).toBe('none')
+  })
+})

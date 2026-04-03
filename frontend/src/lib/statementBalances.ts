@@ -37,6 +37,23 @@ export type MonthlyStatementBalanceResult = {
   payable_to_owner: number
 }
 
+export type MonthlyStatementBalanceDebugMonth = MonthlyStatementBalanceResult & {
+  carry_source_kind: 'none' | 'prior_operating_loss' | 'furniture_outstanding' | 'mixed'
+}
+
+export type MonthlyStatementBalanceDebugResult = {
+  result: MonthlyStatementBalanceResult
+  months: MonthlyStatementBalanceDebugMonth[]
+  target: MonthlyStatementBalanceDebugMonth
+  summary: {
+    showBalance: boolean
+    hasCarry: boolean
+    hasFurniture: boolean
+    carrySourceKind: 'none' | 'prior_operating_loss' | 'furniture_outstanding' | 'mixed'
+    carrySourceLabel: string
+  }
+}
+
 function round2(n: number): number {
   return Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100
 }
@@ -174,6 +191,17 @@ export function computeMonthlyStatementBalance(input: {
   txs: Tx[]
   managementFeeRate?: number
 }): MonthlyStatementBalanceResult {
+  return computeMonthlyStatementBalanceDebug(input).result
+}
+
+export function computeMonthlyStatementBalanceDebug(input: {
+  month: string
+  propertyId: string
+  propertyCode?: string
+  orders: Order[]
+  txs: Tx[]
+  managementFeeRate?: number
+}): MonthlyStatementBalanceDebugResult {
   const monthKey = String(input.month || '').trim()
   const targetStart = dayjs(`${monthKey}-01`).startOf('month')
   const property = { id: String(input.propertyId || ''), code: input.propertyCode }
@@ -210,6 +238,7 @@ export function computeMonthlyStatementBalance(input: {
   let payableTarget = 0
   let closingCarryNet = 0
   let furnitureClosing = 0
+  const months: MonthlyStatementBalanceDebugMonth[] = []
 
   while (cur.isBefore(targetStart.add(1, 'month'))) {
     const mk = cur.format('YYYY-MM')
@@ -235,6 +264,28 @@ export function computeMonthlyStatementBalance(input: {
     const offset = round2(Math.min(payableBeforeFurniture, newOutstanding))
     const payableToOwner = round2(payableBeforeFurniture - offset)
     newOutstanding = round2(newOutstanding - offset)
+    const monthResult: MonthlyStatementBalanceDebugMonth = {
+      month: mk,
+      operating_net_income: round2(operatingNet),
+      opening_carry_net: round2(openingCN),
+      closing_carry_net: round2(newCarryNet),
+      furniture_opening_outstanding: round2(openingFO),
+      furniture_charge: round2(charge),
+      furniture_owner_paid: round2(ownerPaid),
+      furniture_offset_from_rent: round2(offset),
+      furniture_closing_outstanding: round2(newOutstanding),
+      payable_before_furniture: round2(payableBeforeFurniture),
+      payable_to_owner: round2(payableToOwner),
+      carry_source_kind:
+        Math.abs(round2(openingCN)) > 0.005 && Math.abs(round2(openingFO)) > 0.005
+          ? 'mixed'
+          : Math.abs(round2(openingCN)) > 0.005
+            ? 'prior_operating_loss'
+            : Math.abs(round2(openingFO)) > 0.005
+              ? 'furniture_outstanding'
+              : 'none',
+    }
+    months.push(monthResult)
 
     if (mk === monthKey) {
       openingCarryNet = round2(openingCN)
@@ -254,7 +305,7 @@ export function computeMonthlyStatementBalance(input: {
     cur = cur.add(1, 'month').startOf('month')
   }
 
-  return {
+  const result: MonthlyStatementBalanceResult = {
     month: monthKey,
     operating_net_income: operatingNetTarget,
     opening_carry_net: openingCarryNet,
@@ -266,5 +317,37 @@ export function computeMonthlyStatementBalance(input: {
     furniture_closing_outstanding: furnitureClosing,
     payable_before_furniture: payableBeforeFurnitureTarget,
     payable_to_owner: payableTarget,
+  }
+  const target = months.find(x => x.month === monthKey) || {
+    ...result,
+    carry_source_kind: 'none' as const,
+  }
+  const hasCarry = [result.opening_carry_net, result.closing_carry_net].some(v => Math.abs(Number(v || 0)) > 0.005)
+  const hasFurniture = [
+    result.furniture_opening_outstanding,
+    result.furniture_charge,
+    result.furniture_owner_paid,
+    result.furniture_offset_from_rent,
+    result.furniture_closing_outstanding,
+  ].some(v => Math.abs(Number(v || 0)) > 0.005)
+  const carrySourceLabel = (() => {
+    if (target.carry_source_kind === 'mixed') return '结转同时来自前序月份负净收入与家具待抵扣余额'
+    if (target.carry_source_kind === 'prior_operating_loss') return '结转来自前序月份累计负净收入'
+    if (target.carry_source_kind === 'furniture_outstanding') return '应付金额变化来自家具待抵扣余额'
+    if (hasCarry) return '本月结转来自前序月份累计负净收入'
+    if (hasFurniture) return '本月没有净收入结转，但存在家具待抵扣余额'
+    return '本月没有结转或家具抵扣'
+  })()
+  return {
+    result,
+    months,
+    target,
+    summary: {
+      showBalance: hasCarry || hasFurniture,
+      hasCarry,
+      hasFurniture,
+      carrySourceKind: target.carry_source_kind,
+      carrySourceLabel,
+    },
   }
 }
