@@ -2,6 +2,11 @@
 
 ## Dev (2026-04-03)
 
+### build.2
+
+- Version: `0.2.7-statement-pdf.20260403+build.2`
+- Docker: Add dedicated pdf-jobs worker Dockerfile (`backend/Dockerfile.worker`) whose container starts `node dist/worker_pdf_jobs.js` and does not run the web server.
+
 ### build.1
 
 - Version: `0.2.7-statement-pdf.20260403+build.1`
