@@ -303,6 +303,13 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
             return { hasRoot: !!root, statementRows: rows, tables, cookieHasAuth, href: String(location?.href || '') }
           })
         } catch {}
+        const authFailed = Array.isArray(diag.badResponses) && diag.badResponses.some((s: string) => /\((401|403)\)\s*$/.test(String(s || '')))
+        if (authFailed) throw Object.assign(new Error('print page has unauthorized api responses (401/403)'), { code: 'PRINT_AUTH' })
+        if (diag?.stats?.cookieHasAuth === false) throw Object.assign(new Error('print page missing auth cookie'), { code: 'PRINT_AUTH' })
+        const rows = Number(diag?.stats?.statementRows || 0) || 0
+        const rf = Array.isArray(diag?.requestFails) ? diag.requestFails.length : 0
+        const br = Array.isArray(diag?.badResponses) ? diag.badResponses.length : 0
+        if (!rows && (rf || br)) throw Object.assign(new Error(`print page got empty statement rows=0 with request_fail=${rf} http>=400=${br}`), { code: 'PRINT_EMPTY' })
       } catch (e: any) {
         try {
           const pu = String(page.url?.() || '')
@@ -353,11 +360,14 @@ async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promis
        JOIN property_expenses e ON i.expense_id = e.id
        WHERE e.property_id = $1
          AND (
-           (e.occurred_at >= $2 AND e.occurred_at < $3)
-           OR (e.occurred_at IS NULL AND e.created_at >= $2::date AND e.created_at < $3::date)
+           e.month_key = $2
+           OR (
+             (e.occurred_at >= $3 AND e.occurred_at < $4)
+             OR (e.occurred_at IS NULL AND e.created_at >= $3::date AND e.created_at < $4::date)
+           )
          )
        ORDER BY i.created_at ASC`,
-      [pid, start, end]
+      [pid, mm, start, end]
     )
     urls = (r.rows || []).map((x: any) => String(x?.url || '').trim()).filter(Boolean)
   } catch {}
@@ -508,7 +518,7 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
       const pe = Array.isArray(diag?.pageErrors) ? diag.pageErrors.length : 0
       const rows = Number(diag?.stats?.statementRows || 0) || 0
       const cookie = diag?.stats?.cookieHasAuth === false ? 'cookie_auth=0' : ''
-      if (rows) parts.push(`rows=${rows}`)
+      parts.push(`rows=${rows}`)
       if (rf) parts.push(`request_fail=${rf}`)
       if (br) parts.push(`http>=400=${br}`)
       if (ce) parts.push(`console=${ce}`)
@@ -519,6 +529,8 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
       return ''
     }
   })()
+  if (!statementPdf?.length) throw Object.assign(new Error('statement pdf is empty'), { code: 'PRINT_EMPTY' })
+  if (statementPages <= 0) throw Object.assign(new Error('statement pdf page_count=0'), { code: 'PRINT_EMPTY' })
   const baseKey = `monthly-pack/${monthKey}/${pid}/${id}/statement_base.pdf`
   const baseUrl = await r2Upload(baseKey, 'application/pdf', statementPdf)
   const files: PdfJobFile[] = [{

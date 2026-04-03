@@ -2,6 +2,12 @@
 
 ## Dev (2026-04-03)
 
+### build.9
+
+- Version: `0.2.7-statement-pdf.20260403+build.9`
+- PDF: Merge-monthly-pack invoice collection now prefers `property_expenses.month_key` (prevents missing attachments when `occurred_at/created_at` are outside the month).
+- Worker: Fail fast on unauthorized/empty print-page renders (401/403, missing auth cookie, or empty rows with request failures) to avoid generating “all zeros” PDFs.
+
 ### build.8
 
 - Version: `0.2.7-statement-pdf.20260403+build.8`
