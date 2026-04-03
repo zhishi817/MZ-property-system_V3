@@ -532,6 +532,24 @@ export async function processPdfJobsOnce(opts: { limit?: number } = {}): Promise
   const reclaimed = await reclaimExpiredLeases().catch(() => 0)
   const workerId = String(process.env.PDF_JOBS_WORKER_ID || '') || `pdf_worker_${process.pid}`
   const jobs = await claimJobs(Number(opts.limit || 2), workerId)
+  if (!jobs.length) {
+    try {
+      const r = await pgPool.query(
+        `SELECT
+           now() AS db_now,
+           (SELECT count(1) FROM pdf_jobs WHERE status='queued') AS queued_total,
+           (SELECT count(1) FROM pdf_jobs WHERE status='queued' AND next_retry_at <= now()) AS queued_due,
+           (SELECT min(next_retry_at) FROM pdf_jobs WHERE status='queued') AS queued_min_next,
+           (SELECT min(next_retry_at) FROM pdf_jobs WHERE status='queued' AND kind='merge_monthly_pack') AS mm_min_next,
+           (SELECT count(1) FROM pdf_jobs WHERE status='queued' AND kind='merge_monthly_pack') AS mm_total,
+           (SELECT count(1) FROM pdf_jobs WHERE status='queued' AND kind='merge_monthly_pack' AND next_retry_at <= now()) AS mm_due`
+      )
+      const row = r.rows?.[0] || null
+      console.log(`[pdf-jobs][worker] claim none workerId=${workerId} queued_total=${Number(row?.queued_total || 0)} queued_due=${Number(row?.queued_due || 0)} mm_total=${Number(row?.mm_total || 0)} mm_due=${Number(row?.mm_due || 0)} queued_min_next=${row?.queued_min_next || ''} mm_min_next=${row?.mm_min_next || ''}`)
+    } catch (e: any) {
+      try { console.log(`[pdf-jobs][worker] claim none diag_failed workerId=${workerId} message=${String(e?.message || '')}`) } catch {}
+    }
+  }
   let ok = 0, failed = 0
   for (const job of jobs) {
     const jobId = String(job?.id || '')
