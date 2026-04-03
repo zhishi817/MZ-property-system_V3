@@ -36,6 +36,7 @@ async function main() {
     return
   }
   console.log('[pdf-jobs][worker] starting')
+  try { console.log(`[pdf-jobs][worker] env FRONTEND_BASE_URL=${String(process.env.FRONTEND_BASE_URL || '').trim()}`) } catch {}
   try {
     const expr = String(process.env.PDF_JOBS_CRON || '*/1 * * * *')
     console.log(`[pdf-jobs][worker] cron=${expr}`)
