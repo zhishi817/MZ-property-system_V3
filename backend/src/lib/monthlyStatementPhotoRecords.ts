@@ -39,8 +39,9 @@ export function recordHasPhotoUrls(row: any): boolean {
 
 export function recordMonthKey(row: any): string {
   const raw: any =
-    row?.occurred_at ||
     row?.completed_at ||
+    row?.occurred_at ||
+    row?.ended_at ||
     row?.started_at ||
     row?.submitted_at ||
     row?.created_at
@@ -73,11 +74,12 @@ export async function loadMonthlyStatementPhotoRows(input: LoadRowsInput): Promi
     )
     const colSet = new Set((cols.rows || []).map((r: any) => String(r.column_name || '').toLowerCase()))
     const hasPropCode = colSet.has('property_code')
-    const dateCols = ['occurred_at', 'completed_at', 'started_at', 'submitted_at', 'created_at'].filter((c) => colSet.has(c))
+    const dateCols = ['completed_at', 'occurred_at', 'ended_at', 'started_at', 'submitted_at', 'created_at'].filter((c) => colSet.has(c))
     if (!dateCols.length) return []
 
     const dateExpr = (c: string) => `substring(t.${c}::text, 1, 10)`
-    const dateCond = `(${dateCols.map((c) => `(${dateExpr(c)} >= $2 AND ${dateExpr(c)} < $3)`).join(' OR ')})`
+    const primaryDateExpr = `COALESCE(${dateCols.map((c) => `NULLIF(${dateExpr(c)}, '')`).join(', ')})`
+    const dateCond = `(${primaryDateExpr} >= $2 AND ${primaryDateExpr} < $3)`
     const parts: any[] = []
 
     const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND ${dateCond} LIMIT 8000`

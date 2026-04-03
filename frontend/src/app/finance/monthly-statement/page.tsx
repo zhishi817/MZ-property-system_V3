@@ -5,10 +5,11 @@ import { useEffect, useRef, useState } from 'react'
 import { apiList, getJSON } from '../../../lib/api'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
 import { normalizeReportCategory } from '../../../lib/financeTx'
+import { type LandlordWithManagementFeeRules } from '../../../lib/managementFeeRules'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; ref_type?: string; ref_id?: string }
-type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
+type Landlord = LandlordWithManagementFeeRules
 
 export default function MonthlyStatementPage() {
   const [month, setMonth] = useState<any>(dayjs())

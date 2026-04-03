@@ -4,10 +4,11 @@ import { monthSegments } from '../lib/orders'
 import { shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../lib/financeTx'
 import { isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../lib/statementBalances'
 import { forwardRef } from 'react'
+import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../lib/managementFeeRules'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; status?: string; count_in_income?: boolean }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; ref_type?: string; ref_id?: string }
-type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
+type Landlord = LandlordWithManagementFeeRules
 
 export default forwardRef<HTMLDivElement, {
   baseMonth: any
@@ -28,7 +29,7 @@ export default forwardRef<HTMLDivElement, {
     const d = start.add(idx, 'month')
     return { label: d.format('MMM'), start: d.startOf('month'), end: d.endOf('month') }
   })
-  const landlord = landlords.find(l => (l.property_ids||[]).includes(propertyId))
+  const landlord = findLandlordForProperty(landlords, propertyId)
   const property = properties.find(pp => pp.id === propertyId)
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const orderById = new Map((orders || []).map(o => [String(o.id), o]))
@@ -44,7 +45,11 @@ export default forwardRef<HTMLDivElement, {
       if (String((t as any).category || '').toLowerCase() === 'late_checkout') return false
       return shouldIncludeIncomeTxInPropertyOtherIncome(t, orderById)
     }).reduce((s, x) => s + Number(x.amount || 0), 0)
-    const mgmt = landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON) * 100) / 100 : 0
+    const mgmtRecorded = txs
+      .filter(t => t.kind === 'expense' && String((t as any).category || '') === 'management_fee' && txMatchesProperty(t as any, { id: propertyId, code: property?.code }) && txInMonth(t as any, r.start))
+      .reduce((s, x) => s + Number((x as any).amount || 0), 0)
+    const mgmtRate = Number(resolveManagementFeeRuleForMonth(landlord, r.start.format('YYYY-MM')).rate || 0)
+    const mgmt = mgmtRecorded > 0 ? mgmtRecorded : (mgmtRate ? Math.round(((rentIncome * mgmtRate) + Number.EPSILON) * 100) / 100 : 0)
     const sumCat = (c: string) => txs.filter(t => t.kind === 'expense' && t.category === c && txMatchesProperty(t, { id: propertyId, code: property?.code }) && txInMonth(t as any, r.start) && !isFurnitureRecoverableCharge(t as any)).reduce((s, x) => s + Number(x.amount || 0), 0)
     const consumable = sumCat('consumable')
     const electricity = sumCat('electricity')

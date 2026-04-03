@@ -6,9 +6,10 @@ import MonthlyStatementView from '../../../components/MonthlyStatement'
 import { buildStatementTxs } from '../../../lib/statementTx'
 import { computeMonthlyStatementBalanceDebug } from '../../../lib/statementBalances'
 import { DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH, resolveExcludeOrphanFixedSnapshotsParam, resolveMonthlyStatementCarryStartMonth } from '../../../lib/monthlyStatementPrint'
+import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../../../lib/managementFeeRules'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
-type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
+type Landlord = LandlordWithManagementFeeRules
 
 export default function PublicMonthlyStatementPrintPage() {
   const [month, setMonth] = useState<any>(dayjs())
@@ -164,14 +165,15 @@ export default function PublicMonthlyStatementPrintPage() {
     if (!propertyId || !/^\d{4}-\d{2}$/.test(String(month?.format?.('YYYY-MM') || ''))) return null
     if (!ordersLoaded || !txsLoaded || !propertiesLoaded || !landlordsLoaded) return null
     const property = properties.find(p => String(p.id) === String(propertyId))
-    const landlord = landlords.find(l => (l.property_ids || []).includes(propertyId || ''))
+    const landlord = findLandlordForProperty(landlords, propertyId || '', (property as any)?.landlord_id)
+    const rule = resolveManagementFeeRuleForMonth(landlord, month.format('YYYY-MM'))
     return computeMonthlyStatementBalanceDebug({
       month: month.format('YYYY-MM'),
       propertyId,
       propertyCode: property?.code,
       orders,
       txs,
-      managementFeeRate: landlord?.management_fee_rate,
+      managementFeeRate: rule.rate ?? undefined,
       carryStartMonth,
     })
   }, [propertyId, month, ordersLoaded, txsLoaded, propertiesLoaded, landlordsLoaded, properties, landlords, orders, txs, carryStartMonth])

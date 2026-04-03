@@ -21,6 +21,7 @@ import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
 import { r2GetObjectByKey } from '../r2'
 import { computeMonthSegmentsForOrders, sumSegmentsVisibleNetIncome } from '../lib/orderMonthSegments'
 import { countPhotoUrls, listPhotoUrls, loadMonthlyStatementPhotoRows, recordHasPhotoUrls } from '../lib/monthlyStatementPhotoRecords'
+import { ensureManagementFeeRulesTable, resolveManagementFeeRateForMonth } from '../lib/managementFeeRules'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -2081,19 +2082,18 @@ router.get('/property-revenue', async (req, res) => {
         const missingMonthKey = peRows.filter((e: any) => !e.month_key).length
         if (missingMonthKey > 0) warnings.push(`expenses_without_month_key=${missingMonthKey}`)
         if (orphanFixedSnapshots.length > 0) warnings.push(`orphan_fixed_expense_snapshots=${orphanFixedSnapshots.length}`)
-        // Auto compute management fee from landlord config
+        // Auto compute management fee only when the month has no recorded management_fee expense.
         try {
-          const props = await pgSelect('properties', 'id,landlord_id', { id: pid })
-          const prop = Array.isArray(props) ? props[0] : null
-          let rate = 0
-          if (prop?.landlord_id) {
-            const lrows = await pgSelect('landlords', 'id,management_fee_rate', { id: prop.landlord_id })
-            const ll = Array.isArray(lrows) ? lrows[0] : null
-            rate = Number((ll as any)?.management_fee_rate || 0)
-          }
-          if (rate && rentIncome) {
-            const fee = Number(((rentIncome * rate)).toFixed(2))
-            cols.management_fee += fee
+          if (!Number(cols.management_fee || 0)) {
+            await ensureManagementFeeRulesTable()
+            const props = await pgSelect('properties', 'id,landlord_id', { id: pid })
+            const prop = Array.isArray(props) ? props[0] : null
+            const resolved = prop?.landlord_id ? await resolveManagementFeeRateForMonth(String(prop.landlord_id), ym) : { rate: null as number | null }
+            const rate = Number(resolved?.rate || 0)
+            if (rate && rentIncome) {
+              const fee = Number(((rentIncome * rate)).toFixed(2))
+              cols.management_fee += fee
+            }
           }
         } catch {}
       }
@@ -2262,9 +2262,10 @@ router.post('/management-fee/calc', requireAnyPerm(['property_expenses.write','f
     const prop = Array.isArray(propRows) ? propRows[0] : null
     const lid = prop?.landlord_id
     if (!lid) return res.status(400).json({ message: 'landlord_not_linked' })
-    const llRows = await pgSelect('landlords', 'id,management_fee_rate', { id: lid })
-    const landlord = Array.isArray(llRows) ? llRows[0] : null
-    const rate = Number((landlord as any)?.management_fee_rate || 0)
+    await ensureManagementFeeRulesTable()
+    const resolved = await resolveManagementFeeRateForMonth(String(lid), ym)
+    const rate = Number((resolved as any)?.rate || 0)
+    if (!(resolved as any)?.rule) return res.status(400).json({ message: 'management_fee_rule_missing' })
     if (!rate) return res.status(400).json({ message: 'management_fee_rate_missing' })
     if (!rentIncome) return res.status(400).json({ message: 'rent_income_zero' })
     const fee = Number(((rentIncome * rate)).toFixed(2))

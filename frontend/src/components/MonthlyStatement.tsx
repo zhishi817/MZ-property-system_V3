@@ -8,10 +8,11 @@ import { Table } from 'antd'
 import { forwardRef, useEffect, useRef, useState } from 'react'
 import { API_BASE, authHeaders, fetchWithTimeout } from '../lib/api'
 import { DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH } from '../lib/monthlyStatementPrint'
+import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../lib/managementFeeRules'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; invoice_url?: string; ref_type?: string; ref_id?: string }
-type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
+type Landlord = LandlordWithManagementFeeRules
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
 type DeepCleaning = { id: string; work_no?: string; property_id?: string; occurred_at?: string; completed_at?: string; started_at?: string; ended_at?: string; category?: string; status?: string; review_status?: string; photo_urls?: any; repair_photo_urls?: any; pay_method?: string; total_cost?: any }
 type Maintenance = { id: string; work_no?: string; property_id?: string; occurred_at?: string; completed_at?: string; started_at?: string; ended_at?: string; category?: string; status?: string; review_status?: string; details?: any; repair_notes?: string; photo_urls?: any; repair_photo_urls?: any }
@@ -210,16 +211,7 @@ export default forwardRef<HTMLDivElement, {
           if (id) map.set(id, r)
         }
         const list = Array.from(map.values())
-        const inMonth = list.filter((d: any) => {
-          const raws = [
-            d?.occurred_at,
-            d?.completed_at,
-            d?.started_at,
-            d?.submitted_at,
-            d?.created_at,
-          ].filter(Boolean)
-          return raws.some(isInMonth)
-        })
+        const inMonth = list.filter((d: any) => isInMonth(recordBusinessDateRaw(d)))
         setDeepCleanings(inMonth as any)
       } catch {
         setDeepCleanings([])
@@ -267,16 +259,7 @@ export default forwardRef<HTMLDivElement, {
           if (id) map.set(id, r)
         }
         const list = Array.from(map.values())
-        const inMonth = list.filter((d: any) => {
-          const raws = [
-            d?.occurred_at,
-            d?.completed_at,
-            d?.started_at,
-            d?.submitted_at,
-            d?.created_at,
-          ].filter(Boolean)
-          return raws.some(isInMonth)
-        })
+        const inMonth = list.filter((d: any) => isInMonth(recordBusinessDateRaw(d)))
         setMaintenances(inMonth as any)
       } catch {
         setMaintenances([])
@@ -314,8 +297,20 @@ export default forwardRef<HTMLDivElement, {
   const availableDays = Math.max(0, daysInMonth - ownerNights)
   const occupancyRate = availableDays ? Math.round(((guestNights / availableDays) * 100 + Number.EPSILON) * 100) / 100 : 0
   const dailyAverage = guestNights ? Math.round(((totalIncome / guestNights) + Number.EPSILON) * 100) / 100 : 0
-  const landlord = landlords.find(l => (l.property_ids || []).includes(propertyId || ''))
-  const managementFee = (landlord?.management_fee_rate ? Math.round(((rentIncome * landlord.management_fee_rate) + Number.EPSILON) * 100) / 100 : 0)
+  const landlord = findLandlordForProperty(landlords, propertyId || '', (property as any)?.landlord_id)
+  const managementFeeRule = resolveManagementFeeRuleForMonth(landlord, month)
+  const managementFeeRecorded = txs
+    .filter((t: any) => {
+      if (String(t?.kind || '') !== 'expense') return false
+      if (!txMatchesProperty(t as any, { id: propertyId, code: property?.code })) return false
+      if (!txInMonth(t as any, start)) return false
+      return normalizeReportCategory((t as any)?.report_category || (t as any)?.category) === 'management_fee'
+    })
+    .reduce((s, x) => s + Number((x as any)?.amount || 0), 0)
+  const managementFee = managementFeeRecorded > 0
+    ? Math.round((managementFeeRecorded + Number.EPSILON) * 100) / 100
+    : (managementFeeRule.rate ? Math.round(((rentIncome * managementFeeRule.rate) + Number.EPSILON) * 100) / 100 : 0)
+  const managementFeeRuleMissing = managementFeeRecorded <= 0 && !managementFeeRule.rule
   function catKey(e: any): string {
     const raw = normalizeReportCategory(e?.report_category || e?.category)
     if (raw === 'parking_fee') return 'carpark'
@@ -474,6 +469,14 @@ export default forwardRef<HTMLDivElement, {
     return []
   }
   const urlArr = (raw: any) => toUrlStrings(raw)
+  const recordBusinessDateRaw = (row: any): any => (
+    row?.completed_at ||
+    row?.occurred_at ||
+    row?.ended_at ||
+    row?.started_at ||
+    row?.submitted_at ||
+    row?.created_at
+  )
   const isInMonth = (raw: any): boolean => {
     if (!raw) return false
     const s = String(raw || '').trim()
@@ -515,7 +518,7 @@ export default forwardRef<HTMLDivElement, {
     propertyCode: property?.code,
     orders,
     txs: (txs as any).concat(deepCleanOwnerTxs as any),
-    managementFeeRate: landlord?.management_fee_rate,
+    managementFeeRate: managementFeeRule.rate ?? undefined,
     carryStartMonth: DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH,
   }) : null)
   const balance = balanceDebug?.result || null
@@ -777,6 +780,14 @@ export default forwardRef<HTMLDivElement, {
           <table style={{ width:'100%' }}>
             <tbody>
               <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Management Fee 管理费' : 'Management Fee'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(managementFee)}</td></tr>
+              {managementFeeRuleMissing ? (
+                <tr>
+                  <td style={{ padding:6, textIndent:'4ch', color:'#b42318' }}>{showChinese ? '管理费提示' : 'Management Fee Note'}</td>
+                  <td style={{ textAlign:'right', padding:6, color:'#b42318' }}>
+                    {showChinese ? '缺少费率基线规则，未自动重算管理费' : 'Missing fee baseline rule; management fee was not auto-calculated'}
+                  </td>
+                </tr>
+              ) : null}
               <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Electricity 电费' : 'Electricity'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catElectricity)}</td></tr>
               <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Water 水费' : 'Water'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catWater)}</td></tr>
               <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Gas / Hot water 煤气费 / 热水费' : 'Gas / Hot water'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catGas)}</td></tr>

@@ -6,11 +6,12 @@ import { usePathname } from 'next/navigation'
 import { getJSON } from '../../../../lib/api'
 import { sortProperties } from '../../../../lib/properties'
 import MonthlyStatementView from '../../../../components/MonthlyStatement'
+import { type LandlordWithManagementFeeRules } from '../../../../lib/managementFeeRules'
 
 type Order = { id: string }
 type Tx = { id: string }
 type Property = { id: string; code?: string; address?: string }
-type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
+type Landlord = LandlordWithManagementFeeRules
 
 export default function SinglePropertyAnalysisPage() {
   const pathname = usePathname()
