@@ -1,8 +1,11 @@
 import dotenv from 'dotenv'
 import path from 'path'
-dotenv.config({ path: path.resolve(process.cwd(), '.env.local'), override: true })
-dotenv.config({ path: path.resolve(__dirname, '../.env.local'), override: true })
-dotenv.config()
+const isProd = String(process.env.NODE_ENV || '').toLowerCase() === 'production'
+if (!isProd) {
+  dotenv.config({ path: path.resolve(process.cwd(), '.env.local'), override: false })
+  dotenv.config({ path: path.resolve(__dirname, '../.env.local'), override: false })
+  dotenv.config()
+}
 
 import cron from 'node-cron'
 import { hasPg, pgPool } from './dbAdapter'
@@ -70,4 +73,3 @@ main().catch((e: any) => {
   try { pgPool?.end?.() } catch {}
   process.exit(1)
 })
-

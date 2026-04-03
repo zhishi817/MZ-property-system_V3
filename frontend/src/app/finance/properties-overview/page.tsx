@@ -57,6 +57,7 @@ export default function PropertyRevenuePage() {
   const [splitDl, setSplitDl] = useState<{ maintenance: boolean; deepCleaning: boolean }>({ maintenance: false, deepCleaning: false })
   const [exportPreview, setExportPreview] = useState<{ open: boolean; url: string; pageCount: number; filename: string; loading: boolean }>({ open: false, url: '', pageCount: 0, filename: '', loading: false })
   const printRef = useRef<HTMLDivElement>(null)
+  const mergeStartBtnRef = useRef<HTMLButtonElement | null>(null)
   const [period, setPeriod] = useState<'month'|'year'|'half-year'|'fiscal-year'>('month')
   const [startMonth, setStartMonth] = useState<any>(getDefaultRevenueMonth())
   const [showChinese, setShowChinese] = useState<boolean>(true)
@@ -1163,7 +1164,7 @@ export default function PropertyRevenuePage() {
             setStatementPdfMode(false)
           }
         }} loading={exportPreview.loading}>导出预览</Button>
-        <Button type="primary" onClick={async () => {
+        <Button type="primary" ref={mergeStartBtnRef} onClick={async () => {
           if (!printRef.current || !previewPid) return
           if (isMerging) return
           const waitMonthlyReady = async () => {
@@ -1300,6 +1301,7 @@ export default function PropertyRevenuePage() {
                     excludeOrphanFixedSnapshots,
                     exportQuality,
                     mergeInvoices: true,
+                    forceNew: true,
                   }),
                 })
                 if (!create.ok) {
@@ -1318,13 +1320,20 @@ export default function PropertyRevenuePage() {
                   const st = await fetch(`${API_BASE}/finance/merge-monthly-pack/${encodeURIComponent(jobId)}`, { headers: authHeaders() })
                   if (!st.ok) continue
                   const s = await st.json() as any
-                  const status = String(s?.status || '')
                   const percent = Number(s?.progress || 0)
-                  const stage = String(s?.stage || '处理中...')
+                  const jobStage = String(s?.stage || '')
+                  const stage = jobStage || '处理中...'
                   const detail = String(s?.detail || '')
+                  const attempts = Number(s?.attempts || 0)
+                  const nextRetryAtRaw = String(s?.next_retry_at || '')
+                  const nextRetryAt = nextRetryAtRaw ? Date.parse(nextRetryAtRaw) : NaN
                   updateMerge(Number.isFinite(percent) ? percent : 0, stage, detail)
-                  if (status === 'failed') throw new Error(String(s?.last_error_message || s?.detail || '合并失败'))
-                  if (status === 'success') {
+                  if (jobStage === 'failed') throw new Error(String(s?.last_error_message || s?.detail || '合并失败'))
+                  if (jobStage === 'queued' && attempts > 0 && Number.isFinite(nextRetryAt) && nextRetryAt - Date.now() > 12_000) {
+                    const when = new Date(nextRetryAt).toLocaleString()
+                    throw new Error(`任务已进入重试队列（attempts=${attempts}），下次重试时间：${when}。请点击“重试”创建新任务立即执行。`)
+                  }
+                  if (jobStage === 'done') {
                     const files = Array.isArray(s?.result_files) ? s.result_files : []
                     const pick = (k: string) => files.find((x: any) => String(x?.kind || '') === k)
                     const merged = pick('statement_merged_invoices')
@@ -1582,6 +1591,9 @@ export default function PropertyRevenuePage() {
         ) : null}
       </Modal>
       <Modal title="合并PDF下载" open={mergeUi.open} onCancel={() => setMergeUi((prev) => ({ ...prev, open: false }))} footer={<>
+        {(period === 'month' && mergeUi.status === 'exception') ? (
+          <Button type="primary" onClick={() => { try { mergeStartBtnRef.current?.click() } catch {} }}>重试</Button>
+        ) : null}
         <Button onClick={() => setMergeUi((prev) => ({ ...prev, open: false }))}>{mergeUi.status === 'active' ? '隐藏' : '关闭'}</Button>
       </>} width={520} maskClosable={mergeUi.status !== 'active'} keyboard={mergeUi.status !== 'active'} closable={mergeUi.status !== 'active'}>
         <div style={{ marginBottom: 8, fontWeight: 600 }}>{mergeUi.stage || '处理中...'}</div>

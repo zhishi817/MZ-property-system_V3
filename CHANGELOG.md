@@ -1,5 +1,73 @@
 # Changelog
 
+## Dev (2026-04-03)
+
+### build.11
+
+- Version: `0.2.7-statement-pdf.20260403+build.11`
+- PDF Jobs: Web API no longer triggers on-demand job processing for merge-monthly-pack (POST/GET are side-effect-free; `kick` stays null for compatibility).
+- PDF Jobs: Disable pdf-jobs schedule inside the web server by default (`PDF_JOBS_SCHEDULE_ENABLED=false` unless explicitly enabled), to enforce “worker-only” execution.
+
+### build.10
+
+- Version: `0.2.7-statement-pdf.20260403+build.10`
+- Worker: Preserve render diagnostics in final job `detail`, and include API host samples to quickly detect FRONTEND/API environment mismatch.
+- PDF: Merge-monthly-pack invoice collection also considers `property_expenses.due_date` month when `month_key/occurred_at/created_at` are not usable.
+
+### build.9
+
+- Version: `0.2.7-statement-pdf.20260403+build.9`
+- PDF: Merge-monthly-pack invoice collection now prefers `property_expenses.month_key` (prevents missing attachments when `occurred_at/created_at` are outside the month).
+- Worker: Fail fast on unauthorized/empty print-page renders (401/403, missing auth cookie, or empty rows with request failures) to avoid generating “all zeros” PDFs.
+
+### build.8
+
+- Version: `0.2.7-statement-pdf.20260403+build.8`
+- PDF: Fix merge-monthly-pack empty statement by automatically allowing `FRONTEND_BASE_URL` origin in backend CORS (prevents print page API fetches being blocked).
+- PDF: Merge-monthly-pack invoice URL fallback now also supports `finance_transactions.created_at` when `occurred_at` is NULL.
+- PDF: Merge-monthly-pack attachment fetch allowlist now includes `R2_ENDPOINT` host.
+- PDF: Merge jobs now surface a concise render diagnostics summary in job detail (row count + request failures + bad HTTP responses).
+
+### build.7
+
+- Version: `0.2.7-statement-pdf.20260403+build.7`
+- Worker: Monthly pack statement rendering now surfaces HTTP status errors (e.g. 404/429) with actionable hints instead of timing out on missing selectors.
+- Worker: Support Vercel Deployment Protection bypass for Playwright-rendered print pages via `VERCEL_AUTOMATION_BYPASS_SECRET` (header + query param).
+- Worker: Merge-monthly-pack invoice collection now falls back to `property_expenses.created_at` when `occurred_at` is NULL and de-duplicates invoice URLs.
+
+### build.6
+
+- Version: `0.2.7-statement-pdf.20260403+build.6`
+- Worker: Improve Playwright resilience and debugging for monthly statement rendering: retry once on TargetClosed/browser-disconnected errors and print page URL + truncated HTML content on render wait failures.
+
+### build.5
+
+- Version: `0.2.7-statement-pdf.20260403+build.5`
+- UI: When a merge job is queued but already in backoff (attempts>0 and next_retry_at in the future), stop waiting and show an error with a “Retry” action that creates a new job immediately.
+
+### build.4
+
+- Version: `0.2.7-statement-pdf.20260403+build.4`
+- Finance merge monthly pack: Support `forceNew` to guarantee a brand-new job on retry; only reuses an existing job when it is actively `running` (lease valid).
+- UI: Merge PDF creation now sends `forceNew: true` to avoid reusing stale jobs when users click retry.
+
+### build.3
+
+- Version: `0.2.7-statement-pdf.20260403+build.3`
+- Docker: Fix pdf-jobs worker Dockerfile context (`backend/Dockerfile.worker`) to copy `backend/package*.json` and start `node backend/dist/worker_pdf_jobs.js` under repo-root build context.
+
+### build.2
+
+- Version: `0.2.7-statement-pdf.20260403+build.2`
+- Docker: Add dedicated pdf-jobs worker Dockerfile (`backend/Dockerfile.worker`) whose container starts `node dist/worker_pdf_jobs.js` and does not run the web server.
+
+### build.1
+
+- Version: `0.2.7-statement-pdf.20260403+build.1`
+- Finance PDF jobs: Fix jobs stuck in queued by removing session advisory lock in `claimJobs()` and keeping `FOR UPDATE SKIP LOCKED`; introduce handler registry for job kind dispatch.
+- Finance merge monthly pack: `/finance/merge-monthly-pack/:id/download` now requires `status=success && stage=done` (returns 409 otherwise); worker writes `stage=failed` on final failure for a consistent state machine.
+- UI: Properties revenue “合并PDF下载” polling now relies on `stage` only (`done` downloads, `failed` shows error) and adds a retry button.
+
 ## Dev (2026-04-02)
 
 ### build.2

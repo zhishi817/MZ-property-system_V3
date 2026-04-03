@@ -64,52 +64,6 @@ function isPlaywrightClosedError(e: any) {
   return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg)
 }
 
-let pdfJobsKickInFlight = false
-let pdfJobsKickLastAt = 0
-function pdfJobsOnDemandEnabled() {
-  return String(process.env.PDF_JOBS_ON_DEMAND_ENABLED || 'true').toLowerCase() === 'true'
-}
-async function kickPdfJobsNow(reason: string): Promise<{ attempted: boolean; processed?: number; ok?: number; failed?: number; reclaimed?: number; error?: string }> {
-  if (!hasPg || !pgPool) return { attempted: false, error: 'no_db' }
-  if (!pdfJobsOnDemandEnabled()) return { attempted: false, error: 'disabled' }
-  const now = Date.now()
-  if (pdfJobsKickInFlight) return { attempted: false, error: 'in_flight' }
-  if (now - pdfJobsKickLastAt < 2000) return { attempted: false, error: 'throttled' }
-  pdfJobsKickLastAt = now
-  pdfJobsKickInFlight = true
-  try {
-    const { processPdfJobsOnce } = require('../services/pdfJobsWorker')
-    const r = await Promise.race([
-      processPdfJobsOnce({ limit: 1 }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('kick_timeout')), 1800)),
-    ]) as any
-    return { attempted: true, processed: Number(r?.processed || 0), ok: Number(r?.ok || 0), failed: Number(r?.failed || 0), reclaimed: Number(r?.reclaimed || 0) }
-  } catch (e: any) {
-    return { attempted: true, error: String(e?.message || e || '') || 'kick_failed' }
-  } finally {
-    pdfJobsKickInFlight = false
-  }
-}
-function kickPdfJobsSoon(reason: string) {
-  if (!hasPg || !pgPool) return
-  if (!pdfJobsOnDemandEnabled()) return
-  const now = Date.now()
-  if (pdfJobsKickInFlight) return
-  if (now - pdfJobsKickLastAt < 8000) return
-  pdfJobsKickLastAt = now
-  pdfJobsKickInFlight = true
-  setTimeout(async () => {
-    try {
-      const { processPdfJobsOnce } = require('../services/pdfJobsWorker')
-      await processPdfJobsOnce({ limit: 1 })
-    } catch (e: any) {
-      try { console.error(`[pdf-jobs][kick] failed reason=${String(reason || '')} message=${String(e?.message || '')}`) } catch {}
-    } finally {
-      pdfJobsKickInFlight = false
-    }
-  }, 0)
-}
-
 function monthRangeISO(monthKey: string): { start: string; end: string } | null {
   const m = String(monthKey || '').trim()
   const mm = m.match(/^(\d{4})-(\d{2})$/)
@@ -1225,7 +1179,7 @@ router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', '
 
 router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
   try {
-    const { month, property_id, showChinese, excludeOrphanFixedSnapshots, exportQuality, mergeInvoices } = req.body || {}
+    const { month, property_id, showChinese, excludeOrphanFixedSnapshots, exportQuality, mergeInvoices, forceNew } = req.body || {}
     const monthKey = String(month || '').trim()
     const pid = String(property_id || '').trim()
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
@@ -1234,6 +1188,27 @@ router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx
     if (!String(process.env.FRONTEND_BASE_URL || '').trim()) return res.status(500).json({ message: 'missing FRONTEND_BASE_URL' })
     if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
     await ensurePdfJobsSchema()
+    const wantNew = forceNew === true || forceNew === 1 || forceNew === '1'
+    if (!wantNew) {
+      try {
+        const r0 = await pgPool.query(
+          `SELECT id, status, stage, progress, attempts, locked_by, lease_expires_at, created_at
+           FROM pdf_jobs
+           WHERE kind='merge_monthly_pack'
+             AND status='running'
+             AND (lease_expires_at IS NULL OR lease_expires_at > now())
+             AND COALESCE(params->>'month', params->>'month_key') = $1
+             AND COALESCE(params->>'property_id', params->>'pid') = $2
+           ORDER BY created_at DESC
+           LIMIT 1`,
+          [monthKey, pid]
+        )
+        const existing = r0.rows?.[0] || null
+        if (existing?.id) {
+          return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true })
+        }
+      } catch {}
+    }
     const id = uuidv4()
     const params = {
       month: monthKey,
@@ -1248,8 +1223,7 @@ router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx
        VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`,
       [id, JSON.stringify(params)]
     )
-    kickPdfJobsSoon('create_merge_monthly_pack')
-    return res.json({ job_id: id, status: 'queued' })
+    return res.json({ job_id: id, status: 'queued', reused: false })
   } catch (e: any) {
     const code = String(e?.code || '')
     if (code === 'PDF_JOBS_SCHEMA_MISSING') return res.status(500).json({ message: 'pdf_jobs table missing (apply migration)' })
@@ -1265,9 +1239,14 @@ router.get('/merge-monthly-pack/:id/download', requireAnyPerm(['finance.payout',
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
     if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
     await ensurePdfJobsSchema()
-    const r = await pgPool.query('SELECT id, status, result_files FROM pdf_jobs WHERE id=$1 LIMIT 1', [id])
+    const r = await pgPool.query('SELECT id, status, stage, result_files FROM pdf_jobs WHERE id=$1 LIMIT 1', [id])
     const row = r.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not_found' })
+    const st = String(row?.status || '')
+    const stage = String(row?.stage || '')
+    if (st !== 'success' || stage !== 'done') {
+      return res.status(409).json({ message: 'job_not_done', status: st || null, stage: stage || null })
+    }
     const files = Array.isArray(row?.result_files) ? row.result_files : []
     const pick = (k: string) => files.find((x: any) => String(x?.kind || '') === k)
     const merged = pick('statement_merged_invoices')
@@ -1299,20 +1278,6 @@ router.get('/merge-monthly-pack/:id', requireAnyPerm(['finance.payout', 'finance
     }
     let row = await loadRow()
     if (!row) return res.status(404).json({ message: 'not_found' })
-    const createdMs0 = row.created_at ? new Date(row.created_at).getTime() : NaN
-    const ageMs0 = Number.isFinite(createdMs0) ? (Date.now() - createdMs0) : NaN
-    const shouldKick =
-      String(row.status || '') === 'queued' &&
-      Number.isFinite(ageMs0) &&
-      ageMs0 > 15000 &&
-      Number(row.attempts || 0) === 0 &&
-      !row.locked_by
-    let kick: any = null
-    if (shouldKick) {
-      kick = await kickPdfJobsNow('poll_merge_monthly_pack')
-      try { if (kick?.attempted) row = await loadRow() } catch {}
-      try { if (!kick?.attempted) kickPdfJobsSoon('poll_merge_monthly_pack') } catch {}
-    }
     const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN
     const updatedMs = row.updated_at ? new Date(row.updated_at).getTime() : NaN
     const ageSec = Number.isFinite(createdMs) ? Math.max(0, Math.round((Date.now() - createdMs) / 1000)) : null
@@ -1332,7 +1297,7 @@ router.get('/merge-monthly-pack/:id', requireAnyPerm(['finance.payout', 'finance
       next_retry_at: row.next_retry_at || null,
       locked_by: row.locked_by || null,
       lease_expires_at: row.lease_expires_at || null,
-      kick: kick || null,
+      kick: null,
       params: row.params || null,
       result_files: row.result_files || [],
       last_error_code: row.last_error_code || null,

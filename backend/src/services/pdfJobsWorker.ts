@@ -23,6 +23,12 @@ const SECRET = process.env.JWT_SECRET || 'dev-secret'
 
 let schemaMissingLogged = false
 
+type PdfJobHandler = (job: any, ctx: { workerId: string }) => Promise<void>
+
+const handlers: Record<string, PdfJobHandler> = {
+  merge_monthly_pack: async (job, ctx) => runMergeMonthlyPack(job, ctx.workerId),
+}
+
 function msEnv(name: string, defMs: number): number {
   const raw = Number(process.env[name] || defMs)
   if (!Number.isFinite(raw)) return defMs
@@ -82,12 +88,7 @@ async function claimJobs(limit: number, workerId: string): Promise<any[]> {
   if (!hasPg || !pgPool) return []
   const n = Math.max(1, Math.min(10, Number(limit || 3)))
   const client = await pgPool.connect()
-  let locked = false
   try {
-    const lockKey = Number(process.env.PDF_JOBS_LOCK_KEY || 864209135)
-    const got = await client.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey])
-    locked = !!(got?.rows?.[0]?.ok)
-    if (!locked) return []
     await client.query('BEGIN')
     await applyTxTimeouts(client)
     const leaseSec = Math.max(30, Math.min(30 * 60, Number(process.env.PDF_JOBS_LEASE_SECONDS || 8 * 60)))
@@ -120,7 +121,6 @@ async function claimJobs(limit: number, workerId: string): Promise<any[]> {
     try { await client.query('ROLLBACK') } catch {}
     throw e
   } finally {
-    try { if (locked) await client.query('SELECT pg_advisory_unlock($1)', [Number(process.env.PDF_JOBS_LOCK_KEY || 864209135)]) } catch {}
     try { client.release() } catch {}
   }
 }
@@ -156,6 +156,15 @@ function internalAuthToken() {
 function frontBaseUrl(): string {
   const front = String(process.env.FRONTEND_BASE_URL || '').trim()
   if (!front) throw new Error('missing FRONTEND_BASE_URL')
+  try {
+    let local = false
+    try {
+      const u = new URL(front)
+      const h = String(u.hostname || '').toLowerCase()
+      local = h === 'localhost' || h === '127.0.0.1'
+    } catch {}
+    console.log(`[pdf-jobs][worker] FRONTEND_BASE_URL=${front} is_local=${local ? '1' : '0'}`)
+  } catch {}
   return front
 }
 
@@ -180,6 +189,15 @@ function cookieBase(baseUrl: string, token: string) {
   }
 }
 
+function vercelBypassSecret(): string {
+  return String(
+    process.env.VERCEL_AUTOMATION_BYPASS_SECRET ||
+    process.env.VERCEL_PROTECTION_BYPASS_SECRET ||
+    process.env.VERCEL_PROTECTION_BYPASS ||
+    ''
+  ).trim()
+}
+
 async function pdfPageCount(buf: Buffer): Promise<number> {
   try {
     const doc = await PDFDocument.load(new Uint8Array(buf))
@@ -192,6 +210,7 @@ async function pdfPageCount(buf: Buffer): Promise<number> {
 async function generateStatementBasePdf(opts: { jobId: string; month: string; property_id: string; showChinese: boolean; excludeOrphanFixedSnapshots: boolean }): Promise<{ pdf: Buffer; diagnostics: any }> {
   const front = frontBaseUrl()
   const token = internalAuthToken()
+  const bypass = vercelBypassSecret()
   const url = (() => {
     const u = new URL('/public/monthly-statement-print', front)
     u.searchParams.set('pid', opts.property_id)
@@ -201,66 +220,130 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
     u.searchParams.set('photos', 'off')
     u.searchParams.set('sections', 'base')
     u.searchParams.set('exclude_orphan_fixed', opts.excludeOrphanFixedSnapshots ? '1' : '0')
+    if (bypass) u.searchParams.set('x-vercel-protection-bypass', bypass)
     return u.toString()
   })()
+  try { console.log(`[pdf-jobs][worker] goto_url=${url}`) } catch {}
   const apiBase = apiBaseForAssets()
-  const browser = await getChromiumBrowser()
-  let context: any = null
-  try { context = await browser.newContext() } catch (e: any) {
-    if (!/(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(String(e?.message || ''))) throw e
-    await resetChromiumBrowser()
-    const b2 = await getChromiumBrowser()
-    context = await b2.newContext()
-  }
-  const diag: any = { url, console: [] as string[], pageErrors: [] as string[], requestFails: [] as string[] }
-  try {
-    const cookieTargets = Array.from(new Set([front, apiBase].map(s => String(s || '').trim()).filter(Boolean)))
-    if (cookieTargets.length) {
-      await context.addCookies(cookieTargets.map((base) => cookieBase(base, token)) as any)
-    }
-    const page = await context.newPage()
-    const pushCap = (arr: string[], s: string, cap = 30) => {
-      const v = String(s || '').slice(0, 500)
-      if (!v) return
-      arr.push(v)
-      if (arr.length > cap) arr.splice(0, arr.length - cap)
-    }
+  const isTargetClosed = (e: any) => /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(String(e?.message || ''))
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const browser = await getChromiumBrowser()
+    let context: any = null
+    const diag: any = { url, console: [] as string[], pageErrors: [] as string[], requestFails: [] as string[], badResponses: [] as string[], apiCalls: [] as string[], stats: null as any }
     try {
-      page.on('console', (msg: any) => {
-        const t = String(msg?.type?.() || '')
-        if (t === 'error' || t === 'warning') pushCap(diag.console, `${t}: ${String(msg?.text?.() || '')}`)
-      })
-      page.on('pageerror', (err: any) => pushCap(diag.pageErrors, String(err?.message || err || 'pageerror')))
-      page.on('requestfailed', (req: any) => {
-        const u = String(req?.url?.() || '')
-        const ft = String(req?.failure?.()?.errorText || '')
-        pushCap(diag.requestFails, ft ? `${u} (${ft})` : u)
-      })
-    } catch {}
-    const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)))
-    const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
-    page.setDefaultTimeout(waitTimeoutMs)
-    page.setDefaultNavigationTimeout(navTimeoutMs)
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
-    await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
-    await page.waitForSelector('[data-monthly-statement-root="1"]', { timeout: waitTimeoutMs })
-    const u0 = String(page.url?.() || '')
-    if (u0.includes('/login')) throw new Error('print page redirected to /login')
-    await page.waitForFunction(() => {
-      const el = document.querySelector('[data-monthly-statement-root="1"]') as any
-      if (!el) return false
-      const ready = String(el.getAttribute('data-monthly-statement-ready') || '') === '1'
-      return ready
-    }, { timeout: waitTimeoutMs } as any)
-    await waitForImages(page, { timeoutMs: 20000, scroll: true, maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
-    await page.waitForTimeout(200)
-    await page.emulateMedia({ media: 'print' } as any)
-    const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
-    return { pdf: Buffer.from(pdf), diagnostics: diag }
-  } finally {
-    try { await context.close() } catch {}
+      const extraHTTPHeaders = bypass ? { 'x-vercel-protection-bypass': bypass, 'x-vercel-set-bypass-cookie': 'true' } : undefined
+      try { context = await browser.newContext(extraHTTPHeaders ? { extraHTTPHeaders } : undefined) } catch (e: any) {
+        if (!isTargetClosed(e)) throw e
+        await resetChromiumBrowser()
+        const b2 = await getChromiumBrowser()
+        context = await b2.newContext(extraHTTPHeaders ? { extraHTTPHeaders } : undefined)
+      }
+      const cookieTargets = Array.from(new Set([front, apiBase].map(s => String(s || '').trim()).filter(Boolean)))
+      if (cookieTargets.length) {
+        await context.addCookies(cookieTargets.map((base) => cookieBase(base, token)) as any)
+      }
+      const page = await context.newPage()
+      const pushCap = (arr: string[], s: string, cap = 30) => {
+        const v = String(s || '').slice(0, 500)
+        if (!v) return
+        arr.push(v)
+        if (arr.length > cap) arr.splice(0, arr.length - cap)
+      }
+      try {
+        page.on('console', (msg: any) => {
+          const t = String(msg?.type?.() || '')
+          if (t === 'error' || t === 'warning') pushCap(diag.console, `${t}: ${String(msg?.text?.() || '')}`)
+        })
+        page.on('pageerror', (err: any) => pushCap(diag.pageErrors, String(err?.message || err || 'pageerror')))
+        page.on('response', (resp: any) => {
+          try {
+            const st = Number(resp?.status?.() || 0)
+            const u = String(resp?.url?.() || '')
+            if (st >= 400) pushCap(diag.badResponses, `${u} (${st})`)
+            if (/\/(orders|finance|properties|landlords)(\?|\/|$)/i.test(u)) pushCap(diag.apiCalls, `${u} (${st})`, 12)
+          } catch {}
+        })
+        page.on('requestfailed', (req: any) => {
+          const u = String(req?.url?.() || '')
+          const ft = String(req?.failure?.()?.errorText || '')
+          pushCap(diag.requestFails, ft ? `${u} (${ft})` : u)
+        })
+      } catch {}
+      const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)))
+      const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
+      page.setDefaultTimeout(waitTimeoutMs)
+      page.setDefaultNavigationTimeout(navTimeoutMs)
+      try {
+        const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
+        const status = Number(resp?.status?.() || 0)
+        if (status >= 400) {
+          const title = await page.title().catch(() => '')
+          const hint = status === 429
+            ? '当前返回 429 Too Many Requests，通常表示 FRONTEND_BASE_URL 指向了错误的服务（后端/限流页），或目标站点被限流'
+            : '当前返回非 200 页面，请确认 FRONTEND_BASE_URL 指向 Next 前端站点且存在 /public/monthly-statement-print'
+          const e2: any = new Error(`print page http ${status}${title ? ` title=${title}` : ''} (${hint})`)
+          e2.code = `HTTP_${status}`
+          throw e2
+        }
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+        await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
+        await page.waitForSelector('[data-monthly-statement-root="1"]', { timeout: waitTimeoutMs })
+        const u0 = String(page.url?.() || '')
+        if (u0.includes('/login')) throw new Error('print page redirected to /login')
+        await page.waitForFunction(() => {
+          const el = document.querySelector('[data-monthly-statement-root="1"]') as any
+          if (!el) return false
+          const ready = String(el.getAttribute('data-monthly-statement-ready') || '') === '1'
+          return ready
+        }, { timeout: waitTimeoutMs } as any)
+        try {
+          diag.stats = await page.evaluate(() => {
+            const root = document.querySelector('[data-monthly-statement-root="1"]') as HTMLElement | null
+            const rows = document.querySelectorAll('[data-monthly-statement-root="1"] [data-statement-row="1"]').length
+            const tables = document.querySelectorAll('[data-monthly-statement-root="1"] table').length
+            const cookieHasAuth = typeof document !== 'undefined' ? (document.cookie || '').includes('auth=') : false
+            return { hasRoot: !!root, statementRows: rows, tables, cookieHasAuth, href: String(location?.href || '') }
+          })
+        } catch {}
+        const authFailed = Array.isArray(diag.badResponses) && diag.badResponses.some((s: string) => /\((401|403)\)\s*$/.test(String(s || '')))
+        if (authFailed) throw Object.assign(new Error('print page has unauthorized api responses (401/403)'), { code: 'PRINT_AUTH' })
+        if (diag?.stats?.cookieHasAuth === false) throw Object.assign(new Error('print page missing auth cookie'), { code: 'PRINT_AUTH' })
+        const rows = Number(diag?.stats?.statementRows || 0) || 0
+        const rf = Array.isArray(diag?.requestFails) ? diag.requestFails.length : 0
+        const br = Array.isArray(diag?.badResponses) ? diag.badResponses.length : 0
+        if (!rows && (rf || br)) throw Object.assign(new Error(`print page got empty statement rows=0 with request_fail=${rf} http>=400=${br}`), { code: 'PRINT_EMPTY' })
+      } catch (e: any) {
+        try {
+          const pu = String(page.url?.() || '')
+          const html = await page.content().catch(() => '')
+          console.log(`[pdf-jobs][worker] page_debug attempt=${attempt + 1} page_url=${pu}`)
+          if (html) console.log(String(html).slice(0, 2000))
+        } catch {}
+        const msg = String(e?.message || e || '')
+        if (/ERR_CONNECTION_REFUSED/i.test(msg) && /localhost|127\.0\.0\.1/i.test(url)) {
+          const e2: any = new Error(`${msg} (worker 无法访问 ${url}；请把后端环境变量 FRONTEND_BASE_URL 设置为线上前端域名，而不是 localhost)`)
+          if (e?.code) e2.code = e.code
+          throw e2
+        }
+        throw e
+      }
+      await waitForImages(page, { timeoutMs: 20000, scroll: true, maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
+      await page.waitForTimeout(200)
+      await page.emulateMedia({ media: 'print' } as any)
+      const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
+      return { pdf: Buffer.from(pdf), diagnostics: diag }
+    } catch (e: any) {
+      if (attempt === 0 && isTargetClosed(e)) {
+        try { console.log(`[pdf-jobs][worker] target_closed_retry message=${String(e?.message || '')}`) } catch {}
+        await resetChromiumBrowser().catch(() => {})
+      } else {
+        throw e
+      }
+    } finally {
+      try { await context?.close?.() } catch {}
+    }
   }
+  throw new Error('generateStatementBasePdf failed')
 }
 
 async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promise<string[]> {
@@ -277,9 +360,18 @@ async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promis
     const r = await pgPool.query(
       `SELECT i.url FROM expense_invoices i
        JOIN property_expenses e ON i.expense_id = e.id
-       WHERE e.property_id = $1 AND e.occurred_at >= $2 AND e.occurred_at < $3
+       WHERE e.property_id = $1
+         AND (
+           e.month_key = $2
+           OR (
+             substring(e.due_date::text,1,7) = $2
+             OR
+             (e.occurred_at >= $3 AND e.occurred_at < $4)
+             OR (e.occurred_at IS NULL AND e.created_at >= $3::date AND e.created_at < $4::date)
+           )
+         )
        ORDER BY i.created_at ASC`,
-      [pid, start, end]
+      [pid, mm, start, end]
     )
     urls = (r.rows || []).map((x: any) => String(x?.url || '').trim()).filter(Boolean)
   } catch {}
@@ -287,25 +379,29 @@ async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promis
     try {
       const r2 = await pgPool.query(
         `SELECT invoice_url FROM finance_transactions
-         WHERE kind='expense' AND property_id=$1 AND substring(occurred_at::text,1,7)=$2 AND invoice_url IS NOT NULL
+         WHERE kind='expense' AND property_id=$1 AND invoice_url IS NOT NULL
+           AND (
+             substring(occurred_at::text,1,7)=$2
+             OR (occurred_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
+           )
          ORDER BY created_at ASC
          LIMIT 500`,
-        [pid, mm]
+        [pid, mm, start, end]
       )
       urls = (r2.rows || []).map((x: any) => String(x?.invoice_url || '').trim()).filter(Boolean)
     } catch {}
   }
   const apiBase = apiBaseForAssets()
-  return urls.map((u) => {
+  return Array.from(new Set(urls.map((u) => {
     if (u.startsWith('/') && apiBase) return `${apiBase}${u}`
     return u
-  }).filter(Boolean)
+  }).filter(Boolean)))
 }
 
 function allowedHostsSet(): Set<string> {
   const hosts = new Set<string>()
   const addHost = (h: string) => { if (h) hosts.add(h.toLowerCase()) }
-  const envs = [process.env.API_BASE, process.env.NEXT_PUBLIC_API_BASE_URL, process.env.NEXT_PUBLIC_API_BASE_DEV, process.env.NEXT_PUBLIC_API_BASE, process.env.R2_PUBLIC_BASE_URL, process.env.R2_PUBLIC_BASE]
+  const envs = [process.env.API_BASE, process.env.NEXT_PUBLIC_API_BASE_URL, process.env.NEXT_PUBLIC_API_BASE_DEV, process.env.NEXT_PUBLIC_API_BASE, process.env.R2_PUBLIC_BASE_URL, process.env.R2_PUBLIC_BASE, process.env.R2_ENDPOINT]
   for (const e of envs) {
     try { if (e) addHost(new URL(String(e)).host) } catch {}
   }
@@ -415,6 +511,42 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
   const gen = await generateStatementBasePdf({ jobId: id, month: monthKey, property_id: pid, showChinese, excludeOrphanFixedSnapshots: excludeOrphans })
   const statementPdf = gen.pdf
   const statementPages = await pdfPageCount(statementPdf)
+  const diag = (gen as any)?.diagnostics || null
+  const diagSummary = (() => {
+    try {
+      if (!diag) return ''
+      const parts: string[] = []
+      const rf = Array.isArray(diag?.requestFails) ? diag.requestFails.length : 0
+      const br = Array.isArray(diag?.badResponses) ? diag.badResponses.length : 0
+      const ce = Array.isArray(diag?.console) ? diag.console.length : 0
+      const pe = Array.isArray(diag?.pageErrors) ? diag.pageErrors.length : 0
+      const rows = Number(diag?.stats?.statementRows || 0) || 0
+      const cookie = diag?.stats?.cookieHasAuth === false ? 'cookie_auth=0' : ''
+      const hosts = (() => {
+        try {
+          const arr: string[] = []
+          const pushHost = (u: string) => { try { arr.push(new URL(u).host) } catch {} }
+          for (const s of ([] as string[]).concat(diag?.apiCalls || [], diag?.badResponses || [], diag?.requestFails || [])) {
+            const u = String(s || '').split(' (')[0]
+            if (/^https?:\/\//i.test(u)) pushHost(u)
+          }
+          return Array.from(new Set(arr.map(h => h.toLowerCase()).filter(Boolean)))
+        } catch { return [] as string[] }
+      })()
+      parts.push(`rows=${rows}`)
+      if (rf) parts.push(`request_fail=${rf}`)
+      if (br) parts.push(`http>=400=${br}`)
+      if (ce) parts.push(`console=${ce}`)
+      if (pe) parts.push(`pageerror=${pe}`)
+      if (cookie) parts.push(cookie)
+      if (hosts.length) parts.push(`api_hosts=${hosts.slice(0, 3).join('|')}${hosts.length > 3 ? `(+${hosts.length - 3})` : ''}`)
+      return parts.length ? `；渲染诊断：${parts.join(',')}` : ''
+    } catch {
+      return ''
+    }
+  })()
+  if (!statementPdf?.length) throw Object.assign(new Error('statement pdf is empty'), { code: 'PRINT_EMPTY' })
+  if (statementPages <= 0) throw Object.assign(new Error('statement pdf page_count=0'), { code: 'PRINT_EMPTY' })
   const baseKey = `monthly-pack/${monthKey}/${pid}/${id}/statement_base.pdf`
   const baseUrl = await r2Upload(baseKey, 'application/pdf', statementPdf)
   const files: PdfJobFile[] = [{
@@ -427,16 +559,16 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
     part_no: 1,
     source_count: 1,
   }]
-  await updateJob(id, { progress: 20, stage: 'statement_uploaded', detail: `主报表已生成（${statementPages}页）`, result_files: files, locked_by: workerId })
+  await updateJob(id, { progress: 20, stage: 'statement_uploaded', detail: `主报表已生成（${statementPages}页）${diagSummary}`, result_files: files, locked_by: workerId })
   if (!mergeInvoices) {
-    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: '已生成主报表（未合并附件）', result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
+    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: `已生成主报表（未合并附件）${diagSummary}`, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
     return
   }
-  await updateJob(id, { progress: 25, stage: 'collect_invoices', detail: '正在收集发票附件...', result_files: files, locked_by: workerId })
+  await updateJob(id, { progress: 25, stage: 'collect_invoices', detail: `正在收集发票附件...${diagSummary}`, result_files: files, locked_by: workerId })
   const invoiceUrls = await collectInvoiceUrlsForMonth(pid, monthKey)
-  await updateJob(id, { progress: 35, stage: 'merge_invoices', detail: `正在合并附件（${invoiceUrls.length}）...`, result_files: files, locked_by: workerId })
+  await updateJob(id, { progress: 35, stage: 'merge_invoices', detail: `正在合并附件（${invoiceUrls.length}）...${diagSummary}`, result_files: files, locked_by: workerId })
   if (!invoiceUrls.length) {
-    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: '未找到可合并的附件，已生成主报表', result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
+    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: `未找到可合并的附件，已生成主报表${diagSummary}`, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
     return
   }
   const maxPerPart = Math.max(5, Math.min(60, Number(process.env.MERGE_INVOICE_MAX_PER_PART || 25)))
@@ -463,7 +595,7 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
   }
   const failN = merged.failed.length
   const failSample = merged.failed.slice(0, 3).join(' | ')
-  const detail = failN ? `合并完成（部分附件失败：${failN}，样例：${failSample}）` : '合并完成'
+  const detail = failN ? `合并完成（部分附件失败：${failN}，样例：${failSample}）${diagSummary}` : `合并完成${diagSummary}`
   await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
 }
 
@@ -493,6 +625,8 @@ async function markFailedOrRetry(job: any, info: { retriable: boolean; code: str
   await pgPool!.query(
     `UPDATE pdf_jobs
      SET status='failed',
+         progress=100,
+         stage='failed',
          locked_by=NULL,
          lease_expires_at=NULL,
          last_error_code=$2,
@@ -520,17 +654,33 @@ export async function processPdfJobsOnce(opts: { limit?: number } = {}): Promise
   const reclaimed = await reclaimExpiredLeases().catch(() => 0)
   const workerId = String(process.env.PDF_JOBS_WORKER_ID || '') || `pdf_worker_${process.pid}`
   const jobs = await claimJobs(Number(opts.limit || 2), workerId)
+  if (!jobs.length) {
+    try {
+      const r = await pgPool.query(
+        `SELECT
+           now() AS db_now,
+           (SELECT count(1) FROM pdf_jobs WHERE status='queued') AS queued_total,
+           (SELECT count(1) FROM pdf_jobs WHERE status='queued' AND next_retry_at <= now()) AS queued_due,
+           (SELECT min(next_retry_at) FROM pdf_jobs WHERE status='queued') AS queued_min_next,
+           (SELECT min(next_retry_at) FROM pdf_jobs WHERE status='queued' AND kind='merge_monthly_pack') AS mm_min_next,
+           (SELECT count(1) FROM pdf_jobs WHERE status='queued' AND kind='merge_monthly_pack') AS mm_total,
+           (SELECT count(1) FROM pdf_jobs WHERE status='queued' AND kind='merge_monthly_pack' AND next_retry_at <= now()) AS mm_due`
+      )
+      const row = r.rows?.[0] || null
+      console.log(`[pdf-jobs][worker] claim none workerId=${workerId} queued_total=${Number(row?.queued_total || 0)} queued_due=${Number(row?.queued_due || 0)} mm_total=${Number(row?.mm_total || 0)} mm_due=${Number(row?.mm_due || 0)} queued_min_next=${row?.queued_min_next || ''} mm_min_next=${row?.mm_min_next || ''}`)
+    } catch (e: any) {
+      try { console.log(`[pdf-jobs][worker] claim none diag_failed workerId=${workerId} message=${String(e?.message || '')}`) } catch {}
+    }
+  }
   let ok = 0, failed = 0
   for (const job of jobs) {
     const jobId = String(job?.id || '')
     const kind = String(job?.kind || '')
     try {
       console.log(`[pdf-jobs][worker] run start jobId=${jobId} kind=${kind} attempts=${Number(job?.attempts || 0)}`)
-      if (kind === 'merge_monthly_pack') {
-        await runMergeMonthlyPack(job, workerId)
-      } else {
-        throw Object.assign(new Error('unsupported_job_kind'), { code: 'JOB_INVALID' })
-      }
+      const handler = handlers[kind]
+      if (!handler) throw Object.assign(new Error('unsupported_job_kind'), { code: 'JOB_INVALID' })
+      await handler(job, { workerId })
       console.log(`[pdf-jobs][worker] run done jobId=${jobId} kind=${kind}`)
       ok++
     } catch (e: any) {

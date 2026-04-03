@@ -81,66 +81,6 @@ function isPlaywrightClosedError(e) {
     const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
     return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg);
 }
-let pdfJobsKickInFlight = false;
-let pdfJobsKickLastAt = 0;
-function pdfJobsOnDemandEnabled() {
-    return String(process.env.PDF_JOBS_ON_DEMAND_ENABLED || 'true').toLowerCase() === 'true';
-}
-async function kickPdfJobsNow(reason) {
-    if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
-        return { attempted: false, error: 'no_db' };
-    if (!pdfJobsOnDemandEnabled())
-        return { attempted: false, error: 'disabled' };
-    const now = Date.now();
-    if (pdfJobsKickInFlight)
-        return { attempted: false, error: 'in_flight' };
-    if (now - pdfJobsKickLastAt < 2000)
-        return { attempted: false, error: 'throttled' };
-    pdfJobsKickLastAt = now;
-    pdfJobsKickInFlight = true;
-    try {
-        const { processPdfJobsOnce } = require('../services/pdfJobsWorker');
-        const r = await Promise.race([
-            processPdfJobsOnce({ limit: 1 }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('kick_timeout')), 1800)),
-        ]);
-        return { attempted: true, processed: Number((r === null || r === void 0 ? void 0 : r.processed) || 0), ok: Number((r === null || r === void 0 ? void 0 : r.ok) || 0), failed: Number((r === null || r === void 0 ? void 0 : r.failed) || 0), reclaimed: Number((r === null || r === void 0 ? void 0 : r.reclaimed) || 0) };
-    }
-    catch (e) {
-        return { attempted: true, error: String((e === null || e === void 0 ? void 0 : e.message) || e || '') || 'kick_failed' };
-    }
-    finally {
-        pdfJobsKickInFlight = false;
-    }
-}
-function kickPdfJobsSoon(reason) {
-    if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
-        return;
-    if (!pdfJobsOnDemandEnabled())
-        return;
-    const now = Date.now();
-    if (pdfJobsKickInFlight)
-        return;
-    if (now - pdfJobsKickLastAt < 8000)
-        return;
-    pdfJobsKickLastAt = now;
-    pdfJobsKickInFlight = true;
-    setTimeout(async () => {
-        try {
-            const { processPdfJobsOnce } = require('../services/pdfJobsWorker');
-            await processPdfJobsOnce({ limit: 1 });
-        }
-        catch (e) {
-            try {
-                console.error(`[pdf-jobs][kick] failed reason=${String(reason || '')} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-            }
-            catch (_a) { }
-        }
-        finally {
-            pdfJobsKickInFlight = false;
-        }
-    }, 0);
-}
 function monthRangeISO(monthKey) {
     const m = String(monthKey || '').trim();
     const mm = m.match(/^(\d{4})-(\d{2})$/);
@@ -278,14 +218,26 @@ function autoCalcMaintenanceTotal(row) {
     const base = autoToNum(row === null || row === void 0 ? void 0 : row.maintenance_amount);
     const baseN = Number.isFinite(base) ? base : 0;
     const hasParts = (row === null || row === void 0 ? void 0 : row.has_parts) === true;
-    if (!hasParts)
-        return Math.round((baseN + Number.EPSILON) * 100) / 100;
+    const hasGst = (row === null || row === void 0 ? void 0 : row.has_gst) === true;
+    const includesGst = (row === null || row === void 0 ? void 0 : row.maintenance_amount_includes_gst) === true;
+    let subtotal = baseN;
+    if (!hasParts) {
+        if (hasGst && !includesGst)
+            subtotal = subtotal + subtotal * 0.1;
+        return Math.round((subtotal + Number.EPSILON) * 100) / 100;
+    }
     const includesParts = (row === null || row === void 0 ? void 0 : row.maintenance_amount_includes_parts) === true;
-    if (includesParts)
-        return Math.round((baseN + Number.EPSILON) * 100) / 100;
+    if (includesParts) {
+        if (hasGst && !includesGst)
+            subtotal = subtotal + subtotal * 0.1;
+        return Math.round((subtotal + Number.EPSILON) * 100) / 100;
+    }
     const parts = autoToNum(row === null || row === void 0 ? void 0 : row.parts_amount);
     const partsN = Number.isFinite(parts) ? parts : 0;
-    return Math.round(((baseN + partsN) + Number.EPSILON) * 100) / 100;
+    subtotal = subtotal + partsN;
+    if (hasGst && !includesGst)
+        subtotal = subtotal + subtotal * 0.1;
+    return Math.round((subtotal + Number.EPSILON) * 100) / 100;
 }
 function autoComputeDeepCleaningTotalCost(laborCostRaw, consumablesRaw) {
     const labor = autoToNum(laborCostRaw);
@@ -1290,8 +1242,9 @@ exports.router.get('/monthly-statement-photo-stats', (0, auth_1.requireAnyPerm)(
     }
 });
 exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
+    var _a;
     try {
-        const { month, property_id, showChinese, excludeOrphanFixedSnapshots, exportQuality, mergeInvoices } = req.body || {};
+        const { month, property_id, showChinese, excludeOrphanFixedSnapshots, exportQuality, mergeInvoices, forceNew } = req.body || {};
         const monthKey = String(month || '').trim();
         const pid = String(property_id || '').trim();
         if (!/^\d{4}-\d{2}$/.test(monthKey))
@@ -1305,6 +1258,25 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
         if (!r2_1.hasR2)
             return res.status(500).json({ message: 'R2 not configured' });
         await (0, pdfJobsSchema_1.ensurePdfJobsSchema)();
+        const wantNew = forceNew === true || forceNew === 1 || forceNew === '1';
+        if (!wantNew) {
+            try {
+                const r0 = await dbAdapter_2.pgPool.query(`SELECT id, status, stage, progress, attempts, locked_by, lease_expires_at, created_at
+           FROM pdf_jobs
+           WHERE kind='merge_monthly_pack'
+             AND status='running'
+             AND (lease_expires_at IS NULL OR lease_expires_at > now())
+             AND COALESCE(params->>'month', params->>'month_key') = $1
+             AND COALESCE(params->>'property_id', params->>'pid') = $2
+           ORDER BY created_at DESC
+           LIMIT 1`, [monthKey, pid]);
+                const existing = ((_a = r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
+                if (existing === null || existing === void 0 ? void 0 : existing.id) {
+                    return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true });
+                }
+            }
+            catch (_b) { }
+        }
         const id = (0, uuid_1.v4)();
         const params = {
             month: monthKey,
@@ -1316,8 +1288,7 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
         };
         await dbAdapter_2.pgPool.query(`INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
        VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`, [id, JSON.stringify(params)]);
-        kickPdfJobsSoon('create_merge_monthly_pack');
-        return res.json({ job_id: id, status: 'queued' });
+        return res.json({ job_id: id, status: 'queued', reused: false });
     }
     catch (e) {
         const code = String((e === null || e === void 0 ? void 0 : e.code) || '');
@@ -1338,10 +1309,15 @@ exports.router.get('/merge-monthly-pack/:id/download', (0, auth_1.requireAnyPerm
         if (!r2_1.hasR2)
             return res.status(500).json({ message: 'R2 not configured' });
         await (0, pdfJobsSchema_1.ensurePdfJobsSchema)();
-        const r = await dbAdapter_2.pgPool.query('SELECT id, status, result_files FROM pdf_jobs WHERE id=$1 LIMIT 1', [id]);
+        const r = await dbAdapter_2.pgPool.query('SELECT id, status, stage, result_files FROM pdf_jobs WHERE id=$1 LIMIT 1', [id]);
         const row = ((_c = r.rows) === null || _c === void 0 ? void 0 : _c[0]) || null;
         if (!row)
             return res.status(404).json({ message: 'not_found' });
+        const st = String((row === null || row === void 0 ? void 0 : row.status) || '');
+        const stage = String((row === null || row === void 0 ? void 0 : row.stage) || '');
+        if (st !== 'success' || stage !== 'done') {
+            return res.status(409).json({ message: 'job_not_done', status: st || null, stage: stage || null });
+        }
         const files = Array.isArray(row === null || row === void 0 ? void 0 : row.result_files) ? row.result_files : [];
         const pick = (k) => files.find((x) => String((x === null || x === void 0 ? void 0 : x.kind) || '') === k);
         const merged = pick('statement_merged_invoices');
@@ -1380,27 +1356,6 @@ exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finan
         let row = await loadRow();
         if (!row)
             return res.status(404).json({ message: 'not_found' });
-        const createdMs0 = row.created_at ? new Date(row.created_at).getTime() : NaN;
-        const ageMs0 = Number.isFinite(createdMs0) ? (Date.now() - createdMs0) : NaN;
-        const shouldKick = String(row.status || '') === 'queued' &&
-            Number.isFinite(ageMs0) &&
-            ageMs0 > 15000 &&
-            Number(row.attempts || 0) === 0 &&
-            !row.locked_by;
-        let kick = null;
-        if (shouldKick) {
-            kick = await kickPdfJobsNow('poll_merge_monthly_pack');
-            try {
-                if (kick === null || kick === void 0 ? void 0 : kick.attempted)
-                    row = await loadRow();
-            }
-            catch (_b) { }
-            try {
-                if (!(kick === null || kick === void 0 ? void 0 : kick.attempted))
-                    kickPdfJobsSoon('poll_merge_monthly_pack');
-            }
-            catch (_c) { }
-        }
         const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN;
         const updatedMs = row.updated_at ? new Date(row.updated_at).getTime() : NaN;
         const ageSec = Number.isFinite(createdMs) ? Math.max(0, Math.round((Date.now() - createdMs) / 1000)) : null;
@@ -1420,7 +1375,7 @@ exports.router.get('/merge-monthly-pack/:id', (0, auth_1.requireAnyPerm)(['finan
             next_retry_at: row.next_retry_at || null,
             locked_by: row.locked_by || null,
             lease_expires_at: row.lease_expires_at || null,
-            kick: kick || null,
+            kick: null,
             params: row.params || null,
             result_files: row.result_files || [],
             last_error_code: row.last_error_code || null,

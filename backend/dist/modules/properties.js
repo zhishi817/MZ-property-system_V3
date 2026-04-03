@@ -26,6 +26,7 @@ const createSchema = zod_1.z.object({
     address: zod_1.z.string().min(3),
     type: zod_1.z.string(),
     capacity: zod_1.z.number().int().min(1),
+    room_type_code: zod_1.z.string().optional(),
     region: zod_1.z.string().optional(),
     area_sqm: zod_1.z.number().optional(),
     biz_category: zod_1.z.enum(['leased', 'management_fee']).optional(),
@@ -95,7 +96,7 @@ function findListingConflictLocal(listingName, excludeId) {
     return null;
 }
 exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j;
     const parsed = createSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -109,7 +110,7 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
         if (!hasAnyObj && !hasAnyFlat)
             return res.status(400).json({ message: '请至少填写一个平台的 Listing 名称' });
     }
-    catch (_j) { }
+    catch (_k) { }
     const autoCode = `PM-${Math.random().toString(36).slice(2, 6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
     const actor = req.user;
     const pFull = { id: (0, uuid_1.v4)(), code: parsed.data.code || autoCode, created_by: (actor === null || actor === void 0 ? void 0 : actor.sub) || (actor === null || actor === void 0 ? void 0 : actor.username) || null, ...parsed.data };
@@ -117,9 +118,9 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
     pFull.airbnb_listing_name = normListingName(pFull.airbnb_listing_name || lnObj.airbnb || null);
     pFull.booking_listing_name = normListingName(pFull.booking_listing_name || lnObj.booking || null);
     pFull.listing_names = { other: String(lnObj.other || '').trim() };
-    const baseKeys = ['id', 'code', 'address', 'type', 'capacity', 'region', 'area_sqm', 'biz_category', 'building_name', 'building_facilities', 'building_facility_floor', 'building_facility_other', 'building_contact_name', 'building_contact_phone', 'building_contact_email', 'building_notes', 'bed_config', 'tv_model', 'aircon_model', 'bedroom_ac', 'access_guide_link', 'keybox_location', 'keybox_code', 'garage_guide_link', 'floor', 'parking_type', 'parking_space', 'access_type', 'orientation', 'fireworks_view', 'notes', 'landlord_id', 'created_by', 'listing_names', 'airbnb_listing_name', 'booking_listing_name', 'airbnb_listing_id', 'booking_listing_id'];
+    const baseKeys = ['id', 'code', 'address', 'type', 'capacity', 'room_type_code', 'region', 'area_sqm', 'biz_category', 'building_name', 'building_facilities', 'building_facility_floor', 'building_facility_other', 'building_contact_name', 'building_contact_phone', 'building_contact_email', 'building_notes', 'bed_config', 'tv_model', 'aircon_model', 'bedroom_ac', 'access_guide_link', 'keybox_location', 'keybox_code', 'garage_guide_link', 'floor', 'parking_type', 'parking_space', 'access_type', 'orientation', 'fireworks_view', 'notes', 'landlord_id', 'created_by', 'listing_names', 'airbnb_listing_name', 'booking_listing_name', 'airbnb_listing_id', 'booking_listing_id'];
     const pBase = Object.fromEntries(Object.entries(pFull).filter(([k]) => baseKeys.includes(k)));
-    const minimalKeys = ['id', 'code', 'address', 'type', 'capacity', 'region', 'area_sqm', 'notes', 'listing_names'];
+    const minimalKeys = ['id', 'code', 'address', 'type', 'capacity', 'room_type_code', 'region', 'area_sqm', 'notes', 'listing_names'];
     const pMinimal = Object.fromEntries(Object.entries(pFull).filter(([k]) => minimalKeys.includes(k)));
     try {
         // Supabase branch removed
@@ -241,6 +242,17 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
                         return res.status(500).json({ message: (e5 === null || e5 === void 0 ? void 0 : e5.message) || 'failed to add bedroom_ac column' });
                     }
                 }
+                if (/column\s+"?room_type_code"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
+                    try {
+                        await ((_j = require('../dbAdapter').pgPool) === null || _j === void 0 ? void 0 : _j.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS room_type_code text'));
+                        const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
+                        (0, store_1.addAudit)('Property', row.id, 'create', null, row);
+                        return res.status(201).json(row);
+                    }
+                    catch (e6) {
+                        return res.status(500).json({ message: (e6 === null || e6 === void 0 ? void 0 : e6.message) || 'failed to add room_type_code column' });
+                    }
+                }
                 return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'create failed' });
             }
         }
@@ -258,7 +270,7 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
     }
 });
 exports.router.patch('/:id', (0, auth_1.requirePerm)('property.write'), async (req, res) => {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     const { id } = req.params;
     const body = req.body;
     const cleanedBody = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'bedrooms'));
@@ -268,7 +280,7 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('property.write'), async (r
         cleanedBody.booking_listing_name = normListingName(cleanedBody.booking_listing_name || ln.booking || null);
         cleanedBody.listing_names = { other: String(ln.other || '').trim() };
     }
-    const baseKeys = ['code', 'address', 'type', 'capacity', 'region', 'area_sqm', 'biz_category', 'building_name', 'building_facilities', 'building_facility_floor', 'building_facility_other', 'building_contact_name', 'building_contact_phone', 'building_contact_email', 'building_notes', 'bed_config', 'tv_model', 'aircon_model', 'bedroom_ac', 'access_guide_link', 'keybox_location', 'keybox_code', 'garage_guide_link', 'floor', 'parking_type', 'parking_space', 'access_type', 'orientation', 'fireworks_view', 'notes', 'landlord_id', 'listing_names', 'airbnb_listing_name', 'booking_listing_name', 'airbnb_listing_id', 'booking_listing_id'];
+    const baseKeys = ['code', 'address', 'type', 'capacity', 'room_type_code', 'region', 'area_sqm', 'biz_category', 'building_name', 'building_facilities', 'building_facility_floor', 'building_facility_other', 'building_contact_name', 'building_contact_phone', 'building_contact_email', 'building_notes', 'bed_config', 'tv_model', 'aircon_model', 'bedroom_ac', 'access_guide_link', 'keybox_location', 'keybox_code', 'garage_guide_link', 'floor', 'parking_type', 'parking_space', 'access_type', 'orientation', 'fireworks_view', 'notes', 'landlord_id', 'listing_names', 'airbnb_listing_name', 'booking_listing_name', 'airbnb_listing_id', 'booking_listing_id'];
     const actor = req.user;
     const bodyBaseRaw = Object.fromEntries(Object.entries(cleanedBody).filter(([k]) => baseKeys.includes(k)));
     const bodyBase = { ...bodyBaseRaw, updated_at: new Date(), updated_by: (actor === null || actor === void 0 ? void 0 : actor.sub) || (actor === null || actor === void 0 ? void 0 : actor.username) || null };
@@ -322,6 +334,12 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('property.write'), async (r
                     const row5 = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
                     (0, store_1.addAudit)('Property', id, 'update', before, row5);
                     return res.json(row5);
+                }
+                if (/column\s+"?room_type_code"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
+                    await ((_e = require('../dbAdapter').pgPool) === null || _e === void 0 ? void 0 : _e.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS room_type_code text'));
+                    const row6 = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
+                    (0, store_1.addAudit)('Property', id, 'update', before, row6);
+                    return res.json(row6);
                 }
                 throw e;
             }
