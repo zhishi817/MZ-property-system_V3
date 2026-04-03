@@ -463,6 +463,14 @@ export default function PropertyRevenuePage() {
     return () => { cancelled = true }
   }, [previewOpen, previewPid, period, month?.format?.('YYYY-MM')])
 
+  useEffect(() => {
+    if (!previewOpen || !previewPid || period !== 'month') return
+    const pid = String(previewPid || '').trim()
+    const mk = month?.format?.('YYYY-MM') || ''
+    if (!pid || !mk) return
+    fetchRentSegments(pid, mk).catch(() => {})
+  }, [previewOpen, previewPid, period, month?.format?.('YYYY-MM')])
+
   const monthPdfCfg = useMemo(() => {
     if (period !== 'month' || !previewPid) return null
     return resolveMonthPdfCfg(mergeSplit, mergeNoPhotos)
@@ -601,6 +609,15 @@ export default function PropertyRevenuePage() {
           continue
         }
         const cat = normalizeReportCategory((t as any).report_category || (t as any).category)
+        if (cat === 'other') {
+          const pm = String((t as any).pay_method || (t as any).payment_type || '').trim().toLowerCase()
+          if (pm) {
+            const isRentDeduction = pm.includes('rent_deduction') || pm.includes('rent-deduction') || pm.includes('租金')
+            if (isRentDeduction) continue
+            const isLandlordPay = pm.includes('landlord') || pm.includes('owner') || pm.includes('房东')
+            if (!isLandlordPay) continue
+          }
+        }
         b.expSums[cat] = Number(b.expSums[cat] || 0) + amt
         if (cat === 'other') {
           const d = otherDescOfTx(t)
@@ -1504,6 +1521,7 @@ export default function PropertyRevenuePage() {
                     month={month.format('YYYY-MM')}
                     propertyId={previewPid || undefined}
                     orders={orders}
+                    orderSegments={(rentSegByKey[rentKey(previewPid, month.format('YYYY-MM'))]?.segments as any) || undefined}
                     txs={txs}
                     properties={properties}
                     landlords={landlords}

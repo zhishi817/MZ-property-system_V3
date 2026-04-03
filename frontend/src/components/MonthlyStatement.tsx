@@ -39,6 +39,7 @@ export default forwardRef<HTMLDivElement, {
   month: string
   propertyId?: string
   orders: Order[]
+  orderSegments?: Order[]
   txs: Tx[]
   properties: { id: string; code?: string; address?: string }[]
   landlords: Landlord[]
@@ -56,7 +57,7 @@ export default forwardRef<HTMLDivElement, {
   mode?: 'preview' | 'pdf'
   pdfMode?: boolean
   renderEngine?: 'canvas' | 'print'
-}>(function MonthlyStatementView({ month, propertyId, orders, txs, properties, landlords, ordersLoaded, txsLoaded, propertiesLoaded, landlordsLoaded, showChinese = true, showInvoices = false, sections, includeJobPhotos = true, photosMode = 'full', photoW, photoQ, mode, pdfMode = false, renderEngine = 'canvas' }, ref) {
+}>(function MonthlyStatementView({ month, propertyId, orders, orderSegments, txs, properties, landlords, ordersLoaded, txsLoaded, propertiesLoaded, landlordsLoaded, showChinese = true, showInvoices = false, sections, includeJobPhotos = true, photosMode = 'full', photoW, photoQ, mode, pdfMode = false, renderEngine = 'canvas' }, ref) {
   const resolvedMode: 'preview' | 'pdf' = mode || ((pdfMode || renderEngine === 'print') ? 'pdf' : 'preview')
   const isPdfMode = resolvedMode === 'pdf'
   const sectionSet = new Set((Array.isArray(sections) ? sections : []).map(s => String(s || '').trim().toLowerCase()).filter(Boolean))
@@ -80,16 +81,18 @@ export default forwardRef<HTMLDivElement, {
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
   const fetchTimeoutMs = isPdfMode ? 20000 : 30000
-  const relatedOrdersRaw = monthSegments(
-    orders.filter(o => {
-      if (propertyId && o.property_id !== propertyId) return false
-      const st = String((o as any).status || '').toLowerCase()
-      const isCanceled = st.includes('cancel')
-      const include = (!isCanceled) || !!(o as any).count_in_income
-      return include
-    }),
-    start
-  )
+  const relatedOrdersRaw = Array.isArray(orderSegments) && orderSegments.length
+    ? orderSegments
+    : monthSegments(
+      orders.filter(o => {
+        if (propertyId && o.property_id !== propertyId) return false
+        const st = String((o as any).status || '').toLowerCase()
+        const isCanceled = st.includes('cancel')
+        const include = (!isCanceled) || !!(o as any).count_in_income
+        return include
+      }),
+      start
+    )
   const relatedOrders = relatedOrdersRaw.filter(r => {
     const st = String((r as any).status || '').toLowerCase()
     const isCanceled = st.includes('cancel')
@@ -779,7 +782,7 @@ export default forwardRef<HTMLDivElement, {
       <div data-keep-with-next="true" style={{ marginTop: 24, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Monthly Overview Data 月度概览数据' : 'Monthly Overview Data'}</div>
       <table style={{ width: '100%', borderCollapse:'collapse' }}>
         <tbody>
-          <tr><td style={{ padding:6 }}>{showChinese ? 'Total rent income 总租金' : 'Total rent income'}</td><td style={{ textAlign:'right', padding:6 }}>${fmt(totalIncome)}</td></tr>
+          <tr><td style={{ padding:6 }}>{showChinese ? 'Total rent income 总租金' : 'Total rent income'}</td><td style={{ textAlign:'right', padding:6 }}>${fmt(rentIncome)}</td></tr>
           <tr><td style={{ padding:6 }}>{showChinese ? 'Occupancy Rate 入住率' : 'Occupancy Rate'}</td><td style={{ textAlign:'right', padding:6 }}>{fmt(occupancyRate)}%</td></tr>
           <tr><td style={{ padding:6 }}>{showChinese ? 'Daily Average 日平均租金' : 'Daily Average'}</td><td style={{ textAlign:'right', padding:6 }}>${fmt(dailyAverage)}</td></tr>
         </tbody>

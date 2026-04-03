@@ -92,10 +92,25 @@ export default function PublicMonthlyStatementPrintPage() {
     setOrdersLoaded(false)
     setTxsLoaded(false)
     setLandlordsLoaded(false)
-    getJSON<Order[]>('/orders', { timeoutMs: fetchTimeoutMs })
-      .then(setOrders)
-      .catch(() => setOrders([]))
-      .finally(() => setOrdersLoaded(true))
+    ;(async () => {
+      const pid = String(propertyId || '').trim()
+      const mk = month?.format ? String(month.format('YYYY-MM') || '').trim() : ''
+      if (!pid || !/^\d{4}-\d{2}$/.test(mk)) {
+        setOrders([])
+        setOrdersLoaded(true)
+        return
+      }
+      try {
+        const qs = new URLSearchParams({ month: mk, property_id: pid }).toString()
+        const resp = await getJSON<any>(`/finance/rent-segments?${qs}`, { timeoutMs: fetchTimeoutMs })
+        const segs = Array.isArray(resp?.segments) ? resp.segments : []
+        setOrders(segs)
+      } catch {
+        setOrders([])
+      } finally {
+        setOrdersLoaded(true)
+      }
+    })()
     ;(async () => {
       try {
         const fin: any[] = await getJSON<any[]>('/finance', { timeoutMs: fetchTimeoutMs })
@@ -110,7 +125,7 @@ export default function PublicMonthlyStatementPrintPage() {
       .then(setLandlords)
       .catch(() => setLandlords([]))
       .finally(() => setLandlordsLoaded(true))
-  }, [properties, excludeOrphanFixedSnapshots])
+  }, [properties, excludeOrphanFixedSnapshots, propertyId, month])
 
   if (!propertyId) return <div />
 
@@ -120,6 +135,7 @@ export default function PublicMonthlyStatementPrintPage() {
       month={month.format('YYYY-MM')}
       propertyId={propertyId}
       orders={orders as any}
+      orderSegments={orders as any}
       txs={txs as any}
       properties={properties as any}
       landlords={landlords as any}

@@ -191,12 +191,12 @@ function autoNormPayMethod(v) {
     const low = s.toLowerCase();
     if (!low)
         return '';
+    if (low === 'rent_deduction' || s.includes('租金'))
+        return 'rent_deduction';
     if (low === 'landlord_pay' || s.includes('房东'))
         return 'landlord_pay';
     if (low === 'company_pay' || s.includes('公司'))
         return 'company_pay';
-    if (low === 'rent_deduction' || s.includes('租金'))
-        return 'rent_deduction';
     if (low === 'tenant_pay' || s.includes('房客'))
         return 'tenant_pay';
     if (low === 'other_pay' || s.includes('其他'))
