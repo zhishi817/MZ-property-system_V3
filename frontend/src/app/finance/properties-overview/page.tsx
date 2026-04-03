@@ -9,14 +9,14 @@ import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/pro
 import MonthlyStatementView from '../../../components/MonthlyStatement'
 import { monthSegments, toDayStr, getMonthSegmentsForProperty, isOwnerStay } from '../../../lib/orders'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome } from '../../../lib/financeTx'
-import { isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
+import { computeMonthlyStatementBalanceDebug, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
 import { formatStatementDesc } from '../../../lib/statementDesc'
 import FiscalYearStatement from '../../../components/FiscalYearStatement'
 import { MailOutlined, CreditCardOutlined, CheckOutlined } from '@ant-design/icons'
 import { nextToggleValue } from '../../../lib/toggleStatus'
 import { exportElementToPdfBlob } from '../../../lib/pdfExport'
 import { buildStatementTxs, type StatementTx } from '../../../lib/statementTx'
-import { canDownloadSplitPart, splitPartPhotoCount, type MergeSplitInfo } from '../../../lib/monthlyStatementPhotoSplit'
+import { canDownloadSplitPart, pickSplitPhotosMode, splitPartPhotoCount, type MergeSplitInfo } from '../../../lib/monthlyStatementPhotoSplit'
 
 type Order = { id: string; property_id?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = StatementTx
@@ -50,6 +50,7 @@ export default function PropertyRevenuePage() {
   const [previewPid, setPreviewPid] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewReady, setPreviewReady] = useState(false)
+  const [carryDiagOpen, setCarryDiagOpen] = useState(false)
   const [, setStatementPdfMode] = useState(false)
   const [exportQuality, setExportQuality] = useState<'standard' | 'high' | 'ultra'>('ultra')
   const [mergeUi, setMergeUi] = useState<{ open: boolean; percent: number; status: MergeUiStatus; stage: string; detail?: string }>({ open: false, percent: 0, status: 'active', stage: '', detail: '' })
@@ -108,12 +109,14 @@ export default function PropertyRevenuePage() {
       const prefix = `Monthly Statement - ${month.format('YYYY-MM')}`
       const label = kind === 'maintenance' ? 'Maintenance Photos' : 'Deep Cleaning Photos'
       const filename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''} - ${label}.pdf`
-      const mode = exportQuality === 'ultra' ? 'full' : 'compressed'
-      const cfg = exportQuality === 'standard' ? { photo_w: 1200, photo_q: 65 } : { photo_w: 1600, photo_q: 72 }
+      const mode = pickSplitPhotosMode(partCount, exportQuality)
+      const cfg = mode === 'thumbnail'
+        ? { photo_w: 1000, photo_q: 55 }
+        : (exportQuality === 'standard' ? { photo_w: 1200, photo_q: 65 } : { photo_w: 1600, photo_q: 72 })
       const resp = await fetch(`${API_BASE}/finance/monthly-statement-photos-pdf`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: mode, sections: kind, ...(mode === 'compressed' ? cfg : {}) }),
+        body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: mode, sections: kind, ...cfg }),
       })
       if (!resp.ok) {
         let msg = `HTTP ${resp.status}`
@@ -492,6 +495,22 @@ export default function PropertyRevenuePage() {
     if (period !== 'month' || !previewPid) return null
     return resolveMonthPdfCfg(mergeSplit, mergeNoPhotos)
   }, [period, previewPid, mergeSplit, mergeNoPhotos, exportQuality])
+
+  const previewCarryDebug = useMemo(() => {
+    if (!previewPid || period !== 'month') return null
+    const monthKey = month?.format?.('YYYY-MM') || ''
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) return null
+    const property = properties.find(p => String(p.id) === String(previewPid))
+    const landlord = landlords.find(l => (l.property_ids || []).includes(String(previewPid)))
+    return computeMonthlyStatementBalanceDebug({
+      month: monthKey,
+      propertyId: String(previewPid),
+      propertyCode: property?.code,
+      orders,
+      txs: txsAll,
+      managementFeeRate: landlord?.management_fee_rate,
+    })
+  }, [previewPid, period, month, properties, landlords, orders, txsAll])
 
   useEffect(() => {
     if (!previewOpen || !previewPid || period !== 'month') { setPreviewReady(true); return }
@@ -1018,7 +1037,7 @@ export default function PropertyRevenuePage() {
         }}
       />
       </div>
-      <Modal title={period==='month' ? '月度报告' : (period==='year' ? '年度报告' : (period==='fiscal-year' ? '财年报告' : '半年报告'))} open={previewOpen} onCancel={() => { setPreviewOpen(false); setPreviewReady(false); setStatementPdfMode(false) }} footer={<>
+      <Modal title={period==='month' ? '月度报告' : (period==='year' ? '年度报告' : (period==='fiscal-year' ? '财年报告' : '半年报告'))} open={previewOpen} onCancel={() => { setPreviewOpen(false); setPreviewReady(false); setStatementPdfMode(false); setCarryDiagOpen(false) }} footer={<>
         <Button onClick={async () => {
           if (!printRef.current) return
           const waitMonthlyReady = async () => {
@@ -1519,6 +1538,7 @@ export default function PropertyRevenuePage() {
                 />
                 <span>包含中文说明</span>
                 <Switch checked={showChinese} onChange={setShowChinese as any} />
+                <Button onClick={() => setCarryDiagOpen(true)}>结转来源诊断</Button>
               </div>
               {(monthPdfCfg?.shouldSplit) ? (
                 <div style={{ marginBottom: 8, padding: '8px 12px', borderRadius: 8, border: '1px solid #ffd591', background: '#fff7e6', color: 'rgba(0,0,0,0.72)' }}>
@@ -1624,6 +1644,74 @@ export default function PropertyRevenuePage() {
         {exportPreview.url ? (
           <iframe title="statement-export-preview" src={exportPreview.url} style={{ width: '100%', height: '70vh', border: '1px solid rgba(0,0,0,0.08)', borderRadius: 8, background: '#fff' }} />
         ) : null}
+      </Modal>
+      <Modal
+        title="结转来源诊断"
+        open={carryDiagOpen}
+        onCancel={() => setCarryDiagOpen(false)}
+        footer={<Button onClick={() => setCarryDiagOpen(false)}>关闭</Button>}
+        width={920}
+      >
+        {previewCarryDebug ? (
+          <div>
+            <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 8, background: '#fafafa', border: '1px solid rgba(0,0,0,0.08)' }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>{previewCarryDebug.summary.carrySourceLabel}</div>
+              <div style={{ color: 'rgba(0,0,0,0.65)' }}>
+                {previewCarryDebug.summary.showBalance
+                  ? `目标月份 ${previewCarryDebug.target.month} 的应付房东金额为 $${previewCarryDebug.target.payable_to_owner.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}。`
+                  : `目标月份 ${previewCarryDebug.target.month} 没有结转或家具抵扣，应付房东金额为 $${previewCarryDebug.target.payable_to_owner.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}。`}
+              </div>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', padding: '8px 6px', borderBottom: '1px solid #ddd' }}>月份</th>
+                    <th style={{ textAlign: 'right', padding: '8px 6px', borderBottom: '1px solid #ddd' }}>经营净收入</th>
+                    <th style={{ textAlign: 'right', padding: '8px 6px', borderBottom: '1px solid #ddd' }}>期初结转</th>
+                    <th style={{ textAlign: 'right', padding: '8px 6px', borderBottom: '1px solid #ddd' }}>期末结转</th>
+                    <th style={{ textAlign: 'right', padding: '8px 6px', borderBottom: '1px solid #ddd' }}>家具新增</th>
+                    <th style={{ textAlign: 'right', padding: '8px 6px', borderBottom: '1px solid #ddd' }}>房东已付家具</th>
+                    <th style={{ textAlign: 'right', padding: '8px 6px', borderBottom: '1px solid #ddd' }}>家具租金抵扣</th>
+                    <th style={{ textAlign: 'right', padding: '8px 6px', borderBottom: '1px solid #ddd' }}>抵扣前应付</th>
+                    <th style={{ textAlign: 'right', padding: '8px 6px', borderBottom: '1px solid #ddd' }}>本月应付房东</th>
+                    <th style={{ textAlign: 'left', padding: '8px 6px', borderBottom: '1px solid #ddd' }}>来源判断</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewCarryDebug.months.map((row) => {
+                    const isTarget = row.month === previewCarryDebug.target.month
+                    const money = (n: number) => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                    const sourceLabel =
+                      row.carry_source_kind === 'mixed'
+                        ? '负净收入 + 家具待抵扣'
+                        : row.carry_source_kind === 'prior_operating_loss'
+                          ? '前序负净收入'
+                          : row.carry_source_kind === 'furniture_outstanding'
+                            ? '家具待抵扣'
+                            : '无'
+                    return (
+                      <tr key={row.month} style={isTarget ? { background: '#f6ffed' } : undefined}>
+                        <td style={{ padding: '8px 6px', borderBottom: '1px solid #eee', fontWeight: isTarget ? 700 : 400 }}>{row.month}</td>
+                        <td style={{ padding: '8px 6px', borderBottom: '1px solid #eee', textAlign: 'right' }}>${money(row.operating_net_income)}</td>
+                        <td style={{ padding: '8px 6px', borderBottom: '1px solid #eee', textAlign: 'right' }}>${money(row.opening_carry_net)}</td>
+                        <td style={{ padding: '8px 6px', borderBottom: '1px solid #eee', textAlign: 'right' }}>${money(row.closing_carry_net)}</td>
+                        <td style={{ padding: '8px 6px', borderBottom: '1px solid #eee', textAlign: 'right' }}>${money(row.furniture_charge)}</td>
+                        <td style={{ padding: '8px 6px', borderBottom: '1px solid #eee', textAlign: 'right' }}>${money(row.furniture_owner_paid)}</td>
+                        <td style={{ padding: '8px 6px', borderBottom: '1px solid #eee', textAlign: 'right' }}>${money(row.furniture_offset_from_rent)}</td>
+                        <td style={{ padding: '8px 6px', borderBottom: '1px solid #eee', textAlign: 'right' }}>${money(row.payable_before_furniture)}</td>
+                        <td style={{ padding: '8px 6px', borderBottom: '1px solid #eee', textAlign: 'right', fontWeight: isTarget ? 700 : 400 }}>${money(row.payable_to_owner)}</td>
+                        <td style={{ padding: '8px 6px', borderBottom: '1px solid #eee' }}>{sourceLabel}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <div style={{ color: 'rgba(0,0,0,0.65)' }}>当前只有单个房源月报预览支持结转来源诊断。</div>
+        )}
       </Modal>
       <Modal title="合并PDF下载" open={mergeUi.open} onCancel={() => setMergeUi((prev) => ({ ...prev, open: false }))} footer={<>
         {(period === 'month' && mergeUi.status === 'exception') ? (

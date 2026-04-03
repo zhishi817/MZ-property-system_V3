@@ -1785,15 +1785,27 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
             }
             return n;
         };
-        const normalizePhotosMode = (() => {
+        const requestedPhotosMode = (() => {
             if (photosMode === 'compressed' || photosMode === 'thumbnail')
                 return photosMode;
+            return 'full';
+        })();
+        const effectivePhotosMode = (() => {
+            const total = countRawUrls(deepRows0) + countRawUrls(maintRows0);
+            if (requestedPhotosMode === 'thumbnail')
+                return 'thumbnail';
+            if (requestedPhotosMode === 'compressed')
+                return total >= 36 ? 'thumbnail' : 'compressed';
+            if (total >= 24)
+                return 'thumbnail';
+            if (total >= 12)
+                return 'compressed';
             return 'full';
         })();
         const normalizePhotoUrl = (u) => (0, normalizePhotoUrlForPdf_1.normalizePhotoUrlForPdf)(u, {
             apiBase,
             allowR2KeyPrefixes: ['maintenance/', 'deep-cleaning/', 'deep-cleaning-upload/', 'invoice-company-logos/'],
-            photosMode: normalizePhotosMode,
+            photosMode: effectivePhotosMode,
             compress,
         });
         const mapRowUrls = (r) => {
@@ -1827,7 +1839,7 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
         });
         const tplImageCount = Number((tpl === null || tpl === void 0 ? void 0 : tpl.imageCount) || 0);
         try {
-            console.log(`[monthly-statement-photos-pdf][stats] reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec || 'all'} photosMode=${photosMode}` +
+            console.log(`[monthly-statement-photos-pdf][stats] reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec || 'all'} photosMode=${photosMode} effectivePhotosMode=${effectivePhotosMode}` +
                 ` deepRows=${Array.isArray(deepRows0) ? deepRows0.length : 0} maintRows=${Array.isArray(maintRows0) ? maintRows0.length : 0}` +
                 ` rawUrls=${rawUrls} cleanedUrls=${cleanedUrls} tplImageCount=${tplImageCount}`);
         }
@@ -1851,6 +1863,7 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
             res.setHeader('X-MSP-RawUrls', String(rawUrls));
             res.setHeader('X-MSP-UrlCleaned', String(cleanedUrls));
             res.setHeader('X-MSP-ImageCount', String(tplImageCount));
+            res.setHeader('X-MSP-PhotosMode-Effective', String(effectivePhotosMode));
             return res.status(422).json({
                 message: 'no photos to render for requested sections',
                 diagnosticKind: rawUrls === 0
@@ -1863,6 +1876,7 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
                 property_id: pid,
                 sections: sec || 'all',
                 photosMode,
+                effectivePhotosMode,
                 deepRows: Array.isArray(deepRows0) ? deepRows0.length : 0,
                 maintRows: Array.isArray(maintRows0) ? maintRows0.length : 0,
                 rawUrls,
@@ -1917,6 +1931,7 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
             res.setHeader('X-MSP-RawUrls', String(rawUrls));
             res.setHeader('X-MSP-UrlCleaned', String(cleanedUrls));
             res.setHeader('X-MSP-ImageCount', String(Number((tpl === null || tpl === void 0 ? void 0 : tpl.imageCount) || 0)));
+            res.setHeader('X-MSP-PhotosMode-Effective', String(effectivePhotosMode));
             res.setHeader('X-MSP-ImgNotLoaded', String(Number((imgStats === null || imgStats === void 0 ? void 0 : imgStats.notLoaded) || 0)));
             res.setHeader('X-MSP-PdfBytes', String(pdfBuf.length));
             return res.status(200).send(pdfBuf);

@@ -80,6 +80,8 @@ export default forwardRef<HTMLDivElement, {
   const needMaintData = showMaintSectionFinal || (isPdfMode && showBaseSections)
   const start = dayjs(`${month}-01`)
   const endNext = start.add(1, 'month').startOf('month')
+  const calendarWeekCount = Math.max(1, endNext.subtract(1, 'day').endOf('week').diff(start.startOf('week'), 'week') + 1)
+  const calendarShouldStartNewPage = isPdfMode && renderEngine === 'print' && calendarWeekCount >= 5
   const fetchTimeoutMs = isPdfMode ? 20000 : 30000
   const relatedOrdersRaw = Array.isArray(orderSegments) && orderSegments.length
     ? orderSegments
@@ -129,59 +131,6 @@ export default forwardRef<HTMLDivElement, {
   const [expandAllMaintenance, setExpandAllMaintenance] = useState(false)
   const [expandedMaintenance, setExpandedMaintenance] = useState<Record<string, boolean>>({})
   const calendarRef = useRef<HTMLDivElement>(null)
-  const [calendarZoom, setCalendarZoom] = useState(1)
-  const calendarAdjustCountRef = useRef(0)
-  const calendarSigRef = useRef('')
-  useEffect(() => {
-    if (!isPdfMode || renderEngine !== 'print') {
-      calendarAdjustCountRef.current = 0
-      calendarSigRef.current = ''
-      if (calendarZoom !== 1) setCalendarZoom(1)
-      return
-    }
-    const el = calendarRef.current
-    if (!el) return
-
-    const sig = `${month}__${propertyId || ''}__${relatedOrdersSorted.length}`
-    if (calendarSigRef.current !== sig) {
-      calendarSigRef.current = sig
-      calendarAdjustCountRef.current = 0
-      if (calendarZoom !== 1) setCalendarZoom(1)
-    }
-    if (calendarAdjustCountRef.current >= 4) return
-
-    const raf = requestAnimationFrame(() => {
-      const probe = document.createElement('div')
-      probe.style.position = 'absolute'
-      probe.style.visibility = 'hidden'
-      probe.style.height = '273mm'
-      probe.style.width = '0'
-      document.body.appendChild(probe)
-      const pageContentHeightPx = probe.getBoundingClientRect().height
-      probe.remove()
-      if (!pageContentHeightPx || !Number.isFinite(pageContentHeightPx)) return
-
-      const rect = el.getBoundingClientRect()
-      const top = rect.top + window.scrollY
-      const height = rect.height
-      if (!height || !Number.isFinite(height)) return
-
-      const startPage = Math.floor(top / pageContentHeightPx)
-      const endPage = Math.floor((top + height) / pageContentHeightPx)
-      const safetyPadding = 8
-      if (endPage <= startPage) {
-        if (calendarZoom !== 1) setCalendarZoom(1)
-        return
-      }
-      const pageBottom = (startPage + 1) * pageContentHeightPx - safetyPadding
-      const desired = (pageBottom - top) / height
-      const clamped = Math.max(0.9, Math.min(1, desired))
-      const next = Number(clamped.toFixed(3))
-      calendarAdjustCountRef.current += 1
-      if (Math.abs(next - calendarZoom) > 0.002) setCalendarZoom(next)
-    })
-    return () => cancelAnimationFrame(raf)
-  }, [isPdfMode, renderEngine, month, propertyId, relatedOrdersSorted.length, calendarZoom])
   useEffect(() => {
     (async () => {
       try {
@@ -752,6 +701,7 @@ export default forwardRef<HTMLDivElement, {
           [data-monthly-statement-root="1"] [data-keep-with-next="true"] { break-after: avoid; page-break-after: avoid; }
           [data-monthly-statement-root="1"] [data-print-break-before="true"] { break-before: page; page-break-before: always; }
           [data-monthly-statement-root="1"] tr { break-inside: avoid; page-break-inside: avoid; }
+          [data-monthly-statement-root="1"] [data-calendar-week="1"] { break-inside: avoid; page-break-inside: avoid; }
         }
       `}</style>
       {!hideReportHeader ? (
@@ -927,7 +877,13 @@ export default forwardRef<HTMLDivElement, {
       </table>
 
 
-      <div data-keep-with-next="true" style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}>{showChinese ? 'Order Calendar 订单日历' : 'Order Calendar'}</div>
+      <div
+        data-keep-with-next="true"
+        data-pdf-break-before={calendarShouldStartNewPage ? 'true' : undefined}
+        style={{ marginTop: 16, fontWeight: 700, background:'#eef3fb', padding:'6px 8px' }}
+      >
+        {showChinese ? 'Order Calendar 订单日历' : 'Order Calendar'}
+      </div>
       {(() => {
         const weeks: Array<{ ws: any; we: any }> = []
         let cur = weekStart.clone()
@@ -936,7 +892,7 @@ export default forwardRef<HTMLDivElement, {
         const weekMargin = isPdfMode ? '4px 0' : '6px 0'
         const weekMinBase = isPdfMode ? 110 : 120
         const laneRowHeight = isPdfMode ? 30 : 36
-        const weekExtra = isPdfMode ? 40 : 48
+        const weekBottomPad = isPdfMode ? 14 : 18
         const daysFontSize = isPdfMode ? 10 : 11
         const daysPadding = isPdfMode ? '1px 0' : '2px 0'
         const gridTop = isPdfMode ? 20 : 22
@@ -948,15 +904,39 @@ export default forwardRef<HTMLDivElement, {
           <div
             ref={calendarRef}
             className="landlord-calendar"
-            style={{ background:'#fff', border:'1px solid #eef2f7', borderRadius:12, padding: calendarPadding, ...(isPdfMode && renderEngine === 'print' ? ({ zoom: calendarZoom } as any) : {}) }}
+            style={{
+              background:'#fff',
+              border: isPdfMode && renderEngine === 'print' ? 'none' : '1px solid #eef2f7',
+              borderRadius: isPdfMode && renderEngine === 'print' ? 0 : 12,
+              padding: isPdfMode && renderEngine === 'print' ? 0 : calendarPadding,
+            }}
           >
             {weeks.map(({ ws, we }, idx) => {
               const { segs, laneMap, laneCount } = buildWeekSegments(ws, we)
               const daysRow = Array.from({ length: 7 }).map((_, i) => ws.startOf('day').add(i, 'day'))
               const hasMonthDay = daysRow.some(d => d.isSame(start, 'month'))
               if (!hasMonthDay && segs.length === 0) return null
+              const weekInnerPad = isPdfMode ? 6 : 8
+              const weekMinHeight = Math.max(
+                weekMinBase,
+                eventTopBase + weekInnerPad + Math.max(0, laneCount - 1) * laneRowHeight + eventHeight + weekBottomPad
+              )
               return (
-                <div key={idx} data-pdf-avoid-cut="true" style={{ position:'relative', minHeight: Math.max(weekMinBase, laneCount * laneRowHeight + weekExtra), margin: weekMargin }}>
+                <div
+                  key={idx}
+                  data-calendar-week="1"
+                  data-pdf-avoid-cut="true"
+                  style={{
+                    position:'relative',
+                    minHeight: weekMinHeight,
+                    margin: weekMargin,
+                    border:'1px solid #eef2f7',
+                    borderRadius: 12,
+                    background:'#fff',
+                    overflow:'hidden',
+                    padding: weekInnerPad,
+                  }}
+                >
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:0, padding: daysPadding, fontSize: daysFontSize }}>
                     {daysRow.map((d, i) => {
                       const inMonth = d.isSame(start, 'month')
@@ -970,7 +950,7 @@ export default forwardRef<HTMLDivElement, {
                   {daysRow.map((d, dIdx) => {
                     const inMonth = d.isSame(start, 'month')
                     return (
-                      <div key={dIdx} style={{ position:'absolute', left: `${(dIdx * 100) / 7}%`, width: `${100/7}%`, top: gridTop, bottom:0 }}>
+                      <div key={dIdx} style={{ position:'absolute', left: `${(dIdx * 100) / 7}%`, width: `${100/7}%`, top: gridTop + (isPdfMode ? 6 : 8), bottom:0 }}>
                         {!inMonth ? <div style={{ position:'absolute', inset:0, background:'#f9fafb', opacity:0.7, pointerEvents:'none', zIndex:0 }} /> : null}
                         <div style={{ position:'absolute', right:0, top:0, bottom:0, width:1, borderRight:'1px dashed #eee' }} />
                       </div>
@@ -994,7 +974,7 @@ export default forwardRef<HTMLDivElement, {
                       <div
                         key={seg.id}
                         className={`mz-evt mz-evt--${platform} mz-lane-${lane} ${isStart ? 'fc-event-start' : ''} ${isEnd ? 'fc-event-end' : ''}`}
-                        style={{ position:'absolute', left: `${leftPct}%`, right: `${rightPct}%`, top: eventTopBase + lane * laneRowHeight, height: eventHeight, zIndex: 1 }}
+                        style={{ position:'absolute', left: `${leftPct}%`, right: `${rightPct}%`, top: eventTopBase + (isPdfMode ? 6 : 8) + lane * laneRowHeight, height: eventHeight, zIndex: 1 }}
                       >
                         <div
                           className="mz-booking"

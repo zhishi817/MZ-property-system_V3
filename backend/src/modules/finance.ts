@@ -1646,14 +1646,22 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       }
       return n
     }
-    const normalizePhotosMode = ((): 'full' | 'compressed' | 'thumbnail' => {
+    const requestedPhotosMode = ((): 'full' | 'compressed' | 'thumbnail' => {
       if (photosMode === 'compressed' || photosMode === 'thumbnail') return photosMode
+      return 'full'
+    })()
+    const effectivePhotosMode = ((): 'full' | 'compressed' | 'thumbnail' => {
+      const total = countRawUrls(deepRows0) + countRawUrls(maintRows0)
+      if (requestedPhotosMode === 'thumbnail') return 'thumbnail'
+      if (requestedPhotosMode === 'compressed') return total >= 36 ? 'thumbnail' : 'compressed'
+      if (total >= 24) return 'thumbnail'
+      if (total >= 12) return 'compressed'
       return 'full'
     })()
     const normalizePhotoUrl = (u: string) => normalizePhotoUrlForPdf(u, {
       apiBase,
       allowR2KeyPrefixes: ['maintenance/', 'deep-cleaning/', 'deep-cleaning-upload/', 'invoice-company-logos/'],
-      photosMode: normalizePhotosMode,
+      photosMode: effectivePhotosMode,
       compress,
     })
     const mapRowUrls = (r: any) => {
@@ -1688,7 +1696,7 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
     const tplImageCount = Number(tpl?.imageCount || 0)
     try {
       console.log(
-        `[monthly-statement-photos-pdf][stats] reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec || 'all'} photosMode=${photosMode}` +
+        `[monthly-statement-photos-pdf][stats] reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec || 'all'} photosMode=${photosMode} effectivePhotosMode=${effectivePhotosMode}` +
           ` deepRows=${Array.isArray(deepRows0) ? deepRows0.length : 0} maintRows=${Array.isArray(maintRows0) ? maintRows0.length : 0}` +
           ` rawUrls=${rawUrls} cleanedUrls=${cleanedUrls} tplImageCount=${tplImageCount}`
       )
@@ -1714,6 +1722,7 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       res.setHeader('X-MSP-RawUrls', String(rawUrls))
       res.setHeader('X-MSP-UrlCleaned', String(cleanedUrls))
       res.setHeader('X-MSP-ImageCount', String(tplImageCount))
+      res.setHeader('X-MSP-PhotosMode-Effective', String(effectivePhotosMode))
       return res.status(422).json({
         message: 'no photos to render for requested sections',
         diagnosticKind:
@@ -1727,6 +1736,7 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
         property_id: pid,
         sections: sec || 'all',
         photosMode,
+        effectivePhotosMode,
         deepRows: Array.isArray(deepRows0) ? deepRows0.length : 0,
         maintRows: Array.isArray(maintRows0) ? maintRows0.length : 0,
         rawUrls,
@@ -1775,6 +1785,7 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       res.setHeader('X-MSP-RawUrls', String(rawUrls))
       res.setHeader('X-MSP-UrlCleaned', String(cleanedUrls))
       res.setHeader('X-MSP-ImageCount', String(Number(tpl?.imageCount || 0)))
+      res.setHeader('X-MSP-PhotosMode-Effective', String(effectivePhotosMode))
       res.setHeader('X-MSP-ImgNotLoaded', String(Number((imgStats as any)?.notLoaded || 0)))
       res.setHeader('X-MSP-PdfBytes', String(pdfBuf.length))
       return res.status(200).send(pdfBuf)

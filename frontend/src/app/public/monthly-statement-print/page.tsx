@@ -1,9 +1,11 @@
 "use client"
 import dayjs from 'dayjs'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { apiList, getJSON } from '../../../lib/api'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
 import { buildStatementTxs } from '../../../lib/statementTx'
+import { computeMonthlyStatementBalanceDebug } from '../../../lib/statementBalances'
+import { resolveExcludeOrphanFixedSnapshotsParam } from '../../../lib/monthlyStatementPrint'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
@@ -26,7 +28,12 @@ export default function PublicMonthlyStatementPrintPage() {
   const [photosMode, setPhotosMode] = useState<'full' | 'compressed' | 'thumbnail' | 'off'>('full')
   const [photoW, setPhotoW] = useState<number | undefined>(undefined)
   const [photoQ, setPhotoQ] = useState<number | undefined>(undefined)
-  const [excludeOrphanFixedSnapshots, setExcludeOrphanFixedSnapshots] = useState<boolean>(false)
+  const [excludeOrphanFixedSnapshots, setExcludeOrphanFixedSnapshots] = useState<boolean>(true)
+  const [rawFin, setRawFin] = useState<any[]>([])
+  const [rawPexp, setRawPexp] = useState<any[]>([])
+  const [rawRecurs, setRawRecurs] = useState<any[]>([])
+  const [rawTxLoaded, setRawTxLoaded] = useState<boolean>(false)
+  const [orphanCount, setOrphanCount] = useState<number>(0)
   const ref = useRef<HTMLDivElement>(null)
   const inited = useRef<boolean>(false)
   const fetchTimeoutMs = 25000
@@ -75,9 +82,7 @@ export default function PublicMonthlyStatementPrintPage() {
         const n = Number(photoQ)
         if (Number.isFinite(n) && n > 0) setPhotoQ(n)
       }
-      if (excludeOrphans === '0' || excludeOrphans === '1') {
-        setExcludeOrphanFixedSnapshots(excludeOrphans === '1')
-      }
+      setExcludeOrphanFixedSnapshots(resolveExcludeOrphanFixedSnapshotsParam(excludeOrphans))
     } catch {}
   }, [])
 
@@ -90,7 +95,6 @@ export default function PublicMonthlyStatementPrintPage() {
   }, [])
   useEffect(() => {
     setOrdersLoaded(false)
-    setTxsLoaded(false)
     setLandlordsLoaded(false)
     ;(async () => {
       const pid = String(propertyId || '').trim()
@@ -111,21 +115,75 @@ export default function PublicMonthlyStatementPrintPage() {
         setOrdersLoaded(true)
       }
     })()
+    getJSON<Landlord[]>('/landlords', { timeoutMs: fetchTimeoutMs })
+      .then(setLandlords)
+      .catch(() => setLandlords([]))
+      .finally(() => setLandlordsLoaded(true))
+  }, [propertyId, month])
+
+  useEffect(() => {
+    setRawTxLoaded(false)
     ;(async () => {
       try {
         const fin: any[] = await getJSON<any[]>('/finance', { timeoutMs: fetchTimeoutMs })
         const pexp: any[] = await apiList<any[]>('property_expenses', undefined, { timeoutMs: fetchTimeoutMs })
         const recurs: any[] = await apiList<any[]>('recurring_payments', undefined, { timeoutMs: fetchTimeoutMs })
-        const built = buildStatementTxs(fin, pexp, { properties, recurring_payments: recurs, excludeOrphanFixedSnapshots })
-        setTxs(built.txs as any)
-      } catch { setTxs([]) }
-      finally { setTxsLoaded(true) }
+        setRawFin(Array.isArray(fin) ? fin : [])
+        setRawPexp(Array.isArray(pexp) ? pexp : [])
+        setRawRecurs(Array.isArray(recurs) ? recurs : [])
+      } catch {
+        setRawFin([])
+        setRawPexp([])
+        setRawRecurs([])
+      } finally {
+        setRawTxLoaded(true)
+      }
     })()
-    getJSON<Landlord[]>('/landlords', { timeoutMs: fetchTimeoutMs })
-      .then(setLandlords)
-      .catch(() => setLandlords([]))
-      .finally(() => setLandlordsLoaded(true))
-  }, [properties, excludeOrphanFixedSnapshots, propertyId, month])
+  }, [])
+
+  useEffect(() => {
+    if (!propertiesLoaded || !rawTxLoaded) {
+      setTxs([])
+      setTxsLoaded(false)
+      setOrphanCount(0)
+      return
+    }
+    const built = buildStatementTxs(rawFin, rawPexp, {
+      properties,
+      recurring_payments: rawRecurs,
+      excludeOrphanFixedSnapshots,
+    })
+    setTxs(built.txs as any)
+    setOrphanCount(Number(built.orphanCount || 0))
+    setTxsLoaded(true)
+  }, [propertiesLoaded, rawTxLoaded, properties, rawFin, rawPexp, rawRecurs, excludeOrphanFixedSnapshots])
+
+  const balanceDebug = useMemo(() => {
+    if (!propertyId || !/^\d{4}-\d{2}$/.test(String(month?.format?.('YYYY-MM') || ''))) return null
+    if (!ordersLoaded || !txsLoaded || !propertiesLoaded || !landlordsLoaded) return null
+    const property = properties.find(p => String(p.id) === String(propertyId))
+    const landlord = landlords.find(l => (l.property_ids || []).includes(propertyId || ''))
+    return computeMonthlyStatementBalanceDebug({
+      month: month.format('YYYY-MM'),
+      propertyId,
+      propertyCode: property?.code,
+      orders,
+      txs,
+      managementFeeRate: landlord?.management_fee_rate,
+    })
+  }, [propertyId, month, ordersLoaded, txsLoaded, propertiesLoaded, landlordsLoaded, properties, landlords, orders, txs])
+
+  useEffect(() => {
+    if (!balanceDebug || !propertyId) return
+    console.info('[monthly-statement-print] carry diagnostics', {
+      month: month.format('YYYY-MM'),
+      propertyId,
+      excludeOrphanFixedSnapshots,
+      orphanCount,
+      summary: balanceDebug.summary,
+      target: balanceDebug.target,
+    })
+  }, [balanceDebug, propertyId, month, excludeOrphanFixedSnapshots, orphanCount])
 
   if (!propertyId) return <div />
 

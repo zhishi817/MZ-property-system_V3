@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canDownloadSplitPart, splitPartPhotoCount, type MergeSplitInfo } from './monthlyStatementPhotoSplit'
+import { canDownloadSplitPart, pickSplitPhotosMode, splitPartPhotoCount, type MergeSplitInfo } from './monthlyStatementPhotoSplit'
 
 describe('monthly statement photo split', () => {
   const info: MergeSplitInfo = {
@@ -20,5 +20,11 @@ describe('monthly statement photo split', () => {
   it('enables split download only when that part has photos', () => {
     expect(canDownloadSplitPart(info, 'maintenance')).toBe(true)
     expect(canDownloadSplitPart(info, 'deep_cleaning')).toBe(false)
+  })
+
+  it('downgrades split photo mode for stability', () => {
+    expect(pickSplitPhotosMode(2, 'ultra')).toBe('compressed')
+    expect(pickSplitPhotosMode(12, 'ultra')).toBe('compressed')
+    expect(pickSplitPhotosMode(24, 'ultra')).toBe('thumbnail')
   })
 })
