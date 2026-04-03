@@ -15,6 +15,7 @@ import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
 import { renderMonthlyStatementPdfHtml } from '../lib/monthlyStatementPdfTemplate'
 import { waitForImages } from '../lib/waitForImages'
 import { resizeUploadImage } from '../lib/uploadImageResize'
+import { normalizePhotoUrlForPdf } from '../lib/normalizePhotoUrlForPdf'
 import { v4 as uuidv4 } from 'uuid'
 import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
 import { r2Status, r2GetObjectByKey } from '../r2'
@@ -1774,35 +1775,16 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       }
       return n
     }
-    const isR2 = (u: string) => u.includes('.r2.dev/') || u.includes('r2.cloudflarestorage.com/')
-    const proxyR2 = (u: string) => {
-      if (!apiBase) return u
-      const base = `${apiBase}/public/r2-image?url=${encodeURIComponent(u)}`
-      if (photosMode === 'compressed' || photosMode === 'thumbnail') return `${base}&fmt=jpeg&w=${compress.w}&q=${compress.q}`
-      return base
-    }
-    const normalizeR2Key = (key: string) => {
-      const k = String(key || '').trim().replace(/^\/+/, '')
-      if (!k) return ''
-      if (!/^(maintenance|deep-cleaning|invoice-company-logos)\//i.test(k)) return ''
-      const base = r2PublicBaseForKey()
-      if (!base) return ''
-      const u = `${base}/${k}`
-      return isR2(u) ? proxyR2(u) : u
-    }
-    const normalizePhotoUrl = (u: string) => {
-      const s = String(u || '').trim()
-      if (!s) return ''
-      if (/^https?:\/\//i.test(s)) return isR2(s) ? proxyR2(s) : s
-      if (s.startsWith('//')) {
-        const abs = `https:${s}`
-        return isR2(abs) ? proxyR2(abs) : abs
-      }
-      if (s.startsWith('/')) return apiBase ? `${apiBase}${s}` : ''
-      const maybeKey = normalizeR2Key(s)
-      if (maybeKey) return maybeKey
-      return ''
-    }
+    const normalizePhotosMode = ((): 'full' | 'compressed' | 'thumbnail' => {
+      if (photosMode === 'compressed' || photosMode === 'thumbnail') return photosMode
+      return 'full'
+    })()
+    const normalizePhotoUrl = (u: string) => normalizePhotoUrlForPdf(u, {
+      apiBase,
+      allowR2KeyPrefixes: ['maintenance/', 'deep-cleaning/', 'deep-cleaning-upload/', 'invoice-company-logos/'],
+      photosMode: normalizePhotosMode,
+      compress,
+    })
     const mapRowUrls = (r: any) => {
       const before = normUrlList(r?.photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
       const after = normUrlList(r?.repair_photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
