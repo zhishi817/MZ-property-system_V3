@@ -427,7 +427,7 @@ async function run() {
     `CREATE INDEX IF NOT EXISTS idx_invoices_issue_date ON invoices(issue_date);`,
     `CREATE INDEX IF NOT EXISTS idx_invoices_invoice_no ON invoices(invoice_no);`,
     `CREATE UNIQUE INDEX IF NOT EXISTS uniq_invoices_company_invoice_no ON invoices(company_id, invoice_no) WHERE invoice_no IS NOT NULL;`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_invoices_biz_unique_key ON invoices(biz_unique_key) WHERE biz_unique_key IS NOT NULL;`
+    `CREATE UNIQUE INDEX IF NOT EXISTS uniq_invoices_biz_unique_key ON invoices(biz_unique_key) WHERE biz_unique_key IS NOT NULL AND COALESCE(status, '') <> 'void';`
     ,
     `CREATE TABLE IF NOT EXISTS invoice_sources (
       invoice_id text REFERENCES invoices(id) ON DELETE CASCADE,

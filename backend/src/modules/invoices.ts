@@ -126,7 +126,7 @@ async function ensureInvoiceTables() {
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_invoices_type ON invoices(invoice_type);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_invoices_invoice_no ON invoices(invoice_no);')
   await pgPool.query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_invoices_company_invoice_no ON invoices(company_id, invoice_no) WHERE invoice_no IS NOT NULL;")
-  await pgPool.query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_invoices_biz_unique_key ON invoices(biz_unique_key) WHERE biz_unique_key IS NOT NULL;")
+  await pgPool.query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_invoices_biz_unique_key ON invoices(biz_unique_key) WHERE biz_unique_key IS NOT NULL AND COALESCE(status, '') <> 'void';")
 
   await pgPool.query(`CREATE TABLE IF NOT EXISTS invoice_customers (
     id text PRIMARY KEY,
@@ -322,6 +322,56 @@ function computeBizUniqueKey(payload: any) {
 function isPgUniqueViolation(e: any) {
   const code = String(e?.code || '')
   return code === '23505'
+}
+
+function buildInvoiceConflictResponse(kind: 'duplicate_invoice_content' | 'duplicate_invoice_no', detail?: any) {
+  const payload: Record<string, any> = { message: kind }
+  if (detail?.id) payload.conflict_invoice_id = String(detail.id)
+  if (detail?.invoice_no) payload.conflict_invoice_no = String(detail.invoice_no)
+  if (detail?.company_id) payload.conflict_company_id = String(detail.company_id)
+  return payload
+}
+
+async function findInvoiceByBizKey(bizKey: string, excludeId?: string, client?: any) {
+  const dbh = client || pgPool!
+  const params = excludeId ? [bizKey, excludeId] : [bizKey]
+  const sql = excludeId
+    ? "SELECT id, invoice_no, company_id FROM invoices WHERE biz_unique_key=$1 AND COALESCE(status, '') <> 'void' AND id<>$2 LIMIT 1"
+    : "SELECT id, invoice_no, company_id FROM invoices WHERE biz_unique_key=$1 AND COALESCE(status, '') <> 'void' LIMIT 1"
+  const rs = await dbh.query(sql, params)
+  return rs?.rows?.[0] || null
+}
+
+async function findInvoiceByCompanyAndNo(companyId: any, invoiceNo: any, excludeId?: string, client?: any) {
+  const company = String(companyId || '').trim()
+  const no = String(invoiceNo || '').trim()
+  if (!company || !no) return null
+  const dbh = client || pgPool!
+  const params = excludeId ? [company, no, excludeId] : [company, no]
+  const sql = excludeId
+    ? 'SELECT id, invoice_no, company_id FROM invoices WHERE company_id=$1 AND invoice_no=$2 AND id<>$3 LIMIT 1'
+    : 'SELECT id, invoice_no, company_id FROM invoices WHERE company_id=$1 AND invoice_no=$2 LIMIT 1'
+  const rs = await dbh.query(sql, params)
+  return rs?.rows?.[0] || null
+}
+
+async function resolveInvoiceConflict(e: any, ctx?: { companyId?: any; invoiceNo?: any; bizKey?: string; excludeId?: string; client?: any }) {
+  if (ctx?.companyId && ctx?.invoiceNo) {
+    const dupNo = await findInvoiceByCompanyAndNo(ctx.companyId, ctx.invoiceNo, ctx.excludeId, ctx.client)
+    if (dupNo) return buildInvoiceConflictResponse('duplicate_invoice_no', dupNo)
+  }
+  if (ctx?.bizKey) {
+    const dupBiz = await findInvoiceByBizKey(ctx.bizKey, ctx.excludeId, ctx.client)
+    if (dupBiz) return buildInvoiceConflictResponse('duplicate_invoice_content', dupBiz)
+  }
+  const constraint = String(e?.constraint || '')
+  if (/uniq_invoices_company_invoice_no/i.test(constraint)) {
+    return buildInvoiceConflictResponse('duplicate_invoice_no')
+  }
+  if (/uniq_invoices_biz_unique_key/i.test(constraint)) {
+    return buildInvoiceConflictResponse('duplicate_invoice_content')
+  }
+  return buildInvoiceConflictResponse('duplicate_invoice_content')
 }
  
 function computeLine(item: { quantity: number; unit_price: number; gst_type: GstType }) {
@@ -761,10 +811,13 @@ router.get('/', requirePerm('invoice.view'), async (req, res) => {
 })
  
 router.post('/', requireAnyPerm(['invoice.draft.create','invoice.issue']), async (req, res) => {
+  let parsedBody: any = null
+  let bizKey = ''
   try {
     await ensureInvoiceTables()
     const user = (req as any).user || {}
     const v = InvoiceCreateSchema.parse(req.body || {})
+    parsedBody = v
     const createdBy = user?.sub || user?.username || null
     const roleName = String(user?.role || '')
     const canSwitchType = await roleHasPermAsync(roleName, 'invoice.type.switch')
@@ -823,9 +876,9 @@ router.post('/', requireAnyPerm(['invoice.draft.create','invoice.issue']), async
       updated_at: nowIso(),
       ...totals,
     }
-    const bizKey = computeBizUniqueKey({ ...invoicePayload, issue_date: issueDate, total: totals.total, line_items: lines })
-    const dup = await pgPool!.query('SELECT id FROM invoices WHERE biz_unique_key=$1 LIMIT 1', [bizKey])
-    if (dup?.rowCount) return res.status(409).json({ message: 'duplicate_invoice' })
+    bizKey = computeBizUniqueKey({ ...invoicePayload, issue_date: issueDate, total: totals.total, line_items: lines })
+    const dup = await findInvoiceByBizKey(bizKey)
+    if (dup) return res.status(409).json(buildInvoiceConflictResponse('duplicate_invoice_content', dup))
     invoicePayload.biz_unique_key = bizKey
     const row = await pgInsert('invoices', invoicePayload)
     for (const li of lines) await pgInsert('invoice_line_items', li as any)
@@ -837,7 +890,7 @@ router.post('/', requireAnyPerm(['invoice.draft.create','invoice.issue']), async
     addAudit('Invoice', invoiceId, 'create', null, { ...row, line_items: lines, sources: v.sources || [] }, createdBy, { ip: req.ip, user_agent: req.headers['user-agent'] })
     return res.status(201).json({ ...row, line_items: lines, sources: v.sources || [] })
   } catch (e: any) {
-    if (isPgUniqueViolation(e)) return res.status(409).json({ message: 'duplicate_invoice' })
+    if (isPgUniqueViolation(e)) return res.status(409).json(await resolveInvoiceConflict(e, { companyId: parsedBody?.company_id, invoiceNo: parsedBody?.invoice_no, bizKey }))
     return res.status(400).json({ message: e?.message || 'create_failed' })
   }
 })
@@ -935,6 +988,7 @@ const InvoicePatchSchema = z.object({
 })
  
 router.patch('/:id', requireAnyPerm(['invoice.draft.create','invoice.issue']), async (req, res) => {
+  let conflictCtx: any = null
   try {
     await ensureInvoiceTables()
     const { id } = req.params
@@ -1032,8 +1086,9 @@ router.patch('/:id', requireAnyPerm(['invoice.draft.create','invoice.issue']), a
         primary_source_id: before.primary_source_id,
         line_items: nextLines,
       })
-      const dup = await client.query('SELECT id FROM invoices WHERE biz_unique_key=$1 AND id<>$2 LIMIT 1', [bizKey, id])
-      if (dup?.rowCount) throw new Error('duplicate_invoice')
+      conflictCtx = { companyId: nextCompanyId, invoiceNo: before.invoice_no, bizKey, excludeId: id, client }
+      const dup = await findInvoiceByBizKey(bizKey, id, client)
+      if (dup) throw Object.assign(new Error('duplicate_invoice_content'), { conflict: buildInvoiceConflictResponse('duplicate_invoice_content', dup) })
 
       const nextRow = await pgUpdate('invoices', id, {
         company_id: nextCompanyId || undefined,
@@ -1068,13 +1123,15 @@ router.patch('/:id', requireAnyPerm(['invoice.draft.create','invoice.issue']), a
     if (!updated) return res.status(404).json({ message: 'not_found' })
     return res.json(updated)
   } catch (e: any) {
-    if (String(e?.message || '') === 'duplicate_invoice') return res.status(409).json({ message: 'duplicate_invoice' })
-    if (isPgUniqueViolation(e)) return res.status(409).json({ message: 'duplicate_invoice' })
+    const msg = String(e?.message || '')
+    if (msg === 'duplicate_invoice_content' && e?.conflict) return res.status(409).json(e.conflict)
+    if (isPgUniqueViolation(e)) return res.status(409).json(await resolveInvoiceConflict(e, conflictCtx || {}))
     return res.status(400).json({ message: e?.message || 'update_failed' })
   }
 })
  
 router.post('/:id/issue', requirePerm('invoice.issue'), async (req, res) => {
+  let conflictCtx: any = null
   try {
     await ensureInvoiceTables()
     const { id } = req.params
@@ -1103,8 +1160,9 @@ router.post('/:id/issue', requirePerm('invoice.issue'), async (req, res) => {
         primary_source_id: inv.primary_source_id,
         line_items: lines,
       })
-      const dup = await client.query('SELECT id FROM invoices WHERE biz_unique_key=$1 AND id<>$2 LIMIT 1', [bizKey, id])
-      if (dup?.rowCount) throw new Error('duplicate_invoice')
+      conflictCtx = { companyId: inv.company_id, invoiceNo, bizKey, excludeId: id, client }
+      const dup = await findInvoiceByBizKey(bizKey, id, client)
+      if (dup) throw Object.assign(new Error('duplicate_invoice_content'), { conflict: buildInvoiceConflictResponse('duplicate_invoice_content', dup) })
       const upd = await client.query(
         `UPDATE invoices
          SET status=$1, invoice_no=$2, issue_date=to_date($3,'YYYY-MM-DD'), issued_at=now(),
@@ -1123,8 +1181,8 @@ router.post('/:id/issue', requirePerm('invoice.issue'), async (req, res) => {
   } catch (e: any) {
     const msg = String(e?.message || '')
     if (msg === 'not_found') return res.status(404).json({ message: 'not_found' })
-    if (msg === 'duplicate_invoice') return res.status(409).json({ message: 'duplicate_invoice' })
-    if (isPgUniqueViolation(e)) return res.status(409).json({ message: 'duplicate_invoice' })
+    if (msg === 'duplicate_invoice_content' && e?.conflict) return res.status(409).json(e.conflict)
+    if (isPgUniqueViolation(e)) return res.status(409).json(await resolveInvoiceConflict(e, conflictCtx || {}))
     return res.status(400).json({ message: e?.message || 'issue_failed' })
   }
 })
@@ -1454,8 +1512,8 @@ router.post('/draft-from-sources', requireAnyPerm(['invoice.draft.create','invoi
         const totals = computeTotals(lines as any, 0)
         const primary = payload.sources[0]
         const bizKey = computeBizUniqueKey({ company_id: payload.company_id, invoice_type: 'invoice', currency: payload.currency, total: totals.total, primary_source_type: primary.source_type, primary_source_id: primary.source_id, line_items: lines })
-        const dup = await pgPool!.query('SELECT id FROM invoices WHERE biz_unique_key=$1 LIMIT 1', [bizKey])
-        if (dup?.rowCount) throw new Error('duplicate_invoice')
+        const dup = await findInvoiceByBizKey(bizKey)
+        if (dup) throw Object.assign(new Error('duplicate_invoice_content'), { conflict: buildInvoiceConflictResponse('duplicate_invoice_content', dup) })
         const row = await pgInsert('invoices', { id: invoiceId, company_id: payload.company_id, invoice_type: 'invoice', currency: payload.currency, status: 'draft', biz_unique_key: bizKey, primary_source_type: primary.source_type, primary_source_id: primary.source_id, created_by: actor, updated_by: actor, created_at: nowIso(), updated_at: nowIso(), ...totals } as any)
         for (const li of lines) await pgInsert('invoice_line_items', li as any)
         for (const s of payload.sources) {
@@ -1485,8 +1543,8 @@ router.post('/draft-from-sources', requireAnyPerm(['invoice.draft.create','invoi
       })
       const totals = computeTotals(lines as any, 0)
       const bizKey = computeBizUniqueKey({ company_id: payload.company_id, invoice_type: 'invoice', currency: payload.currency, total: totals.total, bill_to_name: payload.bill_to_name, bill_to_email: payload.bill_to_email, primary_source_type: s.source_type, primary_source_id: s.source_id, line_items: lines })
-      const dup = await pgPool!.query('SELECT id FROM invoices WHERE biz_unique_key=$1 LIMIT 1', [bizKey])
-      if (dup?.rowCount) throw new Error('duplicate_invoice')
+      const dup = await findInvoiceByBizKey(bizKey)
+      if (dup) throw Object.assign(new Error('duplicate_invoice_content'), { conflict: buildInvoiceConflictResponse('duplicate_invoice_content', dup) })
       const row = await pgInsert('invoices', { id: invoiceId, company_id: payload.company_id, invoice_type: 'invoice', currency: payload.currency, status: 'draft', biz_unique_key: bizKey, bill_to_name: payload.bill_to_name, bill_to_email: payload.bill_to_email, bill_to_address: payload.bill_to_address, primary_source_type: s.source_type, primary_source_id: s.source_id, created_by: actor, updated_by: actor, created_at: nowIso(), updated_at: nowIso(), ...totals } as any)
       for (const li of lines) await pgInsert('invoice_line_items', li as any)
       await pgPool!.query('INSERT INTO invoice_sources (invoice_id, source_type, source_id, label) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING', [invoiceId, s.source_type, s.source_id, d.label || null])
@@ -1495,8 +1553,8 @@ router.post('/draft-from-sources', requireAnyPerm(['invoice.draft.create','invoi
     }
     return res.status(201).json({ mode: 'per_item', invoices: outputs })
   } catch (e: any) {
-    if (String(e?.message || '') === 'duplicate_invoice') return res.status(409).json({ message: 'duplicate_invoice' })
-    if (isPgUniqueViolation(e)) return res.status(409).json({ message: 'duplicate_invoice' })
+    if (String(e?.message || '') === 'duplicate_invoice_content' && e?.conflict) return res.status(409).json(e.conflict)
+    if (isPgUniqueViolation(e)) return res.status(409).json(await resolveInvoiceConflict(e))
     return res.status(400).json({ message: e?.message || 'draft_from_sources_failed' })
   }
 })
