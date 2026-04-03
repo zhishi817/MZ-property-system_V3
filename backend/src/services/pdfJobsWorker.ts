@@ -189,6 +189,15 @@ function cookieBase(baseUrl: string, token: string) {
   }
 }
 
+function vercelBypassSecret(): string {
+  return String(
+    process.env.VERCEL_AUTOMATION_BYPASS_SECRET ||
+    process.env.VERCEL_PROTECTION_BYPASS_SECRET ||
+    process.env.VERCEL_PROTECTION_BYPASS ||
+    ''
+  ).trim()
+}
+
 async function pdfPageCount(buf: Buffer): Promise<number> {
   try {
     const doc = await PDFDocument.load(new Uint8Array(buf))
@@ -201,6 +210,7 @@ async function pdfPageCount(buf: Buffer): Promise<number> {
 async function generateStatementBasePdf(opts: { jobId: string; month: string; property_id: string; showChinese: boolean; excludeOrphanFixedSnapshots: boolean }): Promise<{ pdf: Buffer; diagnostics: any }> {
   const front = frontBaseUrl()
   const token = internalAuthToken()
+  const bypass = vercelBypassSecret()
   const url = (() => {
     const u = new URL('/public/monthly-statement-print', front)
     u.searchParams.set('pid', opts.property_id)
@@ -210,6 +220,7 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
     u.searchParams.set('photos', 'off')
     u.searchParams.set('sections', 'base')
     u.searchParams.set('exclude_orphan_fixed', opts.excludeOrphanFixedSnapshots ? '1' : '0')
+    if (bypass) u.searchParams.set('x-vercel-protection-bypass', bypass)
     return u.toString()
   })()
   try { console.log(`[pdf-jobs][worker] goto_url=${url}`) } catch {}
@@ -220,11 +231,12 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
     let context: any = null
     const diag: any = { url, console: [] as string[], pageErrors: [] as string[], requestFails: [] as string[] }
     try {
-      try { context = await browser.newContext() } catch (e: any) {
+      const extraHTTPHeaders = bypass ? { 'x-vercel-protection-bypass': bypass, 'x-vercel-set-bypass-cookie': 'true' } : undefined
+      try { context = await browser.newContext(extraHTTPHeaders ? { extraHTTPHeaders } : undefined) } catch (e: any) {
         if (!isTargetClosed(e)) throw e
         await resetChromiumBrowser()
         const b2 = await getChromiumBrowser()
-        context = await b2.newContext()
+        context = await b2.newContext(extraHTTPHeaders ? { extraHTTPHeaders } : undefined)
       }
       const cookieTargets = Array.from(new Set([front, apiBase].map(s => String(s || '').trim()).filter(Boolean)))
       if (cookieTargets.length) {
@@ -254,7 +266,17 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
       page.setDefaultTimeout(waitTimeoutMs)
       page.setDefaultNavigationTimeout(navTimeoutMs)
       try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
+        const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
+        const status = Number(resp?.status?.() || 0)
+        if (status >= 400) {
+          const title = await page.title().catch(() => '')
+          const hint = status === 429
+            ? '当前返回 429 Too Many Requests，通常表示 FRONTEND_BASE_URL 指向了错误的服务（后端/限流页），或目标站点被限流'
+            : '当前返回非 200 页面，请确认 FRONTEND_BASE_URL 指向 Next 前端站点且存在 /public/monthly-statement-print'
+          const e2: any = new Error(`print page http ${status}${title ? ` title=${title}` : ''} (${hint})`)
+          e2.code = `HTTP_${status}`
+          throw e2
+        }
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
         await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
         await page.waitForSelector('[data-monthly-statement-root="1"]', { timeout: waitTimeoutMs })
@@ -273,6 +295,12 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
           console.log(`[pdf-jobs][worker] page_debug attempt=${attempt + 1} page_url=${pu}`)
           if (html) console.log(String(html).slice(0, 2000))
         } catch {}
+        const msg = String(e?.message || e || '')
+        if (/ERR_CONNECTION_REFUSED/i.test(msg) && /localhost|127\.0\.0\.1/i.test(url)) {
+          const e2: any = new Error(`${msg} (worker 无法访问 ${url}；请把后端环境变量 FRONTEND_BASE_URL 设置为线上前端域名，而不是 localhost)`)
+          if (e?.code) e2.code = e.code
+          throw e2
+        }
         throw e
       }
       await waitForImages(page, { timeoutMs: 20000, scroll: true, maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
@@ -308,7 +336,11 @@ async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promis
     const r = await pgPool.query(
       `SELECT i.url FROM expense_invoices i
        JOIN property_expenses e ON i.expense_id = e.id
-       WHERE e.property_id = $1 AND e.occurred_at >= $2 AND e.occurred_at < $3
+       WHERE e.property_id = $1
+         AND (
+           (e.occurred_at >= $2 AND e.occurred_at < $3)
+           OR (e.occurred_at IS NULL AND e.created_at >= $2::date AND e.created_at < $3::date)
+         )
        ORDER BY i.created_at ASC`,
       [pid, start, end]
     )
@@ -327,10 +359,10 @@ async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promis
     } catch {}
   }
   const apiBase = apiBaseForAssets()
-  return urls.map((u) => {
+  return Array.from(new Set(urls.map((u) => {
     if (u.startsWith('/') && apiBase) return `${apiBase}${u}`
     return u
-  }).filter(Boolean)
+  }).filter(Boolean)))
 }
 
 function allowedHostsSet(): Set<string> {

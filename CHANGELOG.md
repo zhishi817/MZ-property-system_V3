@@ -2,6 +2,13 @@
 
 ## Dev (2026-04-03)
 
+### build.7
+
+- Version: `0.2.7-statement-pdf.20260403+build.7`
+- Worker: Monthly pack statement rendering now surfaces HTTP status errors (e.g. 404/429) with actionable hints instead of timing out on missing selectors.
+- Worker: Support Vercel Deployment Protection bypass for Playwright-rendered print pages via `VERCEL_AUTOMATION_BYPASS_SECRET` (header + query param).
+- Worker: Merge-monthly-pack invoice collection now falls back to `property_expenses.created_at` when `occurred_at` is NULL and de-duplicates invoice URLs.
+
 ### build.6
 
 - Version: `0.2.7-statement-pdf.20260403+build.6`
