@@ -39,6 +39,31 @@ export type MonthlyStatementBalanceResult = {
 
 export type MonthlyStatementBalanceDebugMonth = MonthlyStatementBalanceResult & {
   carry_source_kind: 'none' | 'prior_operating_loss' | 'furniture_outstanding' | 'mixed'
+  contributing_order_ids: string[]
+  contributing_income_tx_ids: string[]
+  contributing_expense_tx_ids: string[]
+  contributing_furniture_charge_tx_ids: string[]
+  contributing_furniture_owner_paid_tx_ids: string[]
+  operating_entries: Array<{
+    id: string
+    source: 'opening_carry' | 'order_rent' | 'income_tx' | 'expense_tx' | 'management_fee'
+    date: string
+    signed_amount: number
+    label: string
+    ref_type?: string
+    ref_id?: string
+  }>
+  negative_carry_trigger: null | {
+    id: string
+    source: 'opening_carry' | 'order_rent' | 'income_tx' | 'expense_tx' | 'management_fee'
+    date: string
+    signed_amount: number
+    label: string
+    running_before: number
+    running_after: number
+    ref_type?: string
+    ref_id?: string
+  }
 }
 
 export type MonthlyStatementBalanceDebugResult = {
@@ -104,7 +129,13 @@ function calcMonthOperatingNet(input: {
   orders: Order[]
   txs: Tx[]
   managementFeeRate?: number
-}): { operatingNet: number } {
+}): {
+  operatingNet: number
+  relatedOrders: Order[]
+  otherIncomeTxs: Tx[]
+  expenseTxs: Tx[]
+  managementFee: number
+} {
   const { monthStart, property, orders, txs } = input
   const start = dayjs(monthStart).startOf('month')
 
@@ -168,19 +199,35 @@ function calcMonthOperatingNet(input: {
   const managementFee = input.managementFeeRate ? round2(rentIncome * Number(input.managementFeeRate || 0)) : 0
   const totalExpenseOperating = managementFee + catElectricity + catWater + catGas + catInternet + catConsumable + catCarpark + catOwnerCorp + catCouncil + catOther
   const operatingNet = round2((rentIncome + otherIncome) - totalExpenseOperating)
-  return { operatingNet }
+  return {
+    operatingNet,
+    relatedOrders,
+    otherIncomeTxs: txs
+      .filter(t => {
+        if (t.kind !== 'income') return false
+        if (!txMatchesProperty(t as any, { id: property.id, code: property.code })) return false
+        if (!txInMonth(t as any, start)) return false
+        if (isFurnitureOwnerPayment(t)) return false
+        if (String((t as any).category || '').toLowerCase() === 'late_checkout') return false
+        return shouldIncludeIncomeTxInPropertyOtherIncome(t, orderById)
+      }),
+    expenseTxs: expensesOperating,
+    managementFee,
+  }
 }
 
 function calcMonthFurniture(input: {
   monthStart: any
   property: { id: string; code?: string }
   txs: Tx[]
-}): { charge: number; ownerPaid: number } {
+}): { charge: number; ownerPaid: number; chargeTxs: Tx[]; ownerPaidTxs: Tx[] } {
   const start = dayjs(input.monthStart).startOf('month')
   const list = (input.txs || []).filter(t => txMatchesProperty(t as any, { id: input.property.id, code: input.property.code }) && txInMonth(t as any, start))
-  const charge = list.filter(isFurnitureRecoverableCharge).reduce((s, x) => s + Number(x.amount || 0), 0)
-  const ownerPaid = list.filter(isFurnitureOwnerPayment).reduce((s, x) => s + Number(x.amount || 0), 0)
-  return { charge: round2(charge), ownerPaid: round2(ownerPaid) }
+  const chargeTxs = list.filter(isFurnitureRecoverableCharge)
+  const ownerPaidTxs = list.filter(isFurnitureOwnerPayment)
+  const charge = chargeTxs.reduce((s, x) => s + Number(x.amount || 0), 0)
+  const ownerPaid = ownerPaidTxs.reduce((s, x) => s + Number(x.amount || 0), 0)
+  return { charge: round2(charge), ownerPaid: round2(ownerPaid), chargeTxs, ownerPaidTxs }
 }
 
 export function computeMonthlyStatementBalance(input: {
@@ -190,6 +237,7 @@ export function computeMonthlyStatementBalance(input: {
   orders: Order[]
   txs: Tx[]
   managementFeeRate?: number
+  carryStartMonth?: string
 }): MonthlyStatementBalanceResult {
   return computeMonthlyStatementBalanceDebug(input).result
 }
@@ -201,6 +249,7 @@ export function computeMonthlyStatementBalanceDebug(input: {
   orders: Order[]
   txs: Tx[]
   managementFeeRate?: number
+  carryStartMonth?: string
 }): MonthlyStatementBalanceDebugResult {
   const monthKey = String(input.month || '').trim()
   const targetStart = dayjs(`${monthKey}-01`).startOf('month')
@@ -222,7 +271,10 @@ export function computeMonthlyStatementBalanceDebug(input: {
 
   const firstMonth = (() => {
     const list = monthsWithData.filter(m => /^\d{4}-\d{2}$/.test(m)).sort()
-    return list.length ? list[0] : targetStart.format('YYYY-MM')
+    const dataFirst = list.length ? list[0] : targetStart.format('YYYY-MM')
+    const carryStart = /^\d{4}-\d{2}$/.test(String(input.carryStartMonth || '')) ? String(input.carryStartMonth) : ''
+    if (!carryStart) return dataFirst
+    return carryStart > dataFirst ? carryStart : dataFirst
   })()
 
   let cur = dayjs(`${firstMonth}-01`).startOf('month')
@@ -242,14 +294,14 @@ export function computeMonthlyStatementBalanceDebug(input: {
 
   while (cur.isBefore(targetStart.add(1, 'month'))) {
     const mk = cur.format('YYYY-MM')
-    const { operatingNet } = calcMonthOperatingNet({
+    const { operatingNet, relatedOrders, otherIncomeTxs, expenseTxs, managementFee } = calcMonthOperatingNet({
       monthStart: cur,
       property,
       orders: input.orders || [],
       txs: input.txs || [],
       managementFeeRate: input.managementFeeRate,
     })
-    const { charge, ownerPaid } = calcMonthFurniture({ monthStart: cur, property, txs: input.txs || [] })
+    const { charge, ownerPaid, chargeTxs, ownerPaidTxs } = calcMonthFurniture({ monthStart: cur, property, txs: input.txs || [] })
 
     const openingCN = carryNet
     const openingFO = furnitureOutstanding
@@ -264,6 +316,71 @@ export function computeMonthlyStatementBalanceDebug(input: {
     const offset = round2(Math.min(payableBeforeFurniture, newOutstanding))
     const payableToOwner = round2(payableBeforeFurniture - offset)
     newOutstanding = round2(newOutstanding - offset)
+    const operatingEntries: MonthlyStatementBalanceDebugMonth['operating_entries'] = []
+    if (Math.abs(round2(openingCN)) > 0.005) {
+      operatingEntries.push({
+        id: `carry-in-${mk}`,
+        source: 'opening_carry',
+        date: `${mk}-01`,
+        signed_amount: round2(openingCN),
+        label: 'Opening carry-over',
+      })
+    }
+    for (const o of relatedOrders) {
+      operatingEntries.push({
+        id: String((o as any).__rid || o.id || ''),
+        source: 'order_rent',
+        date: String(toDayStr((o as any).__src_checkin || o.checkin) || `${mk}-01`),
+        signed_amount: round2(Number(((o as any).visible_net_income ?? (o as any).net_income ?? 0) || 0)),
+        label: `Order rent ${String((o as any).guest_name || o.id || '')}`.trim(),
+      })
+    }
+    for (const t of otherIncomeTxs) {
+      operatingEntries.push({
+        id: String(t.id || ''),
+        source: 'income_tx',
+        date: String(toDayStr((t as any).paid_date || t.occurred_at || (t as any).created_at) || `${mk}-01`),
+        signed_amount: round2(Number(t.amount || 0)),
+        label: `Income ${String(t.category || t.category_detail || t.note || t.id || '')}`.trim(),
+        ref_type: String((t as any).ref_type || '') || undefined,
+        ref_id: String((t as any).ref_id || '') || undefined,
+      })
+    }
+    if (Math.abs(round2(managementFee)) > 0.005) {
+      operatingEntries.push({
+        id: `management-fee-${mk}`,
+        source: 'management_fee',
+        date: `${mk}-28`,
+        signed_amount: round2(-managementFee),
+        label: 'Management fee',
+      })
+    }
+    for (const t of expenseTxs) {
+      operatingEntries.push({
+        id: String(t.id || ''),
+        source: 'expense_tx',
+        date: String(toDayStr((t as any).paid_date || t.occurred_at || (t as any).created_at) || `${mk}-01`),
+        signed_amount: round2(-Number(t.amount || 0)),
+        label: `Expense ${String(t.category || t.category_detail || t.note || t.id || '')}`.trim(),
+        ref_type: String((t as any).ref_type || '') || undefined,
+        ref_id: String((t as any).ref_id || '') || undefined,
+      })
+    }
+    operatingEntries.sort((a, b) => a.date.localeCompare(b.date) || a.source.localeCompare(b.source) || a.id.localeCompare(b.id))
+    let running = 0
+    let negativeCarryTrigger: MonthlyStatementBalanceDebugMonth['negative_carry_trigger'] = null
+    for (const entry of operatingEntries) {
+      const before = round2(running)
+      const after = round2(before + Number(entry.signed_amount || 0))
+      if (!negativeCarryTrigger && before >= 0 && after < 0) {
+        negativeCarryTrigger = {
+          ...entry,
+          running_before: before,
+          running_after: after,
+        }
+      }
+      running = after
+    }
     const monthResult: MonthlyStatementBalanceDebugMonth = {
       month: mk,
       operating_net_income: round2(operatingNet),
@@ -284,6 +401,13 @@ export function computeMonthlyStatementBalanceDebug(input: {
             : Math.abs(round2(openingFO)) > 0.005
               ? 'furniture_outstanding'
               : 'none',
+      contributing_order_ids: relatedOrders.map(o => String((o as any).__rid || o.id || '')).filter(Boolean),
+      contributing_income_tx_ids: otherIncomeTxs.map(t => String(t.id || '')).filter(Boolean),
+      contributing_expense_tx_ids: expenseTxs.map(t => String(t.id || '')).filter(Boolean),
+      contributing_furniture_charge_tx_ids: chargeTxs.map(t => String(t.id || '')).filter(Boolean),
+      contributing_furniture_owner_paid_tx_ids: ownerPaidTxs.map(t => String(t.id || '')).filter(Boolean),
+      operating_entries: operatingEntries,
+      negative_carry_trigger: negativeCarryTrigger,
     }
     months.push(monthResult)
 
@@ -321,6 +445,13 @@ export function computeMonthlyStatementBalanceDebug(input: {
   const target = months.find(x => x.month === monthKey) || {
     ...result,
     carry_source_kind: 'none' as const,
+    contributing_order_ids: [],
+    contributing_income_tx_ids: [],
+    contributing_expense_tx_ids: [],
+    contributing_furniture_charge_tx_ids: [],
+    contributing_furniture_owner_paid_tx_ids: [],
+    operating_entries: [],
+    negative_carry_trigger: null,
   }
   const hasCarry = [result.opening_carry_net, result.closing_carry_net].some(v => Math.abs(Number(v || 0)) > 0.005)
   const hasFurniture = [

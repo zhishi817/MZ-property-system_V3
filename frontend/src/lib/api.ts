@@ -42,6 +42,17 @@ function assertApiBase() {
 
 export type FetchTimeoutOptions = { timeoutMs?: number }
 
+function buildApiError(msg: string, payload?: any) {
+  const err: any = new Error(msg)
+  if (payload && typeof payload === 'object') {
+    for (const [key, value] of Object.entries(payload)) {
+      if (key === 'message' || key === 'error') continue
+      err[key] = value
+    }
+  }
+  return err
+}
+
 function getToken() {
   if (typeof window === 'undefined') return null
   const ls = localStorage.getItem('token') || sessionStorage.getItem('token')
@@ -100,7 +111,7 @@ export async function getJSON<T>(path: string, options?: FetchTimeoutOptions): P
       if (/application\/json/i.test(ct)) {
         const j = await res.json() as any
         const msg = String(j?.message || j?.error || `HTTP ${res.status}`)
-        throw new Error(msg)
+        throw buildApiError(msg, j)
       } else {
         const t = await res.text()
         const msg = t ? t : `HTTP ${res.status}`
@@ -127,7 +138,7 @@ export async function postJSON<T>(path: string, body: any, options?: FetchTimeou
       if (/application\/json/i.test(ct)) {
         const j = await res.json() as any
         const msg = String(j?.message || j?.error || `HTTP ${res.status}`)
-        throw new Error(msg)
+        throw buildApiError(msg, j)
       } else {
         const t = await res.text()
         const msg = t ? t : `HTTP ${res.status}`
@@ -154,7 +165,7 @@ export async function patchJSON<T>(path: string, body: any, options?: FetchTimeo
       if (/application\/json/i.test(ct)) {
         const j = await res.json() as any
         const msg = String(j?.message || j?.error || `HTTP ${res.status}`)
-        throw new Error(msg)
+        throw buildApiError(msg, j)
       } else {
         const t = await res.text()
         const msg = t ? t : `HTTP ${res.status}`
@@ -181,7 +192,7 @@ export async function deleteJSON<T>(path: string, options?: FetchTimeoutOptions)
       if (/application\/json/i.test(ct)) {
         const j = await res.json() as any
         const msg = String(j?.message || j?.error || `HTTP ${res.status}`)
-        throw new Error(msg)
+        throw buildApiError(msg, j)
       } else {
         const t = await res.text()
         const msg = t ? t : `HTTP ${res.status}`

@@ -83,6 +83,28 @@ function isPlaywrightClosedError(e) {
     const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
     return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg);
 }
+function kickPdfJobsSoon(reason) {
+    setTimeout(() => {
+        ;
+        (async () => {
+            try {
+                const { processPdfJobsOnce } = require('../services/pdfJobsWorker');
+                const limit = Math.min(2, Math.max(1, Number(process.env.PDF_JOBS_KICK_LIMIT || 1)));
+                const r = await processPdfJobsOnce({ limit });
+                try {
+                    console.log(`[pdf-jobs][kick] reason=${reason} processed=${(r === null || r === void 0 ? void 0 : r.processed) || 0} ok=${(r === null || r === void 0 ? void 0 : r.ok) || 0} failed=${(r === null || r === void 0 ? void 0 : r.failed) || 0} reclaimed=${(r === null || r === void 0 ? void 0 : r.reclaimed) || 0}`);
+                }
+                catch (_a) { }
+            }
+            catch (e) {
+                try {
+                    console.log(`[pdf-jobs][kick] reason=${reason} failed message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                }
+                catch (_b) { }
+            }
+        })();
+    }, 0);
+}
 function monthRangeISO(monthKey) {
     const m = String(monthKey || '').trim();
     const mm = m.match(/^(\d{4})-(\d{2})$/);
@@ -1166,7 +1188,7 @@ exports.router.get('/monthly-statement-photo-stats', (0, auth_1.requireAnyPerm)(
 exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
     var _a;
     try {
-        const { month, property_id, showChinese, excludeOrphanFixedSnapshots, exportQuality, mergeInvoices, forceNew } = req.body || {};
+        const { month, property_id, showChinese, excludeOrphanFixedSnapshots, carryStartMonth, exportQuality, mergeInvoices, forceNew } = req.body || {};
         const monthKey = String(month || '').trim();
         const pid = String(property_id || '').trim();
         if (!/^\d{4}-\d{2}$/.test(monthKey))
@@ -1186,14 +1208,16 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
                 const r0 = await dbAdapter_2.pgPool.query(`SELECT id, status, stage, progress, attempts, locked_by, lease_expires_at, created_at
            FROM pdf_jobs
            WHERE kind='merge_monthly_pack'
-             AND status='running'
-             AND (lease_expires_at IS NULL OR lease_expires_at > now())
+             AND status IN ('queued', 'running')
+             AND (status <> 'running' OR lease_expires_at IS NULL OR lease_expires_at > now())
              AND COALESCE(params->>'month', params->>'month_key') = $1
              AND COALESCE(params->>'property_id', params->>'pid') = $2
            ORDER BY created_at DESC
            LIMIT 1`, [monthKey, pid]);
                 const existing = ((_a = r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
                 if (existing === null || existing === void 0 ? void 0 : existing.id) {
+                    if (String(existing.status || '') === 'queued')
+                        kickPdfJobsSoon('reuse_existing_merge_monthly_pack');
                     return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true });
                 }
             }
@@ -1204,12 +1228,16 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
             month: monthKey,
             property_id: pid,
             showChinese: !(showChinese === false || showChinese === '0'),
-            excludeOrphanFixedSnapshots: !!(excludeOrphanFixedSnapshots === true || excludeOrphanFixedSnapshots === 1 || excludeOrphanFixedSnapshots === '1'),
+            excludeOrphanFixedSnapshots: excludeOrphanFixedSnapshots === false || excludeOrphanFixedSnapshots === 0 || excludeOrphanFixedSnapshots === '0'
+                ? false
+                : true,
+            carryStartMonth: /^\d{4}-\d{2}$/.test(String(carryStartMonth || '').trim()) ? String(carryStartMonth).trim() : '2026-01',
             exportQuality: String(exportQuality || '').trim() || null,
             mergeInvoices: mergeInvoices === false ? false : true,
         };
         await dbAdapter_2.pgPool.query(`INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
        VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`, [id, JSON.stringify(params)]);
+        kickPdfJobsSoon('create_merge_monthly_pack');
         return res.json({ job_id: id, status: 'queued', reused: false });
     }
     catch (e) {
@@ -1480,7 +1508,7 @@ exports.router.post('/merge-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 
 exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), pdfLimiter, async (req, res) => {
     var _a, _b;
     try {
-        const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q, excludeOrphanFixedSnapshots } = req.body || {};
+        const { month, property_id, showChinese, includePhotosMode, includePhotos, sections, photo_w, photo_q, excludeOrphanFixedSnapshots, carryStartMonth } = req.body || {};
         const monthKey = String(month || '').trim();
         const pid = String(property_id || '').trim();
         if (!/^\d{4}-\d{2}$/.test(monthKey))
@@ -1528,7 +1556,7 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
                 return true;
             if (excludeOrphanFixedSnapshots === false || excludeOrphanFixedSnapshots === 0 || excludeOrphanFixedSnapshots === '0')
                 return false;
-            return false;
+            return true;
         })();
         const url = (() => {
             const u = new URL('/public/monthly-statement-print', front);
@@ -1539,6 +1567,7 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             u.searchParams.set('photos', photos);
             u.searchParams.set('sections', sec || 'all');
             u.searchParams.set('exclude_orphan_fixed', excludeOrphans ? '1' : '0');
+            u.searchParams.set('carry_start_month', /^\d{4}-\d{2}$/.test(String(carryStartMonth || '').trim()) ? String(carryStartMonth).trim() : '2026-01');
             if (photos === 'compressed') {
                 if (compress.w)
                     u.searchParams.set('photo_w', String(compress.w));
@@ -1629,6 +1658,11 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
                         deepCount: String(el.getAttribute('data-deep-clean-count') || ''),
                         maintLoaded: String(el.getAttribute('data-maint-loaded') || ''),
                         maintCount: String(el.getAttribute('data-maint-count') || ''),
+                        balanceShow: String(el.getAttribute('data-balance-show') || ''),
+                        openingCarry: String(el.getAttribute('data-balance-opening-carry') || ''),
+                        closingCarry: String(el.getAttribute('data-balance-closing-carry') || ''),
+                        payable: String(el.getAttribute('data-balance-payable') || ''),
+                        carrySource: String(el.getAttribute('data-balance-carry-source') || ''),
                     };
                 }).catch(() => null);
                 return { curUrl, title, hasRoot, attrs };

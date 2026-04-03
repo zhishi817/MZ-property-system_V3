@@ -5,7 +5,7 @@ import { apiList, getJSON } from '../../../lib/api'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
 import { buildStatementTxs } from '../../../lib/statementTx'
 import { computeMonthlyStatementBalanceDebug } from '../../../lib/statementBalances'
-import { resolveExcludeOrphanFixedSnapshotsParam } from '../../../lib/monthlyStatementPrint'
+import { DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH, resolveExcludeOrphanFixedSnapshotsParam, resolveMonthlyStatementCarryStartMonth } from '../../../lib/monthlyStatementPrint'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
 type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
@@ -29,6 +29,7 @@ export default function PublicMonthlyStatementPrintPage() {
   const [photoW, setPhotoW] = useState<number | undefined>(undefined)
   const [photoQ, setPhotoQ] = useState<number | undefined>(undefined)
   const [excludeOrphanFixedSnapshots, setExcludeOrphanFixedSnapshots] = useState<boolean>(true)
+  const [carryStartMonth, setCarryStartMonth] = useState<string>(DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH)
   const [rawFin, setRawFin] = useState<any[]>([])
   const [rawPexp, setRawPexp] = useState<any[]>([])
   const [rawRecurs, setRawRecurs] = useState<any[]>([])
@@ -54,6 +55,7 @@ export default function PublicMonthlyStatementPrintPage() {
       const photoW = sp.get('photo_w') || sp.get('photoW')
       const photoQ = sp.get('photo_q') || sp.get('photoQ')
       const excludeOrphans = sp.get('exclude_orphan_fixed') || sp.get('excludeOrphanFixedSnapshots')
+      const carryStart = sp.get('carry_start_month') || sp.get('carryStartMonth')
       if (sc === '0' || sc === '1') setShowChinese(sc === '1')
       if (pdf === '0' || pdf === '1') setPdfMode(pdf === '1')
       if (m) setMonth(dayjs(m))
@@ -83,6 +85,7 @@ export default function PublicMonthlyStatementPrintPage() {
         if (Number.isFinite(n) && n > 0) setPhotoQ(n)
       }
       setExcludeOrphanFixedSnapshots(resolveExcludeOrphanFixedSnapshotsParam(excludeOrphans))
+      setCarryStartMonth(resolveMonthlyStatementCarryStartMonth(carryStart))
     } catch {}
   }, [])
 
@@ -105,10 +108,9 @@ export default function PublicMonthlyStatementPrintPage() {
         return
       }
       try {
-        const qs = new URLSearchParams({ month: mk, property_id: pid }).toString()
-        const resp = await getJSON<any>(`/finance/rent-segments?${qs}`, { timeoutMs: fetchTimeoutMs })
-        const segs = Array.isArray(resp?.segments) ? resp.segments : []
-        setOrders(segs)
+        const rows = await getJSON<any[]>('/orders', { timeoutMs: fetchTimeoutMs })
+        const all = Array.isArray(rows) ? rows : []
+        setOrders(all.filter((o: any) => String(o?.property_id || '') === pid))
       } catch {
         setOrders([])
       } finally {
@@ -170,18 +172,49 @@ export default function PublicMonthlyStatementPrintPage() {
       orders,
       txs,
       managementFeeRate: landlord?.management_fee_rate,
+      carryStartMonth,
     })
-  }, [propertyId, month, ordersLoaded, txsLoaded, propertiesLoaded, landlordsLoaded, properties, landlords, orders, txs])
+  }, [propertyId, month, ordersLoaded, txsLoaded, propertiesLoaded, landlordsLoaded, properties, landlords, orders, txs, carryStartMonth])
 
   useEffect(() => {
     if (!balanceDebug || !propertyId) return
+    const targetMonth = balanceDebug.target.month
+    const monthsUntilTarget = balanceDebug.months.filter(x => x.month <= targetMonth)
+    const negativeMonths = monthsUntilTarget.filter(x => Math.abs(Number(x.closing_carry_net || 0)) > 0.005)
+    const firstNegativeMonth = negativeMonths[0] || null
+    const culpritTrail = monthsUntilTarget
+      .filter(x => x.negative_carry_trigger)
+      .map((x) => ({
+        month: x.month,
+        trigger: x.negative_carry_trigger,
+        expenseTxIds: x.contributing_expense_tx_ids,
+        incomeTxIds: x.contributing_income_tx_ids,
+        orderIds: x.contributing_order_ids,
+      }))
+    ;(window as any).__monthlyStatementCarryDebug = balanceDebug
     console.info('[monthly-statement-print] carry diagnostics', {
       month: month.format('YYYY-MM'),
       propertyId,
       excludeOrphanFixedSnapshots,
+      carryStartMonth,
       orphanCount,
       summary: balanceDebug.summary,
       target: balanceDebug.target,
+      firstNegativeMonth,
+      culpritTrail,
+      months: monthsUntilTarget.map((m) => ({
+        month: m.month,
+        openingCarry: m.opening_carry_net,
+        closingCarry: m.closing_carry_net,
+        payable: m.payable_to_owner,
+        carrySourceKind: m.carry_source_kind,
+        orderIds: m.contributing_order_ids,
+        incomeTxIds: m.contributing_income_tx_ids,
+        expenseTxIds: m.contributing_expense_tx_ids,
+        furnitureChargeTxIds: m.contributing_furniture_charge_tx_ids,
+        furnitureOwnerPaidTxIds: m.contributing_furniture_owner_paid_tx_ids,
+        negativeCarryTrigger: m.negative_carry_trigger,
+      })),
     })
   }, [balanceDebug, propertyId, month, excludeOrphanFixedSnapshots, orphanCount])
 
@@ -193,7 +226,7 @@ export default function PublicMonthlyStatementPrintPage() {
       month={month.format('YYYY-MM')}
       propertyId={propertyId}
       orders={orders as any}
-      orderSegments={orders as any}
+      orderSegments={undefined}
       txs={txs as any}
       properties={properties as any}
       landlords={landlords as any}
