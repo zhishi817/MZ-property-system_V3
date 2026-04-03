@@ -18,8 +18,9 @@ import { resizeUploadImage } from '../lib/uploadImageResize'
 import { normalizePhotoUrlForPdf } from '../lib/normalizePhotoUrlForPdf'
 import { v4 as uuidv4 } from 'uuid'
 import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
-import { r2Status, r2GetObjectByKey } from '../r2'
+import { r2GetObjectByKey } from '../r2'
 import { computeMonthSegmentsForOrders, sumSegmentsVisibleNetIncome } from '../lib/orderMonthSegments'
+import { countPhotoUrls, listPhotoUrls, loadMonthlyStatementPhotoRows, recordHasPhotoUrls } from '../lib/monthlyStatementPhotoRecords'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -75,42 +76,6 @@ function monthRangeISO(monthKey: string): { start: string; end: string } | null 
   const start = new Date(Date.UTC(y, mo - 1, 1))
   const end = new Date(Date.UTC(y, mo, 1))
   return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) }
-}
-
-function r2PublicBaseForKey(): string {
-  const st = r2Status()
-  const endpoint = String(st.endpoint || '').replace(/\/$/, '')
-  const bucket = String(st.bucket || '').trim()
-  const pb = String(st.publicBase || '').replace(/\/$/, '')
-  const cleaned = pb && /\.r2\.dev($|\/)/.test(pb) ? pb.replace(new RegExp(`/${bucket}$`), '') : pb
-  return cleaned || (endpoint && bucket ? `${endpoint}/${bucket}` : '')
-}
-
-function countUrlList(v: any): number {
-  if (!v) return 0
-  if (Array.isArray(v)) return v.map(x => String(x || '').trim()).filter(Boolean).length
-  if (typeof v === 'string') {
-    const s = v.trim()
-    if (!s) return 0
-    try {
-      const j = JSON.parse(s)
-      if (Array.isArray(j)) return j.map(x => String(x || '').trim()).filter(Boolean).length
-    } catch {}
-  }
-  if (typeof v === 'object') {
-    const anyV: any = v as any
-    if (Array.isArray(anyV.urls)) return anyV.urls.map((x: any) => String(x || '').trim()).filter(Boolean).length
-  }
-  return 0
-}
-
-function allowPhotosInReportOfRecord(r: any): boolean {
-  return (countUrlList(r?.photo_urls) + countUrlList(r?.repair_photo_urls)) > 0
-}
-
-function recordMonthKey(r: any): string {
-  const raw: any = (r as any)?.occurred_at || (r as any)?.completed_at || (r as any)?.started_at || (r as any)?.submitted_at || (r as any)?.created_at
-  return String(raw || '').slice(0, 7)
 }
 
 router.get('/', async (_req, res) => {
@@ -1094,73 +1059,30 @@ router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', '
       return t || s || propertyCodeRaw
     })()
 
-    const loadRowsPg = async (table: string): Promise<any[]> => {
-      if (!pgPool) return []
-      const cols = await pgPool.query(
-        `SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,
-        [table]
-      )
-      const colSet = new Set((cols.rows || []).map((r: any) => String(r.column_name || '').toLowerCase()))
-      const hasPropCode = colSet.has('property_code')
-      const dateCols = ['occurred_at', 'completed_at', 'started_at', 'submitted_at', 'created_at'].filter(c => colSet.has(c))
-      if (!dateCols.length) return []
-      const dateExpr = (c: string) => `substring(t.${c}::text, 1, 10)`
-      const dateCond = `(${dateCols.map(c => `(${dateExpr(c)} >= $2 AND ${dateExpr(c)} < $3)`).join(' OR ')})`
-      const parts: any[] = []
-      const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND ${dateCond} LIMIT 8000`
-      const r1 = await pgPool.query(q1, [pid, range.start, range.end])
-      parts.push(...(r1.rows || []).map((x: any) => x.row))
-      if (propertyCode || propertyCodeRaw) {
-        const codes = Array.from(new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean)))
-        if (codes.length) {
-          if (hasPropCode) {
-            const q2 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_code = ANY($1::text[]) AND ${dateCond} LIMIT 8000`
-            const r2 = await pgPool.query(q2, [codes, range.start, range.end])
-            parts.push(...(r2.rows || []).map((x: any) => x.row))
-          }
-          const q3 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id = ANY($1::text[]) AND ${dateCond} LIMIT 8000`
-          const r3 = await pgPool.query(q3, [codes, range.start, range.end])
-          parts.push(...(r3.rows || []).map((x: any) => x.row))
-        }
-      }
-      const map = new Map<string, any>()
-      for (const rr of parts) {
-        const id = String(rr?.id || '')
-        if (id) map.set(id, rr)
-      }
-      return Array.from(map.values())
-    }
-
-    const loadRowsMem = (table: string): any[] => {
-      const list = Array.isArray((db as any)[table]) ? (db as any)[table] : []
-      const codes = new Set([propertyCode, propertyCodeRaw].map(s => String(s || '').trim()).filter(Boolean))
-      const inRange = (r: any) => {
-        const m = recordMonthKey(r)
-        return m === monthKey
-      }
-      const map = new Map<string, any>()
-      for (const r of list) {
-        const pidOk = String(r?.property_id || '') === pid
-        const codeOk = codes.size ? codes.has(String(r?.property_code || '').trim()) : false
-        const legacyOk = codes.size ? codes.has(String(r?.property_id || '').trim()) : false
-        if ((pidOk || codeOk || legacyOk) && inRange(r)) {
-          const id = String(r?.id || '')
-          if (id) map.set(id, r)
-        }
-      }
-      return Array.from(map.values())
-    }
-
-    const maint = hasPg ? await loadRowsPg('property_maintenance') : loadRowsMem('property_maintenance')
-    const deep = hasPg ? await loadRowsPg('property_deep_cleaning') : loadRowsMem('property_deep_cleaning')
+    const maint = await loadMonthlyStatementPhotoRows({
+      table: 'property_maintenance',
+      pid,
+      monthKey,
+      range,
+      propertyCode,
+      propertyCodeRaw,
+    })
+    const deep = await loadMonthlyStatementPhotoRows({
+      table: 'property_deep_cleaning',
+      pid,
+      monthKey,
+      range,
+      propertyCode,
+      propertyCodeRaw,
+    })
 
     const maintenancePhotoCount = maint.reduce((n, r) => {
-      if (!allowPhotosInReportOfRecord(r)) return n
-      return n + countUrlList((r as any)?.photo_urls) + countUrlList((r as any)?.repair_photo_urls)
+      if (!recordHasPhotoUrls(r)) return n
+      return n + countPhotoUrls((r as any)?.photo_urls) + countPhotoUrls((r as any)?.repair_photo_urls)
     }, 0)
     const deepCleaningPhotoCount = deep.reduce((n, r) => {
-      if (!allowPhotosInReportOfRecord(r)) return n
-      return n + countUrlList((r as any)?.photo_urls) + countUrlList((r as any)?.repair_photo_urls)
+      if (!recordHasPhotoUrls(r)) return n
+      return n + countPhotoUrls((r as any)?.photo_urls) + countPhotoUrls((r as any)?.repair_photo_urls)
     }, 0)
     const totalPhotoCount = maintenancePhotoCount + deepCleaningPhotoCount
 
@@ -1677,67 +1599,31 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       const t = s.split(/\s+/)[0].trim()
       return t || s || codeRaw
     })()
-    const codes = Array.from(new Set([codeNorm, codeRaw].map(s => String(s || '').trim()).filter(Boolean)))
 
     const wantDeep = photosMode !== 'off' && /(all|deep_cleaning|deepcleaning)/i.test(sec || 'all')
     const wantMaint = photosMode !== 'off' && /(all|maintenance)/i.test(sec || 'all')
 
-    const qDeep = wantDeep ? pgPool.query(
-      `SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
-       FROM property_deep_cleaning
-       WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
-         AND (
-           (occurred_at >= $3::date AND occurred_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
-           OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
-         )
-       ORDER BY occurred_at ASC, created_at ASC
-       LIMIT 5000`,
-      [pid, codes, range.start, range.end]
-    ).then(r => r.rows || []).catch(() => []) : Promise.resolve([] as any[])
+    const qDeep = wantDeep
+      ? loadMonthlyStatementPhotoRows({
+          table: 'property_deep_cleaning',
+          pid,
+          monthKey,
+          range,
+          propertyCode: codeNorm,
+          propertyCodeRaw: codeRaw,
+        }).catch(() => [] as any[])
+      : Promise.resolve([] as any[])
 
-    const qMaint = wantMaint ? (async () => {
-      const baseWhere = `
-        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
-          AND (
-            (occurred_at >= $3::date AND occurred_at < $4::date)
-            OR (occurred_at IS NULL AND completed_at >= $3::date AND completed_at < $4::date)
-            OR (occurred_at IS NULL AND completed_at IS NULL AND started_at >= $3::date AND started_at < $4::date)
-            OR (occurred_at IS NULL AND completed_at IS NULL AND started_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
-          )`
-      const sql0 = `
-        SELECT id, work_no, occurred_at, completed_at, started_at, created_at, photo_urls, repair_photo_urls
-        FROM property_maintenance
-        ${baseWhere}
-        ORDER BY occurred_at ASC, created_at ASC
-        LIMIT 5000`
-      const sql1 = `
-        SELECT id, work_no, occurred_at, completed_at, started_at, submitted_at, created_at, photo_urls, repair_photo_urls
-        FROM property_maintenance
-        WHERE (property_id = $1 OR (array_length($2::text[], 1) IS NOT NULL AND (property_code = ANY($2::text[]) OR property_id = ANY($2::text[]))))
-          AND (
-            (occurred_at >= $3::date AND occurred_at < $4::date)
-            OR (completed_at >= $3::date AND completed_at < $4::date)
-            OR (started_at >= $3::date AND started_at < $4::date)
-            OR (submitted_at >= $3::date AND submitted_at < $4::date)
-            OR (created_at >= $3::date AND created_at < $4::date)
-          )
-        ORDER BY occurred_at ASC, created_at ASC
-        LIMIT 5000`
-      try {
-        const r = await pgPool.query(sql1, [pid, codes, range.start, range.end])
-        return r.rows || []
-      } catch (e: any) {
-        const code = String(e?.code || '')
-        const msg = String(e?.message || '')
-        if (code === '42703' || /submitted_at/i.test(msg)) {
-          const r = await pgPool.query(sql0, [pid, codes, range.start, range.end])
-          return r.rows || []
-        }
-        throw e
-      }
-    })().catch(() => []) : Promise.resolve([] as any[])
+    const qMaint = wantMaint
+      ? loadMonthlyStatementPhotoRows({
+          table: 'property_maintenance',
+          pid,
+          monthKey,
+          range,
+          propertyCode: codeNorm,
+          propertyCodeRaw: codeRaw,
+        }).catch(() => [] as any[])
+      : Promise.resolve([] as any[])
 
     const [deepRows0, maintRows0, llName] = await Promise.all([qDeep, qMaint, landlordName])
     const apiBase = (() => {
@@ -1752,26 +1638,11 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       const q = Math.max(40, Math.min(85, Number.isFinite(q0) && q0 > 0 ? q0 : 72))
       return { w, q }
     })()
-    const normUrlList = (raw: any): string[] => {
-      if (!raw) return []
-      let arr: any[] = []
-      if (Array.isArray(raw)) arr = raw
-      else if (typeof raw === 'string') { try { const j = JSON.parse(raw); arr = Array.isArray(j) ? j : [] } catch { arr = [] } }
-      return arr
-        .map((x) => {
-          if (!x) return ''
-          if (typeof x === 'string') return x
-          if (typeof x === 'object') return String((x as any).url || (x as any).src || (x as any).path || '')
-          return String(x || '')
-        })
-        .map((s) => String(s || '').trim())
-        .filter(Boolean)
-    }
     const countRawUrls = (rows: any[]) => {
       let n = 0
       for (const r of rows || []) {
-        n += normUrlList(r?.photo_urls).length
-        n += normUrlList(r?.repair_photo_urls).length
+        n += listPhotoUrls(r?.photo_urls).length
+        n += listPhotoUrls(r?.repair_photo_urls).length
       }
       return n
     }
@@ -1786,8 +1657,8 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       compress,
     })
     const mapRowUrls = (r: any) => {
-      const before = normUrlList(r?.photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
-      const after = normUrlList(r?.repair_photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
+      const before = listPhotoUrls(r?.photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
+      const after = listPhotoUrls(r?.repair_photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
       return { ...r, photo_urls: before, repair_photo_urls: after }
     }
     const deepRows = Array.isArray(deepRows0) ? deepRows0.map(mapRowUrls) : []
@@ -1825,8 +1696,14 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
     const wantsBase = /(all|base)/i.test(sec || 'all')
     if (photosMode !== 'off' && tplImageCount === 0 && !wantsBase) {
       try {
+        const diagKind =
+          rawUrls === 0
+            ? 'no-record-photo-urls'
+            : cleanedUrls === 0
+              ? 'all-photo-urls-filtered-after-normalize'
+              : 'template-produced-zero-images'
         console.error(
-          `[monthly-statement-photos-pdf][no-images] reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec || 'all'} photosMode=${photosMode}` +
+          `[monthly-statement-photos-pdf][no-images] kind=${diagKind} reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec || 'all'} photosMode=${photosMode}` +
             ` deepRows=${Array.isArray(deepRows0) ? deepRows0.length : 0} maintRows=${Array.isArray(maintRows0) ? maintRows0.length : 0}` +
             ` rawUrls=${rawUrls} cleanedUrls=${cleanedUrls}`
         )
@@ -1839,6 +1716,12 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       res.setHeader('X-MSP-ImageCount', String(tplImageCount))
       return res.status(422).json({
         message: 'no photos to render for requested sections',
+        diagnosticKind:
+          rawUrls === 0
+            ? 'no-record-photo-urls'
+            : cleanedUrls === 0
+              ? 'all-photo-urls-filtered-after-normalize'
+              : 'template-produced-zero-images',
         reqId,
         month: monthKey,
         property_id: pid,
