@@ -35,7 +35,18 @@ async function main() {
     console.log('[pdf-jobs][worker] pg=false')
     return
   }
+  const apiBase = String(
+    process.env.NEXT_PUBLIC_API_BASE_URL ||
+    process.env.NEXT_PUBLIC_API_BASE_DEV ||
+    process.env.NEXT_PUBLIC_API_BASE ||
+    process.env.API_BASE ||
+    process.env.FRONTEND_BASE_URL ||
+    ''
+  ).trim()
+  const front = String(process.env.FRONTEND_BASE_URL || '').trim()
+  const workerId = String(process.env.PDF_JOBS_WORKER_ID || '') || `pdf_worker_${process.pid}`
   console.log('[pdf-jobs][worker] starting')
+  console.log(`[pdf-jobs][worker] worker_mode=dedicated worker_id=${workerId} API_BASE_RESOLVED=${apiBase || '(empty)'} FRONTEND_BASE_URL=${front || '(empty)'}`)
   try {
     const expr = String(process.env.PDF_JOBS_CRON || '*/1 * * * *')
     console.log(`[pdf-jobs][worker] cron=${expr}`)

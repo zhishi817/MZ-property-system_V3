@@ -83,28 +83,6 @@ function isPlaywrightClosedError(e) {
     const msg = String((e === null || e === void 0 ? void 0 : e.message) || '');
     return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg);
 }
-function kickPdfJobsSoon(reason) {
-    setTimeout(() => {
-        ;
-        (async () => {
-            try {
-                const { processPdfJobsOnce } = require('../services/pdfJobsWorker');
-                const limit = Math.min(2, Math.max(1, Number(process.env.PDF_JOBS_KICK_LIMIT || 1)));
-                const r = await processPdfJobsOnce({ limit });
-                try {
-                    console.log(`[pdf-jobs][kick] reason=${reason} processed=${(r === null || r === void 0 ? void 0 : r.processed) || 0} ok=${(r === null || r === void 0 ? void 0 : r.ok) || 0} failed=${(r === null || r === void 0 ? void 0 : r.failed) || 0} reclaimed=${(r === null || r === void 0 ? void 0 : r.reclaimed) || 0}`);
-                }
-                catch (_a) { }
-            }
-            catch (e) {
-                try {
-                    console.log(`[pdf-jobs][kick] reason=${reason} failed message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-                }
-                catch (_b) { }
-            }
-        })();
-    }, 0);
-}
 function monthRangeISO(monthKey) {
     const m = String(monthKey || '').trim();
     const mm = m.match(/^(\d{4})-(\d{2})$/);
@@ -1426,8 +1404,6 @@ exports.router.post('/statement-photo-pack', (0, auth_1.requireAnyPerm)(['financ
            LIMIT 1`, [monthKey, pid, sec, (!(showChinese === false || showChinese === '0')).toString()]);
                 const existing = ((_a = r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
                 if (existing === null || existing === void 0 ? void 0 : existing.id) {
-                    if (String(existing.status || '') === 'queued')
-                        kickPdfJobsSoon('reuse_existing_statement_photo_pack');
                     return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true });
                 }
             }
@@ -1443,7 +1419,6 @@ exports.router.post('/statement-photo-pack', (0, auth_1.requireAnyPerm)(['financ
         };
         await dbAdapter_2.pgPool.query(`INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
        VALUES($1,'statement_photo_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`, [id, JSON.stringify(params)]);
-        kickPdfJobsSoon('create_statement_photo_pack');
         return res.json({ job_id: id, status: 'queued', reused: false });
     }
     catch (e) {
@@ -1567,8 +1542,6 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
            LIMIT 1`, [monthKey, pid]);
                 const existing = ((_a = r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
                 if (existing === null || existing === void 0 ? void 0 : existing.id) {
-                    if (String(existing.status || '') === 'queued')
-                        kickPdfJobsSoon('reuse_existing_merge_monthly_pack');
                     return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true });
                 }
             }
@@ -1588,7 +1561,6 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
         };
         await dbAdapter_2.pgPool.query(`INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
        VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`, [id, JSON.stringify(params)]);
-        kickPdfJobsSoon('create_merge_monthly_pack');
         return res.json({ job_id: id, status: 'queued', reused: false });
     }
     catch (e) {
@@ -1943,6 +1915,8 @@ exports.router.post('/monthly-statement-pdf', (0, auth_1.requireAnyPerm)(['finan
             const apiBaseForAssets = String(process.env.NEXT_PUBLIC_API_BASE_URL ||
                 process.env.NEXT_PUBLIC_API_BASE_DEV ||
                 process.env.NEXT_PUBLIC_API_BASE ||
+                process.env.API_BASE ||
+                process.env.FRONTEND_BASE_URL ||
                 '').trim();
             const cookieBase = (baseUrl) => {
                 const isHttps = /^https:\/\//i.test(baseUrl);

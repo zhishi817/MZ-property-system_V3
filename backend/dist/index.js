@@ -750,42 +750,7 @@ const server = app.listen(port, () => {
     })();
     (async () => {
         try {
-            const enabled = String(process.env.PDF_JOBS_SCHEDULE_ENABLED || 'false').toLowerCase() === 'true';
-            if (enabled && dbAdapter_1.hasPg) {
-                const expr = String(process.env.PDF_JOBS_CRON || '*/1 * * * *');
-                console.log(`[pdf-jobs][schedule] enabled cron=${expr}`);
-                let inFlight = false;
-                const task = node_cron_1.default.schedule(expr, async () => {
-                    if (inFlight) {
-                        try {
-                            console.log('[pdf-jobs][schedule] skipped_reason=in_flight');
-                        }
-                        catch (_a) { }
-                        ;
-                        return;
-                    }
-                    try {
-                        inFlight = true;
-                        const { processPdfJobsOnce } = require('./services/pdfJobsWorker');
-                        const r = await processPdfJobsOnce({
-                            limit: Math.min(5, Math.max(1, Number(process.env.PDF_JOBS_BATCH || 2))),
-                        });
-                        if (((r === null || r === void 0 ? void 0 : r.processed) || 0) > 0 || ((r === null || r === void 0 ? void 0 : r.failed) || 0) > 0 || ((r === null || r === void 0 ? void 0 : r.reclaimed) || 0) > 0) {
-                            console.log(`[pdf-jobs][schedule] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0} reclaimed=${r.reclaimed || 0}`);
-                        }
-                    }
-                    catch (e) {
-                        console.error(`[pdf-jobs][schedule] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-                    }
-                    finally {
-                        inFlight = false;
-                    }
-                }, { scheduled: true });
-                task.start();
-            }
-            else {
-                console.log('[pdf-jobs][schedule] disabled');
-            }
+            console.log('[pdf-jobs][schedule] disabled_on_web');
         }
         catch (e) {
             console.error(`[pdf-jobs][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);

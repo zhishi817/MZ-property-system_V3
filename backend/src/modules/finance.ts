@@ -68,23 +68,6 @@ function isPlaywrightClosedError(e: any) {
   return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg)
 }
 
-function kickPdfJobsSoon(reason: string) {
-  setTimeout(() => {
-    ;(async () => {
-      try {
-        const { processPdfJobsOnce } = require('../services/pdfJobsWorker')
-        const limit = Math.min(2, Math.max(1, Number(process.env.PDF_JOBS_KICK_LIMIT || 1)))
-        const r = await processPdfJobsOnce({ limit })
-        try {
-          console.log(`[pdf-jobs][kick] reason=${reason} processed=${r?.processed || 0} ok=${r?.ok || 0} failed=${r?.failed || 0} reclaimed=${r?.reclaimed || 0}`)
-        } catch {}
-      } catch (e: any) {
-        try { console.log(`[pdf-jobs][kick] reason=${reason} failed message=${String(e?.message || '')}`) } catch {}
-      }
-    })()
-  }, 0)
-}
-
 function monthRangeISO(monthKey: string): { start: string; end: string } | null {
   const m = String(monthKey || '').trim()
   const mm = m.match(/^(\d{4})-(\d{2})$/)
@@ -1350,7 +1333,6 @@ router.post('/statement-photo-pack', requireAnyPerm(['finance.payout', 'finance.
         )
         const existing = r0.rows?.[0] || null
         if (existing?.id) {
-          if (String(existing.status || '') === 'queued') kickPdfJobsSoon('reuse_existing_statement_photo_pack')
           return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true })
         }
       } catch {}
@@ -1368,7 +1350,6 @@ router.post('/statement-photo-pack', requireAnyPerm(['finance.payout', 'finance.
        VALUES($1,'statement_photo_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`,
       [id, JSON.stringify(params)]
     )
-    kickPdfJobsSoon('create_statement_photo_pack')
     return res.json({ job_id: id, status: 'queued', reused: false })
   } catch (e: any) {
     const code = String(e?.code || '')
@@ -1476,7 +1457,6 @@ router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx
         )
         const existing = r0.rows?.[0] || null
         if (existing?.id) {
-          if (String(existing.status || '') === 'queued') kickPdfJobsSoon('reuse_existing_merge_monthly_pack')
           return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true })
         }
       } catch {}
@@ -1499,7 +1479,6 @@ router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx
        VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`,
       [id, JSON.stringify(params)]
     )
-    kickPdfJobsSoon('create_merge_monthly_pack')
     return res.json({ job_id: id, status: 'queued', reused: false })
   } catch (e: any) {
     const code = String(e?.code || '')
@@ -1802,6 +1781,8 @@ router.post('/monthly-statement-pdf', requireAnyPerm(['finance.payout', 'finance
         process.env.NEXT_PUBLIC_API_BASE_URL ||
         process.env.NEXT_PUBLIC_API_BASE_DEV ||
         process.env.NEXT_PUBLIC_API_BASE ||
+        process.env.API_BASE ||
+        process.env.FRONTEND_BASE_URL ||
         ''
       ).trim()
       const cookieBase = (baseUrl: string) => {

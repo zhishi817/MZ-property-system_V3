@@ -40,23 +40,6 @@ function pdfLimiter(req: any, res: any, next: any) {
   })
 }
 
-function kickPdfJobsSoon(reason: string) {
-  setTimeout(() => {
-    ;(async () => {
-      try {
-        const { processPdfJobsOnce } = require('../services/pdfJobsWorker')
-        const limit = Math.min(2, Math.max(1, Number(process.env.PDF_JOBS_KICK_LIMIT || 1)))
-        const r = await processPdfJobsOnce({ limit })
-        try {
-          console.log(`[pdf-jobs][kick] reason=${reason} processed=${r?.processed || 0} ok=${r?.ok || 0} failed=${r?.failed || 0} reclaimed=${r?.reclaimed || 0}`)
-        } catch {}
-      } catch (e: any) {
-        try { console.log(`[pdf-jobs][kick] reason=${reason} failed message=${String(e?.message || '')}`) } catch {}
-      }
-    })()
-  }, 0)
-}
-
 async function ensurePropertyMaintenanceTable() {
   if (!pgPool) return
   await pgPool.query(`CREATE TABLE IF NOT EXISTS property_maintenance (
@@ -195,7 +178,6 @@ router.post('/pdf-jobs/:id', requireAnyPerm(['property_maintenance.view','proper
       )
       const existing = r0.rows?.[0] || null
       if (existing?.id) {
-        if (String(existing.status || '') === 'queued') kickPdfJobsSoon('reuse_existing_maintenance_record_pdf')
         return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true })
       }
     }
@@ -210,7 +192,6 @@ router.post('/pdf-jobs/:id', requireAnyPerm(['property_maintenance.view','proper
        VALUES($1,'maintenance_record_pdf','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`,
       [id, JSON.stringify(params)]
     )
-    kickPdfJobsSoon('create_maintenance_record_pdf')
     return res.json({ job_id: id, status: 'queued', reused: false })
   } catch (e: any) {
     const code = String(e?.code || '')
