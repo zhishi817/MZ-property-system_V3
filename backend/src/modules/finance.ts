@@ -1661,6 +1661,8 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       const proto = String((req.headers['x-forwarded-proto'] as any) || req.protocol || 'https').split(',')[0].trim()
       return host ? `${proto}://${host}` : ''
     })()
+    const wantsBase = /(all|base)/i.test(sec || 'all')
+    const splitOnlyPhotos = photosMode !== 'off' && !wantsBase && ((wantDeep ? 1 : 0) + (wantMaint ? 1 : 0) === 1)
     const compress = (() => {
       const w0 = Number(photo_w || 0)
       const q0 = Number(photo_q || 0)
@@ -1680,7 +1682,12 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       if (photosMode === 'compressed' || photosMode === 'thumbnail') return photosMode
       return 'full'
     })()
+    const totalRawUrls = countRawUrls(deepRows0) + countRawUrls(maintRows0)
     const effectivePhotosMode = ((): 'full' | 'compressed' | 'thumbnail' => {
+      if (splitOnlyPhotos) {
+        if (totalRawUrls >= 12) return 'thumbnail'
+        if (totalRawUrls >= 1) return 'compressed'
+      }
       const total = countRawUrls(deepRows0) + countRawUrls(maintRows0)
       if (requestedPhotosMode === 'thumbnail') return 'thumbnail'
       if (requestedPhotosMode === 'compressed') return total >= 36 ? 'thumbnail' : 'compressed'
@@ -1688,11 +1695,21 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       if (total >= 12) return 'compressed'
       return 'full'
     })()
+    const effectiveCompress = (() => {
+      if (!splitOnlyPhotos) return compress
+      if (effectivePhotosMode === 'thumbnail') {
+        return { w: Math.min(compress.w, 900), q: Math.min(compress.q, 48) }
+      }
+      if (effectivePhotosMode === 'compressed') {
+        return { w: Math.min(compress.w, 1100), q: Math.min(compress.q, 58) }
+      }
+      return compress
+    })()
     const normalizePhotoUrl = (u: string) => normalizePhotoUrlForPdf(u, {
       apiBase,
       allowR2KeyPrefixes: ['maintenance/', 'deep-cleaning/', 'deep-cleaning-upload/', 'invoice-company-logos/'],
       photosMode: effectivePhotosMode,
-      compress,
+      compress: effectiveCompress,
     })
     const mapRowUrls = (r: any) => {
       const before = listPhotoUrls(r?.photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
@@ -1701,7 +1718,7 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
     }
     const deepRows = Array.isArray(deepRows0) ? deepRows0.map(mapRowUrls) : []
     const maintRows = Array.isArray(maintRows0) ? maintRows0.map(mapRowUrls) : []
-    const rawUrls = countRawUrls(deepRows0) + countRawUrls(maintRows0)
+    const rawUrls = totalRawUrls
     const cleanedUrls = (() => {
       const countClean = (rows: any[]) => {
         let n = 0
@@ -1719,7 +1736,7 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       landlordName: llName || '',
       sections: sec || 'all',
       showChinese: !(showChinese === false || showChinese === '0'),
-      includePhotosMode: photosMode as any,
+      includePhotosMode: effectivePhotosMode as any,
       deepCleanings: deepRows as any,
       maintenances: maintRows as any,
     } as any)
@@ -1731,7 +1748,6 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
           ` rawUrls=${rawUrls} cleanedUrls=${cleanedUrls} tplImageCount=${tplImageCount}`
       )
     } catch {}
-    const wantsBase = /(all|base)/i.test(sec || 'all')
     if (photosMode !== 'off' && tplImageCount === 0 && !wantsBase) {
       try {
         const diagKind =

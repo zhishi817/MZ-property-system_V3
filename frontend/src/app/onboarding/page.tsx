@@ -1,8 +1,9 @@
 "use client"
 import { Card, Table, Select, Button, message, Popconfirm, Space } from 'antd'
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { getJSON, API_BASE, authHeaders } from '../../lib/api'
+import { sortProperties } from '../../lib/properties'
 
 type Onb = { id: string; property_id: string; address_snapshot?: string; onboarding_date?: string; status?: string; daily_items_total?: number; furniture_appliance_total?: number; decor_total?: number; oneoff_fees_total?: number; grand_total?: number }
 type Property = { id: string; code?: string; address?: string }
@@ -71,7 +72,7 @@ export default function OnboardingListPage() {
   return (
     <Card title="房源上新管理">
       <div style={{ marginBottom: 12, display:'flex', gap:8 }}>
-        <Select allowClear showSearch optionFilterProp="label" style={{ width: 260 }} placeholder="按房号筛选" value={pid} onChange={setPid as any} options={properties.map(p=>({ value:p.id, label:p.code || p.address || p.id }))} />
+        <Select allowClear showSearch optionFilterProp="label" style={{ width: 260 }} placeholder="按房号筛选" value={pid} onChange={setPid as any} options={sortProperties(Array.isArray(properties) ? properties : []).map(p=>({ value:p.id, label:p.code || p.address || p.id }))} />
         <Button type="primary" onClick={async () => { if (!pid) { message.warning('请先选择房号'); return }; try { const res = await fetch(`${API_BASE}/onboarding`, { method:'POST', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ property_id: pid }) }); if (!res.ok) throw new Error(`HTTP ${res.status}`); message.success('已创建上新记录'); await refresh() } catch (e: any) { message.error(e?.message || '创建失败') } }}>新建上新</Button>
       </div>
       <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={rows} size="small" pagination={{ pageSize: 20 }} />
