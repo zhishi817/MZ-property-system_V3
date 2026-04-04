@@ -1,16 +1,16 @@
 export type WaitForImagesOptions = {
   timeoutMs?: number
-  scroll?: boolean
+  scroll?: boolean | 'once'
   tryFallbackAttr?: string
   maxFailedUrls?: number
 }
 
 export async function waitForImages(page: any, options?: WaitForImagesOptions): Promise<{ total: number; notLoaded: number; failedUrls: string[] }> {
   const timeoutMs = Math.max(1000, Math.min(180000, Number(options?.timeoutMs || 20000)))
-  const scroll = options?.scroll !== false
+  const scrollMode = options?.scroll === 'once' ? 'once' : (options?.scroll !== false ? 'repeat' : 'none')
   const fallbackAttr = String(options?.tryFallbackAttr || '').trim()
   const maxFailedUrls = Math.max(0, Math.min(50, Number(options?.maxFailedUrls || 12)))
-  const r = await page.evaluate(async ({ timeoutMs, scroll, fallbackAttr, maxFailedUrls }: any) => {
+  const r = await page.evaluate(async ({ timeoutMs, scrollMode, fallbackAttr, maxFailedUrls }: any) => {
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
     const imgs = Array.from(document.images || []) as HTMLImageElement[]
     for (const img of imgs) {
@@ -56,7 +56,7 @@ export async function waitForImages(page: any, options?: WaitForImagesOptions): 
     }
 
     const deadline = Date.now() + timeoutMs
-    if (scroll) await scrollThrough()
+    if (scrollMode !== 'none') await scrollThrough()
     while (Date.now() < deadline) {
       let pending = 0
       for (const img of imgs) {
@@ -66,7 +66,7 @@ export async function waitForImages(page: any, options?: WaitForImagesOptions): 
       }
       if (pending === 0) break
       await sleep(80)
-      if (scroll) await scrollThrough()
+      if (scrollMode === 'repeat') await scrollThrough()
     }
 
     const failed: string[] = []
@@ -78,6 +78,6 @@ export async function waitForImages(page: any, options?: WaitForImagesOptions): 
     }
     const notLoaded = imgs.filter((img) => !isOk(img)).length
     return { total: imgs.length, notLoaded, failedUrls: failed }
-  }, { timeoutMs, scroll, fallbackAttr: fallbackAttr ? fallbackAttr : '', maxFailedUrls })
+  }, { timeoutMs, scrollMode, fallbackAttr: fallbackAttr ? fallbackAttr : '', maxFailedUrls })
   return { total: Number(r?.total || 0), notLoaded: Number(r?.notLoaded || 0), failedUrls: Array.isArray(r?.failedUrls) ? r.failedUrls.map((x: any) => String(x || '')).filter(Boolean) : [] }
 }

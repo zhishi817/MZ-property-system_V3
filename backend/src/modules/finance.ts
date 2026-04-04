@@ -207,6 +207,10 @@ function autoNormStatus(v: any): string {
 }
 
 function autoCalcMaintenanceTotal(row: any): number {
+  const explicitTotal = autoToNum(row?.total_amount)
+  if (Number.isFinite(explicitTotal) && explicitTotal > 0) {
+    return Math.round((explicitTotal + Number.EPSILON) * 100) / 100
+  }
   const base = autoToNum(row?.maintenance_amount)
   const baseN = Number.isFinite(base) ? base : 0
   const hasParts = row?.has_parts === true
@@ -516,7 +520,7 @@ async function collectAutoExpenseSourceItems(executor: any, input: { from: strin
   const propertyIdFilter = String(input.propertyIdFilter || '').trim()
   if (input.type === 'all' || input.type === 'maintenance') {
     const mt = await executor.query(
-      `SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, completed_at, occurred_at, created_at, details, repair_notes, category
+      `SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, category
          FROM property_maintenance
         WHERE coalesce(completed_at::date, occurred_at, created_at::date) BETWEEN $1::date AND $2::date
           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
