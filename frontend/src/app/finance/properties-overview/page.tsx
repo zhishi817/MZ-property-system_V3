@@ -61,7 +61,6 @@ export default function PropertyRevenuePage() {
   const [mergeSplit, setMergeSplit] = useState<MergeSplitInfo | null>(null)
   const [mergeNoPhotos, setMergeNoPhotos] = useState<boolean>(false)
   const [splitDl, setSplitDl] = useState<{ maintenance: boolean; deepCleaning: boolean }>({ maintenance: false, deepCleaning: false })
-  const [exportPreview, setExportPreview] = useState<{ open: boolean; url: string; pageCount: number; filename: string; loading: boolean }>({ open: false, url: '', pageCount: 0, filename: '', loading: false })
   const [forceNewMergeJob, setForceNewMergeJob] = useState<boolean>(false)
   const printRef = useRef<HTMLDivElement>(null)
   const mergeStartBtnRef = useRef<HTMLButtonElement | null>(null)
@@ -83,12 +82,6 @@ export default function PropertyRevenuePage() {
   const reloadAllRef = useRef<null | (() => Promise<void>)>(null)
   const rangeReloadPrimedRef = useRef<boolean>(false)
   useEffect(() => { rentIncomeByMonthRef.current = rentIncomeByMonth }, [rentIncomeByMonth])
-  const closeExportPreview = () => {
-    setExportPreview((prev) => {
-      try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
-      return { ...prev, open: false, url: '', loading: false }
-    })
-  }
   const downloadNamedBlob = (blob: Blob, filename: string) => {
     try {
       const url = URL.createObjectURL(blob)
@@ -537,6 +530,10 @@ export default function PropertyRevenuePage() {
     if (period !== 'month' || !previewPid) return null
     return resolveMonthPdfCfg(mergeSplit, mergeNoPhotos)
   }, [period, previewPid, mergeSplit, mergeNoPhotos, exportQuality])
+  const previewOrderSegments = useMemo(() => {
+    if (period !== 'month' || !previewPid || !month) return undefined
+    return getMonthSegmentsForProperty(orders as any, month, String(previewPid))
+  }, [period, previewPid, month, orders])
 
   const previewCarryDebug = useMemo(() => {
     if (!previewPid || period !== 'month') return null
@@ -1148,118 +1145,6 @@ export default function PropertyRevenuePage() {
           setTimeout(() => { try { document.body.removeChild(iframe) } catch {} }, 500)
           setTimeout(() => setStatementPdfMode(false), 800)
         }}>导出PDF</Button>
-        <Button onClick={async () => {
-          if (!printRef.current) return
-          if (exportPreview.loading) return
-          setExportPreview((prev) => ({ ...prev, loading: true }))
-          try {
-            const orientation = period === 'fiscal-year' ? 'l' : 'p'
-            const rootWidthMm = period === 'fiscal-year' ? 277 : 190
-            const prop = properties.find(p => String(p.id) === String(previewPid || ''))
-            const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
-            const prefix = period === 'month'
-              ? `Monthly Statement - ${month.format('YYYY-MM')}`
-              : period === 'year'
-                ? `Annual Statement - ${month.format('YYYY')}`
-                : period === 'fiscal-year'
-                  ? `Fiscal Year Statement - ${month.format('YYYY-MM')}`
-                  : `Statement - ${month.format('YYYY-MM')}`
-            const filename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''}.pdf`
-
-            if (period === 'month' && previewPid) {
-              const cfg = monthPdfCfg || resolveMonthPdfCfg(mergeSplit)
-              const resp = await fetch(`${API_BASE}/finance/monthly-statement-pdf`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: cfg.photosMode, sections: cfg.sectionsApi, ...(cfg.photoCfg || {}), excludeOrphanFixedSnapshots, carryStartMonth: DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH }),
-              })
-              if (!resp.ok) {
-                let msg = `HTTP ${resp.status}`
-                try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
-                throw new Error(msg)
-              }
-              const blob = await resp.blob()
-              const url = URL.createObjectURL(blob)
-              setExportPreview((prev) => {
-                try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
-                return { ...prev, open: true, url, pageCount: 0, filename, loading: false }
-              })
-              return
-            }
-
-            const waitMonthlyReady = async () => {
-              const el = printRef.current as HTMLElement
-              if (!el) return
-              if (String(el.getAttribute('data-monthly-statement-root') || '') !== '1') return
-              const t0 = Date.now()
-              while (Date.now() - t0 < 8000) {
-                const loaded = String(el.getAttribute('data-deep-clean-loaded') || '') === '1'
-              const maintLoaded = String(el.getAttribute('data-maint-loaded') || '') === '1'
-                const pdfOk = String(el.getAttribute('data-pdf-mode') || '') === '1'
-              if (loaded && maintLoaded && pdfOk) break
-                await new Promise(r => setTimeout(r, 80))
-              }
-              const cnt = Number(el.getAttribute('data-deep-clean-count') || 0)
-              if (Number.isFinite(cnt) && cnt > 0) {
-                while (Date.now() - t0 < 8000) {
-                  if (el.querySelector('[data-deep-clean-section="1"]')) break
-                  await new Promise(r => setTimeout(r, 80))
-                }
-              }
-            const mcnt = Number(el.getAttribute('data-maint-count') || 0)
-            if (Number.isFinite(mcnt) && mcnt > 0) {
-              while (Date.now() - t0 < 8000) {
-                  if (el.querySelector('[data-maint-section="1"]')) break
-                await new Promise(r => setTimeout(r, 80))
-              }
-            }
-            }
-            setStatementPdfMode(true)
-            await new Promise(r => setTimeout(r, 0))
-            await waitMonthlyReady()
-            const imgCount = Number((printRef.current as any)?.getAttribute?.('data-deep-clean-count') || 0) || 0
-            const chosenQuality: 'standard' | 'high' | 'ultra' = (exportQuality === 'ultra' && imgCount > 12) ? 'high' : exportQuality
-            if (exportQuality === 'ultra' && chosenQuality !== 'ultra') {
-              message.warning('图片较多，已自动使用“高清（平衡）”以避免导出文件过大')
-            }
-            const exp = pickExportParams(chosenQuality)
-            const { blob, pageCount } = await exportElementToPdfBlob({
-              element: printRef.current as HTMLElement,
-              orientation,
-              rootWidthMm,
-              marginMm: 12,
-              scale: exp.scale,
-              imageQuality: exp.imageQuality,
-              imageType: exp.imageType,
-              minSlicePx: 80,
-              reservePx: 60,
-              tailGapPx: 16,
-              cssText: `
-                html, body { font-family: 'Times New Roman', Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; background:#ffffff; }
-                body { margin: 0; }
-                .__pdf_capture_root__ { padding: 0 4mm; }
-                table { width: 100%; border-collapse: collapse; }
-                th, td { border-bottom: 1px solid #ddd; }
-                .landlord-calendar .mz-booking { border-radius: 0; }
-                .landlord-calendar .fc-event-start .mz-booking { border-top-left-radius: 8px; border-bottom-left-radius: 8px; }
-                .landlord-calendar .fc-event-end .mz-booking { border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
-                .landlord-calendar .mz-evt--airbnb .mz-booking { background-color: #FFE4E6 !important; border-color: #FB7185 !important; color: #881337 !important; }
-                .landlord-calendar .mz-evt--booking .mz-booking { background-color: #DBEAFE !important; border-color: #60A5FA !important; color: #1E3A8A !important; }
-                .landlord-calendar .mz-evt--other .mz-booking { background-color: #F3F4F6 !important; border-color: #9CA3AF !important; color: #111827 !important; }
-              `,
-            })
-            const url = URL.createObjectURL(blob)
-            setExportPreview((prev) => {
-              try { if (prev.url) URL.revokeObjectURL(prev.url) } catch {}
-              return { ...prev, open: true, url, pageCount, filename, loading: false }
-            })
-          } catch (e: any) {
-            message.error(String(e?.message || '生成导出预览失败'))
-            setExportPreview((prev) => ({ ...prev, loading: false }))
-          } finally {
-            setStatementPdfMode(false)
-          }
-        }} loading={exportPreview.loading}>导出预览</Button>
         <Button type="primary" ref={mergeStartBtnRef} onClick={async () => {
           if (!printRef.current || !previewPid) return
           if (isMerging) return
@@ -1607,7 +1492,7 @@ export default function PropertyRevenuePage() {
                     month={month.format('YYYY-MM')}
                     propertyId={previewPid || undefined}
                     orders={orders}
-                    orderSegments={(rentSegByKey[rentKey(previewPid, month.format('YYYY-MM'))]?.segments as any) || undefined}
+                    orderSegments={previewOrderSegments as any}
                     txs={txs}
                     properties={properties}
                     landlords={landlords}
@@ -1674,24 +1559,6 @@ export default function PropertyRevenuePage() {
               })()}
             </div>
           )
-        ) : null}
-      </Modal>
-      <Modal title={exportPreview.pageCount ? `导出预览（${exportPreview.pageCount}页）` : '导出预览'} open={exportPreview.open} onCancel={closeExportPreview} footer={<>
-        <Button onClick={closeExportPreview}>关闭</Button>
-        <Button type="primary" onClick={() => {
-          try {
-            if (!exportPreview.url) return
-            const a = document.createElement('a')
-            a.href = exportPreview.url
-            a.download = exportPreview.filename || 'statement.pdf'
-            document.body.appendChild(a)
-            a.click()
-            document.body.removeChild(a)
-          } catch {}
-        }} disabled={!exportPreview.url}>下载</Button>
-      </>} width={1000}>
-        {exportPreview.url ? (
-          <iframe title="statement-export-preview" src={exportPreview.url} style={{ width: '100%', height: '70vh', border: '1px solid rgba(0,0,0,0.08)', borderRadius: 8, background: '#fff' }} />
         ) : null}
       </Modal>
       <Modal
