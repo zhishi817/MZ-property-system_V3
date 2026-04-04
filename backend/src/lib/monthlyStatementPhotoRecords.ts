@@ -38,14 +38,19 @@ export function recordHasPhotoUrls(row: any): boolean {
 }
 
 export function recordMonthKey(row: any): string {
-  const raw: any =
+  const raw: any = recordBusinessDateRaw(row)
+  return String(raw || '').slice(0, 7)
+}
+
+export function recordBusinessDateRaw(row: any): any {
+  return (
     row?.completed_at ||
     row?.occurred_at ||
     row?.ended_at ||
     row?.started_at ||
     row?.submitted_at ||
     row?.created_at
-  return String(raw || '').slice(0, 7)
+  )
 }
 
 type LoadRowsInput = {
