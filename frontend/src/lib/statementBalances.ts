@@ -195,8 +195,12 @@ function calcMonthOperatingNet(input: {
   const catOwnerCorp = sumByCat('property_fee')
   const catCouncil = sumByCat('council')
   const catOther = sumByCat('other')
+  const managementFeeRecorded = sumByCat('management_fee')
+  const expenseTxs = expensesOperating.filter(e => catKey(e) !== 'management_fee')
 
-  const managementFee = input.managementFeeRate ? round2(rentIncome * Number(input.managementFeeRate || 0)) : 0
+  const managementFee = managementFeeRecorded > 0
+    ? round2(managementFeeRecorded)
+    : (input.managementFeeRate ? round2(rentIncome * Number(input.managementFeeRate || 0)) : 0)
   const totalExpenseOperating = managementFee + catElectricity + catWater + catGas + catInternet + catConsumable + catCarpark + catOwnerCorp + catCouncil + catOther
   const operatingNet = round2((rentIncome + otherIncome) - totalExpenseOperating)
   return {
@@ -211,7 +215,7 @@ function calcMonthOperatingNet(input: {
         if (String((t as any).category || '').toLowerCase() === 'late_checkout') return false
         return shouldIncludeIncomeTxInPropertyOtherIncome(t, orderById)
       }),
-    expenseTxs: expensesOperating,
+    expenseTxs,
     managementFee,
   }
 }

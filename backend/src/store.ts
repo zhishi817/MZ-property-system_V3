@@ -74,6 +74,15 @@ export type Landlord = {
   email?: string
   emails?: string[]
   management_fee_rate?: number
+  management_fee_rules?: Array<{
+    id: string
+    landlord_id: string
+    effective_from_month: string
+    management_fee_rate: number
+    note?: string | null
+    created_at?: string
+    created_by?: string | null
+  }>
   payout_bsb?: string
   payout_account?: string
   property_ids?: string[]

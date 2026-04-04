@@ -38,13 +38,23 @@ export function recordHasPhotoUrls(row: any): boolean {
 }
 
 export function recordMonthKey(row: any): string {
-  const raw: any =
-    row?.occurred_at ||
+  const raw: any = recordCompletedDateRaw(row)
+  return String(raw || '').slice(0, 7)
+}
+
+export function recordBusinessDateRaw(row: any): any {
+  return (
     row?.completed_at ||
+    row?.occurred_at ||
+    row?.ended_at ||
     row?.started_at ||
     row?.submitted_at ||
     row?.created_at
-  return String(raw || '').slice(0, 7)
+  )
+}
+
+export function recordCompletedDateRaw(row: any): any {
+  return row?.completed_at || null
 }
 
 type LoadRowsInput = {
@@ -73,11 +83,8 @@ export async function loadMonthlyStatementPhotoRows(input: LoadRowsInput): Promi
     )
     const colSet = new Set((cols.rows || []).map((r: any) => String(r.column_name || '').toLowerCase()))
     const hasPropCode = colSet.has('property_code')
-    const dateCols = ['occurred_at', 'completed_at', 'started_at', 'submitted_at', 'created_at'].filter((c) => colSet.has(c))
-    if (!dateCols.length) return []
-
-    const dateExpr = (c: string) => `substring(t.${c}::text, 1, 10)`
-    const dateCond = `(${dateCols.map((c) => `(${dateExpr(c)} >= $2 AND ${dateExpr(c)} < $3)`).join(' OR ')})`
+    if (!colSet.has('completed_at')) return []
+    const dateCond = `(substring(t.completed_at::text, 1, 10) >= $2 AND substring(t.completed_at::text, 1, 10) < $3)`
     const parts: any[] = []
 
     const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND ${dateCond} LIMIT 8000`

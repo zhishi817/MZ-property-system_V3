@@ -6,10 +6,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { getJSON, API_BASE, authHeaders, apiList, apiCreate, apiUpdate, apiDelete } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
 import AuditTrail from '../../../components/AuditTrail'
+import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../../../lib/managementFeeRules'
 
 type Order = { id: string; price?: number; cleaning_fee?: number; checkin?: string; checkout?: string; property_id?: string }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; occurred_at: string }
-type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
+type Landlord = LandlordWithManagementFeeRules
 
 export default function CompanyRevenuePage() {
   const [month, setMonth] = useState<any>(dayjs())
@@ -79,12 +80,11 @@ export default function CompanyRevenuePage() {
 
   const mgmtFee = useMemo(() => {
     if (!start || !end) return 0
-    const landByProp = new Map<string, Landlord>()
-    landlords.forEach(l => (l.property_ids||[]).forEach(pid => landByProp.set(pid, l)))
+    const monthKey = start.format('YYYY-MM')
     let sum = 0
     orders.filter(o => inMonth(o.checkout)).forEach(o => {
-      const l = landByProp.get(o.property_id || '')
-      const rate = l?.management_fee_rate || 0
+      const l = findLandlordForProperty(landlords, String(o.property_id || ''))
+      const rate = Number(resolveManagementFeeRuleForMonth(l, monthKey).rate || 0)
       sum += Number(o.price || 0) * rate
     })
     return Math.round((sum + Number.EPSILON) * 100) / 100

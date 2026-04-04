@@ -18,10 +18,11 @@ import { exportElementToPdfBlob } from '../../../lib/pdfExport'
 import { buildStatementTxs, type StatementTx } from '../../../lib/statementTx'
 import { DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH } from '../../../lib/monthlyStatementPrint'
 import { canDownloadSplitPart, pickSplitPhotosMode, splitPartPhotoCount, type MergeSplitInfo } from '../../../lib/monthlyStatementPhotoSplit'
+import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../../../lib/managementFeeRules'
 
 type Order = { id: string; property_id?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = StatementTx
-type Landlord = { id: string; name: string; management_fee_rate?: number; property_ids?: string[] }
+type Landlord = LandlordWithManagementFeeRules
 type DeepCleaning = { id: string; property_id?: string; property_code?: string; code?: string; occurred_at?: string; completed_at?: string; submitted_at?: string; created_at?: string; pay_method?: any; total_cost?: any; labor_cost?: any; consumables?: any; work_no?: string }
 type RevenueStatus = { scheduled_email_set: boolean; transferred: boolean }
 type PendingOps = Record<string, { scheduled?: boolean; transfer?: boolean }>
@@ -502,14 +503,15 @@ export default function PropertyRevenuePage() {
     const monthKey = month?.format?.('YYYY-MM') || ''
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return null
     const property = properties.find(p => String(p.id) === String(previewPid))
-    const landlord = landlords.find(l => (l.property_ids || []).includes(String(previewPid)))
+    const landlord = findLandlordForProperty(landlords, String(previewPid), (property as any)?.landlord_id)
+    const rule = resolveManagementFeeRuleForMonth(landlord, monthKey)
     return computeMonthlyStatementBalanceDebug({
       month: monthKey,
       propertyId: String(previewPid),
       propertyCode: property?.code,
       orders,
       txs: txsAll,
-      managementFeeRate: landlord?.management_fee_rate,
+      managementFeeRate: rule.rate ?? undefined,
       carryStartMonth: DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH,
     })
   }, [previewPid, period, month, properties, landlords, orders, txsAll])
@@ -732,9 +734,8 @@ export default function PropertyRevenuePage() {
         const availableDays = Math.max(0, daysInMonth - ownerNights)
         const occRate = availableDays ? Math.round(((guestNights / availableDays)*100 + Number.EPSILON)*100)/100 : 0
         const avg = guestNights ? Math.round(((rentIncome / guestNights) + Number.EPSILON)*100)/100 : 0
-        const landlordByList = landlords.find(l => (l.property_ids||[]).includes(p.id))
-        const landlordByLink = landlords.find(l => String((l as any).id||'') === String((p as any).landlord_id||''))
-        const rate = landlordByList?.management_fee_rate ?? landlordByLink?.management_fee_rate ?? 0
+        const landlord = findLandlordForProperty(landlords, String(p.id), String((p as any).landlord_id || ''))
+        const rate = Number(resolveManagementFeeRuleForMonth(landlord, mk).rate || 0)
         const sums = (b?.expSums || {}) as any
         const mgmtRecorded = Number(sums.management_fee || 0)
         const mgmt = mgmtRecorded ? mgmtRecorded : (rate ? Math.round(((rentIncome * rate) + Number.EPSILON)*100)/100 : 0)
