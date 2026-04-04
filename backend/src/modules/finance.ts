@@ -1989,7 +1989,14 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
   } catch (e: any) {
     const code = String(e?.code || '')
     if (code === 'NO_PHOTOS_TO_RENDER') return res.status(422).json({ message: 'no photos to render for requested sections' })
-    if (code === 'MEMORY_GUARD_BLOCKED') return res.status(409).json({ message: 'too_many_photos_for_sync_export', rawUrls: Number(e?.rawUrls || 0), syncMaxPhotos: Number(e?.syncMaxPhotos || 0) })
+    if (code === 'MEMORY_GUARD_BLOCKED') {
+      return res.status(409).json({
+        message: '照片较多，当前版本已改为后台生成，请稍后使用照片分卷下载',
+        error_code: 'too_many_photos_for_sync_export',
+        rawUrls: Number(e?.rawUrls || 0),
+        syncMaxPhotos: Number(e?.syncMaxPhotos || 0),
+      })
+    }
     if (code === 'PDF_GENERATION_TIMEOUT') return res.status(504).json({ message: 'pdf_generation_timeout' })
     if (code === 'PDF_IMAGE_FETCH_TIMEOUT') return res.status(504).json({ message: 'pdf_image_fetch_timeout' })
     return res.status(500).json({ message: e?.message || 'pdf failed' })

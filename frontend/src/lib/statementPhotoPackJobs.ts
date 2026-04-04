@@ -8,6 +8,27 @@ type PhotoPackJobStatus = {
   detail?: string
   result_files?: any[]
   last_error_message?: string | null
+  last_error_code?: string | null
+}
+
+function normalizePhotoPackError(message: string, payload?: any) {
+  const raw = String(message || '').trim()
+  const code = String(payload?.last_error_code || payload?.error_code || '').trim()
+  if (code === 'PHOTO_ASSETS_UNREACHABLE' || code === 'PHOTO_PACK_RENDER_EMPTY') {
+    return '照片资源未成功加载，已停止导出，请重试；若持续出现，请检查该房源照片链接是否失效'
+  }
+  if (code === 'NO_PHOTOS_TO_RENDER') return '本月没有可导出的照片分卷'
+  if (code === 'too_many_photos_for_sync_export' || /too_many_photos_for_sync_export/i.test(raw)) {
+    return '照片较多，当前版本已改为后台生成，请稍后重试分卷下载'
+  }
+  if (code === 'PDF_IMAGE_FETCH_TIMEOUT' || /pdf_image_fetch_timeout/i.test(raw)) {
+    return '照片加载超时，请稍后重试'
+  }
+  if (code === 'PDF_GENERATION_TIMEOUT' || /pdf_generation_timeout/i.test(raw)) {
+    return 'PDF 生成时间较长，请稍后重试'
+  }
+  if (/HTTP 404|HTTP 501/i.test(raw)) return '当前服务端版本尚未支持新的照片分卷下载接口'
+  return raw || '照片 PDF 处理失败'
 }
 
 function withTimeout(signalMs: number) {
@@ -63,7 +84,7 @@ export async function runStatementPhotoPackJob(opts: {
       forceNew: false,
     }),
   }, 30000)
-  if (!create.resp.ok) throw new Error(String((create.json as any)?.message || `HTTP ${create.resp.status}`))
+  if (!create.resp.ok) throw new Error(normalizePhotoPackError(String((create.json as any)?.message || `HTTP ${create.resp.status}`), create.json))
   const jobId = String((create.json as any)?.job_id || (create.json as any)?.id || '').trim()
   if (!jobId) throw new Error('创建任务失败（missing job_id）')
   onUpdate({ stage: '创建任务', detail: '任务已创建，正在生成 PDF...', progress: 10, timeout: false })
@@ -85,21 +106,23 @@ export async function runStatementPhotoPackJob(opts: {
         timeout: false,
       })
       if (String(s.status || '') === 'failed' || stage === 'failed') {
-        throw new Error(String(s.last_error_message || s.detail || '照片 PDF 生成失败'))
+        throw new Error(normalizePhotoPackError(String(s.last_error_message || s.detail || '照片 PDF 生成失败'), s))
       }
       if (String(s.status || '') === 'success' && stage === 'done') {
-        onUpdate({ stage: '准备下载', detail: 'PDF 已生成，正在下载...', progress: 96, timeout: false })
+        const warnDetail = /未能加载|缺图/i.test(detail) ? `${detail}，正在下载...` : 'PDF 已生成，正在下载...'
+        onUpdate({ stage: '准备下载', detail: warnDetail, progress: 96, timeout: false })
         const dl = await fetchBlobWithTimeout(`${API_BASE}/finance/statement-photo-pack/${encodeURIComponent(jobId)}/download`, { headers: authHeaders() }, 30000)
         if (!dl.resp.ok) {
           let msg = `HTTP ${dl.resp.status}`
+          let payload: any = null
           try {
             const txt = await dl.blob.text()
-            const j = JSON.parse(txt)
-            msg = String(j?.message || msg)
+            payload = JSON.parse(txt)
+            msg = String(payload?.message || msg)
           } catch {}
-          throw new Error(msg)
+          throw new Error(normalizePhotoPackError(msg, payload))
         }
-        onUpdate({ stage: '完成', detail: '下载完成', progress: 100, timeout: false })
+        onUpdate({ stage: '完成', detail: /未能加载|缺图/i.test(detail) ? detail : '下载完成', progress: 100, timeout: false })
         return { blob: dl.blob, jobId, status: s }
       }
     } catch (e: any) {
@@ -108,7 +131,7 @@ export async function runStatementPhotoPackJob(opts: {
         onUpdate({ stage: '网络较慢', detail: '单次轮询超时，任务仍可能继续执行，正在重试...', timeout: true })
         continue
       }
-      throw e
+      throw new Error(normalizePhotoPackError(String(e?.message || e || '照片 PDF 处理失败')))
     }
   }
   onUpdate({ timeout: true, stage: '生成时间较长', detail: '照片 PDF 仍在后台处理中，请稍后重试。' })

@@ -2155,8 +2155,14 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
         const code = String((e === null || e === void 0 ? void 0 : e.code) || '');
         if (code === 'NO_PHOTOS_TO_RENDER')
             return res.status(422).json({ message: 'no photos to render for requested sections' });
-        if (code === 'MEMORY_GUARD_BLOCKED')
-            return res.status(409).json({ message: 'too_many_photos_for_sync_export', rawUrls: Number((e === null || e === void 0 ? void 0 : e.rawUrls) || 0), syncMaxPhotos: Number((e === null || e === void 0 ? void 0 : e.syncMaxPhotos) || 0) });
+        if (code === 'MEMORY_GUARD_BLOCKED') {
+            return res.status(409).json({
+                message: '照片较多，当前版本已改为后台生成，请稍后使用照片分卷下载',
+                error_code: 'too_many_photos_for_sync_export',
+                rawUrls: Number((e === null || e === void 0 ? void 0 : e.rawUrls) || 0),
+                syncMaxPhotos: Number((e === null || e === void 0 ? void 0 : e.syncMaxPhotos) || 0),
+            });
+        }
         if (code === 'PDF_GENERATION_TIMEOUT')
             return res.status(504).json({ message: 'pdf_generation_timeout' });
         if (code === 'PDF_IMAGE_FETCH_TIMEOUT')

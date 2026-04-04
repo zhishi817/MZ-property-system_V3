@@ -32,6 +32,15 @@ export type GenerateStatementPhotoPackResult = {
   detail: string
 }
 
+function jobError(code: string, message: string, extra?: Record<string, any>) {
+  const e: any = new Error(message)
+  e.code = code
+  if (extra && typeof extra === 'object') {
+    for (const [k, v] of Object.entries(extra)) e[k] = v
+  }
+  return e
+}
+
 function monthRangeISO(monthKey: string): { start: string; end: string } | null {
   const m = String(monthKey || '').trim()
   const mm = m.match(/^(\d{4})-(\d{2})$/)
@@ -141,6 +150,10 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
       : Promise.resolve([] as any[]),
   ])
   const totalRawUrls = countRawUrls(deepRows0) + countRawUrls(maintRows0)
+  const apiBase = String(input.apiBase || '').trim().replace(/\/+$/g, '')
+  if (totalRawUrls > 0 && !/^https?:\/\//i.test(apiBase)) {
+    throw jobError('PHOTO_ASSETS_UNREACHABLE', 'photo assets unreachable: missing valid api base', { rawUrls: totalRawUrls })
+  }
   const effectivePhotosMode = (() => {
     if (requestedMode === 'thumbnail') return 'thumbnail'
     if (requestedMode === 'compressed') return totalRawUrls > 6 ? 'thumbnail' : 'compressed'
@@ -160,7 +173,7 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
     }
   }
   const normalizePhotoUrl = (u: string) => normalizePhotoUrlForPdf(u, {
-    apiBase: input.apiBase,
+    apiBase,
     allowR2KeyPrefixes: ['maintenance/', 'deep-cleaning/', 'deep-cleaning-upload/', 'invoice-company-logos/'],
     photosMode: effectivePhotosMode,
     compress,
@@ -173,6 +186,12 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
   const deepRows = Array.isArray(deepRows0) ? deepRows0.map(mapRowUrls) : []
   const maintRows = Array.isArray(maintRows0) ? maintRows0.map(mapRowUrls) : []
   const cleanedUrls = countRawUrls(deepRows) + countRawUrls(maintRows)
+  if (totalRawUrls > 0 && cleanedUrls <= 0) {
+    throw jobError('PHOTO_ASSETS_UNREACHABLE', 'photo assets unreachable: no renderable urls after normalization', {
+      rawUrls: totalRawUrls,
+      cleanedUrls,
+    })
+  }
   const tpl = renderMonthlyStatementPdfHtml({
     month: monthKey,
     property: { id: String(prop.id), code: prop.code || '', address: prop.address || '' },
@@ -213,6 +232,23 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
     await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
     const remainForImages = Math.max(5000, totalTimeoutMs - (Date.now() - startedAt) - 5000)
     const imgStats = await waitForImages(page, { timeoutMs: Math.min(20000, remainForImages), scroll: true, tryFallbackAttr: 'data-fallback', maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
+    const notLoaded = Number((imgStats as any)?.notLoaded || 0)
+    const failedUrls = Array.isArray((imgStats as any)?.failedUrls) ? (imgStats as any).failedUrls : []
+    const severeMissingThreshold = Math.max(3, Math.ceil(imageCount * 0.8))
+    if (imageCount > 0 && notLoaded >= imageCount) {
+      throw jobError('PHOTO_PACK_RENDER_EMPTY', 'photo pack render empty: all images failed to load', {
+        imageCount,
+        notLoaded,
+        failedUrls,
+      })
+    }
+    if (imageCount > 0 && notLoaded >= severeMissingThreshold) {
+      throw jobError('PHOTO_ASSETS_UNREACHABLE', 'photo assets unreachable: most images failed to load', {
+        imageCount,
+        notLoaded,
+        failedUrls,
+      })
+    }
     if (Date.now() - startedAt > totalTimeoutMs) {
       const e: any = new Error('pdf_generation_timeout')
       e.code = 'PDF_GENERATION_TIMEOUT'
@@ -229,8 +265,8 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
       rawUrls: totalRawUrls,
       cleanedUrls,
       effectivePhotosMode,
-      failedUrls: Array.isArray((imgStats as any)?.failedUrls) ? (imgStats as any).failedUrls : [],
-      notLoaded: Number((imgStats as any)?.notLoaded || 0),
+      failedUrls,
+      notLoaded,
       detail,
     }
   } catch (e: any) {
