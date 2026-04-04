@@ -209,14 +209,14 @@ export default function PropertyRevenuePage() {
     await Promise.all(monthKeys.map((mk) => fetchRentIncomeByProperty(mk, force)))
   }
 
-  const fetchRentSegments = async (pidRaw: string, monthKeyRaw: string) => {
+  const fetchRentSegments = async (pidRaw: string, monthKeyRaw: string, force = false) => {
     const pid = String(pidRaw || '').trim()
     const mk = String(monthKeyRaw || '').trim()
     if (!pid || !/^\d{4}-\d{2}$/.test(mk)) return
     const k = rentKey(pid, mk)
     const cur = rentSegByKey[k]
     if (cur?.loading) return
-    if (Array.isArray(cur?.segments) && cur.segments.length) return
+    if (!force && Array.isArray(cur?.segments) && cur.segments.length) return
     setRentSegByKey((m) => ({ ...m, [k]: { loading: true, segments: [], rent_income: 0 } }))
     try {
       const qs = new URLSearchParams({ month: mk, property_id: pid }).toString()
@@ -235,6 +235,10 @@ export default function PropertyRevenuePage() {
     setPreviewReady(false)
     try {
       await reloadAllRef.current?.()
+    } catch {}
+    try {
+      const mk = month?.format?.('YYYY-MM') || ''
+      if (mk) await fetchRentSegments(nextPid, mk, true)
     } catch {}
     setPreviewPid(nextPid)
     setPreviewOpen(true)
@@ -523,7 +527,7 @@ export default function PropertyRevenuePage() {
     const pid = String(previewPid || '').trim()
     const mk = month?.format?.('YYYY-MM') || ''
     if (!pid || !mk) return
-    fetchRentSegments(pid, mk).catch(() => {})
+    fetchRentSegments(pid, mk, true).catch(() => {})
   }, [previewOpen, previewPid, period, month?.format?.('YYYY-MM')])
 
   const monthPdfCfg = useMemo(() => {
@@ -531,9 +535,11 @@ export default function PropertyRevenuePage() {
     return resolveMonthPdfCfg(mergeSplit, mergeNoPhotos)
   }, [period, previewPid, mergeSplit, mergeNoPhotos, exportQuality])
   const previewOrderSegments = useMemo(() => {
-    if (period !== 'month' || !previewPid || !month) return undefined
-    return getMonthSegmentsForProperty(orders as any, month, String(previewPid))
-  }, [period, previewPid, month, orders])
+    if (period !== 'month' || !previewPid || !month?.format) return undefined
+    const key = rentKey(String(previewPid), month.format('YYYY-MM'))
+    const cached = rentSegByKey[key]
+    return Array.isArray(cached?.segments) ? cached.segments : undefined
+  }, [period, previewPid, month, rentSegByKey])
 
   const previewCarryDebug = useMemo(() => {
     if (!previewPid || period !== 'month') return null
