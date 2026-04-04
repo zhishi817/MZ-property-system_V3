@@ -62,6 +62,7 @@ export default function PropertyRevenuePage() {
   const [mergeNoPhotos, setMergeNoPhotos] = useState<boolean>(false)
   const [splitDl, setSplitDl] = useState<{ maintenance: boolean; deepCleaning: boolean }>({ maintenance: false, deepCleaning: false })
   const [exportPreview, setExportPreview] = useState<{ open: boolean; url: string; pageCount: number; filename: string; loading: boolean }>({ open: false, url: '', pageCount: 0, filename: '', loading: false })
+  const [forceNewMergeJob, setForceNewMergeJob] = useState<boolean>(false)
   const printRef = useRef<HTMLDivElement>(null)
   const mergeStartBtnRef = useRef<HTMLButtonElement | null>(null)
   const [period, setPeriod] = useState<'month'|'year'|'half-year'|'fiscal-year'>('month')
@@ -79,6 +80,8 @@ export default function PropertyRevenuePage() {
   const reloadTimerRef = useRef<any>(null)
   const reloadInFlightRef = useRef<boolean>(false)
   const reloadOrdersOnlyRef = useRef<null | (() => void)>(null)
+  const reloadAllRef = useRef<null | (() => Promise<void>)>(null)
+  const rangeReloadPrimedRef = useRef<boolean>(false)
   useEffect(() => { rentIncomeByMonthRef.current = rentIncomeByMonth }, [rentIncomeByMonth])
   const closeExportPreview = () => {
     setExportPreview((prev) => {
@@ -233,6 +236,17 @@ export default function PropertyRevenuePage() {
     }
   }
 
+  const openPreview = async (pid: string) => {
+    const nextPid = String(pid || '').trim()
+    if (!nextPid) return
+    setPreviewReady(false)
+    try {
+      await reloadAllRef.current?.()
+    } catch {}
+    setPreviewPid(nextPid)
+    setPreviewOpen(true)
+  }
+
   useEffect(() => {
     mountedRef.current = true
     const reload = async (opts?: { ordersOnly?: boolean }) => {
@@ -299,6 +313,7 @@ export default function PropertyRevenuePage() {
       try { if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current) } catch {}
       reloadTimerRef.current = setTimeout(() => { reload({ ordersOnly: true }) }, 350)
     }
+    reloadAllRef.current = () => reload()
     reloadOrdersOnlyRef.current = scheduleReloadOrders
     const onVis = () => { if (document.visibilityState === 'visible') scheduleReloadOrders() }
     const onFocus = () => { scheduleReloadOrders() }
@@ -308,11 +323,21 @@ export default function PropertyRevenuePage() {
     window.addEventListener('focus', onFocus)
     return () => {
       mountedRef.current = false
+      reloadAllRef.current = null
       try { if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current) } catch {}
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('focus', onFocus)
     }
   }, [])
+
+  useEffect(() => {
+    if (!start || !end) return
+    if (!rangeReloadPrimedRef.current) {
+      rangeReloadPrimedRef.current = true
+      return
+    }
+    reloadAllRef.current?.().catch(() => {})
+  }, [start?.valueOf(), end?.valueOf()])
 
   useEffect(() => {
     const p = String(pathname || '')
@@ -911,7 +936,7 @@ export default function PropertyRevenuePage() {
           isPendingTransfer={isPendingTransfer}
           onToggleScheduled={() => toggleStatus(r, 'scheduled_email_set', 'scheduled')}
           onToggleTransfer={() => toggleStatus(r, 'transferred', 'transfer')}
-          onPreview={() => { setPreviewPid(r.pid); setPreviewOpen(true) }}
+          onPreview={() => { void openPreview(String(r?.pid || '')) }}
         />
       )
     } },
@@ -949,7 +974,7 @@ export default function PropertyRevenuePage() {
           disabled={pageLoading || rangeLoading}
         />
         <Select allowClear showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="按房号筛选" style={{ width: 240 }} options={sortProperties(filteredProperties).map(p=>({ value:p.id, label:p.code || p.address || p.id }))} value={selectedPid} onChange={setSelectedPid} disabled={pageLoading || rangeLoading} />
-        <Button type="primary" onClick={() => { if (!selectedPid) { message.warning('请先选择房号'); return } setPreviewPid(selectedPid); setPreviewOpen(true) }} disabled={pageLoading || rangeLoading}>生成报表</Button>
+        <Button type="primary" onClick={() => { if (!selectedPid) { message.warning('请先选择房号'); return } void openPreview(String(selectedPid)) }} disabled={pageLoading || rangeLoading}>生成报表</Button>
         <span style={{ marginLeft: 8 }}>排除孤儿快照</span>
         <Switch checked={excludeOrphanFixedSnapshots} onChange={setExcludeOrphanFixedSnapshots as any} disabled={pageLoading || rangeLoading} />
       </div>
@@ -1373,7 +1398,7 @@ export default function PropertyRevenuePage() {
                     carryStartMonth: DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH,
                     exportQuality,
                     mergeInvoices: true,
-                    forceNew: false,
+                    forceNew: forceNewMergeJob,
                   }),
                 })
                 if (!create.ok) {
@@ -1384,6 +1409,7 @@ export default function PropertyRevenuePage() {
                 const j = await create.json() as any
                 const jobId = String(j?.job_id || j?.id || '').trim()
                 if (!jobId) throw new Error('创建任务失败（missing job_id）')
+                setForceNewMergeJob(false)
                 updateMerge(15, j?.reused ? '已复用后台任务，正在生成...' : '任务已创建，正在生成...', `任务ID：${jobId}`)
                 const t0 = Date.now()
                 const basePollMs = Math.max(1200, Math.min(6000, Number((window as any).__mergePollMs || 2000)))
@@ -1427,6 +1453,7 @@ export default function PropertyRevenuePage() {
                 }
                 throw new Error('合并超时，请稍后在页面重试')
               } catch (e: any) {
+                setForceNewMergeJob(false)
                 mergeFail(e?.message || '合并下载失败', false)
                 return
               }
@@ -1745,7 +1772,7 @@ export default function PropertyRevenuePage() {
       </Modal>
       <Modal title="合并PDF下载" open={mergeUi.open} onCancel={() => setMergeUi((prev) => ({ ...prev, open: false }))} footer={<>
         {(period === 'month' && mergeUi.status === 'exception') ? (
-          <Button type="primary" onClick={() => { try { mergeStartBtnRef.current?.click() } catch {} }}>重试</Button>
+          <Button type="primary" onClick={() => { setForceNewMergeJob(true); try { mergeStartBtnRef.current?.click() } catch {} }}>重试</Button>
         ) : null}
         <Button onClick={() => setMergeUi((prev) => ({ ...prev, open: false }))}>{mergeUi.status === 'active' ? '隐藏' : '关闭'}</Button>
       </>} width={520} maskClosable={mergeUi.status !== 'active'} keyboard={mergeUi.status !== 'active'} closable={mergeUi.status !== 'active'}>
