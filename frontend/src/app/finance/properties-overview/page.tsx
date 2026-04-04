@@ -537,6 +537,10 @@ export default function PropertyRevenuePage() {
     if (period !== 'month' || !previewPid) return null
     return resolveMonthPdfCfg(mergeSplit, mergeNoPhotos)
   }, [period, previewPid, mergeSplit, mergeNoPhotos, exportQuality])
+  const previewOrderSegments = useMemo(() => {
+    if (period !== 'month' || !previewPid || !month) return undefined
+    return getMonthSegmentsForProperty(orders as any, month, String(previewPid))
+  }, [period, previewPid, month, orders])
 
   const previewCarryDebug = useMemo(() => {
     if (!previewPid || period !== 'month') return null
@@ -1607,7 +1611,7 @@ export default function PropertyRevenuePage() {
                     month={month.format('YYYY-MM')}
                     propertyId={previewPid || undefined}
                     orders={orders}
-                    orderSegments={(rentSegByKey[rentKey(previewPid, month.format('YYYY-MM'))]?.segments as any) || undefined}
+                    orderSegments={previewOrderSegments as any}
                     txs={txs}
                     properties={properties}
                     landlords={landlords}
