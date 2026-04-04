@@ -81,7 +81,7 @@ export async function runStatementPhotoPackJob(opts: {
       sections: opts.sections,
       showChinese: !!opts.showChinese,
       quality_mode: opts.qualityMode || 'compressed',
-      forceNew: false,
+      forceNew: true,
     }),
   }, 30000)
   if (!create.resp.ok) throw new Error(normalizePhotoPackError(String((create.json as any)?.message || `HTTP ${create.resp.status}`), create.json))
