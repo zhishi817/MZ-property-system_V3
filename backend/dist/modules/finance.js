@@ -1416,7 +1416,7 @@ exports.router.post('/statement-photo-pack', (0, auth_1.requireAnyPerm)(['financ
                 const r0 = await dbAdapter_2.pgPool.query(`SELECT id, status, created_at
            FROM pdf_jobs
            WHERE kind='statement_photo_pack'
-             AND status IN ('queued', 'running', 'success')
+             AND status IN ('queued', 'running')
              AND (status <> 'running' OR lease_expires_at IS NULL OR lease_expires_at > now())
              AND COALESCE(params->>'month', params->>'month_key') = $1
              AND COALESCE(params->>'property_id', params->>'pid') = $2
