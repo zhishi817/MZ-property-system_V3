@@ -295,7 +295,20 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
       page.setDefaultTimeout(waitTimeoutMs)
       page.setDefaultNavigationTimeout(navTimeoutMs)
       try {
-        const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
+        let resp: any = null
+        try {
+          resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs })
+        } catch (e: any) {
+          const msg = String(e?.message || e || '')
+          const navAborted = /net::ERR_ABORTED/i.test(msg)
+          if (!navAborted) throw e
+          try { console.log(`[pdf-jobs][worker] goto_aborted attempt=${attempt + 1} url=${url}`) } catch {}
+          // Some production navigations are reported as aborted by Chromium even though
+          // the print page keeps loading. Give the page a short grace period and continue
+          // if the statement root shows up.
+          await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {})
+          await page.waitForSelector('[data-monthly-statement-root="1"]', { timeout: Math.min(waitTimeoutMs, 8000) }).catch(() => {})
+        }
         const status = Number(resp?.status?.() || 0)
         if (status >= 400) {
           const title = await page.title().catch(() => '')
