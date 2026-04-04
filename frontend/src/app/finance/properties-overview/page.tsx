@@ -331,15 +331,6 @@ export default function PropertyRevenuePage() {
   }, [])
 
   useEffect(() => {
-    if (!start || !end) return
-    if (!rangeReloadPrimedRef.current) {
-      rangeReloadPrimedRef.current = true
-      return
-    }
-    reloadAllRef.current?.().catch(() => {})
-  }, [start?.valueOf(), end?.valueOf()])
-
-  useEffect(() => {
     const p = String(pathname || '')
     if (p === '/finance/properties-overview' || p === '/finance/performance/revenue') {
       try { reloadOrdersOnlyRef.current?.() } catch {}
@@ -393,6 +384,15 @@ export default function PropertyRevenuePage() {
   useEffect(() => {
     if (!start || !end) { rangeRef.current = null; return }
     rangeRef.current = { start, end }
+  }, [start, end])
+
+  useEffect(() => {
+    if (!start || !end) return
+    if (!rangeReloadPrimedRef.current) {
+      rangeReloadPrimedRef.current = true
+      return
+    }
+    reloadAllRef.current?.().catch(() => {})
   }, [start, end])
 
   useEffect(() => {
