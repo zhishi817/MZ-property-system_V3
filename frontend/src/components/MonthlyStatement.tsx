@@ -211,7 +211,7 @@ export default forwardRef<HTMLDivElement, {
           if (id) map.set(id, r)
         }
         const list = Array.from(map.values())
-        const inMonth = list.filter((d: any) => isInMonth(recordBusinessDateRaw(d)))
+        const inMonth = list.filter((d: any) => isCompletedInMonth(d))
         setDeepCleanings(inMonth as any)
       } catch {
         setDeepCleanings([])
@@ -259,7 +259,7 @@ export default forwardRef<HTMLDivElement, {
           if (id) map.set(id, r)
         }
         const list = Array.from(map.values())
-        const inMonth = list.filter((d: any) => isInMonth(recordBusinessDateRaw(d)))
+        const inMonth = list.filter((d: any) => isCompletedInMonth(d))
         setMaintenances(inMonth as any)
       } catch {
         setMaintenances([])
@@ -342,7 +342,7 @@ export default forwardRef<HTMLDivElement, {
       }, 0)
       const fallbackTotal = Math.round(((laborN + sum) + Number.EPSILON) * 100) / 100
       const amount = Number((d?.total_cost !== undefined && d?.total_cost !== null) ? d.total_cost : fallbackTotal) || 0
-      const dateKey = toDayStr(d?.occurred_at || d?.completed_at || d?.started_at || d?.submitted_at || d?.created_at) || start.format('YYYY-MM-DD')
+      const dateKey = toDayStr(d?.completed_at) || start.format('YYYY-MM-DD')
       return {
         id: `deep-cleaning-${String(d?.id || '')}`,
         kind: 'expense',
@@ -477,6 +477,12 @@ export default forwardRef<HTMLDivElement, {
     row?.submitted_at ||
     row?.created_at
   )
+  const recordCompletedDateRaw = (row: any): any => row?.completed_at || null
+  const isCompletedInMonth = (row: any): boolean => {
+    const completedAt = recordCompletedDateRaw(row)
+    if (!completedAt) return false
+    return isInMonth(completedAt)
+  }
   const isInMonth = (raw: any): boolean => {
     if (!raw) return false
     const s = String(raw || '').trim()
@@ -1029,9 +1035,9 @@ export default forwardRef<HTMLDivElement, {
             <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
               {deepCleanings
                 .slice()
-                .sort((a: any, b: any) => String(a?.occurred_at || '').localeCompare(String(b?.occurred_at || '')))
+                .sort((a: any, b: any) => String(a?.completed_at || '').localeCompare(String(b?.completed_at || '')))
                 .map((d: any, idx: number) => {
-                  const date = dayLabel(d?.completed_at || d?.occurred_at || d?.started_at || d?.submitted_at || d?.created_at)
+                  const date = dayLabel(d?.completed_at)
                   const startTime = d?.started_at ? dayjs(String(d.started_at)).format('HH:mm') : ''
                   const endTime = d?.ended_at ? dayjs(String(d.ended_at)).format('HH:mm') : ''
                   const timeLabel = [date, (startTime || endTime) ? `${startTime || '-'}~${endTime || '-'}` : ''].filter(Boolean).join(' ')
@@ -1152,7 +1158,7 @@ export default forwardRef<HTMLDivElement, {
                   const out: Array<{ url: string; caption: string }> = []
                   for (const r of deepCleanings || []) {
                     const workNo = String((r as any)?.work_no || (r as any)?.id || '').trim()
-                    const day = toDayStr((r as any)?.occurred_at || (r as any)?.completed_at || (r as any)?.started_at || (r as any)?.submitted_at || (r as any)?.created_at)
+                    const day = toDayStr((r as any)?.completed_at)
                     const urls = urlArr(phase === 'before' ? (r as any)?.photo_urls : (r as any)?.repair_photo_urls)
                       .map((u: any) => String(u || '').trim())
                       .filter(Boolean)
@@ -1208,9 +1214,9 @@ export default forwardRef<HTMLDivElement, {
             <div style={{ display:'flex', flexDirection:'column', gap: 12 }}>
               {maintenances
                 .slice()
-                .sort((a: any, b: any) => String(a?.occurred_at || '').localeCompare(String(b?.occurred_at || '')))
+                .sort((a: any, b: any) => String(a?.completed_at || '').localeCompare(String(b?.completed_at || '')))
                 .map((m: any, idx: number) => {
-                  const date = dayLabel(m?.completed_at || m?.occurred_at || m?.started_at || m?.submitted_at || m?.created_at)
+                  const date = dayLabel(m?.completed_at)
                   const startTime = m?.started_at ? dayjs(String(m.started_at)).format('HH:mm') : ''
                   const endTime = m?.ended_at ? dayjs(String(m.ended_at)).format('HH:mm') : ''
                   const timeLabel = [date, (startTime || endTime) ? `${startTime || '-'}~${endTime || '-'}` : ''].filter(Boolean).join(' ')
@@ -1331,7 +1337,7 @@ export default forwardRef<HTMLDivElement, {
                   const out: Array<{ url: string; caption: string }> = []
                   for (const r of maintenances || []) {
                     const workNo = String((r as any)?.work_no || (r as any)?.id || '').trim()
-                    const day = toDayStr((r as any)?.occurred_at || (r as any)?.completed_at || (r as any)?.started_at || (r as any)?.submitted_at || (r as any)?.created_at)
+                    const day = toDayStr((r as any)?.completed_at)
                     const urls = urlArr(phase === 'before' ? (r as any)?.photo_urls : (r as any)?.repair_photo_urls)
                       .map((u: any) => String(u || '').trim())
                       .filter(Boolean)

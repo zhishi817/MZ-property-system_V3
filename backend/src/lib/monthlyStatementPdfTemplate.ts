@@ -1,4 +1,4 @@
-import { recordBusinessDateRaw } from './monthlyStatementPhotoRecords'
+import { recordCompletedDateRaw } from './monthlyStatementPhotoRecords'
 import { renderWorkRecordBodyFragment, workRecordPdfCssTextScoped } from './workRecordPdfTemplate'
 
 type SectionMode = 'all' | 'base' | 'deep_cleaning' | 'maintenance'
@@ -79,7 +79,7 @@ function asUrlStrings(v: any): string[] {
 }
 
 function pickDate(x: any): string {
-  const raw = String(recordBusinessDateRaw(x) || '').slice(0, 10)
+  const raw = String(recordCompletedDateRaw(x) || '').slice(0, 10)
   return raw
 }
 
