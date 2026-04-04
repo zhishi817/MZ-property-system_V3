@@ -16,11 +16,30 @@ function r2PublicBaseForKeyFromEnv(): string {
   return cleaned || (endpoint && bucket ? `${endpoint}/${bucket}` : '')
 }
 
+function parseUrl(input: string): URL | null {
+  try {
+    return new URL(String(input || '').trim())
+  } catch {
+    return null
+  }
+}
+
+function isR2ProxyUrl(u: string): boolean {
+  const parsed = parseUrl(u)
+  if (!parsed) return false
+  const p = String(parsed.pathname || '')
+  return p.endsWith('/public/r2-image') || p.endsWith('/r2-image')
+}
+
 export function isR2Url(u: string): boolean {
-  return u.includes('.r2.dev/') || u.includes('r2.cloudflarestorage.com/')
+  const parsed = parseUrl(u)
+  if (!parsed) return false
+  const host = String(parsed.hostname || '').toLowerCase()
+  return host.endsWith('.r2.dev') || host.includes('r2.cloudflarestorage.com')
 }
 
 export function proxyR2Url(u: string, opt: NormalizePhotoUrlForPdfOptions): string {
+  if (isR2ProxyUrl(u)) return u
   const apiBase = String(opt?.apiBase || '').trim()
   if (!apiBase) return u
   const proxyPath = String(opt?.r2ProxyPath || '/public/r2-image')
@@ -47,9 +66,13 @@ export function normalizeR2KeyForPdf(key: string, opt: NormalizePhotoUrlForPdfOp
 export function normalizePhotoUrlForPdf(u: string, opt: NormalizePhotoUrlForPdfOptions): string {
   const s = String(u || '').trim()
   if (!s) return ''
-  if (/^https?:\/\//i.test(s)) return isR2Url(s) ? proxyR2Url(s, opt) : s
+  if (/^https?:\/\//i.test(s)) {
+    if (isR2ProxyUrl(s)) return s
+    return isR2Url(s) ? proxyR2Url(s, opt) : s
+  }
   if (s.startsWith('//')) {
     const abs = `https:${s}`
+    if (isR2ProxyUrl(abs)) return abs
     return isR2Url(abs) ? proxyR2Url(abs, opt) : abs
   }
   if (s.startsWith('/')) {
@@ -59,4 +82,3 @@ export function normalizePhotoUrlForPdf(u: string, opt: NormalizePhotoUrlForPdfO
   const maybeKey = normalizeR2KeyForPdf(s, opt)
   return maybeKey || ''
 }
-
