@@ -1,6 +1,6 @@
 "use client"
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { App, Button, Card, DatePicker, Descriptions, Divider, Drawer, Form, Grid, Image, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, TimePicker, Typography, Upload } from 'antd'
+import { App, Button, Card, DatePicker, Descriptions, Divider, Drawer, Form, Grid, Image, Input, InputNumber, Modal, Progress, Select, Space, Switch, Table, Tag, TimePicker, Typography, Upload } from 'antd'
 import type { UploadFile, UploadProps } from 'antd'
 import dayjs from 'dayjs'
 import { CheckCircleOutlined, EnvironmentOutlined, InfoCircleOutlined, PictureOutlined, ShareAltOutlined } from '@ant-design/icons'
@@ -8,6 +8,7 @@ import { API_BASE, apiCreate, apiDelete, apiUpdate, authHeaders, getJSON } from 
 import { hasPerm } from '../../../lib/auth'
 import { downloadNamedBlob } from '../../../lib/download'
 import { sortProperties } from '../../../lib/properties'
+import { runWorkRecordPdfJob } from '../../../lib/workRecordPdfJobs'
 
 type DeepCleaningRecord = {
   id: string
@@ -156,6 +157,7 @@ export default function DeepCleaningRecordsPage() {
   const [loading, setLoading] = useState(false)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [pdfPreview, setPdfPreview] = useState<{ open: boolean; url: string; title: string; showChinese: boolean; blob: Blob | null; row: DeepCleaningRecord | null; loading: boolean }>({ open: false, url: '', title: '', showChinese: false, blob: null, row: null, loading: false })
+  const [pdfJobUi, setPdfJobUi] = useState<{ open: boolean; stage: string; detail: string; progress: number; timeout: boolean }>({ open: false, stage: '', detail: '', progress: 0, timeout: false })
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
 
@@ -601,20 +603,21 @@ export default function DeepCleaningRecordsPage() {
 
   async function fetchPdfBlob(r: DeepCleaningRecord, showChinese: boolean) {
     if (!r?.id) return
-    const qs = showChinese ? '?showChinese=1' : ''
-    const resp = await fetch(`${API_BASE}/deep-cleaning/pdf/${String(r.id)}${qs}`, { method: 'POST', cache: 'no-store', headers: authHeaders() })
-    if (!resp.ok) {
-      let msg = `HTTP ${resp.status}`
-      try { const j = await resp.json() as any; msg = String(j?.message || msg) } catch {}
-      throw new Error(msg)
-    }
-    return await resp.blob()
+    const out = await runWorkRecordPdfJob({
+      createPath: `/deep-cleaning/pdf-jobs/${String(r.id)}`,
+      statusPath: (jobId) => `/deep-cleaning/pdf-jobs/${encodeURIComponent(jobId)}`,
+      downloadPath: (jobId) => `/deep-cleaning/pdf-jobs/${encodeURIComponent(jobId)}/download`,
+      showChinese,
+      onUpdate: (patch) => setPdfJobUi(prev => ({ ...prev, ...patch })),
+    })
+    return out.blob
   }
 
   async function openExportPdf(r: DeepCleaningRecord) {
     if (!r?.id) return
     setDownloadingId(String(r.id))
     try {
+      setPdfJobUi({ open: true, stage: '创建任务', detail: '正在准备导出 PDF...', progress: 3, timeout: false })
       const blob = await fetchPdfBlob(r, false)
       if (!blob) return
       const url = URL.createObjectURL(blob)
@@ -627,6 +630,7 @@ export default function DeepCleaningRecordsPage() {
     } catch (e: any) {
       message.error(e?.message || '预览失败')
     } finally {
+      setPdfJobUi(prev => ({ ...prev, open: false }))
       setDownloadingId(null)
     }
   }
@@ -635,6 +639,7 @@ export default function DeepCleaningRecordsPage() {
     if (!r?.id) return
     setPdfPreview(p => ({ ...p, loading: true }))
     try {
+      setPdfJobUi({ open: true, stage: '创建任务', detail: '正在准备导出 PDF...', progress: 3, timeout: false })
       const blob = pdfPreview.showChinese ? await fetchPdfBlob(r, true) : pdfPreview.blob
       if (!blob) return
       const workNo = String((r as any)?.work_no || (r as any)?.id || '').trim()
@@ -644,12 +649,13 @@ export default function DeepCleaningRecordsPage() {
     } catch (e: any) {
       message.error(e?.message || '导出失败')
     } finally {
+      setPdfJobUi(prev => ({ ...prev, open: false }))
       setPdfPreview(p => ({ ...p, loading: false }))
     }
   }
 
   const columns: any[] = [
-    { title:'房号', dataIndex:'code', width: 120, ellipsis: true },
+    { title:'房号', dataIndex:'code', width: 120, ellipsis: true, fixed: 'left' as const },
     { title:'工单号', dataIndex:'work_no', width: 160, render: (_: any, r: any) => String((r as any)?.work_no || (r as any)?.id || '') },
     { title:'清洁日期', dataIndex:'completed_at', width: 120, render: (_: any, r: any) => {
       const v = (r as any)?.completed_at || (r as any)?.occurred_at
@@ -668,7 +674,7 @@ export default function DeepCleaningRecordsPage() {
     { title:'状态', dataIndex:'status', width: 120, render:(s:string)=> statusTag(s) },
     { title:'审核', dataIndex:'review_status', width: 120, render:(s:string)=> reviewTag(s) },
     { title:'提交人员', dataIndex:'submitter_name', width: 160, ellipsis: true, render:(v:string, r:any)=> String(v || (r as any)?.created_by || '-') },
-    { title:'操作', width: 320, render: (_:any, r:DeepCleaningRecord) => (
+    { title:'操作', width: 320, fixed: 'right' as const, render: (_:any, r:DeepCleaningRecord) => (
       <Space wrap>
         <Button onClick={()=>setViewing(r)}>详情</Button>
         <Button onClick={()=>shareLink(r)}>分享</Button>
@@ -1140,6 +1146,15 @@ export default function DeepCleaningRecordsPage() {
           ) : null}
         </Form>
       </Drawer>
+
+      <Modal open={pdfJobUi.open} footer={null} closable={false} maskClosable={false} title="正在生成 PDF" width={isMobile ? '92vw' : 520}>
+        <Space direction="vertical" style={{ width: '100%' }} size={14}>
+          <Progress percent={Math.max(0, Math.min(100, Number(pdfJobUi.progress || 0)))} status={pdfJobUi.timeout ? 'exception' : 'active'} />
+          <div style={{ fontWeight: 600 }}>{pdfJobUi.stage || '处理中...'}</div>
+          <div style={{ color: 'rgba(0,0,0,0.65)' }}>{pdfJobUi.detail || '正在处理，请稍候...'}</div>
+          {pdfJobUi.timeout ? <div style={{ color: '#d97706' }}>当前网络较慢，任务可能仍在后台继续执行。</div> : null}
+        </Space>
+      </Modal>
 
       <Modal
         open={pdfPreview.open}

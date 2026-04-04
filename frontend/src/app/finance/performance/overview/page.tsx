@@ -16,6 +16,8 @@ export default function PerformanceOverviewPage() {
   const [properties, setProperties] = useState<Property[]>([])
   const [month, setMonth] = useState<any>(dayjs())
   const [selectedPid, setSelectedPid] = useState<string | undefined>(undefined)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
   useEffect(() => {
     getJSON<Order[]>('/orders').then(j=> setOrders(Array.isArray(j)?j:[])).catch(()=>setOrders([]))
     getJSON<Property[]>('/properties').then(j=> setProperties(Array.isArray(j)?j:[])).catch(()=>setProperties([]))
@@ -114,7 +116,20 @@ export default function PerformanceOverviewPage() {
           options={sortPropertiesByRegionThenCode(properties as any).map(p => ({ value: p.id, label: p.code || p.address || p.id }))} />
       </Space>
       <Card size="small" title="房源月度汇总（动态9个月，含未来月份）">
-        <Table rowKey={(r:any)=> r.id} pagination={{ pageSize: 20 }} dataSource={propRows} scroll={{ x: 'max-content' }} rowClassName={(r:any)=> r.isRegion ? 'region-row' : ''}
+        <Table rowKey={(r:any)=> r.id} pagination={{
+          current: page,
+          pageSize,
+          showSizeChanger: true,
+          pageSizeOptions: [10, 20, 50, 100],
+          onChange: (nextPage, nextPageSize) => {
+            setPage(nextPage)
+            setPageSize(nextPageSize)
+          },
+          onShowSizeChange: (_current, nextPageSize) => {
+            setPage(1)
+            setPageSize(nextPageSize)
+          },
+        }} dataSource={propRows} scroll={{ x: 'max-content' }} rowClassName={(r:any)=> r.isRegion ? 'region-row' : ''}
           columns={([
             { title: '房号/区域', dataIndex: 'code', fixed: 'left' as const, render: (_:any, r:any)=> r.isRegion ? (<span style={{ fontWeight: 700 }}>{r.code}</span>) : (r.code || r.id) },
             ...months.map((m, idx) => ({

@@ -4,7 +4,7 @@ import dayjs from 'dayjs'
 import { useEffect, useRef, useState } from 'react'
 import { apiList, getJSON } from '../../../lib/api'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
-import { normalizeReportCategory } from '../../../lib/financeTx'
+import { isVoidedTx, normalizeReportCategory } from '../../../lib/financeTx'
 import { type LandlordWithManagementFeeRules } from '../../../lib/managementFeeRules'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number }
@@ -74,7 +74,7 @@ export default function MonthlyStatementPage() {
           if (v.includes('council') || v.includes('市政')) return 'council'
           return 'other'
         }
-        const peMapped: any[] = (Array.isArray(pexp) ? pexp : []).map((r: any) => {
+        const peMapped: any[] = (Array.isArray(pexp) ? pexp : []).filter((r: any) => !isVoidedTx(r)).map((r: any) => {
           const code = String(r.property_code || '').trim()
           const pidRaw = r.property_id || undefined
           const match = properties.find(pp => (pp.code || '') === code)

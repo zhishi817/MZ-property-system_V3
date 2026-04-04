@@ -1,6 +1,6 @@
 import dayjs from 'dayjs'
 import { monthSegments, toDayStr } from './orders'
-import { shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from './financeTx'
+import { isVoidedTx, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from './financeTx'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = {
@@ -166,6 +166,7 @@ function calcMonthOperatingNet(input: {
 
   const expensesOperating = txs.filter(t => {
     if (t.kind !== 'expense') return false
+    if (isVoidedTx(t as any)) return false
     if (!txMatchesProperty(t as any, { id: property.id, code: property.code })) return false
     if (!txInMonth(t as any, start)) return false
     if (isFurnitureRecoverableCharge(t)) return false

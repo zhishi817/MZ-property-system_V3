@@ -19,6 +19,7 @@ import { buildStatementTxs, type StatementTx } from '../../../lib/statementTx'
 import { DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH } from '../../../lib/monthlyStatementPrint'
 import { canDownloadSplitPart, pickSplitPhotosMode, splitPartPhotoCount, type MergeSplitInfo } from '../../../lib/monthlyStatementPhotoSplit'
 import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../../../lib/managementFeeRules'
+import { runStatementPhotoPackJob } from '../../../lib/statementPhotoPackJobs'
 
 type Order = { id: string; property_id?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = StatementTx
@@ -56,6 +57,7 @@ export default function PropertyRevenuePage() {
   const [, setStatementPdfMode] = useState(false)
   const [exportQuality, setExportQuality] = useState<'standard' | 'high' | 'ultra'>('ultra')
   const [mergeUi, setMergeUi] = useState<{ open: boolean; percent: number; status: MergeUiStatus; stage: string; detail?: string }>({ open: false, percent: 0, status: 'active', stage: '', detail: '' })
+  const [photoPackUi, setPhotoPackUi] = useState<{ open: boolean; percent: number; status: MergeUiStatus; stage: string; detail?: string }>({ open: false, percent: 0, status: 'active', stage: '', detail: '' })
   const [mergeSplit, setMergeSplit] = useState<MergeSplitInfo | null>(null)
   const [mergeNoPhotos, setMergeNoPhotos] = useState<boolean>(false)
   const [splitDl, setSplitDl] = useState<{ maintenance: boolean; deepCleaning: boolean }>({ maintenance: false, deepCleaning: false })
@@ -111,45 +113,29 @@ export default function PropertyRevenuePage() {
       const prefix = `Monthly Statement - ${month.format('YYYY-MM')}`
       const label = kind === 'maintenance' ? 'Maintenance Photos' : 'Deep Cleaning Photos'
       const filename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''} - ${label}.pdf`
-      const requestSplitPdf = async (mode: 'compressed' | 'thumbnail', cfg: { photo_w: number; photo_q: number }) => {
-        return fetch(`${API_BASE}/finance/monthly-statement-photos-pdf`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: mode, sections: kind, ...cfg }),
-        })
-      }
       const primaryMode = pickSplitPhotosMode(partCount, exportQuality)
-      const primaryCfg = primaryMode === 'thumbnail'
-        ? { photo_w: 1000, photo_q: 55 }
-        : (exportQuality === 'standard' ? { photo_w: 1200, photo_q: 65 } : { photo_w: 1600, photo_q: 72 })
-      let resp: Response
-      try {
-        resp = await requestSplitPdf(primaryMode, primaryCfg)
-      } catch {
-        resp = await requestSplitPdf('thumbnail', { photo_w: 820, photo_q: 45 })
-      }
-      if (!resp.ok && (resp.status === 502 || resp.status === 504)) {
-        resp = await requestSplitPdf('thumbnail', { photo_w: 820, photo_q: 45 })
-      }
-      if (!resp.ok) {
-        let msg = `HTTP ${resp.status}`
-        try {
-          const j = await resp.json() as any
-          const diagParts = [
-            j?.diagnosticKind ? `kind=${String(j.diagnosticKind)}` : '',
-            j?.reqId ? `reqId=${String(j.reqId)}` : '',
-            j?.rawUrls !== undefined ? `raw=${Number(j.rawUrls || 0)}` : '',
-            j?.cleanedUrls !== undefined ? `cleaned=${Number(j.cleanedUrls || 0)}` : '',
-            j?.imageCount !== undefined ? `images=${Number(j.imageCount || 0)}` : '',
-          ].filter(Boolean)
-          msg = String(j?.message || msg)
-          if (diagParts.length) msg = `${msg} (${diagParts.join(', ')})`
-        } catch {}
-        throw new Error(msg)
-      }
-      const blob = await resp.blob()
+      setPhotoPackUi({ open: true, percent: 5, status: 'active', stage: '创建任务', detail: '正在准备照片下载任务...' })
+      const { blob } = await runStatementPhotoPackJob({
+        month: month.format('YYYY-MM'),
+        propertyId: String(previewPid),
+        sections: kind,
+        showChinese,
+        qualityMode: primaryMode === 'thumbnail' ? 'thumbnail' : 'compressed',
+        onUpdate: (patch) => {
+          setPhotoPackUi((prev) => ({
+            ...prev,
+            open: patch.open ?? true,
+            stage: patch.stage ?? prev.stage,
+            detail: patch.detail ?? prev.detail,
+            percent: Number.isFinite(Number(patch.progress)) ? Number(patch.progress) : prev.percent,
+            status: patch.timeout ? 'exception' : 'active',
+          }))
+        },
+      })
       downloadNamedBlob(blob, filename)
+      setPhotoPackUi({ open: true, percent: 100, status: 'success', stage: '完成', detail: '照片 PDF 下载完成' })
     } catch (e: any) {
+      setPhotoPackUi({ open: true, percent: 100, status: 'exception', stage: '下载失败', detail: e?.message || '下载失败' })
       message.error(e?.message || '下载失败')
     } finally {
       setSplitDl((prev) => ({ ...prev, [key]: false }))
@@ -183,6 +169,19 @@ export default function PropertyRevenuePage() {
       recurring_payments: Array.isArray(recurs) ? recurs : [],
       excludeOrphanFixedSnapshots: excludeOrphans,
     })
+  }
+
+  const currentRangeQuery = () => {
+    const rr = rangeRef.current
+    const s = rr?.start || start
+    const e = rr?.end || end
+    if (!s || !e) return null
+    return {
+      from: s.startOf('month').format('YYYY-MM-DD'),
+      to: e.endOf('month').format('YYYY-MM-DD'),
+      monthFrom: s.startOf('month').format('YYYY-MM'),
+      monthTo: e.endOf('month').format('YYYY-MM'),
+    }
   }
 
   const fetchRentIncomeByProperty = async (monthKey: string, force = false) => {
@@ -243,19 +242,24 @@ export default function PropertyRevenuePage() {
       try {
         if (ordersOnly) {
           setRangeLoading(true)
-          const ordersRes = await getJSON<Order[]>('/orders').catch(() => [] as any[])
+          const rq = currentRangeQuery()
+          const ordersPath = rq ? `/orders?from=${encodeURIComponent(rq.from)}&to=${encodeURIComponent(rq.to)}` : '/orders'
+          const ordersRes = await getJSON<Order[]>(ordersPath).catch(() => [] as any[])
           if (!mountedRef.current) return
           setOrders(Array.isArray(ordersRes) ? ordersRes : [])
           await refreshRentIncomeForRange(true).catch(() => {})
           return
         }
         setPageLoading(true)
+        const rq = currentRangeQuery()
+        const ordersPath = rq ? `/orders?from=${encodeURIComponent(rq.from)}&to=${encodeURIComponent(rq.to)}` : '/orders'
+        const financePath = rq ? `/finance?from=${encodeURIComponent(rq.from)}&to=${encodeURIComponent(rq.to)}` : '/finance'
         const [ordersRes, propsRes, landlordsRes, finRes, pexpRes, recursRes] = await Promise.all([
-          getJSON<Order[]>('/orders').catch(() => [] as any[]),
+          getJSON<Order[]>(ordersPath).catch(() => [] as any[]),
           getJSON<any>('/properties').catch(() => [] as any[]),
           getJSON<Landlord[]>('/landlords').catch(() => [] as any[]),
-          getJSON<Tx[]>('/finance').catch(() => [] as any[]),
-          apiList<any[]>('property_expenses').catch(() => [] as any[]),
+          getJSON<Tx[]>(financePath).catch(() => [] as any[]),
+          apiList<any[]>('property_expenses', rq ? ({ month_key_from: rq.monthFrom, month_key_to: rq.monthTo, limit: 10000 } as any) : undefined).catch(() => [] as any[]),
           apiList<any[]>('recurring_payments').catch(() => [] as any[]),
         ])
         if (!mountedRef.current) return
@@ -1730,6 +1734,14 @@ export default function PropertyRevenuePage() {
         ) : (
           <div style={{ color: 'rgba(0,0,0,0.65)' }}>当前只有单个房源月报预览支持结转来源诊断。</div>
         )}
+      </Modal>
+      <Modal title="照片下载" open={photoPackUi.open} onCancel={() => setPhotoPackUi((prev) => ({ ...prev, open: false }))} footer={<>
+        <Button onClick={() => setPhotoPackUi((prev) => ({ ...prev, open: false }))}>{photoPackUi.status === 'active' ? '隐藏' : '关闭'}</Button>
+      </>} width={520} maskClosable={photoPackUi.status !== 'active'} keyboard={photoPackUi.status !== 'active'} closable={photoPackUi.status !== 'active'}>
+        <div style={{ marginBottom: 8, fontWeight: 600 }}>{photoPackUi.stage || '处理中...'}</div>
+        <Progress percent={photoPackUi.percent || 0} status={photoPackUi.status === 'active' ? 'active' : (photoPackUi.status === 'success' ? 'success' : 'exception')} />
+        {photoPackUi.detail ? <div style={{ marginTop: 8, color: photoPackUi.status === 'exception' ? '#cf1322' : 'rgba(0,0,0,0.65)' }}>{photoPackUi.detail}</div> : null}
+        {photoPackUi.status === 'active' ? <div style={{ marginTop: 8, color: 'rgba(0,0,0,0.45)' }}>请勿关闭页面，生成完成后会自动触发下载。</div> : null}
       </Modal>
       <Modal title="合并PDF下载" open={mergeUi.open} onCancel={() => setMergeUi((prev) => ({ ...prev, open: false }))} footer={<>
         {(period === 'month' && mergeUi.status === 'exception') ? (

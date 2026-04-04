@@ -5,6 +5,11 @@ export type OrderIncomeFlag = { id: string; status?: string; count_in_income?: b
 export type IncomeTxLike = { category?: string; ref_type?: string; ref_id?: string }
 export type TxDateLike = { occurred_at?: string; paid_date?: string; due_date?: string; created_at?: string; month_key?: string }
 
+export function isVoidedTx(tx: any) {
+  const status = String((tx as any)?.status || '').trim().toLowerCase()
+  return status === 'void' || status === 'voided'
+}
+
 export function normalizeReportCategory(raw?: any) {
   const v = String(raw || '').toLowerCase()
   if (!v) return 'other'

@@ -7,10 +7,15 @@ import { API_BASE, getJSON, authHeaders, apiList, apiCreate, apiUpdate, apiDelet
 import { sortProperties } from '../../../lib/properties'
 import { hasPerm } from '../../../lib/auth'
 import { getExpenseDateForDisplay } from '../../../lib/expenseDate'
+import { isVoidedTx } from '../../../lib/financeTx'
 import AuditTrail from '../../../components/AuditTrail'
 
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; fixed_expense_id?: string; occurred_at: string; due_date?: string; paid_date?: string; created_at?: string; note?: string; ref_type?: string; ref_id?: string; generated_from?: string; is_auto?: boolean; source_title?: string; source_summary?: string }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; fixed_expense_id?: string; occurred_at: string; due_date?: string; paid_date?: string; created_at?: string; note?: string; ref_type?: string; ref_id?: string; generated_from?: string; is_auto?: boolean; source_title?: string; source_summary?: string; status?: string }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
+
+function isReadonlyAutoExpense(tx: Partial<Tx> | null | undefined) {
+  return !!tx && tx.is_auto === true && ['maintenance', 'deep_cleaning'].includes(String(tx.ref_type || ''))
+}
 
 export default function ExpensesPage() {
   const [form] = Form.useForm()
@@ -111,7 +116,8 @@ export default function ExpensesPage() {
         is_auto: r.is_auto === true,
         source_title: r.source_title || undefined,
         source_summary: r.source_summary || undefined,
-      }))
+        ...(r.status ? { status: r.status } : {}),
+      } as any)).filter((r: Tx) => !isVoidedTx(r as any))
       const sorted = mapped.sort((a, b) => {
         const ad = getExpenseDateForDisplay(a, now)
         const bd = getExpenseDateForDisplay(b, now)
@@ -329,14 +335,14 @@ export default function ExpensesPage() {
     { title: '操作', render: (_: any, r: Tx) => (
       <Space>
         <Button onClick={() => { setDetailRecord(r); setDetailOpen(true) }}>详情</Button>
-        {(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) ? (
+        {(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) && !isReadonlyAutoExpense(r) ? (
           <Button onClick={() => { setEditing(r); setOpen(true); form.setFieldsValue({
             paid_date: dayjs(r.paid_date || r.occurred_at), property_id: r.property_id, category: r.category,
             other_detail: r.category === 'other' ? r.category_detail : undefined,
             amount: r.amount, currency: r.currency, note: r.note,
           }) }}>编辑</Button>
         ) : null}
-        {(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) && hasPerm('property_expenses.delete') ? (
+        {(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) && hasPerm('property_expenses.delete') && !isReadonlyAutoExpense(r) ? (
           <Button danger onClick={() => {
             modal.confirm({ title: '确认删除支出', okType: 'danger', onOk: async () => {
               const resource = 'property_expenses'
@@ -561,7 +567,7 @@ export default function ExpensesPage() {
           <div style={{ textAlign: 'right' }}>
             <Space>
               <Button onClick={() => { setDetailOpen(false); setDetailRecord(null) }}>关闭</Button>
-              {detailRecord && (hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) ? (
+              {detailRecord && (hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) && !isReadonlyAutoExpense(detailRecord) ? (
                 <Button type="primary" onClick={() => {
                   const r = detailRecord
                   setDetailOpen(false)
@@ -607,6 +613,11 @@ export default function ExpensesPage() {
                   <Descriptions.Item label="来源标识" span={2}>
                     {`ref_type=${String(detailRecord.ref_type || '-')}, ref_id=${String(detailRecord.ref_id || '-')}, generated_from=${String(detailRecord.generated_from || '-')}, is_auto=${detailRecord.is_auto ? 'true' : 'false'}`}
                   </Descriptions.Item>
+                  {isReadonlyAutoExpense(detailRecord) ? (
+                    <Descriptions.Item label="同步规则" span={2}>
+                      此记录为维修/深清自动生成支出，请回源记录修改；房源支出页仅保留查看和发票管理。
+                    </Descriptions.Item>
+                  ) : null}
                 </Descriptions>
               </>
             ) : null}

@@ -5,6 +5,8 @@ import { hasR2, r2Upload } from '../r2'
 import { ensurePdfJobsSchema } from './pdfJobsSchema'
 import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
 import { waitForImages } from '../lib/waitForImages'
+import { generateWorkRecordPdf, type WorkRecordPdfKind, type WorkRecordPdfPhotosMode } from '../lib/workRecordPdf'
+import { generateStatementPhotoPackPdf, type StatementPhotoPackSection } from '../lib/monthlyStatementPhotoPack'
 
 export type PdfJobFile = {
   kind: string
@@ -27,6 +29,9 @@ type PdfJobHandler = (job: any, ctx: { workerId: string }) => Promise<void>
 
 const handlers: Record<string, PdfJobHandler> = {
   merge_monthly_pack: async (job, ctx) => runMergeMonthlyPack(job, ctx.workerId),
+  maintenance_record_pdf: async (job, ctx) => runWorkRecordPdfJob(job, ctx.workerId, 'maintenance'),
+  deep_cleaning_record_pdf: async (job, ctx) => runWorkRecordPdfJob(job, ctx.workerId, 'deep_cleaning'),
+  statement_photo_pack: async (job, ctx) => runStatementPhotoPack(job, ctx.workerId),
 }
 
 function msEnv(name: string, defMs: number): number {
@@ -397,6 +402,140 @@ async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promis
     if (u.startsWith('/') && apiBase) return `${apiBase}${u}`
     return u
   }).filter(Boolean)))
+}
+
+function workRecordPhotosMode(job: any): WorkRecordPdfPhotosMode {
+  const raw = String(job?.params?.quality_mode || '').trim().toLowerCase()
+  if (raw === 'full' || raw === 'compressed' || raw === 'thumbnail') return raw as WorkRecordPdfPhotosMode
+  return 'compressed'
+}
+
+async function runWorkRecordPdfJob(job: any, workerId: string, kind: WorkRecordPdfKind) {
+  if (!hasPg || !pgPool) throw new Error('no database configured')
+  if (!hasR2) throw new Error('R2 not configured')
+  const id = String(job?.id || '').trim()
+  const recordId = String(job?.params?.record_id || '').trim()
+  const showChinese = !!job?.params?.showChinese
+  if (!id || !recordId) {
+    const e: any = new Error('invalid work record pdf job params')
+    e.code = 'JOB_INVALID'
+    throw e
+  }
+  await updateJob(id, { progress: 8, stage: 'collect_images', detail: '正在收集图片...', locked_by: workerId })
+  const initialMode = workRecordPhotosMode(job)
+  let mode = initialMode
+  let built = await generateWorkRecordPdf({
+    recordId,
+    kind,
+    showChinese,
+    apiBase: String(process.env.API_BASE || process.env.NEXT_PUBLIC_API_BASE_URL || '').trim(),
+    photosMode: mode,
+  })
+  if (built.imageCount > 6 && mode !== 'thumbnail') {
+    mode = 'thumbnail'
+    await updateJob(id, { progress: 18, stage: 'compress_images', detail: '图片较多，正在切换为缩略图模式...', locked_by: workerId })
+    built = await generateWorkRecordPdf({
+      recordId,
+      kind,
+      showChinese,
+      apiBase: String(process.env.API_BASE || process.env.NEXT_PUBLIC_API_BASE_URL || '').trim(),
+      photosMode: mode,
+    })
+  }
+  await updateJob(id, { progress: 72, stage: 'uploading', detail: 'PDF 已生成，正在上传文件...', locked_by: workerId })
+  const key = `pdf-jobs/work-records/${kind}/${id}.pdf`
+  const url = await r2Upload(key, 'application/pdf', built.pdf)
+  const file: PdfJobFile = {
+    kind: 'work_record_pdf',
+    name: built.filename,
+    path: key,
+    url,
+    size_bytes: built.pdf.byteLength,
+    page_count: 0,
+    source_count: built.imageCount,
+  }
+  const warning = built.notLoaded > 0 ? `；图片加载警告 ${built.notLoaded} 张` : ''
+  await updateJob(id, {
+    status: 'success',
+    progress: 100,
+    stage: 'done',
+    detail: `已生成 PDF（模式：${mode}，图片 ${built.imageCount} 张${warning}）`,
+    result_files: [file],
+    locked_by: null,
+    lease_expires_at: null,
+    last_error_code: null,
+    last_error_message: null,
+  })
+}
+
+function statementPhotoPackSection(job: any): StatementPhotoPackSection {
+  const raw = String(job?.params?.sections || 'all').trim().toLowerCase()
+  if (raw === 'maintenance' || raw === 'deep_cleaning') return raw as StatementPhotoPackSection
+  return 'all'
+}
+
+function statementPhotoPackQualityMode(job: any): 'compressed' | 'thumbnail' {
+  const raw = String(job?.params?.quality_mode || '').trim().toLowerCase()
+  if (raw === 'thumbnail') return 'thumbnail'
+  return 'compressed'
+}
+
+async function runStatementPhotoPack(job: any, workerId: string) {
+  if (!hasPg || !pgPool) throw Object.assign(new Error('no_pg'), { code: 'JOB_INVALID' })
+  if (!hasR2) throw Object.assign(new Error('R2 not configured'), { code: 'JOB_INVALID' })
+  const id = String(job?.id || '').trim()
+  const params = (job?.params || {}) as any
+  const monthKey = String(params?.month || params?.month_key || '').trim()
+  const pid = String(params?.property_id || params?.pid || '').trim()
+  const sections = statementPhotoPackSection(job)
+  if (!id || !/^\d{4}-\d{2}$/.test(monthKey) || !pid) throw Object.assign(new Error('invalid_job_params'), { code: 'JOB_INVALID' })
+  const showChinese = params?.showChinese !== false
+  await updateJob(id, { progress: 8, stage: 'collect_images', detail: '正在收集照片...', locked_by: workerId })
+  const preferredMode = statementPhotoPackQualityMode(job)
+  let built = await generateStatementPhotoPackPdf({
+    month: monthKey,
+    propertyId: pid,
+    sections,
+    showChinese,
+    apiBase: apiBaseForAssets(),
+    photosMode: preferredMode,
+  })
+  if (built.imageCount > 6 && built.effectivePhotosMode !== 'thumbnail') {
+    await updateJob(id, { progress: 22, stage: 'compress_images', detail: '照片较多，正在切换为缩略图模式...', locked_by: workerId })
+    built = await generateStatementPhotoPackPdf({
+      month: monthKey,
+      propertyId: pid,
+      sections,
+      showChinese,
+      apiBase: apiBaseForAssets(),
+      photosMode: 'thumbnail',
+    })
+  }
+  await updateJob(id, { progress: 76, stage: 'uploading', detail: 'PDF 已生成，正在上传文件...', locked_by: workerId })
+  const suffix = sections === 'maintenance' ? 'maintenance' : sections === 'deep_cleaning' ? 'deep-cleaning' : 'all'
+  const key = `pdf-jobs/statement-photo-pack/${monthKey}/${pid}/${suffix}/${id}.pdf`
+  const url = await r2Upload(key, 'application/pdf', built.pdf)
+  const file: PdfJobFile = {
+    kind: 'statement_photo_pack_pdf',
+    name: built.filename,
+    path: key,
+    url,
+    size_bytes: built.pdf.byteLength,
+    page_count: 0,
+    source_count: built.imageCount,
+  }
+  const warnings = built.notLoaded > 0 ? `；缺图警告 ${built.notLoaded} 张` : ''
+  await updateJob(id, {
+    status: 'success',
+    progress: 100,
+    stage: 'done',
+    detail: `已生成照片 PDF（模式：${built.effectivePhotosMode}，${built.detail}${warnings}）`,
+    result_files: [file],
+    locked_by: null,
+    lease_expires_at: null,
+    last_error_code: null,
+    last_error_message: null,
+  })
 }
 
 function allowedHostsSet(): Set<string> {

@@ -294,6 +294,21 @@ async function deleteAutoExpensesByRef(client: any, refType: string, refId: stri
   await client.query('DELETE FROM company_expenses WHERE ref_type=$1 AND ref_id=$2', [refType, refId])
 }
 
+async function voidAutoExpensesByRef(client: any, refType: string, refId: string) {
+  await client.query(
+    `UPDATE property_expenses
+        SET status='void'
+      WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+    [refType, refId]
+  )
+  await client.query(
+    `UPDATE company_expenses
+        SET status='void'
+      WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+    [refType, refId]
+  )
+}
+
 async function hasManualOverrideForRef(client: any, refType: string, refId: string): Promise<boolean> {
   const r = await client.query(
     `SELECT (
@@ -623,190 +638,97 @@ async function upsertWorkTaskFromDeepCleaningRow(row: any) {
 
 async function syncAutoExpensesFromDeepCleaningRow(row: any) {
   if (!hasPg) return
-  const refType = 'deep_cleaning'
-  const refId = String(row?.id || '')
-  if (!refId) return
-  const propertyId = String(row?.property_id || '')
-  const status = normStatus(row?.status)
-  const payMethod = normPayMethod(row?.pay_method)
-  const occurredAt = toISODateOnly(row?.completed_at) || toISODateOnly(row?.occurred_at) || toISODateOnly(row?.created_at)
-  const amtRaw = Number(row?.total_cost !== undefined && row?.total_cost !== null ? row.total_cost : computeDeepCleaningTotalCost(row?.labor_cost, row?.consumables))
-  const amount = Number.isFinite(amtRaw) ? Math.round((amtRaw + Number.EPSILON) * 100) / 100 : 0
-  const categoryDetail = '深度清洁'
-  const workNo = String(row?.work_no || refId)
-  const sourceTitle = workNo ? `深度清洁 ${workNo}` : '深度清洁'
-  const sourceSummary = deepCleaningProjectSummary(row)
-  const generatedFrom = refId
   const { pgPool } = require('../dbAdapter')
   if (!pgPool) return
   await pgRunInTransaction(async (client) => {
-    await ensureAutoExpenseSchema(client)
-    if (await hasManualOverrideForRef(client, refType, refId)) return
-    if (status !== 'completed' || !(amount > 0) || !occurredAt) {
-      await client.query(
-        `UPDATE property_expenses SET status='void'
-         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
-        [refType, refId]
-      )
-      await client.query(
-        `UPDATE company_expenses SET status='void'
-         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
-        [refType, refId]
-      )
-      return
-    }
-    if (payMethod === 'landlord_pay') {
-      if (!propertyId) return
-      await client.query(
-        `UPDATE company_expenses SET status='void'
-         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
-        [refType, refId]
-      )
-      await upsertAutoPropertyExpense(client, { propertyId, occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
-      return
-    }
-    if (payMethod === 'company_pay') {
-      await client.query(
-        `UPDATE property_expenses SET status='void'
-         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
-        [refType, refId]
-      )
-      await upsertAutoCompanyExpense(client, { occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
-    }
+    await syncAutoExpensesForSourceRowWithClient(client, 'deep_cleaning', row)
   })
 }
 
 async function syncAutoExpensesFromMaintenanceRow(row: any) {
   if (!hasPg) return
-  const refType = 'maintenance'
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool) return
+  await pgRunInTransaction(async (client) => {
+    await syncAutoExpensesForSourceRowWithClient(client, 'maintenance', row)
+  })
+}
+
+async function syncAutoExpensesForSourceRowWithClient(client: any, kind: 'maintenance' | 'deep_cleaning', row: any) {
+  const refType = kind
   const refId = String(row?.id || '')
-  if (!refId) return
+  if (!refId) return { ok: true, skipped: true, error: 'missing_ref_id' }
   const propertyId = String(row?.property_id || '')
   const status = normStatus(row?.status)
   const payMethod = normPayMethod(row?.pay_method)
   const occurredAt = toISODateOnly(row?.completed_at) || toISODateOnly(row?.occurred_at) || toISODateOnly(row?.created_at)
-  const amount = calcMaintenanceTotal(row)
-  const categoryDetail = '维修'
-  const sourceTitle = '维修'
-  const sourceSummary = maintenanceIssueSummary(row)
+  const amount = kind === 'maintenance'
+    ? calcMaintenanceTotal(row)
+    : (() => {
+        const amtRaw = Number(row?.total_cost !== undefined && row?.total_cost !== null ? row.total_cost : computeDeepCleaningTotalCost(row?.labor_cost, row?.consumables))
+        return Number.isFinite(amtRaw) ? Math.round((amtRaw + Number.EPSILON) * 100) / 100 : 0
+      })()
+  const categoryDetail = kind === 'maintenance' ? '维修' : '深度清洁'
+  const sourceTitle = kind === 'maintenance'
+    ? '维修'
+    : (() => {
+        const workNo = String(row?.work_no || refId)
+        return workNo ? `深度清洁 ${workNo}` : '深度清洁'
+      })()
+  const sourceSummary = kind === 'maintenance' ? maintenanceIssueSummary(row) : deepCleaningProjectSummary(row)
   const generatedFrom = refId
-  const { pgPool } = require('../dbAdapter')
-  if (!pgPool) return
-  await pgRunInTransaction(async (client) => {
-    await ensureAutoExpenseSchema(client)
-    if (await hasManualOverrideForRef(client, refType, refId)) return
-    if (status !== 'completed' || !(amount > 0) || !occurredAt) {
-      await client.query(
-        `UPDATE property_expenses SET status='void'
-         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
-        [refType, refId]
-      )
-      await client.query(
-        `UPDATE company_expenses SET status='void'
-         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
-        [refType, refId]
-      )
-      return
+
+  await ensureAutoExpenseSchema(client)
+  if (await hasManualOverrideForRef(client, refType, refId)) {
+    return { ok: true, skipped: true, error: 'manual_override' }
+  }
+
+  if (status !== 'completed' || !(amount > 0) || !occurredAt) {
+    await voidAutoExpensesByRef(client, refType, refId)
+    return { ok: true, skipped: false, error: '' }
+  }
+
+  if (payMethod === 'landlord_pay') {
+    if (!propertyId) {
+      await voidAutoExpensesByRef(client, refType, refId)
+      return { ok: true, skipped: true, error: 'missing_property_id' }
     }
-    if (payMethod === 'landlord_pay') {
-      if (!propertyId) return
-      await client.query(
-        `UPDATE company_expenses SET status='void'
-         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
-        [refType, refId]
-      )
-      await upsertAutoPropertyExpense(client, { propertyId, occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
-      return
-    }
-    if (payMethod === 'company_pay') {
-      await client.query(
-        `UPDATE property_expenses SET status='void'
-         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
-        [refType, refId]
-      )
-      await upsertAutoCompanyExpense(client, { occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
-    }
-  })
+    await client.query(
+      `UPDATE company_expenses
+          SET status='void'
+        WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+      [refType, refId]
+    )
+    await upsertAutoPropertyExpense(client, { propertyId, occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
+    return { ok: true, skipped: false, error: '' }
+  }
+
+  if (payMethod === 'company_pay') {
+    await client.query(
+      `UPDATE property_expenses
+          SET status='void'
+        WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
+      [refType, refId]
+    )
+    await upsertAutoCompanyExpense(client, { occurredAt, amount, categoryDetail, generatedFrom, refType, refId, sourceTitle, sourceSummary })
+    return { ok: true, skipped: false, error: '' }
+  }
+
+  await voidAutoExpensesByRef(client, refType, refId)
+  return { ok: true, skipped: false, error: '' }
 }
 
 async function upsertMaintenancePropertyExpenseInSavepoint(client: any, row: any) {
   const refType = 'maintenance'
   const refId = String(row?.id || '')
-  const status = normStatus(row?.status)
-  const payMethod = normPayMethod(row?.pay_method)
-  const occurredAt = toISODateOnly(row?.completed_at) || toISODateOnly(row?.occurred_at) || toISODateOnly(row?.created_at)
-  const propertyId = String(row?.property_id || '')
-  const base = toNum(row?.maintenance_amount)
-  const amount = calcMaintenanceTotal(row)
-  const categoryDetail = '维修'
-  const sourceTitle = '维修'
-  const sourceSummary = maintenanceIssueSummary(row)
-
   let ok = true
   let errMsg = ''
   await client.query('SAVEPOINT auto_expense')
   try {
     if (!refId) { await client.query('RELEASE SAVEPOINT auto_expense'); return { ok: true, error: '', skipped: true } }
-    await ensureAutoExpenseSchema(client)
-    if (await hasManualOverrideForRef(client, refType, refId)) { await client.query('RELEASE SAVEPOINT auto_expense'); return { ok: true, error: 'manual_override', skipped: true } }
-
-    if (status !== 'completed' || !occurredAt || !(amount > 0)) {
-      await client.query(
-        `UPDATE property_expenses SET status='void'
-         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
-        [refType, refId]
-      )
-      await client.query(
-        `UPDATE company_expenses SET status='void'
-         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
-        [refType, refId]
-      )
-      await client.query('RELEASE SAVEPOINT auto_expense')
-      return { ok: true, error: '', skipped: true }
-    }
-
-    if (payMethod !== 'landlord_pay' && payMethod !== 'company_pay') {
-      await client.query('RELEASE SAVEPOINT auto_expense')
-      return { ok: true, error: '', skipped: true }
-    }
-
-    if (payMethod === 'landlord_pay') {
-      if (!propertyId) { await client.query('RELEASE SAVEPOINT auto_expense'); return { ok: true, error: '', skipped: true } }
-      await client.query(
-        `UPDATE company_expenses SET status='void'
-         WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
-        [refType, refId]
-      )
-      await client.query(
-        `INSERT INTO property_expenses (id, property_id, occurred_at, amount, currency, category, category_detail, note, pay_method, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
-         VALUES ($1,$2,$3,$4,'AUD','other',$5,$6,'landlord_pay',$7,$8,$9,$10,$3,true,$11,$12)
-         ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
-         SET property_id=EXCLUDED.property_id, occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
-             note=EXCLUDED.note, pay_method=EXCLUDED.pay_method, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto,
-             source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`,
-        [require('uuid').v4(), propertyId, occurredAt, amount, categoryDetail, `AUTO maintenance ${refId}`, refId, refType, refId, monthKeyFromDateOnly(occurredAt), sourceTitle, sourceSummary || null]
-      )
-      await client.query('RELEASE SAVEPOINT auto_expense')
-      return { ok: true, error: '', skipped: false }
-    }
-
-    await client.query(
-      `UPDATE property_expenses SET status='void'
-       WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`,
-      [refType, refId]
-    )
-    await client.query(
-      `INSERT INTO company_expenses (id, occurred_at, amount, currency, category, category_detail, note, generated_from, ref_type, ref_id, month_key, due_date, is_auto, source_title, source_summary)
-       VALUES ($1,$2,$3,'AUD','other',$4,$5,$6,$7,$8,$9,$2,true,$10,$11)
-       ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
-       SET occurred_at=EXCLUDED.occurred_at, amount=EXCLUDED.amount, currency=EXCLUDED.currency, category=EXCLUDED.category, category_detail=EXCLUDED.category_detail,
-           note=EXCLUDED.note, generated_from=EXCLUDED.generated_from, month_key=EXCLUDED.month_key, due_date=EXCLUDED.due_date, is_auto=EXCLUDED.is_auto,
-           source_title=EXCLUDED.source_title, source_summary=EXCLUDED.source_summary`,
-      [require('uuid').v4(), occurredAt, amount, categoryDetail, `AUTO maintenance ${refId}`, refId, refType, refId, monthKeyFromDateOnly(occurredAt), sourceTitle, sourceSummary || null]
-    )
+    const result = await syncAutoExpensesForSourceRowWithClient(client, 'maintenance', row)
     await client.query('RELEASE SAVEPOINT auto_expense')
-    return { ok: true, error: '', skipped: false }
-
+    return result
   } catch (e: any) {
     ok = false
     errMsg = String(e?.message || '')
@@ -2685,6 +2607,8 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         }
       }
       if (resource === 'property_expenses') {
+        const autoLocked = before && before.is_auto === true && ['maintenance', 'deep_cleaning'].includes(String(before.ref_type || ''))
+        if (autoLocked) return res.status(403).json({ message: 'auto_generated_expense_readonly' })
         const allow = ['occurred_at','amount','currency','category','category_detail','note','property_id','fixed_expense_id','month_key','due_date','paid_date','status']
         const cleaned: any = {}
         for (const k of allow) { if (payload[k] !== undefined) cleaned[k] = payload[k] }
@@ -2830,15 +2754,21 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         } else if (resource === 'property_deep_cleaning') {
           const { pgPool } = require('../dbAdapter')
           if (pgPool) {
-            const jsonbFields = new Set(['photo_urls','repair_photo_urls','attachment_urls','checklist','consumables'])
-            const keys = Object.keys(toUpdate).filter(k => toUpdate[k] !== undefined)
-            const set = keys.map((k, i) => jsonbFields.has(k) ? `"${k}" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`).join(', ')
-            const values = keys.map((k) => (jsonbFields.has(k)
-              ? JSON.stringify(toUpdate[k] === null ? null : toUpdate[k])
-              : toUpdate[k]))
-            const sql = `UPDATE property_deep_cleaning SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
-            const res2 = await pgPool.query(sql, [...values, id])
-            row = res2.rows && res2.rows[0]
+            const result: any = await pgRunInTransaction(async (client) => {
+              const jsonbFields = new Set(['photo_urls','repair_photo_urls','attachment_urls','checklist','consumables'])
+              const keys = Object.keys(toUpdate).filter(k => toUpdate[k] !== undefined)
+              const set = keys.map((k, i) => jsonbFields.has(k) ? `"${k}" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`).join(', ')
+              const values = keys.map((k) => (jsonbFields.has(k)
+                ? JSON.stringify(toUpdate[k] === null ? null : toUpdate[k])
+                : toUpdate[k]))
+              const sql = `UPDATE property_deep_cleaning SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
+              const res2 = await client.query(sql, [...values, id])
+              const updated = res2.rows && res2.rows[0]
+              const sync = await syncAutoExpensesForSourceRowWithClient(client, 'deep_cleaning', updated)
+              return { row: updated, autoExpenseSync: sync }
+            })
+            row = result?.row
+            autoExpenseSync = result?.autoExpenseSync
           } else {
             row = await pgUpdate(resource, id, toUpdate)
           }
@@ -2863,18 +2793,22 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         let ok = true
         let reason = ''
         let errMsg = ''
-        try {
-          if (resource === 'property_deep_cleaning') {
+        if (autoExpenseSync === undefined) {
+          try {
             await syncAutoExpensesFromDeepCleaningRow(row)
+          } catch (e: any) {
+            ok = false
+            reason = autoExpenseReasonFromError(e)
+            errMsg = String(e?.message || '')
+            try { console.error('[auto-expense-sync:update]', resource, String(id || ''), reason, errMsg) } catch {}
           }
-        } catch (e: any) {
-          ok = false
-          reason = autoExpenseReasonFromError(e)
-          errMsg = String(e?.message || '')
-          try { console.error('[auto-expense-sync:update]', resource, String(id || ''), reason, errMsg) } catch {}
+        } else {
+          ok = autoExpenseSync?.ok === true
+          reason = ok ? '' : autoExpenseReasonFromError(autoExpenseSync?.error)
+          errMsg = String(autoExpenseSync?.error || '')
         }
         try {
-          res.setHeader('x-auto-expense-sync', ok ? 'ok' : 'failed')
+          res.setHeader('x-auto-expense-sync', autoExpenseSync?.skipped ? 'skipped' : (ok ? 'ok' : 'failed'))
           if (!ok) res.setHeader('x-auto-expense-reason', reason || 'other')
           if (!ok && errMsg && process.env.NODE_ENV !== 'production') res.setHeader('x-auto-expense-error', errMsg.slice(0, 180))
         } catch {}
@@ -2977,6 +2911,9 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
         const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
         before = rows[0] || null
       } catch {}
+      if (resource === 'property_expenses' && before && before.is_auto === true && ['maintenance', 'deep_cleaning'].includes(String(before.ref_type || ''))) {
+        return res.status(403).json({ message: 'auto_generated_expense_readonly' })
+      }
       if (resource === 'recurring_payments') {
         const purge = String((req.query as any)?.purge || '') === '1'
         if (!purge) {
@@ -3003,6 +2940,15 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
         })
         addAudit(resource, id, 'delete', before, null, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
         return res.json({ ok: true, ...result })
+      }
+      if (resource === 'property_maintenance' || resource === 'property_deep_cleaning') {
+        await pgRunInTransaction(async (client) => {
+          await ensureAutoExpenseSchema(client)
+          await voidAutoExpensesByRef(client, resource === 'property_maintenance' ? 'maintenance' : 'deep_cleaning', id)
+          await pgDelete(resource, id, client)
+        })
+        addAudit(resource, id, 'delete', before, null, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
+        return res.json({ ok: true, auto_expense_sync: 'ok' })
       }
       const deleted = await pgDelete(resource, id)
       addAudit(resource, id, 'delete', before, deleted || null, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })

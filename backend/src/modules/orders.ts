@@ -4,7 +4,7 @@ import { broadcastOrdersUpdated } from './events'
 import { z } from 'zod'
 import { requirePerm, requireAnyPerm } from '../auth'
 // Supabase removed
-import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
+import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
 
@@ -161,10 +161,32 @@ async function recordDuplicateAttempt(payload: any, reasons: string[], similar: 
   } catch {}
 }
 
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
+  const from = dayOnly((req.query as any)?.from)
+  const to = dayOnly((req.query as any)?.to)
+  const hasRange = !!(from && to)
   try {
     if (hasPg) {
-      const remote: any[] = (await pgSelect('orders')) || []
+      let remote: any[] = []
+      if (hasRange && pgPool) {
+        const rs = await pgPool.query(
+          `SELECT *
+           FROM orders
+           WHERE (
+             (checkin IS NOT NULL AND checkout IS NOT NULL AND substring(checkin::text,1,10) <= $2 AND substring(checkout::text,1,10) >= $1)
+             OR
+             (checkin IS NOT NULL AND checkout IS NULL AND substring(checkin::text,1,10) <= $2)
+             OR
+             (checkin IS NULL AND checkout IS NOT NULL AND substring(checkout::text,1,10) >= $1)
+             OR
+             (checkin IS NULL AND checkout IS NULL AND substring(coalesce(created_at::text,''),1,10) >= $1 AND substring(coalesce(created_at::text,''),1,10) <= $2)
+           )`,
+          [from, to]
+        )
+        remote = Array.isArray(rs?.rows) ? rs.rows : []
+      } else {
+        remote = (await pgSelect('orders')) || []
+      }
       let pRows: any[] = []
       try { const raw = await pgSelect('properties', 'id,code,address,listing_names'); pRows = Array.isArray(raw) ? raw : [] } catch {}
       const byId: Record<string, any> = Object.fromEntries((pRows || []).map((p: any) => [String(p.id), p]))
@@ -234,7 +256,16 @@ router.get('/', async (_req, res) => {
       return res.json(enriched)
     }
     // Supabase branch removed
-    const out = db.orders.map((o) => {
+    const out = db.orders.filter((o: any) => {
+      if (!hasRange) return true
+      const ci = dayOnly(o?.checkin)
+      const co = dayOnly(o?.checkout)
+      const cr = dayOnly((o as any)?.created_at)
+      if (ci && co) return ci <= String(to) && co >= String(from)
+      if (ci && !co) return ci <= String(to)
+      if (!ci && co) return co >= String(from)
+      return !!(cr && cr >= String(from) && cr <= String(to))
+    }).map((o) => {
       const prop = db.properties.find((p) => String(p.id) === String(o.property_id)) || db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || (db.properties as any[]).find((p: any) => { const ln = p?.listing_names || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String((o as any).listing_name || '').toLowerCase()) })
       const property_name = prop?.address || undefined
       const label = (o.property_code || prop?.code || prop?.address || o.property_id || '')
@@ -246,7 +277,16 @@ router.get('/', async (_req, res) => {
     })
     return res.json(out)
   } catch {
-    const out2 = db.orders.map((o) => {
+    const out2 = db.orders.filter((o: any) => {
+      if (!hasRange) return true
+      const ci = dayOnly(o?.checkin)
+      const co = dayOnly(o?.checkout)
+      const cr = dayOnly((o as any)?.created_at)
+      if (ci && co) return ci <= String(to) && co >= String(from)
+      if (ci && !co) return ci <= String(to)
+      if (!ci && co) return co >= String(from)
+      return !!(cr && cr >= String(from) && cr <= String(to))
+    }).map((o) => {
       const prop = db.properties.find((p) => String(p.id) === String(o.property_id)) || db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || (db.properties as any[]).find((p: any) => { const ln = p?.listing_names || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String((o as any).listing_name || '').toLowerCase()) })
       const property_name = prop?.address || undefined
       const label = (o.property_code || prop?.code || prop?.address || o.property_id || '')
