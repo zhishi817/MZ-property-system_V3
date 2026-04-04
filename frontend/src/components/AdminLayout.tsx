@@ -65,19 +65,29 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   }, [mounted, authed, permsLoaded])
   useEffect(() => {
     if (!mounted || !authed) return
+    let cancelled = false
     ;(async () => {
       try {
-        const res = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() })
+        const fetchMe = async () => fetch(`${API_BASE}/auth/me`, { headers: authHeaders() })
+        let res = await fetchMe()
+        if (res.status === 401) {
+          await new Promise((resolve) => setTimeout(resolve, 1500))
+          if (cancelled) return
+          res = await fetchMe()
+        }
+        if (cancelled) return
         if (res.status === 401) {
           clearAuth()
           try { router.replace('/login') } catch {}
           return
         }
         const j = res.ok ? await res.json() : null
+        if (cancelled) return
         setUsername((j as any)?.username || null)
         setRole((j as any)?.role || getRole())
       } catch {}
     })()
+    return () => { cancelled = true }
   }, [mounted, authed, router])
   useEffect(() => {
     if (!mounted) return

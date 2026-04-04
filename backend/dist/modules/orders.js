@@ -199,16 +199,37 @@ async function recordDuplicateAttempt(payload, reasons, similar, actor) {
     }
     catch (_b) { }
 }
-exports.router.get('/', async (_req, res) => {
+exports.router.get('/', async (req, res) => {
+    var _a, _b;
+    const from = dayOnly((_a = req.query) === null || _a === void 0 ? void 0 : _a.from);
+    const to = dayOnly((_b = req.query) === null || _b === void 0 ? void 0 : _b.to);
+    const hasRange = !!(from && to);
     try {
         if (dbAdapter_1.hasPg) {
-            const remote = (await (0, dbAdapter_1.pgSelect)('orders')) || [];
+            let remote = [];
+            if (hasRange && dbAdapter_1.pgPool) {
+                const rs = await dbAdapter_1.pgPool.query(`SELECT *
+           FROM orders
+           WHERE (
+             (checkin IS NOT NULL AND checkout IS NOT NULL AND substring(checkin::text,1,10) <= $2 AND substring(checkout::text,1,10) >= $1)
+             OR
+             (checkin IS NOT NULL AND checkout IS NULL AND substring(checkin::text,1,10) <= $2)
+             OR
+             (checkin IS NULL AND checkout IS NOT NULL AND substring(checkout::text,1,10) >= $1)
+             OR
+             (checkin IS NULL AND checkout IS NULL AND substring(coalesce(created_at::text,''),1,10) >= $1 AND substring(coalesce(created_at::text,''),1,10) <= $2)
+           )`, [from, to]);
+                remote = Array.isArray(rs === null || rs === void 0 ? void 0 : rs.rows) ? rs.rows : [];
+            }
+            else {
+                remote = (await (0, dbAdapter_1.pgSelect)('orders')) || [];
+            }
             let pRows = [];
             try {
                 const raw = await (0, dbAdapter_1.pgSelect)('properties', 'id,code,address,listing_names');
                 pRows = Array.isArray(raw) ? raw : [];
             }
-            catch (_a) { }
+            catch (_c) { }
             const byId = Object.fromEntries((pRows || []).map((p) => [String(p.id), p]));
             const byCode = Object.fromEntries((pRows || []).map((p) => [String(p.code || ''), p]));
             const byListing = {};
@@ -276,7 +297,20 @@ exports.router.get('/', async (_req, res) => {
             return res.json(enriched);
         }
         // Supabase branch removed
-        const out = store_1.db.orders.map((o) => {
+        const out = store_1.db.orders.filter((o) => {
+            if (!hasRange)
+                return true;
+            const ci = dayOnly(o === null || o === void 0 ? void 0 : o.checkin);
+            const co = dayOnly(o === null || o === void 0 ? void 0 : o.checkout);
+            const cr = dayOnly(o === null || o === void 0 ? void 0 : o.created_at);
+            if (ci && co)
+                return ci <= String(to) && co >= String(from);
+            if (ci && !co)
+                return ci <= String(to);
+            if (!ci && co)
+                return co >= String(from);
+            return !!(cr && cr >= String(from) && cr <= String(to));
+        }).map((o) => {
             const prop = store_1.db.properties.find((p) => String(p.id) === String(o.property_id)) || store_1.db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || store_1.db.properties.find((p) => { const ln = (p === null || p === void 0 ? void 0 : p.listing_names) || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String(o.listing_name || '').toLowerCase()); });
             const property_name = (prop === null || prop === void 0 ? void 0 : prop.address) || undefined;
             const label = (o.property_code || (prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || o.property_id || '');
@@ -288,8 +322,21 @@ exports.router.get('/', async (_req, res) => {
         });
         return res.json(out);
     }
-    catch (_b) {
-        const out2 = store_1.db.orders.map((o) => {
+    catch (_d) {
+        const out2 = store_1.db.orders.filter((o) => {
+            if (!hasRange)
+                return true;
+            const ci = dayOnly(o === null || o === void 0 ? void 0 : o.checkin);
+            const co = dayOnly(o === null || o === void 0 ? void 0 : o.checkout);
+            const cr = dayOnly(o === null || o === void 0 ? void 0 : o.created_at);
+            if (ci && co)
+                return ci <= String(to) && co >= String(from);
+            if (ci && !co)
+                return ci <= String(to);
+            if (!ci && co)
+                return co >= String(from);
+            return !!(cr && cr >= String(from) && cr <= String(to));
+        }).map((o) => {
             const prop = store_1.db.properties.find((p) => String(p.id) === String(o.property_id)) || store_1.db.properties.find((p) => String(p.code || '') === String(o.property_id || '')) || store_1.db.properties.find((p) => { const ln = (p === null || p === void 0 ? void 0 : p.listing_names) || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String(o.listing_name || '').toLowerCase()); });
             const property_name = (prop === null || prop === void 0 ? void 0 : prop.address) || undefined;
             const label = (o.property_code || (prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || o.property_id || '');

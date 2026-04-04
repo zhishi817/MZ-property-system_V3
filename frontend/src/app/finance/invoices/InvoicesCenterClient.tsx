@@ -426,7 +426,7 @@ export default function InvoicesCenterClient() {
               }
             }}
           >
-            <Button size="small" shape="round">操作</Button>
+            <Button size="small">操作</Button>
           </Dropdown>
         )
       }
@@ -434,7 +434,6 @@ export default function InvoicesCenterClient() {
         <Space size={8} wrap>
           <Button
             size="small"
-            shape="round"
             onClick={() => {
               setPreviewId(String(r.id))
               setPreviewInvoice(null)
@@ -443,12 +442,11 @@ export default function InvoicesCenterClient() {
           >
             查看
           </Button>
-          <Button size="small" shape="round" onClick={() => printGeneratedInvoice(String(r.id))}>打印</Button>
-          <Button size="small" shape="round" onClick={() => router.push(`/finance/invoices/${r.id}`)}>编辑</Button>
+          <Button size="small" onClick={() => printGeneratedInvoice(String(r.id))}>打印</Button>
+          <Button size="small" onClick={() => router.push(`/finance/invoices/${r.id}`)}>编辑</Button>
           {st === 'draft' ? (
             <Button
               size="small"
-              shape="round"
               danger
               disabled={!canDiscard}
               onClick={() => {
@@ -473,7 +471,6 @@ export default function InvoicesCenterClient() {
           ) : (
             <Button
               size="small"
-              shape="round"
               danger
               disabled={!canVoid}
               onClick={() => {
@@ -542,7 +539,7 @@ export default function InvoicesCenterClient() {
               dataSource={invoices}
               loading={loading}
               rowSelection={{ selectedRowKeys: selectedInvoiceIds, onChange: (keys) => setSelectedInvoiceIds(keys as any) }}
-              pagination={{ pageSize: 20 }}
+              pagination={{ defaultPageSize: 20, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }}
             />
             <Modal
               open={previewOpen}

@@ -1004,7 +1004,7 @@ export default function OrdersPage() {
     return raw
   }
   const columns = [
-    { title: '房号', dataIndex: 'property_code', render: (_: any, r: Order) => {
+    { title: '房号', dataIndex: 'property_code', fixed: 'left' as const, width: 120, render: (_: any, r: Order) => {
       const label = getPropertyCodeLabel(r)
       const hasDed = Number(((r as any).internal_deduction ?? (r as any).internal_deduction_total ?? 0)) > 0
       return hasDed ? (<Space><span>{label}</span><Tag color="red">扣减</Tag></Space>) : label
@@ -1069,7 +1069,7 @@ export default function OrdersPage() {
       return <Tag color={color}>{txt}</Tag>
     } },
     { title: '到账', dataIndex: 'payment_received', render: (v:any)=> v ? <Tag color="green">已到账</Tag> : <Tag>未到账</Tag> },
-    { title: '操作', render: (_: any, r: Order) => (
+    { title: '操作', fixed: 'right' as const, width: 220, render: (_: any, r: Order) => (
       <Space>
         <Button onClick={() => openDetail(r)}>查看</Button>
         {hasPerm('order.manage') && (String(((r as any).cleaning_sync || {}).status || '') === 'failed') ? <Button onClick={async ()=>{

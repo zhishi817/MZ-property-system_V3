@@ -20,8 +20,9 @@ import { v4 as uuidv4 } from 'uuid'
 import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
 import { r2GetObjectByKey } from '../r2'
 import { computeMonthSegmentsForOrders, sumSegmentsVisibleNetIncome } from '../lib/orderMonthSegments'
-import { countPhotoUrls, listPhotoUrls, loadMonthlyStatementPhotoRows, recordHasPhotoUrls } from '../lib/monthlyStatementPhotoRecords'
+import { countPhotoUrls, loadMonthlyStatementPhotoRows, recordHasPhotoUrls } from '../lib/monthlyStatementPhotoRecords'
 import { ensureManagementFeeRulesTable, resolveManagementFeeRateForMonth } from '../lib/managementFeeRules'
+import { generateStatementPhotoPackPdf, type StatementPhotoPackSection } from '../lib/monthlyStatementPhotoPack'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -96,17 +97,75 @@ function monthRangeISO(monthKey: string): { start: string; end: string } | null 
   return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) }
 }
 
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
   try {
-    
     if (hasPg) {
-      const raw = await pgSelect('finance_transactions')
-      const rows: any[] = Array.isArray(raw) ? raw : []
+      const q: any = req.query || {}
+      const from = autoToISODateOnly(q.from)
+      const to = autoToISODateOnly(q.to)
+      const pid = String(q.property_id || '').trim()
+      let rows: any[] = []
+      if (pgPool && (from || to || pid)) {
+        const vals: any[] = []
+        const where: string[] = []
+        if (pid) {
+          vals.push(pid)
+          where.push(`property_id = $${vals.length}`)
+        }
+        if (from && to) {
+          vals.push(from, to)
+          where.push(`(
+            (occurred_at IS NOT NULL AND substring(occurred_at::text,1,10) >= $${vals.length - 1} AND substring(occurred_at::text,1,10) <= $${vals.length})
+            OR
+            (occurred_at IS NULL AND substring(coalesce(created_at::text,''),1,10) >= $${vals.length - 1} AND substring(coalesce(created_at::text,''),1,10) <= $${vals.length})
+          )`)
+        } else if (from) {
+          vals.push(from)
+          where.push(`(
+            (occurred_at IS NOT NULL AND substring(occurred_at::text,1,10) >= $${vals.length})
+            OR
+            (occurred_at IS NULL AND substring(coalesce(created_at::text,''),1,10) >= $${vals.length})
+          )`)
+        } else if (to) {
+          vals.push(to)
+          where.push(`(
+            (occurred_at IS NOT NULL AND substring(occurred_at::text,1,10) <= $${vals.length})
+            OR
+            (occurred_at IS NULL AND substring(coalesce(created_at::text,''),1,10) <= $${vals.length})
+          )`)
+        }
+        const sql = `SELECT * FROM finance_transactions${where.length ? ` WHERE ${where.join(' AND ')}` : ''}`
+        const raw = await pgPool.query(sql, vals)
+        rows = Array.isArray(raw?.rows) ? raw.rows : []
+      } else {
+        const raw = await pgSelect('finance_transactions')
+        rows = Array.isArray(raw) ? raw : []
+      }
       return res.json(rows)
     }
-    return res.json(db.financeTransactions)
+    const q: any = req.query || {}
+    const from = autoToISODateOnly(q.from)
+    const to = autoToISODateOnly(q.to)
+    const pid = String(q.property_id || '').trim()
+    return res.json((db.financeTransactions || []).filter((r: any) => {
+      if (pid && String(r?.property_id || '') !== pid) return false
+      const d = autoToISODateOnly(r?.occurred_at || r?.created_at)
+      if (from && (!d || d < from)) return false
+      if (to && (!d || d > to)) return false
+      return true
+    }))
   } catch {
-    return res.json(db.financeTransactions)
+    const q: any = req.query || {}
+    const from = autoToISODateOnly(q.from)
+    const to = autoToISODateOnly(q.to)
+    const pid = String(q.property_id || '').trim()
+    return res.json((db.financeTransactions || []).filter((r: any) => {
+      if (pid && String(r?.property_id || '') !== pid) return false
+      const d = autoToISODateOnly(r?.occurred_at || r?.created_at)
+      if (from && (!d || d < from)) return false
+      if (to && (!d || d > to)) return false
+      return true
+    }))
   }
 })
 
@@ -461,6 +520,44 @@ const autoExpensesBackfillSchema = z.object({
   property_id: z.string().optional(),
 })
 
+const autoExpensesInspectSchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  limit: z.coerce.number().optional().default(500),
+  type: z.enum(['maintenance','deep_cleaning','all']).optional().default('all'),
+  property_id: z.string().optional(),
+})
+
+async function collectAutoExpenseSourceItems(executor: any, input: { from: string, to: string, limit: number, type: string, propertyIdFilter?: string }) {
+  const items: any[] = []
+  const propertyIdFilter = String(input.propertyIdFilter || '').trim()
+  if (input.type === 'all' || input.type === 'maintenance') {
+    const mt = await executor.query(
+      `SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, completed_at, occurred_at, created_at, details, repair_notes, category
+         FROM property_maintenance
+        WHERE coalesce(completed_at::date, occurred_at, created_at::date) BETWEEN $1::date AND $2::date
+          AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
+        ORDER BY coalesce(completed_at::date, occurred_at, created_at::date) ASC
+        LIMIT $3`,
+      [input.from, input.to, input.limit, propertyIdFilter]
+    )
+    for (const r of (mt.rows || [])) items.push({ kind: 'maintenance', row: r })
+  }
+  if (input.type === 'all' || input.type === 'deep_cleaning') {
+    const dc = await executor.query(
+      `SELECT id, property_id, status, pay_method, work_no, total_cost, labor_cost, consumables, completed_at, occurred_at, created_at, project_desc, details, notes
+         FROM property_deep_cleaning
+        WHERE coalesce(completed_at::date, occurred_at, created_at::date) BETWEEN $1::date AND $2::date
+          AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
+        ORDER BY coalesce(completed_at::date, occurred_at, created_at::date) ASC
+        LIMIT $3`,
+      [input.from, input.to, input.limit, propertyIdFilter]
+    )
+    for (const r of (dc.rows || [])) items.push({ kind: 'deep_cleaning', row: r })
+  }
+  return items
+}
+
 router.post('/auto-expenses/backfill', requireAnyPerm(['finance.tx.write','property_expenses.write','company_expenses.write']), async (req, res) => {
   if (!hasPg || !pgPool) return res.status(400).json({ message: 'pg required' })
   const parsed = autoExpensesBackfillSchema.safeParse(req.body || {})
@@ -472,31 +569,7 @@ router.post('/auto-expenses/backfill', requireAnyPerm(['finance.tx.write','prope
   const type = String(parsed.data.type || 'all')
   const propertyIdFilter = parsed.data.property_id ? String(parsed.data.property_id || '').trim() : ''
   try {
-    const items: any[] = []
-    if (type === 'all' || type === 'maintenance') {
-      const mt = await pgPool.query(
-        `SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, completed_at, occurred_at, created_at, details, repair_notes, category
-         FROM property_maintenance
-         WHERE coalesce(completed_at::date, occurred_at, created_at::date) BETWEEN $1::date AND $2::date
-           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
-         ORDER BY coalesce(completed_at::date, occurred_at, created_at::date) ASC
-         LIMIT $3`,
-        [from, to, limit, propertyIdFilter]
-      )
-      for (const r of (mt.rows || [])) items.push({ kind: 'maintenance', row: r })
-    }
-    if (type === 'all' || type === 'deep_cleaning') {
-      const dc = await pgPool.query(
-        `SELECT id, property_id, status, pay_method, work_no, total_cost, labor_cost, consumables, completed_at, occurred_at, created_at, project_desc, details, notes
-         FROM property_deep_cleaning
-         WHERE coalesce(completed_at::date, occurred_at, created_at::date) BETWEEN $1::date AND $2::date
-           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
-         ORDER BY coalesce(completed_at::date, occurred_at, created_at::date) ASC
-         LIMIT $3`,
-        [from, to, limit, propertyIdFilter]
-      )
-      for (const r of (dc.rows || [])) items.push({ kind: 'deep_cleaning', row: r })
-    }
+    const items = await collectAutoExpenseSourceItems(pgPool, { from, to, limit, type, propertyIdFilter })
     const scanned = items.length
 
     if (dryRun) {
@@ -606,6 +679,126 @@ router.post('/auto-expenses/backfill', requireAnyPerm(['finance.tx.write','prope
     return res.json({ dry_run: false, range: { from, to }, ...(result as any) })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'backfill_failed' })
+  }
+})
+
+router.post('/auto-expenses/inspect', requireAnyPerm(['finance.tx.write','property_expenses.write','company_expenses.write']), async (req, res) => {
+  if (!hasPg || !pgPool) return res.status(400).json({ message: 'pg required' })
+  const parsed = autoExpensesInspectSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const from = parsed.data.from ? String(parsed.data.from).slice(0, 10) : '2000-01-01'
+  const to = parsed.data.to ? String(parsed.data.to).slice(0, 10) : '2100-01-01'
+  const limit = Math.max(1, Math.min(5000, Number(parsed.data.limit || 500)))
+  const type = String(parsed.data.type || 'all')
+  const propertyIdFilter = parsed.data.property_id ? String(parsed.data.property_id || '').trim() : ''
+  try {
+    const items = await collectAutoExpenseSourceItems(pgPool, { from, to, limit, type, propertyIdFilter })
+    const issues: any[] = []
+    const stats = {
+      scanned: items.length,
+      missing_expected: 0,
+      amount_mismatch: 0,
+      wrong_side_active: 0,
+      stale_active: 0,
+      source_deleted_active: 0,
+      skipped_manual_override: 0,
+    }
+    for (const it of items) {
+      const refType = it.kind === 'maintenance' ? 'maintenance' : 'deep_cleaning'
+      const r = it.row || {}
+      const refId = String(r?.id || '')
+      if (!refId) continue
+      const status = autoNormStatus(r?.status)
+      const payMethod = autoNormPayMethod(r?.pay_method)
+      const occurredAt = autoToISODateOnly(r?.completed_at) || autoToISODateOnly(r?.occurred_at) || autoToISODateOnly(r?.created_at)
+      const amount = it.kind === 'maintenance'
+        ? autoCalcMaintenanceTotal(r)
+        : (() => {
+            const raw = r?.total_cost !== undefined && r?.total_cost !== null ? r.total_cost : autoComputeDeepCleaningTotalCost(r?.labor_cost, r?.consumables)
+            return autoToNum(raw)
+          })()
+      const expectedSide = (status === 'completed' && amount > 0 && occurredAt)
+        ? (payMethod === 'landlord_pay' ? 'property' : (payMethod === 'company_pay' ? 'company' : 'void'))
+        : 'void'
+      const manualOverride = await autoHasManualOverrideForRef(pgPool, refType, refId)
+      if (manualOverride) {
+        stats.skipped_manual_override++
+        continue
+      }
+      const propRows = await pgPool.query(
+        `SELECT id, amount, status, is_auto FROM property_expenses WHERE ref_type=$1 AND ref_id=$2 ORDER BY created_at DESC NULLS LAST, occurred_at DESC NULLS LAST`,
+        [refType, refId]
+      )
+      const compRows = await pgPool.query(
+        `SELECT id, amount, status, is_auto FROM company_expenses WHERE ref_type=$1 AND ref_id=$2 ORDER BY created_at DESC NULLS LAST, occurred_at DESC NULLS LAST`,
+        [refType, refId]
+      )
+      const activeProp = (propRows.rows || []).filter((x: any) => String(x?.status || '') !== 'void' && x?.is_auto === true)
+      const activeComp = (compRows.rows || []).filter((x: any) => String(x?.status || '') !== 'void' && x?.is_auto === true)
+      if (expectedSide === 'property') {
+        if (!activeProp.length) {
+          stats.missing_expected++
+          issues.push({ kind: it.kind, ref_type: refType, ref_id: refId, issue: 'missing_expected_property_expense' })
+        } else if (Math.abs(Number(activeProp[0]?.amount || 0) - Number(amount || 0)) > 0.005) {
+          stats.amount_mismatch++
+          issues.push({ kind: it.kind, ref_type: refType, ref_id: refId, issue: 'property_amount_mismatch', expected_amount: amount, actual_amount: Number(activeProp[0]?.amount || 0) })
+        }
+        if (activeComp.length) {
+          stats.wrong_side_active++
+          issues.push({ kind: it.kind, ref_type: refType, ref_id: refId, issue: 'company_expense_should_be_void', active_company_expense_ids: activeComp.map((x: any) => x.id) })
+        }
+      } else if (expectedSide === 'company') {
+        if (!activeComp.length) {
+          stats.missing_expected++
+          issues.push({ kind: it.kind, ref_type: refType, ref_id: refId, issue: 'missing_expected_company_expense' })
+        } else if (Math.abs(Number(activeComp[0]?.amount || 0) - Number(amount || 0)) > 0.005) {
+          stats.amount_mismatch++
+          issues.push({ kind: it.kind, ref_type: refType, ref_id: refId, issue: 'company_amount_mismatch', expected_amount: amount, actual_amount: Number(activeComp[0]?.amount || 0) })
+        }
+        if (activeProp.length) {
+          stats.wrong_side_active++
+          issues.push({ kind: it.kind, ref_type: refType, ref_id: refId, issue: 'property_expense_should_be_void', active_property_expense_ids: activeProp.map((x: any) => x.id) })
+        }
+      } else if (activeProp.length || activeComp.length) {
+        stats.stale_active++
+        issues.push({ kind: it.kind, ref_type: refType, ref_id: refId, issue: 'auto_expense_should_be_void', active_property_expense_ids: activeProp.map((x: any) => x.id), active_company_expense_ids: activeComp.map((x: any) => x.id) })
+      }
+    }
+
+    const orphans = await pgPool.query(
+      `
+      SELECT 'property' AS side, id, ref_type, ref_id
+        FROM property_expenses
+       WHERE is_auto=true
+         AND ref_type IN ('maintenance','deep_cleaning')
+         AND coalesce(status,'') <> 'void'
+         AND (
+           (ref_type='maintenance' AND NOT EXISTS (SELECT 1 FROM property_maintenance m WHERE m.id = property_expenses.ref_id))
+           OR
+           (ref_type='deep_cleaning' AND NOT EXISTS (SELECT 1 FROM property_deep_cleaning d WHERE d.id = property_expenses.ref_id))
+         )
+      UNION ALL
+      SELECT 'company' AS side, id, ref_type, ref_id
+        FROM company_expenses
+       WHERE is_auto=true
+         AND ref_type IN ('maintenance','deep_cleaning')
+         AND coalesce(status,'') <> 'void'
+         AND (
+           (ref_type='maintenance' AND NOT EXISTS (SELECT 1 FROM property_maintenance m WHERE m.id = company_expenses.ref_id))
+           OR
+           (ref_type='deep_cleaning' AND NOT EXISTS (SELECT 1 FROM property_deep_cleaning d WHERE d.id = company_expenses.ref_id))
+         )
+      LIMIT $1
+      `,
+      [limit]
+    )
+    const orphanRows = orphans.rows || []
+    stats.source_deleted_active = orphanRows.length
+    for (const row of orphanRows) issues.push({ issue: 'source_deleted_but_auto_expense_active', ...row })
+
+    return res.json({ range: { from, to }, stats, issues })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'inspect_failed' })
   }
 })
 
@@ -1118,6 +1311,143 @@ router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', '
   }
 })
 
+router.post('/statement-photo-pack', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+  try {
+    const { month, property_id, sections, showChinese, quality_mode, forceNew } = req.body || {}
+    const monthKey = String(month || '').trim()
+    const pid = String(property_id || '').trim()
+    const sec = (() => {
+      const raw = String(sections || 'all').trim().toLowerCase()
+      if (raw === 'maintenance' || raw === 'deep_cleaning') return raw as StatementPhotoPackSection
+      return 'all' as StatementPhotoPackSection
+    })()
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
+    if (!pid) return res.status(400).json({ message: 'missing property_id' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
+    await ensurePdfJobsSchema()
+    const wantNew = forceNew === true || forceNew === 1 || forceNew === '1'
+    const qualityMode = (() => {
+      const raw = String(quality_mode || '').trim().toLowerCase()
+      if (raw === 'thumbnail') return 'thumbnail'
+      return 'compressed'
+    })()
+    if (!wantNew) {
+      try {
+        const r0 = await pgPool.query(
+          `SELECT id, status, created_at
+           FROM pdf_jobs
+           WHERE kind='statement_photo_pack'
+             AND status IN ('queued', 'running', 'success')
+             AND (status <> 'running' OR lease_expires_at IS NULL OR lease_expires_at > now())
+             AND COALESCE(params->>'month', params->>'month_key') = $1
+             AND COALESCE(params->>'property_id', params->>'pid') = $2
+             AND COALESCE(params->>'sections', 'all') = $3
+             AND COALESCE(params->>'showChinese', 'true') = $4
+           ORDER BY created_at DESC
+           LIMIT 1`,
+          [monthKey, pid, sec, (!(showChinese === false || showChinese === '0')).toString()]
+        )
+        const existing = r0.rows?.[0] || null
+        if (existing?.id) {
+          if (String(existing.status || '') === 'queued') kickPdfJobsSoon('reuse_existing_statement_photo_pack')
+          return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true })
+        }
+      } catch {}
+    }
+    const id = uuidv4()
+    const params = {
+      month: monthKey,
+      property_id: pid,
+      sections: sec,
+      showChinese: !(showChinese === false || showChinese === '0'),
+      quality_mode: qualityMode,
+    }
+    await pgPool.query(
+      `INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
+       VALUES($1,'statement_photo_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`,
+      [id, JSON.stringify(params)]
+    )
+    kickPdfJobsSoon('create_statement_photo_pack')
+    return res.json({ job_id: id, status: 'queued', reused: false })
+  } catch (e: any) {
+    const code = String(e?.code || '')
+    if (code === 'PDF_JOBS_SCHEMA_MISSING') return res.status(500).json({ message: 'pdf_jobs table missing (apply migration)' })
+    return res.status(500).json({ message: e?.message || 'create photo pack job failed' })
+  }
+})
+
+router.get('/statement-photo-pack/:id', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+  try {
+    const id = String(req.params?.id || '').trim()
+    if (!id) return res.status(400).json({ message: 'missing id' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensurePdfJobsSchema()
+    const r = await pgPool.query(`SELECT * FROM pdf_jobs WHERE id=$1 AND kind='statement_photo_pack' LIMIT 1`, [id])
+    const row = r.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not_found' })
+    const createdMs = row.created_at ? new Date(row.created_at).getTime() : NaN
+    const updatedMs = row.updated_at ? new Date(row.updated_at).getTime() : NaN
+    const ageSec = Number.isFinite(createdMs) ? Math.max(0, Math.round((Date.now() - createdMs) / 1000)) : null
+    const idleSec = Number.isFinite(updatedMs) ? Math.max(0, Math.round((Date.now() - updatedMs) / 1000)) : null
+    return res.json({
+      id: row.id,
+      kind: row.kind,
+      status: row.status,
+      progress: Number(row.progress || 0),
+      stage: row.stage || '',
+      detail: row.detail || '',
+      attempts: Number(row.attempts || 0),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      age_seconds: ageSec,
+      idle_seconds: idleSec,
+      next_retry_at: row.next_retry_at || null,
+      locked_by: row.locked_by || null,
+      lease_expires_at: row.lease_expires_at || null,
+      params: row.params || null,
+      result_files: row.result_files || [],
+      last_error_code: row.last_error_code || null,
+      last_error_message: row.last_error_message || null,
+    })
+  } catch (e: any) {
+    const code = String(e?.code || '')
+    if (code === 'PDF_JOBS_SCHEMA_MISSING') return res.status(500).json({ message: 'pdf_jobs table missing (apply migration)' })
+    return res.status(500).json({ message: e?.message || 'get photo pack job failed' })
+  }
+})
+
+router.get('/statement-photo-pack/:id/download', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
+  try {
+    const id = String(req.params?.id || '').trim()
+    if (!id) return res.status(400).json({ message: 'missing id' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
+    await ensurePdfJobsSchema()
+    const r = await pgPool.query(`SELECT id, status, stage, result_files FROM pdf_jobs WHERE id=$1 AND kind='statement_photo_pack' LIMIT 1`, [id])
+    const row = r.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not_found' })
+    const st = String(row?.status || '')
+    const stage = String(row?.stage || '')
+    if (st !== 'success' || stage !== 'done') {
+      return res.status(409).json({ message: 'job_not_done', status: st || null, stage: stage || null })
+    }
+    const files = Array.isArray(row?.result_files) ? row.result_files : []
+    const target = files.find((x: any) => String(x?.kind || '') === 'statement_photo_pack_pdf') || files[0]
+    const key = String(target?.path || '').trim()
+    if (!key) return res.status(404).json({ message: 'file_not_found' })
+    const obj = await r2GetObjectByKey(key)
+    if (!obj || !obj.body?.length) return res.status(404).json({ message: 'file_not_found' })
+    const filename = String(target?.name || `${String(row.id)}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_')
+    res.setHeader('Content-Type', obj.contentType || 'application/octet-stream')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.setHeader('Cache-Control', 'private, max-age=0, no-cache')
+    return res.status(200).send(obj.body)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'download failed' })
+  }
+})
+
 router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view', 'invoice.view']), async (req, res) => {
   try {
     const { month, property_id, showChinese, excludeOrphanFixedSnapshots, carryStartMonth, exportQuality, mergeInvoices, forceNew } = req.body || {}
@@ -1599,70 +1929,23 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month' })
     if (!pid) return res.status(400).json({ message: 'missing property_id' })
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    const photosMode = (() => {
-      if (includePhotos === 0 || includePhotos === '0' || includePhotos === false) return 'off'
-      const v = String(includePhotosMode || 'full')
-      if (v === 'thumbnail' || v === 'off' || v === 'compressed') return v
-      return 'full'
-    })()
-    const sec = (() => {
-      if (Array.isArray(sections)) return sections.map((x: any) => String(x || '').trim()).filter(Boolean).join(',')
-      if (typeof sections === 'string') return sections.split(',').map(s => s.trim()).filter(Boolean).join(',')
-      return 'all'
-    })()
-    const range = monthRangeISO(monthKey)
-    if (!range) return res.status(400).json({ message: 'invalid month' })
-    const propR = await pgPool.query('SELECT id, code, address, landlord_id FROM properties WHERE id = $1 LIMIT 1', [pid])
-    const prop = (propR.rows?.[0] || null) as any
-    if (!prop) return res.status(404).json({ message: 'property not found' })
-    const landlordName = (() => {
-      const lid = String(prop?.landlord_id || '').trim()
-      if (!lid) return Promise.resolve('')
-      return pgPool.query('SELECT name FROM landlords WHERE id = $1 LIMIT 1', [lid])
-        .then((r) => String(r.rows?.[0]?.name || '').trim())
-        .catch(() => '')
-    })()
-    const codeRaw = String(prop?.code || '').trim()
-    const codeNorm = (() => {
-      if (!codeRaw) return ''
-      const s = codeRaw.split('(')[0].trim()
-      const t = s.split(/\s+/)[0].trim()
-      return t || s || codeRaw
-    })()
-
-    const wantDeep = photosMode !== 'off' && /(all|deep_cleaning|deepcleaning)/i.test(sec || 'all')
-    const wantMaint = photosMode !== 'off' && /(all|maintenance)/i.test(sec || 'all')
-
-    const qDeep = wantDeep
-      ? loadMonthlyStatementPhotoRows({
-          table: 'property_deep_cleaning',
-          pid,
-          monthKey,
-          range,
-          propertyCode: codeNorm,
-          propertyCodeRaw: codeRaw,
-        }).catch(() => [] as any[])
-      : Promise.resolve([] as any[])
-
-    const qMaint = wantMaint
-      ? loadMonthlyStatementPhotoRows({
-          table: 'property_maintenance',
-          pid,
-          monthKey,
-          range,
-          propertyCode: codeNorm,
-          propertyCodeRaw: codeRaw,
-        }).catch(() => [] as any[])
-      : Promise.resolve([] as any[])
-
-    const [deepRows0, maintRows0, llName] = await Promise.all([qDeep, qMaint, landlordName])
     const apiBase = (() => {
       const host = String((req.headers['x-forwarded-host'] as any) || req.headers.host || '').split(',')[0].trim()
       const proto = String((req.headers['x-forwarded-proto'] as any) || req.protocol || 'https').split(',')[0].trim()
       return host ? `${proto}://${host}` : ''
     })()
-    const wantsBase = /(all|base)/i.test(sec || 'all')
-    const splitOnlyPhotos = photosMode !== 'off' && !wantsBase && ((wantDeep ? 1 : 0) + (wantMaint ? 1 : 0) === 1)
+    const photosMode = (() => {
+      if (includePhotos === 0 || includePhotos === '0' || includePhotos === false) return 'off'
+      const v = String(includePhotosMode || 'full').trim().toLowerCase()
+      if (v === 'thumbnail' || v === 'compressed') return v as 'thumbnail' | 'compressed'
+      return 'full'
+    })()
+    const sec = (() => {
+      const raw = Array.isArray(sections) ? sections.join(',') : String(sections || 'all')
+      if (/deep[_-]?clean/i.test(raw) && !/maintenance/i.test(raw)) return 'deep_cleaning'
+      if (/maintenance/i.test(raw) && !/deep[_-]?clean/i.test(raw)) return 'maintenance'
+      return 'all'
+    })() as StatementPhotoPackSection
     const compress = (() => {
       const w0 = Number(photo_w || 0)
       const q0 = Number(photo_q || 0)
@@ -1670,175 +1953,45 @@ router.post('/monthly-statement-photos-pdf', requireAnyPerm(['finance.payout', '
       const q = Math.max(40, Math.min(85, Number.isFinite(q0) && q0 > 0 ? q0 : 72))
       return { w, q }
     })()
-    const countRawUrls = (rows: any[]) => {
-      let n = 0
-      for (const r of rows || []) {
-        n += listPhotoUrls(r?.photo_urls).length
-        n += listPhotoUrls(r?.repair_photo_urls).length
-      }
-      return n
-    }
-    const requestedPhotosMode = ((): 'full' | 'compressed' | 'thumbnail' => {
-      if (photosMode === 'compressed' || photosMode === 'thumbnail') return photosMode
-      return 'full'
-    })()
-    const totalRawUrls = countRawUrls(deepRows0) + countRawUrls(maintRows0)
-    const effectivePhotosMode = ((): 'full' | 'compressed' | 'thumbnail' => {
-      if (splitOnlyPhotos) {
-        if (totalRawUrls >= 12) return 'thumbnail'
-        if (totalRawUrls >= 1) return 'compressed'
-      }
-      const total = countRawUrls(deepRows0) + countRawUrls(maintRows0)
-      if (requestedPhotosMode === 'thumbnail') return 'thumbnail'
-      if (requestedPhotosMode === 'compressed') return total >= 36 ? 'thumbnail' : 'compressed'
-      if (total >= 24) return 'thumbnail'
-      if (total >= 12) return 'compressed'
-      return 'full'
-    })()
-    const effectiveCompress = (() => {
-      if (!splitOnlyPhotos) return compress
-      if (effectivePhotosMode === 'thumbnail') {
-        return { w: Math.min(compress.w, 900), q: Math.min(compress.q, 48) }
-      }
-      if (effectivePhotosMode === 'compressed') {
-        return { w: Math.min(compress.w, 1100), q: Math.min(compress.q, 58) }
-      }
-      return compress
-    })()
-    const normalizePhotoUrl = (u: string) => normalizePhotoUrlForPdf(u, {
-      apiBase,
-      allowR2KeyPrefixes: ['maintenance/', 'deep-cleaning/', 'deep-cleaning-upload/', 'invoice-company-logos/'],
-      photosMode: effectivePhotosMode,
-      compress: effectiveCompress,
-    })
-    const mapRowUrls = (r: any) => {
-      const before = listPhotoUrls(r?.photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
-      const after = listPhotoUrls(r?.repair_photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
-      return { ...r, photo_urls: before, repair_photo_urls: after }
-    }
-    const deepRows = Array.isArray(deepRows0) ? deepRows0.map(mapRowUrls) : []
-    const maintRows = Array.isArray(maintRows0) ? maintRows0.map(mapRowUrls) : []
-    const rawUrls = totalRawUrls
-    const cleanedUrls = (() => {
-      const countClean = (rows: any[]) => {
-        let n = 0
-        for (const r of rows || []) {
-          n += Array.isArray(r?.photo_urls) ? r.photo_urls.length : 0
-          n += Array.isArray(r?.repair_photo_urls) ? r.repair_photo_urls.length : 0
-        }
-        return n
-      }
-      return countClean(deepRows) + countClean(maintRows)
-    })()
-    const tpl = renderMonthlyStatementPdfHtml({
-      month: monthKey,
-      property: { id: String(prop.id), code: prop.code || '', address: prop.address || '' },
-      landlordName: llName || '',
-      sections: sec || 'all',
-      showChinese: !(showChinese === false || showChinese === '0'),
-      includePhotosMode: effectivePhotosMode as any,
-      deepCleanings: deepRows as any,
-      maintenances: maintRows as any,
-    } as any)
-    const tplImageCount = Number(tpl?.imageCount || 0)
-    try {
-      console.log(
-        `[monthly-statement-photos-pdf][stats] reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec || 'all'} photosMode=${photosMode} effectivePhotosMode=${effectivePhotosMode}` +
-          ` deepRows=${Array.isArray(deepRows0) ? deepRows0.length : 0} maintRows=${Array.isArray(maintRows0) ? maintRows0.length : 0}` +
-          ` rawUrls=${rawUrls} cleanedUrls=${cleanedUrls} tplImageCount=${tplImageCount}`
-      )
-    } catch {}
-    if (photosMode !== 'off' && tplImageCount === 0 && !wantsBase) {
-      try {
-        const diagKind =
-          rawUrls === 0
-            ? 'no-record-photo-urls'
-            : cleanedUrls === 0
-              ? 'all-photo-urls-filtered-after-normalize'
-              : 'template-produced-zero-images'
-        console.error(
-          `[monthly-statement-photos-pdf][no-images] kind=${diagKind} reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec || 'all'} photosMode=${photosMode}` +
-            ` deepRows=${Array.isArray(deepRows0) ? deepRows0.length : 0} maintRows=${Array.isArray(maintRows0) ? maintRows0.length : 0}` +
-            ` rawUrls=${rawUrls} cleanedUrls=${cleanedUrls}`
-        )
-      } catch {}
-      res.setHeader('X-MSP-ReqId', reqId)
-      res.setHeader('X-MSP-DeepRows', String(Array.isArray(deepRows0) ? deepRows0.length : 0))
-      res.setHeader('X-MSP-MaintRows', String(Array.isArray(maintRows0) ? maintRows0.length : 0))
-      res.setHeader('X-MSP-RawUrls', String(rawUrls))
-      res.setHeader('X-MSP-UrlCleaned', String(cleanedUrls))
-      res.setHeader('X-MSP-ImageCount', String(tplImageCount))
-      res.setHeader('X-MSP-PhotosMode-Effective', String(effectivePhotosMode))
-      return res.status(422).json({
-        message: 'no photos to render for requested sections',
-        diagnosticKind:
-          rawUrls === 0
-            ? 'no-record-photo-urls'
-            : cleanedUrls === 0
-              ? 'all-photo-urls-filtered-after-normalize'
-              : 'template-produced-zero-images',
-        reqId,
+    const totalTimeoutMs = Math.max(15000, Math.min(120000, Number(process.env.MONTHLY_STATEMENT_SYNC_TIMEOUT_MS || 60000)))
+    const built = await Promise.race([
+      generateStatementPhotoPackPdf({
         month: monthKey,
-        property_id: pid,
-        sections: sec || 'all',
+        propertyId: pid,
+        sections: sec,
+        showChinese: !(showChinese === false || showChinese === '0'),
+        apiBase,
         photosMode,
-        effectivePhotosMode,
-        deepRows: Array.isArray(deepRows0) ? deepRows0.length : 0,
-        maintRows: Array.isArray(maintRows0) ? maintRows0.length : 0,
-        rawUrls,
-        cleanedUrls,
-        imageCount: tplImageCount,
-      })
-    }
-    let browser = await getChromiumBrowser()
-    let context: any = null
-    try { context = await browser.newContext() } catch (e: any) {
-      if (!isPlaywrightClosedError(e)) throw e
-      await resetChromiumBrowser()
-      browser = await getChromiumBrowser()
-      context = await browser.newContext()
-    }
+        compress,
+        syncGuard: true,
+      }),
+      new Promise((_, reject) => {
+        setTimeout(() => {
+          const err: any = new Error('pdf_generation_timeout')
+          err.code = 'PDF_GENERATION_TIMEOUT'
+          reject(err)
+        }, totalTimeoutMs)
+      }),
+    ]) as Awaited<ReturnType<typeof generateStatementPhotoPackPdf>>
     try {
-      const page = await context.newPage()
-      const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)))
-      const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
-      page.setDefaultTimeout(waitTimeoutMs)
-      page.setDefaultNavigationTimeout(navTimeoutMs)
-      await page.setContent(tpl.html, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs } as any)
-      await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
-      const imgStats = await waitForImages(page, { timeoutMs: 20000, scroll: true, tryFallbackAttr: 'data-fallback', maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
-      try {
-        if (Number(imgStats?.notLoaded || 0) > 0) {
-          const sample = (imgStats as any)?.failedUrls?.length ? ` sample=${(imgStats as any).failedUrls.join(' | ')}` : ''
-          console.error(`[monthly-statement-photos-pdf][img-timeout] month=${monthKey} pid=${pid} total=${imgStats.total} notLoaded=${imgStats.notLoaded}${sample}`)
-        }
-      } catch {}
-      await page.waitForTimeout(200)
-      await page.emulateMedia({ media: 'print' } as any)
-      const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
-      const pdfBuf = Buffer.from(pdf)
-      try {
-        const total = Number((imgStats as any)?.total || 0)
-        const notLoaded = Number((imgStats as any)?.notLoaded || 0)
-        const failedSample = Array.isArray((imgStats as any)?.failedUrls) ? (imgStats as any).failedUrls.slice(0, 2).join(' | ') : ''
-        console.log(`[monthly-statement-photos-pdf][pdf] reqId=${reqId} bytes=${pdfBuf.length} imgTotal=${total} imgNotLoaded=${notLoaded}${failedSample ? ` failedSample=${failedSample}` : ''}`)
-      } catch {}
-      res.setHeader('Content-Type', 'application/pdf')
-      res.setHeader('Content-Disposition', `attachment; filename="monthly-statement-photos-${monthKey}.pdf"`)
-      res.setHeader('X-MSP-ReqId', reqId)
-      res.setHeader('X-MSP-DeepRows', String(Array.isArray(deepRows0) ? deepRows0.length : 0))
-      res.setHeader('X-MSP-MaintRows', String(Array.isArray(maintRows0) ? maintRows0.length : 0))
-      res.setHeader('X-MSP-RawUrls', String(rawUrls))
-      res.setHeader('X-MSP-UrlCleaned', String(cleanedUrls))
-      res.setHeader('X-MSP-ImageCount', String(Number(tpl?.imageCount || 0)))
-      res.setHeader('X-MSP-PhotosMode-Effective', String(effectivePhotosMode))
-      res.setHeader('X-MSP-ImgNotLoaded', String(Number((imgStats as any)?.notLoaded || 0)))
-      res.setHeader('X-MSP-PdfBytes', String(pdfBuf.length))
-      return res.status(200).send(pdfBuf)
-    } finally {
-      try { await context.close() } catch {}
-    }
+      console.log(`[monthly-statement-photos-pdf][pdf] reqId=${reqId} month=${monthKey} pid=${pid} sections=${sec} mode=${built.effectivePhotosMode} rawUrls=${built.rawUrls} cleanedUrls=${built.cleanedUrls} imageCount=${built.imageCount} notLoaded=${built.notLoaded} bytes=${built.pdf.length}`)
+    } catch {}
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `attachment; filename="${built.filename.replace(/"/g, '_')}"`)
+    res.setHeader('X-MSP-ReqId', reqId)
+    res.setHeader('X-MSP-RawUrls', String(built.rawUrls))
+    res.setHeader('X-MSP-UrlCleaned', String(built.cleanedUrls))
+    res.setHeader('X-MSP-ImageCount', String(built.imageCount))
+    res.setHeader('X-MSP-PhotosMode-Effective', String(built.effectivePhotosMode))
+    res.setHeader('X-MSP-ImgNotLoaded', String(built.notLoaded))
+    res.setHeader('X-MSP-PdfBytes', String(built.pdf.length))
+    return res.status(200).send(built.pdf)
   } catch (e: any) {
+    const code = String(e?.code || '')
+    if (code === 'NO_PHOTOS_TO_RENDER') return res.status(422).json({ message: 'no photos to render for requested sections' })
+    if (code === 'MEMORY_GUARD_BLOCKED') return res.status(409).json({ message: 'too_many_photos_for_sync_export', rawUrls: Number(e?.rawUrls || 0), syncMaxPhotos: Number(e?.syncMaxPhotos || 0) })
+    if (code === 'PDF_GENERATION_TIMEOUT') return res.status(504).json({ message: 'pdf_generation_timeout' })
+    if (code === 'PDF_IMAGE_FETCH_TIMEOUT') return res.status(504).json({ message: 'pdf_image_fetch_timeout' })
     return res.status(500).json({ message: e?.message || 'pdf failed' })
   }
 })

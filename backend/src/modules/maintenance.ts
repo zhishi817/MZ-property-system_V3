@@ -1,16 +1,15 @@
 import { Router } from 'express'
 import multer from 'multer'
 import path from 'path'
-import { hasR2, r2Upload } from '../r2'
+import { hasR2, r2GetObjectByKey, r2Upload } from '../r2'
 import { requireAnyPerm } from '../auth'
 import { hasPg, pgPool } from '../dbAdapter'
 import crypto from 'crypto'
+import { v4 as uuidv4 } from 'uuid'
 import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
-import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
-import { waitForImages } from '../lib/waitForImages'
-import { renderWorkRecordPdfHtml } from '../lib/workRecordPdfTemplate'
-import { normalizePhotoUrlForPdf } from '../lib/normalizePhotoUrlForPdf'
 import { resizeUploadImage } from '../lib/uploadImageResize'
+import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
+import { generateWorkRecordPdf } from '../lib/workRecordPdf'
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
@@ -41,9 +40,21 @@ function pdfLimiter(req: any, res: any, next: any) {
   })
 }
 
-function isPlaywrightClosedError(e: any) {
-  const msg = String(e?.message || '')
-  return /(Target page, context or browser has been closed|browser has been closed|browser disconnected|Target closed)/i.test(msg)
+function kickPdfJobsSoon(reason: string) {
+  setTimeout(() => {
+    ;(async () => {
+      try {
+        const { processPdfJobsOnce } = require('../services/pdfJobsWorker')
+        const limit = Math.min(2, Math.max(1, Number(process.env.PDF_JOBS_KICK_LIMIT || 1)))
+        const r = await processPdfJobsOnce({ limit })
+        try {
+          console.log(`[pdf-jobs][kick] reason=${reason} processed=${r?.processed || 0} ok=${r?.ok || 0} failed=${r?.failed || 0} reclaimed=${r?.reclaimed || 0}`)
+        } catch {}
+      } catch (e: any) {
+        try { console.log(`[pdf-jobs][kick] reason=${reason} failed message=${String(e?.message || '')}`) } catch {}
+      }
+    })()
+  }, 0)
 }
 
 async function ensurePropertyMaintenanceTable() {
@@ -130,141 +141,140 @@ router.post('/pdf/:id', requireAnyPerm(['property_maintenance.view','property_ma
     const showChineseRaw = String((req as any)?.query?.showChinese ?? '').trim().toLowerCase()
     const showChinese = showChineseRaw === '1' || showChineseRaw === 'true' || showChineseRaw === 'yes'
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyMaintenanceTable()
-    const r0 = await pgPool.query(
-      `SELECT m.*, COALESCE(m.property_code, p.code) AS property_code
-       FROM property_maintenance m
-       LEFT JOIN properties p ON p.id = m.property_id
-       WHERE m.id=$1
-       LIMIT 1`,
-      [rid]
-    )
-    const row = r0.rows?.[0] || null
-    if (!row) return res.status(404).json({ message: 'not found' })
-
-    const tz = 'Australia/Melbourne'
-    function dayStrAtTZ(d: Date): string {
-      const parts = new Intl.DateTimeFormat('en-AU', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d)
-      const get = (t: string) => parts.find(p => p.type === t)?.value || ''
-      const yyyy = get('year'); const mm = get('month'); const dd = get('day')
-      return `${yyyy}-${mm}-${dd}`
-    }
-    function timeStrAtTZ(d: Date): string {
-      const parts = new Intl.DateTimeFormat('en-AU', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(d)
-      const get = (t: string) => parts.find(p => p.type === t)?.value || ''
-      const hh = get('hour'); const mi = get('minute')
-      return `${hh}:${mi}`
-    }
-    function pickDateOnly(): string {
-      const occurred = String(row?.occurred_at || '').slice(0, 10)
-      if (/^\d{4}-\d{2}-\d{2}$/.test(occurred)) return occurred
-      const raw = row?.completed_at || row?.started_at || row?.created_at
-      if (!raw) return ''
-      const d = new Date(String(raw))
-      return isNaN(d.getTime()) ? '' : dayStrAtTZ(d)
-    }
-    function completionText(): string {
-      const dateOnly = pickDateOnly()
-      const stRaw = String(row?.started_at || '').trim()
-      const ctRaw = String(row?.completed_at || '').trim()
-      const st = stRaw ? new Date(stRaw) : null
-      const ct = ctRaw ? new Date(ctRaw) : null
-      const stOk = st && !isNaN(st.getTime())
-      const ctOk = ct && !isNaN(ct.getTime())
-      const base = dateOnly || (ctOk ? dayStrAtTZ(ct as any) : (stOk ? dayStrAtTZ(st as any) : ''))
-      if (stOk && ctOk) return `${base} ${timeStrAtTZ(st as any)}~${timeStrAtTZ(ct as any)}`
-      if (ctOk) return `${base} ${timeStrAtTZ(ct as any)}`
-      if (stOk) return `${base} ${timeStrAtTZ(st as any)}`
-      return base || '-'
-    }
-
     const apiBase = (() => {
       const host = String((req.headers['x-forwarded-host'] as any) || req.headers.host || '').split(',')[0].trim()
       const proto = String((req.headers['x-forwarded-proto'] as any) || req.protocol || 'https').split(',')[0].trim()
       return host ? `${proto}://${host}` : ''
     })()
-    const normalizePhotoUrl = (u: string) => normalizePhotoUrlForPdf(u, {
-      apiBase,
-      allowR2KeyPrefixes: ['maintenance/'],
-      photosMode: 'full',
-    })
-    const normUrlList = (raw: any): string[] => {
-      if (!raw) return []
-      let arr: any[] = []
-      if (Array.isArray(raw)) arr = raw
-      else if (typeof raw === 'string') { try { const j = JSON.parse(raw); arr = Array.isArray(j) ? j : [] } catch { arr = [] } }
-      return arr
-        .map((x) => {
-          if (!x) return ''
-          if (typeof x === 'string') return x
-          if (typeof x === 'object') return String((x as any).url || (x as any).src || (x as any).path || '')
-          return String(x || '')
-        })
-        .map((s) => String(s || '').trim())
-        .filter(Boolean)
-    }
-    const beforeUrls = normUrlList(row?.photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
-    const afterUrls = normUrlList(row?.repair_photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u))
-
-    const tpl = renderWorkRecordPdfHtml({
-      kind: 'maintenance',
-      showChinese,
-      jobNumber: String(row?.work_no || row?.id || ''),
-      completionText: completionText(),
-      areaText: String(row?.category_detail || row?.category || ''),
-      beforeUrls,
-      afterUrls,
-    })
-    if (Number(tpl?.imageCount || 0) <= 0) return res.status(422).json({ message: 'no photos to render' })
-
-    const filename = `maintenance-${String(row?.work_no || row?.id || rid).replace(/[^a-zA-Z0-9._-]+/g, '-')}.pdf`
-    const navTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_NAV_TIMEOUT_MS || 45000)))
-    const waitTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
-
-    const runOnce = async () => {
-      let browser = await getChromiumBrowser()
-      let context: any = null
-      try { context = await browser.newContext() } catch (e: any) {
-        if (!isPlaywrightClosedError(e)) throw e
-        await resetChromiumBrowser()
-        browser = await getChromiumBrowser()
-        context = await browser.newContext()
-      }
-      try {
-        const page = await context.newPage()
-        page.setDefaultTimeout(waitTimeoutMs)
-        page.setDefaultNavigationTimeout(navTimeoutMs)
-        await page.setContent(tpl.html, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs } as any)
-        await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
-        await waitForImages(page, { timeoutMs: 20000, scroll: true, tryFallbackAttr: 'data-fallback', maxFailedUrls: 8 }).catch(() => null)
-        await page.waitForTimeout(200)
-        await page.emulateMedia({ media: 'print' } as any)
-        const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
-        try { await page.close() } catch {}
-        return pdf
-      } finally {
-        try { await context?.close?.() } catch {}
-      }
-    }
-
-    let pdf: any = null
-    try {
-      pdf = await runOnce()
-    } catch (e: any) {
-      if (!isPlaywrightClosedError(e)) throw e
-      await resetChromiumBrowser()
-      pdf = await runOnce()
-    }
+    const built = await generateWorkRecordPdf({ recordId: rid, kind: 'maintenance', showChinese, apiBase, photosMode: 'full' })
 
     res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.setHeader('Content-Disposition', `attachment; filename="${built.filename}"`)
     res.setHeader('Cache-Control', 'no-store, max-age=0')
     res.setHeader('Pragma', 'no-cache')
     res.setHeader('X-WorkRecordPdfTemplate', 'workRecordPdfTemplate.v4.headerOnce.noFrame')
     res.setHeader('X-WorkRecordPdfChinese', showChinese ? '1' : '0')
-    return res.status(200).send(Buffer.from(pdf))
+    if (built.notLoaded > 0) res.setHeader('X-WorkRecordPdfWarnings', `images_not_loaded=${built.notLoaded}`)
+    return res.status(200).send(built.pdf)
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'generate pdf failed' })
+    const msg = String(e?.message || 'generate pdf failed')
+    if (msg === 'not found') return res.status(404).json({ message: 'not found' })
+    if (msg === 'no photos to render') return res.status(422).json({ message: 'no photos to render' })
+    if (/timeout/i.test(msg)) return res.status(504).json({ message: 'pdf_generation_timeout' })
+    return res.status(500).json({ message: msg || 'generate pdf failed' })
+  }
+})
+
+router.post('/pdf-jobs/:id', requireAnyPerm(['property_maintenance.view','property_maintenance.write','rbac.manage']), async (req, res) => {
+  try {
+    const rid = String(req.params?.id || '').trim()
+    const body = req.body || {}
+    const showChinese = !(body.showChinese === false || body.showChinese === '0' || body.showChinese === 0)
+    const qualityMode = String(body.quality_mode || '').trim()
+    const forceNew = body.forceNew === true || body.forceNew === 1 || body.forceNew === '1'
+    if (!rid) return res.status(400).json({ message: 'missing id' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    if (!String(process.env.FRONTEND_BASE_URL || '').trim()) return res.status(500).json({ message: 'missing FRONTEND_BASE_URL' })
+    if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
+    await ensurePdfJobsSchema()
+    await ensurePropertyMaintenanceTable()
+    const rowCheck = await pgPool.query('SELECT id FROM property_maintenance WHERE id=$1 LIMIT 1', [rid])
+    if (!rowCheck.rowCount) return res.status(404).json({ message: 'not found' })
+    if (!forceNew) {
+      const r0 = await pgPool.query(
+        `SELECT id, status
+         FROM pdf_jobs
+         WHERE kind='maintenance_record_pdf'
+           AND status IN ('queued', 'running', 'success')
+           AND (status <> 'running' OR lease_expires_at IS NULL OR lease_expires_at > now())
+           AND COALESCE(params->>'record_id', params->>'id') = $1
+           AND COALESCE(params->>'showChinese', 'false') = $2
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [rid, showChinese ? 'true' : 'false']
+      )
+      const existing = r0.rows?.[0] || null
+      if (existing?.id) {
+        if (String(existing.status || '') === 'queued') kickPdfJobsSoon('reuse_existing_maintenance_record_pdf')
+        return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true })
+      }
+    }
+    const id = uuidv4()
+    const params = {
+      record_id: rid,
+      showChinese,
+      quality_mode: qualityMode || null,
+    }
+    await pgPool.query(
+      `INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
+       VALUES($1,'maintenance_record_pdf','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`,
+      [id, JSON.stringify(params)]
+    )
+    kickPdfJobsSoon('create_maintenance_record_pdf')
+    return res.json({ job_id: id, status: 'queued', reused: false })
+  } catch (e: any) {
+    const code = String(e?.code || '')
+    if (code === 'PDF_JOBS_SCHEMA_MISSING') return res.status(500).json({ message: 'pdf_jobs table missing (apply migration)' })
+    return res.status(500).json({ message: e?.message || 'create job failed' })
+  }
+})
+
+router.get('/pdf-jobs/:id', requireAnyPerm(['property_maintenance.view','property_maintenance.write','rbac.manage']), async (req, res) => {
+  try {
+    const id = String(req.params?.id || '').trim()
+    if (!id) return res.status(400).json({ message: 'missing id' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensurePdfJobsSchema()
+    const r = await pgPool.query(`SELECT * FROM pdf_jobs WHERE id=$1 AND kind='maintenance_record_pdf' LIMIT 1`, [id])
+    const row = r.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not_found' })
+    return res.json({
+      id: row.id,
+      kind: row.kind,
+      status: row.status,
+      progress: Number(row.progress || 0),
+      stage: row.stage || '',
+      detail: row.detail || '',
+      attempts: Number(row.attempts || 0),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      next_retry_at: row.next_retry_at || null,
+      lease_expires_at: row.lease_expires_at || null,
+      result_files: row.result_files || [],
+      last_error_code: row.last_error_code || null,
+      last_error_message: row.last_error_message || null,
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'get job failed' })
+  }
+})
+
+router.get('/pdf-jobs/:id/download', requireAnyPerm(['property_maintenance.view','property_maintenance.write','rbac.manage']), async (req, res) => {
+  try {
+    const id = String(req.params?.id || '').trim()
+    if (!id) return res.status(400).json({ message: 'missing id' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
+    await ensurePdfJobsSchema()
+    const r = await pgPool.query(`SELECT id, status, stage, result_files FROM pdf_jobs WHERE id=$1 AND kind='maintenance_record_pdf' LIMIT 1`, [id])
+    const row = r.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not_found' })
+    if (String(row.status || '') !== 'success' || String(row.stage || '') !== 'done') {
+      return res.status(409).json({ message: 'job_not_done', status: row.status || null, stage: row.stage || null })
+    }
+    const files = Array.isArray(row?.result_files) ? row.result_files : []
+    const file = files.find((x: any) => String(x?.kind || '') === 'work_record_pdf') || files[0]
+    const key = String(file?.path || '').trim()
+    if (!key) return res.status(404).json({ message: 'file_not_found' })
+    const obj = await r2GetObjectByKey(key)
+    if (!obj || !obj.body?.length) return res.status(404).json({ message: 'file_not_found' })
+    const filename = String(file?.name || `${id}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_')
+    res.setHeader('Content-Type', obj.contentType || 'application/octet-stream')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.setHeader('Cache-Control', 'private, max-age=0, no-cache')
+    return res.status(200).send(obj.body)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'download failed' })
   }
 })
 

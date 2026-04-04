@@ -509,10 +509,16 @@ export default forwardRef<HTMLDivElement, {
     if (d.isValid()) return d.format('YYYY-MM-DD')
     return ''
   }
-  const otherItems = expensesInMonthForReportAll
+  const otherExpenseEntries = expensesInMonthForReportAll
     .filter(e => catKey(e) === 'other')
-    .map(e => otherDescOfTx(e))
-    .filter(Boolean)
+    .map((e) => {
+      const desc = otherDescOfTx(e)
+      const amount = Number((e as any)?.amount || 0)
+      if (!desc || !(amount > 0)) return null
+      return { desc, amount }
+    })
+    .filter(Boolean) as Array<{ desc: string; amount: number }>
+  const otherItems = otherExpenseEntries.map((e) => e.desc)
   const otherExpenseDescFmt = formatStatementDesc({
     items: otherItems,
     lang: 'en',
@@ -802,16 +808,29 @@ export default forwardRef<HTMLDivElement, {
               <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Carpark 车位费' : 'Carpark'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catCarpark)}</td></tr>
               <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? `Owner's Corporation 物业费` : `Owner's Corporation`}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOwnerCorp)}</td></tr>
               <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Council Rate 市政费' : 'Council Rate'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catCouncil)}</td></tr>
-              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Other Expense 其他支出' : 'Other Expense'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOther)}</td></tr>
-              <tr>
-                <td style={{ padding:6, textIndent:'4ch', whiteSpace:'nowrap' }}>{showChinese ? 'Other Expense Desc 其他支出描述' : 'Other Expense Desc'}</td>
-                <td
-                  style={{ padding:6, textAlign:'right', whiteSpace:'normal', wordBreak:'break-word', overflowWrap:'anywhere' }}
-                  title={otherExpenseDescFmt.full || undefined}
-                >
-                  {otherExpenseDescFmt.text}
-                </td>
-              </tr>
+              <tr><td style={{ padding:6, textIndent:'4ch' }}>{showChinese ? 'Other Expense Total 其他支出合计' : 'Other Expense Total'}</td><td style={{ textAlign:'right', padding:6 }}>-${fmt(catOther)}</td></tr>
+              {otherExpenseEntries.length ? otherExpenseEntries.map((entry, idx) => (
+                <tr key={`other-expense-${idx}`}>
+                  <td style={{ padding:6, textIndent:'6ch', whiteSpace:'normal', wordBreak:'break-word', overflowWrap:'anywhere', fontSize: 12 }}>
+                    {idx === 0
+                      ? (showChinese ? 'Other Expense Item 其他支出明细' : 'Other Expense Item')
+                      : ''}
+                    {idx === 0 ? ': ' : ''}
+                    {entry.desc}
+                  </td>
+                  <td style={{ textAlign:'right', padding:6, whiteSpace:'nowrap', fontSize: 12 }}>-${fmt(entry.amount)}</td>
+                </tr>
+              )) : (
+                <tr>
+                  <td style={{ padding:6, textIndent:'4ch', whiteSpace:'nowrap' }}>{showChinese ? 'Other Expense Desc 其他支出描述' : 'Other Expense Desc'}</td>
+                  <td
+                    style={{ padding:6, textAlign:'right', whiteSpace:'normal', wordBreak:'break-word', overflowWrap:'anywhere' }}
+                    title={otherExpenseDescFmt.full || undefined}
+                  >
+                    {otherExpenseDescFmt.text}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </>

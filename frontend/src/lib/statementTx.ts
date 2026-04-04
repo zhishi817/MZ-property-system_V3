@@ -1,4 +1,4 @@
-import { normalizeReportCategory } from './financeTx'
+import { isVoidedTx, normalizeReportCategory } from './financeTx'
 
 export type StatementTxKind = 'income' | 'expense'
 
@@ -165,6 +165,7 @@ export function buildStatementTxs(fin: any[], pexp: any[], ctx: BuildStatementTx
 
   const peOut: StatementTx[] = []
   for (const r of (Array.isArray(pexp) ? pexp : [])) {
+    if (isVoidedTx(r)) continue
     const fid = String((r as any)?.fixed_expense_id || '').trim()
     const isSnapshot = fid ? isSnapshotOfRecurringFixedExpense(r) : false
     const isOrphanSnapshot = !!(fid && isSnapshot && !recurringIdSet.has(fid))

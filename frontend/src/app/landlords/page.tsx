@@ -45,6 +45,8 @@ export default function LandlordsPage() {
   const [showArchived, setShowArchived] = useState(false)
   const [ruleSaving, setRuleSaving] = useState(false)
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
 
   async function refreshOne(id: string, target: 'edit' | 'detail' | 'both' = 'both') {
     const row = await getJSON<Landlord>(`/landlords/${id}`).catch(() => null as any)
@@ -286,7 +288,20 @@ export default function LandlordsPage() {
             propLabels.some(s => s.includes(q))
           )
         })}
-        pagination={{ pageSize: 10 }}
+        pagination={{
+          current: page,
+          pageSize,
+          showSizeChanger: true,
+          pageSizeOptions: [10, 20, 50, 100],
+          onChange: (nextPage, nextPageSize) => {
+            setPage(nextPage)
+            setPageSize(nextPageSize)
+          },
+          onShowSizeChange: (_current, nextPageSize) => {
+            setPage(1)
+            setPageSize(nextPageSize)
+          },
+        }}
         size="small"
         scroll={{ x: 'max-content' }}
       />

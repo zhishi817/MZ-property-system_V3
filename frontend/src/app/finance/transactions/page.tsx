@@ -175,7 +175,7 @@ export default function FinanceTransactionsPage() {
       title: '操作',
       width: 140,
       render: (_: any, r: Tx) => (
-        <Space>
+        <Space size={8}>
           <Button size="small" onClick={() => openEdit(r)}>编辑</Button>
           <Popconfirm title="确认删除该条交易？" okText="删除" cancelText="取消" onConfirm={() => remove(r)}>
             <Button size="small" danger>删除</Button>

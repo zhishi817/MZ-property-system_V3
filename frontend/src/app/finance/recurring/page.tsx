@@ -497,17 +497,31 @@ export default function RecurringPage() {
       return { ...t, amount, next_due_date, is_paid, is_due_month, status: (t.status||''), category }
     })
     .sort((a,b)=>{
-      const aIsConsumables = String(a.category||'')==='消耗品费' || String(a.report_category||'')==='consumables'
-      const bIsConsumables = String(b.category||'')==='消耗品费' || String(b.report_category||'')==='consumables'
-      if (aIsConsumables !== bIsConsumables) return aIsConsumables ? 1 : -1
-      const ac = a.created_at ? new Date(a.created_at).getTime() : 0
-      const bc = b.created_at ? new Date(b.created_at).getTime() : 0
-      if (ac !== bc) return bc - ac
+      const today = nowAU().startOf('day')
+      const bucket = (row: any) => {
+        if (String(row.status || '') === 'paused') return 5
+        const nd = parseAU(row.next_due_date)
+        if (!row.is_due_month || row.payment_type === 'rent_deduction' || !nd) return 4
+        if (!row.is_paid && today.isAfter(nd.startOf('day'))) return 0
+        if (!row.is_paid && nd.isSame(today, 'day')) return 1
+        if (!row.is_paid) {
+          const days = nd.startOf('day').diff(today, 'day')
+          const remind = Number(row.remind_days_before ?? 3)
+          if (days > 0 && days <= remind) return 2
+        }
+        return 3
+      }
+      const ab = bucket(a)
+      const bb = bucket(b)
+      if (ab !== bb) return ab - bb
       const ad = parseAU(a.next_due_date)
       const bd = parseAU(b.next_due_date)
       const av = ad ? ad.valueOf() : Number.POSITIVE_INFINITY
       const bv = bd ? bd.valueOf() : Number.POSITIVE_INFINITY
-      return av - bv
+      if (av !== bv) return av - bv
+      const ac = a.created_at ? new Date(a.created_at).getTime() : 0
+      const bc = b.created_at ? new Date(b.created_at).getTime() : 0
+      return bc - ac
     })
   const allRows = allRowsBase.filter(r => {
     const q = String(searchText||'').trim().toLowerCase()
