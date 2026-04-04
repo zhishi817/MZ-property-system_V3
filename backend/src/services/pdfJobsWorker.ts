@@ -60,7 +60,16 @@ function classifyError(e: any): { retriable: boolean; code: string; message: str
   const code = String(e?.code || '')
   const message = String(e?.message || '')
   const retriableCodes = new Set(['40001', '40P01', '55P03', '57014', '53300', '57P01', '57P02', '57P03'])
-  const nonRetriableCodes = new Set(['23503', '23505', '42501', '42P01', '42703'])
+  const nonRetriableCodes = new Set([
+    '23503',
+    '23505',
+    '42501',
+    '42P01',
+    '42703',
+    'NO_PHOTOS_TO_RENDER',
+    'PHOTO_ASSETS_UNREACHABLE',
+    'PHOTO_PACK_RENDER_EMPTY',
+  ])
   if (code === 'PDF_JOBS_SCHEMA_MISSING' || code === 'JOB_INVALID') return { retriable: false, code, message }
   if (nonRetriableCodes.has(code)) return { retriable: false, code, message }
   if (retriableCodes.has(code)) return { retriable: true, code, message }
@@ -511,6 +520,12 @@ async function runStatementPhotoPack(job: any, workerId: string) {
       photosMode: 'thumbnail',
     })
   }
+  try {
+    const samples = (Array.isArray(built.failedUrls) ? built.failedUrls : []).slice(0, 3).join(' | ')
+    console.log(
+      `[statement-photo-pack][worker] job_id=${id} property_id=${pid} month=${monthKey} sections=${sections} mode=${built.effectivePhotosMode} rawUrls=${built.rawUrls} cleanedUrls=${built.cleanedUrls} imageCount=${built.imageCount} notLoaded=${built.notLoaded} failedCount=${Array.isArray(built.failedUrls) ? built.failedUrls.length : 0}${samples ? ` sampleFailedUrls=${samples}` : ''}`
+    )
+  } catch {}
   await updateJob(id, { progress: 76, stage: 'uploading', detail: 'PDF 已生成，正在上传文件...', locked_by: workerId })
   const suffix = sections === 'maintenance' ? 'maintenance' : sections === 'deep_cleaning' ? 'deep-cleaning' : 'all'
   const key = `pdf-jobs/statement-photo-pack/${monthKey}/${pid}/${suffix}/${id}.pdf`
@@ -524,7 +539,7 @@ async function runStatementPhotoPack(job: any, workerId: string) {
     page_count: 0,
     source_count: built.imageCount,
   }
-  const warnings = built.notLoaded > 0 ? `；缺图警告 ${built.notLoaded} 张` : ''
+  const warnings = built.notLoaded > 0 ? `；部分照片未能加载 ${built.notLoaded} 张` : ''
   await updateJob(id, {
     status: 'success',
     progress: 100,
