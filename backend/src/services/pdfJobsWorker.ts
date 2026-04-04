@@ -183,13 +183,16 @@ function frontBaseUrl(): string {
 }
 
 function apiBaseForAssets(): string {
-  return String(
+  const apiBase = String(
     process.env.NEXT_PUBLIC_API_BASE_URL ||
     process.env.NEXT_PUBLIC_API_BASE_DEV ||
     process.env.NEXT_PUBLIC_API_BASE ||
     process.env.API_BASE ||
+    process.env.FRONTEND_BASE_URL ||
     ''
   ).trim()
+  try { console.log(`[pdf-jobs][worker] API_BASE_RESOLVED=${apiBase || '(empty)'}`) } catch {}
+  return apiBase
 }
 
 function cookieBase(baseUrl: string, token: string) {
