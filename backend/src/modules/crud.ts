@@ -178,6 +178,10 @@ function autoExpenseReasonFromError(e: any): string {
 }
 
 function calcMaintenanceTotal(row: any): number {
+  const explicitTotal = toNum(row?.total_amount)
+  if (Number.isFinite(explicitTotal) && explicitTotal > 0) {
+    return Math.round((explicitTotal + Number.EPSILON) * 100) / 100
+  }
   const base = toNum(row?.maintenance_amount)
   const baseN = Number.isFinite(base) ? base : 0
   const hasParts = row?.has_parts === true
@@ -1536,6 +1540,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_parts boolean;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS has_gst boolean;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS maintenance_amount_includes_gst boolean;`)
+          await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS total_amount numeric(12,2);`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
           await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
@@ -1576,10 +1581,10 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             property_code, work_no, category, status, urgency,
             submitted_at, submitter_name, completed_at,
             maintenance_amount, has_parts, parts_amount,
-            maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst,
+            maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount,
             pay_method, pay_other_note
           )
-            VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::text[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25) RETURNING *`
+            VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::text[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) RETURNING *`
           const detailsArr = Array.isArray(detailsRaw) ? detailsRaw : []
           let photoUrlsArr: any = (payload as any).photo_urls
           if (typeof photoUrlsArr === 'string') {
@@ -1629,6 +1634,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 (d && (d as any).maintenance_amount_includes_parts !== undefined) ? !!(d as any).maintenance_amount_includes_parts : null,
                 (d && (d as any).has_gst !== undefined) ? !!(d as any).has_gst : null,
                 (d && (d as any).maintenance_amount_includes_gst !== undefined) ? !!(d as any).maintenance_amount_includes_gst : null,
+                calcMaintenanceTotal(d || {}),
                 (d && (d as any).pay_method !== undefined) ? String((d as any).pay_method || '') : null,
                 (d && (d as any).pay_other_note !== undefined) ? String((d as any).pay_other_note || '') : null
               ]
@@ -1661,6 +1667,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               payload.maintenance_amount_includes_parts !== undefined ? !!payload.maintenance_amount_includes_parts : null,
               payload.has_gst !== undefined ? !!payload.has_gst : null,
               payload.maintenance_amount_includes_gst !== undefined ? !!payload.maintenance_amount_includes_gst : null,
+              calcMaintenanceTotal(payload || {}),
               payload.pay_method !== undefined ? String(payload.pay_method || '') : null,
               payload.pay_other_note !== undefined ? String(payload.pay_other_note || '') : null
             ]
@@ -2470,6 +2477,10 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
       } catch {}
       let toUpdate: any = payload
       if (resource === 'property_maintenance') {
+        try {
+          const { pgPool } = require('../dbAdapter')
+          if (pgPool) await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS total_amount numeric(12,2);`)
+        } catch {}
         const boolFields = ['has_parts', 'maintenance_amount_includes_parts', 'has_gst', 'maintenance_amount_includes_gst']
         for (const k of boolFields) {
           if (!Object.prototype.hasOwnProperty.call(toUpdate, k)) continue
@@ -2518,6 +2529,17 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         }
         if (Object.prototype.hasOwnProperty.call(toUpdate, 'repair_photo_urls')) {
           toUpdate.repair_photo_urls = normalizeUrlList(toUpdate.repair_photo_urls)
+        }
+        const touchedMaintenanceCost =
+          Object.prototype.hasOwnProperty.call(payload, 'maintenance_amount') ||
+          Object.prototype.hasOwnProperty.call(payload, 'has_parts') ||
+          Object.prototype.hasOwnProperty.call(payload, 'parts_amount') ||
+          Object.prototype.hasOwnProperty.call(payload, 'maintenance_amount_includes_parts') ||
+          Object.prototype.hasOwnProperty.call(payload, 'has_gst') ||
+          Object.prototype.hasOwnProperty.call(payload, 'maintenance_amount_includes_gst')
+        if (touchedMaintenanceCost || (before && ((before as any).total_amount === null || (before as any).total_amount === undefined))) {
+          const merged = { ...(before || {}), ...(toUpdate || {}) }
+          ;(toUpdate as any).total_amount = calcMaintenanceTotal(merged)
         }
       }
       if (resource === 'property_deep_cleaning') {

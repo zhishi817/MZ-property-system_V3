@@ -18,6 +18,7 @@ export type GenerateStatementPhotoPackInput = {
   photosMode?: StatementPhotoPackPhotosMode
   compress?: { w: number; q: number }
   syncGuard?: boolean
+  onStage?: (stage: string, detail: string, meta?: Record<string, any>) => Promise<void> | void
 }
 
 export type GenerateStatementPhotoPackResult = {
@@ -30,6 +31,7 @@ export type GenerateStatementPhotoPackResult = {
   failedUrls: string[]
   notLoaded: number
   detail: string
+  metrics: Record<string, any>
 }
 
 function jobError(code: string, message: string, extra?: Record<string, any>) {
@@ -99,7 +101,65 @@ async function landlordNameByProperty(landlordId: string): Promise<string> {
   }
 }
 
+function nowMs() {
+  return Date.now()
+}
+
+function isLikelyImageUrl(u: string): boolean {
+  const s = String(u || '').trim().toLowerCase()
+  if (!s) return false
+  if (/\/public\/r2-image\b|\/r2-image\b/.test(s)) return true
+  if (/\.(jpg|jpeg|png|webp|gif|bmp|svg|heic|heif)(\?|$)/i.test(s)) return true
+  if (/\.(mp4|mov|avi|m4v|webm)(\?|$)/i.test(s)) return false
+  return /^https?:\/\//i.test(s)
+}
+
+async function runLimited<T>(items: T[], limit: number, worker: (item: T, index: number) => Promise<void>) {
+  const n = Math.max(1, Math.min(20, Number(limit || 1)))
+  let idx = 0
+  const runners = Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (true) {
+      const cur = idx++
+      if (cur >= items.length) break
+      await worker(items[cur], cur)
+    }
+  })
+  await Promise.all(runners)
+}
+
+async function preflightPhotoUrls(urls: string[]): Promise<{ ok: string[]; failed: string[] }> {
+  const unique = Array.from(new Set(urls.map((u) => String(u || '').trim()).filter(Boolean)))
+  if (!unique.length) return { ok: [], failed: [] }
+  const timeoutMs = Math.max(2000, Math.min(20000, Number(process.env.PHOTO_PREFLIGHT_TIMEOUT_MS || 6000)))
+  const concurrency = Math.max(2, Math.min(12, Number(process.env.PHOTO_PREFLIGHT_CONCURRENCY || 6)))
+  const ok: string[] = []
+  const failed: string[] = []
+  await runLimited(unique, concurrency, async (u) => {
+    const ac = new AbortController()
+    const t = setTimeout(() => { try { ac.abort() } catch {} }, timeoutMs)
+    try {
+      const r: any = await fetch(u, { method: 'GET', signal: ac.signal } as any)
+      const ct = String(r?.headers?.get?.('content-type') || '').toLowerCase()
+      try { await r?.body?.cancel?.() } catch {}
+      if (!r?.ok) throw new Error(`http_${String(r?.status || '')}`)
+      if (ct && !ct.startsWith('image/')) throw new Error(`invalid_content_type:${ct}`)
+      ok.push(u)
+    } catch {
+      failed.push(u)
+    } finally {
+      clearTimeout(t)
+    }
+  })
+  return { ok, failed }
+}
+
 export async function generateStatementPhotoPackPdf(input: GenerateStatementPhotoPackInput): Promise<GenerateStatementPhotoPackResult> {
+  const metrics: Record<string, any> = {}
+  const stage = async (name: string, detail: string, meta?: Record<string, any>) => {
+    if (meta && typeof meta === 'object') Object.assign(metrics, meta)
+    await input.onStage?.(name, detail, meta)
+  }
+  const t0 = nowMs()
   const monthKey = String(input.month || '').trim()
   const pid = String(input.propertyId || '').trim()
   const sections = (String(input.sections || 'all').trim() || 'all') as StatementPhotoPackSection
@@ -149,7 +209,9 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
       ? loadMonthlyStatementPhotoRows({ table: 'property_maintenance', pid, monthKey, range, propertyCode: codeNorm, propertyCodeRaw: codeRaw }).catch(() => [] as any[])
       : Promise.resolve([] as any[]),
   ])
+  metrics.load_rows_ms = nowMs() - t0
   const totalRawUrls = countRawUrls(deepRows0) + countRawUrls(maintRows0)
+  await stage('normalize_urls', `正在整理照片链接（原始 ${totalRawUrls}）...`, { rawUrls: totalRawUrls })
   const apiBase = String(input.apiBase || '').trim().replace(/\/+$/g, '')
   if (totalRawUrls > 0 && !/^https?:\/\//i.test(apiBase)) {
     throw jobError('PHOTO_ASSETS_UNREACHABLE', 'photo assets unreachable: missing valid api base', { rawUrls: totalRawUrls })
@@ -179,17 +241,34 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
     compress,
   })
   const mapRowUrls = (r: any) => {
-    const before = listPhotoUrls(r?.photo_urls).map(normalizePhotoUrl).filter((u) => /^https?:\/\//i.test(u))
-    const after = listPhotoUrls(r?.repair_photo_urls).map(normalizePhotoUrl).filter((u) => /^https?:\/\//i.test(u))
+    const before = listPhotoUrls(r?.photo_urls).map(normalizePhotoUrl).filter((u) => /^https?:\/\//i.test(u) && isLikelyImageUrl(u))
+    const after = listPhotoUrls(r?.repair_photo_urls).map(normalizePhotoUrl).filter((u) => /^https?:\/\//i.test(u) && isLikelyImageUrl(u))
     return { ...r, photo_urls: before, repair_photo_urls: after }
   }
   const deepRows = Array.isArray(deepRows0) ? deepRows0.map(mapRowUrls) : []
   const maintRows = Array.isArray(maintRows0) ? maintRows0.map(mapRowUrls) : []
   const cleanedUrls = countRawUrls(deepRows) + countRawUrls(maintRows)
+  metrics.normalize_urls_ms = nowMs() - t0 - Number(metrics.load_rows_ms || 0)
   if (totalRawUrls > 0 && cleanedUrls <= 0) {
     throw jobError('PHOTO_ASSETS_UNREACHABLE', 'photo assets unreachable: no renderable urls after normalization', {
       rawUrls: totalRawUrls,
       cleanedUrls,
+    })
+  }
+  const allUrls = Array.from(new Set(
+    [...deepRows, ...maintRows].flatMap((r: any) => [...listPhotoUrls(r?.photo_urls), ...listPhotoUrls(r?.repair_photo_urls)])
+  ))
+  await stage('prefetch_validate', `正在校验照片资源（${allUrls.length}）...`, { dedupedUrls: allUrls.length, cleanedUrls })
+  const preflightStartedAt = nowMs()
+  const preflight = await preflightPhotoUrls(allUrls)
+  metrics.prefetch_validate_ms = nowMs() - preflightStartedAt
+  metrics.validatedUrls = preflight.ok.length
+  metrics.failed_prefetch = preflight.failed.length
+  if (preflight.failed.length > 0) {
+    throw jobError('PHOTO_PREFLIGHT_FAILED', 'photo resources failed preflight validation', {
+      rawUrls: totalRawUrls,
+      cleanedUrls,
+      failedUrls: preflight.failed.slice(0, 8),
     })
   }
   const tpl = renderMonthlyStatementPdfHtml({
@@ -228,13 +307,15 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
     const waitTimeoutMs = Math.max(5000, Math.min(90000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
     page.setDefaultTimeout(waitTimeoutMs)
     page.setDefaultNavigationTimeout(navTimeoutMs)
+    await stage('wait_images', `正在等待全部照片加载（${imageCount}）...`, { imageCount })
     await page.setContent(tpl.html, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs } as any)
     await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
     const remainForImages = Math.max(5000, totalTimeoutMs - (Date.now() - startedAt) - 5000)
-    const imgStats = await waitForImages(page, { timeoutMs: Math.min(20000, remainForImages), scroll: true, tryFallbackAttr: 'data-fallback', maxFailedUrls: 8 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
+    const waitStartedAt = nowMs()
+    const imgStats = await waitForImages(page, { timeoutMs: Math.min(12000, remainForImages), scroll: 'once', tryFallbackAttr: 'data-fallback', maxFailedUrls: 12 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
+    metrics.wait_images_ms = nowMs() - waitStartedAt
     const notLoaded = Number((imgStats as any)?.notLoaded || 0)
     const failedUrls = Array.isArray((imgStats as any)?.failedUrls) ? (imgStats as any).failedUrls : []
-    const severeMissingThreshold = Math.max(3, Math.ceil(imageCount * 0.8))
     if (imageCount > 0 && notLoaded >= imageCount) {
       throw jobError('PHOTO_PACK_RENDER_EMPTY', 'photo pack render empty: all images failed to load', {
         imageCount,
@@ -242,8 +323,8 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
         failedUrls,
       })
     }
-    if (imageCount > 0 && notLoaded >= severeMissingThreshold) {
-      throw jobError('PHOTO_ASSETS_UNREACHABLE', 'photo assets unreachable: most images failed to load', {
+    if (notLoaded > 0) {
+      throw jobError('PHOTO_LOAD_INCOMPLETE', 'photo load incomplete: some images failed to load', {
         imageCount,
         notLoaded,
         failedUrls,
@@ -254,10 +335,14 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
       e.code = 'PDF_GENERATION_TIMEOUT'
       throw e
     }
+    await stage('render_pdf', '正在生成 PDF...', {})
     await page.waitForTimeout(150)
     await page.emulateMedia({ media: 'print' } as any)
+    const pdfStartedAt = nowMs()
     const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
-    const detail = `图片 ${imageCount} 张（原始 ${totalRawUrls} / 可渲染 ${cleanedUrls}${Number((imgStats as any)?.notLoaded || 0) > 0 ? ` / 未加载 ${Number((imgStats as any)?.notLoaded || 0)}` : ''}）`
+    metrics.render_pdf_ms = nowMs() - pdfStartedAt
+    metrics.pdf_bytes = Buffer.byteLength(pdf)
+    const detail = `图片 ${imageCount} 张（原始 ${totalRawUrls} / 去重 ${allUrls.length} / 可渲染 ${cleanedUrls} / 已校验 ${preflight.ok.length}）`
     return {
       pdf: Buffer.from(pdf),
       filename: buildFilename(monthKey, prop, sections),
@@ -268,6 +353,7 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
       failedUrls,
       notLoaded,
       detail,
+      metrics,
     }
   } catch (e: any) {
     if (String(e?.code || '') === 'PDF_GENERATION_TIMEOUT') throw e

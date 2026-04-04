@@ -69,6 +69,9 @@ function classifyError(e: any): { retriable: boolean; code: string; message: str
     'NO_PHOTOS_TO_RENDER',
     'PHOTO_ASSETS_UNREACHABLE',
     'PHOTO_PACK_RENDER_EMPTY',
+    'PHOTO_PREFLIGHT_FAILED',
+    'PHOTO_LOAD_INCOMPLETE',
+    'MERGE_ATTACHMENT_PREFLIGHT_FAILED',
   ])
   if (code === 'PDF_JOBS_SCHEMA_MISSING' || code === 'JOB_INVALID') return { retriable: false, code, message }
   if (nonRetriableCodes.has(code)) return { retriable: false, code, message }
@@ -416,6 +419,39 @@ async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promis
   }).filter(Boolean)))
 }
 
+async function preflightUrls(urls: string[], kind: 'image' | 'attachment'): Promise<{ ok: string[]; failed: string[] }> {
+  const unique = Array.from(new Set(urls.map((u) => String(u || '').trim()).filter(Boolean)))
+  if (!unique.length) return { ok: [], failed: [] }
+  const timeoutMs = Math.max(2000, Math.min(20000, Number(process.env.PDF_PREFLIGHT_TIMEOUT_MS || 7000)))
+  const concurrency = Math.max(2, Math.min(12, Number(process.env.PDF_PREFLIGHT_CONCURRENCY || 6)))
+  const ok: string[] = []
+  const failed: string[] = []
+  let idx = 0
+  const workers = Array.from({ length: Math.min(concurrency, unique.length) }, async () => {
+    while (true) {
+      const cur = idx++
+      if (cur >= unique.length) break
+      const u = unique[cur]
+      const ac = new AbortController()
+      const t = setTimeout(() => { try { ac.abort() } catch {} }, timeoutMs)
+      try {
+        const r: any = await fetch(u, { method: 'GET', signal: ac.signal } as any)
+        const ct = String(r?.headers?.get?.('content-type') || '').toLowerCase()
+        try { await r?.body?.cancel?.() } catch {}
+        if (!r?.ok) throw new Error(`http_${String(r?.status || '')}`)
+        if (kind === 'image' && ct && !ct.startsWith('image/')) throw new Error(`invalid_content_type:${ct}`)
+        ok.push(u)
+      } catch {
+        failed.push(u)
+      } finally {
+        clearTimeout(t)
+      }
+    }
+  })
+  await Promise.all(workers)
+  return { ok, failed }
+}
+
 function workRecordPhotosMode(job: any): WorkRecordPdfPhotosMode {
   const raw = String(job?.params?.quality_mode || '').trim().toLowerCase()
   if (raw === 'full' || raw === 'compressed' || raw === 'thumbnail') return raw as WorkRecordPdfPhotosMode
@@ -502,8 +538,9 @@ async function runStatementPhotoPack(job: any, workerId: string) {
   const sections = statementPhotoPackSection(job)
   if (!id || !/^\d{4}-\d{2}$/.test(monthKey) || !pid) throw Object.assign(new Error('invalid_job_params'), { code: 'JOB_INVALID' })
   const showChinese = params?.showChinese !== false
-  await updateJob(id, { progress: 8, stage: 'collect_images', detail: '正在收集照片...', locked_by: workerId })
+  await updateJob(id, { progress: 5, stage: 'load_rows', detail: '正在读取照片记录...', locked_by: workerId })
   const preferredMode = statementPhotoPackQualityMode(job)
+  const jobStartedAt = Date.now()
   let built = await generateStatementPhotoPackPdf({
     month: monthKey,
     propertyId: pid,
@@ -511,6 +548,19 @@ async function runStatementPhotoPack(job: any, workerId: string) {
     showChinese,
     apiBase: apiBaseForAssets(),
     photosMode: preferredMode,
+    onStage: async (stage, detail, meta) => {
+      const progressByStage: Record<string, number> = {
+        load_rows: 8,
+        normalize_urls: 14,
+        prefetch_validate: 26,
+        wait_images: 48,
+        render_pdf: 68,
+      }
+      await updateJob(id, { progress: progressByStage[stage] || 8, stage, detail, locked_by: workerId })
+      try {
+        if (meta) console.log(`[statement-photo-pack][worker] stage job_id=${id} stage=${stage} detail=${detail} meta=${JSON.stringify(meta)}`)
+      } catch {}
+    },
   })
   if (built.imageCount > 6 && built.effectivePhotosMode !== 'thumbnail') {
     await updateJob(id, { progress: 22, stage: 'compress_images', detail: '照片较多，正在切换为缩略图模式...', locked_by: workerId })
@@ -526,28 +576,30 @@ async function runStatementPhotoPack(job: any, workerId: string) {
   try {
     const samples = (Array.isArray(built.failedUrls) ? built.failedUrls : []).slice(0, 3).join(' | ')
     console.log(
-      `[statement-photo-pack][worker] job_id=${id} property_id=${pid} month=${monthKey} sections=${sections} mode=${built.effectivePhotosMode} rawUrls=${built.rawUrls} cleanedUrls=${built.cleanedUrls} imageCount=${built.imageCount} notLoaded=${built.notLoaded} failedCount=${Array.isArray(built.failedUrls) ? built.failedUrls.length : 0}${samples ? ` sampleFailedUrls=${samples}` : ''}`
+      `[statement-photo-pack][worker] job_id=${id} property_id=${pid} month=${monthKey} sections=${sections} mode=${built.effectivePhotosMode} rawUrls=${built.rawUrls} cleanedUrls=${built.cleanedUrls} imageCount=${built.imageCount} notLoaded=${built.notLoaded} failedCount=${Array.isArray(built.failedUrls) ? built.failedUrls.length : 0}${samples ? ` sampleFailedUrls=${samples}` : ''} metrics=${JSON.stringify(built.metrics || {})}`
     )
   } catch {}
   await updateJob(id, { progress: 76, stage: 'uploading', detail: 'PDF 已生成，正在上传文件...', locked_by: workerId })
   const suffix = sections === 'maintenance' ? 'maintenance' : sections === 'deep_cleaning' ? 'deep-cleaning' : 'all'
   const key = `pdf-jobs/statement-photo-pack/${monthKey}/${pid}/${suffix}/${id}.pdf`
+  const uploadStartedAt = Date.now()
   const url = await r2Upload(key, 'application/pdf', built.pdf)
+  const uploadMs = Date.now() - uploadStartedAt
+  const pageCount = await pdfPageCount(built.pdf)
   const file: PdfJobFile = {
     kind: 'statement_photo_pack_pdf',
     name: built.filename,
     path: key,
     url,
     size_bytes: built.pdf.byteLength,
-    page_count: 0,
+    page_count: pageCount,
     source_count: built.imageCount,
   }
-  const warnings = built.notLoaded > 0 ? `；部分照片未能加载 ${built.notLoaded} 张` : ''
   await updateJob(id, {
     status: 'success',
     progress: 100,
     stage: 'done',
-    detail: `已生成照片 PDF（模式：${built.effectivePhotosMode}，${built.detail}${warnings}）`,
+    detail: `已生成照片 PDF（模式：${built.effectivePhotosMode}，${built.detail}，页数 ${pageCount}，上传 ${uploadMs}ms，总耗时 ${Date.now() - jobStartedAt}ms）`,
     result_files: [file],
     locked_by: null,
     lease_expires_at: null,
@@ -666,8 +718,11 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
   const excludeOrphans = !!params?.excludeOrphanFixedSnapshots
   const carryStartMonth = /^\d{4}-\d{2}$/.test(String(params?.carryStartMonth || '').trim()) ? String(params.carryStartMonth).trim() : '2026-01'
   const mergeInvoices = params?.mergeInvoices !== false
+  const jobStartedAt = Date.now()
   await updateJob(id, { progress: 3, stage: 'render_statement', detail: '正在生成主报表（无照片版）...', locked_by: workerId })
+  const renderStartedAt = Date.now()
   const gen = await generateStatementBasePdf({ jobId: id, month: monthKey, property_id: pid, showChinese, excludeOrphanFixedSnapshots: excludeOrphans, carryStartMonth })
+  const renderMs = Date.now() - renderStartedAt
   const statementPdf = gen.pdf
   const statementPages = await pdfPageCount(statementPdf)
   const diag = (gen as any)?.diagnostics || null
@@ -707,7 +762,9 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
   if (!statementPdf?.length) throw Object.assign(new Error('statement pdf is empty'), { code: 'PRINT_EMPTY' })
   if (statementPages <= 0) throw Object.assign(new Error('statement pdf page_count=0'), { code: 'PRINT_EMPTY' })
   const baseKey = `monthly-pack/${monthKey}/${pid}/${id}/statement_base.pdf`
+  const baseUploadStartedAt = Date.now()
   const baseUrl = await r2Upload(baseKey, 'application/pdf', statementPdf)
+  const baseUploadMs = Date.now() - baseUploadStartedAt
   const files: PdfJobFile[] = [{
     kind: 'statement_base',
     name: 'statement_base.pdf',
@@ -718,26 +775,43 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
     part_no: 1,
     source_count: 1,
   }]
-  await updateJob(id, { progress: 20, stage: 'statement_uploaded', detail: `主报表已生成（${statementPages}页）${diagSummary}`, result_files: files, locked_by: workerId })
+  await updateJob(id, { progress: 20, stage: 'statement_uploaded', detail: `主报表已生成（${statementPages}页，渲染 ${renderMs}ms，上传 ${baseUploadMs}ms）${diagSummary}`, result_files: files, locked_by: workerId })
   if (!mergeInvoices) {
     await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: `已生成主报表（未合并附件）${diagSummary}`, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
     return
   }
   await updateJob(id, { progress: 25, stage: 'collect_invoices', detail: `正在收集发票附件...${diagSummary}`, result_files: files, locked_by: workerId })
+  const collectStartedAt = Date.now()
   const invoiceUrls = await collectInvoiceUrlsForMonth(pid, monthKey)
-  await updateJob(id, { progress: 35, stage: 'merge_invoices', detail: `正在合并附件（${invoiceUrls.length}）...${diagSummary}`, result_files: files, locked_by: workerId })
+  const collectMs = Date.now() - collectStartedAt
+  await updateJob(id, { progress: 32, stage: 'validate_invoices', detail: `正在校验发票附件（${invoiceUrls.length}）...${diagSummary}`, result_files: files, locked_by: workerId })
+  const validateStartedAt = Date.now()
+  const preflight = await preflightUrls(invoiceUrls, 'attachment')
+  const validateMs = Date.now() - validateStartedAt
+  const validInvoiceUrls = preflight.ok
+  const invalidInvoiceUrls = preflight.failed
+  if (!validInvoiceUrls.length && invoiceUrls.length) {
+    const e: any = new Error('merge attachment preflight failed: no valid attachments')
+    e.code = 'MERGE_ATTACHMENT_PREFLIGHT_FAILED'
+    throw e
+  }
+  await updateJob(id, { progress: 40, stage: 'merge_invoices', detail: `正在合并附件（有效 ${validInvoiceUrls.length} / 总计 ${invoiceUrls.length}，收集 ${collectMs}ms，校验 ${validateMs}ms）...${diagSummary}`, result_files: files, locked_by: workerId })
   if (!invoiceUrls.length) {
-    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: `未找到可合并的附件，已生成主报表${diagSummary}`, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
+    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: `未找到可合并的附件，已生成主报表（总耗时 ${Date.now() - jobStartedAt}ms）${diagSummary}`, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
     return
   }
   const maxPerPart = Math.max(5, Math.min(60, Number(process.env.MERGE_INVOICE_MAX_PER_PART || 25)))
   const maxSourceBytes = Math.max(5 * 1024 * 1024, Math.min(80 * 1024 * 1024, Number(process.env.MERGE_INVOICE_MAX_SOURCE_BYTES || 20 * 1024 * 1024)))
-  const merged = await mergeStatementWithInvoices(statementPdf, invoiceUrls, maxPerPart, maxSourceBytes)
+  const mergeStartedAt = Date.now()
+  const merged = await mergeStatementWithInvoices(statementPdf, validInvoiceUrls, maxPerPart, maxSourceBytes)
+  const mergeMs = Date.now() - mergeStartedAt
   for (const f of merged.files) {
     const key = f.kind === 'statement_merged_invoices'
       ? `monthly-pack/${monthKey}/${pid}/${id}/statement_merged_invoices.pdf`
       : `monthly-pack/${monthKey}/${pid}/${id}/invoices_part_${String(f.part_no).padStart(2, '0')}.pdf`
+    const uploadStartedAt = Date.now()
     const url = await r2Upload(key, 'application/pdf', f.buf)
+    const uploadMs = Date.now() - uploadStartedAt
     const pages = await pdfPageCount(f.buf)
     files.push({
       kind: f.kind,
@@ -750,11 +824,11 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
       source_count: f.source_count,
     })
     const p = Math.min(95, 35 + Math.round((files.length / (merged.files.length + 1)) * 55))
-    await updateJob(id, { progress: p, stage: 'uploading', detail: `正在上传合并文件（${files.length - 1}/${merged.files.length}）...`, result_files: files, locked_by: workerId })
+    await updateJob(id, { progress: p, stage: 'uploading', detail: `正在上传合并文件（${files.length - 1}/${merged.files.length}，上传 ${uploadMs}ms）...`, result_files: files, locked_by: workerId })
   }
-  const failN = merged.failed.length
-  const failSample = merged.failed.slice(0, 3).join(' | ')
-  const detail = failN ? `合并完成（部分附件失败：${failN}，样例：${failSample}）${diagSummary}` : `合并完成${diagSummary}`
+  const failN = merged.failed.length + invalidInvoiceUrls.length
+  const failSample = [...invalidInvoiceUrls, ...merged.failed].slice(0, 3).join(' | ')
+  const detail = failN ? `合并完成（附件失败：${failN}，样例：${failSample}，合并 ${mergeMs}ms，总耗时 ${Date.now() - jobStartedAt}ms）${diagSummary}` : `合并完成（合并 ${mergeMs}ms，总耗时 ${Date.now() - jobStartedAt}ms）${diagSummary}`
   await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
 }
 
