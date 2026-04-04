@@ -1,5 +1,5 @@
 "use client"
-import { Card, Tabs, Form, Input, DatePicker, Button, Select, Table, InputNumber, Space, message, Upload, Switch, Tag, Drawer, Modal, Tooltip, Popconfirm } from 'antd'
+import { Card, Tabs, Form, Input, DatePicker, Button, Select, Table, InputNumber, Space, message, Upload, Switch, Tag, Drawer, Modal, Tooltip, Popconfirm, Spin } from 'antd'
 import { ArrowLeftOutlined, DeleteOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -28,6 +28,8 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
   const [attach, setAttach] = useState<any[]>([])
   const [prop, setProp] = useState<{ id: string; code?: string; address?: string } | null>(null)
   const printRef = useRef<HTMLDivElement>(null)
+  const [pdfExporting, setPdfExporting] = useState(false)
+  const [pdfExportStage, setPdfExportStage] = useState('')
 
   async function ensureOnboarding() {
     const list = await getJSON<Onb[]>(`/onboarding?property_id=${encodeURIComponent(pid)}`).catch(()=>[])
@@ -188,81 +190,86 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
   async function generatePdfPreview() {
     const node = (modalRef.current || printRef.current) as HTMLElement
     if (!onb || !node) return
-    const canvas = await html2canvas(node, { scale: 2, useCORS: true, allowTaint: true, backgroundColor: '#ffffff' })
-    const pdf = new jsPDF('p', 'mm', 'a4')
-    const margin = 10
-    const pageWmm = pdf.internal.pageSize.getWidth() - margin * 2
-    const pageHmm = pdf.internal.pageSize.getHeight() - margin * 2
-    const pxPerMm = canvas.width / pageWmm
-    const pageHPx = Math.floor(pageHmm * pxPerMm)
-    const baseRect = node.getBoundingClientRect()
-    const scaleFactor = canvas.width / Math.max(1, (node.scrollWidth || node.clientWidth))
-    const rows: Array<{ top: number; bottom: number }> = []
-    node.querySelectorAll('table tr').forEach((el) => {
-      const r = (el as HTMLElement).getBoundingClientRect()
-      const top = Math.max(0, Math.round((r.top - baseRect.top) * scaleFactor))
-      const bottom = Math.max(top + Math.round(r.height * scaleFactor), Math.round((r.bottom - baseRect.top) * scaleFactor))
-      if (bottom > top) rows.push({ top, bottom })
-    })
-    const blocks: number[] = []
-    node.querySelectorAll('[data-pdf-block]').forEach((el) => {
-      const r = (el as HTMLElement).getBoundingClientRect()
-      const b = Math.max(0, Math.round((r.bottom - baseRect.top) * scaleFactor))
-      blocks.push(b)
-    })
-    const mainCtx = canvas.getContext('2d')!
-    const tfoots: Array<{ top: number; bottom: number }> = []
-    node.querySelectorAll('table tfoot').forEach((el) => {
-      const r = (el as HTMLElement).getBoundingClientRect()
-      const top = Math.max(0, Math.round((r.top - baseRect.top) * scaleFactor))
-      const bottom = Math.max(top + Math.round(r.height * scaleFactor), Math.round((r.bottom - baseRect.top) * scaleFactor))
-      if (bottom > top) tfoots.push({ top, bottom })
-    })
-    const subtotals: Array<{ top: number; bottom: number }> = []
-    node.querySelectorAll('.subtotalBar').forEach((el) => {
-      const r = (el as HTMLElement).getBoundingClientRect()
-      const top = Math.max(0, Math.round((r.top - baseRect.top) * scaleFactor))
-      const bottom = Math.max(top + Math.round(r.height * scaleFactor), Math.round((r.bottom - baseRect.top) * scaleFactor))
-      if (bottom > top) subtotals.push({ top, bottom })
-    })
-    const blockTitleInfos: Array<{ top: number; needH: number }> = []
-    const blockTitles = Array.from(node.querySelectorAll('.blockTitle')) as HTMLElement[]
-    for (const t of blockTitles) {
-      const table = t.parentElement?.querySelector('.itemsTable') as HTMLElement | null
-      if (!table) continue
-      const thead = table.querySelector('thead') as HTMLElement | null
-      const two = Array.from(table.querySelectorAll('tbody tr')).slice(0, 2) as HTMLElement[]
-      const needH = ((thead?.getBoundingClientRect().height || 0) + two.reduce((s, r) => s + r.getBoundingClientRect().height, 0)) * scaleFactor
-      const r = t.getBoundingClientRect()
-      const top = Math.max(0, Math.round((r.top - baseRect.top) * scaleFactor))
-      blockTitleInfos.push({ top, needH })
-    }
-    const groupHeaderInfos: Array<{ top: number; needH: number }> = []
-    const dailyTables = Array.from(node.querySelectorAll('.itemsTable[data-kind="daily"]')) as HTMLElement[]
-    for (const tb of dailyTables) {
-      const headers = Array.from(tb.querySelectorAll('tr.groupHeader')) as HTMLTableRowElement[]
-      for (const h of headers) {
-        const r = h.getBoundingClientRect()
+    setPdfExporting(true)
+    setPdfExportStage('正在合成PDF...')
+    const loadingKey = `onboarding-pdf-${String(onb.id)}`
+    message.loading({ content: '正在合成并下载PDF，请稍候...', key: loadingKey, duration: 0 })
+    try {
+      const canvas = await html2canvas(node, { scale: 2, useCORS: true, allowTaint: true, backgroundColor: '#ffffff' })
+      const pdf = new jsPDF('p', 'mm', 'a4')
+      const margin = 10
+      const pageWmm = pdf.internal.pageSize.getWidth() - margin * 2
+      const pageHmm = pdf.internal.pageSize.getHeight() - margin * 2
+      const pxPerMm = canvas.width / pageWmm
+      const pageHPx = Math.floor(pageHmm * pxPerMm)
+      const baseRect = node.getBoundingClientRect()
+      const scaleFactor = canvas.width / Math.max(1, (node.scrollWidth || node.clientWidth))
+      const rows: Array<{ top: number; bottom: number }> = []
+      node.querySelectorAll('table tr').forEach((el) => {
+        const r = (el as HTMLElement).getBoundingClientRect()
         const top = Math.max(0, Math.round((r.top - baseRect.top) * scaleFactor))
-        const following: HTMLTableRowElement[] = []
-        let el: Element | null = h.nextElementSibling
-        while (el && following.length < 2) {
-          if ((el as HTMLTableRowElement).classList.contains('groupHeader')) break
-          following.push(el as HTMLTableRowElement)
-          el = el.nextElementSibling
-        }
-        const needH = following.reduce((s, row) => s + (row.getBoundingClientRect().height * scaleFactor), 0)
-        groupHeaderInfos.push({ top, needH })
+        const bottom = Math.max(top + Math.round(r.height * scaleFactor), Math.round((r.bottom - baseRect.top) * scaleFactor))
+        if (bottom > top) rows.push({ top, bottom })
+      })
+      const blocks: number[] = []
+      node.querySelectorAll('[data-pdf-block]').forEach((el) => {
+        const r = (el as HTMLElement).getBoundingClientRect()
+        const b = Math.max(0, Math.round((r.bottom - baseRect.top) * scaleFactor))
+        blocks.push(b)
+      })
+      const mainCtx = canvas.getContext('2d')!
+      const tfoots: Array<{ top: number; bottom: number }> = []
+      node.querySelectorAll('table tfoot').forEach((el) => {
+        const r = (el as HTMLElement).getBoundingClientRect()
+        const top = Math.max(0, Math.round((r.top - baseRect.top) * scaleFactor))
+        const bottom = Math.max(top + Math.round(r.height * scaleFactor), Math.round((r.bottom - baseRect.top) * scaleFactor))
+        if (bottom > top) tfoots.push({ top, bottom })
+      })
+      const subtotals: Array<{ top: number; bottom: number }> = []
+      node.querySelectorAll('.subtotalBar').forEach((el) => {
+        const r = (el as HTMLElement).getBoundingClientRect()
+        const top = Math.max(0, Math.round((r.top - baseRect.top) * scaleFactor))
+        const bottom = Math.max(top + Math.round(r.height * scaleFactor), Math.round((r.bottom - baseRect.top) * scaleFactor))
+        if (bottom > top) subtotals.push({ top, bottom })
+      })
+      const blockTitleInfos: Array<{ top: number; needH: number }> = []
+      const blockTitles = Array.from(node.querySelectorAll('.blockTitle')) as HTMLElement[]
+      for (const t of blockTitles) {
+        const table = t.parentElement?.querySelector('.itemsTable') as HTMLElement | null
+        if (!table) continue
+        const thead = table.querySelector('thead') as HTMLElement | null
+        const two = Array.from(table.querySelectorAll('tbody tr')).slice(0, 2) as HTMLElement[]
+        const needH = ((thead?.getBoundingClientRect().height || 0) + two.reduce((s, r) => s + r.getBoundingClientRect().height, 0)) * scaleFactor
+        const r = t.getBoundingClientRect()
+        const top = Math.max(0, Math.round((r.top - baseRect.top) * scaleFactor))
+        blockTitleInfos.push({ top, needH })
       }
-    }
-    const grandBars: Array<{ top: number; bottom: number }> = []
-    node.querySelectorAll('.grandTotalBar').forEach((el) => {
-      const r = (el as HTMLElement).getBoundingClientRect()
-      const top = Math.max(0, Math.round((r.top - baseRect.top) * scaleFactor))
-      const bottom = Math.max(top + Math.round(r.height * scaleFactor), Math.round((r.bottom - baseRect.top) * scaleFactor))
-      if (bottom > top) grandBars.push({ top, bottom })
-    })
-    const findWhiteBreak = (start: number, maxH: number) => {
+      const groupHeaderInfos: Array<{ top: number; needH: number }> = []
+      const dailyTables = Array.from(node.querySelectorAll('.itemsTable[data-kind="daily"]')) as HTMLElement[]
+      for (const tb of dailyTables) {
+        const headers = Array.from(tb.querySelectorAll('tr.groupHeader')) as HTMLTableRowElement[]
+        for (const h of headers) {
+          const r = h.getBoundingClientRect()
+          const top = Math.max(0, Math.round((r.top - baseRect.top) * scaleFactor))
+          const following: HTMLTableRowElement[] = []
+          let el: Element | null = h.nextElementSibling
+          while (el && following.length < 2) {
+            if ((el as HTMLTableRowElement).classList.contains('groupHeader')) break
+            following.push(el as HTMLTableRowElement)
+            el = el.nextElementSibling
+          }
+          const needH = following.reduce((s, row) => s + (row.getBoundingClientRect().height * scaleFactor), 0)
+          groupHeaderInfos.push({ top, needH })
+        }
+      }
+      const grandBars: Array<{ top: number; bottom: number }> = []
+      node.querySelectorAll('.grandTotalBar').forEach((el) => {
+        const r = (el as HTMLElement).getBoundingClientRect()
+        const top = Math.max(0, Math.round((r.top - baseRect.top) * scaleFactor))
+        const bottom = Math.max(top + Math.round(r.height * scaleFactor), Math.round((r.bottom - baseRect.top) * scaleFactor))
+        if (bottom > top) grandBars.push({ top, bottom })
+      })
+      const findWhiteBreak = (start: number, maxH: number) => {
       try {
         const band = 80
         for (let dy = 0; dy < band; dy++) {
@@ -280,8 +287,8 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
         }
       } catch {}
       return maxH
-    }
-    const chooseBreak = (start: number, maxH: number) => {
+      }
+      const chooseBreak = (start: number, maxH: number) => {
       const target = start + maxH
       const threshold = 140
       let best = -1
@@ -336,11 +343,11 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
       }
       if (wb >= maxH - threshold) return wb
       return maxH
-    }
-    let y = 0
-    let pageIndex = 0
-    const baseOverlapPx = Math.max(6, Math.round(6 * pxPerMm))
-    const isMostlyWhite = (ctx: CanvasRenderingContext2D, h: number) => {
+      }
+      let y = 0
+      let pageIndex = 0
+      const baseOverlapPx = Math.max(6, Math.round(6 * pxPerMm))
+      const isMostlyWhite = (ctx: CanvasRenderingContext2D, h: number) => {
       try {
         const sampleH = Math.min(h, 120)
         const data = ctx.getImageData(0, Math.floor(h/2 - sampleH/2), Math.min(600, canvas.width), sampleH).data
@@ -353,55 +360,55 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
         const ratio = white / Math.ceil(data.length / step)
         return ratio > 0.985
       } catch { return false }
-    }
-    while (y < canvas.height) {
-      let sliceH = Math.min(pageHPx, canvas.height - y)
-      sliceH = chooseBreak(y, sliceH)
-      if (sliceH <= 0) break
-      const sliceCanvas = document.createElement('canvas')
-      sliceCanvas.width = canvas.width
-      sliceCanvas.height = sliceH
-      const ctx = sliceCanvas.getContext('2d')!
-      ctx.drawImage(canvas, 0, y, canvas.width, sliceH, 0, 0, canvas.width, sliceH)
-      if (pageIndex > 0) {
-        const regionStart = y
-        const regionEnd = y + sliceH
-        const hasGrand = grandBars.some(b => b.top >= regionStart && b.top <= regionEnd)
-        const hasContentRow = rows.some(r => r.top >= regionStart && r.top <= regionEnd)
-        const hasBlockEdge = blocks.some(b => b >= regionStart && b <= regionEnd)
-        const hasAny = hasGrand || hasContentRow || hasBlockEdge
-        const mostlyWhite = isMostlyWhite(ctx, sliceH)
-        const tinySlice = sliceH < Math.round(20 * pxPerMm)
-        if (!hasAny || (mostlyWhite && !hasAny) || tinySlice) {
-          break
-        }
       }
-      const imgData = sliceCanvas.toDataURL('image/png')
-      if (pageIndex > 0) pdf.addPage()
-      const imgHmm = sliceH / pxPerMm
-      pdf.addImage(imgData, 'PNG', margin, margin, pageWmm, imgHmm)
-      // small overlap only when the tail is mostly white (avoid duplicating colored subtotal bars)
-      const tailSampleH = Math.min(24, sliceH)
-      let tailNonWhite = 0
-      try {
-        const td = ctx.getImageData(0, sliceH - tailSampleH, Math.min(600, canvas.width), tailSampleH).data
-        const step = Math.max(4, Math.floor((canvas.width * 4) / 200))
-        for (let i = 0; i < td.length; i += step) {
-          const r = td[i], g = td[i+1], b = td[i+2]
-          if (!(r > 245 && g > 245 && b > 245)) tailNonWhite++
+      while (y < canvas.height) {
+        let sliceH = Math.min(pageHPx, canvas.height - y)
+        sliceH = chooseBreak(y, sliceH)
+        if (sliceH <= 0) break
+        const sliceCanvas = document.createElement('canvas')
+        sliceCanvas.width = canvas.width
+        sliceCanvas.height = sliceH
+        const ctx = sliceCanvas.getContext('2d')!
+        ctx.drawImage(canvas, 0, y, canvas.width, sliceH, 0, 0, canvas.width, sliceH)
+        if (pageIndex > 0) {
+          const regionStart = y
+          const regionEnd = y + sliceH
+          const hasGrand = grandBars.some(b => b.top >= regionStart && b.top <= regionEnd)
+          const hasContentRow = rows.some(r => r.top >= regionStart && r.top <= regionEnd)
+          const hasBlockEdge = blocks.some(b => b >= regionStart && b <= regionEnd)
+          const hasAny = hasGrand || hasContentRow || hasBlockEdge
+          const mostlyWhite = isMostlyWhite(ctx, sliceH)
+          const tinySlice = sliceH < Math.round(20 * pxPerMm)
+          if (!hasAny || (mostlyWhite && !hasAny) || tinySlice) {
+            break
+          }
         }
-      } catch {}
-      const allowOverlap = tailNonWhite === 0
-      const overlapPx = allowOverlap ? baseOverlapPx : 0
-      y += Math.max(1, sliceH - overlapPx)
-      pageIndex++
-    }
-    const nameBase = `${(prop?.code || '').trim()} Property Onboarding Listing`.trim()
-    const fileName = `${nameBase || 'property-onboarding-listing'}.pdf`
-    try {
+        const imgData = sliceCanvas.toDataURL('image/png')
+        if (pageIndex > 0) pdf.addPage()
+        const imgHmm = sliceH / pxPerMm
+        pdf.addImage(imgData, 'PNG', margin, margin, pageWmm, imgHmm)
+        const tailSampleH = Math.min(24, sliceH)
+        let tailNonWhite = 0
+        try {
+          const td = ctx.getImageData(0, sliceH - tailSampleH, Math.min(600, canvas.width), tailSampleH).data
+          const step = Math.max(4, Math.floor((canvas.width * 4) / 200))
+          for (let i = 0; i < td.length; i += step) {
+            const r = td[i], g = td[i+1], b = td[i+2]
+            if (!(r > 245 && g > 245 && b > 245)) tailNonWhite++
+          }
+        } catch {}
+        const allowOverlap = tailNonWhite === 0
+        const overlapPx = allowOverlap ? baseOverlapPx : 0
+        y += Math.max(1, sliceH - overlapPx)
+        pageIndex++
+      }
+      const nameBase = `${(prop?.code || '').trim()} Property Onboarding Listing`.trim()
+      const fileName = `${nameBase || 'property-onboarding-listing'}.pdf`
+      setPdfExportStage('正在生成下载文件...')
       const dataUrl = pdf.output('datauristring')
       try {
         const ab = pdf.output('arraybuffer') as ArrayBuffer
+        setPdfExportStage('正在下载PDF...')
         const resBin = await fetch(`${API_BASE}/onboarding/${onb.id}/merge-pdf-binary`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/pdf', ...authHeaders() },
@@ -417,11 +424,12 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
           a.click()
           a.remove()
           URL.revokeObjectURL(url)
-          message.success('PDF已下载')
+          message.success({ content: 'PDF已下载', key: loadingKey })
           return
         }
       } catch {}
       try {
+        setPdfExportStage('正在下载PDF...')
         const res = await fetch(`${API_BASE}/onboarding/${onb.id}/merge-pdf`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -437,14 +445,18 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
           a.click()
           a.remove()
           URL.revokeObjectURL(url)
-          message.success('PDF已下载')
+          message.success({ content: 'PDF已下载', key: loadingKey })
           return
         }
       } catch {}
+      setPdfExportStage('正在下载PDF...')
       pdf.save(fileName)
-      message.success('PDF已下载')
+      message.success({ content: 'PDF已下载', key: loadingKey })
     } catch {
-      message.error('PDF导出失败')
+      message.error({ content: 'PDF导出失败', key: loadingKey })
+    } finally {
+      setPdfExporting(false)
+      setPdfExportStage('')
     }
   }
 
@@ -957,7 +969,7 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
                 <h3 className="grandTotalBar" data-pdf-block="grand-total" style={{ textAlign:'right', marginTop:12 }}>{dict[pdfLang].grand}：{fmtCurrency(((pdfDailyMode==='total' && pdfDailyOverride!=null ? Number(pdfDailyOverride) : totals.sumDaily)) + totals.sumFurn + totals.sumDecor + fees.filter(f=>f.include_in_property_cost).reduce((s,f)=> s + (f.waived ? 0 : Number(f.total_price||0)), 0))}</h3>
               </div>
               <Space>
-                <Button type="primary" onClick={()=> setPreviewOpen(true)} disabled={!items.length && !fees.length}>预览并导出PDF</Button>
+                <Button type="primary" onClick={()=> setPreviewOpen(true)} disabled={(!items.length && !fees.length) || pdfExporting} loading={pdfExporting}>预览并导出PDF</Button>
               </Space>
             </div>
           )},
@@ -1009,7 +1021,8 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
           )}
         </Form>
       </Drawer>
-      <Modal open={previewOpen} onCancel={()=> setPreviewOpen(false)} width={860} footer={<Space><Button onClick={()=> setPreviewOpen(false)}>关闭</Button><Button type="primary" onClick={generatePdfPreview}>导出PDF</Button></Space>}>
+      <Modal open={previewOpen} onCancel={()=> { if (!pdfExporting) setPreviewOpen(false) }} width={860} maskClosable={!pdfExporting} keyboard={!pdfExporting} closable={!pdfExporting} footer={<Space>{pdfExporting ? <span style={{ color:'rgba(0,0,0,0.65)' }}>{pdfExportStage || '正在处理PDF...'}</span> : null}<Button onClick={()=> setPreviewOpen(false)} disabled={pdfExporting}>关闭</Button><Button type="primary" onClick={generatePdfPreview} loading={pdfExporting}>导出PDF</Button></Space>}>
+        <Spin spinning={pdfExporting} tip={pdfExportStage || '正在处理PDF...'}>
         <div ref={modalRef as any} style={{ width: 794, margin: '0 auto', padding: 16, background:'#fff' }}>
           <style>{`
             @media print {
@@ -1292,6 +1305,7 @@ export default function PropertyOnboardingPage({ params }: { params: { id: strin
 
           <div className="grandTotalBar" data-pdf-block="grand-total" style={{ textAlign:'right', marginTop:12, fontWeight:700 }}>Grand Total：${(((pdfDailyMode==='total' && pdfDailyOverride!=null ? Number(pdfDailyOverride) : totals.sumDaily)) + totals.sumFurn + totals.sumDecor + fees.filter(f=>f.include_in_property_cost).reduce((s,f)=> s + (f.waived ? 0 : Number(f.total_price||0)), 0)).toFixed(2)}</div>
         </div>
+        </Spin>
       </Modal>
     </Card>
   )

@@ -111,15 +111,26 @@ export default function PropertyRevenuePage() {
       const prefix = `Monthly Statement - ${month.format('YYYY-MM')}`
       const label = kind === 'maintenance' ? 'Maintenance Photos' : 'Deep Cleaning Photos'
       const filename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''} - ${label}.pdf`
-      const mode = pickSplitPhotosMode(partCount, exportQuality)
-      const cfg = mode === 'thumbnail'
+      const requestSplitPdf = async (mode: 'compressed' | 'thumbnail', cfg: { photo_w: number; photo_q: number }) => {
+        return fetch(`${API_BASE}/finance/monthly-statement-photos-pdf`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: mode, sections: kind, ...cfg }),
+        })
+      }
+      const primaryMode = pickSplitPhotosMode(partCount, exportQuality)
+      const primaryCfg = primaryMode === 'thumbnail'
         ? { photo_w: 1000, photo_q: 55 }
         : (exportQuality === 'standard' ? { photo_w: 1200, photo_q: 65 } : { photo_w: 1600, photo_q: 72 })
-      const resp = await fetch(`${API_BASE}/finance/monthly-statement-photos-pdf`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ month: month.format('YYYY-MM'), property_id: previewPid, showChinese, includePhotosMode: mode, sections: kind, ...cfg }),
-      })
+      let resp: Response
+      try {
+        resp = await requestSplitPdf(primaryMode, primaryCfg)
+      } catch {
+        resp = await requestSplitPdf('thumbnail', { photo_w: 820, photo_q: 45 })
+      }
+      if (!resp.ok && (resp.status === 502 || resp.status === 504)) {
+        resp = await requestSplitPdf('thumbnail', { photo_w: 820, photo_q: 45 })
+      }
       if (!resp.ok) {
         let msg = `HTTP ${resp.status}`
         try {

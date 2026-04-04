@@ -27,6 +27,7 @@ const pdfJobsSchema_1 = require("../services/pdfJobsSchema");
 const r2_2 = require("../r2");
 const orderMonthSegments_1 = require("../lib/orderMonthSegments");
 const monthlyStatementPhotoRecords_1 = require("../lib/monthlyStatementPhotoRecords");
+const managementFeeRules_1 = require("../lib/managementFeeRules");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -1804,6 +1805,8 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
             const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
             return host ? `${proto}://${host}` : '';
         })();
+        const wantsBase = /(all|base)/i.test(sec || 'all');
+        const splitOnlyPhotos = photosMode !== 'off' && !wantsBase && ((wantDeep ? 1 : 0) + (wantMaint ? 1 : 0) === 1);
         const compress = (() => {
             const w0 = Number(photo_w || 0);
             const q0 = Number(photo_q || 0);
@@ -1824,7 +1827,14 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
                 return photosMode;
             return 'full';
         })();
+        const totalRawUrls = countRawUrls(deepRows0) + countRawUrls(maintRows0);
         const effectivePhotosMode = (() => {
+            if (splitOnlyPhotos) {
+                if (totalRawUrls >= 12)
+                    return 'thumbnail';
+                if (totalRawUrls >= 1)
+                    return 'compressed';
+            }
             const total = countRawUrls(deepRows0) + countRawUrls(maintRows0);
             if (requestedPhotosMode === 'thumbnail')
                 return 'thumbnail';
@@ -1836,11 +1846,22 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
                 return 'compressed';
             return 'full';
         })();
+        const effectiveCompress = (() => {
+            if (!splitOnlyPhotos)
+                return compress;
+            if (effectivePhotosMode === 'thumbnail') {
+                return { w: Math.min(compress.w, 900), q: Math.min(compress.q, 48) };
+            }
+            if (effectivePhotosMode === 'compressed') {
+                return { w: Math.min(compress.w, 1100), q: Math.min(compress.q, 58) };
+            }
+            return compress;
+        })();
         const normalizePhotoUrl = (u) => (0, normalizePhotoUrlForPdf_1.normalizePhotoUrlForPdf)(u, {
             apiBase,
             allowR2KeyPrefixes: ['maintenance/', 'deep-cleaning/', 'deep-cleaning-upload/', 'invoice-company-logos/'],
             photosMode: effectivePhotosMode,
-            compress,
+            compress: effectiveCompress,
         });
         const mapRowUrls = (r) => {
             const before = (0, monthlyStatementPhotoRecords_1.listPhotoUrls)(r === null || r === void 0 ? void 0 : r.photo_urls).map(normalizePhotoUrl).filter(u => /^https?:\/\//i.test(u));
@@ -1849,7 +1870,7 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
         };
         const deepRows = Array.isArray(deepRows0) ? deepRows0.map(mapRowUrls) : [];
         const maintRows = Array.isArray(maintRows0) ? maintRows0.map(mapRowUrls) : [];
-        const rawUrls = countRawUrls(deepRows0) + countRawUrls(maintRows0);
+        const rawUrls = totalRawUrls;
         const cleanedUrls = (() => {
             const countClean = (rows) => {
                 let n = 0;
@@ -1867,7 +1888,7 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
             landlordName: llName || '',
             sections: sec || 'all',
             showChinese: !(showChinese === false || showChinese === '0'),
-            includePhotosMode: photosMode,
+            includePhotosMode: effectivePhotosMode,
             deepCleanings: deepRows,
             maintenances: maintRows,
         });
@@ -1878,7 +1899,6 @@ exports.router.post('/monthly-statement-photos-pdf', (0, auth_1.requireAnyPerm)(
                 ` rawUrls=${rawUrls} cleanedUrls=${cleanedUrls} tplImageCount=${tplImageCount}`);
         }
         catch (_c) { }
-        const wantsBase = /(all|base)/i.test(sec || 'all');
         if (photosMode !== 'off' && tplImageCount === 0 && !wantsBase) {
             try {
                 const diagKind = rawUrls === 0
@@ -2289,19 +2309,18 @@ exports.router.get('/property-revenue', async (req, res) => {
                     warnings.push(`expenses_without_month_key=${missingMonthKey}`);
                 if (orphanFixedSnapshots.length > 0)
                     warnings.push(`orphan_fixed_expense_snapshots=${orphanFixedSnapshots.length}`);
-                // Auto compute management fee from landlord config
+                // Auto compute management fee only when the month has no recorded management_fee expense.
                 try {
-                    const props = await (0, dbAdapter_1.pgSelect)('properties', 'id,landlord_id', { id: pid });
-                    const prop = Array.isArray(props) ? props[0] : null;
-                    let rate = 0;
-                    if (prop === null || prop === void 0 ? void 0 : prop.landlord_id) {
-                        const lrows = await (0, dbAdapter_1.pgSelect)('landlords', 'id,management_fee_rate', { id: prop.landlord_id });
-                        const ll = Array.isArray(lrows) ? lrows[0] : null;
-                        rate = Number((ll === null || ll === void 0 ? void 0 : ll.management_fee_rate) || 0);
-                    }
-                    if (rate && rentIncome) {
-                        const fee = Number(((rentIncome * rate)).toFixed(2));
-                        cols.management_fee += fee;
+                    if (!Number(cols.management_fee || 0)) {
+                        await (0, managementFeeRules_1.ensureManagementFeeRulesTable)();
+                        const props = await (0, dbAdapter_1.pgSelect)('properties', 'id,landlord_id', { id: pid });
+                        const prop = Array.isArray(props) ? props[0] : null;
+                        const resolved = (prop === null || prop === void 0 ? void 0 : prop.landlord_id) ? await (0, managementFeeRules_1.resolveManagementFeeRateForMonth)(String(prop.landlord_id), ym) : { rate: null };
+                        const rate = Number((resolved === null || resolved === void 0 ? void 0 : resolved.rate) || 0);
+                        if (rate && rentIncome) {
+                            const fee = Number(((rentIncome * rate)).toFixed(2));
+                            cols.management_fee += fee;
+                        }
                     }
                 }
                 catch (_j) { }
@@ -2486,9 +2505,11 @@ exports.router.post('/management-fee/calc', (0, auth_1.requireAnyPerm)(['propert
         const lid = prop === null || prop === void 0 ? void 0 : prop.landlord_id;
         if (!lid)
             return res.status(400).json({ message: 'landlord_not_linked' });
-        const llRows = await (0, dbAdapter_1.pgSelect)('landlords', 'id,management_fee_rate', { id: lid });
-        const landlord = Array.isArray(llRows) ? llRows[0] : null;
-        const rate = Number((landlord === null || landlord === void 0 ? void 0 : landlord.management_fee_rate) || 0);
+        await (0, managementFeeRules_1.ensureManagementFeeRulesTable)();
+        const resolved = await (0, managementFeeRules_1.resolveManagementFeeRateForMonth)(String(lid), ym);
+        const rate = Number((resolved === null || resolved === void 0 ? void 0 : resolved.rate) || 0);
+        if (!(resolved === null || resolved === void 0 ? void 0 : resolved.rule))
+            return res.status(400).json({ message: 'management_fee_rule_missing' });
         if (!rate)
             return res.status(400).json({ message: 'management_fee_rate_missing' });
         if (!rentIncome)
