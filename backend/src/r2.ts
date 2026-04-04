@@ -17,9 +17,56 @@ export const r2 = hasR2
   })
   : null
 
+function r2UploadTimeoutMs() {
+  const raw = Number(process.env.R2_UPLOAD_TIMEOUT_MS || 60000)
+  if (!Number.isFinite(raw)) return 60000
+  return Math.max(5000, Math.min(300000, Math.floor(raw)))
+}
+
+function r2UploadMaxAttempts() {
+  const raw = Number(process.env.R2_UPLOAD_MAX_ATTEMPTS || 2)
+  if (!Number.isFinite(raw)) return 2
+  return Math.max(1, Math.min(5, Math.floor(raw)))
+}
+
 export async function r2Upload(key: string, contentType: string, body: Buffer) {
   if (!hasR2 || !r2) throw new Error('R2 not configured')
-  await r2.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: body, ContentType: contentType }))
+  const timeoutMs = r2UploadTimeoutMs()
+  const maxAttempts = r2UploadMaxAttempts()
+  let lastErr: any = null
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const ac = new AbortController()
+    const t = setTimeout(() => {
+      try { ac.abort() } catch {}
+    }, timeoutMs)
+    try {
+      await r2.send(
+        new PutObjectCommand({ Bucket: bucket, Key: key, Body: body, ContentType: contentType }),
+        { abortSignal: ac.signal } as any
+      )
+      clearTimeout(t)
+      lastErr = null
+      break
+    } catch (e: any) {
+      clearTimeout(t)
+      lastErr = e
+      try {
+        const name = String(e?.name || '')
+        const msg = String(e?.message || '')
+        console.log(`[r2][upload] failed attempt=${attempt}/${maxAttempts} key=${key} timeout_ms=${timeoutMs} name=${name} message=${msg}`)
+      } catch {}
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(3000, attempt * 1000)))
+      }
+    }
+  }
+  if (lastErr) {
+    const msg = String(lastErr?.message || '')
+    const code = /abort|timeout/i.test(String(lastErr?.name || '') + ' ' + msg) ? 'R2_UPLOAD_TIMEOUT' : 'R2_UPLOAD_FAILED'
+    const err: any = new Error(msg || 'r2 upload failed')
+    err.code = code
+    throw err
+  }
   const pb = (publicBase || '').replace(/\/$/, '')
   // If publicBase already contains the bucket path, strip it; Cloudflare R2 public host is per-bucket
   const cleaned = pb && /\.r2\.dev($|\/)/.test(pb)
