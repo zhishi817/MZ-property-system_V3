@@ -18,6 +18,7 @@ export default function SinglePropertyAnalysisPage() {
   const [month, setMonth] = useState<any>(dayjs())
   const [pid, setPid] = useState<string | undefined>(undefined)
   const [orders, setOrders] = useState<Order[]>([])
+  const [orderSegments, setOrderSegments] = useState<any[]>([])
   const [txs, setTxs] = useState<Tx[]>([])
   const [properties, setProperties] = useState<Property[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
@@ -65,6 +66,17 @@ export default function SinglePropertyAnalysisPage() {
       try { reloadOrdersOnlyRef.current?.() } catch {}
     }
   }, [pathname])
+  useEffect(() => {
+    const propertyId = String(pid || '').trim()
+    const mk = month?.format ? String(month.format('YYYY-MM') || '').trim() : ''
+    if (!propertyId || !/^\d{4}-\d{2}$/.test(mk)) {
+      setOrderSegments([])
+      return
+    }
+    getJSON<any>(`/finance/rent-segments?${new URLSearchParams({ month: mk, property_id: propertyId }).toString()}`)
+      .then((j) => setOrderSegments(Array.isArray(j?.segments) ? j.segments : []))
+      .catch(() => setOrderSegments([]))
+  }, [pid, month])
   return (
     <Card title="单房源分析">
       <div style={{ display:'flex', gap:12, alignItems:'center', marginBottom: 12 }}>
@@ -74,7 +86,7 @@ export default function SinglePropertyAnalysisPage() {
           value={pid} onChange={setPid} />
       </div>
       {pid ? (
-        <MonthlyStatementView month={month.format('YYYY-MM')} propertyId={pid} orders={orders as any} txs={txs as any} properties={properties as any} landlords={landlords as any} />
+        <MonthlyStatementView month={month.format('YYYY-MM')} propertyId={pid} orders={orders as any} orderSegments={orderSegments as any} txs={txs as any} properties={properties as any} landlords={landlords as any} />
       ) : (<div style={{ color:'#999' }}>请选择房号</div>)}
     </Card>
   )

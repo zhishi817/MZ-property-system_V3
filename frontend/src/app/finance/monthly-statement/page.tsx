@@ -15,6 +15,7 @@ export default function MonthlyStatementPage() {
   const [month, setMonth] = useState<any>(dayjs())
   const [propertyId, setPropertyId] = useState<string | undefined>(undefined)
   const [orders, setOrders] = useState<Order[]>([])
+  const [orderSegments, setOrderSegments] = useState<any[]>([])
   const [txs, setTxs] = useState<Tx[]>([])
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
@@ -121,6 +122,18 @@ export default function MonthlyStatementPage() {
     getJSON<Landlord[]>('/landlords').then(setLandlords).catch(() => setLandlords([]))
   }, [properties])
 
+  useEffect(() => {
+    const pid = String(propertyId || '').trim()
+    const mk = month?.format ? String(month.format('YYYY-MM') || '').trim() : ''
+    if (!pid || !/^\d{4}-\d{2}$/.test(mk)) {
+      setOrderSegments([])
+      return
+    }
+    getJSON<any>(`/finance/rent-segments?${new URLSearchParams({ month: mk, property_id: pid }).toString()}`)
+      .then((j) => setOrderSegments(Array.isArray(j?.segments) ? j.segments : []))
+      .catch(() => setOrderSegments([]))
+  }, [propertyId, month])
+
   function downloadPdf() { if (ref.current) window.print() }
 
   useEffect(() => {
@@ -147,6 +160,7 @@ export default function MonthlyStatementPage() {
           month={month.format('YYYY-MM')}
           propertyId={propertyId}
           orders={orders as any}
+          orderSegments={orderSegments as any}
           txs={txs as any}
           properties={properties as any}
           landlords={landlords as any}
