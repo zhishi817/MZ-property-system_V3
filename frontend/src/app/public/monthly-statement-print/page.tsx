@@ -15,10 +15,12 @@ export default function PublicMonthlyStatementPrintPage() {
   const [month, setMonth] = useState<any>(dayjs())
   const [propertyId, setPropertyId] = useState<string | undefined>(undefined)
   const [orders, setOrders] = useState<Order[]>([])
+  const [orderSegments, setOrderSegments] = useState<any[]>([])
   const [txs, setTxs] = useState<any[]>([])
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
   const [landlords, setLandlords] = useState<Landlord[]>([])
   const [ordersLoaded, setOrdersLoaded] = useState<boolean>(false)
+  const [orderSegmentsLoaded, setOrderSegmentsLoaded] = useState<boolean>(false)
   const [txsLoaded, setTxsLoaded] = useState<boolean>(false)
   const [propertiesLoaded, setPropertiesLoaded] = useState<boolean>(false)
   const [landlordsLoaded, setLandlordsLoaded] = useState<boolean>(false)
@@ -99,23 +101,32 @@ export default function PublicMonthlyStatementPrintPage() {
   }, [])
   useEffect(() => {
     setOrdersLoaded(false)
+    setOrderSegmentsLoaded(false)
     setLandlordsLoaded(false)
     ;(async () => {
       const pid = String(propertyId || '').trim()
       const mk = month?.format ? String(month.format('YYYY-MM') || '').trim() : ''
       if (!pid || !/^\d{4}-\d{2}$/.test(mk)) {
         setOrders([])
+        setOrderSegments([])
         setOrdersLoaded(true)
+        setOrderSegmentsLoaded(true)
         return
       }
       try {
-        const rows = await getJSON<any[]>('/orders', { timeoutMs: fetchTimeoutMs })
+        const [rows, segResp] = await Promise.all([
+          getJSON<any[]>('/orders', { timeoutMs: fetchTimeoutMs }),
+          getJSON<any>(`/finance/rent-segments?${new URLSearchParams({ month: mk, property_id: pid }).toString()}`, { timeoutMs: fetchTimeoutMs }),
+        ])
         const all = Array.isArray(rows) ? rows : []
         setOrders(all.filter((o: any) => String(o?.property_id || '') === pid))
+        setOrderSegments(Array.isArray(segResp?.segments) ? segResp.segments : [])
       } catch {
         setOrders([])
+        setOrderSegments([])
       } finally {
         setOrdersLoaded(true)
+        setOrderSegmentsLoaded(true)
       }
     })()
     getJSON<Landlord[]>('/landlords', { timeoutMs: fetchTimeoutMs })
@@ -228,11 +239,11 @@ export default function PublicMonthlyStatementPrintPage() {
       month={month.format('YYYY-MM')}
       propertyId={propertyId}
       orders={orders as any}
-      orderSegments={undefined}
+      orderSegments={orderSegments as any}
       txs={txs as any}
       properties={properties as any}
       landlords={landlords as any}
-      ordersLoaded={ordersLoaded}
+      ordersLoaded={ordersLoaded && orderSegmentsLoaded}
       txsLoaded={txsLoaded}
       propertiesLoaded={propertiesLoaded}
       landlordsLoaded={landlordsLoaded}
