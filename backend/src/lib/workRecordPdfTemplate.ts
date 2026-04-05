@@ -102,14 +102,12 @@ export function workRecordPdfCssText(): string {
     .section-head { margin-top: 16px; display: flex; align-items: center; gap: 10px; }
     .section-bar { width: 4px; height: 16px; background: #1f5cff; border-radius: 2px; }
     .section-title { font-size: 16px; font-weight: 700; color: #2b3a55; letter-spacing: 0.2px; line-height: 1.2; }
-    .grid { display: flex; flex-wrap: wrap; gap: 16px; }
     .phase-pack { width: 100%; margin-top: 18px; break-inside: avoid; page-break-inside: avoid; }
-    .phase-pack-row { display: flex; flex-wrap: wrap; gap: 16px; }
-    .phase-pack-row .img-cell { margin-top: 0; }
     .phase-head { width: 100%; break-after: avoid; page-break-after: avoid; }
     .phase-text { font-size: 16px; font-weight: 700; color: #111; }
     .phase-line { height: 2px; background: #c4cddd; margin-top: 10px; margin-bottom: 12px; }
-    .img-cell { width: calc((100% - 32px) / 3); padding: 0; margin: 0; border: none; border-radius: 0; background: transparent; box-shadow: none; break-inside: avoid; page-break-inside: avoid; }
+    .phase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+    .img-cell { min-width: 0; padding: 0; margin: 0; border: none; border-radius: 0; background: transparent; box-shadow: none; break-inside: avoid; page-break-inside: avoid; }
     .img-cell img { width: 100%; height: 76mm; object-fit: contain; display: block; background: #fff; border: none; border-radius: 0; box-shadow: none; outline: none; }
   `
 }
@@ -129,14 +127,12 @@ export function workRecordPdfCssTextScoped(scope: string): string {
     ${s} .section-head { margin-top: 16px; display: flex; align-items: center; gap: 10px; }
     ${s} .section-bar { width: 4px; height: 16px; background: #1f5cff; border-radius: 2px; }
     ${s} .section-title { font-size: 16px; font-weight: 700; color: #2b3a55; letter-spacing: 0.2px; line-height: 1.2; }
-    ${s} .grid { display: flex; flex-wrap: wrap; gap: 16px; }
     ${s} .phase-pack { width: 100%; margin-top: 18px; break-inside: avoid; page-break-inside: avoid; }
-    ${s} .phase-pack-row { display: flex; flex-wrap: wrap; gap: 16px; }
-    ${s} .phase-pack-row .img-cell { margin-top: 0; }
     ${s} .phase-head { width: 100%; break-after: avoid; page-break-after: avoid; }
     ${s} .phase-text { font-size: 16px; font-weight: 700; color: #111; }
     ${s} .phase-line { height: 2px; background: #c4cddd; margin-top: 10px; margin-bottom: 12px; }
-    ${s} .img-cell { width: calc((100% - 32px) / 3); padding: 0; margin: 0; border: none; border-radius: 0; background: transparent; box-shadow: none; break-inside: avoid; page-break-inside: avoid; }
+    ${s} .phase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+    ${s} .img-cell { min-width: 0; padding: 0; margin: 0; border: none; border-radius: 0; background: transparent; box-shadow: none; break-inside: avoid; page-break-inside: avoid; }
     ${s} .img-cell img { width: 100%; height: 76mm; object-fit: contain; display: block; background: #fff; border: none; border-radius: 0; box-shadow: none; outline: none; }
   `
 }
@@ -191,7 +187,7 @@ function buildWorkRecordParts(input: WorkRecordPdfTemplateInput): { title: strin
   const renderGrid = (items: Array<{ src: string; fallback: string }>) => {
     if (!items.length) return ''
     return `
-      <div class="grid">
+      <div class="phase-grid">
         ${items.map((it) => {
           const onerr = `try{var fb=this.getAttribute('data-fallback')||'';if(fb&&this.src!==fb){this.onerror=null;this.src=fb}}catch(e){}`
           return `
@@ -206,34 +202,13 @@ function buildWorkRecordParts(input: WorkRecordPdfTemplateInput): { title: strin
 
   const renderPhase = (phase: string, items: Array<{ src: string; fallback: string }>) => {
     if (!items.length) return ''
-    const firstRow = items.slice(0, 3)
-    const rest = items.slice(3)
     return `
-      <div class="grid">
-        <div class="phase-pack">
-          <div class="phase-head">
-            <div class="phase-text">${escapeHtml(phase)}</div>
-            <div class="phase-line"></div>
-          </div>
-          <div class="phase-pack-row">
-            ${firstRow.map((it) => {
-              const onerr = `try{var fb=this.getAttribute('data-fallback')||'';if(fb&&this.src!==fb){this.onerror=null;this.src=fb}}catch(e){}`
-              return `
-                <div class="img-cell">
-                  <img crossorigin="anonymous" referrerpolicy="no-referrer" src="${escapeHtml(it.src)}" data-fallback="${escapeHtml(it.fallback)}" alt="" onerror="${escapeHtml(onerr)}" />
-                </div>
-              `
-            }).join('')}
-          </div>
+      <div class="phase-pack">
+        <div class="phase-head">
+          <div class="phase-text">${escapeHtml(phase)}</div>
+          <div class="phase-line"></div>
         </div>
-        ${rest.map((it) => {
-          const onerr = `try{var fb=this.getAttribute('data-fallback')||'';if(fb&&this.src!==fb){this.onerror=null;this.src=fb}}catch(e){}`
-          return `
-            <div class="img-cell">
-              <img crossorigin="anonymous" referrerpolicy="no-referrer" src="${escapeHtml(it.src)}" data-fallback="${escapeHtml(it.fallback)}" alt="" onerror="${escapeHtml(onerr)}" />
-            </div>
-          `
-        }).join('')}
+        ${renderGrid(items)}
       </div>
     `
   }

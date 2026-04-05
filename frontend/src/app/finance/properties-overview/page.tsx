@@ -1184,6 +1184,23 @@ export default function PropertyRevenuePage() {
           const updateMerge = (percent: number, stage: string, detail?: string) => {
             setMergeUi((prev) => ({ ...prev, open: true, percent: Math.max(0, Math.min(100, Math.round(percent))), status: 'active', stage, detail }))
           }
+          const normalizeMergeJobUi = (stageRaw: string, detailRaw: string, percentRaw: number, attemptsRaw: number) => {
+            const stage = String(stageRaw || '').trim()
+            const detail = String(detailRaw || '').trim()
+            const attempts = Math.max(0, Number(attemptsRaw || 0))
+            if (stage === 'queued') {
+              return {
+                stage: attempts > 0 ? '任务已受理，正在重新安排处理...' : '任务已受理，正在请求立即处理...',
+                detail: detail || '系统已经收到请求，正在安排后台 worker 立刻开始合并，请稍候。',
+                percent: Math.max(8, Math.min(18, Number.isFinite(percentRaw) ? Number(percentRaw) : 10)),
+              }
+            }
+            return {
+              stage: stage || '处理中...',
+              detail,
+              percent: Number.isFinite(percentRaw) ? Number(percentRaw) : 0,
+            }
+          }
           const mergeFail = (reason: string, fallback: boolean) => {
             const text = String(reason || '合并下载失败')
             setMergeUi((prev) => ({ ...prev, open: true, percent: 100, status: 'exception', stage: fallback ? '合并失败，已回退下载原报表' : '合并失败', detail: text }))
@@ -1314,12 +1331,12 @@ export default function PropertyRevenuePage() {
                   const s = await st.json() as any
                   const percent = Number(s?.progress || 0)
                   const jobStage = String(s?.stage || '')
-                  const stage = jobStage || '处理中...'
                   const detail = String(s?.detail || '')
                   const attempts = Number(s?.attempts || 0)
                   const nextRetryAtRaw = String(s?.next_retry_at || '')
                   const nextRetryAt = nextRetryAtRaw ? Date.parse(nextRetryAtRaw) : NaN
-                  updateMerge(Number.isFinite(percent) ? percent : 0, stage, detail)
+                  const ui = normalizeMergeJobUi(jobStage, detail, percent, attempts)
+                  updateMerge(ui.percent, ui.stage, ui.detail)
                   if (jobStage === 'failed') throw new Error(String(s?.last_error_message || s?.detail || '合并失败'))
                   if (jobStage === 'queued' && attempts > 0 && Number.isFinite(nextRetryAt) && nextRetryAt - Date.now() > 12_000) {
                     const when = new Date(nextRetryAt).toLocaleString()
@@ -1652,7 +1669,7 @@ export default function PropertyRevenuePage() {
         <div style={{ marginBottom: 8, fontWeight: 600 }}>{mergeUi.stage || '处理中...'}</div>
         <Progress percent={mergeUi.percent || 0} status={mergeUi.status === 'active' ? 'active' : (mergeUi.status === 'success' ? 'success' : 'exception')} />
         {mergeUi.detail ? <div style={{ marginTop: 8, color: mergeUi.status === 'exception' ? '#cf1322' : 'rgba(0,0,0,0.65)' }}>{mergeUi.detail}</div> : null}
-        {mergeUi.status === 'active' ? <div style={{ marginTop: 8, color: 'rgba(0,0,0,0.45)' }}>请勿关闭页面，合并完成后会自动触发下载。</div> : null}
+        {mergeUi.status === 'active' ? <div style={{ marginTop: 8, color: 'rgba(0,0,0,0.45)' }}>系统已受理该任务，后台会尽快开始处理；合并完成后会自动触发下载。</div> : null}
         {(period === 'month' && mergeNoPhotos && mergeUi.status !== 'active') ? (
           <div style={{ marginTop: 12 }}>
             <div style={{ marginBottom: 8, color: 'rgba(0,0,0,0.65)' }}>

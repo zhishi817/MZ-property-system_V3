@@ -18,6 +18,7 @@ import { resizeUploadImage } from '../lib/uploadImageResize'
 import { normalizePhotoUrlForPdf } from '../lib/normalizePhotoUrlForPdf'
 import { v4 as uuidv4 } from 'uuid'
 import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
+import { schedulePdfJobsKick } from '../services/pdfJobsWorker'
 import { r2GetObjectByKey } from '../r2'
 import { computeMonthSegmentsForOrders, sumSegmentsVisibleNetIncome } from '../lib/orderMonthSegments'
 import { countPhotoUrls, loadMonthlyStatementPhotoRows, recordHasPhotoUrls } from '../lib/monthlyStatementPhotoRecords'
@@ -1367,6 +1368,7 @@ router.post('/statement-photo-pack', requireAnyPerm(['finance.payout', 'finance.
         )
         const existing = r0.rows?.[0] || null
         if (existing?.id) {
+          if (String(existing.status || '') === 'queued') schedulePdfJobsKick(1)
           return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true })
         }
       } catch {}
@@ -1384,6 +1386,7 @@ router.post('/statement-photo-pack', requireAnyPerm(['finance.payout', 'finance.
        VALUES($1,'statement_photo_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`,
       [id, JSON.stringify(params)]
     )
+    schedulePdfJobsKick(2)
     return res.json({ job_id: id, status: 'queued', reused: false })
   } catch (e: any) {
     const code = String(e?.code || '')
@@ -1491,6 +1494,7 @@ router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx
         )
         const existing = r0.rows?.[0] || null
         if (existing?.id) {
+          if (String(existing.status || '') === 'queued') schedulePdfJobsKick(1)
           return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true })
         }
       } catch {}
@@ -1513,6 +1517,7 @@ router.post('/merge-monthly-pack', requireAnyPerm(['finance.payout', 'finance.tx
        VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`,
       [id, JSON.stringify(params)]
     )
+    schedulePdfJobsKick(2)
     return res.json({ job_id: id, status: 'queued', reused: false })
   } catch (e: any) {
     const code = String(e?.code || '')

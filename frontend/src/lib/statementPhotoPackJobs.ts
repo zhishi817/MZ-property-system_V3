@@ -81,13 +81,19 @@ export async function runStatementPhotoPackJob(opts: {
       sections: opts.sections,
       showChinese: !!opts.showChinese,
       quality_mode: opts.qualityMode || 'compressed',
-      forceNew: true,
+      forceNew: false,
     }),
   }, 30000)
   if (!create.resp.ok) throw new Error(normalizePhotoPackError(String((create.json as any)?.message || `HTTP ${create.resp.status}`), create.json))
   const jobId = String((create.json as any)?.job_id || (create.json as any)?.id || '').trim()
   if (!jobId) throw new Error('创建任务失败（missing job_id）')
-  onUpdate({ stage: '创建任务', detail: '任务已创建，正在生成 PDF...', progress: 10, timeout: false })
+  const reused = !!(create.json as any)?.reused
+  onUpdate({
+    stage: '创建任务',
+    detail: reused ? '已接入现有任务，正在继续生成 PDF...' : '任务已创建，正在生成 PDF...',
+    progress: 10,
+    timeout: false,
+  })
   const startedAt = Date.now()
   let pollCount = 0
   while (Date.now() - startedAt < 8 * 60 * 1000) {

@@ -127,18 +127,28 @@ async function runLimited<T>(items: T[], limit: number, worker: (item: T, index:
   await Promise.all(runners)
 }
 
-async function preflightPhotoUrls(urls: string[]): Promise<{ ok: string[]; failed: string[] }> {
+async function preflightPhotoUrls(urls: string[]): Promise<{ ok: string[]; failed: string[]; checked: number; skipped: number }> {
   const unique = Array.from(new Set(urls.map((u) => String(u || '').trim()).filter(Boolean)))
-  if (!unique.length) return { ok: [], failed: [] }
-  const timeoutMs = Math.max(2000, Math.min(20000, Number(process.env.PHOTO_PREFLIGHT_TIMEOUT_MS || 6000)))
-  const concurrency = Math.max(2, Math.min(12, Number(process.env.PHOTO_PREFLIGHT_CONCURRENCY || 6)))
+  if (!unique.length) return { ok: [], failed: [], checked: 0, skipped: 0 }
+  const maxChecks = Math.max(1, Math.min(12, Number(process.env.PHOTO_PREFLIGHT_MAX_CHECKS || 6)))
+  const candidates = unique.slice(0, maxChecks)
+  const timeoutMs = Math.max(1500, Math.min(12000, Number(process.env.PHOTO_PREFLIGHT_TIMEOUT_MS || 4000)))
+  const concurrency = Math.max(2, Math.min(8, Number(process.env.PHOTO_PREFLIGHT_CONCURRENCY || 4)))
   const ok: string[] = []
   const failed: string[] = []
-  await runLimited(unique, concurrency, async (u) => {
+  await runLimited(candidates, concurrency, async (u) => {
     const ac = new AbortController()
     const t = setTimeout(() => { try { ac.abort() } catch {} }, timeoutMs)
     try {
-      const r: any = await fetch(u, { method: 'GET', signal: ac.signal } as any)
+      let r: any = null
+      try {
+        r = await fetch(u, { method: 'HEAD', signal: ac.signal } as any)
+      } catch {}
+      const shouldFallbackGet = !r || !r.ok || [403, 405, 501].includes(Number(r?.status || 0))
+      if (shouldFallbackGet) {
+        try { await r?.body?.cancel?.() } catch {}
+        r = await fetch(u, { method: 'GET', signal: ac.signal } as any)
+      }
       const ct = String(r?.headers?.get?.('content-type') || '').toLowerCase()
       try { await r?.body?.cancel?.() } catch {}
       if (!r?.ok) throw new Error(`http_${String(r?.status || '')}`)
@@ -150,7 +160,7 @@ async function preflightPhotoUrls(urls: string[]): Promise<{ ok: string[]; faile
       clearTimeout(t)
     }
   })
-  return { ok, failed }
+  return { ok, failed, checked: candidates.length, skipped: Math.max(0, unique.length - candidates.length) }
 }
 
 export async function generateStatementPhotoPackPdf(input: GenerateStatementPhotoPackInput): Promise<GenerateStatementPhotoPackResult> {
@@ -264,7 +274,9 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
   metrics.prefetch_validate_ms = nowMs() - preflightStartedAt
   metrics.validatedUrls = preflight.ok.length
   metrics.failed_prefetch = preflight.failed.length
-  if (preflight.failed.length > 0) {
+  metrics.checked_prefetch = preflight.checked
+  metrics.skipped_prefetch = preflight.skipped
+  if (preflight.checked > 0 && preflight.ok.length <= 0 && preflight.failed.length > 0) {
     throw jobError('PHOTO_PREFLIGHT_FAILED', 'photo resources failed preflight validation', {
       rawUrls: totalRawUrls,
       cleanedUrls,
@@ -342,7 +354,7 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
     const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
     metrics.render_pdf_ms = nowMs() - pdfStartedAt
     metrics.pdf_bytes = Buffer.byteLength(pdf)
-    const detail = `图片 ${imageCount} 张（原始 ${totalRawUrls} / 去重 ${allUrls.length} / 可渲染 ${cleanedUrls} / 已校验 ${preflight.ok.length}）`
+    const detail = `图片 ${imageCount} 张（原始 ${totalRawUrls} / 去重 ${allUrls.length} / 可渲染 ${cleanedUrls} / 已快检 ${preflight.ok.length}/${preflight.checked || 0}）`
     return {
       pdf: Buffer.from(pdf),
       filename: buildFilename(monthKey, prop, sections),
