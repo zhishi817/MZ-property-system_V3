@@ -198,7 +198,6 @@ export function renderMonthlyStatementPhotoPackHtml(input: MonthlyStatementPhoto
           .header { display: flex; align-items: flex-end; justify-content: space-between; border-bottom: 2px solid #000; padding-bottom: 8px; }
           .title-main { font-size: 28px; font-weight: 700; letter-spacing: 0.6px; }
           .meta { text-align: right; font-size: 13px; line-height: 1.4; }
-          .cover-note { margin-top: 10mm; font-size: 13px; color: #333; }
           .page { break-after: page; page-break-after: always; }
           .page:last-child { break-after: auto; page-break-after: auto; }
           .titlebar { background: #eef3fb; padding: 6px 8px; margin-bottom: 10px; }
@@ -222,20 +221,9 @@ export function renderMonthlyStatementPhotoPackHtml(input: MonthlyStatementPhoto
         </style>
       </head>
       <body>
-        <section class="cover">
-          <div class="header">
-            <div class="title-main">${showChinese ? '照片分卷' : 'PHOTO PACK'}</div>
-            <div class="meta">
-              <div>${escapeHtml(month)}</div>
-              <div>${escapeHtml([propCode, propAddr].filter(Boolean).join(' / '))}</div>
-              ${landlord ? `<div>${escapeHtml(landlord)}</div>` : ''}
-            </div>
-          </div>
-          <div class="cover-note">${showChinese ? '本 PDF 为维修/深清照片专用导出。图片由后台整理后嵌入，若有缺失会在对应记录页中标注。' : 'This PDF is a dedicated maintenance / deep cleaning photo export. Images are embedded by the backend and missing assets are labeled per record.'}</div>
-        </section>
         ${pages.join('')}
       </body>
     </html>
   `
-  return { html, imageCount, pageCount: 1 + pages.length }
+  return { html, imageCount, pageCount: pages.length }
 }
