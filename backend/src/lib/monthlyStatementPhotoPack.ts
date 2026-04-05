@@ -1,10 +1,11 @@
 import { db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
-import { renderMonthlyStatementPdfHtml } from './monthlyStatementPdfTemplate'
-import { waitForImages } from './waitForImages'
+import sharp from 'sharp'
 import { getChromiumBrowser, resetChromiumBrowser } from './playwright'
-import { normalizePhotoUrlForPdf } from './normalizePhotoUrlForPdf'
-import { listPhotoUrls, loadMonthlyStatementPhotoRows } from './monthlyStatementPhotoRecords'
+import { isAllowedR2ImageKey } from './r2ImageProxyPolicy'
+import { renderMonthlyStatementPhotoPackHtml, type PhotoPackEmbeddedImage, type PhotoPackTemplateRecord } from './monthlyStatementPhotoPackTemplate'
+import { listPhotoUrls, loadMonthlyStatementPhotoRows, recordCompletedDateRaw } from './monthlyStatementPhotoRecords'
+import { hasR2, r2GetObjectByKey, r2KeyFromUrl } from '../r2'
 
 export type StatementPhotoPackSection = 'all' | 'maintenance' | 'deep_cleaning'
 export type StatementPhotoPackPhotosMode = 'full' | 'compressed' | 'thumbnail' | 'off'
@@ -32,6 +33,13 @@ export type GenerateStatementPhotoPackResult = {
   notLoaded: number
   detail: string
   metrics: Record<string, any>
+}
+
+type LoadedAsset = {
+  ok: boolean
+  image?: PhotoPackEmbeddedImage
+  sourceUrl: string
+  reason?: string
 }
 
 function jobError(code: string, message: string, extra?: Record<string, any>) {
@@ -127,40 +135,108 @@ async function runLimited<T>(items: T[], limit: number, worker: (item: T, index:
   await Promise.all(runners)
 }
 
-async function preflightPhotoUrls(urls: string[]): Promise<{ ok: string[]; failed: string[]; checked: number; skipped: number }> {
-  const unique = Array.from(new Set(urls.map((u) => String(u || '').trim()).filter(Boolean)))
-  if (!unique.length) return { ok: [], failed: [], checked: 0, skipped: 0 }
-  const maxChecks = Math.max(1, Math.min(12, Number(process.env.PHOTO_PREFLIGHT_MAX_CHECKS || 6)))
-  const candidates = unique.slice(0, maxChecks)
-  const timeoutMs = Math.max(1500, Math.min(12000, Number(process.env.PHOTO_PREFLIGHT_TIMEOUT_MS || 4000)))
-  const concurrency = Math.max(2, Math.min(8, Number(process.env.PHOTO_PREFLIGHT_CONCURRENCY || 4)))
-  const ok: string[] = []
-  const failed: string[] = []
-  await runLimited(candidates, concurrency, async (u) => {
+function dayLabel(raw: any) {
+  const s = String(recordCompletedDateRaw(raw) || raw?.occurred_at || raw?.started_at || raw?.created_at || '').trim()
+  return s ? s.slice(0, 10) : ''
+}
+
+function photoPackLimits() {
+  const totalLimit = Math.max(20, Math.min(400, Number(process.env.PHOTO_PACK_MAX_IMAGES || 200)))
+  const perRecordLimit = Math.max(6, Math.min(60, Number(process.env.PHOTO_PACK_MAX_IMAGES_PER_RECORD || 30)))
+  const fetchConcurrency = Math.max(2, Math.min(10, Number(process.env.PHOTO_PACK_FETCH_CONCURRENCY || 6)))
+  const fetchTimeoutMs = Math.max(3000, Math.min(20000, Number(process.env.PHOTO_PACK_FETCH_TIMEOUT_MS || 10000)))
+  const maxEdge = Math.max(800, Math.min(1800, Number(process.env.PHOTO_PACK_IMAGE_MAX_EDGE || 1200)))
+  const jpegQuality = Math.max(50, Math.min(90, Number(process.env.PHOTO_PACK_IMAGE_JPEG_QUALITY || 80)))
+  return { totalLimit, perRecordLimit, fetchConcurrency, fetchTimeoutMs, maxEdge, jpegQuality }
+}
+
+function dataUrl(mimeType: string, body: Buffer) {
+  return `data:${mimeType};base64,${body.toString('base64')}`
+}
+
+function normalizeFetchUrl(raw: string, apiBase: string): { sourceUrl: string; kind: 'r2' | 'url'; value: string } | null {
+  const s = String(raw || '').trim()
+  if (!s) return null
+  const abs = (() => {
+    if (/^https?:\/\//i.test(s)) return s
+    if (s.startsWith('//')) return `https:${s}`
+    if (s.startsWith('/')) return apiBase ? `${apiBase}${s}` : s
+    return s
+  })()
+  try {
+    const u = new URL(abs)
+    if (/\/public\/r2-image\b|\/r2-image\b/.test(String(u.pathname || ''))) {
+      const original = String(u.searchParams.get('url') || '').trim()
+      if (original) {
+        const key = r2KeyFromUrl(original)
+        if (key && isAllowedR2ImageKey(key)) return { sourceUrl: original, kind: 'r2', value: key }
+        return { sourceUrl: original, kind: 'url', value: original }
+      }
+    }
+    const key = r2KeyFromUrl(abs)
+    if (key && isAllowedR2ImageKey(key)) return { sourceUrl: abs, kind: 'r2', value: key }
+    return /^https?:\/\//i.test(abs) ? { sourceUrl: abs, kind: 'url', value: abs } : null
+  } catch {
+    if (isAllowedR2ImageKey(s)) return { sourceUrl: s, kind: 'r2', value: s }
+    return null
+  }
+}
+
+async function fetchExternalBytes(url: string, timeoutMs: number): Promise<{ body: Buffer; contentType: string }> {
+  let lastErr: any = null
+  for (let attempt = 0; attempt < 2; attempt++) {
     const ac = new AbortController()
     const t = setTimeout(() => { try { ac.abort() } catch {} }, timeoutMs)
     try {
-      let r: any = null
-      try {
-        r = await fetch(u, { method: 'HEAD', signal: ac.signal } as any)
-      } catch {}
-      const shouldFallbackGet = !r || !r.ok || [403, 405, 501].includes(Number(r?.status || 0))
-      if (shouldFallbackGet) {
-        try { await r?.body?.cancel?.() } catch {}
-        r = await fetch(u, { method: 'GET', signal: ac.signal } as any)
-      }
-      const ct = String(r?.headers?.get?.('content-type') || '').toLowerCase()
-      try { await r?.body?.cancel?.() } catch {}
-      if (!r?.ok) throw new Error(`http_${String(r?.status || '')}`)
-      if (ct && !ct.startsWith('image/')) throw new Error(`invalid_content_type:${ct}`)
-      ok.push(u)
-    } catch {
-      failed.push(u)
+      const resp: any = await fetch(url, { method: 'GET', signal: ac.signal, headers: { Accept: 'image/*,*/*;q=0.8' } } as any)
+      if (!resp?.ok) throw new Error(`http_${String(resp?.status || '')}`)
+      const ab = await resp.arrayBuffer()
+      return { body: Buffer.from(ab), contentType: String(resp?.headers?.get?.('content-type') || 'application/octet-stream') }
+    } catch (e: any) {
+      lastErr = e
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 200))
     } finally {
       clearTimeout(t)
     }
-  })
-  return { ok, failed, checked: candidates.length, skipped: Math.max(0, unique.length - candidates.length) }
+  }
+  throw lastErr || new Error('fetch_failed')
+}
+
+async function fetchAssetBytes(target: { sourceUrl: string; kind: 'r2' | 'url'; value: string }, timeoutMs: number): Promise<{ body: Buffer; contentType: string }> {
+  if (target.kind === 'r2') {
+    if (!hasR2) throw new Error('r2_not_configured')
+    const obj = await r2GetObjectByKey(target.value)
+    if (!obj?.body?.length) throw new Error('r2_not_found')
+    return { body: obj.body, contentType: String(obj.contentType || 'application/octet-stream') }
+  }
+  return fetchExternalBytes(target.value, timeoutMs)
+}
+
+async function compressImage(body: Buffer, contentType: string, maxEdge: number, jpegQuality: number): Promise<PhotoPackEmbeddedImage> {
+  const img = sharp(body, { animated: false }).rotate()
+  const meta = await img.metadata().catch(() => ({} as any))
+  const hasAlpha = !!meta?.hasAlpha
+  const pipeline = img.resize({ width: maxEdge, height: maxEdge, fit: 'inside', withoutEnlargement: true })
+  if (hasAlpha) {
+    const out = await pipeline.png({ compressionLevel: 9, palette: true }).toBuffer()
+    return { dataUrl: dataUrl('image/png', out), mimeType: 'image/png', width: Number(meta?.width || 0), height: Number(meta?.height || 0) }
+  }
+  const out = await pipeline.jpeg({ quality: jpegQuality, mozjpeg: true }).toBuffer()
+  return { dataUrl: dataUrl('image/jpeg', out), mimeType: 'image/jpeg', width: Number(meta?.width || 0), height: Number(meta?.height || 0) }
+}
+
+async function loadImageAsset(raw: string, apiBase: string, timeoutMs: number, maxEdge: number, jpegQuality: number): Promise<LoadedAsset> {
+  try {
+    const target = normalizeFetchUrl(raw, apiBase)
+    if (!target) return { ok: false, sourceUrl: raw, reason: 'invalid_source' }
+    const { body, contentType } = await fetchAssetBytes(target, timeoutMs)
+    const ct = String(contentType || '').toLowerCase()
+    if (!ct.startsWith('image/')) return { ok: false, sourceUrl: target.sourceUrl, reason: `invalid_content_type:${ct || 'unknown'}` }
+    const image = await compressImage(body, ct, maxEdge, jpegQuality)
+    return { ok: true, sourceUrl: target.sourceUrl, image }
+  } catch (e: any) {
+    return { ok: false, sourceUrl: raw, reason: String(e?.message || 'load_failed') }
+  }
 }
 
 export async function generateStatementPhotoPackPdf(input: GenerateStatementPhotoPackInput): Promise<GenerateStatementPhotoPackResult> {
@@ -221,7 +297,7 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
   ])
   metrics.load_rows_ms = nowMs() - t0
   const totalRawUrls = countRawUrls(deepRows0) + countRawUrls(maintRows0)
-  await stage('normalize_urls', `正在整理照片链接（原始 ${totalRawUrls}）...`, { rawUrls: totalRawUrls })
+  await stage('collect_assets', `正在整理照片记录（原始 ${totalRawUrls}）...`, { rawUrls: totalRawUrls })
   const apiBase = String(input.apiBase || '').trim().replace(/\/+$/g, '')
   if (totalRawUrls > 0 && !/^https?:\/\//i.test(apiBase)) {
     throw jobError('PHOTO_ASSETS_UNREACHABLE', 'photo assets unreachable: missing valid api base', { rawUrls: totalRawUrls })
@@ -244,51 +320,83 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
       throw e
     }
   }
-  const normalizePhotoUrl = (u: string) => normalizePhotoUrlForPdf(u, {
-    apiBase,
-    allowR2KeyPrefixes: ['maintenance/', 'deep-cleaning/', 'deep-cleaning-upload/', 'invoice-company-logos/'],
-    photosMode: effectivePhotosMode,
-    compress,
-  })
-  const mapRowUrls = (r: any) => {
-    const before = listPhotoUrls(r?.photo_urls).map(normalizePhotoUrl).filter((u) => /^https?:\/\//i.test(u) && isLikelyImageUrl(u))
-    const after = listPhotoUrls(r?.repair_photo_urls).map(normalizePhotoUrl).filter((u) => /^https?:\/\//i.test(u) && isLikelyImageUrl(u))
-    return { ...r, photo_urls: before, repair_photo_urls: after }
+  const { totalLimit, perRecordLimit, fetchConcurrency, fetchTimeoutMs, maxEdge, jpegQuality } = photoPackLimits()
+  const sourceRows = [
+    ...((wantDeep ? deepRows0 : []).map((row: any) => ({ kind: 'deep_cleaning' as const, row }))),
+    ...((wantMaint ? maintRows0 : []).map((row: any) => ({ kind: 'maintenance' as const, row }))),
+  ].sort((a, b) => dayLabel(a.row).localeCompare(dayLabel(b.row)) || String(a.row?.id || '').localeCompare(String(b.row?.id || '')))
+  const totalPlanned = sourceRows.reduce((sum, item) => {
+    return sum + Math.min(perRecordLimit, listPhotoUrls(item.row?.photo_urls).length + listPhotoUrls(item.row?.repair_photo_urls).length)
+  }, 0)
+  if (totalPlanned > totalLimit) {
+    throw jobError('PHOTO_PACK_TOO_LARGE', `photo pack exceeds image limit (${totalPlanned}/${totalLimit})`, { rawUrls: totalRawUrls, totalPlanned, totalLimit })
   }
-  const deepRows = Array.isArray(deepRows0) ? deepRows0.map(mapRowUrls) : []
-  const maintRows = Array.isArray(maintRows0) ? maintRows0.map(mapRowUrls) : []
-  const cleanedUrls = countRawUrls(deepRows) + countRawUrls(maintRows)
-  metrics.normalize_urls_ms = nowMs() - t0 - Number(metrics.load_rows_ms || 0)
-  if (totalRawUrls > 0 && cleanedUrls <= 0) {
-    throw jobError('PHOTO_ASSETS_UNREACHABLE', 'photo assets unreachable: no renderable urls after normalization', {
-      rawUrls: totalRawUrls,
-      cleanedUrls,
+  await stage('fetch_assets', `正在抓取并压缩照片资源（${totalPlanned}）...`, { rawUrls: totalRawUrls, totalPlanned, totalLimit })
+  const fetchStartedAt = nowMs()
+  const records: PhotoPackTemplateRecord[] = []
+  const failedDetails: Array<{ url: string; reason: string }> = []
+  let successImages = 0
+  let skippedRecords = 0
+  for (const item of sourceRows) {
+    const row = item.row
+    const beforeRaw = listPhotoUrls(row?.photo_urls).filter(isLikelyImageUrl).slice(0, perRecordLimit)
+    const remaining = Math.max(0, perRecordLimit - beforeRaw.length)
+    const afterRaw = listPhotoUrls(row?.repair_photo_urls).filter(isLikelyImageUrl).slice(0, remaining)
+    const beforeResults: LoadedAsset[] = new Array(beforeRaw.length)
+    const afterResults: LoadedAsset[] = new Array(afterRaw.length)
+    await runLimited(beforeRaw, fetchConcurrency, async (u, idx) => {
+      beforeResults[idx] = await loadImageAsset(u, apiBase, fetchTimeoutMs, maxEdge, jpegQuality)
+    })
+    await runLimited(afterRaw, fetchConcurrency, async (u, idx) => {
+      afterResults[idx] = await loadImageAsset(u, apiBase, fetchTimeoutMs, maxEdge, jpegQuality)
+    })
+    const beforeImages = beforeResults.filter((x) => x?.ok && x.image).map((x) => x.image!) as PhotoPackEmbeddedImage[]
+    const afterImages = afterResults.filter((x) => x?.ok && x.image).map((x) => x.image!) as PhotoPackEmbeddedImage[]
+    const failures = [...beforeResults, ...afterResults].filter((x) => x && !x.ok)
+    failures.forEach((f) => failedDetails.push({ url: f.sourceUrl, reason: String(f.reason || 'load_failed') }))
+    successImages += beforeImages.length + afterImages.length
+    if (beforeRaw.length + afterRaw.length <= 0) continue
+    const missingNotice = failures.length && (beforeImages.length + afterImages.length) <= 0
+      ? '该记录的所有图片均无法加载，请检查原始链接'
+      : undefined
+    if ((beforeImages.length + afterImages.length) <= 0) skippedRecords += 1
+    records.push({
+      kind: item.kind,
+      jobNumber: String(row?.work_no || row?.id || '').trim(),
+      completionText: dayLabel(row) || '-',
+      areaText: item.kind === 'maintenance'
+        ? String(row?.category_detail || row?.category || '').trim()
+        : String(row?.category || '').trim(),
+      beforeImages,
+      afterImages,
+      beforeRawCount: beforeRaw.length,
+      afterRawCount: afterRaw.length,
+      missingNotice,
     })
   }
-  const allUrls = Array.from(new Set(
-    [...deepRows, ...maintRows].flatMap((r: any) => [...listPhotoUrls(r?.photo_urls), ...listPhotoUrls(r?.repair_photo_urls)])
-  ))
-  await stage('prefetch_validate', `正在校验照片资源（${allUrls.length}）...`, { dedupedUrls: allUrls.length, cleanedUrls })
-  const preflightStartedAt = nowMs()
-  const preflight = await preflightPhotoUrls(allUrls)
-  metrics.prefetch_validate_ms = nowMs() - preflightStartedAt
-  metrics.validatedUrls = preflight.ok.length
-  metrics.failed_prefetch = preflight.failed.length
-  metrics.checked_prefetch = preflight.checked
-  metrics.skipped_prefetch = preflight.skipped
-  const preflightWarn = preflight.failed.length > 0
-    ? `快检异常 ${preflight.failed.length}/${preflight.checked || 0}，将继续尝试渲染`
-    : ''
-  const tpl = renderMonthlyStatementPdfHtml({
+  metrics.fetch_assets_ms = nowMs() - fetchStartedAt
+  metrics.success_images = successImages
+  metrics.failed_images = failedDetails.length
+  metrics.skipped_records = skippedRecords
+  if (records.length <= 0 || successImages <= 0) {
+    throw jobError('PHOTO_PACK_RENDER_EMPTY', 'photo pack render empty: no embeddable images', {
+      rawUrls: totalRawUrls,
+      failedUrls: failedDetails.slice(0, 8).map((x) => `${x.reason}:${x.url}`),
+    })
+  }
+  await stage('transform_assets', `正在整理页面内容（成功 ${successImages} / 失败 ${failedDetails.length}）...`, {
+    success_images: successImages,
+    failed_images: failedDetails.length,
+    skipped_records: skippedRecords,
+  })
+  const cleanedUrls = successImages
+  const tpl = renderMonthlyStatementPhotoPackHtml({
     month: monthKey,
     property: { id: String(prop.id), code: prop.code || '', address: prop.address || '' },
     landlordName: llName || '',
-    sections,
     showChinese: !!input.showChinese,
-    includePhotosMode: effectivePhotosMode as any,
-    deepCleanings: deepRows as any,
-    maintenances: maintRows as any,
-  } as any)
+    records,
+  })
   const imageCount = Number(tpl?.imageCount || 0)
   if (imageCount <= 0) {
     const e: any = new Error('no photos to render for requested sections')
@@ -315,23 +423,9 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
     const waitTimeoutMs = Math.max(5000, Math.min(90000, Number(process.env.PDF_WAIT_TIMEOUT_MS || 45000)))
     page.setDefaultTimeout(waitTimeoutMs)
     page.setDefaultNavigationTimeout(navTimeoutMs)
-    await stage('wait_images', `正在等待全部照片加载（${imageCount}）...`, { imageCount })
+    await stage('render_html', `正在写入 PDF 页面内容（${imageCount}）...`, { imageCount, pageCount: tpl.pageCount })
     await page.setContent(tpl.html, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs } as any)
     await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
-    const remainForImages = Math.max(5000, totalTimeoutMs - (Date.now() - startedAt) - 5000)
-    const waitStartedAt = nowMs()
-    const imageWaitTimeoutMs = Math.min(25000, remainForImages)
-    let imgStats = await waitForImages(page, { timeoutMs: imageWaitTimeoutMs, scroll: 'once', tryFallbackAttr: 'data-fallback', maxFailedUrls: 12 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
-    metrics.wait_images_ms = nowMs() - waitStartedAt
-    let notLoaded = Number((imgStats as any)?.notLoaded || 0)
-    let failedUrls = Array.isArray((imgStats as any)?.failedUrls) ? (imgStats as any).failedUrls : []
-    const mergedFailedUrls = Array.from(new Set([...(preflight.failed || []), ...failedUrls])).slice(0, 20)
-    if (imageCount > 0 && notLoaded >= imageCount) {
-      await page.waitForTimeout(3000).catch(() => {})
-      imgStats = await waitForImages(page, { timeoutMs: Math.min(8000, Math.max(3000, remainForImages / 2)), scroll: false, tryFallbackAttr: 'data-fallback', maxFailedUrls: 12 }).catch(() => imgStats)
-      notLoaded = Number((imgStats as any)?.notLoaded || 0)
-      failedUrls = Array.isArray((imgStats as any)?.failedUrls) ? (imgStats as any).failedUrls : failedUrls
-    }
     if (Date.now() - startedAt > totalTimeoutMs) {
       const e: any = new Error('pdf_generation_timeout')
       e.code = 'PDF_GENERATION_TIMEOUT'
@@ -345,11 +439,10 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
     metrics.render_pdf_ms = nowMs() - pdfStartedAt
     metrics.pdf_bytes = Buffer.byteLength(pdf)
     const detailParts = [
-      `图片 ${imageCount} 张（原始 ${totalRawUrls} / 去重 ${allUrls.length} / 可渲染 ${cleanedUrls} / 已快检 ${preflight.ok.length}/${preflight.checked || 0}）`,
+      `图片 ${imageCount} 张（原始 ${totalRawUrls} / 成功嵌入 ${successImages} / 失败 ${failedDetails.length} / 记录 ${records.length}）`,
     ]
-    if (preflightWarn) detailParts.push(preflightWarn)
-    if (imageCount > 0 && notLoaded >= imageCount) detailParts.push('图片未能在校验阶段确认加载，已继续尝试导出，请检查生成结果')
-    if (notLoaded > 0) detailParts.push(`渲染时有 ${notLoaded} 张未成功加载，已尽量导出其余图片`)
+    if (skippedRecords > 0) detailParts.push(`有 ${skippedRecords} 条记录仅输出了缺图提示`)
+    if (failedDetails.length > 0) detailParts.push(`失败样本：${failedDetails.slice(0, 3).map((x) => `${x.reason}:${x.url}`).join(' | ')}`)
     const detail = detailParts.join('；')
     return {
       pdf: Buffer.from(pdf),
@@ -358,8 +451,8 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
       rawUrls: totalRawUrls,
       cleanedUrls,
       effectivePhotosMode,
-      failedUrls: Array.from(new Set([...(preflight.failed || []), ...failedUrls])).slice(0, 20),
-      notLoaded,
+      failedUrls: failedDetails.slice(0, 20).map((x) => `${x.reason}:${x.url}`),
+      notLoaded: failedDetails.length,
       detail,
       metrics,
     }
