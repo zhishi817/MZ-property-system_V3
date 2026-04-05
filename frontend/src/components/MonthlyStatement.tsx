@@ -1075,12 +1075,10 @@ export default forwardRef<HTMLDivElement, {
                   const jobNo = String(d?.work_no || d?.id || '')
                   const renderPhase = (phaseText: string, urls: string[]) => {
                     if (!urls.length) return null
-                    const firstRow = urls.slice(0, 3)
-                    const rest = urls.slice(3)
                     const cell = (u: string, idx: number) => {
                       const src = resolveUrl(u)
                       return (
-                        <div key={`${idx}-${u}`} style={{ width:'calc((100% - 32px) / 3)', padding: 0, margin: 0, border: 'none', borderRadius: 0, background: 'transparent', boxShadow: 'none', breakInside:'avoid', pageBreakInside:'avoid' }}>
+                        <div key={`${idx}-${u}`} style={{ minWidth: 0, padding: 0, margin: 0, border: 'none', borderRadius: 0, background: 'transparent', boxShadow: 'none', breakInside:'avoid', pageBreakInside:'avoid' }}>
                           {isImg(u) ? (
                             renderEngine === 'print'
                               ? <img crossOrigin="anonymous" src={src} style={{ width:'100%', height: '76mm', objectFit:'contain', display:'block', background:'#fff', border:'none', borderRadius: 0, boxShadow:'none', outline:'none' }} />
@@ -1092,15 +1090,12 @@ export default forwardRef<HTMLDivElement, {
                       )
                     }
                     return (
-                      <div style={{ display:'flex', flexWrap:'wrap', gap: 16 }}>
-                        <div style={{ width:'100%', marginTop: 18, breakInside:'avoid', pageBreakInside:'avoid' }}>
-                          <div style={{ fontSize: 16, fontWeight: 700, color:'#111' }}>{phaseText}</div>
-                          <div style={{ height: 2, background: '#c4cddd', marginTop: 10, marginBottom: 12 }} />
-                          <div style={{ display:'flex', flexWrap:'wrap', gap: 16 }}>
-                            {firstRow.map((u, idx) => cell(u, idx))}
-                          </div>
+                      <div style={{ width:'100%', marginTop: 18, breakInside:'avoid', pageBreakInside:'avoid' }}>
+                        <div style={{ fontSize: 16, fontWeight: 700, color:'#111' }}>{phaseText}</div>
+                        <div style={{ height: 2, background: '#c4cddd', marginTop: 10, marginBottom: 12 }} />
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap: 16, alignItems: 'start' }}>
+                          {urls.map((u, idx) => cell(u, idx))}
                         </div>
-                        {rest.map((u, idx) => cell(u, idx + 3))}
                       </div>
                     )
                   }
@@ -1254,12 +1249,10 @@ export default forwardRef<HTMLDivElement, {
                   const jobNo = String(m?.work_no || m?.id || '')
                   const renderPhase = (phaseText: string, urls: string[]) => {
                     if (!urls.length) return null
-                    const firstRow = urls.slice(0, 3)
-                    const rest = urls.slice(3)
                     const cell = (u: string, idx: number) => {
                       const src = resolveUrl(u)
                       return (
-                        <div key={`${idx}-${u}`} style={{ width:'calc((100% - 32px) / 3)', padding: 0, margin: 0, border: 'none', borderRadius: 0, background: 'transparent', boxShadow: 'none', breakInside:'avoid', pageBreakInside:'avoid' }}>
+                        <div key={`${idx}-${u}`} style={{ minWidth: 0, padding: 0, margin: 0, border: 'none', borderRadius: 0, background: 'transparent', boxShadow: 'none', breakInside:'avoid', pageBreakInside:'avoid' }}>
                           {isImg(u) ? (
                             renderEngine === 'print'
                               ? <img crossOrigin="anonymous" src={src} style={{ width:'100%', height: '76mm', objectFit:'contain', display:'block', background:'#fff', border:'none', borderRadius: 0, boxShadow:'none', outline:'none' }} />
@@ -1271,15 +1264,12 @@ export default forwardRef<HTMLDivElement, {
                       )
                     }
                     return (
-                      <div style={{ display:'flex', flexWrap:'wrap', gap: 16 }}>
-                        <div style={{ width:'100%', marginTop: 18, breakInside:'avoid', pageBreakInside:'avoid' }}>
-                          <div style={{ fontSize: 16, fontWeight: 700, color:'#111' }}>{phaseText}</div>
-                          <div style={{ height: 2, background: '#c4cddd', marginTop: 10, marginBottom: 12 }} />
-                          <div style={{ display:'flex', flexWrap:'wrap', gap: 16 }}>
-                            {firstRow.map((u, idx) => cell(u, idx))}
-                          </div>
+                      <div style={{ width:'100%', marginTop: 18, breakInside:'avoid', pageBreakInside:'avoid' }}>
+                        <div style={{ fontSize: 16, fontWeight: 700, color:'#111' }}>{phaseText}</div>
+                        <div style={{ height: 2, background: '#c4cddd', marginTop: 10, marginBottom: 12 }} />
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3, minmax(0, 1fr))', gap: 16, alignItems: 'start' }}>
+                          {urls.map((u, idx) => cell(u, idx))}
                         </div>
-                        {rest.map((u, idx) => cell(u, idx + 3))}
                       </div>
                     )
                   }

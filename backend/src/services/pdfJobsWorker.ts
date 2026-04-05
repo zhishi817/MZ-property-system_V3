@@ -116,7 +116,14 @@ async function claimJobs(limit: number, workerId: string): Promise<any[]> {
          SELECT id
          FROM pdf_jobs
          WHERE status='queued' AND next_retry_at <= now()
-         ORDER BY next_retry_at ASC, created_at ASC
+         ORDER BY
+           CASE kind
+             WHEN 'statement_photo_pack' THEN 0
+             WHEN 'merge_monthly_pack' THEN 1
+             ELSE 2
+           END ASC,
+           next_retry_at ASC,
+           created_at ASC
          FOR UPDATE SKIP LOCKED
          LIMIT $1
        )
@@ -142,6 +149,31 @@ async function claimJobs(limit: number, workerId: string): Promise<any[]> {
   } finally {
     try { client.release() } catch {}
   }
+}
+
+let kickScheduled = false
+let kickInFlight = false
+let kickRequestedLimit = 1
+
+export function schedulePdfJobsKick(limit = 1) {
+  kickRequestedLimit = Math.max(kickRequestedLimit, Math.max(1, Math.min(10, Number(limit || 1))))
+  if (kickScheduled || kickInFlight) return
+  kickScheduled = true
+  setTimeout(async () => {
+    kickScheduled = false
+    if (kickInFlight) return
+    kickInFlight = true
+    const runLimit = kickRequestedLimit
+    kickRequestedLimit = 1
+    try {
+      await processPdfJobsOnce({ limit: runLimit })
+    } catch (e: any) {
+      try { console.error(`[pdf-jobs][kick] failed message=${String(e?.message || '')}`) } catch {}
+    } finally {
+      kickInFlight = false
+      if (kickRequestedLimit > 1) schedulePdfJobsKick(kickRequestedLimit)
+    }
+  }, 0)
 }
 
 async function updateJob(id: string, patch: Partial<{ status: string; progress: number; stage: string; detail: string; result_files: PdfJobFile[]; last_error_code: string | null; last_error_message: string | null; locked_by: string | null; lease_expires_at: any | null }>) {

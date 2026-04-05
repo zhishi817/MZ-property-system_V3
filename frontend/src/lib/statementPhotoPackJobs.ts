@@ -17,6 +17,12 @@ function normalizePhotoPackError(message: string, payload?: any) {
   if (code === 'PHOTO_ASSETS_UNREACHABLE' || code === 'PHOTO_PACK_RENDER_EMPTY') {
     return '照片资源未成功加载，已停止导出，请重试；若持续出现，请检查该房源照片链接是否失效'
   }
+  if (code === 'PHOTO_PREFLIGHT_FAILED' || /photo resources failed preflight validation/i.test(raw)) {
+    return '照片链接快检未通过，但这通常不代表全部失效；请重试，若仍失败请检查该房源照片链接'
+  }
+  if (code === 'PHOTO_LOAD_INCOMPLETE' || /photo load incomplete/i.test(raw)) {
+    return '部分照片加载失败，系统已尽量导出其余图片；请检查失效照片链接'
+  }
   if (code === 'NO_PHOTOS_TO_RENDER') return '本月没有可导出的照片分卷'
   if (code === 'too_many_photos_for_sync_export' || /too_many_photos_for_sync_export/i.test(raw)) {
     return '照片较多，当前版本已改为后台生成，请稍后重试分卷下载'
@@ -81,13 +87,19 @@ export async function runStatementPhotoPackJob(opts: {
       sections: opts.sections,
       showChinese: !!opts.showChinese,
       quality_mode: opts.qualityMode || 'compressed',
-      forceNew: true,
+      forceNew: false,
     }),
   }, 30000)
   if (!create.resp.ok) throw new Error(normalizePhotoPackError(String((create.json as any)?.message || `HTTP ${create.resp.status}`), create.json))
   const jobId = String((create.json as any)?.job_id || (create.json as any)?.id || '').trim()
   if (!jobId) throw new Error('创建任务失败（missing job_id）')
-  onUpdate({ stage: '创建任务', detail: '任务已创建，正在生成 PDF...', progress: 10, timeout: false })
+  const reused = !!(create.json as any)?.reused
+  onUpdate({
+    stage: '创建任务',
+    detail: reused ? '已接入现有任务，正在继续生成 PDF...' : '任务已创建，正在生成 PDF...',
+    progress: 10,
+    timeout: false,
+  })
   const startedAt = Date.now()
   let pollCount = 0
   while (Date.now() - startedAt < 8 * 60 * 1000) {
