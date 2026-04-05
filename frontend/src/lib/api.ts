@@ -178,6 +178,33 @@ export async function patchJSON<T>(path: string, body: any, options?: FetchTimeo
   return res.json() as Promise<T>
 }
 
+export async function putJSON<T>(path: string, body: any, options?: FetchTimeoutOptions): Promise<T> {
+  assertApiBase()
+  const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) }, options)
+  if (res.status === 401) {
+    clearAuth()
+    if (typeof window !== 'undefined') window.location.href = '/login'
+    throw new Error('HTTP 401')
+  }
+  if (!res.ok) {
+    try {
+      const ct = res.headers.get('content-type') || ''
+      if (/application\/json/i.test(ct)) {
+        const j = await res.json() as any
+        const msg = String(j?.message || j?.error || `HTTP ${res.status}`)
+        throw buildApiError(msg, j)
+      } else {
+        const t = await res.text()
+        const msg = t ? t : `HTTP ${res.status}`
+        throw new Error(msg)
+      }
+    } catch {
+      throw new Error(`HTTP ${res.status}`)
+    }
+  }
+  return res.json() as Promise<T>
+}
+
 export async function deleteJSON<T>(path: string, options?: FetchTimeoutOptions): Promise<T> {
   assertApiBase()
   const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: 'DELETE', headers: { ...authHeaders() } }, options)

@@ -18,6 +18,29 @@ function actorId(req: any) {
   return u?.sub || u?.username || null
 }
 
+function randomSuffix(len: number) {
+  const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  let s = ''
+  for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)]
+  return s
+}
+
+function isSmWarehouseRow(row: any) {
+  const id = String(row?.id || '').trim().toLowerCase()
+  const code = String(row?.code || '').trim().toLowerCase()
+  const name = String(row?.name || '').trim().toLowerCase()
+  return id === 'wh.south_melbourne' || code === 'sou' || name.includes('south melbourne')
+}
+
+function toDayStartIsoMelbourne(daysFromToday = 0) {
+  const now = new Date()
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000
+  const mel = new Date(utc + 10 * 60 * 60000)
+  mel.setHours(0, 0, 0, 0)
+  mel.setDate(mel.getDate() + Number(daysFromToday || 0))
+  return mel.toISOString()
+}
+
 let inventorySchemaEnsured = false
 async function ensureInventorySchema() {
   if (!pgPool) return
@@ -28,6 +51,7 @@ async function ensureInventorySchema() {
       id text PRIMARY KEY,
       code text NOT NULL,
       name text NOT NULL,
+      linen_capacity_sets integer,
       active boolean NOT NULL DEFAULT true,
       created_at timestamptz NOT NULL DEFAULT now()
     );`)
@@ -87,6 +111,30 @@ async function ensureInventorySchema() {
         ('item.linen_type.pillowcase','枕套','LT:pillowcase','linen','pillowcase','pcs',0,NULL,true,false),
         ('item.linen_type.bath_towel','浴巾','LT:bath_towel','linen','bath_towel','pcs',0,NULL,true,false)
       ON CONFLICT (id) DO NOTHING;`)
+    await pgPool.query(`
+      INSERT INTO inventory_items (id, name, sku, category, linen_type_code, unit, default_threshold, bin_location, active, is_key_item)
+      SELECT
+        'item.linen_type.' || lt.code AS id,
+        lt.name,
+        'LT:' || lt.code AS sku,
+        'linen' AS category,
+        lt.code AS linen_type_code,
+        'pcs' AS unit,
+        0 AS default_threshold,
+        NULL AS bin_location,
+        lt.active,
+        false AS is_key_item
+      FROM inventory_linen_types lt
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM inventory_items i
+        WHERE i.category = 'linen' AND i.linen_type_code = lt.code
+      )
+      ON CONFLICT (id) DO UPDATE
+      SET name = EXCLUDED.name,
+          active = EXCLUDED.active,
+          linen_type_code = EXCLUDED.linen_type_code
+    `)
 
     await pgPool.query(`CREATE TABLE IF NOT EXISTS inventory_room_types (
       code text PRIMARY KEY,
@@ -116,6 +164,7 @@ async function ensureInventorySchema() {
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_room_type_req_room ON inventory_room_type_requirements(room_type_code);')
 
     await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS room_type_code text;')
+    await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS linen_service_warehouse_id text;')
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_properties_room_type_code ON properties(room_type_code);')
 
     await pgPool.query(`CREATE TABLE IF NOT EXISTS warehouse_stocks (
@@ -134,6 +183,21 @@ async function ensureInventorySchema() {
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_warehouse_stocks_wh ON warehouse_stocks(warehouse_id);')
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_warehouse_stocks_item ON warehouse_stocks(item_id);')
 
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS inventory_stock_policies (
+      id text PRIMARY KEY,
+      warehouse_id text NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
+      item_id text NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+      reserve_qty integer NOT NULL DEFAULT 0,
+      updated_at timestamptz
+    );`)
+    await pgPool.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'unique_inventory_stock_policy') THEN
+        ALTER TABLE inventory_stock_policies ADD CONSTRAINT unique_inventory_stock_policy UNIQUE (warehouse_id, item_id);
+      END IF;
+    END $$;`)
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_stock_policies_wh ON inventory_stock_policies(warehouse_id);')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_stock_policies_item ON inventory_stock_policies(item_id);')
+
     await pgPool.query(`CREATE TABLE IF NOT EXISTS suppliers (
       id text PRIMARY KEY,
       name text NOT NULL,
@@ -142,6 +206,24 @@ async function ensureInventorySchema() {
       created_at timestamptz NOT NULL DEFAULT now()
     );`)
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_suppliers_active ON suppliers(active);')
+
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS supplier_item_prices (
+      id text PRIMARY KEY,
+      supplier_id text NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+      item_id text NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+      purchase_unit_price numeric NOT NULL DEFAULT 0,
+      refund_unit_price numeric NOT NULL DEFAULT 0,
+      effective_from date,
+      active boolean NOT NULL DEFAULT true,
+      updated_at timestamptz
+    );`)
+    await pgPool.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'unique_supplier_item_price') THEN
+        ALTER TABLE supplier_item_prices ADD CONSTRAINT unique_supplier_item_price UNIQUE (supplier_id, item_id);
+      END IF;
+    END $$;`)
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_supplier_item_prices_supplier ON supplier_item_prices(supplier_id);')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_supplier_item_prices_item ON supplier_item_prices(item_id);')
 
     await pgPool.query(`CREATE TABLE IF NOT EXISTS region_supplier_rules (
       id text PRIMARY KEY,
@@ -156,6 +238,7 @@ async function ensureInventorySchema() {
 
     await pgPool.query(`CREATE TABLE IF NOT EXISTS purchase_orders (
       id text PRIMARY KEY,
+      po_no text,
       supplier_id text NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
       warehouse_id text NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
       status text NOT NULL DEFAULT 'draft',
@@ -175,6 +258,8 @@ async function ensureInventorySchema() {
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_orders_region ON purchase_orders(region);')
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_orders_property ON purchase_orders(property_id);')
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_orders_ordered_date ON purchase_orders(ordered_date);')
+    await pgPool.query('ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS po_no text;')
+    await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_orders_po_no_unique ON purchase_orders(po_no) WHERE po_no IS NOT NULL;')
 
     await pgPool.query(`CREATE TABLE IF NOT EXISTS purchase_order_lines (
       id text PRIMARY KEY,
@@ -187,6 +272,7 @@ async function ensureInventorySchema() {
     );`)
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_order_lines_po ON purchase_order_lines(po_id);')
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_order_lines_item ON purchase_order_lines(item_id);')
+    await pgPool.query('ALTER TABLE purchase_order_lines ADD COLUMN IF NOT EXISTS amount_total numeric;')
 
     await pgPool.query(`CREATE TABLE IF NOT EXISTS purchase_deliveries (
       id text PRIMARY KEY,
@@ -272,6 +358,99 @@ async function ensureInventorySchema() {
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_stock_change_requests_item ON stock_change_requests(item_id);')
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_stock_change_requests_created_at ON stock_change_requests(created_at);')
 
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS linen_delivery_plans (
+      id text PRIMARY KEY,
+      plan_date date NOT NULL,
+      from_warehouse_id text NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+      date_from date,
+      date_to date,
+      vehicle_capacity_sets integer,
+      status text NOT NULL DEFAULT 'draft',
+      note text,
+      created_by text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz
+    );`)
+    await pgPool.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'linen_delivery_plans_status_check') THEN
+        ALTER TABLE linen_delivery_plans
+          ADD CONSTRAINT linen_delivery_plans_status_check
+          CHECK (status IN ('draft','planned','dispatched','cancelled'));
+      END IF;
+    END $$;`)
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_linen_delivery_plans_plan_date ON linen_delivery_plans(plan_date DESC);')
+
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS linen_delivery_plan_lines (
+      id text PRIMARY KEY,
+      plan_id text NOT NULL REFERENCES linen_delivery_plans(id) ON DELETE CASCADE,
+      to_warehouse_id text NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+      room_type_code text REFERENCES inventory_room_types(code) ON DELETE SET NULL,
+      current_sets integer NOT NULL DEFAULT 0,
+      demand_sets integer NOT NULL DEFAULT 0,
+      target_sets integer NOT NULL DEFAULT 0,
+      suggested_sets integer NOT NULL DEFAULT 0,
+      actual_sets integer NOT NULL DEFAULT 0,
+      warehouse_capacity_sets integer,
+      vehicle_load_sets integer NOT NULL DEFAULT 0,
+      note text
+    );`)
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_linen_delivery_plan_lines_plan ON linen_delivery_plan_lines(plan_id);')
+
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS linen_supplier_return_batches (
+      id text PRIMARY KEY,
+      supplier_id text NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+      warehouse_id text NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+      status text NOT NULL DEFAULT 'draft',
+      returned_at timestamptz,
+      note text,
+      created_by text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz
+    );`)
+    await pgPool.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'linen_supplier_return_batches_status_check') THEN
+        ALTER TABLE linen_supplier_return_batches
+          ADD CONSTRAINT linen_supplier_return_batches_status_check
+          CHECK (status IN ('draft','returned','settled'));
+      END IF;
+    END $$;`)
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_linen_supplier_return_batches_supplier ON linen_supplier_return_batches(supplier_id);')
+
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS linen_supplier_return_batch_lines (
+      id text PRIMARY KEY,
+      batch_id text NOT NULL REFERENCES linen_supplier_return_batches(id) ON DELETE CASCADE,
+      item_id text NOT NULL REFERENCES inventory_items(id) ON DELETE RESTRICT,
+      quantity integer NOT NULL,
+      refund_unit_price numeric NOT NULL DEFAULT 0,
+      amount_total numeric NOT NULL DEFAULT 0,
+      note text
+    );`)
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_linen_supplier_return_batch_lines_batch ON linen_supplier_return_batch_lines(batch_id);')
+
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS linen_supplier_refunds (
+      id text PRIMARY KEY,
+      batch_id text NOT NULL REFERENCES linen_supplier_return_batches(id) ON DELETE CASCADE,
+      supplier_id text NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+      warehouse_id text NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+      expected_amount numeric NOT NULL DEFAULT 0,
+      received_amount numeric NOT NULL DEFAULT 0,
+      variance_amount numeric NOT NULL DEFAULT 0,
+      status text NOT NULL DEFAULT 'pending',
+      received_at timestamptz,
+      note text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz
+    );`)
+    await pgPool.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'linen_supplier_refunds_status_check') THEN
+        ALTER TABLE linen_supplier_refunds
+          ADD CONSTRAINT linen_supplier_refunds_status_check
+          CHECK (status IN ('pending','partial','settled','disputed'));
+      END IF;
+    END $$;`)
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_linen_supplier_refunds_supplier ON linen_supplier_refunds(supplier_id);')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_linen_supplier_refunds_status ON linen_supplier_refunds(status);')
+
     await pgPool.query(`INSERT INTO warehouses (id, code, name) VALUES
       ('wh.south_melbourne', 'SOU', 'South Melbourne'),
       ('wh.msq', 'MSQ', 'MSQ'),
@@ -288,6 +467,15 @@ async function ensureInventorySchema() {
       ('rsr.southbank', 'Southbank', 'sup.linen.1', 100),
       ('rsr.default', '*', 'sup.linen.2', 0)
     ON CONFLICT (id) DO NOTHING;`)
+
+    await pgPool.query(`UPDATE warehouses
+      SET linen_capacity_sets = CASE
+        WHEN id = 'wh.south_melbourne' THEN COALESCE(linen_capacity_sets, 500)
+        WHEN id = 'wh.msq' THEN COALESCE(linen_capacity_sets, 120)
+        WHEN id = 'wh.wsp' THEN COALESCE(linen_capacity_sets, 120)
+        WHEN id = 'wh.my80' THEN COALESCE(linen_capacity_sets, 100)
+        ELSE linen_capacity_sets
+      END;`)
   } catch (e) {
     inventorySchemaEnsured = false
     throw e
@@ -318,6 +506,152 @@ async function ensureWarehouseStockRow(client: any, warehouse_id: string, item_i
      ON CONFLICT (warehouse_id, item_id) DO NOTHING`,
     [id, warehouse_id, item_id],
   )
+}
+
+async function ensurePurchaseOrderNo(client: any, rowOrId: any) {
+  const id = typeof rowOrId === 'string' ? String(rowOrId) : String(rowOrId?.id || '')
+  if (!id) return null
+  const current = typeof rowOrId === 'object' ? String(rowOrId?.po_no || '').trim() : ''
+  if (current) return current
+  let date = typeof rowOrId === 'object'
+    ? String(rowOrId?.ordered_date || rowOrId?.created_at || '').slice(0, 10)
+    : ''
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) date = new Date().toISOString().slice(0, 10)
+  const base = date.replace(/-/g, '').slice(2)
+  const prefix = `PO-${base}-`
+  let candidate = `${prefix}${randomSuffix(4)}`
+  for (let i = 0; i < 8; i++) {
+    const chk = await client.query('SELECT 1 FROM purchase_orders WHERE po_no = $1 LIMIT 1', [candidate])
+    if (!chk.rowCount) break
+    candidate = `${prefix}${randomSuffix(4 + Math.min(i, 2))}`
+  }
+  await client.query(`UPDATE purchase_orders SET po_no = $1 WHERE id = $2 AND COALESCE(po_no, '') = ''`, [candidate, id])
+  return candidate
+}
+
+async function ensureLinenInventoryItem(client: any, linenTypeCode: string) {
+  const code = String(linenTypeCode || '').trim()
+  if (!code) return null
+  const existing = await client.query(
+    `SELECT id, name, sku, linen_type_code
+     FROM inventory_items
+     WHERE category = 'linen' AND linen_type_code = $1
+     ORDER BY active DESC, name ASC, id ASC
+     LIMIT 1`,
+    [code],
+  )
+  if (existing.rows?.[0]?.id) return existing.rows[0]
+  const linenType = await client.query(
+    `SELECT code, name, active
+     FROM inventory_linen_types
+     WHERE code = $1
+     LIMIT 1`,
+    [code],
+  )
+  const row = linenType.rows?.[0]
+  if (!row) return null
+  const itemId = `item.linen_type.${code}`
+  const inserted = await client.query(
+    `INSERT INTO inventory_items (id, name, sku, category, linen_type_code, unit, default_threshold, bin_location, active, is_key_item)
+     VALUES ($1,$2,$3,'linen',$4,'pcs',0,NULL,$5,false)
+     ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, active = EXCLUDED.active, linen_type_code = EXCLUDED.linen_type_code
+     RETURNING id, name, sku, linen_type_code`,
+    [itemId, row.name, `LT:${code}`, code, row.active],
+  )
+  return inserted.rows?.[0] || null
+}
+
+async function getSmWarehouse() {
+  if (!pgPool) return null
+  const rows = await pgPool.query(`SELECT id, code, name, linen_capacity_sets FROM warehouses ORDER BY code ASC`)
+  const list = rows.rows || []
+  return list.find((r: any) => isSmWarehouseRow(r)) || list[0] || null
+}
+
+async function getActiveLinenTypes(client: any) {
+  const rows = await client.query(
+    `SELECT code, name, in_set, set_divisor, sort_order
+     FROM inventory_linen_types
+     WHERE active = true
+     ORDER BY sort_order ASC, code ASC`,
+  )
+  return rows.rows || []
+}
+
+async function getRoomTypeRequirementMaps(client: any) {
+  const [roomTypesRows, reqRows] = await Promise.all([
+    client.query(
+      `SELECT code, name, sort_order
+       FROM inventory_room_types
+       WHERE active = true
+       ORDER BY sort_order ASC, code ASC`,
+    ),
+    client.query(`SELECT room_type_code, linen_type_code, quantity FROM inventory_room_type_requirements`),
+  ])
+  const roomTypes = roomTypesRows.rows || []
+  const reqMap = new Map<string, Map<string, number>>()
+  for (const r of reqRows.rows || []) {
+    const roomTypeCode = String(r.room_type_code || '')
+    const linenTypeCode = String(r.linen_type_code || '')
+    const quantity = Number(r.quantity || 0)
+    if (!roomTypeCode || !linenTypeCode || quantity <= 0) continue
+    if (!reqMap.has(roomTypeCode)) reqMap.set(roomTypeCode, new Map())
+    reqMap.get(roomTypeCode)!.set(linenTypeCode, quantity)
+  }
+  return { roomTypes, reqMap }
+}
+
+function computeSetsForRoomType(countsByLinenType: Record<string, number>, requirements: Map<string, number> | undefined | null) {
+  if (!requirements || !requirements.size) return 0
+  const candidates: number[] = []
+  for (const [linenTypeCode, quantity] of requirements.entries()) {
+    const stockQty = Number(countsByLinenType[linenTypeCode] || 0)
+    candidates.push(Math.floor(stockQty / Math.max(1, quantity)))
+  }
+  return candidates.length ? Math.max(0, Math.min(...candidates)) : 0
+}
+
+function resolveWarehouseForProperty(property: any, warehouses: any[]) {
+  const explicit = String(property?.linen_service_warehouse_id || '').trim()
+  if (explicit) return explicit
+  const region = String(property?.region || '').trim().toLowerCase()
+  if (!region) return null
+  const found = (warehouses || []).find((w: any) => {
+    const code = String(w.code || '').trim().toLowerCase()
+    const name = String(w.name || '').trim().toLowerCase()
+    return code === region || name === region || name.includes(region) || region.includes(code)
+  })
+  return found ? String(found.id) : null
+}
+
+async function getLinenReserveMap(client: any, warehouseId: string) {
+  const rows = await client.query(
+    `SELECT item_id, reserve_qty
+     FROM inventory_stock_policies
+     WHERE warehouse_id = $1`,
+    [warehouseId],
+  )
+  return new Map<string, number>((rows.rows || []).map((r: any) => [String(r.item_id), Number(r.reserve_qty || 0)]))
+}
+
+async function getLatestSupplierItemPrice(client: any, supplierId: string) {
+  const rows = await client.query(
+    `SELECT sip.id, sip.supplier_id, sip.item_id, sip.purchase_unit_price, sip.refund_unit_price, sip.effective_from, sip.active,
+            i.name AS item_name, i.sku AS item_sku, i.linen_type_code
+     FROM supplier_item_prices sip
+     JOIN inventory_items i ON i.id = sip.item_id
+     WHERE sip.supplier_id = $1
+       AND sip.active = true
+     ORDER BY COALESCE(sip.effective_from, DATE '1970-01-01') DESC, sip.updated_at DESC NULLS LAST, sip.id DESC`,
+    [supplierId],
+  )
+  const out = new Map<string, any>()
+  for (const row of rows.rows || []) {
+    const itemId = String(row.item_id || '')
+    if (!itemId || out.has(itemId)) continue
+    out.set(itemId, row)
+  }
+  return out
 }
 
 async function applyStockDeltaInTx(client: any, input: {
@@ -378,14 +712,14 @@ router.get('/warehouses', requirePerm('inventory.view'), async (req, res) => {
   try {
     if (hasPg && pgPool) {
       await ensureInventorySchema()
-      const rows = await pgPool.query(`SELECT id, code, name, active FROM warehouses ORDER BY code ASC`)
+      const rows = await pgPool.query(`SELECT id, code, name, linen_capacity_sets, active FROM warehouses ORDER BY code ASC`)
       return res.json(rows.rows || [])
     }
     return res.json([
-      { id: 'wh.south_melbourne', code: 'SOU', name: 'South Melbourne', active: true },
-      { id: 'wh.msq', code: 'MSQ', name: 'MSQ', active: true },
-      { id: 'wh.wsp', code: 'WSP', name: 'WSP', active: true },
-      { id: 'wh.my80', code: 'MY80', name: 'My80', active: true },
+      { id: 'wh.south_melbourne', code: 'SOU', name: 'South Melbourne', linen_capacity_sets: 500, active: true },
+      { id: 'wh.msq', code: 'MSQ', name: 'MSQ', linen_capacity_sets: 120, active: true },
+      { id: 'wh.wsp', code: 'WSP', name: 'WSP', linen_capacity_sets: 120, active: true },
+      { id: 'wh.my80', code: 'MY80', name: 'My80', linen_capacity_sets: 100, active: true },
     ])
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
@@ -405,7 +739,23 @@ router.get('/linen-types', requirePerm('inventory.view'), async (req, res) => {
   try {
     if (hasPg && pgPool) {
       await ensureInventorySchema()
-      const rows = await pgPool.query(`SELECT code, name, in_set, set_divisor, sort_order, active FROM inventory_linen_types ORDER BY active DESC, name ASC, code ASC`)
+      const rows = await pgPool.query(`
+        SELECT lt.code,
+               lt.name,
+               lt.in_set,
+               lt.set_divisor,
+               lt.sort_order,
+               lt.active,
+               (
+                 SELECT i.id
+                 FROM inventory_items i
+                 WHERE i.category = 'linen' AND i.linen_type_code = lt.code
+                 ORDER BY i.active DESC, i.name ASC, i.id ASC
+                 LIMIT 1
+               ) AS item_id
+        FROM inventory_linen_types lt
+        ORDER BY lt.active DESC, lt.name ASC, lt.code ASC
+      `)
       return res.json(rows.rows || [])
     }
     return res.json([])
@@ -1089,6 +1439,7 @@ const transferRoomTypeSchema = z.object({
   to_warehouse_id: z.string().min(1),
   room_type_code: z.string().min(1),
   sets: z.number().int().min(1),
+  delivery_plan_id: z.string().optional(),
   note: z.string().optional(),
   photo_url: z.string().optional(),
 })
@@ -1142,6 +1493,22 @@ router.post('/transfers/room-type', requirePerm('inventory.move'), async (req, r
           photo_url: parsed.data.photo_url || null,
         })
         if (!inn.ok) return inn
+      }
+      if (parsed.data.delivery_plan_id) {
+        await client.query(
+          `UPDATE linen_delivery_plan_lines
+           SET actual_sets = $1, vehicle_load_sets = $1
+           WHERE plan_id = $2
+             AND to_warehouse_id = $3
+             AND room_type_code = $4`,
+          [parsed.data.sets, parsed.data.delivery_plan_id, parsed.data.to_warehouse_id, parsed.data.room_type_code],
+        )
+        await client.query(
+          `UPDATE linen_delivery_plans
+           SET status = 'dispatched', updated_at = now()
+           WHERE id = $1`,
+          [parsed.data.delivery_plan_id],
+        )
       }
       return { ok: true as const, transfer_id: transferId }
     })
@@ -1816,6 +2183,62 @@ router.patch('/suppliers/:id', requirePerm('inventory.po.manage'), async (req, r
   }
 })
 
+router.delete('/suppliers/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+  const id = String(req.params.id || '')
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const before = await pgPool.query(`SELECT * FROM suppliers WHERE id = $1`, [id])
+    const row = before.rows?.[0]
+    if (!row) return res.status(404).json({ message: 'supplier not found' })
+
+    const refs = await Promise.all([
+      pgPool.query(`SELECT 1 FROM purchase_orders WHERE supplier_id = $1 LIMIT 1`, [id]),
+      pgPool.query(`SELECT 1 FROM region_supplier_rules WHERE supplier_id = $1 LIMIT 1`, [id]),
+      pgPool.query(`SELECT 1 FROM supplier_item_prices WHERE supplier_id = $1 LIMIT 1`, [id]),
+      pgPool.query(`SELECT 1 FROM linen_supplier_return_batches WHERE supplier_id = $1 LIMIT 1`, [id]),
+      pgPool.query(`SELECT 1 FROM linen_supplier_refunds WHERE supplier_id = $1 LIMIT 1`, [id]),
+    ])
+    if (refs.some((r) => (r.rows || []).length > 0)) {
+      return res.status(409).json({ message: '该供应商已有采购、价格、规则或返厂退款记录，无法删除' })
+    }
+
+    await pgPool.query(`DELETE FROM suppliers WHERE id = $1`, [id])
+    addAudit('Supplier', id, 'delete', row, null, actorId(req))
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.post('/suppliers/:id/delete', requirePerm('inventory.po.manage'), async (req, res) => {
+  const id = String(req.params.id || '')
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const before = await pgPool.query(`SELECT * FROM suppliers WHERE id = $1`, [id])
+    const row = before.rows?.[0]
+    if (!row) return res.status(404).json({ message: 'supplier not found' })
+
+    const refs = await Promise.all([
+      pgPool.query(`SELECT 1 FROM purchase_orders WHERE supplier_id = $1 LIMIT 1`, [id]),
+      pgPool.query(`SELECT 1 FROM region_supplier_rules WHERE supplier_id = $1 LIMIT 1`, [id]),
+      pgPool.query(`SELECT 1 FROM supplier_item_prices WHERE supplier_id = $1 LIMIT 1`, [id]),
+      pgPool.query(`SELECT 1 FROM linen_supplier_return_batches WHERE supplier_id = $1 LIMIT 1`, [id]),
+      pgPool.query(`SELECT 1 FROM linen_supplier_refunds WHERE supplier_id = $1 LIMIT 1`, [id]),
+    ])
+    if (refs.some((r) => (r.rows || []).length > 0)) {
+      return res.status(409).json({ message: '该供应商已有采购、价格、规则或返厂退款记录，无法删除' })
+    }
+
+    await pgPool.query(`DELETE FROM suppliers WHERE id = $1`, [id])
+    addAudit('Supplier', id, 'delete', row, null, actorId(req))
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
 router.get('/region-supplier-rules', requirePerm('inventory.po.manage'), async (req, res) => {
   try {
     if (hasPg && pgPool) {
@@ -1947,6 +2370,11 @@ router.get('/purchase-orders', requirePerm('inventory.po.manage'), async (req, r
       `
       const poRows = await pgPool.query(sql, values)
       const rows = poRows.rows || []
+      for (const row of rows) {
+        if (!String((row as any)?.po_no || '').trim()) {
+          ;(row as any).po_no = await ensurePurchaseOrderNo(pgPool, row)
+        }
+      }
       if (!rows.length) return res.json([])
 
       const supplierIds = Array.from(new Set(rows.map((r: any) => String(r.supplier_id || '')).filter(Boolean)))
@@ -2110,14 +2538,23 @@ router.post('/purchase-orders', requirePerm('inventory.po.manage'), async (req, 
     const supplierIdExplicit = String(parsed.data.supplier_id || '').trim()
     const pool = pgPool
     if (!pool) throw new Error('db not ready')
-    const regionExplicit = String(parsed.data.region || '').trim()
+    let regionExplicit = String(parsed.data.region || '').trim()
+    const propertyIdExplicit = String(parsed.data.property_id || '').trim()
+    let propertyRow: any = null
+    if (propertyIdExplicit) {
+      const propRes = await pool.query(`SELECT id, region FROM properties WHERE id = $1`, [propertyIdExplicit])
+      propertyRow = propRes.rows?.[0] || null
+      if (!regionExplicit && propertyRow?.region) regionExplicit = String(propertyRow.region || '').trim()
+    }
     let regionFinal = regionExplicit
     const supplier_id = supplierIdExplicit || (regionFinal ? await pickSupplierIdForRegion(regionFinal) : null)
     if (!supplier_id) return res.status(400).json({ message: '无法确定供应商，请手动选择 supplier_id' })
 
     const poId = uuidv4()
     const created_by = actorId(req)
-    const warehouseFinal = 'wh.south_melbourne'
+    const smWarehouse = await getSmWarehouse()
+    const warehouseDefault = smWarehouse?.id ? String(smWarehouse.id) : 'wh.south_melbourne'
+    const warehouseFinal = String(parsed.data.warehouse_id || '').trim() || warehouseDefault
     const orderedDate = String(parsed.data.ordered_date || '').trim()
 
     const result = await pgRunInTransaction(async (client) => {
@@ -2133,12 +2570,15 @@ router.post('/purchase-orders', requirePerm('inventory.po.manage'), async (req, 
           orderedDate,
           parsed.data.requested_delivery_date ? parsed.data.requested_delivery_date : null,
           regionFinal || null,
-          null,
+          propertyIdExplicit || null,
           parsed.data.note || null,
           created_by,
         ],
       )
+      await ensurePurchaseOrderNo(client, poRow.rows?.[0] || { id: poId, ordered_date: orderedDate })
+      const poRowWithNo = await client.query(`SELECT * FROM purchase_orders WHERE id = $1`, [poId])
 
+      const priceMap = await getLatestSupplierItemPrice(client, supplier_id)
       const qtyByItem = new Map<string, number>()
       const metaByItem = new Map<string, { unit_price: number | null; note: string | null; unit: string | null }>()
 
@@ -2147,7 +2587,12 @@ router.post('/purchase-orders', requirePerm('inventory.po.manage'), async (req, 
           const item_id = String(ln.item_id)
           const qty = Number(ln.quantity || 0)
           qtyByItem.set(item_id, (qtyByItem.get(item_id) || 0) + qty)
-          metaByItem.set(item_id, { unit_price: ln.unit_price ?? null, note: ln.note || null, unit: ln.unit || null })
+          const priceRow = priceMap.get(item_id)
+          metaByItem.set(item_id, {
+            unit_price: ln.unit_price ?? (priceRow ? Number(priceRow.purchase_unit_price || 0) : null),
+            note: ln.note || null,
+            unit: ln.unit || null,
+          })
           continue
         }
         if (ln.room_type_code) {
@@ -2179,15 +2624,24 @@ router.post('/purchase-orders', requirePerm('inventory.po.manage'), async (req, 
         if (!unit) throw new Error('unit missing')
         const lineId = uuidv4()
         const row = await client.query(
-          `INSERT INTO purchase_order_lines (id, po_id, item_id, quantity, unit, unit_price, note)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)
+          `INSERT INTO purchase_order_lines (id, po_id, item_id, quantity, unit, unit_price, amount_total, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
            RETURNING *`,
-          [lineId, poId, item_id, quantity, unit, meta.unit_price, meta.note],
+          [
+            lineId,
+            poId,
+            item_id,
+            quantity,
+            unit,
+            meta.unit_price,
+            meta.unit_price === null || meta.unit_price === undefined ? null : Number(meta.unit_price) * Number(quantity || 0),
+            meta.note,
+          ],
         )
         linesOut.push(row.rows?.[0] || null)
       }
 
-      return { po: poRow.rows?.[0] || null, lines: linesOut }
+      return { po: poRowWithNo.rows?.[0] || poRow.rows?.[0] || null, lines: linesOut }
     })
 
     addAudit('PurchaseOrder', poId, 'create', null, result, actorId(req))
@@ -2211,6 +2665,9 @@ router.get('/purchase-orders/:id', requirePerm('inventory.po.manage'), async (re
       [id],
     )
     if (!po.rows?.[0]) return res.status(404).json({ message: 'po not found' })
+    if (!String(po.rows?.[0]?.po_no || '').trim()) {
+      po.rows[0].po_no = await ensurePurchaseOrderNo(pgPool, po.rows[0])
+    }
     const lines = await pgPool.query(
       `SELECT l.*, i.name AS item_name, i.sku AS item_sku
        FROM purchase_order_lines l
@@ -2360,6 +2817,712 @@ router.post('/purchase-orders/:id/deliveries', requirePerm('inventory.po.manage'
     if (!(result as any)?.ok) return res.status((result as any).code).json({ message: (result as any).message })
     addAudit('PurchaseDelivery', (result as any)?.delivery?.id || po_id, 'create', null, result, actorId(req))
     return res.status(201).json(result)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.get('/deliveries', requirePerm('inventory.view'), async (req, res) => {
+  try {
+    if (!(hasPg && pgPool)) return res.json([])
+    await ensureInventorySchema()
+    const q: any = req.query || {}
+    const supplierId = String(q.supplier_id || '').trim()
+    const warehouseId = String(q.warehouse_id || '').trim()
+    const category = String(q.category || '').trim()
+    const from = String(q.from || '').trim()
+    const to = String(q.to || '').trim()
+
+    const where: string[] = []
+    const values: any[] = []
+    if (supplierId) { values.push(supplierId); where.push(`po.supplier_id = $${values.length}`) }
+    if (warehouseId) { values.push(warehouseId); where.push(`po.warehouse_id = $${values.length}`) }
+    if (from) { values.push(from); where.push(`d.received_at >= $${values.length}::timestamptz`) }
+    if (to) { values.push(to); where.push(`d.received_at <= $${values.length}::timestamptz`) }
+    if (category) {
+      values.push(category)
+      where.push(`EXISTS (
+        SELECT 1
+        FROM purchase_delivery_lines dl
+        JOIN inventory_items i ON i.id = dl.item_id
+        WHERE dl.delivery_id = d.id
+          AND i.category = $${values.length}
+      )`)
+    }
+    const rows = await pgPool.query(
+      `SELECT d.id, d.po_id, d.received_at, d.received_by, d.note,
+              po.supplier_id, po.warehouse_id,
+              s.name AS supplier_name,
+              w.code AS warehouse_code, w.name AS warehouse_name,
+              COUNT(dl.id)::int AS line_count,
+              COALESCE(SUM(dl.quantity_received),0)::int AS quantity_total
+       FROM purchase_deliveries d
+       JOIN purchase_orders po ON po.id = d.po_id
+       JOIN suppliers s ON s.id = po.supplier_id
+       JOIN warehouses w ON w.id = po.warehouse_id
+       LEFT JOIN purchase_delivery_lines dl ON dl.delivery_id = d.id
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       GROUP BY d.id, d.po_id, d.received_at, d.received_by, d.note, po.supplier_id, po.warehouse_id, s.name, w.code, w.name
+       ORDER BY d.received_at DESC
+       LIMIT 200`,
+      values,
+    )
+    return res.json(rows.rows || [])
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+const optionalNonEmptyString = z.preprocess((v) => {
+  if (v === undefined || v === null) return undefined
+  const s = String(v).trim()
+  return s ? s : undefined
+}, z.string().min(1).optional())
+
+const supplierItemPriceSchema = z.object({
+  supplier_id: z.string().min(1),
+  item_id: optionalNonEmptyString,
+  linen_type_code: optionalNonEmptyString,
+  purchase_unit_price: z.number().min(0),
+  refund_unit_price: z.number().min(0).optional(),
+  effective_from: z.string().optional(),
+  active: z.boolean().optional(),
+})
+
+router.get('/supplier-item-prices', requirePerm('inventory.po.manage'), async (req, res) => {
+  try {
+    if (!(hasPg && pgPool)) return res.json([])
+    await ensureInventorySchema()
+    const supplierId = String((req.query as any)?.supplier_id || '').trim()
+    const itemId = String((req.query as any)?.item_id || '').trim()
+    const active = String((req.query as any)?.active || '').trim().toLowerCase()
+    const where: string[] = []
+    const values: any[] = []
+    if (supplierId) { values.push(supplierId); where.push(`sip.supplier_id = $${values.length}`) }
+    if (itemId) { values.push(itemId); where.push(`sip.item_id = $${values.length}`) }
+    if (active === 'true' || active === 'false') { values.push(active === 'true'); where.push(`sip.active = $${values.length}`) }
+    const rows = await pgPool.query(
+      `SELECT sip.*, s.name AS supplier_name, i.name AS item_name, i.sku AS item_sku, i.linen_type_code
+       FROM supplier_item_prices sip
+       JOIN suppliers s ON s.id = sip.supplier_id
+       JOIN inventory_items i ON i.id = sip.item_id
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY s.name ASC, i.name ASC, COALESCE(sip.effective_from, DATE '1970-01-01') DESC`,
+      values,
+    )
+    return res.json(rows.rows || [])
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.post('/supplier-item-prices', requirePerm('inventory.po.manage'), async (req, res) => {
+  const parsed = supplierItemPriceSchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const body = parsed.data
+    let itemId = String(body.item_id || '').trim()
+    if (!itemId && body.linen_type_code) {
+      const item = await ensureLinenInventoryItem(pgPool, String(body.linen_type_code))
+      itemId = String(item?.id || '')
+    }
+    if (!itemId) return res.status(400).json({ message: 'item_id required' })
+    const id = uuidv4()
+    const row = await pgPool.query(
+      `INSERT INTO supplier_item_prices (id, supplier_id, item_id, purchase_unit_price, refund_unit_price, effective_from, active, updated_at)
+       VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')::date,$7,now())
+       ON CONFLICT (supplier_id, item_id)
+       DO UPDATE SET purchase_unit_price = EXCLUDED.purchase_unit_price,
+                     refund_unit_price = EXCLUDED.refund_unit_price,
+                     effective_from = EXCLUDED.effective_from,
+                     active = EXCLUDED.active,
+                     updated_at = now()
+       RETURNING *`,
+      [id, body.supplier_id, itemId, body.purchase_unit_price, body.refund_unit_price ?? body.purchase_unit_price, body.effective_from || null, body.active ?? true],
+    )
+    return res.status(201).json(row.rows?.[0] || null)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.patch('/supplier-item-prices/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+  const parsed = supplierItemPriceSchema.partial().safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const id = String(req.params.id || '')
+    const payload = parsed.data as any
+    const keys = Object.keys(payload).filter((k) => payload[k] !== undefined)
+    if (!keys.length) return res.json(null)
+    const sets = keys.map((k, i) => k === 'effective_from' ? `"${k}" = NULLIF($${i + 1}, '')::date` : `"${k}" = $${i + 1}`).join(', ')
+    const values = keys.map((k) => payload[k])
+    const row = await pgPool.query(
+      `UPDATE supplier_item_prices
+       SET ${sets}, updated_at = now()
+       WHERE id = $${keys.length + 1}
+       RETURNING *`,
+      [...values, id],
+    )
+    return res.json(row.rows?.[0] || null)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.delete('/supplier-item-prices/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const id = String(req.params.id || '')
+    const before = await pgPool.query(`SELECT * FROM supplier_item_prices WHERE id = $1`, [id])
+    const row = before.rows?.[0]
+    if (!row) return res.status(404).json({ message: 'not found' })
+    await pgPool.query(`DELETE FROM supplier_item_prices WHERE id = $1`, [id])
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.get('/linen/reserve-policies', requirePerm('inventory.view'), async (req, res) => {
+  try {
+    if (!(hasPg && pgPool)) return res.json([])
+    await ensureInventorySchema()
+    const warehouseId = String((req.query as any)?.warehouse_id || '').trim()
+    const rows = await pgPool.query(
+      `SELECT p.id, p.warehouse_id, p.item_id, p.reserve_qty, w.code AS warehouse_code, w.name AS warehouse_name,
+              i.name AS item_name, i.sku AS item_sku, i.linen_type_code
+       FROM inventory_stock_policies p
+       JOIN warehouses w ON w.id = p.warehouse_id
+       JOIN inventory_items i ON i.id = p.item_id
+       ${warehouseId ? 'WHERE p.warehouse_id = $1' : ''}
+       ORDER BY w.code ASC, i.name ASC`,
+      warehouseId ? [warehouseId] : [],
+    )
+    return res.json(rows.rows || [])
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+const reservePolicySchema = z.object({
+  warehouse_id: z.string().min(1),
+  item_id: z.string().min(1),
+  reserve_qty: z.number().int().min(0),
+})
+
+router.put('/linen/reserve-policies', requirePerm('inventory.item.manage'), async (req, res) => {
+  const parsed = reservePolicySchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const body = parsed.data
+    const id = `reserve.${body.warehouse_id}.${body.item_id}`
+    const row = await pgPool.query(
+      `INSERT INTO inventory_stock_policies (id, warehouse_id, item_id, reserve_qty, updated_at)
+       VALUES ($1,$2,$3,$4,now())
+       ON CONFLICT (warehouse_id, item_id)
+       DO UPDATE SET reserve_qty = EXCLUDED.reserve_qty, updated_at = now()
+       RETURNING *`,
+      [id, body.warehouse_id, body.item_id, body.reserve_qty],
+    )
+    return res.json(row.rows?.[0] || null)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.get('/linen/dashboard', requirePerm('inventory.view'), async (req, res) => {
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const client = pgPool
+    const smWarehouse = await getSmWarehouse()
+    const smWarehouseId = String(smWarehouse?.id || '')
+    const [warehousesRes, itemsRes, stocksRes, roomRes, pendingRefundRes] = await Promise.all([
+      client.query(`SELECT id, code, name, linen_capacity_sets, active FROM warehouses WHERE active = true ORDER BY code ASC`),
+      client.query(`SELECT id, name, sku, linen_type_code FROM inventory_items WHERE category = 'linen' AND active = true ORDER BY name ASC`),
+      client.query(`SELECT warehouse_id, item_id, quantity FROM warehouse_stocks WHERE item_id IN (SELECT id FROM inventory_items WHERE category = 'linen')`),
+      getRoomTypeRequirementMaps(client),
+      client.query(`SELECT COALESCE(SUM(expected_amount - received_amount),0) AS pending_amount FROM linen_supplier_refunds WHERE status <> 'settled'`),
+    ])
+    const warehouses = warehousesRes.rows || []
+    const items = itemsRes.rows || []
+    const reserveMap = smWarehouseId ? await getLinenReserveMap(client, smWarehouseId) : new Map<string, number>()
+    const itemMap = new Map<string, any>(items.map((r: any) => [String(r.id), r]))
+    const countsByWarehouse = new Map<string, Record<string, number>>()
+    for (const row of stocksRes.rows || []) {
+      const warehouseId = String(row.warehouse_id || '')
+      if (!countsByWarehouse.has(warehouseId)) countsByWarehouse.set(warehouseId, {})
+      const item = itemMap.get(String(row.item_id || ''))
+      const linenTypeCode = String(item?.linen_type_code || '')
+      if (!linenTypeCode) continue
+      countsByWarehouse.get(warehouseId)![linenTypeCode] = Number(countsByWarehouse.get(warehouseId)![linenTypeCode] || 0) + Number(row.quantity || 0)
+    }
+    const dispatchableByType: Record<string, number> = {}
+    if (smWarehouseId) {
+      for (const item of items) {
+        const itemId = String(item.id)
+        const linenTypeCode = String(item.linen_type_code || '')
+        const qty = Number((countsByWarehouse.get(smWarehouseId) || {})[linenTypeCode] || 0)
+        const reserveQty = Number(reserveMap.get(itemId) || 0)
+        dispatchableByType[linenTypeCode] = Math.max(0, qty - reserveQty)
+      }
+    }
+    const roomTypes = roomRes.roomTypes || []
+    const rows = warehouses.map((warehouse: any) => {
+      const counts = countsByWarehouse.get(String(warehouse.id)) || {}
+      const availableSetsByRoomType: Record<string, number> = {}
+      for (const roomType of roomTypes) {
+        availableSetsByRoomType[String(roomType.code)] = computeSetsForRoomType(counts, roomRes.reqMap.get(String(roomType.code)))
+      }
+      return {
+        warehouse_id: warehouse.id,
+        warehouse_code: warehouse.code,
+        warehouse_name: warehouse.name,
+        linen_capacity_sets: warehouse.linen_capacity_sets,
+        is_sm: isSmWarehouseRow(warehouse),
+        counts_by_sub_type: counts,
+        available_sets_by_room_type: availableSetsByRoomType,
+      }
+    })
+    const pendingReturnRows = await client.query(
+      `SELECT i.linen_type_code,
+              COALESCE(SUM(CASE WHEN m.reason = 'return_from_subwarehouse' AND m.type = 'in' THEN m.quantity ELSE 0 END),0) -
+              COALESCE(SUM(CASE WHEN m.reason = 'return_to_supplier' AND m.type = 'out' THEN m.quantity ELSE 0 END),0) AS qty
+       FROM stock_movements m
+       JOIN inventory_items i ON i.id = m.item_id
+       WHERE i.category = 'linen'
+         AND m.warehouse_id = $1
+       GROUP BY i.linen_type_code`,
+      [smWarehouseId || ''],
+    )
+    const pendingReturnsByType: Record<string, number> = {}
+    for (const row of pendingReturnRows.rows || []) pendingReturnsByType[String(row.linen_type_code || '')] = Math.max(0, Number(row.qty || 0))
+    return res.json({
+      sm_warehouse_id: smWarehouseId || null,
+      room_types: roomTypes,
+      linen_items: items,
+      reserve_policies: items.map((item: any) => ({
+        item_id: item.id,
+        item_name: item.name,
+        item_sku: item.sku,
+        linen_type_code: item.linen_type_code,
+        reserve_qty: Number(reserveMap.get(String(item.id)) || 0),
+      })),
+      dispatchable_by_type: dispatchableByType,
+      pending_returns_by_type: pendingReturnsByType,
+      pending_refund_amount: Number(pendingRefundRes.rows?.[0]?.pending_amount || 0),
+      warehouses: rows,
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.get('/linen/delivery-suggestions', requirePerm('inventory.view'), async (req, res) => {
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const client = pgPool
+    const dateFrom = String((req.query as any)?.date_from || '').trim() || toDayStartIsoMelbourne(0).slice(0, 10)
+    const dateTo = String((req.query as any)?.date_to || '').trim() || toDayStartIsoMelbourne(7).slice(0, 10)
+    const vehicleCapacitySets = Math.max(1, Number((req.query as any)?.vehicle_capacity_sets || 80))
+    const smWarehouse = await getSmWarehouse()
+    const warehousesRes = await client.query(`SELECT id, code, name, linen_capacity_sets FROM warehouses WHERE active = true ORDER BY code ASC`)
+    const warehouses = warehousesRes.rows || []
+    const smWarehouseId = String(smWarehouse?.id || '')
+    const [roomData, itemsRes, stocksRes, ordersRes] = await Promise.all([
+      getRoomTypeRequirementMaps(client),
+      client.query(`SELECT id, name, sku, linen_type_code FROM inventory_items WHERE category = 'linen' AND active = true`),
+      client.query(`SELECT warehouse_id, item_id, quantity FROM warehouse_stocks WHERE item_id IN (SELECT id FROM inventory_items WHERE category = 'linen')`),
+      client.query(
+        `SELECT o.id, substring(o.checkout::text,1,10) AS checkout_day, p.id AS property_id, p.code AS property_code, p.region,
+                p.room_type_code, p.linen_service_warehouse_id
+         FROM orders o
+         JOIN properties p ON p.id = o.property_id
+         WHERE substring(o.checkout::text,1,10) >= $1
+           AND substring(o.checkout::text,1,10) <= $2
+           AND lower(coalesce(o.status,'')) NOT LIKE '%cancel%'
+           AND lower(coalesce(o.status,'')) NOT LIKE '%void%'`,
+        [dateFrom, dateTo],
+      ),
+    ])
+    const items = itemsRes.rows || []
+    const itemMap = new Map<string, any>(items.map((r: any) => [String(r.id), r]))
+    const reserveMap = smWarehouseId ? await getLinenReserveMap(client, smWarehouseId) : new Map<string, number>()
+    const countsByWarehouse = new Map<string, Record<string, number>>()
+    for (const row of stocksRes.rows || []) {
+      const warehouseId = String(row.warehouse_id || '')
+      if (!countsByWarehouse.has(warehouseId)) countsByWarehouse.set(warehouseId, {})
+      const item = itemMap.get(String(row.item_id || ''))
+      const linenTypeCode = String(item?.linen_type_code || '')
+      if (!linenTypeCode) continue
+      countsByWarehouse.get(warehouseId)![linenTypeCode] = Number(countsByWarehouse.get(warehouseId)![linenTypeCode] || 0) + Number(row.quantity || 0)
+    }
+    const dispatchableByType: Record<string, number> = {}
+    for (const item of items) {
+      const itemId = String(item.id)
+      const linenTypeCode = String(item.linen_type_code || '')
+      const qty = Number((countsByWarehouse.get(smWarehouseId) || {})[linenTypeCode] || 0)
+      const reserveQty = Number(reserveMap.get(itemId) || 0)
+      dispatchableByType[linenTypeCode] = Math.max(0, qty - reserveQty)
+    }
+    const demandMap = new Map<string, Map<string, number>>()
+    const unmatchedProperties: any[] = []
+    for (const orderRow of ordersRes.rows || []) {
+      const warehouseId = resolveWarehouseForProperty(orderRow, warehouses)
+      const roomTypeCode = String(orderRow.room_type_code || '')
+      if (!warehouseId || !roomTypeCode) {
+        unmatchedProperties.push({
+          property_id: orderRow.property_id,
+          property_code: orderRow.property_code,
+          room_type_code: roomTypeCode || null,
+          warehouse_id: warehouseId || null,
+        })
+        continue
+      }
+      if (!demandMap.has(warehouseId)) demandMap.set(warehouseId, new Map())
+      demandMap.get(warehouseId)!.set(roomTypeCode, Number(demandMap.get(warehouseId)!.get(roomTypeCode) || 0) + 1)
+    }
+    const lines: any[] = []
+    let vehicleRemaining = vehicleCapacitySets
+    for (const warehouse of warehouses.filter((w: any) => !isSmWarehouseRow(w))) {
+      const warehouseId = String(warehouse.id)
+      const counts = countsByWarehouse.get(warehouseId) || {}
+      for (const roomType of roomData.roomTypes || []) {
+        const roomTypeCode = String(roomType.code || '')
+        const currentSets = computeSetsForRoomType(counts, roomData.reqMap.get(roomTypeCode))
+        const demandSets = Number(demandMap.get(warehouseId)?.get(roomTypeCode) || 0)
+        const capacitySets = Number(warehouse.linen_capacity_sets || 0)
+        const targetSets = capacitySets > 0 ? Math.min(capacitySets, demandSets) : demandSets
+        let suggestedSets = Math.max(0, targetSets - currentSets)
+        if (suggestedSets <= 0 || vehicleRemaining <= 0) continue
+        const reqs = roomData.reqMap.get(roomTypeCode)
+        if (!reqs || !reqs.size) continue
+        let maxByDispatchable = suggestedSets
+        for (const [linenTypeCode, quantity] of reqs.entries()) {
+          maxByDispatchable = Math.min(maxByDispatchable, Math.floor(Number(dispatchableByType[linenTypeCode] || 0) / Math.max(1, quantity)))
+        }
+        suggestedSets = Math.max(0, Math.min(suggestedSets, maxByDispatchable, vehicleRemaining))
+        if (suggestedSets <= 0) continue
+        for (const [linenTypeCode, quantity] of reqs.entries()) {
+          dispatchableByType[linenTypeCode] = Math.max(0, Number(dispatchableByType[linenTypeCode] || 0) - suggestedSets * quantity)
+        }
+        vehicleRemaining -= suggestedSets
+        lines.push({
+          to_warehouse_id: warehouseId,
+          to_warehouse_code: warehouse.code,
+          to_warehouse_name: warehouse.name,
+          room_type_code: roomTypeCode,
+          room_type_name: roomType.name,
+          current_sets: currentSets,
+          demand_sets: demandSets,
+          target_sets: targetSets,
+          suggested_sets: suggestedSets,
+          warehouse_capacity_sets: capacitySets || null,
+          vehicle_load_sets: suggestedSets,
+        })
+      }
+    }
+    lines.sort((a, b) => Number(b.demand_sets - b.current_sets) - Number(a.demand_sets - a.current_sets))
+    return res.json({
+      from_warehouse_id: smWarehouseId || null,
+      from_warehouse_name: smWarehouse?.name || null,
+      date_from: dateFrom,
+      date_to: dateTo,
+      vehicle_capacity_sets: vehicleCapacitySets,
+      vehicle_remaining_sets: vehicleRemaining,
+      unmatched_properties: unmatchedProperties,
+      lines,
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+const linenDeliveryPlanCreateSchema = z.object({
+  plan_date: z.string().min(1),
+  date_from: z.string().optional(),
+  date_to: z.string().optional(),
+  from_warehouse_id: z.string().min(1),
+  vehicle_capacity_sets: z.number().int().min(1).optional(),
+  note: z.string().optional(),
+  lines: z.array(z.object({
+    to_warehouse_id: z.string().min(1),
+    room_type_code: z.string().min(1),
+    current_sets: z.number().int().min(0),
+    demand_sets: z.number().int().min(0),
+    target_sets: z.number().int().min(0),
+    suggested_sets: z.number().int().min(0),
+    warehouse_capacity_sets: z.number().int().nullable().optional(),
+    vehicle_load_sets: z.number().int().min(0).optional(),
+    note: z.string().optional(),
+  })).min(1),
+})
+
+router.get('/linen/delivery-plans', requirePerm('inventory.view'), async (req, res) => {
+  try {
+    if (!(hasPg && pgPool)) return res.json([])
+    await ensureInventorySchema()
+    const rows = await pgPool.query(
+      `SELECT p.*, fw.code AS from_warehouse_code, fw.name AS from_warehouse_name,
+              COUNT(l.id)::int AS line_count,
+              COALESCE(SUM(l.actual_sets),0)::int AS actual_sets_total,
+              COALESCE(SUM(l.suggested_sets),0)::int AS suggested_sets_total
+       FROM linen_delivery_plans p
+       JOIN warehouses fw ON fw.id = p.from_warehouse_id
+       LEFT JOIN linen_delivery_plan_lines l ON l.plan_id = p.id
+       GROUP BY p.id, fw.code, fw.name
+       ORDER BY p.plan_date DESC, p.created_at DESC
+       LIMIT 100`,
+    )
+    return res.json(rows.rows || [])
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.post('/linen/delivery-plans', requirePerm('inventory.move'), async (req, res) => {
+  const parsed = linenDeliveryPlanCreateSchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const body = parsed.data
+    const planId = uuidv4()
+    const result = await pgRunInTransaction(async (client) => {
+      const planRow = await client.query(
+        `INSERT INTO linen_delivery_plans (id, plan_date, from_warehouse_id, date_from, date_to, vehicle_capacity_sets, status, note, created_by)
+         VALUES ($1,$2::date,$3,NULLIF($4,'')::date,NULLIF($5,'')::date,$6,'planned',$7,$8)
+         RETURNING *`,
+        [planId, body.plan_date, body.from_warehouse_id, body.date_from || null, body.date_to || null, body.vehicle_capacity_sets ?? null, body.note || null, actorId(req)],
+      )
+      const lines: any[] = []
+      for (const line of body.lines) {
+        const row = await client.query(
+          `INSERT INTO linen_delivery_plan_lines (id, plan_id, to_warehouse_id, room_type_code, current_sets, demand_sets, target_sets, suggested_sets, actual_sets, warehouse_capacity_sets, vehicle_load_sets, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,$9,$10,$11)
+           RETURNING *`,
+          [uuidv4(), planId, line.to_warehouse_id, line.room_type_code, line.current_sets, line.demand_sets, line.target_sets, line.suggested_sets, line.warehouse_capacity_sets ?? null, line.vehicle_load_sets ?? line.suggested_sets, line.note || null],
+        )
+        lines.push(row.rows?.[0] || null)
+      }
+      return { plan: planRow.rows?.[0] || null, lines }
+    })
+    return res.status(201).json(result)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+const linenReturnIntakeSchema = z.object({
+  from_warehouse_id: z.string().min(1),
+  quantity: z.number().int().min(1),
+  item_id: z.string().min(1),
+  note: z.string().optional(),
+})
+
+router.post('/linen/return-intakes', requirePerm('inventory.move'), async (req, res) => {
+  const parsed = linenReturnIntakeSchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const smWarehouse = await getSmWarehouse()
+    const smWarehouseId = String(smWarehouse?.id || '')
+    const intakeId = uuidv4()
+    const result = await pgRunInTransaction(async (client) => {
+      const out = await applyStockDeltaInTx(client, {
+        warehouse_id: parsed.data.from_warehouse_id,
+        item_id: parsed.data.item_id,
+        type: 'out',
+        quantity: parsed.data.quantity,
+        reason: 'return_from_subwarehouse',
+        ref_type: 'linen_return_intake',
+        ref_id: intakeId,
+        actor_id: actorId(req),
+        note: parsed.data.note || null,
+      })
+      if (!out.ok) return out
+      const inn = await applyStockDeltaInTx(client, {
+        warehouse_id: smWarehouseId,
+        item_id: parsed.data.item_id,
+        type: 'in',
+        quantity: parsed.data.quantity,
+        reason: 'return_from_subwarehouse',
+        ref_type: 'linen_return_intake',
+        ref_id: intakeId,
+        actor_id: actorId(req),
+        note: parsed.data.note || null,
+      })
+      if (!inn.ok) return inn
+      return { ok: true as const, intake_id: intakeId }
+    })
+    if (!(result as any)?.ok) return res.status((result as any).code).json({ message: (result as any).message })
+    return res.status(201).json(result)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+const supplierReturnBatchSchema = z.object({
+  supplier_id: z.string().min(1),
+  warehouse_id: z.string().optional(),
+  returned_at: z.string().optional(),
+  note: z.string().optional(),
+  lines: z.array(z.object({
+    item_id: z.string().min(1),
+    quantity: z.number().int().min(1),
+    refund_unit_price: z.number().min(0).optional(),
+    note: z.string().optional(),
+  })).min(1),
+})
+
+router.get('/linen/supplier-return-batches', requirePerm('inventory.view'), async (req, res) => {
+  try {
+    if (!(hasPg && pgPool)) return res.json([])
+    await ensureInventorySchema()
+    const rows = await pgPool.query(
+      `SELECT b.*, s.name AS supplier_name, w.code AS warehouse_code, w.name AS warehouse_name,
+              COALESCE(SUM(l.quantity),0)::int AS quantity_total,
+              COALESCE(SUM(l.amount_total),0) AS amount_total
+       FROM linen_supplier_return_batches b
+       JOIN suppliers s ON s.id = b.supplier_id
+       JOIN warehouses w ON w.id = b.warehouse_id
+       LEFT JOIN linen_supplier_return_batch_lines l ON l.batch_id = b.id
+       GROUP BY b.id, s.name, w.code, w.name
+       ORDER BY COALESCE(b.returned_at, b.created_at) DESC
+       LIMIT 100`,
+    )
+    return res.json(rows.rows || [])
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.post('/linen/supplier-return-batches', requirePerm('inventory.move'), async (req, res) => {
+  const parsed = supplierReturnBatchSchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const smWarehouse = await getSmWarehouse()
+    const warehouseId = String(parsed.data.warehouse_id || smWarehouse?.id || '').trim()
+    const batchId = uuidv4()
+    const result = await pgRunInTransaction(async (client) => {
+      const priceMap = await getLatestSupplierItemPrice(client, parsed.data.supplier_id)
+      const batchRow = await client.query(
+        `INSERT INTO linen_supplier_return_batches (id, supplier_id, warehouse_id, status, returned_at, note, created_by)
+         VALUES ($1,$2,$3,'returned',$4,$5,$6)
+         RETURNING *`,
+        [batchId, parsed.data.supplier_id, warehouseId, parsed.data.returned_at || new Date().toISOString(), parsed.data.note || null, actorId(req)],
+      )
+      const lines: any[] = []
+      let expectedAmount = 0
+      for (const line of parsed.data.lines) {
+        const priceRow = priceMap.get(String(line.item_id))
+        const refundUnitPrice = line.refund_unit_price ?? (priceRow ? Number(priceRow.refund_unit_price || 0) : 0)
+        const amountTotal = Number(refundUnitPrice || 0) * Number(line.quantity || 0)
+        const row = await client.query(
+          `INSERT INTO linen_supplier_return_batch_lines (id, batch_id, item_id, quantity, refund_unit_price, amount_total, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
+           RETURNING *`,
+          [uuidv4(), batchId, line.item_id, line.quantity, refundUnitPrice, amountTotal, line.note || null],
+        )
+        lines.push(row.rows?.[0] || null)
+        expectedAmount += amountTotal
+        const applied = await applyStockDeltaInTx(client, {
+          warehouse_id: warehouseId,
+          item_id: line.item_id,
+          type: 'out',
+          quantity: line.quantity,
+          reason: 'return_to_supplier',
+          actor_id: actorId(req),
+          note: parsed.data.note || null,
+          ref_type: 'linen_supplier_return_batch',
+          ref_id: batchId,
+        })
+        if (!applied.ok) return applied
+      }
+      const refundRow = await client.query(
+        `INSERT INTO linen_supplier_refunds (id, batch_id, supplier_id, warehouse_id, expected_amount, received_amount, variance_amount, status, note, updated_at)
+         VALUES ($1,$2,$3,$4,$5,0,$6,'pending',$7,now())
+         RETURNING *`,
+        [uuidv4(), batchId, parsed.data.supplier_id, warehouseId, expectedAmount, 0 - expectedAmount, parsed.data.note || null],
+      )
+      await client.query(`UPDATE linen_supplier_return_batches SET updated_at = now() WHERE id = $1`, [batchId])
+      return { ok: true as const, batch: batchRow.rows?.[0] || null, lines, refund: refundRow.rows?.[0] || null }
+    })
+    if (!(result as any)?.ok) return res.status((result as any).code).json({ message: (result as any).message })
+    return res.status(201).json(result)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.get('/linen/supplier-refunds', requirePerm('inventory.view'), async (req, res) => {
+  try {
+    if (!(hasPg && pgPool)) return res.json([])
+    await ensureInventorySchema()
+    const rows = await pgPool.query(
+      `SELECT r.*, s.name AS supplier_name, w.code AS warehouse_code, w.name AS warehouse_name
+       FROM linen_supplier_refunds r
+       JOIN suppliers s ON s.id = r.supplier_id
+       JOIN warehouses w ON w.id = r.warehouse_id
+       ORDER BY r.created_at DESC
+       LIMIT 100`,
+    )
+    return res.json(rows.rows || [])
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+const supplierRefundPatchSchema = z.object({
+  received_amount: z.number().min(0).optional(),
+  status: z.enum(['pending', 'partial', 'settled', 'disputed']).optional(),
+  received_at: z.string().optional(),
+  note: z.string().optional(),
+})
+
+router.patch('/linen/supplier-refunds/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+  const parsed = supplierRefundPatchSchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const id = String(req.params.id || '')
+    const before = await pgPool.query(`SELECT * FROM linen_supplier_refunds WHERE id = $1`, [id])
+    const row = before.rows?.[0]
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const nextReceivedAmount = parsed.data.received_amount ?? Number(row.received_amount || 0)
+    const expectedAmount = Number(row.expected_amount || 0)
+    let nextStatus = parsed.data.status
+    if (!nextStatus) {
+      if (nextReceivedAmount <= 0) nextStatus = 'pending'
+      else if (Math.abs(nextReceivedAmount - expectedAmount) < 0.0001) nextStatus = 'settled'
+      else if (nextReceivedAmount < expectedAmount) nextStatus = 'partial'
+      else nextStatus = 'disputed'
+    }
+    const updated = await pgPool.query(
+      `UPDATE linen_supplier_refunds
+       SET received_amount = $1,
+           variance_amount = $1 - expected_amount,
+           status = $2,
+           received_at = COALESCE(NULLIF($3,'')::timestamptz, received_at),
+           note = COALESCE($4, note),
+           updated_at = now()
+       WHERE id = $5
+       RETURNING *`,
+      [nextReceivedAmount, nextStatus, parsed.data.received_at || null, parsed.data.note || null, id],
+    )
+    return res.json(updated.rows?.[0] || null)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
   }

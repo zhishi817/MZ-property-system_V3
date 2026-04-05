@@ -76,6 +76,12 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out
 }
 
+type PageSection = {
+  label: string
+  images?: PhotoPackEmbeddedImage[]
+  missingText?: string
+}
+
 function renderRecordHeader(record: PhotoPackTemplateRecord, showChinese: boolean) {
   const labelJob = showChinese ? '工单编号  JOB NUMBER' : 'JOB NUMBER'
   const labelCompletion = showChinese ? '完成时间  COMPLETION DATE' : 'COMPLETION DATE'
@@ -110,35 +116,27 @@ function renderRecordHeader(record: PhotoPackTemplateRecord, showChinese: boolea
   `
 }
 
-function renderPhasePage(record: PhotoPackTemplateRecord, showChinese: boolean, phaseLabel: string, images: PhotoPackEmbeddedImage[], pageIndex: number, totalPages: number) {
-  const continuation = totalPages > 1 ? ` ${showChinese ? `（第 ${pageIndex + 1}/${totalPages} 页）` : `(Page ${pageIndex + 1}/${totalPages})`}` : ''
+function renderRecordPage(record: PhotoPackTemplateRecord, showChinese: boolean, sections: PageSection[]) {
   return `
     <section class="page photo-page">
       ${renderRecordHeader(record, showChinese)}
-      <div class="phase-pack">
-        <div class="phase-head">
-          <div class="phase-text">${escapeHtml(phaseLabel + continuation)}</div>
-          <div class="phase-line"></div>
+      ${sections.map((section) => `
+        <div class="phase-pack">
+          <div class="phase-head">
+            <div class="phase-text">${escapeHtml(section.label)}</div>
+            <div class="phase-line"></div>
+          </div>
+          ${section.missingText
+            ? `<div class="missing-box">${escapeHtml(section.missingText)}</div>`
+            : `<div class="phase-grid">
+                ${(section.images || []).map((img) => `
+                  <div class="img-cell">
+                    <img src="${escapeHtml(img.dataUrl)}" alt="" />
+                  </div>
+                `).join('')}
+              </div>`}
         </div>
-        <div class="phase-grid">
-          ${images.map((img) => `
-            <div class="img-cell">
-              <img src="${escapeHtml(img.dataUrl)}" alt="" />
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    </section>
-  `
-}
-
-function renderMissingPage(record: PhotoPackTemplateRecord, showChinese: boolean, text: string) {
-  return `
-    <section class="page photo-page">
-      ${renderRecordHeader(record, showChinese)}
-      <div class="phase-pack">
-        <div class="missing-box">${escapeHtml(text)}</div>
-      </div>
+      `).join('')}
     </section>
   `
 }
@@ -155,24 +153,44 @@ export function renderMonthlyStatementPhotoPackHtml(input: MonthlyStatementPhoto
   for (const record of input.records || []) {
     const beforeLabel = showChinese ? 'Before（前）' : 'Before'
     const afterLabel = showChinese ? 'After（后）' : 'After'
+    const pageCapacity = 6
     const phases = [
       { label: beforeLabel, images: Array.isArray(record.beforeImages) ? record.beforeImages : [], rawCount: Number(record.beforeRawCount || 0) || 0 },
       { label: afterLabel, images: Array.isArray(record.afterImages) ? record.afterImages : [], rawCount: Number(record.afterRawCount || 0) || 0 },
     ]
     let renderedAny = false
+    let currentSections: PageSection[] = []
+    let usedSlots = 0
+    const flushPage = () => {
+      if (!currentSections.length) return
+      pages.push(renderRecordPage(record, showChinese, currentSections))
+      currentSections = []
+      usedSlots = 0
+    }
     for (const phase of phases) {
       if (phase.images.length > 0) {
-        const chunks = chunk(phase.images, 6)
         imageCount += phase.images.length
-        chunks.forEach((items, idx) => {
-          pages.push(renderPhasePage(record, showChinese, phase.label, items, idx, chunks.length))
-        })
+        let idx = 0
+        while (idx < phase.images.length) {
+          const remaining = pageCapacity - usedSlots
+          if (remaining <= 0) {
+            flushPage()
+            continue
+          }
+          const take = Math.min(remaining, phase.images.length - idx)
+          currentSections.push({ label: phase.label, images: phase.images.slice(idx, idx + take) })
+          usedSlots += take
+          idx += take
+          if (usedSlots >= pageCapacity) flushPage()
+        }
         renderedAny = true
       } else if (phase.rawCount > 0) {
         const msg = showChinese
           ? `${phase.label} 的图片均无法加载，请检查原始链接`
           : `All ${phase.label} images failed to load. Please verify the source links.`
-        pages.push(renderMissingPage(record, showChinese, msg))
+        flushPage()
+        currentSections.push({ label: phase.label, missingText: msg })
+        flushPage()
         renderedAny = true
       }
     }
@@ -180,8 +198,9 @@ export function renderMonthlyStatementPhotoPackHtml(input: MonthlyStatementPhoto
       const msg = record.missingNotice || (showChinese
         ? '该记录没有可用图片，请检查原始链接'
         : 'No usable images were available for this record.')
-      pages.push(renderMissingPage(record, showChinese, msg))
+      currentSections.push({ label: showChinese ? '照片缺失说明' : 'Missing Photos', missingText: msg })
     }
+    flushPage()
   }
 
   const html = `

@@ -1,5 +1,60 @@
 # Execution Records
 
+## 床品管理模块优化方案（按现有床品管理模块升级）
+
+- Date: 2026-04-05
+- Task: 床品管理模块优化方案（按现有床品管理模块升级）
+- Status: implemented
+
+### Confirmed Plan
+- 保留现有 `仓库管理 > 床品管理` 菜单结构，不新增独立一级模块，在现有床品页面下补齐业务闭环。
+- 统一 Ewash / PSL 到 `SM 总仓` 收货，采购单支持固定周期补货、供应商人工选择、自动带出床品单价与金额。
+- 床品库存调整为“总仓按件、分仓按套”的使用视图，并增加总仓 `压箱底安全库存` 跟踪。
+- 床品配送从日常调拨视角升级为按周补仓视角，基于未来窗口需求、车容量、分仓容量生成配送建议与计划。
+- 补齐脏床品回仓、返厂批次、退款核销、报损的链路，并在现有床品退货/报损页面内承载。
+
+### Implementation Result
+- `backend/src/modules/inventory.ts` 已新增床品升级所需 schema 与接口，包括：
+- `supplier_item_prices` 供应商床品价格表，支持采购价、退款价、生效日、启停。
+- `inventory_stock_policies` 安全库存策略，支持按总仓 + 床品设置保留件数。
+- `linen_delivery_plans / linen_delivery_plan_lines` 配送计划与计划明细。
+- `linen_supplier_return_batches / linen_supplier_return_batch_lines / linen_supplier_refunds` 返厂批次与退款核销台账。
+- 已新增床品专用接口：`/inventory/linen/dashboard`、`/inventory/linen/delivery-suggestions`、`/inventory/linen/delivery-plans`、`/inventory/linen/return-intakes`、`/inventory/linen/supplier-return-batches`、`/inventory/linen/supplier-refunds`、`/inventory/supplier-item-prices`、`/inventory/linen/reserve-policies`、`/inventory/deliveries`。
+- 采购单创建逻辑已修正为真正使用前端传入的 `warehouse_id / property_id / region`，并在有供应商价格时自动写入单价和明细金额，不再固定忽略页面输入。
+- `frontend/src/app/inventory/category/[category]/stocks/page.tsx` 已切换床品分类到专用库存看板 `LinenStocksDashboard`。
+- `frontend/src/app/inventory/category/[category]/deliveries/page.tsx` 已切换床品分类到专用配送页 `LinenTransfersView`。
+- `frontend/src/app/inventory/category/[category]/returns/page.tsx` 已切换床品分类到专用退回页 `LinenReturnsDamageView`。
+- `frontend/src/app/inventory/suppliers/page.tsx` 已扩展为“供应商列表 + 床品价格表”双 tab，支持维护采购价与退款价。
+- `frontend/src/app/inventory/purchase-orders/new/page.tsx` 已支持按床品明细或按房型套数建单，并展示自动带出的单价与金额合计。
+- `frontend/src/app/inventory/purchase-orders/[id]/page.tsx` 已补显示明细金额。
+- `frontend/src/lib/api.ts` 已新增 `putJSON` 以支持安全库存策略更新。
+- 已新增 migration：`backend/scripts/migrations/20260405_inventory_linen_upgrade.sql`。
+
+### Validation
+- `backend`: `npm run build` 通过。
+- `frontend`: `npm run build` 通过。
+- 前端构建过程中存在仓库内原有 ESLint warnings，但无新的阻塞型构建错误。
+
+### Files / Areas
+- `linen inventory`
+- `linen purchasing`
+- `linen delivery planning`
+- `linen supplier pricing`
+- `linen return / refund settlement`
+- `backend/src/modules/inventory.ts`
+- `backend/scripts/migrations/20260405_inventory_linen_upgrade.sql`
+- `frontend/src/app/inventory/_components/LinenStocksDashboard.tsx`
+- `frontend/src/app/inventory/_components/LinenTransfersView.tsx`
+- `frontend/src/app/inventory/_components/LinenReturnsDamageView.tsx`
+- `frontend/src/app/inventory/suppliers/page.tsx`
+- `frontend/src/app/inventory/purchase-orders/new/page.tsx`
+
+### Open Issues / Follow-ups
+- 当前配送建议已优先读取 `properties.linen_service_warehouse_id`，若未维护则退回到按 `region` 粗匹配仓库；后续建议在房源页面补出该字段的可视化编辑入口。
+- 分仓库存当前前端主视图已切成“按套”，但底层仍沿用件数换算；若后续需要更强的分仓套数独立审计，可继续补 dedicated 套数快照或盘点表。
+- 返厂退款目前已支持应收、实收、差异、状态管理；若后续需要和财务交易流水自动联动，还可继续接入 `finance` 模块做到账凭证映射。
+- 当前工作区仍有无关的 `backend/dist/modules/finance.js` 变更和 `.codex/environments/` 未跟踪内容，未包含在本次床品执行记录范围内。
+
 ## 房源月报链路优化方案 v2
 
 - Date: 2026-04-05
