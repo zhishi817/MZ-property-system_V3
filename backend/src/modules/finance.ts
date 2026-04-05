@@ -23,6 +23,7 @@ import { computeMonthSegmentsForOrders, sumSegmentsVisibleNetIncome } from '../l
 import { countPhotoUrls, loadMonthlyStatementPhotoRows, recordHasPhotoUrls } from '../lib/monthlyStatementPhotoRecords'
 import { ensureManagementFeeRulesTable, resolveManagementFeeRateForMonth } from '../lib/managementFeeRules'
 import { generateStatementPhotoPackPdf, type StatementPhotoPackSection } from '../lib/monthlyStatementPhotoPack'
+import { collectMonthlyInvoiceAttachments } from '../lib/monthlyStatementInvoiceAttachments'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -407,6 +408,7 @@ async function ensureAutoExpenseSchema(client: any) {
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_title text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_summary text;')
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
+  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_month ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;')
@@ -419,6 +421,7 @@ async function ensureAutoExpenseSchema(client: any) {
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_title text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_summary text;')
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_ref ON company_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
+  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_fixed_month ON company_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
 }
 
 async function autoUpsertPropertyExpenseByRef(client: any, input: { propertyId: string, occurredAt: string, amount: number, categoryDetail: string, generatedFrom: string, refType: string, refId: string, sourceTitle?: string, sourceSummary?: string }) {
@@ -1204,21 +1207,48 @@ router.delete('/expense-invoices/:id', requireAnyPerm(['property_expenses.write'
 
 // Query invoices by property and occurred_at range via expense join
 router.get('/expense-invoices/search', requireAnyPerm(['property_expenses.view','finance.tx.write','property_expenses.write']), async (req, res) => {
-  const { property_id, from, to } = (req.query || {}) as any
-  if (!property_id || !from || !to) return res.status(400).json({ message: 'missing property_id/from/to' })
+  const { property_id, from, to, month } = (req.query || {}) as any
+  const pid = String(property_id || '').trim()
+  const monthKey = (() => {
+    const rawMonth = String(month || '').trim()
+    if (/^\d{4}-\d{2}$/.test(rawMonth)) return rawMonth
+    const fromStr = String(from || '').trim().slice(0, 10)
+    const toStr = String(to || '').trim().slice(0, 10)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(fromStr) && /^\d{4}-\d{2}-\d{2}$/.test(toStr) && fromStr.slice(0, 7) === toStr.slice(0, 7)) return fromStr.slice(0, 7)
+    return ''
+  })()
+  if (!pid) return res.status(400).json({ message: 'missing property_id' })
   try {
+    if (monthKey) {
+      const rows = await collectMonthlyInvoiceAttachments({
+        propertyId: pid,
+        monthKey,
+        apiBase: String(process.env.API_BASE || '').trim(),
+      })
+      return res.json(rows.map((row) => ({
+        id: row.expense_invoice_id || row.tx_id || row.dedupe_key,
+        url: row.url,
+        created_at: row.created_at || null,
+        expense_id: row.expense_id || null,
+        source: row.source,
+        tx_id: row.tx_id || null,
+        dedupe_key: row.dedupe_key,
+        object_key: row.object_key || null,
+      })))
+    }
+    if (!from || !to) return res.status(400).json({ message: 'missing property_id/from/to' })
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
       if (pgPool) {
         const sql = `SELECT i.* FROM expense_invoices i JOIN property_expenses e ON i.expense_id = e.id WHERE e.property_id = $1 AND e.occurred_at >= $2 AND e.occurred_at <= $3 ORDER BY i.created_at ASC`
-        const r = await pgPool.query(sql, [property_id, from, to])
+        const r = await pgPool.query(sql, [pid, from, to])
         return res.json(r.rows || [])
       }
     }
     const rows = db.expenseInvoices.filter((ii: any) => {
       const exp = (db as any).property_expenses?.find?.((e: any) => String(e.id) === String(ii.expense_id))
       if (!exp) return false
-      const pidOk = String(exp.property_id || '') === String(property_id)
+      const pidOk = String(exp.property_id || '') === pid
       const dt = exp.occurred_at ? new Date(exp.occurred_at) : null
       const fromD = new Date(String(from))
       const toD = new Date(String(to))

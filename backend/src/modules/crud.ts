@@ -415,6 +415,7 @@ async function ensureAutoExpenseSchema(client: any) {
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_title text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_summary text;')
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
+  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_month ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS invoice_url text;')
@@ -428,6 +429,7 @@ async function ensureAutoExpenseSchema(client: any) {
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_title text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_summary text;')
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_ref ON company_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
+  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_fixed_month ON company_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
   autoExpenseSchemaEnsured = true
   })().catch((e: any) => {
     autoExpenseSchemaEnsuring = null

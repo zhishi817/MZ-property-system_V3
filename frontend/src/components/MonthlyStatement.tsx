@@ -138,9 +138,7 @@ export default forwardRef<HTMLDivElement, {
       try {
         if (!showInvoices || !showBaseSections) { setInvoiceMap({}); return }
         if (!propertyId) { setInvoiceMap({}); return }
-        const from = start.format('YYYY-MM-DD')
-        const to = endNext.subtract(1,'day').format('YYYY-MM-DD')
-        const res = await fetch(`${API_BASE}/finance/expense-invoices/search?property_id=${encodeURIComponent(propertyId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { headers: authHeaders() })
+        const res = await fetch(`${API_BASE}/finance/expense-invoices/search?property_id=${encodeURIComponent(propertyId)}&month=${encodeURIComponent(start.format('YYYY-MM'))}`, { headers: authHeaders() })
         const rows: ExpenseInvoice[] = res.ok ? (await res.json()) : []
         const map: Record<string, ExpenseInvoice[]> = {}
         rows.forEach((r: any) => { const k = String(r.expense_id); (map[k] = map[k] || []).push(r) })

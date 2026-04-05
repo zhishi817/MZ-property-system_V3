@@ -6,11 +6,10 @@ import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders, apiList, apiCreate, apiUpdate, apiDelete } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
 import { hasPerm } from '../../../lib/auth'
-import { getExpenseDateForDisplay } from '../../../lib/expenseDate'
 import { isVoidedTx } from '../../../lib/financeTx'
 import AuditTrail from '../../../components/AuditTrail'
 
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; fixed_expense_id?: string; occurred_at: string; due_date?: string; paid_date?: string; created_at?: string; note?: string; ref_type?: string; ref_id?: string; generated_from?: string; is_auto?: boolean; source_title?: string; source_summary?: string; status?: string }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; fixed_expense_id?: string; month_key?: string; occurred_at: string; due_date?: string; paid_date?: string; created_at?: string; note?: string; ref_type?: string; ref_id?: string; generated_from?: string; is_auto?: boolean; source_title?: string; source_summary?: string; status?: string }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
 
 function isReadonlyAutoExpense(tx: Partial<Tx> | null | undefined) {
@@ -50,6 +49,10 @@ export default function ExpensesPage() {
   const [backfillResult, setBackfillResult] = useState<any | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailRecord, setDetailRecord] = useState<Tx | null>(null)
+  const getExpenseActualDate = (tx: Partial<Tx> | null | undefined): string | undefined => {
+    if (!tx) return undefined
+    return String(tx.due_date || tx.occurred_at || tx.paid_date || tx.created_at || '').trim() || undefined
+  }
   const role = (typeof window !== 'undefined') ? (localStorage.getItem('role') || sessionStorage.getItem('role')) : null
   const canViewList = (role === 'admin') || hasPerm('menu.finance') || hasPerm('property_expenses.view') || role === 'customer_service' || hasPerm('finance.tx.write')
   const canBackfill = hasPerm('finance.tx.write') || hasPerm('property_expenses.write') || hasPerm('company_expenses.write') || role === 'admin'
@@ -105,6 +108,7 @@ export default function ExpensesPage() {
         property_id: r.property_id || undefined,
         property_code: r.property_code || undefined,
         fixed_expense_id: r.fixed_expense_id || undefined,
+        month_key: r.month_key || undefined,
         occurred_at: r.occurred_at,
         due_date: r.due_date,
         paid_date: r.paid_date,
@@ -119,8 +123,8 @@ export default function ExpensesPage() {
         ...(r.status ? { status: r.status } : {}),
       } as any)).filter((r: Tx) => !isVoidedTx(r as any))
       const sorted = mapped.sort((a, b) => {
-        const ad = getExpenseDateForDisplay(a, now)
-        const bd = getExpenseDateForDisplay(b, now)
+        const ad = getExpenseActualDate(a)
+        const bd = getExpenseActualDate(b)
         const at = ad ? new Date(ad).getTime() : 0
         const bt = bd ? new Date(bd).getTime() : 0
         return bt - at
@@ -279,8 +283,12 @@ export default function ExpensesPage() {
       return `${D}/${M}/${Y}`
     } catch { return s ? dayjs(s).format('DD/MM/YYYY') : '-' }
   }
-  function sourceLabel(refType?: string): string {
-    const v = String(refType || '').trim().toLowerCase()
+  function sourceLabel(row?: Partial<Tx> | null): string {
+    const refType = String(row?.ref_type || '').trim().toLowerCase()
+    const generatedFrom = String(row?.generated_from || '').trim().toLowerCase()
+    const hasRecurringSnapshot = generatedFrom === 'recurring_payments' || (!!String(row?.fixed_expense_id || '').trim() && !!String(row?.month_key || '').trim())
+    if (hasRecurringSnapshot) return '固定支出快照'
+    const v = refType
     if (!v) return '手动输入'
     if (v === 'maintenance') return '维修'
     if (v === 'deep_cleaning') return '深度清洁'
@@ -312,8 +320,8 @@ export default function ExpensesPage() {
     }
   }
   const columns = [
-    { title: '日期', dataIndex: 'occurred_at', render: (_: any, r: Tx) => {
-      const d = getExpenseDateForDisplay(r, now)
+    { title: '支出日期', dataIndex: 'occurred_at', render: (_: any, r: Tx) => {
+      const d = getExpenseActualDate(r)
       return melDay(d)
     } },
     { title: '房号', dataIndex: 'property_code', render: (v: string, r: any) => (v || (()=>{ const p = properties.find(x => x.id === r.property_id); return p?.code || r.property_id || '-' })()) },
@@ -322,7 +330,7 @@ export default function ExpensesPage() {
       if (r.category === 'other') return r.category_detail ? `其他；${r.category_detail || ''}` : '其他'
       return catLabel(r.category)
     } },
-    { title: '来源', dataIndex: 'ref_type', render: (_: any, r: Tx) => sourceLabel(r.ref_type) },
+    { title: '来源', dataIndex: 'ref_type', render: (_: any, r: Tx) => sourceLabel(r) },
     { title: '来源摘要', dataIndex: 'source_summary', ellipsis: true, render: (_: any, r: Tx) => {
       const s = summaryText(r.source_summary)
       if (!s) return '-'
@@ -409,7 +417,7 @@ export default function ExpensesPage() {
           const label = String((x as any).property_code || (()=>{ const p = properties.find(pp => pp.id === x.property_id); return p?.code || '' })() || '')
           const codeOk = (!codeQuery || label.toLowerCase().includes(codeQuery.trim().toLowerCase()))
           const catOk = !catFilter || catKey(x.category) === catFilter
-          const baseDate = getExpenseDateForDisplay(x, now)
+          const baseDate = getExpenseActualDate(x)
           const inRange = !dateRange || (!!baseDate && (!dateRange[0] || dayjs(baseDate).diff(dateRange[0], 'day') >= 0) && (!dateRange[1] || dayjs(baseDate).diff(dateRange[1], 'day') <= 0))
           const kindOk = x.kind === 'expense'
           const scopeOk = !!x.property_id
@@ -420,7 +428,7 @@ export default function ExpensesPage() {
         <Alert
           type="info"
           showIcon
-          message="提示：固定支出在历史月份按到期日展示，方便对应已支付的历史账期；当月及未来月份仍按创建时间展示。"
+          message="提示：列表按支出日期排序并展示；固定支出优先显示账期/到期日，不再使用创建时间作为日期。"
           style={{ marginTop: 12 }}
         />
       )}
@@ -593,7 +601,7 @@ export default function ExpensesPage() {
           <>
             <Divider orientation="left">支出基础信息</Divider>
             <Descriptions bordered column={2} labelStyle={{ width: 120 }}>
-              <Descriptions.Item label="日期">{melDay(getExpenseDateForDisplay(detailRecord, now))}</Descriptions.Item>
+              <Descriptions.Item label="支出日期">{melDay(getExpenseActualDate(detailRecord))}</Descriptions.Item>
               <Descriptions.Item label="类别">{detailRecord.category ? (detailRecord.category === 'other' ? (detailRecord.category_detail ? `其他；${detailRecord.category_detail}` : '其他') : catLabel(detailRecord.category)) : '-'}</Descriptions.Item>
               <Descriptions.Item label="房号">{detailRecord.property_code || (()=>{ const p = properties.find(x => x.id === detailRecord.property_id); return p?.code || detailRecord.property_id || '-' })()}</Descriptions.Item>
               <Descriptions.Item label="金额">{`$${fmt(Number(detailRecord.amount || 0))}`}</Descriptions.Item>
@@ -605,7 +613,7 @@ export default function ExpensesPage() {
               <>
                 <Divider orientation="left">来源信息</Divider>
                 <Descriptions bordered column={2} labelStyle={{ width: 120 }}>
-                  <Descriptions.Item label="来源">{sourceLabel(detailRecord.ref_type)}</Descriptions.Item>
+                  <Descriptions.Item label="来源">{sourceLabel(detailRecord)}</Descriptions.Item>
                   <Descriptions.Item label="来源标题">{detailRecord.source_title ? String(detailRecord.source_title) : '-'}</Descriptions.Item>
                   <Descriptions.Item label="来源摘要" span={2}>
                     {summaryText(detailRecord.source_summary) ? summaryText(detailRecord.source_summary) : '-'}

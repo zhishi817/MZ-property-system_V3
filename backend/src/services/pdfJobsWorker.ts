@@ -7,6 +7,8 @@ import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
 import { waitForImages } from '../lib/waitForImages'
 import { generateWorkRecordPdf, type WorkRecordPdfKind, type WorkRecordPdfPhotosMode } from '../lib/workRecordPdf'
 import { generateStatementPhotoPackPdf, type StatementPhotoPackSection } from '../lib/monthlyStatementPhotoPack'
+import { collectMonthlyInvoiceAttachments } from '../lib/monthlyStatementInvoiceAttachments'
+import { reconcileMonthlyAutoExpenses } from '../lib/monthlyStatementExpenseReconcile'
 
 export type PdfJobFile = {
   kind: string
@@ -380,75 +382,38 @@ async function generateStatementBasePdf(opts: { jobId: string; month: string; pr
   throw new Error('generateStatementBasePdf failed')
 }
 
-async function collectInvoiceUrlsForMonth(pid: string, monthKey: string): Promise<string[]> {
-  if (!pgPool) return []
-  const mm = String(monthKey || '').trim()
-  const m = mm.match(/^(\d{4})-(\d{2})$/)
-  if (!m) return []
-  const y = Number(m[1])
-  const mo = Number(m[2])
-  const start = new Date(Date.UTC(y, mo - 1, 1)).toISOString().slice(0, 10)
-  const end = new Date(Date.UTC(y, mo, 1)).toISOString().slice(0, 10)
-  let urls: string[] = []
-  try {
-    const r = await pgPool.query(
-      `SELECT i.url FROM expense_invoices i
-       JOIN property_expenses e ON i.expense_id = e.id
-       WHERE e.property_id = $1
-         AND (
-           e.month_key = $2
-           OR (
-             substring(e.due_date::text,1,7) = $2
-             OR
-             (e.occurred_at >= $3 AND e.occurred_at < $4)
-             OR (e.occurred_at IS NULL AND e.created_at >= $3::date AND e.created_at < $4::date)
-           )
-         )
-       ORDER BY i.created_at ASC`,
-      [pid, mm, start, end]
-    )
-    urls = (r.rows || []).map((x: any) => String(x?.url || '').trim()).filter(Boolean)
-  } catch {}
-  if (!urls.length) {
-    try {
-      const r2 = await pgPool.query(
-        `SELECT invoice_url FROM finance_transactions
-         WHERE kind='expense' AND property_id=$1 AND invoice_url IS NOT NULL
-           AND (
-             substring(occurred_at::text,1,7)=$2
-             OR (occurred_at IS NULL AND created_at >= $3::date AND created_at < $4::date)
-           )
-         ORDER BY created_at ASC
-         LIMIT 500`,
-        [pid, mm, start, end]
-      )
-      urls = (r2.rows || []).map((x: any) => String(x?.invoice_url || '').trim()).filter(Boolean)
-    } catch {}
-  }
-  const apiBase = apiBaseForAssets()
-  return Array.from(new Set(urls.map((u) => {
-    if (u.startsWith('/') && apiBase) return `${apiBase}${u}`
-    return u
-  }).filter(Boolean)))
-}
-
-async function preflightUrls(urls: string[], kind: 'image' | 'attachment'): Promise<{ ok: string[]; failed: string[] }> {
+async function preflightUrls(urls: string[], kind: 'image' | 'attachment'): Promise<{ ok: string[]; failed: string[]; skipped: string[] }> {
   const unique = Array.from(new Set(urls.map((u) => String(u || '').trim()).filter(Boolean)))
-  if (!unique.length) return { ok: [], failed: [] }
+  if (!unique.length) return { ok: [], failed: [], skipped: [] }
   const timeoutMs = Math.max(2000, Math.min(20000, Number(process.env.PDF_PREFLIGHT_TIMEOUT_MS || 7000)))
   const concurrency = Math.max(2, Math.min(12, Number(process.env.PDF_PREFLIGHT_CONCURRENCY || 6)))
+  const maxChecks = kind === 'attachment'
+    ? Math.max(0, Math.min(40, Number(process.env.MERGE_ATTACHMENT_PREFLIGHT_MAX || 12)))
+    : unique.length
+  const inspect = kind === 'attachment' ? unique.slice(0, maxChecks) : unique
+  const skipped = kind === 'attachment' ? unique.slice(maxChecks) : []
   const ok: string[] = []
   const failed: string[] = []
   let idx = 0
-  const workers = Array.from({ length: Math.min(concurrency, unique.length) }, async () => {
+  const workers = Array.from({ length: Math.min(concurrency, inspect.length) }, async () => {
     while (true) {
       const cur = idx++
-      if (cur >= unique.length) break
-      const u = unique[cur]
+      if (cur >= inspect.length) break
+      const u = inspect[cur]
       const ac = new AbortController()
       const t = setTimeout(() => { try { ac.abort() } catch {} }, timeoutMs)
       try {
-        const r: any = await fetch(u, { method: 'GET', signal: ac.signal } as any)
+        let r: any
+        try {
+          r = await fetch(u, { method: kind === 'attachment' ? 'HEAD' : 'GET', signal: ac.signal } as any)
+          if (kind === 'attachment' && (r?.status === 405 || r?.status === 403)) throw new Error(`head_unsupported:${String(r?.status || '')}`)
+        } catch (e: any) {
+          if (kind === 'attachment' && /^head_unsupported:/i.test(String(e?.message || ''))) {
+            r = await fetch(u, { method: 'GET', signal: ac.signal } as any)
+          } else {
+            throw e
+          }
+        }
         const ct = String(r?.headers?.get?.('content-type') || '').toLowerCase()
         try { await r?.body?.cancel?.() } catch {}
         if (!r?.ok) throw new Error(`http_${String(r?.status || '')}`)
@@ -462,7 +427,7 @@ async function preflightUrls(urls: string[], kind: 'image' | 'attachment'): Prom
     }
   })
   await Promise.all(workers)
-  return { ok, failed }
+  return { ok, failed, skipped }
 }
 
 function workRecordPhotosMode(job: any): WorkRecordPdfPhotosMode {
@@ -732,6 +697,8 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
   const carryStartMonth = /^\d{4}-\d{2}$/.test(String(params?.carryStartMonth || '').trim()) ? String(params.carryStartMonth).trim() : '2026-01'
   const mergeInvoices = params?.mergeInvoices !== false
   const jobStartedAt = Date.now()
+  await updateJob(id, { progress: 2, stage: 'reconcile_expenses', detail: '正在同步维修/深清支出...', locked_by: workerId })
+  await reconcileMonthlyAutoExpenses({ monthKey, propertyId: pid })
   await updateJob(id, { progress: 3, stage: 'render_statement', detail: '正在生成主报表（无照片版）...', locked_by: workerId })
   const renderStartedAt = Date.now()
   const gen = await generateStatementBasePdf({ jobId: id, month: monthKey, property_id: pid, showChinese, excludeOrphanFixedSnapshots: excludeOrphans, carryStartMonth })
@@ -795,22 +762,31 @@ async function runMergeMonthlyPack(job: any, workerId: string) {
   }
   await updateJob(id, { progress: 25, stage: 'collect_invoices', detail: `正在收集发票附件...${diagSummary}`, result_files: files, locked_by: workerId })
   const collectStartedAt = Date.now()
-  const invoiceUrls = await collectInvoiceUrlsForMonth(pid, monthKey)
+  const attachments = await collectMonthlyInvoiceAttachments({ propertyId: pid, monthKey, apiBase: apiBaseForAssets() })
+  const invoiceUrls = attachments.map((x) => String(x.url || '').trim()).filter(Boolean)
   const collectMs = Date.now() - collectStartedAt
+  if (!invoiceUrls.length) {
+    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: `未找到可合并的附件，已生成主报表（总耗时 ${Date.now() - jobStartedAt}ms）${diagSummary}`, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
+    return
+  }
   await updateJob(id, { progress: 32, stage: 'validate_invoices', detail: `正在校验发票附件（${invoiceUrls.length}）...${diagSummary}`, result_files: files, locked_by: workerId })
   const validateStartedAt = Date.now()
   const preflight = await preflightUrls(invoiceUrls, 'attachment')
   const validateMs = Date.now() - validateStartedAt
-  const validInvoiceUrls = preflight.ok
+  const validInvoiceUrls = Array.from(new Set([...preflight.ok, ...preflight.skipped]))
   const invalidInvoiceUrls = preflight.failed
-  if (!validInvoiceUrls.length && invoiceUrls.length) {
-    const e: any = new Error('merge attachment preflight failed: no valid attachments')
-    e.code = 'MERGE_ATTACHMENT_PREFLIGHT_FAILED'
-    throw e
-  }
-  await updateJob(id, { progress: 40, stage: 'merge_invoices', detail: `正在合并附件（有效 ${validInvoiceUrls.length} / 总计 ${invoiceUrls.length}，收集 ${collectMs}ms，校验 ${validateMs}ms）...${diagSummary}`, result_files: files, locked_by: workerId })
-  if (!invoiceUrls.length) {
-    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: `未找到可合并的附件，已生成主报表（总耗时 ${Date.now() - jobStartedAt}ms）${diagSummary}`, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
+  const sampledCount = preflight.ok.length + preflight.failed.length
+  const invalidRate = sampledCount > 0 ? invalidInvoiceUrls.length / sampledCount : 0
+  const degraded = invalidInvoiceUrls.length > 0 && invalidRate >= Math.max(0.2, Math.min(1, Number(process.env.MERGE_ATTACHMENT_PREFLIGHT_FAIL_RATIO || 0.5)))
+  await updateJob(id, {
+    progress: 40,
+    stage: 'merge_invoices',
+    detail: `正在合并附件（有效 ${validInvoiceUrls.length} / 总计 ${invoiceUrls.length}，收集 ${collectMs}ms，校验 ${validateMs}ms${invalidInvoiceUrls.length ? `，预检失败 ${invalidInvoiceUrls.length}` : ''}${degraded ? '，部分附件失效将跳过' : ''}）...${diagSummary}`,
+    result_files: files,
+    locked_by: workerId,
+  })
+  if (!validInvoiceUrls.length) {
+    await updateJob(id, { status: 'success', progress: 100, stage: 'done', detail: `附件全部失效，已生成主报表并跳过附件（收集 ${collectMs}ms，校验 ${validateMs}ms）${diagSummary}`, result_files: files, locked_by: null, lease_expires_at: null, last_error_code: null, last_error_message: null })
     return
   }
   const maxPerPart = Math.max(5, Math.min(60, Number(process.env.MERGE_INVOICE_MAX_PER_PART || 25)))
