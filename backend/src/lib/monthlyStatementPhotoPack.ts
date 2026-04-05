@@ -320,17 +320,17 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
     await page.evaluate(() => (document as any).fonts?.ready).catch(() => {})
     const remainForImages = Math.max(5000, totalTimeoutMs - (Date.now() - startedAt) - 5000)
     const waitStartedAt = nowMs()
-    const imgStats = await waitForImages(page, { timeoutMs: Math.min(12000, remainForImages), scroll: 'once', tryFallbackAttr: 'data-fallback', maxFailedUrls: 12 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
+    const imageWaitTimeoutMs = Math.min(25000, remainForImages)
+    let imgStats = await waitForImages(page, { timeoutMs: imageWaitTimeoutMs, scroll: 'once', tryFallbackAttr: 'data-fallback', maxFailedUrls: 12 }).catch(() => ({ total: 0, notLoaded: 0, failedUrls: [] as string[] }))
     metrics.wait_images_ms = nowMs() - waitStartedAt
-    const notLoaded = Number((imgStats as any)?.notLoaded || 0)
-    const failedUrls = Array.isArray((imgStats as any)?.failedUrls) ? (imgStats as any).failedUrls : []
+    let notLoaded = Number((imgStats as any)?.notLoaded || 0)
+    let failedUrls = Array.isArray((imgStats as any)?.failedUrls) ? (imgStats as any).failedUrls : []
     const mergedFailedUrls = Array.from(new Set([...(preflight.failed || []), ...failedUrls])).slice(0, 20)
     if (imageCount > 0 && notLoaded >= imageCount) {
-      throw jobError('PHOTO_PACK_RENDER_EMPTY', 'photo pack render empty: all images failed to load', {
-        imageCount,
-        notLoaded,
-        failedUrls: mergedFailedUrls,
-      })
+      await page.waitForTimeout(3000).catch(() => {})
+      imgStats = await waitForImages(page, { timeoutMs: Math.min(8000, Math.max(3000, remainForImages / 2)), scroll: false, tryFallbackAttr: 'data-fallback', maxFailedUrls: 12 }).catch(() => imgStats)
+      notLoaded = Number((imgStats as any)?.notLoaded || 0)
+      failedUrls = Array.isArray((imgStats as any)?.failedUrls) ? (imgStats as any).failedUrls : failedUrls
     }
     if (Date.now() - startedAt > totalTimeoutMs) {
       const e: any = new Error('pdf_generation_timeout')
@@ -348,6 +348,7 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
       `图片 ${imageCount} 张（原始 ${totalRawUrls} / 去重 ${allUrls.length} / 可渲染 ${cleanedUrls} / 已快检 ${preflight.ok.length}/${preflight.checked || 0}）`,
     ]
     if (preflightWarn) detailParts.push(preflightWarn)
+    if (imageCount > 0 && notLoaded >= imageCount) detailParts.push('图片未能在校验阶段确认加载，已继续尝试导出，请检查生成结果')
     if (notLoaded > 0) detailParts.push(`渲染时有 ${notLoaded} 张未成功加载，已尽量导出其余图片`)
     const detail = detailParts.join('；')
     return {
@@ -357,7 +358,7 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
       rawUrls: totalRawUrls,
       cleanedUrls,
       effectivePhotosMode,
-      failedUrls: mergedFailedUrls,
+      failedUrls: Array.from(new Set([...(preflight.failed || []), ...failedUrls])).slice(0, 20),
       notLoaded,
       detail,
       metrics,
