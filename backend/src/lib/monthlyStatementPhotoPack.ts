@@ -276,13 +276,9 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
   metrics.failed_prefetch = preflight.failed.length
   metrics.checked_prefetch = preflight.checked
   metrics.skipped_prefetch = preflight.skipped
-  if (preflight.checked > 0 && preflight.ok.length <= 0 && preflight.failed.length > 0) {
-    throw jobError('PHOTO_PREFLIGHT_FAILED', 'photo resources failed preflight validation', {
-      rawUrls: totalRawUrls,
-      cleanedUrls,
-      failedUrls: preflight.failed.slice(0, 8),
-    })
-  }
+  const preflightWarn = preflight.failed.length > 0
+    ? `快检异常 ${preflight.failed.length}/${preflight.checked || 0}，将继续尝试渲染`
+    : ''
   const tpl = renderMonthlyStatementPdfHtml({
     month: monthKey,
     property: { id: String(prop.id), code: prop.code || '', address: prop.address || '' },
@@ -328,18 +324,12 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
     metrics.wait_images_ms = nowMs() - waitStartedAt
     const notLoaded = Number((imgStats as any)?.notLoaded || 0)
     const failedUrls = Array.isArray((imgStats as any)?.failedUrls) ? (imgStats as any).failedUrls : []
+    const mergedFailedUrls = Array.from(new Set([...(preflight.failed || []), ...failedUrls])).slice(0, 20)
     if (imageCount > 0 && notLoaded >= imageCount) {
       throw jobError('PHOTO_PACK_RENDER_EMPTY', 'photo pack render empty: all images failed to load', {
         imageCount,
         notLoaded,
-        failedUrls,
-      })
-    }
-    if (notLoaded > 0) {
-      throw jobError('PHOTO_LOAD_INCOMPLETE', 'photo load incomplete: some images failed to load', {
-        imageCount,
-        notLoaded,
-        failedUrls,
+        failedUrls: mergedFailedUrls,
       })
     }
     if (Date.now() - startedAt > totalTimeoutMs) {
@@ -354,7 +344,12 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
     const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true })
     metrics.render_pdf_ms = nowMs() - pdfStartedAt
     metrics.pdf_bytes = Buffer.byteLength(pdf)
-    const detail = `图片 ${imageCount} 张（原始 ${totalRawUrls} / 去重 ${allUrls.length} / 可渲染 ${cleanedUrls} / 已快检 ${preflight.ok.length}/${preflight.checked || 0}）`
+    const detailParts = [
+      `图片 ${imageCount} 张（原始 ${totalRawUrls} / 去重 ${allUrls.length} / 可渲染 ${cleanedUrls} / 已快检 ${preflight.ok.length}/${preflight.checked || 0}）`,
+    ]
+    if (preflightWarn) detailParts.push(preflightWarn)
+    if (notLoaded > 0) detailParts.push(`渲染时有 ${notLoaded} 张未成功加载，已尽量导出其余图片`)
+    const detail = detailParts.join('；')
     return {
       pdf: Buffer.from(pdf),
       filename: buildFilename(monthKey, prop, sections),
@@ -362,7 +357,7 @@ export async function generateStatementPhotoPackPdf(input: GenerateStatementPhot
       rawUrls: totalRawUrls,
       cleanedUrls,
       effectivePhotosMode,
-      failedUrls,
+      failedUrls: mergedFailedUrls,
       notLoaded,
       detail,
       metrics,

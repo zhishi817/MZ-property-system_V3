@@ -17,6 +17,12 @@ function normalizePhotoPackError(message: string, payload?: any) {
   if (code === 'PHOTO_ASSETS_UNREACHABLE' || code === 'PHOTO_PACK_RENDER_EMPTY') {
     return '照片资源未成功加载，已停止导出，请重试；若持续出现，请检查该房源照片链接是否失效'
   }
+  if (code === 'PHOTO_PREFLIGHT_FAILED' || /photo resources failed preflight validation/i.test(raw)) {
+    return '照片链接快检未通过，但这通常不代表全部失效；请重试，若仍失败请检查该房源照片链接'
+  }
+  if (code === 'PHOTO_LOAD_INCOMPLETE' || /photo load incomplete/i.test(raw)) {
+    return '部分照片加载失败，系统已尽量导出其余图片；请检查失效照片链接'
+  }
   if (code === 'NO_PHOTOS_TO_RENDER') return '本月没有可导出的照片分卷'
   if (code === 'too_many_photos_for_sync_export' || /too_many_photos_for_sync_export/i.test(raw)) {
     return '照片较多，当前版本已改为后台生成，请稍后重试分卷下载'
