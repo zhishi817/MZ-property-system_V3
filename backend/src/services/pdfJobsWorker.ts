@@ -221,11 +221,12 @@ function frontBaseUrl(): string {
 
 function apiBaseForAssets(): string {
   const apiBase = String(
+    process.env.API_BASE ||
     process.env.NEXT_PUBLIC_API_BASE_URL ||
     process.env.NEXT_PUBLIC_API_BASE_DEV ||
     process.env.NEXT_PUBLIC_API_BASE ||
-    process.env.API_BASE ||
-    process.env.FRONTEND_BASE_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    process.env.URL ||
     ''
   ).trim()
   try { console.log(`[pdf-jobs][worker] API_BASE_RESOLVED=${apiBase || '(empty)'}`) } catch {}
@@ -561,10 +562,12 @@ async function runStatementPhotoPack(job: any, workerId: string) {
     onStage: async (stage, detail, meta) => {
       const progressByStage: Record<string, number> = {
         load_rows: 8,
-        normalize_urls: 14,
-        prefetch_validate: 26,
-        wait_images: 48,
+        collect_assets: 14,
+        fetch_assets: 28,
+        transform_assets: 48,
+        render_html: 62,
         render_pdf: 68,
+        uploading: 82,
       }
       await updateJob(id, { progress: progressByStage[stage] || 8, stage, detail, locked_by: workerId })
       try {
