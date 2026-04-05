@@ -1,0 +1,4 @@
+interface:
+  display_name: "Execution Record"
+  short_description: "Record confirmed plans and implementation results"
+  default_prompt: "Use $execution-record to capture the approved plan, implementation result, validation outcome, and follow-ups in docs/execution-records.md for the current repository."

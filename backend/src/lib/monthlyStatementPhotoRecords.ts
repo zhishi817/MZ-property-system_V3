@@ -66,6 +66,37 @@ type LoadRowsInput = {
   propertyCodeRaw?: string
 }
 
+const columnCache = new Map<string, { cols: Set<string>; loadedAt: number }>()
+const COLUMN_CACHE_TTL_MS = 5 * 60 * 1000
+const ensuredIndexTables = new Set<string>()
+
+async function loadColumnSet(table: string, force = false): Promise<Set<string>> {
+  if (!pgPool) return new Set<string>()
+  const now = Date.now()
+  const cached = columnCache.get(table)
+  if (!force && cached && now - cached.loadedAt < COLUMN_CACHE_TTL_MS) return cached.cols
+  const cols = await pgPool.query(
+    `SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,
+    [table]
+  )
+  const colSet = new Set((cols.rows || []).map((r: any) => String(r.column_name || '').toLowerCase()))
+  columnCache.set(table, { cols: colSet, loadedAt: now })
+  return colSet
+}
+
+async function ensurePhotoQueryIndexes(table: string, colSet: Set<string>) {
+  if (!pgPool || ensuredIndexTables.has(table)) return
+  ensuredIndexTables.add(table)
+  try {
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_${table}_property_completed_at ON ${table}(property_id, completed_at);`)
+  } catch {}
+  if (colSet.has('property_code')) {
+    try {
+      await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_${table}_property_code_completed_at ON ${table}(property_code, completed_at);`)
+    } catch {}
+  }
+}
+
 export async function loadMonthlyStatementPhotoRows(input: LoadRowsInput): Promise<any[]> {
   const table = input.table
   const pid = String(input.pid || '').trim()
@@ -77,14 +108,12 @@ export async function loadMonthlyStatementPhotoRows(input: LoadRowsInput): Promi
   if (!pid) return []
 
   if (hasPg && pgPool) {
-    const cols = await pgPool.query(
-      `SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,
-      [table]
-    )
-    const colSet = new Set((cols.rows || []).map((r: any) => String(r.column_name || '').toLowerCase()))
+    let colSet = await loadColumnSet(table, false)
+    if (!colSet.has('completed_at')) colSet = await loadColumnSet(table, true)
     const hasPropCode = colSet.has('property_code')
     if (!colSet.has('completed_at')) return []
-    const dateCond = `(substring(t.completed_at::text, 1, 10) >= $2 AND substring(t.completed_at::text, 1, 10) < $3)`
+    await ensurePhotoQueryIndexes(table, colSet)
+    const dateCond = `(t.completed_at >= $2::date AND t.completed_at < $3::date)`
     const parts: any[] = []
 
     const q1 = `SELECT to_jsonb(t) AS row FROM ${table} t WHERE t.property_id=$1 AND ${dateCond} LIMIT 8000`

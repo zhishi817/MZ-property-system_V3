@@ -94,6 +94,76 @@ function dueMonthKeysBetween(start: string, end: string, freqMonths: number): st
   return out
 }
 
+const RECURRING_SNAPSHOT_CONFLICT_WHERE = `fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> ''`
+
+type RecurringSnapshotPayload = {
+  fixedExpenseId: string
+  monthKey: string
+  occurredAt: string
+  amount: number
+  category?: string | null
+  categoryDetail?: string | null
+  dueDate: string
+  paidDate?: string | null
+  status: 'paid' | 'unpaid'
+  propertyId?: string | null
+}
+
+function buildRecurringSnapshotPayload(input: RecurringSnapshotPayload) {
+  const { v4: uuid } = require('uuid')
+  return {
+    id: uuid(),
+    occurred_at: input.occurredAt,
+    amount: input.amount,
+    currency: 'AUD',
+    category: input.category || 'other',
+    category_detail: input.categoryDetail || null,
+    note: 'Fixed payment snapshot',
+    generated_from: 'recurring_payments',
+    fixed_expense_id: input.fixedExpenseId,
+    month_key: input.monthKey,
+    due_date: input.dueDate,
+    paid_date: input.paidDate || null,
+    status: input.status,
+    property_id: input.propertyId || null,
+  }
+}
+
+async function upsertRecurringSnapshotTx(client: any, table: 'property_expenses' | 'company_expenses', payload0: RecurringSnapshotPayload) {
+  const scope = table === 'property_expenses' ? 'property' : 'company'
+  const payload = buildRecurringSnapshotPayload(payload0)
+  const cols = ['id', 'occurred_at', 'amount', 'currency', 'category', 'category_detail', 'note', 'generated_from', 'fixed_expense_id', 'month_key', 'due_date', 'paid_date', 'status']
+  const placeholders = cols.map((_, i) => `$${i + 1}`).join(',')
+  const extraCols = scope === 'property' ? ', property_id' : ''
+  const extraPlaceholder = scope === 'property' ? `,$${cols.length + 1}` : ''
+  const values = cols.map((k) => (payload as any)[k]).concat(scope === 'property' ? [payload.property_id] : [])
+  const propertyUpdate = scope === 'property' ? `, property_id = COALESCE(EXCLUDED.property_id, ${table}.property_id)` : ''
+  const sql = `INSERT INTO ${table} (${cols.join(',')}${extraCols})
+    VALUES (${placeholders}${extraPlaceholder})
+    ON CONFLICT (fixed_expense_id, month_key) WHERE ${RECURRING_SNAPSHOT_CONFLICT_WHERE}
+    DO UPDATE SET
+      occurred_at = EXCLUDED.occurred_at,
+      amount = EXCLUDED.amount,
+      currency = EXCLUDED.currency,
+      category = EXCLUDED.category,
+      category_detail = EXCLUDED.category_detail,
+      note = EXCLUDED.note,
+      generated_from = EXCLUDED.generated_from,
+      due_date = EXCLUDED.due_date,
+      status = CASE
+        WHEN ${table}.status = 'paid' AND EXCLUDED.status <> 'paid' THEN ${table}.status
+        ELSE EXCLUDED.status
+      END,
+      paid_date = CASE
+        WHEN ${table}.paid_date IS NOT NULL AND EXCLUDED.paid_date IS NULL THEN ${table}.paid_date
+        ELSE COALESCE(EXCLUDED.paid_date, ${table}.paid_date)
+      END
+      ${propertyUpdate}
+    RETURNING *, (xmax = 0) AS inserted`
+  const res = await client.query(sql, values)
+  return res.rows?.[0] || null
+}
+
 let schemaEnsured: Promise<void> | null = null
 async function ensureSchemasOnce() {
   if (!hasPg || !pgPool) return
@@ -120,6 +190,8 @@ async function ensureSchemasOnce() {
     try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;') } catch {}
     try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
     try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
+    try { await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_month ON property_expenses(fixed_expense_id, month_key) WHERE ${RECURRING_SNAPSHOT_CONFLICT_WHERE};`) } catch {}
+    try { await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_fixed_month ON company_expenses(fixed_expense_id, month_key) WHERE ${RECURRING_SNAPSHOT_CONFLICT_WHERE};`) } catch {}
   })().catch((e) => {
     schemaEnsured = null
     throw e
@@ -483,40 +555,26 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
 
       let inserted = 0
       let updated = 0
-      const { v4: uuid } = require('uuid')
       const incomeCache: Record<string, number> = {}
 
       for (const mk of pastDueMonths) {
         const dueISO = payment.payment_type === 'rent_deduction' ? `${mk}-01` : computeDueISO(mk, dueDay)
         const row = byMonth[mk]
         if (!row) {
-          const id = uuid()
           const amount = await computeSnapshotAmountTx(client, payment, mk, incomeCache)
-          const payload: any = {
-            id,
-            occurred_at: dueISO,
+          const rowUp = await upsertRecurringSnapshotTx(client, table as any, {
+            fixedExpenseId: payment.id,
+            monthKey: mk,
+            occurredAt: dueISO,
             amount,
-            currency: 'AUD',
             category: payment.category || 'other',
-            category_detail: payment.category_detail || null,
-            note: 'Fixed payment snapshot',
-            generated_from: 'recurring_payments',
-            fixed_expense_id: payment.id,
-            month_key: mk,
-            due_date: dueISO,
-            paid_date: dueISO,
+            categoryDetail: payment.category_detail || null,
+            dueDate: dueISO,
+            paidDate: dueISO,
             status: 'paid',
-          }
-          if (scope === 'property') payload.property_id = payment.property_id || null
-          const ins2 = await client.query(
-            `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})
-             ON CONFLICT DO NOTHING`,
-            scope === 'property'
-              ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
-              : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
-          )
-          if (Number(ins2?.rowCount || 0) > 0) inserted++
+            propertyId: scope === 'property' ? (payment.property_id || null) : null,
+          })
+          if (rowUp?.inserted) inserted++
         } else if (String((row as any).status || '') !== 'paid') {
           const nextPaid = toISODate((row as any).paid_date) || toISODate((row as any).due_date) || dueISO
           const nextDue = toISODate((row as any).due_date) || dueISO
@@ -531,33 +589,20 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
         const row = byMonth[mk]
         const wantPaid = initial_mark === 'paid'
         if (!row) {
-          const id = uuid()
           const amount = await computeSnapshotAmountTx(client, payment, mk, incomeCache)
-          const payload: any = {
-            id,
-            occurred_at: dueISO,
+          const rowUp = await upsertRecurringSnapshotTx(client, table as any, {
+            fixedExpenseId: payment.id,
+            monthKey: mk,
+            occurredAt: dueISO,
             amount,
-            currency: 'AUD',
             category: payment.category || 'other',
-            category_detail: payment.category_detail || null,
-            note: 'Fixed payment snapshot',
-            generated_from: 'recurring_payments',
-            fixed_expense_id: payment.id,
-            month_key: mk,
-            due_date: dueISO,
-            paid_date: wantPaid ? dueISO : null,
+            categoryDetail: payment.category_detail || null,
+            dueDate: dueISO,
+            paidDate: wantPaid ? dueISO : null,
             status: wantPaid ? 'paid' : 'unpaid',
-          }
-          if (scope === 'property') payload.property_id = payment.property_id || null
-          const ins3 = await client.query(
-            `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})
-             ON CONFLICT DO NOTHING`,
-            scope === 'property'
-              ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
-              : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
-          )
-          if (Number(ins3?.rowCount || 0) > 0) inserted++
+            propertyId: scope === 'property' ? (payment.property_id || null) : null,
+          })
+          if (rowUp?.inserted) inserted++
         }
       }
 
@@ -685,35 +730,19 @@ router.post('/payments/:id/resume', requireAnyPerm(['recurring_payments.write', 
       if (!isDue) return { before, after, month_key: monthKey, ensured: false }
       const dueISO = after.payment_type === 'rent_deduction' ? `${monthKey}-01` : computeDueISO(monthKey, dueDay)
       const shouldPaid = after.payment_type === 'rent_deduction' || monthIdx < curIdx
-      const existing = await client.query(`SELECT id FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
-      if (!existing.rowCount) {
-        const { v4: uuid } = require('uuid')
-        const amount = await computeSnapshotAmountTx(client, after, monthKey)
-        const payload: any = {
-          id: uuid(),
-          occurred_at: dueISO,
-          amount,
-          currency: 'AUD',
-          category: after.category || 'other',
-          category_detail: after.category_detail || null,
-          note: 'Fixed payment snapshot',
-          generated_from: 'recurring_payments',
-          fixed_expense_id: id,
-          month_key: monthKey,
-          due_date: dueISO,
-          paid_date: shouldPaid ? dueISO : null,
-          status: shouldPaid ? 'paid' : 'unpaid',
-        }
-        if (scope === 'property') payload.property_id = after.property_id || before.property_id || null
-        await client.query(
-          `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})
-           ON CONFLICT DO NOTHING`,
-          scope === 'property'
-            ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
-            : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
-        )
-      }
+      const amount = await computeSnapshotAmountTx(client, after, monthKey)
+      await upsertRecurringSnapshotTx(client, table as any, {
+        fixedExpenseId: id,
+        monthKey,
+        occurredAt: dueISO,
+        amount,
+        category: after.category || 'other',
+        categoryDetail: after.category_detail || null,
+        dueDate: dueISO,
+        paidDate: shouldPaid ? dueISO : null,
+        status: shouldPaid ? 'paid' : 'unpaid',
+        propertyId: scope === 'property' ? (after.property_id || before.property_id || null) : null,
+      })
       return { before, after, month_key: monthKey, ensured: true }
     })
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
@@ -751,38 +780,20 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
       if (!isDue) return { ensured: false, month_key: monthKey }
       const dueISO = payment.payment_type === 'rent_deduction' ? `${monthKey}-01` : computeDueISO(monthKey, dueDay)
       const shouldPaid = payment.payment_type === 'rent_deduction' || monthIdx < curIdx
-      const existing = await client.query(`SELECT id, status FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
-      if (!existing.rowCount) {
-        const wantAmount = await computeSnapshotAmountTx(client, payment, monthKey)
-        const { v4: uuid } = require('uuid')
-        const payload: any = {
-          id: uuid(),
-          occurred_at: dueISO,
-          amount: wantAmount,
-          currency: 'AUD',
-          category: payment.category || 'other',
-          category_detail: payment.category_detail || null,
-          note: 'Fixed payment snapshot',
-          generated_from: 'recurring_payments',
-          fixed_expense_id: id,
-          month_key: monthKey,
-          due_date: dueISO,
-          paid_date: shouldPaid ? dueISO : null,
-          status: shouldPaid ? 'paid' : 'unpaid',
-        }
-        if (scope === 'property') payload.property_id = payment.property_id || null
-        const ins = await client.query(
-          `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})
-           ON CONFLICT DO NOTHING`,
-          scope === 'property'
-            ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
-            : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
-        )
-        return { ensured: Number(ins?.rowCount || 0) > 0, inserted: Number(ins?.rowCount || 0), updated: 0, month_key: monthKey }
-      }
-      const row = existing.rows?.[0]
-      const status = String(row?.status || 'unpaid')
+      const rowUp = await upsertRecurringSnapshotTx(client, table as any, {
+        fixedExpenseId: id,
+        monthKey,
+        occurredAt: dueISO,
+        amount: await computeSnapshotAmountTx(client, payment, monthKey),
+        category: payment.category || 'other',
+        categoryDetail: payment.category_detail || null,
+        dueDate: dueISO,
+        paidDate: shouldPaid ? dueISO : null,
+        status: shouldPaid ? 'paid' : 'unpaid',
+        propertyId: scope === 'property' ? (payment.property_id || null) : null,
+      })
+      if (!rowUp) return { ensured: false, inserted: 0, updated: 0, month_key: monthKey }
+      const status = String(rowUp?.status || 'unpaid')
       if (status === 'paid') return { ensured: true, inserted: 0, updated: 0, month_key: monthKey }
       if (String((payment as any).amount_mode || '') === 'percent_of_property_total_income' && isReferralLocked(monthKey)) {
         return { ensured: true, inserted: 0, updated: 0, month_key: monthKey, locked: true }
@@ -797,9 +808,9 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
         updates.push(`paid_date = COALESCE(paid_date, $${vals.length + 1})`); vals.push(dueISO)
       }
       const sql = `UPDATE ${table} SET ${updates.join(', ')} WHERE id = $${vals.length + 1}`
-      vals.push(String(row.id))
+      vals.push(String(rowUp.id))
       await client.query(sql, vals)
-      return { ensured: true, inserted: 0, updated: 1, month_key: monthKey }
+      return { ensured: true, inserted: rowUp?.inserted ? 1 : 0, updated: rowUp?.inserted ? 0 : 1, month_key: monthKey }
     })
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
     return res.json({ ok: true, ...result })
@@ -831,38 +842,19 @@ router.post('/payments/:id/mark-paid', requireAnyPerm(['recurring_payments.write
       const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
       const dueDay = Number(payment.due_day_of_month || 1)
       const dueISO = payment.payment_type === 'rent_deduction' ? `${monthKey}-01` : computeDueISO(monthKey, dueDay)
-      const existing = await client.query(`SELECT id FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
-      let expenseId = existing.rows?.[0]?.id ? String(existing.rows[0].id) : ''
-      if (!expenseId) {
-        const wantAmount = await computeSnapshotAmountTx(client, payment, monthKey)
-        const { v4: uuid } = require('uuid')
-        const payload: any = {
-          id: uuid(),
-          occurred_at: dueISO,
-          amount: wantAmount,
-          currency: 'AUD',
-          category: payment.category || 'other',
-          category_detail: payment.category_detail || null,
-          note: 'Fixed payment snapshot',
-          generated_from: 'recurring_payments',
-          fixed_expense_id: id,
-          month_key: monthKey,
-          due_date: dueISO,
-          paid_date: null,
-          status: 'unpaid',
-        }
-        if (scope === 'property') payload.property_id = payment.property_id || null
-        await client.query(
-          `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})
-           ON CONFLICT DO NOTHING`,
-          scope === 'property'
-            ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
-            : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
-        )
-        const afterRes = await client.query(`SELECT id FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
-        expenseId = afterRes.rows?.[0]?.id ? String(afterRes.rows[0].id) : ''
-      }
+      const rowUp = await upsertRecurringSnapshotTx(client, table as any, {
+        fixedExpenseId: id,
+        monthKey,
+        occurredAt: dueISO,
+        amount: await computeSnapshotAmountTx(client, payment, monthKey),
+        category: payment.category || 'other',
+        categoryDetail: payment.category_detail || null,
+        dueDate: dueISO,
+        paidDate: null,
+        status: 'unpaid',
+        propertyId: scope === 'property' ? (payment.property_id || null) : null,
+      })
+      let expenseId = rowUp?.id ? String(rowUp.id) : ''
       if (!expenseId) return { failed: true }
       await client.query(`UPDATE ${table} SET status = 'paid', paid_date = $1 WHERE id = $2`, [paidDate, expenseId])
       return { ok: true, expense_id: expenseId, month_key: monthKey }
@@ -897,38 +889,19 @@ router.post('/payments/:id/unmark-paid', requireAnyPerm(['recurring_payments.wri
       const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
       const dueDay = Number(payment.due_day_of_month || 1)
       const dueISO = payment.payment_type === 'rent_deduction' ? `${monthKey}-01` : computeDueISO(monthKey, dueDay)
-      const existing = await client.query(`SELECT id FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
-      let expenseId = existing.rows?.[0]?.id ? String(existing.rows[0].id) : ''
-      if (!expenseId) {
-        const wantAmount = await computeSnapshotAmountTx(client, payment, monthKey)
-        const { v4: uuid } = require('uuid')
-        const payload: any = {
-          id: uuid(),
-          occurred_at: dueISO,
-          amount: wantAmount,
-          currency: 'AUD',
-          category: payment.category || 'other',
-          category_detail: payment.category_detail || null,
-          note: 'Fixed payment snapshot',
-          generated_from: 'recurring_payments',
-          fixed_expense_id: id,
-          month_key: monthKey,
-          due_date: dueISO,
-          paid_date: null,
-          status: 'unpaid',
-        }
-        if (scope === 'property') payload.property_id = payment.property_id || null
-        await client.query(
-          `INSERT INTO ${table} (id, occurred_at, amount, currency, category, category_detail, note, generated_from, fixed_expense_id, month_key, due_date, paid_date, status${scope === 'property' ? ', property_id' : ''})
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${scope === 'property' ? ',$14' : ''})
-           ON CONFLICT DO NOTHING`,
-          scope === 'property'
-            ? [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status, payload.property_id]
-            : [payload.id, payload.occurred_at, payload.amount, payload.currency, payload.category, payload.category_detail, payload.note, payload.generated_from, payload.fixed_expense_id, payload.month_key, payload.due_date, payload.paid_date, payload.status]
-        )
-        const afterRes = await client.query(`SELECT id FROM ${table} WHERE fixed_expense_id = $1 AND month_key = $2 LIMIT 1`, [id, monthKey])
-        expenseId = afterRes.rows?.[0]?.id ? String(afterRes.rows[0].id) : ''
-      }
+      const rowUp = await upsertRecurringSnapshotTx(client, table as any, {
+        fixedExpenseId: id,
+        monthKey,
+        occurredAt: dueISO,
+        amount: await computeSnapshotAmountTx(client, payment, monthKey),
+        category: payment.category || 'other',
+        categoryDetail: payment.category_detail || null,
+        dueDate: dueISO,
+        paidDate: null,
+        status: 'unpaid',
+        propertyId: scope === 'property' ? (payment.property_id || null) : null,
+      })
+      let expenseId = rowUp?.id ? String(rowUp.id) : ''
       if (!expenseId) return { failed: true }
       await client.query(`UPDATE ${table} SET status = 'unpaid', paid_date = NULL WHERE id = $1`, [expenseId])
       return { ok: true, expense_id: expenseId, month_key: monthKey }
@@ -1041,38 +1014,24 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
               const mk = String((r as any).month_key || '')
               if (mk) byMonth[mk] = r
             }
-            const { v4: uuid } = require('uuid')
             for (const mk of pastMonths) {
               const row = byMonth[mk]
               const dueISO = updated.payment_type === 'rent_deduction' ? `${mk}-01` : computeDueISO(mk, dueDay)
               if (!row) {
                 const amount = await computeSnapshotAmountTx(client, updated, mk, incomeCache)
-                const payload2: any = {
-                  id: uuid(),
-                  occurred_at: dueISO,
+                const rowUp = await upsertRecurringSnapshotTx(client, table as any, {
+                  fixedExpenseId: id,
+                  monthKey: mk,
+                  occurredAt: dueISO,
                   amount,
-                  currency: 'AUD',
                   category: updated.category || 'other',
-                  category_detail: (updated as any).category_detail || null,
-                  note: 'Fixed payment snapshot',
-                  generated_from: 'recurring_payments',
-                  fixed_expense_id: id,
-                  month_key: mk,
-                  due_date: dueISO,
-                  paid_date: dueISO,
+                  categoryDetail: (updated as any).category_detail || null,
+                  dueDate: dueISO,
+                  paidDate: dueISO,
                   status: 'paid',
-                }
-                if (scope === 'property') payload2.property_id = updated.property_id || before.property_id || null
-                const cols = ['id','occurred_at','amount','currency','category','category_detail','note','generated_from','fixed_expense_id','month_key','due_date','paid_date','status']
-                const placeholders = cols.map((_, i) => `$${i + 1}`).join(',')
-                const extraCols = scope === 'property' ? ', property_id' : ''
-                const extraPlaceholder = scope === 'property' ? `,$${cols.length + 1}` : ''
-                const values = cols.map((k) => (payload2 as any)[k]).concat(scope === 'property' ? [payload2.property_id] : [])
-                const ins4 = await client.query(
-                  `INSERT INTO ${table} (${cols.join(',')}${extraCols}) VALUES (${placeholders}${extraPlaceholder}) ON CONFLICT DO NOTHING`,
-                  values
-                )
-                if (Number(ins4?.rowCount || 0) > 0) autoMarked++
+                  propertyId: scope === 'property' ? (updated.property_id || before.property_id || null) : null,
+                })
+                if (rowUp) autoMarked++
                 continue
               }
               if (String((row as any).status || '') === 'paid') continue
@@ -1086,32 +1045,18 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
               const mk = currentMonth
               const dueISO = updated.payment_type === 'rent_deduction' ? `${mk}-01` : computeDueISO(mk, dueDay)
               const amount = await computeSnapshotAmountTx(client, updated, mk, incomeCache)
-              const payload3: any = {
-                id: uuid(),
-                occurred_at: dueISO,
+              await upsertRecurringSnapshotTx(client, table as any, {
+                fixedExpenseId: id,
+                monthKey: mk,
+                occurredAt: dueISO,
                 amount,
-                currency: 'AUD',
                 category: updated.category || 'other',
-                category_detail: (updated as any).category_detail || null,
-                note: 'Fixed payment snapshot',
-                generated_from: 'recurring_payments',
-                fixed_expense_id: id,
-                month_key: mk,
-                due_date: dueISO,
-                paid_date: null,
+                categoryDetail: (updated as any).category_detail || null,
+                dueDate: dueISO,
+                paidDate: null,
                 status: 'unpaid',
-              }
-              if (scope === 'property') payload3.property_id = updated.property_id || before.property_id || null
-              const cols = ['id','occurred_at','amount','currency','category','category_detail','note','generated_from','fixed_expense_id','month_key','due_date','paid_date','status']
-              const placeholders = cols.map((_, i) => `$${i + 1}`).join(',')
-              const extraCols = scope === 'property' ? ', property_id' : ''
-              const extraPlaceholder = scope === 'property' ? `,$${cols.length + 1}` : ''
-              const values = cols.map((k) => (payload3 as any)[k]).concat(scope === 'property' ? [payload3.property_id] : [])
-              const ins5 = await client.query(
-                `INSERT INTO ${table} (${cols.join(',')}${extraCols}) VALUES (${placeholders}${extraPlaceholder}) ON CONFLICT DO NOTHING`,
-                values
-              )
-              void ins5
+                propertyId: scope === 'property' ? (updated.property_id || before.property_id || null) : null,
+              })
             }
           }
         }
