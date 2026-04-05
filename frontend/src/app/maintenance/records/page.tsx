@@ -333,17 +333,25 @@ export default function MaintenanceRecordsUnified() {
         notes: v.notes || undefined,
         urgency: v.urgency || undefined,
       }
-      if (v.details) {
-        try {
-          payload.details = JSON.stringify([{ content: String(v.details || '') }])
-        } catch {
-          payload.details = String(v.details || '')
+      if (Object.prototype.hasOwnProperty.call(v, 'details')) {
+        const detailsText = String(v.details || '').trim()
+        if (detailsText) {
+          try {
+            payload.details = JSON.stringify([{ content: detailsText }])
+          } catch {
+            payload.details = detailsText
+          }
+        } else {
+          payload.details = null
         }
       }
       const st = String(v.status || '')
       if (st === 'in_progress' || st === 'completed') {
         if (repairPhotos.length) payload.repair_photo_urls = repairPhotos
-        if (v.repair_notes) payload.repair_notes = v.repair_notes
+        if (Object.prototype.hasOwnProperty.call(v, 'repair_notes')) {
+          const repairNotes = String(v.repair_notes || '').trim()
+          payload.repair_notes = repairNotes || null
+        }
       }
       if (prePhotos.length) payload.photo_urls = prePhotos
       if (st === 'completed') {

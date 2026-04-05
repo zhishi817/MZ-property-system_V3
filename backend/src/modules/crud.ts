@@ -28,6 +28,8 @@ const ALLOW: Record<string, true> = {
   property_deep_cleaning: true,
   order_import_staging: true,
   repair_orders: true,
+  supplier_item_prices: true,
+  suppliers: true,
 }
 
 function okResource(r: string): boolean { return !!ALLOW[r] }
@@ -116,9 +118,9 @@ function pickSummaryFromDetails(detailsRaw: any): string {
 }
 
 function maintenanceIssueSummary(row: any): string {
-  const a = pickSummaryFromDetails(row?.details)
+  const a = toSummaryText(row?.repair_notes)
   if (a) return a
-  const b = toSummaryText(row?.repair_notes)
+  const b = pickSummaryFromDetails(row?.details)
   if (b) return b
   return toSummaryText(row?.category)
 }
@@ -2540,7 +2542,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
           Object.prototype.hasOwnProperty.call(payload, 'has_gst') ||
           Object.prototype.hasOwnProperty.call(payload, 'maintenance_amount_includes_gst')
         if (touchedMaintenanceCost || (before && ((before as any).total_amount === null || (before as any).total_amount === undefined))) {
-          const merged = { ...(before || {}), ...(toUpdate || {}) }
+          const merged = { ...(before || {}), ...(toUpdate || {}), total_amount: null }
           ;(toUpdate as any).total_amount = calcMaintenanceTotal(merged)
         }
       }

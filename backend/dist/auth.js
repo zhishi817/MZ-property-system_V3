@@ -434,6 +434,8 @@ function requireResourcePerm(kind) {
             company_expenses: { view: ['finance.tx.write'], write: ['finance.tx.write'] },
             properties: { view: ['property.view'], write: ['property.write'] },
             orders: { view: ['order.view'], write: ['order.write'] },
+            suppliers: { view: ['inventory.po.manage'], write: ['inventory.po.manage'], delete: ['inventory.po.manage'] },
+            supplier_item_prices: { view: ['inventory.po.manage'], write: ['inventory.po.manage'], delete: ['inventory.po.manage'] },
         };
         const candidates = (() => {
             var _a;
