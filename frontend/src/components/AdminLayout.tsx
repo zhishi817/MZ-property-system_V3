@@ -140,66 +140,64 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     { key: 'onboarding-prices', label: <Link href="/onboarding/prices" prefetch={false}>日用品价格表</Link> },
     { key: 'onboarding-fa-prices', label: <Link href="/onboarding/fa-prices" prefetch={false}>家具/家电价格表</Link> },
   ] })
-  if (hasPerm('menu.inventory')) {
+  const canViewInventoryMenu = (...codes: string[]) => hasPerm('menu.inventory') || codes.some((code) => hasPerm(code))
+  if (canViewInventoryMenu(
+    'menu.inventory.overview.visible',
+    'menu.inventory.warehouses.visible',
+    'menu.inventory.linen.visible',
+    'menu.inventory.daily.visible',
+    'menu.inventory.consumable.visible',
+    'menu.inventory.other.visible',
+    'menu.inventory.suppliers.visible',
+    'menu.inventory.movements.visible',
+    'menu.inventory.audits.visible',
+  )) {
+    const inventoryChildren: any[] = []
+    if (canViewInventoryMenu('menu.inventory.overview.visible')) inventoryChildren.push({ key: '/inventory/overview', label: <Link href="/inventory/overview" prefetch={false}>仓库总览</Link> })
+    if (canViewInventoryMenu('menu.inventory.warehouses.visible')) inventoryChildren.push({ key: '/inventory/warehouses', label: <Link href="/inventory/warehouses" prefetch={false}>仓库列表</Link> })
+
+    const inventoryLinenChildren: any[] = []
+    if (canViewInventoryMenu('menu.inventory.linen.stocks.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/stocks', label: <Link href="/inventory/category/linen/stocks" prefetch={false}>床品库存</Link> })
+    if (canViewInventoryMenu('menu.inventory.linen.purchase_orders.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/purchase-orders', label: <Link href="/inventory/category/linen/purchase-orders" prefetch={false}>床品采购记录</Link> })
+    if (canViewInventoryMenu('menu.inventory.linen.deliveries.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/deliveries', label: <Link href="/inventory/category/linen/deliveries" prefetch={false}>床品配送记录</Link> })
+    if (canViewInventoryMenu('menu.inventory.linen.usage.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/usage', label: <Link href="/inventory/category/linen/usage" prefetch={false}>床品使用记录</Link> })
+    if (canViewInventoryMenu('menu.inventory.linen.returns.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/returns', label: <Link href="/inventory/category/linen/returns" prefetch={false}>床品退货/报损记录</Link> })
+    if (inventoryLinenChildren.length) inventoryChildren.push({ key: 'inventory_linen', label: '床品管理', children: inventoryLinenChildren })
+
+    const inventoryDailyChildren: any[] = []
+    if (canViewInventoryMenu('menu.inventory.daily.stocks.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/stocks', label: <Link href="/inventory/category/daily/stocks" prefetch={false}>日用品库存</Link> })
+    if (canViewInventoryMenu('menu.inventory.daily.purchase_orders.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/purchase-orders', label: <Link href="/inventory/category/daily/purchase-orders" prefetch={false}>日用品采购记录</Link> })
+    if (canViewInventoryMenu('menu.inventory.daily.deliveries.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/deliveries', label: <Link href="/inventory/category/daily/deliveries" prefetch={false}>日用品配送记录</Link> })
+    if (canViewInventoryMenu('menu.inventory.daily.replacements.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/replacements', label: <Link href="/inventory/category/daily/replacements" prefetch={false}>日用品更换记录</Link> })
+    if (inventoryDailyChildren.length) inventoryChildren.push({ key: 'inventory_daily', label: '日用品管理', children: inventoryDailyChildren })
+
+    const inventoryConsumableChildren: any[] = []
+    if (canViewInventoryMenu('menu.inventory.consumable.stocks.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/stocks', label: <Link href="/inventory/category/consumable/stocks" prefetch={false}>消耗品库存</Link> })
+    if (canViewInventoryMenu('menu.inventory.consumable.purchase_orders.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/purchase-orders', label: <Link href="/inventory/category/consumable/purchase-orders" prefetch={false}>消耗品采购记录</Link> })
+    if (canViewInventoryMenu('menu.inventory.consumable.deliveries.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/deliveries', label: <Link href="/inventory/category/consumable/deliveries" prefetch={false}>消耗品配送记录</Link> })
+    if (canViewInventoryMenu('menu.inventory.consumable.usage.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/usage', label: <Link href="/inventory/category/consumable/usage" prefetch={false}>消耗品使用记录</Link> })
+    if (inventoryConsumableChildren.length) inventoryChildren.push({ key: 'inventory_consumable', label: '消耗品管理', children: inventoryConsumableChildren })
+
+    const inventoryOtherChildren: any[] = []
+    if (canViewInventoryMenu('menu.inventory.other.stocks.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/stocks', label: <Link href="/inventory/category/other/stocks" prefetch={false}>其他物品库存</Link> })
+    if (canViewInventoryMenu('menu.inventory.other.purchase_orders.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/purchase-orders', label: <Link href="/inventory/category/other/purchase-orders" prefetch={false}>其他物品采购记录</Link> })
+    if (canViewInventoryMenu('menu.inventory.other.deliveries.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/deliveries', label: <Link href="/inventory/category/other/deliveries" prefetch={false}>其他物品配送记录</Link> })
+    if (canViewInventoryMenu('menu.inventory.other.usage.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/usage', label: <Link href="/inventory/category/other/usage" prefetch={false}>其他物品使用记录</Link> })
+    if (inventoryOtherChildren.length) inventoryChildren.push({ key: 'inventory_other', label: '其他物品管理', children: inventoryOtherChildren })
+
+    const inventorySupplierChildren: any[] = []
+    if (canViewInventoryMenu('menu.inventory.suppliers.list.visible')) inventorySupplierChildren.push({ key: '/inventory/suppliers', label: <Link href="/inventory/suppliers" prefetch={false}>供应商列表</Link> })
+    if (canViewInventoryMenu('menu.inventory.suppliers.region_rules.visible')) inventorySupplierChildren.push({ key: '/inventory/region-rules', label: <Link href="/inventory/region-rules" prefetch={false}>供应区域规则</Link> })
+    if (inventorySupplierChildren.length) inventoryChildren.push({ key: 'inventory_suppliers', label: '供应商管理', children: inventorySupplierChildren })
+
+    if (canViewInventoryMenu('menu.inventory.movements.visible')) inventoryChildren.push({ key: '/inventory/movements', label: <Link href="/inventory/movements" prefetch={false}>库存流水</Link> })
+    if (canViewInventoryMenu('menu.inventory.audits.visible')) inventoryChildren.push({ key: '/inventory/audits', label: <Link href="/inventory/audits" prefetch={false}>操作日志</Link> })
+
     items.push({
       key: 'inventory',
       icon: <ProfileOutlined />,
       label: '仓库管理',
-      children: [
-        { key: '/inventory/overview', label: <Link href="/inventory/overview" prefetch={false}>仓库总览</Link> },
-        { key: '/inventory/warehouses', label: <Link href="/inventory/warehouses" prefetch={false}>仓库列表</Link> },
-        {
-          key: 'inventory_linen',
-          label: '床品管理',
-          children: [
-            { key: '/inventory/category/linen/stocks', label: <Link href="/inventory/category/linen/stocks" prefetch={false}>床品库存</Link> },
-            { key: '/inventory/category/linen/purchase-orders', label: <Link href="/inventory/category/linen/purchase-orders" prefetch={false}>床品采购记录</Link> },
-            { key: '/inventory/category/linen/deliveries', label: <Link href="/inventory/category/linen/deliveries" prefetch={false}>床品配送记录</Link> },
-            { key: '/inventory/category/linen/usage', label: <Link href="/inventory/category/linen/usage" prefetch={false}>床品使用记录</Link> },
-            { key: '/inventory/category/linen/returns', label: <Link href="/inventory/category/linen/returns" prefetch={false}>床品退货/报损记录</Link> },
-          ],
-        },
-        {
-          key: 'inventory_daily',
-          label: '日用品管理',
-          children: [
-            { key: '/inventory/category/daily/stocks', label: <Link href="/inventory/category/daily/stocks" prefetch={false}>日用品库存</Link> },
-            { key: '/inventory/category/daily/purchase-orders', label: <Link href="/inventory/category/daily/purchase-orders" prefetch={false}>日用品采购记录</Link> },
-            { key: '/inventory/category/daily/deliveries', label: <Link href="/inventory/category/daily/deliveries" prefetch={false}>日用品配送记录</Link> },
-            { key: '/inventory/category/daily/replacements', label: <Link href="/inventory/category/daily/replacements" prefetch={false}>日用品更换记录</Link> },
-          ],
-        },
-        {
-          key: 'inventory_consumable',
-          label: '消耗品管理',
-          children: [
-            { key: '/inventory/category/consumable/stocks', label: <Link href="/inventory/category/consumable/stocks" prefetch={false}>消耗品库存</Link> },
-            { key: '/inventory/category/consumable/purchase-orders', label: <Link href="/inventory/category/consumable/purchase-orders" prefetch={false}>消耗品采购记录</Link> },
-            { key: '/inventory/category/consumable/deliveries', label: <Link href="/inventory/category/consumable/deliveries" prefetch={false}>消耗品配送记录</Link> },
-            { key: '/inventory/category/consumable/usage', label: <Link href="/inventory/category/consumable/usage" prefetch={false}>消耗品使用记录</Link> },
-          ],
-        },
-        {
-          key: 'inventory_other',
-          label: '其他物品管理',
-          children: [
-            { key: '/inventory/category/other/stocks', label: <Link href="/inventory/category/other/stocks" prefetch={false}>其他物品库存</Link> },
-            { key: '/inventory/category/other/purchase-orders', label: <Link href="/inventory/category/other/purchase-orders" prefetch={false}>其他物品采购记录</Link> },
-            { key: '/inventory/category/other/deliveries', label: <Link href="/inventory/category/other/deliveries" prefetch={false}>其他物品配送记录</Link> },
-            { key: '/inventory/category/other/usage', label: <Link href="/inventory/category/other/usage" prefetch={false}>其他物品使用记录</Link> },
-          ],
-        },
-        {
-          key: 'inventory_suppliers',
-          label: '供应商管理',
-          children: [
-            { key: '/inventory/suppliers', label: <Link href="/inventory/suppliers" prefetch={false}>供应商列表</Link> },
-            { key: '/inventory/region-rules', label: <Link href="/inventory/region-rules" prefetch={false}>供应区域规则</Link> },
-          ],
-        },
-        { key: '/inventory/movements', label: <Link href="/inventory/movements" prefetch={false}>库存流水</Link> },
-        { key: '/inventory/audits', label: <Link href="/inventory/audits" prefetch={false}>操作日志</Link> },
-      ],
+      children: inventoryChildren,
     })
   }
   const financeChildren: any[] = []

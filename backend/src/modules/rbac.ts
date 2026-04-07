@@ -21,6 +21,43 @@ function expandPermissionSynonyms(codes: string[]): string[] {
   return Array.from(s)
 }
 
+async function resolveRolePermissionBinding(rawRoleId: string) {
+  const reqId = String(rawRoleId || '').trim()
+  const normalizedId = reqId.startsWith('role.') ? reqId : `role.${reqId}`
+  const altId = reqId.startsWith('role.') ? reqId.replace(/^role\./, '') : reqId
+  const variants = new Set<string>([reqId, normalizedId, altId].filter(Boolean))
+  let targetRoleId = normalizedId
+
+  if (hasPg) {
+    try {
+      await ensureRolesTable()
+      const { pgPool } = require('../dbAdapter')
+      if (pgPool) {
+        const found = await pgPool.query(
+          'SELECT id, name FROM roles WHERE id = ANY($1::text[]) OR name = ANY($1::text[]) LIMIT 1',
+          [Array.from(variants)],
+        )
+        const row = found?.rows?.[0]
+        if (row) {
+          const id = String(row.id || '').trim()
+          const name = String(row.name || '').trim()
+          if (id) {
+            targetRoleId = id
+            variants.add(id)
+            variants.add(id.replace(/^role\./, ''))
+          }
+          if (name) {
+            variants.add(name)
+            variants.add(`role.${name}`)
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return { normalizedId, altId, targetRoleId, variants: Array.from(variants) }
+}
+
 async function ensureRolesTable() {
   if (!hasPg) return
   try {
@@ -268,11 +305,16 @@ router.get('/role-permissions', async (req, res) => {
   const { role_id } = req.query as { role_id?: string }
   try {
     if (hasPg) {
-      let rows = await pgSelect('role_permissions', '*', role_id ? { role_id } : undefined) as any[] || []
-      if (role_id && (!rows || rows.length === 0)) {
-        const alt = role_id.startsWith('role.') ? role_id.replace(/^role\./, '') : `role.${role_id}`
-        const altRows = await pgSelect('role_permissions', '*', { role_id: alt }) as any[] || []
-        if (altRows && altRows.length) rows = altRows
+      let rows: any[] = []
+      if (role_id) {
+        const binding = await resolveRolePermissionBinding(String(role_id))
+        const { pgPool } = require('../dbAdapter')
+        if (pgPool) {
+          const rr = await pgPool.query('SELECT * FROM role_permissions WHERE role_id = ANY($1::text[])', [binding.variants])
+          rows = rr?.rows || []
+        }
+      } else {
+        rows = await pgSelect('role_permissions', '*') as any[] || []
       }
       if (role_id) {
         const codes = expandPermissionSynonyms(rows.map((r: any) => String(r?.permission_code || '')))
@@ -367,18 +409,17 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
       const { pgPool } = require('../dbAdapter')
       const { v4: uuid } = require('uuid')
       if (!pgPool) { console.error('[RBAC] no pgPool'); return res.status(500).json({ message: 'database not available' }) }
+      const binding = await resolveRolePermissionBinding(role_id)
       const client = await pgPool.connect()
       let inserted = 0
       try {
         console.log(`[RBAC] txn begin role_id=${role_id}`)
         await client.query('BEGIN')
-        const normalizedId = role_id.startsWith('role.') ? role_id : `role.${role_id}`
-        const altId = role_id.startsWith('role.') ? role_id.replace(/^role\./, '') : role_id
-        await client.query('DELETE FROM role_permissions WHERE role_id = $1 OR role_id = $2', [normalizedId, altId])
+        await client.query('DELETE FROM role_permissions WHERE role_id = ANY($1::text[])', [binding.variants])
         for (const code of finalCodes) {
           const id = uuid()
           const sql = 'INSERT INTO role_permissions (id, role_id, permission_code) VALUES ($1,$2,$3) ON CONFLICT (role_id, permission_code) DO NOTHING RETURNING id'
-          const r = await client.query(sql, [id, normalizedId, code])
+          const r = await client.query(sql, [id, binding.targetRoleId, code])
           if (r && r.rows && r.rows[0]) inserted++
         }
         await client.query('COMMIT')
@@ -402,8 +443,7 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
 router.delete('/role-permissions', requirePerm('rbac.manage'), async (req, res) => {
   const role_id = String((req.query as any)?.role_id || '').trim()
   if (!role_id) return res.status(400).json({ message: 'role_id required' })
-  const normalizedId = role_id.startsWith('role.') ? role_id : `role.${role_id}`
-  const altId = role_id.startsWith('role.') ? role_id.replace(/^role\./, '') : role_id
+  const binding = await resolveRolePermissionBinding(role_id)
   try {
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
@@ -417,11 +457,12 @@ router.delete('/role-permissions', requirePerm('rbac.manage'), async (req, res) 
         );`)
         await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_role_perm ON role_permissions(role_id, permission_code);')
       } catch {}
-      await pgPool.query('DELETE FROM role_permissions WHERE role_id = $1 OR role_id = $2', [normalizedId, altId])
+      await pgPool.query('DELETE FROM role_permissions WHERE role_id = ANY($1::text[])', [binding.variants])
       return res.json({ ok: true })
     }
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
-  db.rolePermissions = db.rolePermissions.filter((rp) => rp.role_id !== normalizedId && rp.role_id !== altId)
+  const variants = new Set(binding.variants)
+  db.rolePermissions = db.rolePermissions.filter((rp) => !variants.has(String(rp.role_id || '')))
   try { if (!hasPg) saveRolePermissions(db.rolePermissions) } catch {}
   return res.json({ ok: true })
 })

@@ -31,6 +31,7 @@ type Delivery = { id: string; received_at: string; received_by?: string | null; 
 type Supplier = { id: string; name: string; kind: string; active: boolean }
 type Warehouse = { id: string; code: string; name: string; active: boolean }
 type LinenTypeMeta = { code: string; name: string; psl_code?: string | null; sort_order?: number | null; active: boolean; item_id?: string | null }
+type SupplierPrice = { supplier_id: string; item_id: string; linen_type_code?: string | null; purchase_unit_price: number }
 const PDF_PAGE_WIDTH = 794
 const PDF_PAGE_HEIGHT = 1123
 
@@ -134,6 +135,7 @@ export default function PurchaseOrderDetailPage({ params }: any) {
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
   const [linenTypes, setLinenTypes] = useState<LinenTypeMeta[]>([])
+  const [supplierPrices, setSupplierPrices] = useState<SupplierPrice[]>([])
   const [editing, setEditing] = useState(false)
   const [open, setOpen] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
@@ -144,14 +146,16 @@ export default function PurchaseOrderDetailPage({ params }: any) {
   const [editForm] = Form.useForm()
 
   async function loadBase() {
-    const [ws, ss, lt] = await Promise.all([
+    const [ws, ss, lt, sp] = await Promise.all([
       getJSON<Warehouse[]>('/inventory/warehouses'),
       getJSON<Supplier[]>('/inventory/suppliers'),
       getJSON<LinenTypeMeta[]>('/inventory/linen-types'),
+      getJSON<SupplierPrice[]>('/inventory/supplier-item-prices?active=true').catch(() => []),
     ])
     setWarehouses(ws || [])
     setSuppliers(ss || [])
     setLinenTypes(lt || [])
+    setSupplierPrices(sp || [])
   }
 
   async function load() {
@@ -170,6 +174,40 @@ export default function PurchaseOrderDetailPage({ params }: any) {
     if ((po?.status === 'received' || po?.status === 'closed') && editing) setEditing(false)
   }, [searchParams, po, editing])
 
+  const supplierPriceMap = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const row of supplierPrices || []) {
+      const supplierId = String(row.supplier_id || '')
+      const itemId = String(row.item_id || '')
+      const code = normalizeLinenDisplayKey(row.linen_type_code)
+      const itemCode = normalizeLinenDisplayKey(itemId.split('item.linen_type.').pop())
+      const price = Number(row.purchase_unit_price || 0)
+      if (supplierId && itemId) map.set(`${supplierId}:item:${itemId}`, price)
+      if (supplierId && code) map.set(`${supplierId}:code:${code}`, price)
+      if (supplierId && itemCode) map.set(`${supplierId}:code:${itemCode}`, price)
+    }
+    return map
+  }, [supplierPrices])
+
+  function resolveSupplierUnitPrice(supplierId: string | undefined, line: Line) {
+    if (!supplierId) return null
+    const itemId = String(line.item_id || '').trim()
+    if (itemId) {
+      const hit = supplierPriceMap.get(`${supplierId}:item:${itemId}`)
+      if (hit != null) return Number(hit)
+    }
+    const candidates = [
+      normalizeLinenDisplayKey(line.item_sku),
+      normalizeLinenDisplayKey(line.item_name),
+      normalizeLinenDisplayKey(itemId.split('item.linen_type.').pop()),
+    ].filter(Boolean)
+    for (const code of candidates) {
+      const hit = supplierPriceMap.get(`${supplierId}:code:${code}`)
+      if (hit != null) return Number(hit)
+    }
+    return null
+  }
+
   useEffect(() => {
     if (!po) return
     const sorted = sortLinesByLinenTypeOrder(lines, linenTypes)
@@ -181,14 +219,41 @@ export default function PurchaseOrderDetailPage({ params }: any) {
       note: po.note || '',
       lines: sorted.map((line) => ({
         id: line.id,
+        item_id: line.item_id,
         item_name: line.item_name,
         item_sku: line.item_sku,
         quantity: Number(line.quantity || 0),
         note: line.note || '',
-        unit_price: line.unit_price == null ? null : Number(line.unit_price),
+        unit_price: line.unit_price == null ? resolveSupplierUnitPrice(po.supplier_id, line) : Number(line.unit_price),
       })),
     })
-  }, [po, lines, linenTypes, editForm])
+  }, [po, lines, linenTypes, editForm, supplierPriceMap])
+
+  const watchedEditSupplierId = Form.useWatch('supplier_id', editForm)
+
+  useEffect(() => {
+    if (!editing || !po || !watchedEditSupplierId) return
+    const currentLines = editForm.getFieldValue('lines') || []
+    const nextLines = currentLines.map((line: any, idx: number) => {
+      const fallbackLine = lines[idx]
+      const resolved = resolveSupplierUnitPrice(watchedEditSupplierId, {
+        id: String(line?.id || fallbackLine?.id || ''),
+        item_id: String(line?.item_id || fallbackLine?.item_id || ''),
+        item_name: String(line?.item_name || fallbackLine?.item_name || ''),
+        item_sku: String(line?.item_sku || fallbackLine?.item_sku || ''),
+        quantity: Number(line?.quantity || fallbackLine?.quantity || 0),
+        unit: String(fallbackLine?.unit || 'pcs'),
+        unit_price: line?.unit_price,
+        amount_total: fallbackLine?.amount_total,
+        note: line?.note || fallbackLine?.note || '',
+      })
+      return {
+        ...line,
+        unit_price: resolved == null ? (line?.unit_price ?? null) : resolved,
+      }
+    })
+    editForm.setFieldValue('lines', nextLines)
+  }, [editing, po, watchedEditSupplierId, supplierPriceMap, lines, editForm])
 
   const fmtMoney = (value: any) => {
     const num = Number(value || 0)
@@ -436,6 +501,7 @@ export default function PurchaseOrderDetailPage({ params }: any) {
                       {fields.map((field) => (
                         <div key={field.key} style={{ display: 'grid', gridTemplateColumns: '1.4fr 120px 120px 1fr', gap: 12, alignItems: 'start', padding: 12, border: '1px solid #f0f0f0', borderRadius: 10, background: '#fafafa' }}>
                           <Form.Item name={[field.name, 'id']} hidden><Input /></Form.Item>
+                          <Form.Item name={[field.name, 'item_id']} hidden><Input /></Form.Item>
                           <Form.Item name={[field.name, 'unit_price']} hidden><InputNumber /></Form.Item>
                           <Form.Item label="床品类型" style={{ marginBottom: 0 }}>
                             <Input value={editForm.getFieldValue(['lines', field.name, 'item_name'])} disabled />
@@ -443,8 +509,12 @@ export default function PurchaseOrderDetailPage({ params }: any) {
                           <Form.Item name={[field.name, 'quantity']} label="数量" rules={[{ required: true, message: '请输入数量' }]}>
                             <InputNumber min={0} precision={0} style={{ width: '100%' }} />
                           </Form.Item>
-                          <Form.Item label="单价" style={{ marginBottom: 0 }}>
-                            <Input value={fmtMoney(editForm.getFieldValue(['lines', field.name, 'unit_price']))} disabled />
+                          <Form.Item shouldUpdate noStyle>
+                            {() => (
+                              <Form.Item label="单价" style={{ marginBottom: 0 }}>
+                                <Input value={fmtMoney(editForm.getFieldValue(['lines', field.name, 'unit_price']))} disabled />
+                              </Form.Item>
+                            )}
                           </Form.Item>
                           <Form.Item name={[field.name, 'note']} label="备注">
                             <Input />
