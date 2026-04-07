@@ -22,11 +22,13 @@ const waitForImages_1 = require("../lib/waitForImages");
 const uploadImageResize_1 = require("../lib/uploadImageResize");
 const uuid_1 = require("uuid");
 const pdfJobsSchema_1 = require("../services/pdfJobsSchema");
+const pdfJobsWorker_1 = require("../services/pdfJobsWorker");
 const r2_2 = require("../r2");
 const orderMonthSegments_1 = require("../lib/orderMonthSegments");
 const monthlyStatementPhotoRecords_1 = require("../lib/monthlyStatementPhotoRecords");
 const managementFeeRules_1 = require("../lib/managementFeeRules");
 const monthlyStatementPhotoPack_1 = require("../lib/monthlyStatementPhotoPack");
+const monthlyStatementInvoiceAttachments_1 = require("../lib/monthlyStatementInvoiceAttachments");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -247,6 +249,10 @@ function autoNormStatus(v) {
     return low;
 }
 function autoCalcMaintenanceTotal(row) {
+    const explicitTotal = autoToNum(row === null || row === void 0 ? void 0 : row.total_amount);
+    if (Number.isFinite(explicitTotal) && explicitTotal > 0) {
+        return Math.round((explicitTotal + Number.EPSILON) * 100) / 100;
+    }
     const base = autoToNum(row === null || row === void 0 ? void 0 : row.maintenance_amount);
     const baseN = Number.isFinite(base) ? base : 0;
     const hasParts = (row === null || row === void 0 ? void 0 : row.has_parts) === true;
@@ -471,6 +477,7 @@ async function ensureAutoExpenseSchema(client) {
     await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_title text;');
     await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_summary text;');
     await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;");
+    await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_month ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';");
     await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;');
     await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;');
     await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;');
@@ -483,6 +490,7 @@ async function ensureAutoExpenseSchema(client) {
     await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_title text;');
     await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_summary text;');
     await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_ref ON company_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;");
+    await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_fixed_month ON company_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';");
 }
 async function autoUpsertPropertyExpenseByRef(client, input) {
     var _a, _b;
@@ -564,7 +572,7 @@ async function collectAutoExpenseSourceItems(executor, input) {
     const items = [];
     const propertyIdFilter = String(input.propertyIdFilter || '').trim();
     if (input.type === 'all' || input.type === 'maintenance') {
-        const mt = await executor.query(`SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, completed_at, occurred_at, created_at, details, repair_notes, category
+        const mt = await executor.query(`SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, category
          FROM property_maintenance
         WHERE coalesce(completed_at::date, occurred_at, created_at::date) BETWEEN $1::date AND $2::date
           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
@@ -1260,15 +1268,45 @@ exports.router.delete('/expense-invoices/:id', (0, auth_1.requireAnyPerm)(['prop
 });
 // Query invoices by property and occurred_at range via expense join
 exports.router.get('/expense-invoices/search', (0, auth_1.requireAnyPerm)(['property_expenses.view', 'finance.tx.write', 'property_expenses.write']), async (req, res) => {
-    const { property_id, from, to } = (req.query || {});
-    if (!property_id || !from || !to)
-        return res.status(400).json({ message: 'missing property_id/from/to' });
+    const { property_id, from, to, month } = (req.query || {});
+    const pid = String(property_id || '').trim();
+    const monthKey = (() => {
+        const rawMonth = String(month || '').trim();
+        if (/^\d{4}-\d{2}$/.test(rawMonth))
+            return rawMonth;
+        const fromStr = String(from || '').trim().slice(0, 10);
+        const toStr = String(to || '').trim().slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(fromStr) && /^\d{4}-\d{2}-\d{2}$/.test(toStr) && fromStr.slice(0, 7) === toStr.slice(0, 7))
+            return fromStr.slice(0, 7);
+        return '';
+    })();
+    if (!pid)
+        return res.status(400).json({ message: 'missing property_id' });
     try {
+        if (monthKey) {
+            const rows = await (0, monthlyStatementInvoiceAttachments_1.collectMonthlyInvoiceAttachments)({
+                propertyId: pid,
+                monthKey,
+                apiBase: String(process.env.API_BASE || '').trim(),
+            });
+            return res.json(rows.map((row) => ({
+                id: row.expense_invoice_id || row.tx_id || row.dedupe_key,
+                url: row.url,
+                created_at: row.created_at || null,
+                expense_id: row.expense_id || null,
+                source: row.source,
+                tx_id: row.tx_id || null,
+                dedupe_key: row.dedupe_key,
+                object_key: row.object_key || null,
+            })));
+        }
+        if (!from || !to)
+            return res.status(400).json({ message: 'missing property_id/from/to' });
         if (dbAdapter_1.hasPg) {
             const { pgPool } = require('../dbAdapter');
             if (pgPool) {
                 const sql = `SELECT i.* FROM expense_invoices i JOIN property_expenses e ON i.expense_id = e.id WHERE e.property_id = $1 AND e.occurred_at >= $2 AND e.occurred_at <= $3 ORDER BY i.created_at ASC`;
-                const r = await pgPool.query(sql, [property_id, from, to]);
+                const r = await pgPool.query(sql, [pid, from, to]);
                 return res.json(r.rows || []);
             }
         }
@@ -1277,7 +1315,7 @@ exports.router.get('/expense-invoices/search', (0, auth_1.requireAnyPerm)(['prop
             const exp = (_b = (_a = store_1.db.property_expenses) === null || _a === void 0 ? void 0 : _a.find) === null || _b === void 0 ? void 0 : _b.call(_a, (e) => String(e.id) === String(ii.expense_id));
             if (!exp)
                 return false;
-            const pidOk = String(exp.property_id || '') === String(property_id);
+            const pidOk = String(exp.property_id || '') === pid;
             const dt = exp.occurred_at ? new Date(exp.occurred_at) : null;
             const fromD = new Date(String(from));
             const toD = new Date(String(to));
@@ -1404,6 +1442,8 @@ exports.router.post('/statement-photo-pack', (0, auth_1.requireAnyPerm)(['financ
            LIMIT 1`, [monthKey, pid, sec, (!(showChinese === false || showChinese === '0')).toString()]);
                 const existing = ((_a = r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
                 if (existing === null || existing === void 0 ? void 0 : existing.id) {
+                    if (String(existing.status || '') === 'queued')
+                        (0, pdfJobsWorker_1.schedulePdfJobsKick)(1);
                     return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true });
                 }
             }
@@ -1419,6 +1459,7 @@ exports.router.post('/statement-photo-pack', (0, auth_1.requireAnyPerm)(['financ
         };
         await dbAdapter_2.pgPool.query(`INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
        VALUES($1,'statement_photo_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`, [id, JSON.stringify(params)]);
+        (0, pdfJobsWorker_1.schedulePdfJobsKick)(2);
         return res.json({ job_id: id, status: 'queued', reused: false });
     }
     catch (e) {
@@ -1542,6 +1583,8 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
            LIMIT 1`, [monthKey, pid]);
                 const existing = ((_a = r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
                 if (existing === null || existing === void 0 ? void 0 : existing.id) {
+                    if (String(existing.status || '') === 'queued')
+                        (0, pdfJobsWorker_1.schedulePdfJobsKick)(1);
                     return res.json({ job_id: String(existing.id), status: String(existing.status || 'running'), reused: true });
                 }
             }
@@ -1561,6 +1604,7 @@ exports.router.post('/merge-monthly-pack', (0, auth_1.requireAnyPerm)(['finance.
         };
         await dbAdapter_2.pgPool.query(`INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
        VALUES($1,'merge_monthly_pack','queued',0,'queued',NULL,$2::jsonb,'[]'::jsonb,0,3,now(),now(),now())`, [id, JSON.stringify(params)]);
+        (0, pdfJobsWorker_1.schedulePdfJobsKick)(2);
         return res.json({ job_id: id, status: 'queued', reused: false });
     }
     catch (e) {
