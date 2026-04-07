@@ -1,6 +1,6 @@
 "use client"
 import { DeleteOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons'
-import { Button, Card, DatePicker, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Space, Switch, Table, Tag, Typography, message } from 'antd'
+import { Button, Card, DatePicker, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, Typography, message } from 'antd'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { deleteJSON, getJSON, patchJSON, postJSON } from '../../../lib/api'
@@ -59,6 +59,14 @@ function isExcludedForEwash(row: { code?: string | null; name?: string | null })
   )
 }
 
+const SUPPLIER_KIND_OPTIONS = [
+  { value: 'linen', label: '床品' },
+  { value: 'daily', label: '日用品' },
+  { value: 'consumable', label: '消耗品' },
+  { value: 'furniture', label: '家具/家电' },
+  { value: 'other', label: '其他' },
+]
+
 export default function InventorySuppliersPage() {
   const [rows, setRows] = useState<Supplier[]>([])
   const [linenTypes, setLinenTypes] = useState<LinenType[]>([])
@@ -69,6 +77,7 @@ export default function InventorySuppliersPage() {
   const [viewing, setViewing] = useState<Supplier | null>(null)
   const [editing, setEditing] = useState<Supplier | null>(null)
   const [priceDrafts, setPriceDrafts] = useState<Record<string, PriceDraftRow>>({})
+  const [initialPriceDrafts, setInitialPriceDrafts] = useState<Record<string, PriceDraftRow>>({})
   const [submittingSupplier, setSubmittingSupplier] = useState(false)
   const [savingPrices, setSavingPrices] = useState(false)
   const [creatingLinenType, setCreatingLinenType] = useState(false)
@@ -144,6 +153,7 @@ export default function InventorySuppliersPage() {
     const supplierId = String(editing?.id || '')
     if (!supplierId) {
       setPriceDrafts({})
+      setInitialPriceDrafts({})
       return
     }
     const byLinenType = new Map<string, SupplierPrice>()
@@ -172,12 +182,40 @@ export default function InventorySuppliersPage() {
       }
     }
     setPriceDrafts(next)
+    setInitialPriceDrafts(next)
   }, [editing, prices, linenTypes])
+
+  function normalizeDraft(row: PriceDraftRow | undefined) {
+    if (!row) return null
+    return {
+      id: row.id || '',
+      supplier_id: row.supplier_id || '',
+      linen_type_code: row.linen_type_code || '',
+      item_id: row.item_id || '',
+      linen_type_name: row.linen_type_name || '',
+      psl_code: row.psl_code || '',
+      sort_order: Number(row.sort_order || 0),
+      purchase_unit_price: Number(row.purchase_unit_price || 0),
+      refund_unit_price: Number(row.refund_unit_price || 0),
+      effective_from: row.effective_from || '',
+      active: !!row.active,
+      deleted: !!row.deleted,
+    }
+  }
+
+  function isDraftChanged(row: PriceDraftRow | undefined) {
+    if (!row) return false
+    const current = normalizeDraft(row)
+    const initial = normalizeDraft(initialPriceDrafts[row.linen_type_code])
+    return JSON.stringify(current) !== JSON.stringify(initial)
+  }
 
   function kindTag(k: string) {
     if (k === 'linen') return <Tag color="blue">床品</Tag>
     if (k === 'daily') return <Tag color="purple">日用品</Tag>
     if (k === 'consumable') return <Tag color="green">消耗品</Tag>
+    if (k === 'furniture') return <Tag color="gold">家具/家电</Tag>
+    if (k === 'other') return <Tag>其他</Tag>
     return <Tag>{k || '其他'}</Tag>
   }
 
@@ -261,7 +299,11 @@ export default function InventorySuppliersPage() {
     }
     setSavingPrices(true)
     try {
-      const pending = Object.values(priceDrafts)
+      const pending = Object.values(priceDrafts).filter((row) => isDraftChanged(row))
+      if (!pending.length) {
+        message.success('没有需要保存的修改')
+        return
+      }
       for (const row of pending) {
         if (row.deleted) {
           if (row.id) {
@@ -633,17 +675,10 @@ export default function InventorySuppliersPage() {
             </Descriptions.Item>
             <Descriptions.Item label="类型">
               <Form.Item name="kind" noStyle rules={[{ required: true }]}>
-                <Input
-                  disabled
-                  value={
-                    editingKind === 'linen'
-                      ? '床品'
-                      : editingKind === 'daily'
-                        ? '日用品'
-                        : editingKind === 'consumable'
-                          ? '消耗品'
-                          : editingKind || ''
-                  }
+                <Select
+                  options={SUPPLIER_KIND_OPTIONS}
+                  style={{ width: 180 }}
+                  popupMatchSelectWidth={180}
                 />
               </Form.Item>
             </Descriptions.Item>

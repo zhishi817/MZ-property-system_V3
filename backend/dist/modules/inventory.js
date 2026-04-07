@@ -2790,6 +2790,30 @@ async function refreshPurchaseOrderTotals(client, poId) {
          updated_at = now()
      WHERE id = $4`, [subtotal, gst, totalInclGst, poId]);
 }
+async function syncDraftPurchaseOrderPricesForSupplierItem(client, { supplierId, itemId, unitPrice, active, }) {
+    if (!supplierId || !itemId || !active)
+        return;
+    const affected = await client.query(`SELECT DISTINCT l.po_id
+     FROM purchase_order_lines l
+     JOIN purchase_orders po ON po.id = l.po_id
+     WHERE po.supplier_id = $1
+       AND po.status = 'draft'
+       AND l.item_id = $2`, [supplierId, itemId]);
+    const poIds = (affected.rows || []).map((row) => String(row.po_id || '')).filter(Boolean);
+    if (!poIds.length)
+        return;
+    await client.query(`UPDATE purchase_order_lines l
+     SET unit_price = $1::numeric,
+         amount_total = ROUND((COALESCE(l.quantity, 0)::numeric * $1::numeric), 2)
+     FROM purchase_orders po
+     WHERE po.id = l.po_id
+       AND po.supplier_id = $2
+       AND po.status = 'draft'
+       AND l.item_id = $3`, [unitPrice, supplierId, itemId]);
+    for (const poId of poIds) {
+        await refreshPurchaseOrderTotals(client, poId);
+    }
+}
 exports.router.patch('/purchase-orders/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
     var _a, _b, _c, _d;
     const parsed = poPatchSchema.safeParse(req.body);
@@ -3093,16 +3117,40 @@ exports.router.post('/supplier-item-prices', (0, auth_1.requirePerm)('inventory.
         if (!itemId)
             return res.status(400).json({ message: 'item_id required' });
         const id = (0, uuid_1.v4)();
-        const row = await dbAdapter_1.pgPool.query(`INSERT INTO supplier_item_prices (id, supplier_id, item_id, purchase_unit_price, refund_unit_price, effective_from, active, updated_at)
-       VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')::date,$7,now())
-       ON CONFLICT (supplier_id, item_id)
-       DO UPDATE SET purchase_unit_price = EXCLUDED.purchase_unit_price,
-                     refund_unit_price = EXCLUDED.refund_unit_price,
-                     effective_from = EXCLUDED.effective_from,
-                     active = EXCLUDED.active,
-                     updated_at = now()
-       RETURNING *`, [id, body.supplier_id, itemId, body.purchase_unit_price, (_a = body.refund_unit_price) !== null && _a !== void 0 ? _a : body.purchase_unit_price, body.effective_from || null, (_b = body.active) !== null && _b !== void 0 ? _b : true]);
-        return res.status(201).json(((_c = row.rows) === null || _c === void 0 ? void 0 : _c[0]) || null);
+        const client = await dbAdapter_1.pgPool.connect();
+        try {
+            await client.query('BEGIN');
+            const row = await client.query(`INSERT INTO supplier_item_prices (id, supplier_id, item_id, purchase_unit_price, refund_unit_price, effective_from, active, updated_at)
+         VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')::date,$7,now())
+         ON CONFLICT (supplier_id, item_id)
+         DO UPDATE SET purchase_unit_price = EXCLUDED.purchase_unit_price,
+                       refund_unit_price = EXCLUDED.refund_unit_price,
+                       effective_from = EXCLUDED.effective_from,
+                       active = EXCLUDED.active,
+                       updated_at = now()
+         RETURNING *`, [id, body.supplier_id, itemId, body.purchase_unit_price, (_a = body.refund_unit_price) !== null && _a !== void 0 ? _a : body.purchase_unit_price, body.effective_from || null, (_b = body.active) !== null && _b !== void 0 ? _b : true]);
+            const saved = ((_c = row.rows) === null || _c === void 0 ? void 0 : _c[0]) || null;
+            if (saved) {
+                await syncDraftPurchaseOrderPricesForSupplierItem(client, {
+                    supplierId: String(saved.supplier_id || ''),
+                    itemId: String(saved.item_id || ''),
+                    unitPrice: Number(saved.purchase_unit_price || 0),
+                    active: Boolean(saved.active),
+                });
+            }
+            await client.query('COMMIT');
+            return res.status(201).json(saved);
+        }
+        catch (txErr) {
+            try {
+                await client.query('ROLLBACK');
+            }
+            catch (_d) { }
+            throw txErr;
+        }
+        finally {
+            client.release();
+        }
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
@@ -3124,11 +3172,35 @@ exports.router.patch('/supplier-item-prices/:id', (0, auth_1.requirePerm)('inven
             return res.json(null);
         const sets = keys.map((k, i) => k === 'effective_from' ? `"${k}" = NULLIF($${i + 1}, '')::date` : `"${k}" = $${i + 1}`).join(', ');
         const values = keys.map((k) => payload[k]);
-        const row = await dbAdapter_1.pgPool.query(`UPDATE supplier_item_prices
-       SET ${sets}, updated_at = now()
-       WHERE id = $${keys.length + 1}
-       RETURNING *`, [...values, id]);
-        return res.json(((_a = row.rows) === null || _a === void 0 ? void 0 : _a[0]) || null);
+        const client = await dbAdapter_1.pgPool.connect();
+        try {
+            await client.query('BEGIN');
+            const row = await client.query(`UPDATE supplier_item_prices
+         SET ${sets}, updated_at = now()
+         WHERE id = $${keys.length + 1}
+         RETURNING *`, [...values, id]);
+            const saved = ((_a = row.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
+            if (saved) {
+                await syncDraftPurchaseOrderPricesForSupplierItem(client, {
+                    supplierId: String(saved.supplier_id || ''),
+                    itemId: String(saved.item_id || ''),
+                    unitPrice: Number(saved.purchase_unit_price || 0),
+                    active: Boolean(saved.active),
+                });
+            }
+            await client.query('COMMIT');
+            return res.json(saved);
+        }
+        catch (txErr) {
+            try {
+                await client.query('ROLLBACK');
+            }
+            catch (_b) { }
+            throw txErr;
+        }
+        finally {
+            client.release();
+        }
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });

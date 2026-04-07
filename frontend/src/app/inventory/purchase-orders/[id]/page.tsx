@@ -259,6 +259,11 @@ export default function PurchaseOrderDetailPage({ params }: any) {
     const num = Number(value || 0)
     return `$${num.toFixed(2)}`
   }
+  const fmtUnitPrice = (value: any) => {
+    const num = Number(value || 0)
+    if (!Number.isFinite(num)) return '-'
+    return `$${num.toFixed(4).replace(/\.?0+$/, '')}`
+  }
 
   const statusTag = (s: string) => {
     if (s === 'draft') return <Tag>草稿</Tag>
@@ -398,7 +403,7 @@ export default function PurchaseOrderDetailPage({ params }: any) {
     { title: '床品类型', dataIndex: 'item_name', render: (_: any, r: Line) => <Space><span>{r.item_name}</span><Tag>{r.item_sku}</Tag></Space> },
     { title: '数量', dataIndex: 'quantity', width: 100 },
     { title: '单位', dataIndex: 'unit', width: 100 },
-    { title: '单价', dataIndex: 'unit_price', width: 120, render: (v: any) => v == null ? '-' : fmtMoney(v) },
+    { title: '单价', dataIndex: 'unit_price', width: 120, render: (v: any) => v == null ? '-' : fmtUnitPrice(v) },
     { title: '金额', dataIndex: 'amount_total', width: 140, render: (_: any, r: Line) => fmtMoney(r.amount_total ?? (Number(r.unit_price || 0) * Number(r.quantity || 0))) },
     { title: '备注', dataIndex: 'note' },
   ]
@@ -512,7 +517,7 @@ export default function PurchaseOrderDetailPage({ params }: any) {
                           <Form.Item shouldUpdate noStyle>
                             {() => (
                               <Form.Item label="单价" style={{ marginBottom: 0 }}>
-                                <Input value={fmtMoney(editForm.getFieldValue(['lines', field.name, 'unit_price']))} disabled />
+                                <Input value={fmtUnitPrice(editForm.getFieldValue(['lines', field.name, 'unit_price']))} disabled />
                               </Form.Item>
                             )}
                           </Form.Item>
@@ -808,7 +813,7 @@ export default function PurchaseOrderDetailPage({ params }: any) {
                         </td>
                         <td style={{ padding: pdfRowPad, textAlign: 'center', border: '1px solid #dbe4f0' }}>{line.quantity}</td>
                         <td style={{ padding: pdfRowPad, textAlign: 'center', border: '1px solid #dbe4f0' }}>{line.unit}</td>
-                        {!hideSupplierPricing ? <td style={{ padding: pdfRowPad, textAlign: 'right', border: '1px solid #dbe4f0' }}>{fmtMoney(line.unit_price)}</td> : null}
+                        {!hideSupplierPricing ? <td style={{ padding: pdfRowPad, textAlign: 'right', border: '1px solid #dbe4f0' }}>{fmtUnitPrice(line.unit_price)}</td> : null}
                         {!hideSupplierPricing ? <td style={{ padding: pdfRowPad, textAlign: 'right', border: '1px solid #dbe4f0', color: '#166534', fontWeight: 700 }}>
                           {fmtMoney(line.amount_total ?? (Number(line.unit_price || 0) * Number(line.quantity || 0)))}
                         </td> : null}
