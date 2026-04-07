@@ -10,6 +10,7 @@ type Warehouse = { id: string; code: string; name: string; active: boolean }
 type Supplier = { id: string; name: string; kind: string; active: boolean }
 type LinenType = { code: string; name: string; item_id?: string | null; active: boolean; sort_order?: number | null; aliases?: string[]; alias_item_ids?: string[] }
 type SupplierPrice = { supplier_id: string; item_id: string; linen_type_code?: string | null; purchase_unit_price: number; refund_unit_price: number }
+type LinenItem = { id: string; name: string; sku?: string | null; linen_type_code?: string | null; active?: boolean }
 
 function normalizeLinenTypeCode(code?: string | null) {
   return String(code || '').trim().toLowerCase()
@@ -114,15 +115,36 @@ export default function PurchaseOrderNewPage() {
   }
 
   async function loadBase() {
-    const [ws, ss, linenTypeRows, priceRows] = await Promise.all([
+    const [ws, ss, linenTypeRows, linenItems, priceRows] = await Promise.all([
       getJSON<Warehouse[]>('/inventory/warehouses'),
       getJSON<Supplier[]>('/inventory/suppliers'),
       getJSON<LinenType[]>('/inventory/linen-types'),
+      getJSON<LinenItem[]>('/inventory/items?active=true&category=linen'),
       loadSupplierPricesCompat(),
     ])
     const activeWarehouses = (ws || []).filter((w) => w.active)
     const activeSuppliers = (ss || []).filter((s) => s.active && s.kind === 'linen')
-    const activeLinenTypes = dedupeLinenTypes((linenTypeRows || []).filter((i) => i.active))
+    const itemRows = (linenItems || []).filter((i) => i.active !== false)
+    const mergedLinenTypes = (linenTypeRows || [])
+      .filter((i) => i.active)
+      .map((linenType) => {
+        const matches = itemRows.filter((item) => normalizeLinenTypeCode(item.linen_type_code) === normalizeLinenTypeCode(linenType.code))
+        const canonical = matches[0]
+        return {
+          ...linenType,
+          item_id: String(linenType.item_id || canonical?.id || ''),
+          alias_item_ids: matches.map((item) => String(item.id || '')).filter(Boolean),
+          aliases: Array.from(new Set([
+            String(linenType.code || ''),
+            ...matches.flatMap((item) => [
+              String(item.linen_type_code || ''),
+              String(item.name || ''),
+              String(item.sku || '').replace(/^LT:/i, ''),
+            ]),
+          ].filter(Boolean))),
+        }
+      })
+    const activeLinenTypes = dedupeLinenTypes(mergedLinenTypes)
     setWarehouses(activeWarehouses)
     setSuppliers(activeSuppliers)
     setLinenTypes(activeLinenTypes)
@@ -160,6 +182,8 @@ export default function PurchaseOrderNewPage() {
       map.set(`${row.supplier_id}:item:${row.item_id}`, price)
       const code = normalizeLinenTypeCode(row.linen_type_code)
       if (code) map.set(`${row.supplier_id}:code:${code}`, price)
+      const itemCode = normalizeLinenTypeCode(String(row.item_id || '').split('item.linen_type.').pop())
+      if (itemCode) map.set(`${row.supplier_id}:code:${itemCode}`, price)
     }
     return map
   }, [prices])
