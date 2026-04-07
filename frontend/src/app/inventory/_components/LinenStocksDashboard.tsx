@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { getJSON, putJSON } from '../../../lib/api'
 
 type RoomType = { code: string; name: string; sort_order: number }
+type LinenItem = { id: string; name: string; sku: string; linen_type_code?: string | null; sort_order?: number | null }
 type ReservePolicy = { item_id: string; item_name: string; item_sku: string; linen_type_code?: string | null; reserve_qty: number }
 type DashboardWarehouseRow = {
   warehouse_id: string
@@ -17,11 +18,28 @@ type DashboardWarehouseRow = {
 type DashboardResp = {
   sm_warehouse_id?: string | null
   room_types: RoomType[]
+  linen_items?: LinenItem[]
   reserve_policies: ReservePolicy[]
   dispatchable_by_type: Record<string, number>
   pending_returns_by_type: Record<string, number>
   pending_refund_amount: number
   warehouses: DashboardWarehouseRow[]
+}
+
+function isExcludedLinenMisc(value?: string | null) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/^lt:/, '').replace(/[\s_-]+/g, '')
+  return [
+    'trolley',
+    'trolleyliner',
+    'redlaundrybag',
+    'orangebag',
+    'cartliner',
+    '红色洗衣袋',
+    '橘色袋子',
+    '橙色袋子',
+    '推车',
+    '推车liner',
+  ].some((needle) => normalized.includes(needle))
 }
 
 export default function LinenStocksDashboard() {
@@ -48,6 +66,10 @@ export default function LinenStocksDashboard() {
   const smWarehouse = useMemo(() => (data?.warehouses || []).find((x) => x.is_sm) || null, [data])
   const roomTypes = useMemo(() => (data?.room_types || []).slice().sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)), [data])
   const subWarehouseRows = useMemo(() => (data?.warehouses || []).filter((x) => !x.is_sm), [data])
+  const linenOrderMap = useMemo(
+    () => new Map((data?.linen_items || []).map((item, idx) => [String(item.linen_type_code || ''), Number.isFinite(Number(item.sort_order)) ? Number(item.sort_order) : idx])),
+    [data],
+  )
 
   const smReserveTotal = useMemo(() => (data?.reserve_policies || []).reduce((sum, row) => sum + Number(row.reserve_qty || 0), 0), [data])
   const pendingReturnsTotal = useMemo(() => Object.values(data?.pending_returns_by_type || {}).reduce((sum, qty) => sum + Number(qty || 0), 0), [data])
@@ -68,13 +90,21 @@ export default function LinenStocksDashboard() {
 
   const smCountsRows = useMemo(() => {
     const counts = smWarehouse?.counts_by_sub_type || {}
-    return (data?.reserve_policies || []).map((row) => ({
-      ...row,
-      qty: Number(counts[String(row.linen_type_code || '')] || 0),
-      dispatchable_qty: Number((data?.dispatchable_by_type || {})[String(row.linen_type_code || '')] || 0),
-      pending_return_qty: Number((data?.pending_returns_by_type || {})[String(row.linen_type_code || '')] || 0),
-    }))
-  }, [data, smWarehouse])
+    return (data?.reserve_policies || [])
+      .map((row) => ({
+        ...row,
+        qty: Number(counts[String(row.linen_type_code || '')] || 0),
+        dispatchable_qty: Number((data?.dispatchable_by_type || {})[String(row.linen_type_code || '')] || 0),
+        pending_return_qty: Number((data?.pending_returns_by_type || {})[String(row.linen_type_code || '')] || 0),
+      }))
+      .sort((a, b) => {
+        const orderA = linenOrderMap.get(String(a.linen_type_code || '')) ?? 9999
+        const orderB = linenOrderMap.get(String(b.linen_type_code || '')) ?? 9999
+        if (orderA !== orderB) return orderA - orderB
+        return String(a.item_name || '').localeCompare(String(b.item_name || ''), 'zh')
+      })
+      .filter((row) => !isExcludedLinenMisc(row.item_name) && !isExcludedLinenMisc(row.item_sku) && !isExcludedLinenMisc(row.linen_type_code))
+  }, [data, linenOrderMap, smWarehouse])
 
   const smColumns: any[] = [
     { title: '床品', dataIndex: 'item_name', render: (_: any, r: any) => <Space><span>{r.item_name}</span><Tag>{r.item_sku}</Tag></Space> },

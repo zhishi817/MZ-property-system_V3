@@ -6,7 +6,8 @@ import { getJSON, patchJSON, postJSON } from '../../../lib/api'
 
 type Warehouse = { id: string; code: string; name: string; active: boolean }
 type Supplier = { id: string; name: string; kind: string; active: boolean }
-type Item = { id: string; name: string; sku: string; active: boolean }
+type LinenType = { code: string; name: string; sort_order?: number | null; active: boolean }
+type Item = { id: string; name: string; sku: string; active: boolean; linen_type_code?: string | null }
 type MovementRow = {
   id: string
   created_at: string
@@ -73,14 +74,29 @@ export default function LinenReturnsDamageView() {
   const [damageForm] = Form.useForm()
 
   async function loadBase() {
-    const [ws, ss, its] = await Promise.all([
+    const [ws, ss, lt, its] = await Promise.all([
       getJSON<Warehouse[]>('/inventory/warehouses'),
       getJSON<Supplier[]>('/inventory/suppliers'),
+      getJSON<LinenType[]>('/inventory/linen-types'),
       getJSON<Item[]>('/inventory/items?active=true&category=linen'),
     ])
     setWarehouses((ws || []).filter((w) => w.active))
     setSuppliers((ss || []).filter((s) => s.active && s.kind === 'linen'))
-    setItems((its || []).filter((i) => i.active))
+    const activeLinenTypes = (lt || []).filter((row) => row.active)
+    const orderMap = new Map<string, number>(
+      activeLinenTypes.map((row, idx) => [String(row.code || ''), Number.isFinite(Number(row.sort_order)) ? Number(row.sort_order) : idx]),
+    )
+    setItems(
+      (its || [])
+        .filter((i) => i.active)
+        .slice()
+        .sort((a, b) => {
+          const orderA = orderMap.get(String(a.linen_type_code || '')) ?? 9999
+          const orderB = orderMap.get(String(b.linen_type_code || '')) ?? 9999
+          if (orderA !== orderB) return orderA - orderB
+          return String(a.name || '').localeCompare(String(b.name || ''), 'zh')
+        }),
+    )
   }
 
   async function loadAll() {
