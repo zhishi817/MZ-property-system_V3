@@ -28,6 +28,39 @@ function expandPermissionSynonyms(codes) {
     });
     return Array.from(s);
 }
+async function resolveRolePermissionBinding(rawRoleId) {
+    var _a;
+    const reqId = String(rawRoleId || '').trim();
+    const normalizedId = reqId.startsWith('role.') ? reqId : `role.${reqId}`;
+    const altId = reqId.startsWith('role.') ? reqId.replace(/^role\./, '') : reqId;
+    const variants = new Set([reqId, normalizedId, altId].filter(Boolean));
+    let targetRoleId = normalizedId;
+    if (dbAdapter_1.hasPg) {
+        try {
+            await ensureRolesTable();
+            const { pgPool } = require('../dbAdapter');
+            if (pgPool) {
+                const found = await pgPool.query('SELECT id, name FROM roles WHERE id = ANY($1::text[]) OR name = ANY($1::text[]) LIMIT 1', [Array.from(variants)]);
+                const row = (_a = found === null || found === void 0 ? void 0 : found.rows) === null || _a === void 0 ? void 0 : _a[0];
+                if (row) {
+                    const id = String(row.id || '').trim();
+                    const name = String(row.name || '').trim();
+                    if (id) {
+                        targetRoleId = id;
+                        variants.add(id);
+                        variants.add(id.replace(/^role\./, ''));
+                    }
+                    if (name) {
+                        variants.add(name);
+                        variants.add(`role.${name}`);
+                    }
+                }
+            }
+        }
+        catch (_b) { }
+    }
+    return { normalizedId, altId, targetRoleId, variants: Array.from(variants) };
+}
 async function ensureRolesTable() {
     if (!dbAdapter_1.hasPg)
         return;
@@ -318,12 +351,17 @@ exports.router.get('/role-permissions', async (req, res) => {
     const { role_id } = req.query;
     try {
         if (dbAdapter_1.hasPg) {
-            let rows = await (0, dbAdapter_1.pgSelect)('role_permissions', '*', role_id ? { role_id } : undefined) || [];
-            if (role_id && (!rows || rows.length === 0)) {
-                const alt = role_id.startsWith('role.') ? role_id.replace(/^role\./, '') : `role.${role_id}`;
-                const altRows = await (0, dbAdapter_1.pgSelect)('role_permissions', '*', { role_id: alt }) || [];
-                if (altRows && altRows.length)
-                    rows = altRows;
+            let rows = [];
+            if (role_id) {
+                const binding = await resolveRolePermissionBinding(String(role_id));
+                const { pgPool } = require('../dbAdapter');
+                if (pgPool) {
+                    const rr = await pgPool.query('SELECT * FROM role_permissions WHERE role_id = ANY($1::text[])', [binding.variants]);
+                    rows = (rr === null || rr === void 0 ? void 0 : rr.rows) || [];
+                }
+            }
+            else {
+                rows = await (0, dbAdapter_1.pgSelect)('role_permissions', '*') || [];
             }
             if (role_id) {
                 const codes = expandPermissionSynonyms(rows.map((r) => String((r === null || r === void 0 ? void 0 : r.permission_code) || '')));
@@ -435,18 +473,17 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
                 console.error('[RBAC] no pgPool');
                 return res.status(500).json({ message: 'database not available' });
             }
+            const binding = await resolveRolePermissionBinding(role_id);
             const client = await pgPool.connect();
             let inserted = 0;
             try {
                 console.log(`[RBAC] txn begin role_id=${role_id}`);
                 await client.query('BEGIN');
-                const normalizedId = role_id.startsWith('role.') ? role_id : `role.${role_id}`;
-                const altId = role_id.startsWith('role.') ? role_id.replace(/^role\./, '') : role_id;
-                await client.query('DELETE FROM role_permissions WHERE role_id = $1 OR role_id = $2', [normalizedId, altId]);
+                await client.query('DELETE FROM role_permissions WHERE role_id = ANY($1::text[])', [binding.variants]);
                 for (const code of finalCodes) {
                     const id = uuid();
                     const sql = 'INSERT INTO role_permissions (id, role_id, permission_code) VALUES ($1,$2,$3) ON CONFLICT (role_id, permission_code) DO NOTHING RETURNING id';
-                    const r = await client.query(sql, [id, normalizedId, code]);
+                    const r = await client.query(sql, [id, binding.targetRoleId, code]);
                     if (r && r.rows && r.rows[0])
                         inserted++;
                 }
@@ -484,8 +521,7 @@ exports.router.delete('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'
     const role_id = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.role_id) || '').trim();
     if (!role_id)
         return res.status(400).json({ message: 'role_id required' });
-    const normalizedId = role_id.startsWith('role.') ? role_id : `role.${role_id}`;
-    const altId = role_id.startsWith('role.') ? role_id.replace(/^role\./, '') : role_id;
+    const binding = await resolveRolePermissionBinding(role_id);
     try {
         if (dbAdapter_1.hasPg) {
             const { pgPool } = require('../dbAdapter');
@@ -501,14 +537,15 @@ exports.router.delete('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'
                 await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_role_perm ON role_permissions(role_id, permission_code);');
             }
             catch (_b) { }
-            await pgPool.query('DELETE FROM role_permissions WHERE role_id = $1 OR role_id = $2', [normalizedId, altId]);
+            await pgPool.query('DELETE FROM role_permissions WHERE role_id = ANY($1::text[])', [binding.variants]);
             return res.json({ ok: true });
         }
     }
     catch (e) {
         return res.status(500).json({ message: e.message });
     }
-    store_1.db.rolePermissions = store_1.db.rolePermissions.filter((rp) => rp.role_id !== normalizedId && rp.role_id !== altId);
+    const variants = new Set(binding.variants);
+    store_1.db.rolePermissions = store_1.db.rolePermissions.filter((rp) => !variants.has(String(rp.role_id || '')));
     try {
         if (!dbAdapter_1.hasPg)
             (0, persistence_1.saveRolePermissions)(store_1.db.rolePermissions);

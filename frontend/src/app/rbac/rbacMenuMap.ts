@@ -24,29 +24,34 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
     label: '房源管理',
     children: {
       'menu.properties.list.visible': {
-        label: '房源列表',
-        perms: [
-          'properties.view',
-          'properties.write',
-          'properties.delete',
-          'properties.archive',
-        ],
-      },
-      'menu.properties.keys.visible': {
-        label: '房源钥匙',
-        perms: [
-          'keyset.manage',
-          'key.flow',
-        ],
-      },
-      'menu.properties.guides.visible': {
-        label: '入住指南',
-        perms: [
-          'property_guides.view',
-          'property_guides.write',
-          'property_guides.delete',
-          'property_guides.archive',
-        ],
+        label: '房源管理',
+        children: {
+          'menu.properties.list.index.visible': {
+            label: '房源列表',
+            perms: [
+              'properties.view',
+              'properties.write',
+              'properties.delete',
+              'properties.archive',
+            ],
+          },
+          'menu.properties.keys.visible': {
+            label: '房源钥匙',
+            perms: [
+              'keyset.manage',
+              'key.flow',
+            ],
+          },
+          'menu.properties.guides.visible': {
+            label: '入住指南',
+            perms: [
+              'property_guides.view',
+              'property_guides.write',
+              'property_guides.delete',
+              'property_guides.archive',
+            ],
+          },
+        },
       },
     },
   },
@@ -82,9 +87,125 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
   },
   'menu.inventory': {
     label: '仓库管理',
-    perms: [
-      'inventory.view',
-    ],
+    children: {
+      'menu.inventory.overview.visible': {
+        label: '仓库总览',
+        perms: ['inventory.view'],
+      },
+      'menu.inventory.warehouses.visible': {
+        label: '仓库列表',
+        perms: ['inventory.view'],
+      },
+      'menu.inventory.linen.visible': {
+        label: '床品管理',
+        children: {
+          'menu.inventory.linen.stocks.visible': {
+            label: '床品库存',
+            perms: ['inventory.view'],
+          },
+          'menu.inventory.linen.purchase_orders.visible': {
+            label: '床品采购记录',
+            perms: ['inventory.po.manage'],
+          },
+          'menu.inventory.linen.deliveries.visible': {
+            label: '床品配送记录',
+            perms: ['inventory.po.manage', 'inventory.move'],
+          },
+          'menu.inventory.linen.usage.visible': {
+            label: '床品使用记录',
+            perms: ['inventory.move'],
+          },
+          'menu.inventory.linen.returns.visible': {
+            label: '床品退货/报损记录',
+            perms: ['inventory.move', 'inventory.po.manage'],
+          },
+        },
+      },
+      'menu.inventory.daily.visible': {
+        label: '日用品管理',
+        children: {
+          'menu.inventory.daily.stocks.visible': {
+            label: '日用品库存',
+            perms: ['inventory.view'],
+          },
+          'menu.inventory.daily.purchase_orders.visible': {
+            label: '日用品采购记录',
+            perms: ['inventory.po.manage'],
+          },
+          'menu.inventory.daily.deliveries.visible': {
+            label: '日用品配送记录',
+            perms: ['inventory.po.manage', 'inventory.move'],
+          },
+          'menu.inventory.daily.replacements.visible': {
+            label: '日用品更换记录',
+            perms: ['inventory.move'],
+          },
+        },
+      },
+      'menu.inventory.consumable.visible': {
+        label: '消耗品管理',
+        children: {
+          'menu.inventory.consumable.stocks.visible': {
+            label: '消耗品库存',
+            perms: ['inventory.view'],
+          },
+          'menu.inventory.consumable.purchase_orders.visible': {
+            label: '消耗品采购记录',
+            perms: ['inventory.po.manage'],
+          },
+          'menu.inventory.consumable.deliveries.visible': {
+            label: '消耗品配送记录',
+            perms: ['inventory.po.manage', 'inventory.move'],
+          },
+          'menu.inventory.consumable.usage.visible': {
+            label: '消耗品使用记录',
+            perms: ['inventory.move'],
+          },
+        },
+      },
+      'menu.inventory.other.visible': {
+        label: '其他物品管理',
+        children: {
+          'menu.inventory.other.stocks.visible': {
+            label: '其他物品库存',
+            perms: ['inventory.view'],
+          },
+          'menu.inventory.other.purchase_orders.visible': {
+            label: '其他物品采购记录',
+            perms: ['inventory.po.manage'],
+          },
+          'menu.inventory.other.deliveries.visible': {
+            label: '其他物品配送记录',
+            perms: ['inventory.po.manage', 'inventory.move'],
+          },
+          'menu.inventory.other.usage.visible': {
+            label: '其他物品使用记录',
+            perms: ['inventory.move'],
+          },
+        },
+      },
+      'menu.inventory.suppliers.visible': {
+        label: '供应商管理',
+        children: {
+          'menu.inventory.suppliers.list.visible': {
+            label: '供应商列表',
+            perms: ['inventory.po.manage'],
+          },
+          'menu.inventory.suppliers.region_rules.visible': {
+            label: '供应区域规则',
+            perms: ['inventory.po.manage'],
+          },
+        },
+      },
+      'menu.inventory.movements.visible': {
+        label: '库存流水',
+        perms: ['inventory.view', 'inventory.move'],
+      },
+      'menu.inventory.audits.visible': {
+        label: '操作日志',
+        perms: ['inventory.view'],
+      },
+    },
   },
   'menu.keys': {
     label: '钥匙管理',
@@ -259,11 +380,11 @@ export function findMenuPathLabels(map: Record<string, MenuPermNode>, key: strin
   function walk(nodes: Record<string, MenuPermNode>, stack: string[]) {
     for (const [k, node] of Object.entries(nodes)) {
       const next = [...stack, node.label]
-      if (k === target) { path.push(...next); return true }
-      if (node.children) {
-        const ok = walk(node.children, next)
-        if (ok) return true
+      if (k === target) {
+        path.splice(0, path.length, ...next)
+        return true
       }
+      if (node.children && walk(node.children, next)) return true
     }
     return false
   }
