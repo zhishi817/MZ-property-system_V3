@@ -89,6 +89,7 @@ async function ensureInventorySchema() {
     await pgPool.query(`CREATE TABLE IF NOT EXISTS inventory_linen_types (
       code text PRIMARY KEY,
       name text NOT NULL,
+      psl_code text,
       in_set boolean NOT NULL DEFAULT true,
       set_divisor integer NOT NULL DEFAULT 1,
       sort_order integer NOT NULL DEFAULT 0,
@@ -96,6 +97,7 @@ async function ensureInventorySchema() {
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz
     );`)
+    await pgPool.query('ALTER TABLE inventory_linen_types ADD COLUMN IF NOT EXISTS psl_code text;')
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_linen_types_active_sort ON inventory_linen_types(active, sort_order, code);')
     await pgPool.query(`INSERT INTO inventory_linen_types (code, name, in_set, set_divisor, sort_order, active) VALUES
       ('bedsheet','床单',true,1,10,true),
@@ -247,6 +249,9 @@ async function ensureInventorySchema() {
       region text,
       property_id text,
       note text,
+      subtotal_amount numeric NOT NULL DEFAULT 0,
+      gst_amount numeric NOT NULL DEFAULT 0,
+      total_amount_inc_gst numeric NOT NULL DEFAULT 0,
       created_by text,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz
@@ -259,6 +264,9 @@ async function ensureInventorySchema() {
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_orders_property ON purchase_orders(property_id);')
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_orders_ordered_date ON purchase_orders(ordered_date);')
     await pgPool.query('ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS po_no text;')
+    await pgPool.query('ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS subtotal_amount numeric NOT NULL DEFAULT 0;')
+    await pgPool.query('ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS gst_amount numeric NOT NULL DEFAULT 0;')
+    await pgPool.query('ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS total_amount_inc_gst numeric NOT NULL DEFAULT 0;')
     await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_orders_po_no_unique ON purchase_orders(po_no) WHERE po_no IS NOT NULL;')
 
     await pgPool.query(`CREATE TABLE IF NOT EXISTS purchase_order_lines (
@@ -729,6 +737,7 @@ router.get('/warehouses', requirePerm('inventory.view'), async (req, res) => {
 const linenTypeSchema = z.object({
   code: z.string().min(1),
   name: z.string().min(1),
+  psl_code: z.string().optional(),
   in_set: z.boolean().optional(),
   set_divisor: z.number().int().min(1).optional(),
   sort_order: z.number().int().optional(),
@@ -742,6 +751,7 @@ router.get('/linen-types', requirePerm('inventory.view'), async (req, res) => {
       const rows = await pgPool.query(`
         SELECT lt.code,
                lt.name,
+               lt.psl_code,
                lt.in_set,
                lt.set_divisor,
                lt.sort_order,
@@ -754,7 +764,7 @@ router.get('/linen-types', requirePerm('inventory.view'), async (req, res) => {
                  LIMIT 1
                ) AS item_id
         FROM inventory_linen_types lt
-        ORDER BY lt.active DESC, lt.name ASC, lt.code ASC
+        ORDER BY lt.active DESC, lt.sort_order ASC, lt.code ASC
       `)
       return res.json(rows.rows || [])
     }
@@ -772,10 +782,10 @@ router.post('/linen-types', requirePerm('inventory.item.manage'), async (req, re
     await ensureInventorySchema()
     const v = parsed.data
     const row = await pgPool.query(
-      `INSERT INTO inventory_linen_types (code, name, in_set, set_divisor, sort_order, active)
-       VALUES ($1,$2,$3,$4,$5,$6)
-       RETURNING code, name, in_set, set_divisor, sort_order, active`,
-      [v.code, v.name, v.in_set ?? true, v.set_divisor ?? 1, v.sort_order ?? 0, v.active ?? true],
+      `INSERT INTO inventory_linen_types (code, name, psl_code, in_set, set_divisor, sort_order, active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       RETURNING code, name, psl_code, in_set, set_divisor, sort_order, active`,
+      [v.code, v.name, v.psl_code ?? null, v.in_set ?? true, v.set_divisor ?? 1, v.sort_order ?? 0, v.active ?? true],
     )
     const itemId = `item.linen_type.${v.code}`
     await pgPool.query(
@@ -806,7 +816,7 @@ router.patch('/linen-types/:code', requirePerm('inventory.item.manage'), async (
     if (!keys.length) return res.json(b)
     const sets = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ')
     const values = keys.map(k => (payload as any)[k])
-    const sql = `UPDATE inventory_linen_types SET ${sets}, updated_at = now() WHERE code = $${keys.length + 1} RETURNING code, name, in_set, set_divisor, sort_order, active`
+    const sql = `UPDATE inventory_linen_types SET ${sets}, updated_at = now() WHERE code = $${keys.length + 1} RETURNING code, name, psl_code, in_set, set_divisor, sort_order, active`
     const after = await pgPool.query(sql, [...values, code])
     const a = after.rows?.[0]
     if (a) {
@@ -1023,27 +1033,35 @@ router.get('/items', requirePerm('inventory.view'), async (req, res) => {
       await ensureInventorySchema()
       const where: string[] = []
       const values: any[] = []
+      const linenAlias = category === 'linen' ? 'i' : ''
+      const col = (name: string) => linenAlias ? `${linenAlias}.${name}` : name
       if (q) {
         values.push(`%${q}%`)
         values.push(`%${q}%`)
-        where.push(`(name ILIKE $${values.length - 1} OR sku ILIKE $${values.length})`)
+        where.push(`(${col('name')} ILIKE $${values.length - 1} OR ${col('sku')} ILIKE $${values.length})`)
       }
       if (category) {
         values.push(category)
-        where.push(`category = $${values.length}`)
+        where.push(`${col('category')} = $${values.length}`)
       }
       if (active === 'true' || active === 'false') {
         values.push(active === 'true')
-        where.push(`active = $${values.length}`)
+        where.push(`${col('active')} = $${values.length}`)
       }
       if (linenTypeCode) {
         values.push(linenTypeCode)
-        where.push(`linen_type_code = $${values.length}`)
+        where.push(`${col('linen_type_code')} = $${values.length}`)
       }
-      const sql = `SELECT id, name, sku, category, sub_type, linen_type_code, unit, default_threshold, bin_location, active, is_key_item
-                   FROM inventory_items
-                   ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-                   ORDER BY name ASC`
+      const sql = category === 'linen'
+        ? `SELECT i.id, i.name, i.sku, i.category, i.sub_type, i.linen_type_code, i.unit, i.default_threshold, i.bin_location, i.active, i.is_key_item
+             FROM inventory_items i
+             LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
+             ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+             ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`
+        : `SELECT id, name, sku, category, sub_type, linen_type_code, unit, default_threshold, bin_location, active, is_key_item
+             FROM inventory_items
+             ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+             ORDER BY name ASC`
       const rows = await pgPool.query(sql, values)
       return res.json(rows.rows || [])
     }
@@ -1151,8 +1169,18 @@ router.get('/stocks', requirePerm('inventory.view'), async (req, res) => {
       await ensureInventorySchema()
       if (category) {
         const itemVals: any[] = [category]
-        let itemSql = `SELECT id, name, sku, category, sub_type, linen_type_code, unit, default_threshold, bin_location, active, is_key_item FROM inventory_items WHERE category = $1`
+        let itemSql = category === 'linen'
+        ? `SELECT i.id, i.name, i.sku, i.category, i.sub_type, i.linen_type_code, i.unit, i.default_threshold, i.bin_location, i.active, i.is_key_item, lt.sort_order
+               FROM inventory_items i
+               LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
+               WHERE i.category = $1`
+          : `SELECT id, name, sku, category, sub_type, linen_type_code, unit, default_threshold, bin_location, active, is_key_item
+               FROM inventory_items
+               WHERE category = $1`
         if (keyOnly) itemSql += ` AND is_key_item = true`
+        itemSql += category === 'linen'
+          ? ` ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`
+          : ` ORDER BY name ASC`
         const items = await pgPool.query(itemSql, itemVals)
         const itemRows = items.rows || []
         if (!itemRows.length) return res.json([])
@@ -1174,6 +1202,7 @@ router.get('/stocks', requirePerm('inventory.view'), async (req, res) => {
             sku: it.sku,
             category: it.category,
             sub_type: it.sub_type,
+            sort_order: it.sort_order,
             unit: it.unit,
             default_threshold: it.default_threshold,
             bin_location: it.bin_location,
@@ -1181,7 +1210,14 @@ router.get('/stocks', requirePerm('inventory.view'), async (req, res) => {
             is_key_item: it.is_key_item,
             threshold_effective: eff,
           }
-        }).sort((a: any, b: any) => String(a.name || '').localeCompare(String(b.name || '')))
+        }).sort((a: any, b: any) => {
+          if (category === 'linen') {
+            const sortA = Number.isFinite(Number(a.sort_order)) ? Number(a.sort_order) : 9999
+            const sortB = Number.isFinite(Number(b.sort_order)) ? Number(b.sort_order) : 9999
+            if (sortA !== sortB) return sortA - sortB
+          }
+          return String(a.name || '').localeCompare(String(b.name || ''), 'zh')
+        })
         if (warningsOnly) out = out.filter((x: any) => Number(x.quantity || 0) < Number(x.threshold_effective || 0))
         return res.json(out)
       }
@@ -1615,12 +1651,21 @@ router.get('/category-dashboard', requirePerm('inventory.view'), async (req, res
         )
         : { rows: [] as any[] }
 
-      const its = await pgPool.query(
-        `SELECT id, name, sku, category, sub_type, linen_type_code, unit, default_threshold, bin_location, active, is_key_item
-         FROM inventory_items
-         WHERE category = $1`,
-        [category],
-      )
+      const its = category === 'linen'
+        ? await pgPool.query(
+          `SELECT i.id, i.name, i.sku, i.category, i.sub_type, i.linen_type_code, i.unit, i.default_threshold, i.bin_location, i.active, i.is_key_item, lt.sort_order
+           FROM inventory_items i
+           LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
+           WHERE i.category = $1
+           ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`,
+          [category],
+        )
+        : await pgPool.query(
+          `SELECT id, name, sku, category, sub_type, linen_type_code, unit, default_threshold, bin_location, active, is_key_item
+           FROM inventory_items
+           WHERE category = $1`,
+          [category],
+        )
       const items = its.rows || []
       const itemIds = items.map((r: any) => String(r.id))
       const itemMap = new Map<string, any>(items.map((r: any) => [String(r.id), r]))
@@ -2365,7 +2410,7 @@ router.get('/purchase-orders', requirePerm('inventory.po.manage'), async (req, r
         SELECT po.*
         FROM purchase_orders po
         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-        ORDER BY po.created_at DESC
+        ORDER BY COALESCE(po.ordered_date, (po.created_at AT TIME ZONE 'Australia/Melbourne')::date) DESC, po.created_at DESC
         LIMIT 200
       `
       const poRows = await pgPool.query(sql, values)
@@ -2411,6 +2456,9 @@ router.get('/purchase-orders', requirePerm('inventory.po.manage'), async (req, r
           line_count: Number(a.line_count || 0),
           quantity_total: Number(a.quantity_total || 0),
           amount_total: a.amount_total !== undefined && a.amount_total !== null ? String(a.amount_total) : '0',
+          subtotal_amount: r.subtotal_amount !== undefined && r.subtotal_amount !== null ? String(r.subtotal_amount) : '0',
+          gst_amount: r.gst_amount !== undefined && r.gst_amount !== null ? String(r.gst_amount) : '0',
+          total_amount_inc_gst: r.total_amount_inc_gst !== undefined && r.total_amount_inc_gst !== null ? String(r.total_amount_inc_gst) : '0',
         }
       })
       return res.json(out)
@@ -2469,9 +2517,12 @@ router.get('/purchase-order-lines', requirePerm('inventory.po.manage'), async (r
       const lineVals: any[] = [poIds]
       if (itemIdsByCategory) { lineVals.push(itemIdsByCategory); lineWhere.push(`item_id = ANY($${lineVals.length}::text[])`) }
       const lines = await pgPool.query(
-        `SELECT * FROM purchase_order_lines
+        `SELECT l.*, i.name AS item_name, i.sku AS item_sku, lt.sort_order
+         FROM purchase_order_lines l
+         JOIN inventory_items i ON i.id = l.item_id
+         LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
          WHERE ${lineWhere.join(' AND ')}
-         ORDER BY po_id ASC`,
+         ORDER BY l.po_id ASC, COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`,
         lineVals,
       )
       const lineRows = lines.rows || []
@@ -2641,7 +2692,9 @@ router.post('/purchase-orders', requirePerm('inventory.po.manage'), async (req, 
         linesOut.push(row.rows?.[0] || null)
       }
 
-      return { po: poRowWithNo.rows?.[0] || poRow.rows?.[0] || null, lines: linesOut }
+      await refreshPurchaseOrderTotals(client, poId)
+      const poFinal = await client.query(`SELECT * FROM purchase_orders WHERE id = $1`, [poId])
+      return { po: poFinal.rows?.[0] || poRowWithNo.rows?.[0] || poRow.rows?.[0] || null, lines: linesOut }
     })
 
     addAudit('PurchaseOrder', poId, 'create', null, result, actorId(req))
@@ -2669,11 +2722,12 @@ router.get('/purchase-orders/:id', requirePerm('inventory.po.manage'), async (re
       po.rows[0].po_no = await ensurePurchaseOrderNo(pgPool, po.rows[0])
     }
     const lines = await pgPool.query(
-      `SELECT l.*, i.name AS item_name, i.sku AS item_sku
+      `SELECT l.*, i.name AS item_name, i.sku AS item_sku, lt.sort_order
        FROM purchase_order_lines l
        JOIN inventory_items i ON i.id = l.item_id
+       LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
        WHERE l.po_id = $1
-       ORDER BY i.name ASC`,
+       ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`,
       [id],
     )
     const deliveries = await pgPool.query(
@@ -2688,10 +2742,40 @@ router.get('/purchase-orders/:id', requirePerm('inventory.po.manage'), async (re
 
 const poPatchSchema = z.object({
   status: z.enum(['draft','ordered','received','closed']).optional(),
+  supplier_id: z.string().min(1).optional(),
+  warehouse_id: z.string().min(1).optional(),
   ordered_date: z.string().optional(),
   requested_delivery_date: z.string().optional(),
   note: z.string().optional(),
+  lines: z.array(z.object({
+    id: z.string().min(1),
+    quantity: z.number(),
+    note: z.string().optional(),
+    unit_price: z.number().nullable().optional(),
+  })).optional(),
 })
+
+async function refreshPurchaseOrderTotals(client: any, poId: string) {
+  const totals = await client.query(
+    `SELECT
+       COALESCE(SUM(COALESCE(amount_total,0)),0)::numeric AS subtotal_amount
+     FROM purchase_order_lines
+     WHERE po_id = $1`,
+    [poId],
+  )
+  const subtotal = Number(totals.rows?.[0]?.subtotal_amount || 0)
+  const gst = Number((subtotal * 0.1).toFixed(2))
+  const totalInclGst = Number((subtotal + gst).toFixed(2))
+  await client.query(
+    `UPDATE purchase_orders
+     SET subtotal_amount = $1::numeric,
+         gst_amount = $2::numeric,
+         total_amount_inc_gst = $3::numeric,
+         updated_at = now()
+     WHERE id = $4`,
+    [subtotal, gst, totalInclGst, poId],
+  )
+}
 
 router.patch('/purchase-orders/:id', requirePerm('inventory.po.manage'), async (req, res) => {
   const parsed = poPatchSchema.safeParse(req.body)
@@ -2703,15 +2787,65 @@ router.patch('/purchase-orders/:id', requirePerm('inventory.po.manage'), async (
     const before = await pgPool.query(`SELECT * FROM purchase_orders WHERE id = $1`, [id])
     const b = before.rows?.[0]
     if (!b) return res.status(404).json({ message: 'po not found' })
+    if (String(b.status || '') === 'received' || String(b.status || '') === 'closed') {
+      return res.status(400).json({ message: '已到货或已关闭的采购单不可编辑' })
+    }
     const payload = parsed.data as any
-    const keys = Object.keys(payload).filter(k => payload[k] !== undefined)
-    if (!keys.length) return res.json(b)
-    const sets = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ')
-    const values = keys.map(k => (payload as any)[k])
-    const sql = `UPDATE purchase_orders SET ${sets}, updated_at = now() WHERE id = $${keys.length + 1} RETURNING *`
-    const after = await pgPool.query(sql, [...values, id])
-    addAudit('PurchaseOrder', id, 'update', b, after.rows?.[0] || null, actorId(req))
-    return res.json(after.rows?.[0] || null)
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      const { lines: linePayload, ...poPayload } = payload
+      const keys = Object.keys(poPayload).filter((k) => poPayload[k] !== undefined)
+      let afterRow = b
+      if (keys.length) {
+        const sets = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ')
+        const values = keys.map((k) => poPayload[k])
+        const sql = `UPDATE purchase_orders SET ${sets}, updated_at = now() WHERE id = $${keys.length + 1} RETURNING *`
+        const after = await client.query(sql, [...values, id])
+        afterRow = after.rows?.[0] || afterRow
+      }
+      if (Array.isArray(linePayload) && linePayload.length) {
+        for (const line of linePayload) {
+          const existing = await client.query(
+            `SELECT id, po_id, quantity, unit_price, note
+             FROM purchase_order_lines
+             WHERE id = $1 AND po_id = $2`,
+            [line.id, id],
+          )
+          const current = existing.rows?.[0]
+          if (!current) continue
+          const quantity = Number(line.quantity || 0)
+          const unitPrice = line.unit_price === undefined ? Number(current.unit_price || 0) : (line.unit_price === null ? null : Number(line.unit_price))
+          await client.query(
+            `UPDATE purchase_order_lines
+             SET quantity = $1::integer,
+                 note = $2,
+                 unit_price = $3::numeric,
+                 amount_total = CASE
+                   WHEN $3 IS NULL THEN NULL
+                   ELSE ROUND(($1::numeric * $3::numeric), 2)
+                 END
+             WHERE id = $4 AND po_id = $5`,
+            [quantity, line.note || null, unitPrice, line.id, id],
+          )
+        }
+      }
+      await refreshPurchaseOrderTotals(client, id)
+      const afterPo = await client.query(`SELECT * FROM purchase_orders WHERE id = $1`, [id])
+      const afterLines = await client.query(
+        `SELECT * FROM purchase_order_lines WHERE po_id = $1 ORDER BY id ASC`,
+        [id],
+      )
+      await client.query('COMMIT')
+      const result = { po: afterPo.rows?.[0] || afterRow, lines: afterLines.rows || [] }
+      addAudit('PurchaseOrder', id, 'update', b, result.po || null, actorId(req))
+      return res.json(result)
+    } catch (txErr: any) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw txErr
+    } finally {
+      client.release()
+    }
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
   }
@@ -2732,11 +2866,12 @@ router.post('/purchase-orders/:id/export', requirePerm('inventory.po.manage'), a
     )
     if (!po.rows?.[0]) return res.status(404).json({ message: 'po not found' })
     const lines = await pgPool.query(
-      `SELECT i.name AS item_name, i.sku AS item_sku, l.quantity, l.unit, l.unit_price, l.note
+      `SELECT i.name AS item_name, i.sku AS item_sku, l.quantity, l.unit, l.unit_price, l.note, lt.sort_order
        FROM purchase_order_lines l
        JOIN inventory_items i ON i.id = l.item_id
+       LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
        WHERE l.po_id = $1
-       ORDER BY i.name ASC`,
+       ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`,
       [id],
     )
     const header = ['物料','SKU','数量','单位','单价','备注']
@@ -2778,11 +2913,12 @@ router.post('/purchase-orders/:id/deliveries', requirePerm('inventory.po.manage'
       if (!p) return { ok: false as const, code: 404 as const, message: 'po not found' }
 
       const deliveryId = uuidv4()
+      const receivedAt = String(parsed.data.received_at || '').trim()
       const d = await client.query(
         `INSERT INTO purchase_deliveries (id, po_id, received_at, received_by, note)
          VALUES ($1,$2,$3,$4,$5)
          RETURNING *`,
-        [deliveryId, po_id, parsed.data.received_at ? parsed.data.received_at : null, actorId(req), parsed.data.note || null],
+        [deliveryId, po_id, receivedAt || new Date().toISOString(), actorId(req), parsed.data.note || null],
       )
 
       const lineRows: any[] = []
@@ -3044,9 +3180,15 @@ router.get('/linen/dashboard', requirePerm('inventory.view'), async (req, res) =
     const client = pgPool
     const smWarehouse = await getSmWarehouse()
     const smWarehouseId = String(smWarehouse?.id || '')
-    const [warehousesRes, itemsRes, stocksRes, roomRes, pendingRefundRes] = await Promise.all([
+      const [warehousesRes, itemsRes, stocksRes, roomRes, pendingRefundRes] = await Promise.all([
       client.query(`SELECT id, code, name, linen_capacity_sets, active FROM warehouses WHERE active = true ORDER BY code ASC`),
-      client.query(`SELECT id, name, sku, linen_type_code FROM inventory_items WHERE category = 'linen' AND active = true ORDER BY name ASC`),
+      client.query(
+        `SELECT i.id, i.name, i.sku, i.linen_type_code, lt.sort_order
+         FROM inventory_items i
+         LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
+         WHERE i.category = 'linen' AND i.active = true
+         ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`,
+      ),
       client.query(`SELECT warehouse_id, item_id, quantity FROM warehouse_stocks WHERE item_id IN (SELECT id FROM inventory_items WHERE category = 'linen')`),
       getRoomTypeRequirementMaps(client),
       client.query(`SELECT COALESCE(SUM(expected_amount - received_amount),0) AS pending_amount FROM linen_supplier_refunds WHERE status <> 'settled'`),

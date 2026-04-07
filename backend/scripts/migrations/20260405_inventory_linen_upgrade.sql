@@ -1,5 +1,8 @@
 -- Inventory linen upgrade: reserve stock, supplier prices, delivery plans, supplier returns/refunds
 
+ALTER TABLE inventory_linen_types
+ADD COLUMN IF NOT EXISTS psl_code text;
+
 ALTER TABLE warehouses ADD COLUMN IF NOT EXISTS linen_capacity_sets integer;
 
 ALTER TABLE properties ADD COLUMN IF NOT EXISTS linen_service_warehouse_id text;
@@ -173,3 +176,27 @@ SET linen_capacity_sets = CASE
   WHEN id = 'wh.my80' THEN COALESCE(linen_capacity_sets, 100)
   ELSE linen_capacity_sets
 END;
+
+ALTER TABLE purchase_orders
+ADD COLUMN IF NOT EXISTS subtotal_amount numeric NOT NULL DEFAULT 0;
+
+ALTER TABLE purchase_orders
+ADD COLUMN IF NOT EXISTS gst_amount numeric NOT NULL DEFAULT 0;
+
+ALTER TABLE purchase_orders
+ADD COLUMN IF NOT EXISTS total_amount_inc_gst numeric NOT NULL DEFAULT 0;
+
+WITH po_totals AS (
+  SELECT
+    po.id,
+    COALESCE(SUM(COALESCE(pol.amount_total, 0)), 0)::numeric AS subtotal_amount
+  FROM purchase_orders po
+  LEFT JOIN purchase_order_lines pol ON pol.po_id = po.id
+  GROUP BY po.id
+)
+UPDATE purchase_orders po
+SET subtotal_amount = t.subtotal_amount,
+    gst_amount = ROUND(t.subtotal_amount * 0.1, 2),
+    total_amount_inc_gst = ROUND(t.subtotal_amount * 1.1, 2)
+FROM po_totals t
+WHERE t.id = po.id;

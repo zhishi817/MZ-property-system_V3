@@ -1,5 +1,5 @@
 "use client"
-import { Card, Table, Space, Button, Tag, Select, message, Modal, Form, DatePicker, Input, InputNumber } from 'antd'
+import { Card, Table, Space, Button, Tag, Select, message, Modal, Form, Input, InputNumber } from 'antd'
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import dayjs from 'dayjs'
@@ -22,6 +22,7 @@ type PoRow = {
   supplier_name: string
   warehouse_name: string
   warehouse_code: string
+  total_amount_inc_gst?: string | null
 }
 type DeliveryLine = { item_id: string; item_name: string; item_sku: string; quantity: number }
 
@@ -39,12 +40,9 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
   const [status, setStatus] = useState<string>('')
   const [warehouseId, setWarehouseId] = useState<string>('')
   const [supplierId, setSupplierId] = useState<string>('')
-  const [editing, setEditing] = useState<PoRow | null>(null)
-  const [saving, setSaving] = useState(false)
   const [deliveryPo, setDeliveryPo] = useState<PoRow | null>(null)
   const [deliveryLines, setDeliveryLines] = useState<DeliveryLine[]>([])
   const [deliverySaving, setDeliverySaving] = useState(false)
-  const [form] = Form.useForm()
   const [deliveryForm] = Form.useForm()
 
   const canManage = hasPerm('inventory.po.manage')
@@ -69,34 +67,6 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
   }
 
   useEffect(() => { loadBase().then(load).catch((e) => message.error(e?.message || '加载失败')) }, [])
-
-  function openEdit(row: PoRow) {
-    setEditing(row)
-    form.setFieldsValue({
-      ordered_date: row.ordered_date ? dayjs(row.ordered_date) : null,
-      requested_delivery_date: row.requested_delivery_date ? dayjs(row.requested_delivery_date) : null,
-      note: row.note || '',
-    })
-  }
-
-  async function submitEdit() {
-    if (!editing) return
-    setSaving(true)
-    try {
-      const values = await form.validateFields()
-      await patchJSON(`/inventory/purchase-orders/${editing.id}`, {
-        ordered_date: values.ordered_date ? dayjs(values.ordered_date).format('YYYY-MM-DD') : undefined,
-        requested_delivery_date: values.requested_delivery_date ? dayjs(values.requested_delivery_date).format('YYYY-MM-DD') : undefined,
-        note: values.note || undefined,
-      })
-      message.success('采购单已更新')
-      setEditing(null)
-      form.resetFields()
-      await load()
-    } finally {
-      setSaving(false)
-    }
-  }
 
   async function markOrdered(row: PoRow) {
     await patchJSON(`/inventory/purchase-orders/${row.id}`, {
@@ -182,6 +152,7 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
     { title: '下单日期', dataIndex: 'ordered_date', width: 140, render: (v: string | null) => v || '-' },
     { title: '供应商', dataIndex: 'supplier_name' },
     { title: '送货仓库', dataIndex: 'warehouse_name', render: (_: any, r: PoRow) => `${r.warehouse_code} - ${r.warehouse_name}` },
+    { title: '总金额', dataIndex: 'total_amount_inc_gst', width: 140, render: (v: string | null) => `$${Number(v || 0).toFixed(2)}` },
     { title: '状态', dataIndex: 'status', render: (v: string) => statusTag(v) },
     { title: '备注', dataIndex: 'note' },
     {
@@ -191,7 +162,7 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
       render: (_: any, r: PoRow) => (
         <Space>
           <Link href={`/inventory/purchase-orders/${r.id}`} prefetch={false}><Button>详情</Button></Link>
-          {canManage ? <Button onClick={() => openEdit(r)}>编辑</Button> : null}
+          {canManage && r.status !== 'received' && r.status !== 'closed' ? <Link href={`/inventory/purchase-orders/${r.id}?edit=1`} prefetch={false}><Button>编辑</Button></Link> : null}
           {canManage && r.status === 'draft' ? <Button type="primary" onClick={() => markOrdered(r).catch((e) => message.error(e?.message || '下单失败'))}>下单</Button> : null}
           {canManage && r.status === 'ordered' ? <Button onClick={() => openDelivery(r).catch((e) => message.error(e?.message || '加载到货明细失败'))}>登记到货</Button> : null}
           {canManage ? <Button danger onClick={() => archiveRow(r)}>归档</Button> : null}
@@ -216,32 +187,7 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
         columns={columns}
         dataSource={rows}
         pagination={{ pageSize: 20 }}
-        onRow={(record) => ({
-          onDoubleClick: () => { window.location.href = `/inventory/purchase-orders/${record.id}` },
-        })}
       />
-
-      <Modal
-        open={!!editing}
-        title="编辑采购单"
-        onCancel={() => { setEditing(null); form.resetFields() }}
-        onOk={() => submitEdit().catch((e) => message.error(e?.message || '保存失败'))}
-        confirmLoading={saving}
-        okText="保存"
-        cancelText="取消"
-      >
-        <Form form={form} layout="vertical">
-          <Form.Item name="ordered_date" label="下单日期">
-            <DatePicker style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="requested_delivery_date" label="送货日期">
-            <DatePicker style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="note" label="备注">
-            <Input />
-          </Form.Item>
-        </Form>
-      </Modal>
 
       <Modal
         open={!!deliveryPo}

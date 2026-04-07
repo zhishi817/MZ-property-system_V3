@@ -89,6 +89,7 @@ async function ensureInventorySchema() {
         await dbAdapter_1.pgPool.query(`CREATE TABLE IF NOT EXISTS inventory_linen_types (
       code text PRIMARY KEY,
       name text NOT NULL,
+      psl_code text,
       in_set boolean NOT NULL DEFAULT true,
       set_divisor integer NOT NULL DEFAULT 1,
       sort_order integer NOT NULL DEFAULT 0,
@@ -96,6 +97,7 @@ async function ensureInventorySchema() {
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz
     );`);
+        await dbAdapter_1.pgPool.query('ALTER TABLE inventory_linen_types ADD COLUMN IF NOT EXISTS psl_code text;');
         await dbAdapter_1.pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_linen_types_active_sort ON inventory_linen_types(active, sort_order, code);');
         await dbAdapter_1.pgPool.query(`INSERT INTO inventory_linen_types (code, name, in_set, set_divisor, sort_order, active) VALUES
       ('bedsheet','床单',true,1,10,true),
@@ -237,6 +239,9 @@ async function ensureInventorySchema() {
       region text,
       property_id text,
       note text,
+      subtotal_amount numeric NOT NULL DEFAULT 0,
+      gst_amount numeric NOT NULL DEFAULT 0,
+      total_amount_inc_gst numeric NOT NULL DEFAULT 0,
       created_by text,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz
@@ -249,6 +254,9 @@ async function ensureInventorySchema() {
         await dbAdapter_1.pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_orders_property ON purchase_orders(property_id);');
         await dbAdapter_1.pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_orders_ordered_date ON purchase_orders(ordered_date);');
         await dbAdapter_1.pgPool.query('ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS po_no text;');
+        await dbAdapter_1.pgPool.query('ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS subtotal_amount numeric NOT NULL DEFAULT 0;');
+        await dbAdapter_1.pgPool.query('ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS gst_amount numeric NOT NULL DEFAULT 0;');
+        await dbAdapter_1.pgPool.query('ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS total_amount_inc_gst numeric NOT NULL DEFAULT 0;');
         await dbAdapter_1.pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_orders_po_no_unique ON purchase_orders(po_no) WHERE po_no IS NOT NULL;');
         await dbAdapter_1.pgPool.query(`CREATE TABLE IF NOT EXISTS purchase_order_lines (
       id text PRIMARY KEY,
@@ -666,6 +674,7 @@ exports.router.get('/warehouses', (0, auth_1.requirePerm)('inventory.view'), asy
 const linenTypeSchema = zod_1.z.object({
     code: zod_1.z.string().min(1),
     name: zod_1.z.string().min(1),
+    psl_code: zod_1.z.string().optional(),
     in_set: zod_1.z.boolean().optional(),
     set_divisor: zod_1.z.number().int().min(1).optional(),
     sort_order: zod_1.z.number().int().optional(),
@@ -678,6 +687,7 @@ exports.router.get('/linen-types', (0, auth_1.requirePerm)('inventory.view'), as
             const rows = await dbAdapter_1.pgPool.query(`
         SELECT lt.code,
                lt.name,
+               lt.psl_code,
                lt.in_set,
                lt.set_divisor,
                lt.sort_order,
@@ -690,7 +700,7 @@ exports.router.get('/linen-types', (0, auth_1.requirePerm)('inventory.view'), as
                  LIMIT 1
                ) AS item_id
         FROM inventory_linen_types lt
-        ORDER BY lt.active DESC, lt.name ASC, lt.code ASC
+        ORDER BY lt.active DESC, lt.sort_order ASC, lt.code ASC
       `);
             return res.json(rows.rows || []);
         }
@@ -701,7 +711,7 @@ exports.router.get('/linen-types', (0, auth_1.requirePerm)('inventory.view'), as
     }
 });
 exports.router.post('/linen-types', (0, auth_1.requirePerm)('inventory.item.manage'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const parsed = linenTypeSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -710,15 +720,15 @@ exports.router.post('/linen-types', (0, auth_1.requirePerm)('inventory.item.mana
             return res.status(501).json({ message: 'not available without PG' });
         await ensureInventorySchema();
         const v = parsed.data;
-        const row = await dbAdapter_1.pgPool.query(`INSERT INTO inventory_linen_types (code, name, in_set, set_divisor, sort_order, active)
-       VALUES ($1,$2,$3,$4,$5,$6)
-       RETURNING code, name, in_set, set_divisor, sort_order, active`, [v.code, v.name, (_a = v.in_set) !== null && _a !== void 0 ? _a : true, (_b = v.set_divisor) !== null && _b !== void 0 ? _b : 1, (_c = v.sort_order) !== null && _c !== void 0 ? _c : 0, (_d = v.active) !== null && _d !== void 0 ? _d : true]);
+        const row = await dbAdapter_1.pgPool.query(`INSERT INTO inventory_linen_types (code, name, psl_code, in_set, set_divisor, sort_order, active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       RETURNING code, name, psl_code, in_set, set_divisor, sort_order, active`, [v.code, v.name, (_a = v.psl_code) !== null && _a !== void 0 ? _a : null, (_b = v.in_set) !== null && _b !== void 0 ? _b : true, (_c = v.set_divisor) !== null && _c !== void 0 ? _c : 1, (_d = v.sort_order) !== null && _d !== void 0 ? _d : 0, (_e = v.active) !== null && _e !== void 0 ? _e : true]);
         const itemId = `item.linen_type.${v.code}`;
         await dbAdapter_1.pgPool.query(`INSERT INTO inventory_items (id, name, sku, category, linen_type_code, unit, default_threshold, bin_location, active, is_key_item)
        VALUES ($1,$2,$3,'linen',$4,'pcs',0,NULL,$5,false)
-       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, active = EXCLUDED.active, linen_type_code = EXCLUDED.linen_type_code`, [itemId, v.name, `LT:${v.code}`, v.code, (_e = v.active) !== null && _e !== void 0 ? _e : true]);
-        (0, store_1.addAudit)('InventoryLinenType', v.code, 'create', null, ((_f = row.rows) === null || _f === void 0 ? void 0 : _f[0]) || null, actorId(req));
-        return res.status(201).json(((_g = row.rows) === null || _g === void 0 ? void 0 : _g[0]) || null);
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, active = EXCLUDED.active, linen_type_code = EXCLUDED.linen_type_code`, [itemId, v.name, `LT:${v.code}`, v.code, (_f = v.active) !== null && _f !== void 0 ? _f : true]);
+        (0, store_1.addAudit)('InventoryLinenType', v.code, 'create', null, ((_g = row.rows) === null || _g === void 0 ? void 0 : _g[0]) || null, actorId(req));
+        return res.status(201).json(((_h = row.rows) === null || _h === void 0 ? void 0 : _h[0]) || null);
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
@@ -744,7 +754,7 @@ exports.router.patch('/linen-types/:code', (0, auth_1.requirePerm)('inventory.it
             return res.json(b);
         const sets = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
         const values = keys.map(k => payload[k]);
-        const sql = `UPDATE inventory_linen_types SET ${sets}, updated_at = now() WHERE code = $${keys.length + 1} RETURNING code, name, in_set, set_divisor, sort_order, active`;
+        const sql = `UPDATE inventory_linen_types SET ${sets}, updated_at = now() WHERE code = $${keys.length + 1} RETURNING code, name, psl_code, in_set, set_divisor, sort_order, active`;
         const after = await dbAdapter_1.pgPool.query(sql, [...values, code]);
         const a = (_b = after.rows) === null || _b === void 0 ? void 0 : _b[0];
         if (a) {
@@ -973,27 +983,35 @@ exports.router.get('/items', (0, auth_1.requirePerm)('inventory.view'), async (r
             await ensureInventorySchema();
             const where = [];
             const values = [];
+            const linenAlias = category === 'linen' ? 'i' : '';
+            const col = (name) => linenAlias ? `${linenAlias}.${name}` : name;
             if (q) {
                 values.push(`%${q}%`);
                 values.push(`%${q}%`);
-                where.push(`(name ILIKE $${values.length - 1} OR sku ILIKE $${values.length})`);
+                where.push(`(${col('name')} ILIKE $${values.length - 1} OR ${col('sku')} ILIKE $${values.length})`);
             }
             if (category) {
                 values.push(category);
-                where.push(`category = $${values.length}`);
+                where.push(`${col('category')} = $${values.length}`);
             }
             if (active === 'true' || active === 'false') {
                 values.push(active === 'true');
-                where.push(`active = $${values.length}`);
+                where.push(`${col('active')} = $${values.length}`);
             }
             if (linenTypeCode) {
                 values.push(linenTypeCode);
-                where.push(`linen_type_code = $${values.length}`);
+                where.push(`${col('linen_type_code')} = $${values.length}`);
             }
-            const sql = `SELECT id, name, sku, category, sub_type, linen_type_code, unit, default_threshold, bin_location, active, is_key_item
-                   FROM inventory_items
-                   ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-                   ORDER BY name ASC`;
+            const sql = category === 'linen'
+                ? `SELECT i.id, i.name, i.sku, i.category, i.sub_type, i.linen_type_code, i.unit, i.default_threshold, i.bin_location, i.active, i.is_key_item
+             FROM inventory_items i
+             LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
+             ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+             ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`
+                : `SELECT id, name, sku, category, sub_type, linen_type_code, unit, default_threshold, bin_location, active, is_key_item
+             FROM inventory_items
+             ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+             ORDER BY name ASC`;
             const rows = await dbAdapter_1.pgPool.query(sql, values);
             return res.json(rows.rows || []);
         }
@@ -1107,9 +1125,19 @@ exports.router.get('/stocks', (0, auth_1.requirePerm)('inventory.view'), async (
             await ensureInventorySchema();
             if (category) {
                 const itemVals = [category];
-                let itemSql = `SELECT id, name, sku, category, sub_type, linen_type_code, unit, default_threshold, bin_location, active, is_key_item FROM inventory_items WHERE category = $1`;
+                let itemSql = category === 'linen'
+                    ? `SELECT i.id, i.name, i.sku, i.category, i.sub_type, i.linen_type_code, i.unit, i.default_threshold, i.bin_location, i.active, i.is_key_item, lt.sort_order
+               FROM inventory_items i
+               LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
+               WHERE i.category = $1`
+                    : `SELECT id, name, sku, category, sub_type, linen_type_code, unit, default_threshold, bin_location, active, is_key_item
+               FROM inventory_items
+               WHERE category = $1`;
                 if (keyOnly)
                     itemSql += ` AND is_key_item = true`;
+                itemSql += category === 'linen'
+                    ? ` ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`
+                    : ` ORDER BY name ASC`;
                 const items = await dbAdapter_1.pgPool.query(itemSql, itemVals);
                 const itemRows = items.rows || [];
                 if (!itemRows.length)
@@ -1129,6 +1157,7 @@ exports.router.get('/stocks', (0, auth_1.requirePerm)('inventory.view'), async (
                         sku: it.sku,
                         category: it.category,
                         sub_type: it.sub_type,
+                        sort_order: it.sort_order,
                         unit: it.unit,
                         default_threshold: it.default_threshold,
                         bin_location: it.bin_location,
@@ -1136,7 +1165,15 @@ exports.router.get('/stocks', (0, auth_1.requirePerm)('inventory.view'), async (
                         is_key_item: it.is_key_item,
                         threshold_effective: eff,
                     };
-                }).sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+                }).sort((a, b) => {
+                    if (category === 'linen') {
+                        const sortA = Number.isFinite(Number(a.sort_order)) ? Number(a.sort_order) : 9999;
+                        const sortB = Number.isFinite(Number(b.sort_order)) ? Number(b.sort_order) : 9999;
+                        if (sortA !== sortB)
+                            return sortA - sortB;
+                    }
+                    return String(a.name || '').localeCompare(String(b.name || ''), 'zh');
+                });
                 if (warningsOnly)
                     out = out.filter((x) => Number(x.quantity || 0) < Number(x.threshold_effective || 0));
                 return res.json(out);
@@ -1596,9 +1633,15 @@ exports.router.get('/category-dashboard', (0, auth_1.requirePerm)('inventory.vie
                 ? await dbAdapter_1.pgPool.query(`SELECT room_type_code, linen_type_code, quantity
            FROM inventory_room_type_requirements`)
                 : { rows: [] };
-            const its = await dbAdapter_1.pgPool.query(`SELECT id, name, sku, category, sub_type, linen_type_code, unit, default_threshold, bin_location, active, is_key_item
-         FROM inventory_items
-         WHERE category = $1`, [category]);
+            const its = category === 'linen'
+                ? await dbAdapter_1.pgPool.query(`SELECT i.id, i.name, i.sku, i.category, i.sub_type, i.linen_type_code, i.unit, i.default_threshold, i.bin_location, i.active, i.is_key_item, lt.sort_order
+           FROM inventory_items i
+           LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
+           WHERE i.category = $1
+           ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`, [category])
+                : await dbAdapter_1.pgPool.query(`SELECT id, name, sku, category, sub_type, linen_type_code, unit, default_threshold, bin_location, active, is_key_item
+           FROM inventory_items
+           WHERE category = $1`, [category]);
             const items = its.rows || [];
             const itemIds = items.map((r) => String(r.id));
             const itemMap = new Map(items.map((r) => [String(r.id), r]));
@@ -2393,7 +2436,7 @@ exports.router.get('/purchase-orders', (0, auth_1.requirePerm)('inventory.po.man
         SELECT po.*
         FROM purchase_orders po
         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-        ORDER BY po.created_at DESC
+        ORDER BY COALESCE(po.ordered_date, (po.created_at AT TIME ZONE 'Australia/Melbourne')::date) DESC, po.created_at DESC
         LIMIT 200
       `;
             const poRows = await dbAdapter_1.pgPool.query(sql, values);
@@ -2434,6 +2477,9 @@ exports.router.get('/purchase-orders', (0, auth_1.requirePerm)('inventory.po.man
                     line_count: Number(a.line_count || 0),
                     quantity_total: Number(a.quantity_total || 0),
                     amount_total: a.amount_total !== undefined && a.amount_total !== null ? String(a.amount_total) : '0',
+                    subtotal_amount: r.subtotal_amount !== undefined && r.subtotal_amount !== null ? String(r.subtotal_amount) : '0',
+                    gst_amount: r.gst_amount !== undefined && r.gst_amount !== null ? String(r.gst_amount) : '0',
+                    total_amount_inc_gst: r.total_amount_inc_gst !== undefined && r.total_amount_inc_gst !== null ? String(r.total_amount_inc_gst) : '0',
                 };
             });
             return res.json(out);
@@ -2508,9 +2554,12 @@ exports.router.get('/purchase-order-lines', (0, auth_1.requirePerm)('inventory.p
                 lineVals.push(itemIdsByCategory);
                 lineWhere.push(`item_id = ANY($${lineVals.length}::text[])`);
             }
-            const lines = await dbAdapter_1.pgPool.query(`SELECT * FROM purchase_order_lines
+            const lines = await dbAdapter_1.pgPool.query(`SELECT l.*, i.name AS item_name, i.sku AS item_sku, lt.sort_order
+         FROM purchase_order_lines l
+         JOIN inventory_items i ON i.id = l.item_id
+         LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
          WHERE ${lineWhere.join(' AND ')}
-         ORDER BY po_id ASC`, lineVals);
+         ORDER BY l.po_id ASC, COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`, lineVals);
             const lineRows = lines.rows || [];
             if (!lineRows.length)
                 return res.json([]);
@@ -2596,7 +2645,7 @@ exports.router.post('/purchase-orders', (0, auth_1.requirePerm)('inventory.po.ma
         const warehouseFinal = String(parsed.data.warehouse_id || '').trim() || warehouseDefault;
         const orderedDate = String(parsed.data.ordered_date || '').trim();
         const result = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
-            var _a, _b, _c, _d, _e, _f, _g;
+            var _a, _b, _c, _d, _e, _f, _g, _h;
             const poRow = await client.query(`INSERT INTO purchase_orders (id, supplier_id, warehouse_id, status, ordered_date, requested_delivery_date, region, property_id, note, created_by)
          VALUES ($1,$2,$3,$4,COALESCE(NULLIF($5,'')::date, (now() AT TIME ZONE 'Australia/Melbourne')::date),$6,$7,$8,$9,$10)
          RETURNING *`, [
@@ -2670,7 +2719,9 @@ exports.router.post('/purchase-orders', (0, auth_1.requirePerm)('inventory.po.ma
                 ]);
                 linesOut.push(((_e = row.rows) === null || _e === void 0 ? void 0 : _e[0]) || null);
             }
-            return { po: ((_f = poRowWithNo.rows) === null || _f === void 0 ? void 0 : _f[0]) || ((_g = poRow.rows) === null || _g === void 0 ? void 0 : _g[0]) || null, lines: linesOut };
+            await refreshPurchaseOrderTotals(client, poId);
+            const poFinal = await client.query(`SELECT * FROM purchase_orders WHERE id = $1`, [poId]);
+            return { po: ((_f = poFinal.rows) === null || _f === void 0 ? void 0 : _f[0]) || ((_g = poRowWithNo.rows) === null || _g === void 0 ? void 0 : _g[0]) || ((_h = poRow.rows) === null || _h === void 0 ? void 0 : _h[0]) || null, lines: linesOut };
         });
         (0, store_1.addAudit)('PurchaseOrder', poId, 'create', null, result, actorId(req));
         return res.status(201).json(result);
@@ -2696,11 +2747,12 @@ exports.router.get('/purchase-orders/:id', (0, auth_1.requirePerm)('inventory.po
         if (!String(((_c = (_b = po.rows) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.po_no) || '').trim()) {
             po.rows[0].po_no = await ensurePurchaseOrderNo(dbAdapter_1.pgPool, po.rows[0]);
         }
-        const lines = await dbAdapter_1.pgPool.query(`SELECT l.*, i.name AS item_name, i.sku AS item_sku
+        const lines = await dbAdapter_1.pgPool.query(`SELECT l.*, i.name AS item_name, i.sku AS item_sku, lt.sort_order
        FROM purchase_order_lines l
        JOIN inventory_items i ON i.id = l.item_id
+       LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
        WHERE l.po_id = $1
-       ORDER BY i.name ASC`, [id]);
+       ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`, [id]);
         const deliveries = await dbAdapter_1.pgPool.query(`SELECT d.* FROM purchase_deliveries d WHERE d.po_id = $1 ORDER BY d.received_at DESC`, [id]);
         return res.json({ po: po.rows[0], lines: lines.rows || [], deliveries: deliveries.rows || [] });
     }
@@ -2710,12 +2762,36 @@ exports.router.get('/purchase-orders/:id', (0, auth_1.requirePerm)('inventory.po
 });
 const poPatchSchema = zod_1.z.object({
     status: zod_1.z.enum(['draft', 'ordered', 'received', 'closed']).optional(),
+    supplier_id: zod_1.z.string().min(1).optional(),
+    warehouse_id: zod_1.z.string().min(1).optional(),
     ordered_date: zod_1.z.string().optional(),
     requested_delivery_date: zod_1.z.string().optional(),
     note: zod_1.z.string().optional(),
+    lines: zod_1.z.array(zod_1.z.object({
+        id: zod_1.z.string().min(1),
+        quantity: zod_1.z.number(),
+        note: zod_1.z.string().optional(),
+        unit_price: zod_1.z.number().nullable().optional(),
+    })).optional(),
 });
+async function refreshPurchaseOrderTotals(client, poId) {
+    var _a, _b;
+    const totals = await client.query(`SELECT
+       COALESCE(SUM(COALESCE(amount_total,0)),0)::numeric AS subtotal_amount
+     FROM purchase_order_lines
+     WHERE po_id = $1`, [poId]);
+    const subtotal = Number(((_b = (_a = totals.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.subtotal_amount) || 0);
+    const gst = Number((subtotal * 0.1).toFixed(2));
+    const totalInclGst = Number((subtotal + gst).toFixed(2));
+    await client.query(`UPDATE purchase_orders
+     SET subtotal_amount = $1::numeric,
+         gst_amount = $2::numeric,
+         total_amount_inc_gst = $3::numeric,
+         updated_at = now()
+     WHERE id = $4`, [subtotal, gst, totalInclGst, poId]);
+}
 exports.router.patch('/purchase-orders/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     const parsed = poPatchSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -2728,16 +2804,62 @@ exports.router.patch('/purchase-orders/:id', (0, auth_1.requirePerm)('inventory.
         const b = (_a = before.rows) === null || _a === void 0 ? void 0 : _a[0];
         if (!b)
             return res.status(404).json({ message: 'po not found' });
+        if (String(b.status || '') === 'received' || String(b.status || '') === 'closed') {
+            return res.status(400).json({ message: '已到货或已关闭的采购单不可编辑' });
+        }
         const payload = parsed.data;
-        const keys = Object.keys(payload).filter(k => payload[k] !== undefined);
-        if (!keys.length)
-            return res.json(b);
-        const sets = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
-        const values = keys.map(k => payload[k]);
-        const sql = `UPDATE purchase_orders SET ${sets}, updated_at = now() WHERE id = $${keys.length + 1} RETURNING *`;
-        const after = await dbAdapter_1.pgPool.query(sql, [...values, id]);
-        (0, store_1.addAudit)('PurchaseOrder', id, 'update', b, ((_b = after.rows) === null || _b === void 0 ? void 0 : _b[0]) || null, actorId(req));
-        return res.json(((_c = after.rows) === null || _c === void 0 ? void 0 : _c[0]) || null);
+        const client = await dbAdapter_1.pgPool.connect();
+        try {
+            await client.query('BEGIN');
+            const { lines: linePayload, ...poPayload } = payload;
+            const keys = Object.keys(poPayload).filter((k) => poPayload[k] !== undefined);
+            let afterRow = b;
+            if (keys.length) {
+                const sets = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
+                const values = keys.map((k) => poPayload[k]);
+                const sql = `UPDATE purchase_orders SET ${sets}, updated_at = now() WHERE id = $${keys.length + 1} RETURNING *`;
+                const after = await client.query(sql, [...values, id]);
+                afterRow = ((_b = after.rows) === null || _b === void 0 ? void 0 : _b[0]) || afterRow;
+            }
+            if (Array.isArray(linePayload) && linePayload.length) {
+                for (const line of linePayload) {
+                    const existing = await client.query(`SELECT id, po_id, quantity, unit_price, note
+             FROM purchase_order_lines
+             WHERE id = $1 AND po_id = $2`, [line.id, id]);
+                    const current = (_c = existing.rows) === null || _c === void 0 ? void 0 : _c[0];
+                    if (!current)
+                        continue;
+                    const quantity = Number(line.quantity || 0);
+                    const unitPrice = line.unit_price === undefined ? Number(current.unit_price || 0) : (line.unit_price === null ? null : Number(line.unit_price));
+                    await client.query(`UPDATE purchase_order_lines
+             SET quantity = $1::integer,
+                 note = $2,
+                 unit_price = $3::numeric,
+                 amount_total = CASE
+                   WHEN $3 IS NULL THEN NULL
+                   ELSE ROUND(($1::numeric * $3::numeric), 2)
+                 END
+             WHERE id = $4 AND po_id = $5`, [quantity, line.note || null, unitPrice, line.id, id]);
+                }
+            }
+            await refreshPurchaseOrderTotals(client, id);
+            const afterPo = await client.query(`SELECT * FROM purchase_orders WHERE id = $1`, [id]);
+            const afterLines = await client.query(`SELECT * FROM purchase_order_lines WHERE po_id = $1 ORDER BY id ASC`, [id]);
+            await client.query('COMMIT');
+            const result = { po: ((_d = afterPo.rows) === null || _d === void 0 ? void 0 : _d[0]) || afterRow, lines: afterLines.rows || [] };
+            (0, store_1.addAudit)('PurchaseOrder', id, 'update', b, result.po || null, actorId(req));
+            return res.json(result);
+        }
+        catch (txErr) {
+            try {
+                await client.query('ROLLBACK');
+            }
+            catch (_e) { }
+            throw txErr;
+        }
+        finally {
+            client.release();
+        }
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
@@ -2757,11 +2879,12 @@ exports.router.post('/purchase-orders/:id/export', (0, auth_1.requirePerm)('inve
        WHERE po.id = $1`, [id]);
         if (!((_a = po.rows) === null || _a === void 0 ? void 0 : _a[0]))
             return res.status(404).json({ message: 'po not found' });
-        const lines = await dbAdapter_1.pgPool.query(`SELECT i.name AS item_name, i.sku AS item_sku, l.quantity, l.unit, l.unit_price, l.note
+        const lines = await dbAdapter_1.pgPool.query(`SELECT i.name AS item_name, i.sku AS item_sku, l.quantity, l.unit, l.unit_price, l.note, lt.sort_order
        FROM purchase_order_lines l
        JOIN inventory_items i ON i.id = l.item_id
+       LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
        WHERE l.po_id = $1
-       ORDER BY i.name ASC`, [id]);
+       ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`, [id]);
         const header = ['物料', 'SKU', '数量', '单位', '单价', '备注'];
         const esc = (v) => {
             const s = String(v !== null && v !== void 0 ? v : '');
@@ -2805,9 +2928,10 @@ exports.router.post('/purchase-orders/:id/deliveries', (0, auth_1.requirePerm)('
             if (!p)
                 return { ok: false, code: 404, message: 'po not found' };
             const deliveryId = (0, uuid_1.v4)();
+            const receivedAt = String(parsed.data.received_at || '').trim();
             const d = await client.query(`INSERT INTO purchase_deliveries (id, po_id, received_at, received_by, note)
          VALUES ($1,$2,$3,$4,$5)
-         RETURNING *`, [deliveryId, po_id, parsed.data.received_at ? parsed.data.received_at : null, actorId(req), parsed.data.note || null]);
+         RETURNING *`, [deliveryId, po_id, receivedAt || new Date().toISOString(), actorId(req), parsed.data.note || null]);
             const lineRows = [];
             for (const ln of parsed.data.lines) {
                 const dlId = (0, uuid_1.v4)();
@@ -3086,7 +3210,11 @@ exports.router.get('/linen/dashboard', (0, auth_1.requirePerm)('inventory.view')
         const smWarehouseId = String((smWarehouse === null || smWarehouse === void 0 ? void 0 : smWarehouse.id) || '');
         const [warehousesRes, itemsRes, stocksRes, roomRes, pendingRefundRes] = await Promise.all([
             client.query(`SELECT id, code, name, linen_capacity_sets, active FROM warehouses WHERE active = true ORDER BY code ASC`),
-            client.query(`SELECT id, name, sku, linen_type_code FROM inventory_items WHERE category = 'linen' AND active = true ORDER BY name ASC`),
+            client.query(`SELECT i.id, i.name, i.sku, i.linen_type_code, lt.sort_order
+         FROM inventory_items i
+         LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
+         WHERE i.category = 'linen' AND i.active = true
+         ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`),
             client.query(`SELECT warehouse_id, item_id, quantity FROM warehouse_stocks WHERE item_id IN (SELECT id FROM inventory_items WHERE category = 'linen')`),
             getRoomTypeRequirementMaps(client),
             client.query(`SELECT COALESCE(SUM(expected_amount - received_amount),0) AS pending_amount FROM linen_supplier_refunds WHERE status <> 'settled'`),

@@ -7,7 +7,7 @@ import { deleteJSON, getJSON, patchJSON, postJSON } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
 
 type Supplier = { id: string; name: string; kind: string; active: boolean }
-type LinenType = { code: string; name: string; sort_order?: number; active: boolean; item_id?: string | null }
+type LinenType = { code: string; name: string; psl_code?: string | null; sort_order?: number; active: boolean; item_id?: string | null }
 type SupplierPrice = {
   id: string
   supplier_id: string
@@ -27,11 +27,36 @@ type PriceDraftRow = {
   linen_type_code: string
   item_id: string
   linen_type_name: string
+  psl_code: string
+  sort_order: number
   purchase_unit_price: number
   refund_unit_price: number
   effective_from?: string
   active: boolean
   deleted?: boolean
+}
+
+function isExcludedForEwash(row: { code?: string | null; name?: string | null }) {
+  const candidates = [
+    String(row.code || '').trim().toLowerCase().replace(/[\s_-]+/g, ''),
+    String(row.name || '').trim().toLowerCase().replace(/[\s_-]+/g, ''),
+    String(row.code || '').trim(),
+    String(row.name || '').trim(),
+  ]
+  return candidates.some((candidate) =>
+    [
+      '红色洗衣袋',
+      '橘色袋子',
+      '橙色袋子',
+      '推车',
+      '推车liner',
+      'trolley',
+      'trolleyliner',
+      'redlaundrybag',
+      'orangebag',
+      'cartliner',
+    ].some((needle) => String(candidate).includes(needle)),
+  )
 }
 
 export default function InventorySuppliersPage() {
@@ -73,6 +98,7 @@ export default function InventorySuppliersPage() {
         .map((x, idx) => ({
           code: String(x.linen_type_code),
           name: String(x.name || x.linen_type_code),
+          psl_code: String(x.psl_code || ''),
           sort_order: Number(x.sort_order ?? idx),
           item_id: String(x.id || ''),
           active: true,
@@ -136,6 +162,8 @@ export default function InventorySuppliersPage() {
         linen_type_code: String(linenType.code),
         item_id: existing?.item_id || String(linenType.item_id || ''),
         linen_type_name: String(linenType.name),
+        psl_code: String(linenType.psl_code || ''),
+        sort_order: Number(linenType.sort_order || 0),
         purchase_unit_price: Number(existing?.purchase_unit_price || 0),
         refund_unit_price: Number(existing?.refund_unit_price || 0),
         effective_from: existing?.effective_from || '',
@@ -186,6 +214,8 @@ export default function InventorySuppliersPage() {
           linen_type_code: linenTypeCode,
           item_id: String(linenTypes.find((x) => x.code === linenTypeCode)?.item_id || ''),
           linen_type_name: linenTypes.find((x) => x.code === linenTypeCode)?.name || linenTypeCode,
+          psl_code: String(linenTypes.find((x) => x.code === linenTypeCode)?.psl_code || ''),
+          sort_order: Number(linenTypes.find((x) => x.code === linenTypeCode)?.sort_order || 0),
           purchase_unit_price: 0,
           refund_unit_price: 0,
           effective_from: '',
@@ -243,6 +273,15 @@ export default function InventorySuppliersPage() {
             }
           }
           continue
+        }
+        try {
+          await patchJSON(`/inventory/linen-types/${row.linen_type_code}`, {
+            name: row.linen_type_name,
+            psl_code: row.psl_code || '',
+            sort_order: Number(row.sort_order || 0),
+          })
+        } catch (e: any) {
+          if (!is404Error(e)) throw e
         }
         const resolvedItemId = row.item_id || String(linenTypes.find((x) => x.code === row.linen_type_code)?.item_id || '')
         const payload: any = {
@@ -393,6 +432,9 @@ export default function InventorySuppliersPage() {
   }
 
   const editingKind = Form.useWatch('kind', form)
+  const editingSupplierNameLower = String(editing?.name || '').trim().toLowerCase()
+  const isEditingPsl = editingSupplierNameLower.includes('psl')
+  const isEditingEwash = editingSupplierNameLower.includes('ewash')
   const viewingPriceCount = useMemo(() => prices.filter((p) => p.supplier_id === viewing?.id).length, [prices, viewing])
   const viewingPrices = useMemo(() => {
     if (!viewing?.id) return []
@@ -403,12 +445,15 @@ export default function InventorySuppliersPage() {
   const editingPriceRows = useMemo(() => {
     if (!editing?.id || editingKind !== 'linen') return []
     return (linenTypes || [])
+      .filter((linenType) => !(isEditingEwash && isExcludedForEwash(linenType)))
       .map((linenType) => (
         priceDrafts[String(linenType.code)] || {
           supplier_id: editing.id,
           linen_type_code: String(linenType.code),
           item_id: String(linenType.item_id || ''),
           linen_type_name: String(linenType.name),
+          psl_code: String(linenType.psl_code || ''),
+          sort_order: Number(linenType.sort_order || 0),
           purchase_unit_price: 0,
           refund_unit_price: 0,
           effective_from: '',
@@ -417,7 +462,8 @@ export default function InventorySuppliersPage() {
         }
       ))
       .filter((row) => !row.deleted)
-  }, [editing, editingKind, linenTypes, priceDrafts])
+      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
+  }, [editing, editingKind, linenTypes, priceDrafts, isEditingEwash])
 
   const supplierColumns: any[] = [
     { title: '名称', dataIndex: 'name' },
@@ -437,7 +483,26 @@ export default function InventorySuppliersPage() {
   ].filter(Boolean)
 
   const priceColumns: any[] = [
-    { title: '床品类型', dataIndex: 'linen_type_name' },
+    {
+      title: '床品类型',
+      render: (_: any, r: PriceDraftRow) => (
+        <Input value={r.linen_type_name} onChange={(e) => updateDraft(r.linen_type_code, { linen_type_name: e.target.value })} style={{ width: 160 }} />
+      ),
+    },
+    {
+      title: '排序',
+      width: 120,
+      render: (_: any, r: PriceDraftRow) => (
+        <InputNumber min={0} value={r.sort_order} onChange={(v) => updateDraft(r.linen_type_code, { sort_order: Number(v || 0) })} style={{ width: 100 }} />
+      ),
+    },
+    ...(isEditingPsl ? [{
+      title: 'PSL Code',
+      width: 140,
+      render: (_: any, r: PriceDraftRow) => (
+        <Input value={r.psl_code} onChange={(e) => updateDraft(r.linen_type_code, { psl_code: e.target.value })} style={{ width: 110 }} />
+      ),
+    }] : []),
     {
       title: '采购单价',
       render: (_: any, r: PriceDraftRow) => (
