@@ -12,6 +12,25 @@ export const router = Router()
 
 const upload = multer({ storage: multer.memoryStorage() })
 
+function buildDailyItemSku(id: string) {
+  const raw = String(id || '').replace(/[^a-zA-Z0-9]+/g, '').toUpperCase()
+  return `DY-${(raw || 'ITEM').slice(0, 8)}`
+}
+
+async function backfillDailyPriceSkus() {
+  try {
+    if (!hasPg) return
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return
+    const rows = await pgPool.query(`SELECT id FROM daily_items_price_list WHERE COALESCE(NULLIF(TRIM(sku), ''), '') = ''`)
+    for (const row of rows.rows || []) {
+      const id = String(row?.id || '')
+      if (!id) continue
+      await pgPool.query(`UPDATE daily_items_price_list SET sku = $1 WHERE id = $2`, [buildDailyItemSku(id), id])
+    }
+  } catch {}
+}
+
 const createSchema = z.object({ property_id: z.string(), onboarding_date: z.string().optional(), owner_user_id: z.string().optional(), remark: z.string().optional() })
 router.post('/', requirePerm('onboarding.manage'), async (req, res) => {
   const parsed = createSchema.safeParse(req.body)
@@ -78,6 +97,7 @@ router.get('/daily-items-prices', requireAnyPerm(['onboarding.manage','onboardin
   try {
     if (hasPg) {
       await ensurePriceListColumns()
+      await backfillDailyPriceSkus()
       try {
         const rows = await pgSelect('daily_items_price_list', '*', category ? { category } : undefined)
         return res.json(Array.isArray(rows) ? rows : [])
@@ -108,10 +128,12 @@ router.get('/daily-items-prices', requireAnyPerm(['onboarding.manage','onboardin
 router.post('/daily-items-prices', requirePerm('onboarding.manage'), async (req, res) => {
   const body = req.body || {}
   if (!body.item_name || typeof body.unit_price === 'undefined') return res.status(400).json({ message: 'missing item_name/unit_price' })
-  const row: any = { id: uuid(), category: body.category || null, item_name: String(body.item_name), unit_price: Number(body.unit_price || 0), currency: body.currency || 'AUD', unit: body.unit || null, default_quantity: body.default_quantity != null ? Number(body.default_quantity) : null, is_active: body.is_active != null ? !!body.is_active : true, updated_at: new Date().toISOString(), updated_by: (req as any)?.user?.sub || (req as any)?.user?.username || null }
+  const id = uuid()
+  const row: any = { id, sku: buildDailyItemSku(id), category: body.category || null, item_name: String(body.item_name), cost_unit_price: Number(body.cost_unit_price || 0), unit_price: Number(body.unit_price || 0), currency: body.currency || 'AUD', unit: body.unit || null, default_quantity: body.default_quantity != null ? Number(body.default_quantity) : null, is_active: body.is_active != null ? !!body.is_active : true, updated_at: new Date().toISOString(), updated_by: (req as any)?.user?.sub || (req as any)?.user?.username || null }
   try {
     if (hasPg) {
       await ensurePriceListColumns()
+      await backfillDailyPriceSkus()
       try {
         const created = await pgInsert('daily_items_price_list', row)
         return res.status(201).json(created || row)
@@ -141,10 +163,12 @@ router.post('/daily-items-prices', requirePerm('onboarding.manage'), async (req,
 })
 router.patch('/daily-items-prices/:id', requirePerm('onboarding.manage'), async (req, res) => {
   const { id } = req.params
-  const body = req.body || {}
+  const body = { ...(req.body || {}) }
   try {
     if (hasPg) {
       await ensurePriceListColumns()
+      await backfillDailyPriceSkus()
+      delete (body as any).sku
       try {
         const updated = await pgUpdate('daily_items_price_list', id, body as any)
         return res.json(updated || { id, ...body })
@@ -211,6 +235,7 @@ router.post('/daily-items-prices/bulk', requirePerm('onboarding.manage'), async 
   if (!list.length) return res.status(400).json({ message: 'empty payload' })
   try {
     if (hasPg) {
+      await ensurePriceListColumns()
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'database not available' })
       const actor = (req as any).user || {}
@@ -223,11 +248,12 @@ router.post('/daily-items-prices/bulk', requirePerm('onboarding.manage'), async 
           const unit = Number(it.unit_price || 0)
           const currency = String(it.currency || 'AUD')
           if (!name) continue
-          const sql = `INSERT INTO daily_items_price_list (id, category, item_name, unit_price, currency, is_active, updated_at, updated_by)
-                       VALUES ($1,$2,$3,$4,$5,TRUE,now(),$6)
-                       ON CONFLICT (category, item_name) DO UPDATE SET unit_price=EXCLUDED.unit_price, currency=EXCLUDED.currency, is_active=TRUE, updated_at=now(), updated_by=EXCLUDED.updated_by`
           const { v4: uuid } = require('uuid')
-          await client.query(sql, [uuid(), category, name, unit, currency, actor?.sub || actor?.username || null])
+          const nextId = uuid()
+          const sql = `INSERT INTO daily_items_price_list (id, sku, category, item_name, cost_unit_price, unit_price, currency, unit, default_quantity, is_active, updated_at, updated_by)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE,now(),$10)
+                       ON CONFLICT (category, item_name) DO UPDATE SET cost_unit_price=EXCLUDED.cost_unit_price, unit_price=EXCLUDED.unit_price, currency=EXCLUDED.currency, unit=EXCLUDED.unit, default_quantity=EXCLUDED.default_quantity, is_active=TRUE, updated_at=now(), updated_by=EXCLUDED.updated_by`
+          await client.query(sql, [nextId, buildDailyItemSku(nextId), category, name, Number(it.cost_unit_price || 0), unit, currency, it.unit || null, it.default_quantity != null ? Number(it.default_quantity) : null, actor?.sub || actor?.username || null])
         }
         await client.query('COMMIT')
         return res.json({ ok: true, count: list.length })
@@ -943,8 +969,25 @@ async function ensurePriceListColumns() {
     if (!hasPg) return
     const { pgPool } = require('../dbAdapter')
     if (pgPool) {
+      await pgPool.query(`CREATE TABLE IF NOT EXISTS daily_items_price_list (
+        id text PRIMARY KEY,
+        category text,
+        item_name text NOT NULL,
+        sku text,
+        cost_unit_price numeric NOT NULL DEFAULT 0,
+        unit_price numeric NOT NULL,
+        currency text DEFAULT 'AUD',
+        unit text,
+        default_quantity integer,
+        is_active boolean DEFAULT true,
+        updated_at timestamptz,
+        updated_by text
+      );`)
+      await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_daily_items_price ON daily_items_price_list(category, item_name);')
       await pgPool.query('ALTER TABLE daily_items_price_list ADD COLUMN IF NOT EXISTS unit text;')
       await pgPool.query('ALTER TABLE daily_items_price_list ADD COLUMN IF NOT EXISTS default_quantity integer;')
+      await pgPool.query('ALTER TABLE daily_items_price_list ADD COLUMN IF NOT EXISTS sku text;')
+      await pgPool.query('ALTER TABLE daily_items_price_list ADD COLUMN IF NOT EXISTS cost_unit_price numeric NOT NULL DEFAULT 0;')
     }
   } catch {}
 }

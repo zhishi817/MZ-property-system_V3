@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation'
 
 export default function InventoryHome() {
-  redirect('/inventory/stocks')
+  redirect('/inventory/overview')
 }

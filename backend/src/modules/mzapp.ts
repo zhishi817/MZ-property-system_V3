@@ -2346,7 +2346,7 @@ router.get('/work-tasks', async (req, res) => {
   }
 })
 
-const dailyNecessitiesStatusSchema = z.enum(['need_replace', 'in_progress', 'replaced', 'no_action'])
+const dailyNecessitiesStatusSchema = z.enum(['need_replace', 'replaced', 'no_action'])
 
 const feedbackCreateSchema = z
   .object({
@@ -2545,9 +2545,9 @@ router.get('/property-feedbacks', async (req, res) => {
   const wantCancelled = want.length ? want.includes('cancelled') : false
   const openView = wantOpen && wantInProgress && !wantResolved && !wantCancelled
 
-  const dailyStatusSet = new Set(['need_replace', 'in_progress', 'replaced', 'no_action'])
+  const dailyStatusSet = new Set(['need_replace', 'replaced', 'no_action'])
   const dailyWanted = want.filter((s) => dailyStatusSet.has(String(s || '').trim()))
-  const dailyFilter = dailyWanted.length ? dailyWanted : ['need_replace', 'in_progress']
+  const dailyFilter = dailyWanted.length ? dailyWanted : ['need_replace']
 
   const limit0 = Number((req.query as any)?.limit || 20)
   const limit = Number.isFinite(limit0) ? Math.max(1, Math.min(50, limit0)) : 20

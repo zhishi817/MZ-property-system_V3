@@ -1,10 +1,10 @@
 "use client"
-import { Card, Table, Space, Button, Modal, Form, Input, Switch, message } from 'antd'
+import { Card, Table, Space, Button, Modal, Form, Input, InputNumber, Switch, message } from 'antd'
 import { useEffect, useState } from 'react'
 import { getJSON, patchJSON, postJSON } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
 
-type Warehouse = { id: string; code: string; name: string; active: boolean }
+type Warehouse = { id: string; code: string; name: string; linen_capacity_sets?: number | null; stocktake_enabled?: boolean; active: boolean }
 
 export default function InventoryWarehousesPage() {
   const [rows, setRows] = useState<Warehouse[]>([])
@@ -38,10 +38,12 @@ export default function InventoryWarehousesPage() {
   const columns: any[] = [
     { title: 'Code', dataIndex: 'code' },
     { title: '名称', dataIndex: 'name' },
+    { title: '容量上限(套)', dataIndex: 'linen_capacity_sets', render: (v: number | null | undefined) => v ?? '-' },
+    { title: '允许盘点', dataIndex: 'stocktake_enabled', render: (v: boolean | undefined) => v === false ? '否' : '是' },
     { title: '启用', dataIndex: 'active', render: (v: boolean) => v ? '是' : '否' },
     canManage ? { title: '操作', render: (_: any, r: Warehouse) => (
       <Space>
-        <Button onClick={() => { setEditing(r); setOpen(true); form.setFieldsValue({ code: r.code, name: r.name, active: r.active }) }}>编辑</Button>
+        <Button onClick={() => { setEditing(r); setOpen(true); form.setFieldsValue({ code: r.code, name: r.name, linen_capacity_sets: r.linen_capacity_sets ?? undefined, stocktake_enabled: r.stocktake_enabled !== false, active: r.active }) }}>编辑</Button>
       </Space>
     ) } : null,
   ].filter(Boolean)
@@ -49,17 +51,18 @@ export default function InventoryWarehousesPage() {
   return (
     <Card
       title="仓库管理"
-      extra={canManage ? <Button type="primary" onClick={() => { setEditing(null); setOpen(true); form.resetFields(); form.setFieldsValue({ active: true }) }}>新增仓库</Button> : null}
+      extra={canManage ? <Button type="primary" onClick={() => { setEditing(null); setOpen(true); form.resetFields(); form.setFieldsValue({ active: true, stocktake_enabled: true }) }}>新增仓库</Button> : null}
     >
       <Table rowKey={(r) => r.id} columns={columns} dataSource={rows} pagination={{ pageSize: 20 }} />
       <Modal open={open} title={editing ? '编辑仓库' : '新增仓库'} onCancel={() => setOpen(false)} onOk={submit} okButtonProps={{ disabled: !canManage }}>
         <Form form={form} layout="vertical">
           <Form.Item name="code" label="Code" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="linen_capacity_sets" label="容量上限(套)"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="stocktake_enabled" label="允许作为盘点分仓" valuePropName="checked"><Switch /></Form.Item>
           <Form.Item name="active" label="启用" valuePropName="checked"><Switch /></Form.Item>
         </Form>
       </Modal>
     </Card>
   )
 }
-

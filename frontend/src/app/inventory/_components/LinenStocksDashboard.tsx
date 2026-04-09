@@ -1,6 +1,7 @@
 "use client"
-import { Button, Card, Col, Form, InputNumber, Modal, Row, Space, Statistic, Table, Tag, message } from 'antd'
+import { Button, Card, Col, Form, InputNumber, Modal, Row, Space, Statistic, Table, Tag, Typography, message } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
+import dayjs from 'dayjs'
 import { getJSON, putJSON } from '../../../lib/api'
 
 type RoomType = { code: string; name: string; sort_order: number }
@@ -13,7 +14,14 @@ type DashboardWarehouseRow = {
   linen_capacity_sets?: number | null
   is_sm: boolean
   counts_by_sub_type: Record<string, number>
+  delivered_sets_by_room_type: Record<string, number>
+  stocktake_sets_by_room_type: Record<string, number>
   available_sets_by_room_type: Record<string, number>
+  task_estimated_consumed_sets_by_room_type?: Record<string, number>
+  last_stocktake_at?: string | null
+  stocktake_date?: string | null
+  has_stocktake?: boolean
+  dirty_bag_note?: string | null
 }
 type DashboardResp = {
   sm_warehouse_id?: string | null
@@ -132,12 +140,30 @@ export default function LinenStocksDashboard() {
     const base: any[] = [
       { title: '分仓', dataIndex: 'warehouse_name', render: (_: any, r: DashboardWarehouseRow) => `${r.warehouse_code} - ${r.warehouse_name}` },
       { title: '容量上限(套)', dataIndex: 'linen_capacity_sets', render: (v: number | null | undefined) => v ?? '-' },
+      {
+        title: '最近盘点',
+        dataIndex: 'last_stocktake_at',
+        width: 180,
+        render: (_: any, r: DashboardWarehouseRow) => r.has_stocktake
+          ? (r.last_stocktake_at ? dayjs(r.last_stocktake_at).format('YYYY-MM-DD HH:mm') : String(r.stocktake_date || '-'))
+          : <Tag color="orange">未盘点</Tag>,
+      },
     ]
     for (const roomType of roomTypes) {
       base.push({
-        title: `${roomType.name}可用套数`,
+        title: `${roomType.name}当前可用`,
         dataIndex: roomType.code,
-        render: (_: any, r: DashboardWarehouseRow) => Number((r.available_sets_by_room_type || {})[roomType.code] || 0),
+        render: (_: any, r: DashboardWarehouseRow) => (
+          <Space direction="vertical" size={0}>
+            <Typography.Text strong>{Number((r.available_sets_by_room_type || {})[roomType.code] || 0)}</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              累计配送 {Number((r.delivered_sets_by_room_type || {})[roomType.code] || 0)} / 最近盘点 {Number((r.stocktake_sets_by_room_type || {})[roomType.code] || 0)}
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              清洁任务理论消耗 {Number((r.task_estimated_consumed_sets_by_room_type || {})[roomType.code] || 0)}
+            </Typography.Text>
+          </Space>
+        ),
       })
     }
     return base

@@ -33,7 +33,7 @@ export type PurchaseOrdersListViewProps = {
 
 export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProps) {
   const { title, category } = props
-  const newPath = '/inventory/purchase-orders/new'
+  const newPath = category ? `/inventory/category/${category}/purchase-orders/new` : '/inventory/purchase-orders/new'
   const [rows, setRows] = useState<PoRow[]>([])
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
@@ -147,6 +147,9 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
   const warehouseOptions = useMemo(() => [{ value: '', label: '全部仓库' }, ...(warehouses || []).filter(w => w.active).map(w => ({ value: w.id, label: `${w.code} - ${w.name}` }))], [warehouses])
   const supplierOptions = useMemo(() => [{ value: '', label: '全部供应商' }, ...(suppliers || []).filter(s => s.active).map(s => ({ value: s.id, label: s.name }))], [suppliers])
 
+  const detailPath = (id: string) => category ? `/inventory/purchase-orders/${id}?category=${category}` : `/inventory/purchase-orders/${id}`
+  const editPath = (id: string) => category ? `/inventory/purchase-orders/${id}?edit=1&category=${category}` : `/inventory/purchase-orders/${id}?edit=1`
+
   const columns: any[] = [
     { title: '采购单号', dataIndex: 'po_no', width: 180, render: (v: string, r: PoRow) => v || r.id },
     { title: '下单日期', dataIndex: 'ordered_date', width: 140, render: (v: string | null) => v || '-' },
@@ -161,8 +164,8 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
       width: 220,
       render: (_: any, r: PoRow) => (
         <Space>
-          <Link href={`/inventory/purchase-orders/${r.id}`} prefetch={false}><Button>详情</Button></Link>
-          {canManage && r.status !== 'received' && r.status !== 'closed' ? <Link href={`/inventory/purchase-orders/${r.id}?edit=1`} prefetch={false}><Button>编辑</Button></Link> : null}
+          <Link href={detailPath(r.id)} prefetch={false}><Button>详情</Button></Link>
+          {canManage && r.status !== 'received' && r.status !== 'closed' ? <Link href={editPath(r.id)} prefetch={false}><Button>编辑</Button></Link> : null}
           {canManage && r.status === 'draft' ? <Button type="primary" onClick={() => markOrdered(r).catch((e) => message.error(e?.message || '下单失败'))}>下单</Button> : null}
           {canManage && r.status === 'ordered' ? <Button onClick={() => openDelivery(r).catch((e) => message.error(e?.message || '加载到货明细失败'))}>登记到货</Button> : null}
           {canManage ? <Button danger onClick={() => archiveRow(r)}>归档</Button> : null}

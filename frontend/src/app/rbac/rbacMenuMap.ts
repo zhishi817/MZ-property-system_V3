@@ -116,7 +116,7 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
             perms: ['inventory.move'],
           },
           'menu.inventory.linen.returns.visible': {
-            label: '床品退货/报损记录',
+            label: '床品退货记录',
             perms: ['inventory.move', 'inventory.po.manage'],
           },
         },
@@ -127,6 +127,10 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
           'menu.inventory.daily.stocks.visible': {
             label: '日用品库存',
             perms: ['inventory.view'],
+          },
+          'menu.inventory.daily.prices.visible': {
+            label: '日用品价格表',
+            perms: ['inventory.view', 'inventory.po.manage'],
           },
           'menu.inventory.daily.purchase_orders.visible': {
             label: '日用品采购记录',
@@ -149,6 +153,10 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
             label: '消耗品库存',
             perms: ['inventory.view'],
           },
+          'menu.inventory.consumable.prices.visible': {
+            label: '消耗品价格表',
+            perms: ['inventory.view', 'inventory.po.manage'],
+          },
           'menu.inventory.consumable.purchase_orders.visible': {
             label: '消耗品采购记录',
             perms: ['inventory.po.manage'],
@@ -169,6 +177,10 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
           'menu.inventory.other.stocks.visible': {
             label: '其他物品库存',
             perms: ['inventory.view'],
+          },
+          'menu.inventory.other.prices.visible': {
+            label: '其他物品价格表',
+            perms: ['inventory.po.manage'],
           },
           'menu.inventory.other.purchase_orders.visible': {
             label: '其他物品采购记录',
@@ -200,10 +212,6 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
       'menu.inventory.movements.visible': {
         label: '库存流水',
         perms: ['inventory.view', 'inventory.move'],
-      },
-      'menu.inventory.audits.visible': {
-        label: '操作日志',
-        perms: ['inventory.view'],
       },
     },
   },
@@ -319,12 +327,21 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
   },
   'menu.cms': {
     label: 'CMS管理',
-    perms: [
-      'cms_pages.view',
-      'cms_pages.write',
-      'cms_pages.delete',
-      'cms_pages.archive',
-    ],
+    children: {
+      'menu.cms.visible': {
+        label: '页面管理',
+        perms: [
+          'cms_pages.view',
+          'cms_pages.write',
+          'cms_pages.delete',
+          'cms_pages.archive',
+        ],
+      },
+    },
+  },
+  'menu.inventory.audits.visible': {
+    label: '操作日志',
+    perms: ['inventory.view'],
   },
   'menu.jobs.email_sync.visible': {
     label: '系统任务 · 邮件同步',

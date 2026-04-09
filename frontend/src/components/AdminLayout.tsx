@@ -1,5 +1,5 @@
 "use client"
-import { Layout, Button, Space } from 'antd'
+import { Layout, Button, Space, Tag } from 'antd'
 import {
   ApartmentOutlined,
   KeyOutlined,
@@ -15,7 +15,7 @@ const AdminMenu = dynamic(() => import('./AdminMenu'), { ssr: false })
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { getRole, hasPerm, preloadRolePerms } from '../lib/auth'
-import { API_BASE, authHeaders, clearAuth } from '../lib/api'
+import { clearAuth, getJSON, isApiFailureKind } from '../lib/api'
 import { VersionBadge } from './VersionBadge'
 import { pickHomeRoute } from '../lib/homeRoute'
 
@@ -26,13 +26,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const [permTick, setPermTick] = useState(0)
   const [permsLoaded, setPermsLoaded] = useState(false)
-  async function preloadPerms() {
-    try {
-      await preloadRolePerms()
-      setPermsLoaded(true)
-      setPermTick((x)=>x+1)
-    } catch {}
-  }
+  const [authState, setAuthState] = useState<'anonymous' | 'auth_loading' | 'backend_unavailable' | 'authenticated'>('anonymous')
   function getCookie(name: string) {
     if (typeof document === 'undefined') return null
     const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()\[\]\\/+^])/g, '\\$1') + '=([^;]*)'))
@@ -49,8 +43,13 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   const authedRaw = (typeof document !== 'undefined') ? /(?:^|;\s*)auth=/.test(document.cookie || '') : false
   const authed = mounted ? authedRaw : false
   useEffect(() => {
-    if (!authed) setPermsLoaded(false)
-  }, [authed])
+    if (!authed) {
+      setPermsLoaded(false)
+      setAuthState('anonymous')
+    } else if (mounted) {
+      setAuthState((prev) => prev === 'authenticated' ? prev : 'auth_loading')
+    }
+  }, [authed, mounted])
   useEffect(() => {
     if (typeof document === 'undefined') return
     const m = document.cookie.match(/(?:^|;\s*)auth=([^;]*)/)
@@ -60,35 +59,57 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
       if (token && !existing) localStorage.setItem('token', token)
     } catch {}
   }, [pathname])
-  useEffect(() => {
-    if (mounted && authed && !permsLoaded) { preloadPerms().catch(() => {}) }
-  }, [mounted, authed, permsLoaded])
+
+  async function bootstrapSession() {
+    if (!mounted || !authed) return
+    setAuthState('auth_loading')
+    const me = await getJSON<any>('/auth/me', { authSensitive: true, timeoutMs: 5000 })
+    setUsername((me as any)?.username || null)
+    setRole((me as any)?.role || getRole())
+    await preloadRolePerms()
+    setPermsLoaded(true)
+    setPermTick((x) => x + 1)
+    setAuthState('authenticated')
+  }
+
   useEffect(() => {
     if (!mounted || !authed) return
     let cancelled = false
     ;(async () => {
       try {
-        const fetchMe = async () => fetch(`${API_BASE}/auth/me`, { headers: authHeaders() })
-        let res = await fetchMe()
-        if (res.status === 401) {
-          await new Promise((resolve) => setTimeout(resolve, 1500))
-          if (cancelled) return
-          res = await fetchMe()
-        }
+        await bootstrapSession()
+      } catch (e: any) {
         if (cancelled) return
-        if (res.status === 401) {
-          clearAuth()
-          try { router.replace('/login') } catch {}
+        if (isApiFailureKind(e, 'network_unavailable')) {
+          setAuthState('backend_unavailable')
           return
         }
-        const j = res.ok ? await res.json() : null
-        if (cancelled) return
-        setUsername((j as any)?.username || null)
-        setRole((j as any)?.role || getRole())
-      } catch {}
+        if (isApiFailureKind(e, 'auth_401')) {
+          clearAuth()
+          try { router.replace('/login') } catch {}
+        }
+      }
     })()
     return () => { cancelled = true }
   }, [mounted, authed, router])
+
+  useEffect(() => {
+    if (!mounted || !authed || authState !== 'backend_unavailable') return
+    let cancelled = false
+    const timer = setInterval(() => {
+      getJSON('/health', { timeoutMs: 1500 })
+        .then(async () => {
+          if (cancelled) return
+          await bootstrapSession()
+        })
+        .catch(() => {})
+    }, 2000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [mounted, authed, authState])
+
   useEffect(() => {
     if (!mounted) return
     if (!isLogin && !isPublic && !authed) {
@@ -137,7 +158,6 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   ] })
   if (hasPerm('menu.onboarding')) items.push({ key: 'onboarding', icon: <ProfileOutlined />, label: '房源上新', children: [
     { key: 'onboarding-list', label: <Link href="/onboarding" prefetch={false}>上新管理</Link> },
-    { key: 'onboarding-prices', label: <Link href="/onboarding/prices" prefetch={false}>日用品价格表</Link> },
     { key: 'onboarding-fa-prices', label: <Link href="/onboarding/fa-prices" prefetch={false}>家具/家电价格表</Link> },
   ] })
   const canViewInventoryMenu = (...codes: string[]) => hasPerm('menu.inventory') || codes.some((code) => hasPerm(code))
@@ -150,7 +170,6 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     'menu.inventory.other.visible',
     'menu.inventory.suppliers.visible',
     'menu.inventory.movements.visible',
-    'menu.inventory.audits.visible',
   )) {
     const inventoryChildren: any[] = []
     if (canViewInventoryMenu('menu.inventory.overview.visible')) inventoryChildren.push({ key: '/inventory/overview', label: <Link href="/inventory/overview" prefetch={false}>仓库总览</Link> })
@@ -161,11 +180,12 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     if (canViewInventoryMenu('menu.inventory.linen.purchase_orders.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/purchase-orders', label: <Link href="/inventory/category/linen/purchase-orders" prefetch={false}>床品采购记录</Link> })
     if (canViewInventoryMenu('menu.inventory.linen.deliveries.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/deliveries', label: <Link href="/inventory/category/linen/deliveries" prefetch={false}>床品配送记录</Link> })
     if (canViewInventoryMenu('menu.inventory.linen.usage.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/usage', label: <Link href="/inventory/category/linen/usage" prefetch={false}>床品使用记录</Link> })
-    if (canViewInventoryMenu('menu.inventory.linen.returns.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/returns', label: <Link href="/inventory/category/linen/returns" prefetch={false}>床品退货/报损记录</Link> })
+    if (canViewInventoryMenu('menu.inventory.linen.returns.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/returns', label: <Link href="/inventory/category/linen/returns" prefetch={false}>床品退货记录</Link> })
     if (inventoryLinenChildren.length) inventoryChildren.push({ key: 'inventory_linen', label: '床品管理', children: inventoryLinenChildren })
 
     const inventoryDailyChildren: any[] = []
     if (canViewInventoryMenu('menu.inventory.daily.stocks.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/stocks', label: <Link href="/inventory/category/daily/stocks" prefetch={false}>日用品库存</Link> })
+    if (canViewInventoryMenu('menu.inventory.daily.prices.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/prices', label: <Link href="/inventory/category/daily/prices" prefetch={false}>日用品价格表</Link> })
     if (canViewInventoryMenu('menu.inventory.daily.purchase_orders.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/purchase-orders', label: <Link href="/inventory/category/daily/purchase-orders" prefetch={false}>日用品采购记录</Link> })
     if (canViewInventoryMenu('menu.inventory.daily.deliveries.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/deliveries', label: <Link href="/inventory/category/daily/deliveries" prefetch={false}>日用品配送记录</Link> })
     if (canViewInventoryMenu('menu.inventory.daily.replacements.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/replacements', label: <Link href="/inventory/category/daily/replacements" prefetch={false}>日用品更换记录</Link> })
@@ -173,6 +193,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
 
     const inventoryConsumableChildren: any[] = []
     if (canViewInventoryMenu('menu.inventory.consumable.stocks.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/stocks', label: <Link href="/inventory/category/consumable/stocks" prefetch={false}>消耗品库存</Link> })
+    if (canViewInventoryMenu('menu.inventory.consumable.prices.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/prices', label: <Link href="/inventory/category/consumable/prices" prefetch={false}>消耗品价格表</Link> })
     if (canViewInventoryMenu('menu.inventory.consumable.purchase_orders.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/purchase-orders', label: <Link href="/inventory/category/consumable/purchase-orders" prefetch={false}>消耗品采购记录</Link> })
     if (canViewInventoryMenu('menu.inventory.consumable.deliveries.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/deliveries', label: <Link href="/inventory/category/consumable/deliveries" prefetch={false}>消耗品配送记录</Link> })
     if (canViewInventoryMenu('menu.inventory.consumable.usage.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/usage', label: <Link href="/inventory/category/consumable/usage" prefetch={false}>消耗品使用记录</Link> })
@@ -180,6 +201,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
 
     const inventoryOtherChildren: any[] = []
     if (canViewInventoryMenu('menu.inventory.other.stocks.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/stocks', label: <Link href="/inventory/category/other/stocks" prefetch={false}>其他物品库存</Link> })
+    if (canViewInventoryMenu('menu.inventory.other.prices.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/prices', label: <Link href="/inventory/category/other/prices" prefetch={false}>其他物品价格表</Link> })
     if (canViewInventoryMenu('menu.inventory.other.purchase_orders.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/purchase-orders', label: <Link href="/inventory/category/other/purchase-orders" prefetch={false}>其他物品采购记录</Link> })
     if (canViewInventoryMenu('menu.inventory.other.deliveries.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/deliveries', label: <Link href="/inventory/category/other/deliveries" prefetch={false}>其他物品配送记录</Link> })
     if (canViewInventoryMenu('menu.inventory.other.usage.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/usage', label: <Link href="/inventory/category/other/usage" prefetch={false}>其他物品使用记录</Link> })
@@ -191,7 +213,6 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     if (inventorySupplierChildren.length) inventoryChildren.push({ key: 'inventory_suppliers', label: '供应商管理', children: inventorySupplierChildren })
 
     if (canViewInventoryMenu('menu.inventory.movements.visible')) inventoryChildren.push({ key: '/inventory/movements', label: <Link href="/inventory/movements" prefetch={false}>库存流水</Link> })
-    if (canViewInventoryMenu('menu.inventory.audits.visible')) inventoryChildren.push({ key: '/inventory/audits', label: <Link href="/inventory/audits" prefetch={false}>操作日志</Link> })
 
     items.push({
       key: 'inventory',
@@ -225,12 +246,15 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     { key: 'jobs-cleaning-sync-retry', label: <Link href="/jobs/cleaning-sync-retry" prefetch={false}>清洁同步重试</Link> },
     { key: 'jobs-cleaning-backfill', label: <Link href="/jobs/cleaning-backfill" prefetch={false}>清洁回填自动化</Link> },
   ] })
-  if (hasPerm('menu.cms')) items.push({ key: 'cms', icon: <ShopOutlined />, label: 'CMS管理', children: [
-    { key: 'cms-home', label: <Link href="/cms" prefetch={false}>页面管理</Link> },
-    { key: 'cms-cleaning', label: <Link href="/cms/public-cleaning" prefetch={false}>清洁公开指南</Link> },
-    { key: 'cms-cleaning-password', label: <Link href="/cms/public-cleaning-password" prefetch={false}>公开访问密码</Link> },
-    { key: 'cms-company', label: <Link href="/cms/company" prefetch={false}>公司内容中心</Link> },
-  ] })
+  const cmsChildren: any[] = []
+  if (hasPerm('menu.cms')) {
+    cmsChildren.push({ key: 'cms-home', label: <Link href="/cms" prefetch={false}>页面管理</Link> })
+    cmsChildren.push({ key: 'cms-cleaning', label: <Link href="/cms/public-cleaning" prefetch={false}>清洁公开指南</Link> })
+    cmsChildren.push({ key: 'cms-cleaning-password', label: <Link href="/cms/public-cleaning-password" prefetch={false}>公开访问密码</Link> })
+    cmsChildren.push({ key: 'cms-company', label: <Link href="/cms/company" prefetch={false}>公司内容中心</Link> })
+  }
+  if (cmsChildren.length) items.push({ key: 'cms', icon: <ShopOutlined />, label: 'CMS管理', children: cmsChildren })
+  if (hasPerm('menu.inventory.audits.visible')) items.push({ key: '/inventory/audits', icon: <ProfileOutlined />, label: <Link href="/inventory/audits" prefetch={false}>操作日志</Link> })
 
   
   
@@ -256,6 +280,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
             <div style={{ fontWeight: 700, fontFamily:'SF Pro Display, Segoe UI, Roboto, Helvetica Neue, Arial' }}>后台管理</div>
             <div>
               <Space>
+                {authState === 'backend_unavailable' ? <Tag color="orange">本地后端启动中，正在重试</Tag> : null}
                 <span style={{ fontFamily:'SF Pro Text, Segoe UI, Roboto, Helvetica Neue, Arial', color:'#555', display: authed ? 'inline' : 'none' }}>
                   Hi, {username || ''}{role ? ` (${role})` : ''}
                 </span>

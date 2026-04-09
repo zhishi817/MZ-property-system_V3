@@ -1,0 +1,4 @@
+interface:
+  display_name: "MZ CRUD Page Rules"
+  short_description: "Standardize backend CRUD page UI and interaction rules."
+  default_prompt: "Use $mz-crud-page-rules when building or refactoring backend CRUD pages so the page follows the repository's standard list, drawer, form, action order, submission, numbering, and display conventions."

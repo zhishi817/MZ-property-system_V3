@@ -1,12 +1,22 @@
 "use client"
 import { DeleteOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons'
-import { Button, Card, DatePicker, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Space, Switch, Table, Tag, Typography, message } from 'antd'
+import { Button, Card, DatePicker, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, Typography, message } from 'antd'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { deleteJSON, getJSON, patchJSON, postJSON } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
 
-type Supplier = { id: string; name: string; kind: string; active: boolean }
+type Supplier = {
+  id: string
+  name: string
+  kind: string
+  supply_items_note?: string | null
+  login_url?: string | null
+  login_username?: string | null
+  login_password?: string | null
+  login_note?: string | null
+  active: boolean
+}
 type LinenType = { code: string; name: string; psl_code?: string | null; sort_order?: number; active: boolean; item_id?: string | null }
 type SupplierPrice = {
   id: string
@@ -59,6 +69,14 @@ function isExcludedForEwash(row: { code?: string | null; name?: string | null })
   )
 }
 
+const SUPPLIER_KIND_OPTIONS = [
+  { value: 'linen', label: '床品' },
+  { value: 'daily', label: '日用品' },
+  { value: 'consumable', label: '消耗品' },
+  { value: 'furniture', label: '家具/家电' },
+  { value: 'other', label: '其他' },
+]
+
 export default function InventorySuppliersPage() {
   const [rows, setRows] = useState<Supplier[]>([])
   const [linenTypes, setLinenTypes] = useState<LinenType[]>([])
@@ -69,6 +87,7 @@ export default function InventorySuppliersPage() {
   const [viewing, setViewing] = useState<Supplier | null>(null)
   const [editing, setEditing] = useState<Supplier | null>(null)
   const [priceDrafts, setPriceDrafts] = useState<Record<string, PriceDraftRow>>({})
+  const [initialPriceDrafts, setInitialPriceDrafts] = useState<Record<string, PriceDraftRow>>({})
   const [submittingSupplier, setSubmittingSupplier] = useState(false)
   const [savingPrices, setSavingPrices] = useState(false)
   const [creatingLinenType, setCreatingLinenType] = useState(false)
@@ -144,6 +163,7 @@ export default function InventorySuppliersPage() {
     const supplierId = String(editing?.id || '')
     if (!supplierId) {
       setPriceDrafts({})
+      setInitialPriceDrafts({})
       return
     }
     const byLinenType = new Map<string, SupplierPrice>()
@@ -172,12 +192,40 @@ export default function InventorySuppliersPage() {
       }
     }
     setPriceDrafts(next)
+    setInitialPriceDrafts(next)
   }, [editing, prices, linenTypes])
+
+  function normalizeDraft(row: PriceDraftRow | undefined) {
+    if (!row) return null
+    return {
+      id: row.id || '',
+      supplier_id: row.supplier_id || '',
+      linen_type_code: row.linen_type_code || '',
+      item_id: row.item_id || '',
+      linen_type_name: row.linen_type_name || '',
+      psl_code: row.psl_code || '',
+      sort_order: Number(row.sort_order || 0),
+      purchase_unit_price: Number(row.purchase_unit_price || 0),
+      refund_unit_price: Number(row.refund_unit_price || 0),
+      effective_from: row.effective_from || '',
+      active: !!row.active,
+      deleted: !!row.deleted,
+    }
+  }
+
+  function isDraftChanged(row: PriceDraftRow | undefined) {
+    if (!row) return false
+    const current = normalizeDraft(row)
+    const initial = normalizeDraft(initialPriceDrafts[row.linen_type_code])
+    return JSON.stringify(current) !== JSON.stringify(initial)
+  }
 
   function kindTag(k: string) {
     if (k === 'linen') return <Tag color="blue">床品</Tag>
     if (k === 'daily') return <Tag color="purple">日用品</Tag>
     if (k === 'consumable') return <Tag color="green">消耗品</Tag>
+    if (k === 'furniture') return <Tag color="gold">家具/家电</Tag>
+    if (k === 'other') return <Tag>其他</Tag>
     return <Tag>{k || '其他'}</Tag>
   }
 
@@ -190,7 +238,7 @@ export default function InventorySuppliersPage() {
     setViewing(null)
     setEditing(null)
     form.resetFields()
-    form.setFieldsValue({ name: '', kind: 'linen', active: true })
+    form.setFieldsValue({ name: '', kind: 'linen', supply_items_note: '', login_url: '', login_username: '', login_password: '', login_note: '', active: true })
     setPriceDrafts({})
     setEditOpen(true)
   }
@@ -200,7 +248,16 @@ export default function InventorySuppliersPage() {
     setDetailOpen(false)
     setEditing(supplier)
     form.resetFields()
-    form.setFieldsValue({ name: supplier.name, kind: supplier.kind, active: supplier.active })
+    form.setFieldsValue({
+      name: supplier.name,
+      kind: supplier.kind,
+      supply_items_note: supplier.supply_items_note || '',
+      login_url: supplier.login_url || '',
+      login_username: supplier.login_username || '',
+      login_password: supplier.login_password || '',
+      login_note: supplier.login_note || '',
+      active: supplier.active,
+    })
     setEditOpen(true)
   }
 
@@ -245,7 +302,16 @@ export default function InventorySuppliersPage() {
       await load()
       if (created?.id) {
         setEditing(created)
-        form.setFieldsValue({ name: created.name, kind: created.kind, active: created.active })
+        form.setFieldsValue({
+          name: created.name,
+          kind: created.kind,
+          supply_items_note: created.supply_items_note || '',
+          login_url: created.login_url || '',
+          login_username: created.login_username || '',
+          login_password: created.login_password || '',
+          login_note: created.login_note || '',
+          active: created.active,
+        })
       } else {
         setEditOpen(false)
       }
@@ -261,7 +327,11 @@ export default function InventorySuppliersPage() {
     }
     setSavingPrices(true)
     try {
-      const pending = Object.values(priceDrafts)
+      const pending = Object.values(priceDrafts).filter((row) => isDraftChanged(row))
+      if (!pending.length) {
+        message.success('没有需要保存的修改')
+        return
+      }
       for (const row of pending) {
         if (row.deleted) {
           if (row.id) {
@@ -468,7 +538,13 @@ export default function InventorySuppliersPage() {
   const supplierColumns: any[] = [
     { title: '名称', dataIndex: 'name' },
     { title: '类型', dataIndex: 'kind', render: (v: string) => kindTag(v) },
-    { title: '床品价格条数', render: (_: any, r: Supplier) => prices.filter((p) => p.supplier_id === r.id).length },
+    {
+      title: '采购物品描述',
+      dataIndex: 'supply_items_note',
+      ellipsis: true,
+      render: (value: string | null | undefined) => value || '-',
+    },
+    { title: '价格配置', render: (_: any, r: Supplier) => r.kind === 'linen' ? `${prices.filter((p) => p.supplier_id === r.id).length} 项` : '-' },
     canManage ? {
       title: '操作',
       width: 220,
@@ -573,7 +649,14 @@ export default function InventorySuppliersPage() {
               <Descriptions.Item label="名称">{viewing.name}</Descriptions.Item>
               <Descriptions.Item label="类型">{kindTag(viewing.kind)}</Descriptions.Item>
               <Descriptions.Item label="状态">{viewing.active ? '启用' : '停用'}</Descriptions.Item>
-              <Descriptions.Item label="床品价格条数">{viewingPriceCount}</Descriptions.Item>
+              <Descriptions.Item label="价格配置">{viewing.kind === 'linen' ? `${viewingPriceCount} 项` : '-'}</Descriptions.Item>
+              <Descriptions.Item label="采购物品描述" span={2}>{viewing.supply_items_note || '-'}</Descriptions.Item>
+              <Descriptions.Item label="登录网站" span={2}>
+                {viewing.login_url ? <a href={viewing.login_url} target="_blank" rel="noreferrer">{viewing.login_url}</a> : '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="登录账号">{viewing.login_username || '-'}</Descriptions.Item>
+              <Descriptions.Item label="登录密码">{viewing.login_password || '-'}</Descriptions.Item>
+              <Descriptions.Item label="登录备注" span={2}>{viewing.login_note || '-'}</Descriptions.Item>
             </Descriptions>
 
             {viewing.kind === 'linen' ? (
@@ -633,18 +716,36 @@ export default function InventorySuppliersPage() {
             </Descriptions.Item>
             <Descriptions.Item label="类型">
               <Form.Item name="kind" noStyle rules={[{ required: true }]}>
-                <Input
-                  disabled
-                  value={
-                    editingKind === 'linen'
-                      ? '床品'
-                      : editingKind === 'daily'
-                        ? '日用品'
-                        : editingKind === 'consumable'
-                          ? '消耗品'
-                          : editingKind || ''
-                  }
+                <Select
+                  options={SUPPLIER_KIND_OPTIONS}
+                  style={{ width: 180 }}
+                  popupMatchSelectWidth={180}
                 />
+              </Form.Item>
+            </Descriptions.Item>
+            <Descriptions.Item label="采购物品描述">
+              <Form.Item name="supply_items_note" noStyle>
+                <Input.TextArea rows={3} placeholder="例如：床单、枕套、浴巾，或洗发水、垃圾袋、马克杯等" />
+              </Form.Item>
+            </Descriptions.Item>
+            <Descriptions.Item label="登录网站">
+              <Form.Item name="login_url" noStyle>
+                <Input placeholder="https://example.com/login" />
+              </Form.Item>
+            </Descriptions.Item>
+            <Descriptions.Item label="登录账号">
+              <Form.Item name="login_username" noStyle>
+                <Input placeholder="可选" />
+              </Form.Item>
+            </Descriptions.Item>
+            <Descriptions.Item label="登录密码">
+              <Form.Item name="login_password" noStyle>
+                <Input.Password placeholder="可选" />
+              </Form.Item>
+            </Descriptions.Item>
+            <Descriptions.Item label="登录备注">
+              <Form.Item name="login_note" noStyle>
+                <Input.TextArea rows={3} placeholder="可记录验证码、登录流程、采购入口等" />
               </Form.Item>
             </Descriptions.Item>
           </Descriptions>

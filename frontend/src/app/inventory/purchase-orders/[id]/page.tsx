@@ -145,6 +145,17 @@ export default function PurchaseOrderDetailPage({ params }: any) {
   const [deliveryForm] = Form.useForm()
   const [editForm] = Form.useForm()
 
+  const inferredCategory = useMemo(() => {
+    const fromQuery = String(searchParams.get('category') || '').trim()
+    if (fromQuery) return fromQuery
+    const itemIds = (lines || []).map((line) => String(line.item_id || ''))
+    if (itemIds.some((itemId) => itemId.startsWith('item.daily_price.'))) return 'daily'
+    if (itemIds.some((itemId) => itemId.startsWith('item.linen_type.'))) return 'linen'
+    return 'linen'
+  }, [searchParams, lines])
+
+  const listPath = useMemo(() => `/inventory/category/${inferredCategory}/purchase-orders`, [inferredCategory])
+
   async function loadBase() {
     const [ws, ss, lt, sp] = await Promise.all([
       getJSON<Warehouse[]>('/inventory/warehouses'),
@@ -258,6 +269,11 @@ export default function PurchaseOrderDetailPage({ params }: any) {
   const fmtMoney = (value: any) => {
     const num = Number(value || 0)
     return `$${num.toFixed(2)}`
+  }
+  const fmtUnitPrice = (value: any) => {
+    const num = Number(value || 0)
+    if (!Number.isFinite(num)) return '-'
+    return `$${num.toFixed(4).replace(/\.?0+$/, '')}`
   }
 
   const statusTag = (s: string) => {
@@ -387,7 +403,7 @@ export default function PurchaseOrderDetailPage({ params }: any) {
       })
       message.success(markAsOrdered ? '采购单已保存并下单' : '采购单已更新')
       setEditing(false)
-      router.replace(`/inventory/category/linen/purchase-orders`)
+      router.replace(listPath)
       await load()
     } finally {
       setSavingEdit(false)
@@ -398,7 +414,7 @@ export default function PurchaseOrderDetailPage({ params }: any) {
     { title: '床品类型', dataIndex: 'item_name', render: (_: any, r: Line) => <Space><span>{r.item_name}</span><Tag>{r.item_sku}</Tag></Space> },
     { title: '数量', dataIndex: 'quantity', width: 100 },
     { title: '单位', dataIndex: 'unit', width: 100 },
-    { title: '单价', dataIndex: 'unit_price', width: 120, render: (v: any) => v == null ? '-' : fmtMoney(v) },
+    { title: '单价', dataIndex: 'unit_price', width: 120, render: (v: any) => v == null ? '-' : fmtUnitPrice(v) },
     { title: '金额', dataIndex: 'amount_total', width: 140, render: (_: any, r: Line) => fmtMoney(r.amount_total ?? (Number(r.unit_price || 0) * Number(r.quantity || 0))) },
     { title: '备注', dataIndex: 'note' },
   ]
@@ -459,7 +475,7 @@ export default function PurchaseOrderDetailPage({ params }: any) {
       title={<Space><span>采购单详情</span>{po ? statusTag(po.status) : null}</Space>}
         extra={
           <Space>
-            <Link href="/inventory/category/linen/purchase-orders" prefetch={false}><Button icon={<ArrowLeftOutlined />}>返回列表</Button></Link>
+            <Link href={listPath} prefetch={false}><Button icon={<ArrowLeftOutlined />}>返回列表</Button></Link>
             <Button onClick={() => exportCsv().catch((e) => message.error(e?.message || '导出失败'))}>导出CSV</Button>
             <Button onClick={() => setPreviewOpen(true)}>预览并下载PDF</Button>
             {po?.status !== 'closed' ? <Button danger onClick={() => archivePo().catch((e) => message.error(e?.message || '归档失败'))}>归档</Button> : null}
@@ -512,7 +528,7 @@ export default function PurchaseOrderDetailPage({ params }: any) {
                           <Form.Item shouldUpdate noStyle>
                             {() => (
                               <Form.Item label="单价" style={{ marginBottom: 0 }}>
-                                <Input value={fmtMoney(editForm.getFieldValue(['lines', field.name, 'unit_price']))} disabled />
+                                <Input value={fmtUnitPrice(editForm.getFieldValue(['lines', field.name, 'unit_price']))} disabled />
                               </Form.Item>
                             )}
                           </Form.Item>
@@ -526,7 +542,7 @@ export default function PurchaseOrderDetailPage({ params }: any) {
                 </Form.List>
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
-                  <Button onClick={() => { setEditing(false); editForm.resetFields(); router.replace('/inventory/category/linen/purchase-orders') }}>取消</Button>
+                  <Button onClick={() => { setEditing(false); editForm.resetFields(); router.replace(listPath) }}>取消</Button>
                   {po?.status === 'draft' ? <Button loading={savingEdit} onClick={() => submitEdit(true).catch((e) => message.error(e?.message || '保存并下单失败'))}>保存并下单</Button> : null}
                   <Button type="primary" loading={savingEdit} onClick={() => submitEdit().catch((e) => message.error(e?.message || '保存失败'))}>保存</Button>
                 </div>
@@ -808,7 +824,7 @@ export default function PurchaseOrderDetailPage({ params }: any) {
                         </td>
                         <td style={{ padding: pdfRowPad, textAlign: 'center', border: '1px solid #dbe4f0' }}>{line.quantity}</td>
                         <td style={{ padding: pdfRowPad, textAlign: 'center', border: '1px solid #dbe4f0' }}>{line.unit}</td>
-                        {!hideSupplierPricing ? <td style={{ padding: pdfRowPad, textAlign: 'right', border: '1px solid #dbe4f0' }}>{fmtMoney(line.unit_price)}</td> : null}
+                        {!hideSupplierPricing ? <td style={{ padding: pdfRowPad, textAlign: 'right', border: '1px solid #dbe4f0' }}>{fmtUnitPrice(line.unit_price)}</td> : null}
                         {!hideSupplierPricing ? <td style={{ padding: pdfRowPad, textAlign: 'right', border: '1px solid #dbe4f0', color: '#166534', fontWeight: 700 }}>
                           {fmtMoney(line.amount_total ?? (Number(line.unit_price || 0) * Number(line.quantity || 0)))}
                         </td> : null}

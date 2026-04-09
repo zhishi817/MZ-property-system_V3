@@ -30,6 +30,12 @@ function displayLinenLabel(code?: string | null, fallback?: string | null) {
   return map[normalized] || String(fallback || code || '').trim()
 }
 
+function fmtUnitPrice(value: any) {
+  const num = Number(value || 0)
+  if (!Number.isFinite(num)) return '-'
+  return num.toFixed(4).replace(/\.?0+$/, '')
+}
+
 function linenTypePriority(row: LinenType) {
   const code = normalizeLinenTypeCode(row.code)
   let score = 0
@@ -281,7 +287,7 @@ export default function PurchaseOrderNewPage() {
         </Form.Item>
       ),
     },
-    { title: '单价', width: 120, render: (_: any, row: any) => row.unitPrice ? row.unitPrice.toFixed(2) : '-' },
+    { title: '单价', width: 120, render: (_: any, row: any) => row.unitPrice ? fmtUnitPrice(row.unitPrice) : '-' },
     { title: '金额', width: 140, render: (_: any, row: any) => row.quantity > 0 ? row.amount.toFixed(2) : '-' },
   ]
 
