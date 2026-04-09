@@ -201,10 +201,6 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
         label: '库存流水',
         perms: ['inventory.view', 'inventory.move'],
       },
-      'menu.inventory.audits.visible': {
-        label: '操作日志',
-        perms: ['inventory.view'],
-      },
     },
   },
   'menu.keys': {
@@ -319,12 +315,21 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
   },
   'menu.cms': {
     label: 'CMS管理',
-    perms: [
-      'cms_pages.view',
-      'cms_pages.write',
-      'cms_pages.delete',
-      'cms_pages.archive',
-    ],
+    children: {
+      'menu.cms.visible': {
+        label: '页面管理',
+        perms: [
+          'cms_pages.view',
+          'cms_pages.write',
+          'cms_pages.delete',
+          'cms_pages.archive',
+        ],
+      },
+    },
+  },
+  'menu.inventory.audits.visible': {
+    label: '操作日志',
+    perms: ['inventory.view'],
   },
   'menu.jobs.email_sync.visible': {
     label: '系统任务 · 邮件同步',

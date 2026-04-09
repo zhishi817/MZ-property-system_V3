@@ -1,3 +1,5 @@
+import { getJSON } from './api'
+
 function decodeJwtPayload(token: string | null): any {
   try {
     if (!token || token.indexOf('.') === -1) return null
@@ -27,20 +29,12 @@ export function getRole(): string | null {
 
 let cachedPerms: Record<string, string[]> = {}
 async function fetchMyPerms(): Promise<string[]> {
-  try {
-    const m = typeof document !== 'undefined' ? (document.cookie.match(/(?:^|;\s*)auth=([^;]*)/) || []) : []
-    const token = m[1] ? decodeURIComponent(m[1]) : (typeof localStorage !== 'undefined' ? (localStorage.getItem('token') || '') : '')
-    const res = await fetch(`${API_BASE}/rbac/my-permissions`, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })
-    if (res.ok) {
-      const arr = await res.json().catch(() => [])
-      return Array.isArray(arr) ? arr : []
-    }
-  } catch {}
-  return []
+  const arr = await getJSON<any>('/rbac/my-permissions', { authSensitive: true, timeoutMs: 5000 })
+  return Array.isArray(arr) ? arr : []
 }
 export async function preloadRolePerms(): Promise<void> {
   const role = getRole() || ''
-  const list = await fetchMyPerms().catch(() => [])
+  const list = await fetchMyPerms()
   cachedPerms[role] = list
   try { localStorage.setItem(`perms:${role}`, JSON.stringify(list)) } catch {}
 }
@@ -59,4 +53,3 @@ export function hasPerm(code: string): boolean {
   }
   return Array.isArray(list) ? list.includes(code) : false
 }
-import { API_BASE } from './api'

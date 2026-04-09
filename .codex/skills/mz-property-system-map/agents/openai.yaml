@@ -1,0 +1,4 @@
+interface:
+  display_name: "MZ Property System Map"
+  short_description: "Map resources, routes, pages, and workflows."
+  default_prompt: "Use $mz-property-system-map to locate the right module, page, and API path for a feature or resource in this repo."
