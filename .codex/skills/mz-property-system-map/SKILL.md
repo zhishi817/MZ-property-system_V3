@@ -41,6 +41,7 @@ This map is based on the repo snapshot around 2026-04-07. When behavior seems in
 - Read `references/frontend-entrypoints.md` when the task is "which page owns this flow" or "what does this screen call".
 - Read `references/backend-route-patterns.md` when the task is "which router/module should I edit" or "is this CRUD or workflow".
 - Read `references/anti-patterns.md` when the task involves assumptions, refactors, or implementation planning.
+- Read `$mz-crud-page-rules` when the task is to build or refactor a backend CRUD page and the page should follow the repository's standard UI and interaction rules.
 
 ## Output Format
 

@@ -158,7 +158,6 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   ] })
   if (hasPerm('menu.onboarding')) items.push({ key: 'onboarding', icon: <ProfileOutlined />, label: '房源上新', children: [
     { key: 'onboarding-list', label: <Link href="/onboarding" prefetch={false}>上新管理</Link> },
-    { key: 'onboarding-prices', label: <Link href="/onboarding/prices" prefetch={false}>日用品价格表</Link> },
     { key: 'onboarding-fa-prices', label: <Link href="/onboarding/fa-prices" prefetch={false}>家具/家电价格表</Link> },
   ] })
   const canViewInventoryMenu = (...codes: string[]) => hasPerm('menu.inventory') || codes.some((code) => hasPerm(code))
@@ -181,11 +180,12 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     if (canViewInventoryMenu('menu.inventory.linen.purchase_orders.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/purchase-orders', label: <Link href="/inventory/category/linen/purchase-orders" prefetch={false}>床品采购记录</Link> })
     if (canViewInventoryMenu('menu.inventory.linen.deliveries.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/deliveries', label: <Link href="/inventory/category/linen/deliveries" prefetch={false}>床品配送记录</Link> })
     if (canViewInventoryMenu('menu.inventory.linen.usage.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/usage', label: <Link href="/inventory/category/linen/usage" prefetch={false}>床品使用记录</Link> })
-    if (canViewInventoryMenu('menu.inventory.linen.returns.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/returns', label: <Link href="/inventory/category/linen/returns" prefetch={false}>床品退货/报损记录</Link> })
+    if (canViewInventoryMenu('menu.inventory.linen.returns.visible')) inventoryLinenChildren.push({ key: '/inventory/category/linen/returns', label: <Link href="/inventory/category/linen/returns" prefetch={false}>床品退货记录</Link> })
     if (inventoryLinenChildren.length) inventoryChildren.push({ key: 'inventory_linen', label: '床品管理', children: inventoryLinenChildren })
 
     const inventoryDailyChildren: any[] = []
     if (canViewInventoryMenu('menu.inventory.daily.stocks.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/stocks', label: <Link href="/inventory/category/daily/stocks" prefetch={false}>日用品库存</Link> })
+    if (canViewInventoryMenu('menu.inventory.daily.prices.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/prices', label: <Link href="/inventory/category/daily/prices" prefetch={false}>日用品价格表</Link> })
     if (canViewInventoryMenu('menu.inventory.daily.purchase_orders.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/purchase-orders', label: <Link href="/inventory/category/daily/purchase-orders" prefetch={false}>日用品采购记录</Link> })
     if (canViewInventoryMenu('menu.inventory.daily.deliveries.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/deliveries', label: <Link href="/inventory/category/daily/deliveries" prefetch={false}>日用品配送记录</Link> })
     if (canViewInventoryMenu('menu.inventory.daily.replacements.visible')) inventoryDailyChildren.push({ key: '/inventory/category/daily/replacements', label: <Link href="/inventory/category/daily/replacements" prefetch={false}>日用品更换记录</Link> })
@@ -193,6 +193,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
 
     const inventoryConsumableChildren: any[] = []
     if (canViewInventoryMenu('menu.inventory.consumable.stocks.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/stocks', label: <Link href="/inventory/category/consumable/stocks" prefetch={false}>消耗品库存</Link> })
+    if (canViewInventoryMenu('menu.inventory.consumable.prices.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/prices', label: <Link href="/inventory/category/consumable/prices" prefetch={false}>消耗品价格表</Link> })
     if (canViewInventoryMenu('menu.inventory.consumable.purchase_orders.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/purchase-orders', label: <Link href="/inventory/category/consumable/purchase-orders" prefetch={false}>消耗品采购记录</Link> })
     if (canViewInventoryMenu('menu.inventory.consumable.deliveries.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/deliveries', label: <Link href="/inventory/category/consumable/deliveries" prefetch={false}>消耗品配送记录</Link> })
     if (canViewInventoryMenu('menu.inventory.consumable.usage.visible')) inventoryConsumableChildren.push({ key: '/inventory/category/consumable/usage', label: <Link href="/inventory/category/consumable/usage" prefetch={false}>消耗品使用记录</Link> })
@@ -200,6 +201,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
 
     const inventoryOtherChildren: any[] = []
     if (canViewInventoryMenu('menu.inventory.other.stocks.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/stocks', label: <Link href="/inventory/category/other/stocks" prefetch={false}>其他物品库存</Link> })
+    if (canViewInventoryMenu('menu.inventory.other.prices.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/prices', label: <Link href="/inventory/category/other/prices" prefetch={false}>其他物品价格表</Link> })
     if (canViewInventoryMenu('menu.inventory.other.purchase_orders.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/purchase-orders', label: <Link href="/inventory/category/other/purchase-orders" prefetch={false}>其他物品采购记录</Link> })
     if (canViewInventoryMenu('menu.inventory.other.deliveries.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/deliveries', label: <Link href="/inventory/category/other/deliveries" prefetch={false}>其他物品配送记录</Link> })
     if (canViewInventoryMenu('menu.inventory.other.usage.visible')) inventoryOtherChildren.push({ key: '/inventory/category/other/usage', label: <Link href="/inventory/category/other/usage" prefetch={false}>其他物品使用记录</Link> })

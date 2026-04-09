@@ -333,3 +333,46 @@
   - `frontend`: `npm run build` 通过。
 - Open Issues / Follow-ups:
   - 当前理论消耗按 `checkout_clean` 任务数量 = 房型套数消耗 1 次来估算，适合作为运营对账参考；若后续存在多次补换、深清或非标准任务耗用场景，需要再细化任务类型与耗用系数。
+
+## MZ 后台 CRUD 页面规则 Skill 初始化与校验
+
+- Date: 2026-04-09
+- Task: MZ 后台 CRUD 页面规则 Skill 初始化与校验
+- Status: implemented
+
+### Confirmed Plan
+- 在仓库内 `.codex/skills` 下新增独立的 `mz-crud-page-rules` skill，用于约束后续 `frontend/src/app` 下后台 CRUD 页面的统一 UI 与交互规则。
+- skill 聚焦后台 CRUD 页的通用规则，不写系统地图，不强制每个页面都包含下载、PDF 或审批类动作。
+- 轻量更新 `mz-property-system-map`，让其在“新建或改造后台 CRUD 页面”场景下引用 `mz-crud-page-rules`，保持职责分离。
+- 跑正式 skill 校验，确认新 skill 和更新后的 map skill 均有效。
+
+### Implementation Result
+- 已创建 `.codex/skills/mz-crud-page-rules/` 目录。
+- 已完成 `.codex/skills/mz-crud-page-rules/SKILL.md`，明确后台 CRUD 页面通用规则，包括：
+- 单页列表 + 主操作优先，避免无意义 tabs
+- 详情默认右侧 `Drawer`
+- 编辑默认右侧 `Drawer`
+- 新增优先复用编辑表单容器
+- 行操作默认顺序 `详情 / 编辑 / 删除`
+- 表单重复提交拦截与后端事务真实回滚
+- 明细行优先使用紧凑表格式录入
+- 业务编号优先使用可读单号，不直接暴露 UUID
+- 列表、详情、导出中的金额与编号格式保持一致
+- 下载、PDF、审批、作废等特殊动作仅在业务需要时加入，不作为 CRUD 页必备项
+- 已完成 `.codex/skills/mz-crud-page-rules/agents/openai.yaml`，补齐 skill 列表显示名称、短描述与默认 prompt。
+- 已更新 `.codex/skills/mz-property-system-map/SKILL.md`，增加“新建或改造后台 CRUD 页面时读取 `$mz-crud-page-rules`”的引用说明。
+
+### Validation
+- `python3 /Users/zhishi/.codex/skills/.system/skill-creator/scripts/quick_validate.py '.codex/skills/mz-crud-page-rules'` 通过，结果为 `Skill is valid!`。
+- `python3 /Users/zhishi/.codex/skills/.system/skill-creator/scripts/quick_validate.py '.codex/skills/mz-property-system-map'` 通过，结果为 `Skill is valid!`。
+- 手工检查已确认新 skill 的职责边界与 `mz-property-system-map` 区分清晰，未把 CRUD 页面规范硬塞进系统地图 skill。
+
+### Files / Areas
+- `.codex/skills/mz-crud-page-rules/SKILL.md`
+- `.codex/skills/mz-crud-page-rules/agents/openai.yaml`
+- `.codex/skills/mz-property-system-map/SKILL.md`
+- `docs/execution-records.md`
+
+### Open Issues / Follow-ups
+- 当前新 skill 已覆盖后台 CRUD 页面通用规则，但尚未把具体模块示例拆到 `references/`；如果后续规则继续增多，可再按 inventory / finance 等场景补充细分参考文档。
+- 后续新增后台 CRUD 页面时，需要在实际开发流程中显式使用该 skill，才能持续保持一致性。
