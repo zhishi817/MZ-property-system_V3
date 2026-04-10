@@ -872,24 +872,44 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
       try {
         const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds } = require('./notifications')
         let propertyCode = ''
+        let propertyId = ''
         try {
           const r = await pgPool.query(
-            `SELECT COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+            `SELECT t.property_id::text AS property_id,
+                    COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
              FROM cleaning_tasks t
              LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
              LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
              WHERE t.id=$1 LIMIT 1`,
             [id],
           )
+          propertyId = String(r?.rows?.[0]?.property_id || '').trim()
           propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
         } catch {}
         const to = Array.from(new Set([...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())]))
+        const eventId = `guest_checked_out_cancelled:${propertyCode || id}:${prevCheckedOutAt || ''}`
         await notifyExpoUsers({
           user_ids: to,
-          title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
-          body: '已取消退房',
-          data: { kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: `guest_checked_out_cancelled:${propertyCode || id}:${prevCheckedOutAt || ''}` },
+          title: propertyCode ? `待退房：${propertyCode}` : '待退房',
+          body: '房源还未退房，待退房',
+          data: { kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
         })
+        if (propertyId && to.length) {
+          const { emitNotificationEvent } = require('../services/notificationEvents')
+          await emitNotificationEvent({
+            type: 'CLEANING_TASK_UPDATED',
+            entity: 'cleaning_task',
+            entityId: String(id),
+            propertyId,
+            updatedAt: new Date().toISOString(),
+            changes: ['status'],
+            title: propertyCode ? `待退房：${propertyCode}` : '待退房',
+            body: '房源还未退房，待退房',
+            data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
+            actorUserId: userId,
+            recipientUserIds: to,
+          })
+        }
       } catch {}
       return res.status(201).json({ ok: true })
     }
@@ -995,26 +1015,46 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
         for (const id of ids2) broadcastCleaningEvent({ event: 'guest_checked_out_cancelled', task_id: id })
       } catch {}
       let propertyCode = ''
+      let propertyId = ''
       try {
         const r = await pgPool.query(
-          `SELECT COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+          `SELECT t.property_id::text AS property_id,
+                  COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
            FROM cleaning_tasks t
            LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
            LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
            WHERE t.id=$1 LIMIT 1`,
           [ids2[0]],
         )
+        propertyId = String(r?.rows?.[0]?.property_id || '').trim()
         propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
       } catch {}
       try {
         const { notifyExpoUsers, listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
         const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(ids2)), ...(await listManagerUserIds())]))
+        const eventId = `guest_checked_out_cancelled:${propertyCode || ids2[0]}:${prevCheckedOutAt || ''}`
         await notifyExpoUsers({
           user_ids: to,
-          title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
-          body: '已取消退房',
-          data: { kind: 'guest_checked_out_cancelled', task_ids: ids2, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: `guest_checked_out_cancelled:${propertyCode || ids2[0]}:${prevCheckedOutAt || ''}` },
+          title: propertyCode ? `待退房：${propertyCode}` : '待退房',
+          body: '房源还未退房，待退房',
+          data: { kind: 'guest_checked_out_cancelled', task_ids: ids2, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
         })
+        if (propertyId && to.length) {
+          const { emitNotificationEvent } = require('../services/notificationEvents')
+          await emitNotificationEvent({
+            type: 'CLEANING_TASK_UPDATED',
+            entity: 'cleaning_task',
+            entityId: String(ids2[0]),
+            propertyId,
+            updatedAt: new Date().toISOString(),
+            changes: ['status'],
+            title: propertyCode ? `待退房：${propertyCode}` : '待退房',
+            body: '房源还未退房，待退房',
+            data: { entity: 'cleaning_task', entityId: String(ids2[0]), action: 'open_task', kind: 'guest_checked_out_cancelled', task_ids: ids2, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
+            actorUserId: userId,
+            recipientUserIds: to,
+          })
+        }
       } catch {}
       return res.status(201).json({ ok: true })
     }
@@ -1122,26 +1162,46 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
         for (const id of taskIds) broadcastCleaningEvent({ event: 'guest_checked_out_cancelled', task_id: id })
       } catch {}
       let propertyCode = ''
+      let propertyId = ''
       try {
         const r = await pgPool.query(
-          `SELECT COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+          `SELECT t.property_id::text AS property_id,
+                  COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
            FROM cleaning_tasks t
            LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
            LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
            WHERE t.id=$1 LIMIT 1`,
           [taskIds[0]],
         )
+        propertyId = String(r?.rows?.[0]?.property_id || '').trim()
         propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
       } catch {}
       try {
         const { notifyExpoUsers, listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
         const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(taskIds)), ...(await listManagerUserIds())]))
+        const eventId = `guest_checked_out_cancelled:${propertyCode || taskIds[0]}:${prevCheckedOutAt || ''}`
         await notifyExpoUsers({
           user_ids: to,
-          title: propertyCode ? `取消已退房：${propertyCode}` : '取消已退房',
-          body: '已取消退房',
-          data: { kind: 'guest_checked_out_cancelled', task_ids: taskIds, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: `guest_checked_out_cancelled:${propertyCode || taskIds[0]}:${prevCheckedOutAt || ''}` },
+          title: propertyCode ? `待退房：${propertyCode}` : '待退房',
+          body: '房源还未退房，待退房',
+          data: { kind: 'guest_checked_out_cancelled', task_ids: taskIds, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
         })
+        if (propertyId && to.length) {
+          const { emitNotificationEvent } = require('../services/notificationEvents')
+          await emitNotificationEvent({
+            type: 'CLEANING_TASK_UPDATED',
+            entity: 'cleaning_task',
+            entityId: String(taskIds[0]),
+            propertyId,
+            updatedAt: new Date().toISOString(),
+            changes: ['status'],
+            title: propertyCode ? `待退房：${propertyCode}` : '待退房',
+            body: '房源还未退房，待退房',
+            data: { entity: 'cleaning_task', entityId: String(taskIds[0]), action: 'open_task', kind: 'guest_checked_out_cancelled', task_ids: taskIds, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
+            actorUserId: userId,
+            recipientUserIds: to,
+          })
+        }
       } catch {}
       return res.status(201).json({ ok: true })
     }
@@ -1346,10 +1406,6 @@ async function handleManagerFields(req: any, res: any) {
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const role = String(user.role || '')
   if (role !== 'customer_service') return res.status(403).json({ message: 'forbidden' })
-  const body0 = req.body || {}
-  if (Object.prototype.hasOwnProperty.call(body0, 'keys_required')) {
-    return res.status(400).json({ message: 'keys_required 已迁移到订单主数据（order_id）更新，请升级前端后重试' })
-  }
   const parsed = managerFieldsSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -1357,10 +1413,11 @@ async function handleManagerFields(req: any, res: any) {
     await ensureCleaningCustomerColumns()
     const repId = String(parsed.data.task_ids[0] || '').trim()
     let propertyCode = ''
+    let propertyId = ''
     let prevRow: any = null
     try {
       const r = await pgPool.query(
-        `SELECT t.order_id::text AS order_id, t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
+        `SELECT t.order_id::text AS order_id, t.property_id::text AS property_id, t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
                 COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
          FROM cleaning_tasks t
          LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
@@ -1369,6 +1426,7 @@ async function handleManagerFields(req: any, res: any) {
         [repId],
       )
       prevRow = r?.rows?.[0] || null
+      propertyId = String(prevRow?.property_id || '').trim()
       propertyCode = String(prevRow?.property_code || '').trim()
     } catch {}
     const fields: string[] = []
@@ -1526,7 +1584,7 @@ async function handleManagerFields(req: any, res: any) {
       let afterRow: any = null
       try {
         const rAfter = await pgPool.query(
-          `SELECT t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
+          `SELECT t.property_id::text AS property_id, t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
                   COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
            FROM cleaning_tasks t
            LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
@@ -1535,6 +1593,7 @@ async function handleManagerFields(req: any, res: any) {
           [repId],
         )
         afterRow = rAfter?.rows?.[0] || null
+        if (!propertyId) propertyId = String(afterRow?.property_id || '').trim()
         if (!propertyCode) propertyCode = String(afterRow?.property_code || '').trim()
       } catch {}
       const keyObj = {
@@ -1547,12 +1606,38 @@ async function handleManagerFields(req: any, res: any) {
       }
       const fieldsKey = hashText(JSON.stringify(keyObj))
       const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(Array.from(affectedTaskIds))), ...(await listManagerUserIds())]))
+      const changes: string[] = []
+      if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) changes.push('time')
+      if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) changes.push('time')
+      if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) changes.push('password')
+      if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) changes.push('password')
+      if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) changes.push('note')
+      if (parsed.data.keys_required !== undefined && nextKeysRequired != null) changes.push('keys')
+      const title = propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新'
+      const body = lines.length ? lines.join('\n') : '任务信息已更新'
+      const data = { entity: 'cleaning_task', entityId: String(repId), action: 'open_task', kind: 'cleaning_task_manager_fields_updated', task_ids: Array.from(affectedTaskIds), property_code: propertyCode, fields_key: fieldsKey, event_id: `manager_fields:${propertyCode || repId}:${fieldsKey}` }
       await notifyExpoUsers({
         user_ids: to,
-        title: propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新',
-        body: lines.length ? lines.join('\n') : '任务信息已更新',
-        data: { kind: 'cleaning_task_manager_fields_updated', task_ids: Array.from(affectedTaskIds), property_code: propertyCode, fields_key: fieldsKey, event_id: `manager_fields:${propertyCode || repId}:${fieldsKey}` },
+        title,
+        body,
+        data,
       })
+      if (propertyId && to.length) {
+        const { emitNotificationEvent } = require('../services/notificationEvents')
+        await emitNotificationEvent({
+          type: 'CLEANING_TASK_UPDATED',
+          entity: 'cleaning_task',
+          entityId: String(repId),
+          propertyId,
+          updatedAt: new Date().toISOString(),
+          changes,
+          title,
+          body,
+          data,
+          actorUserId: String(user?.sub || ''),
+          recipientUserIds: to,
+        })
+      }
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {

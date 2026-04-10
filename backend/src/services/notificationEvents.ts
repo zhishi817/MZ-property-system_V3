@@ -228,6 +228,14 @@ function resolvePriority(params: EmitNotificationEventParams): NotificationPrior
   return 'low'
 }
 
+function normalizeEventTimestamp(raw: any) {
+  const s = String(raw || '').trim()
+  if (!s) return null
+  const d = new Date(s)
+  if (!Number.isFinite(d.getTime())) return null
+  return d.toISOString()
+}
+
 export async function emitNotificationEvent(params: EmitNotificationEventParams, opts?: EmitNotificationEventOptions) {
   if (!hasPg || !pgPool) return { ok: true, sent: 0 }
   await ensureNotificationStorage()
@@ -238,12 +246,15 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
   const entityId = String(params.entityId || '').trim()
   if (!entity || !entityId) return { ok: false, sent: 0 }
 
-  const updatedAt = String(params.updatedAt || '').trim() || String(opts?.operationId || '').trim() || new Date().toISOString()
+  const updatedAt = normalizeEventTimestamp(params.updatedAt) || new Date().toISOString()
   const eventId = `${type}_${entity}_${entityId}_${updatedAt}`
 
   const resolved = await resolveRecipients(params, client)
   const propertyId = String(params.propertyId || '').trim()
-  const filtered = propertyId ? await filterUserIdsByPropertyScope(resolved, propertyId, client) : resolved
+  const hasExplicitRecipients = Array.isArray(params.recipientUserIds) && params.recipientUserIds.length > 0
+  const filtered = hasExplicitRecipients
+    ? resolved
+    : (propertyId ? await filterUserIdsByPropertyScope(resolved, propertyId, client) : resolved)
   const actor = String(params.actorUserId || '').trim()
   const excludeActor = shouldExcludeActor(params)
   const to = excludeActor && actor ? filtered.filter((x) => x !== actor) : filtered
@@ -269,7 +280,7 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
       `INSERT INTO user_notifications (
         id, user_id, event_id, type, entity, entity_id, changes, title, body, data, priority, created_at, updated_at
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),now()
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::timestamptz,now()
       )
       ON CONFLICT (user_id, event_id)
       DO UPDATE SET
@@ -285,7 +296,7 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
         priority = EXCLUDED.priority,
         updated_at = now()
       RETURNING id`,
-      [nid, userId, eventId, type, entity, entityId, changes.length ? changes : null, title, body, data, priority],
+      [nid, userId, eventId, type, entity, entityId, changes.length ? changes : null, title, body, data, priority, updatedAt],
     )
     const userNotificationId = String(r?.rows?.[0]?.id || '').trim() || nid
 

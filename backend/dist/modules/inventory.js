@@ -1179,6 +1179,70 @@ async function applyStockDeltaInTx(client, input) {
     const after = await client.query(`SELECT * FROM warehouse_stocks WHERE id = $1`, [row.id]);
     return { ok: true, stock: ((_b = after.rows) === null || _b === void 0 ? void 0 : _b[0]) || null, movement_id: moveId };
 }
+function normalizeRoomTypeLookupKey(value) {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/^房型[:：\s-]*/g, '')
+        .replace(/[（(].*?[）)]/g, '')
+        .replace(/[\s_-]+/g, '');
+}
+function buildRoomTypeAliasKeys(row) {
+    var _a, _b;
+    const keys = new Set();
+    const code = String(row.code || '').trim();
+    const name = String(row.name || '').trim();
+    const bedrooms = Number((_a = row.bedrooms) !== null && _a !== void 0 ? _a : 0);
+    const bathrooms = Number((_b = row.bathrooms) !== null && _b !== void 0 ? _b : 0);
+    for (const value of [code, name]) {
+        const normalized = normalizeRoomTypeLookupKey(value);
+        if (normalized)
+            keys.add(normalized);
+    }
+    if (bedrooms > 0 || bathrooms > 0) {
+        keys.add(normalizeRoomTypeLookupKey(`${bedrooms}b${bathrooms}b`));
+        keys.add(normalizeRoomTypeLookupKey(`${bedrooms}房${bathrooms}卫`));
+        keys.add(normalizeRoomTypeLookupKey(`房型${bedrooms}房${bathrooms}卫`));
+    }
+    if (name) {
+        keys.add(normalizeRoomTypeLookupKey(name.replace(/^房型/, '')));
+        keys.add(normalizeRoomTypeLookupKey(`房型${name}`));
+    }
+    return Array.from(keys).filter(Boolean);
+}
+function resolveRoomTypeCode(inputCode, roomTypeRows, reqMap) {
+    const rows = roomTypeRows || [];
+    const exact = rows.find((row) => String(row.code || '') === inputCode) || null;
+    const lookupKeys = new Set([inputCode, exact === null || exact === void 0 ? void 0 : exact.name].map((value) => normalizeRoomTypeLookupKey(value)).filter(Boolean));
+    const aliasCandidates = new Set();
+    for (const row of rows) {
+        const aliases = buildRoomTypeAliasKeys(row);
+        if (aliases.some((alias) => lookupKeys.has(alias)))
+            aliasCandidates.add(String(row.code || '').trim());
+    }
+    const inputCodeExists = rows.some((row) => String(row.code || '').trim() === String(inputCode || '').trim());
+    const candidateCodes = Array.from(new Set([
+        ...Array.from(aliasCandidates),
+        ...(inputCodeExists ? [String(inputCode || '').trim()] : []),
+        ...(exact ? [String(exact.code || '').trim()] : []),
+        String(inputCode || '').trim(),
+    ])).filter(Boolean);
+    const preferredCode = candidateCodes.find((code) => {
+        if (!reqMap)
+            return false;
+        const reqs = reqMap.get(code);
+        return !!reqs && reqs.size > 0;
+    });
+    const resolvedCode = preferredCode || candidateCodes[0] || '';
+    const resolvedRow = rows.find((row) => String(row.code || '').trim() === resolvedCode)
+        || exact
+        || rows.find((row) => buildRoomTypeAliasKeys(row).some((alias) => lookupKeys.has(alias)))
+        || null;
+    return {
+        code: resolvedCode,
+        name: String((resolvedRow === null || resolvedRow === void 0 ? void 0 : resolvedRow.name) || (exact === null || exact === void 0 ? void 0 : exact.name) || inputCode || ''),
+    };
+}
 async function expandLinenDeliveryInputLines(client, lines) {
     const normalized = (lines || []).map((line) => ({
         room_type_code: String((line === null || line === void 0 ? void 0 : line.room_type_code) || '').trim(),
@@ -1197,14 +1261,19 @@ async function expandLinenDeliveryInputLines(client, lines) {
         seen.add(line.room_type_code);
     }
     const [roomTypesRes, reqRows, itemsRes] = await Promise.all([
-        client.query(`SELECT code, name
+        client.query(`SELECT code, name, bedrooms, bathrooms
        FROM inventory_room_types`),
         client.query(`SELECT room_type_code, linen_type_code, quantity FROM inventory_room_type_requirements`),
         client.query(`SELECT id, name, sku, linen_type_code
        FROM inventory_items
        WHERE category = 'linen' AND active = true`),
     ]);
-    const roomTypeNameMap = new Map((roomTypesRes.rows || []).map((row) => [String(row.code || ''), String(row.name || row.code || '')]));
+    const roomTypeRows = (roomTypesRes.rows || []).map((row) => ({
+        code: String(row.code || ''),
+        name: String(row.name || row.code || ''),
+        bedrooms: row.bedrooms == null ? null : Number(row.bedrooms),
+        bathrooms: row.bathrooms == null ? null : Number(row.bathrooms),
+    }));
     const reqMap = new Map();
     for (const row of reqRows.rows || []) {
         const roomTypeCode = String(row.room_type_code || '');
@@ -1224,10 +1293,12 @@ async function expandLinenDeliveryInputLines(client, lines) {
         itemByLinenType.set(code, row);
     }
     return normalized.map((line) => {
-        const roomTypeName = String(roomTypeNameMap.get(line.room_type_code) || '');
+        const resolvedRoomType = resolveRoomTypeCode(line.room_type_code, roomTypeRows, reqMap);
+        const roomTypeCode = String(resolvedRoomType.code || '').trim();
+        const roomTypeName = String(resolvedRoomType.name || '');
         if (!roomTypeName)
             throw new Error(`未知房型：${line.room_type_code}`);
-        const reqs = reqMap.get(line.room_type_code);
+        const reqs = reqMap.get(roomTypeCode);
         if (!reqs || !reqs.size)
             throw new Error(`房型 ${roomTypeName} 未配置床品占用清单`);
         const breakdown = Array.from(reqs.entries()).map(([linenTypeCode, quantity]) => {
@@ -1246,7 +1317,7 @@ async function expandLinenDeliveryInputLines(client, lines) {
         if (!breakdown.length)
             throw new Error(`房型 ${roomTypeName} 未配置有效床品占用清单`);
         return {
-            room_type_code: line.room_type_code,
+            room_type_code: roomTypeCode,
             room_type_name: roomTypeName,
             sets: line.sets,
             breakdown,
@@ -1263,26 +1334,33 @@ async function normalizeLinenStocktakeLines(client, lines) {
     });
     if (!normalized.length)
         throw new Error('至少需要填写一条盘点明细');
-    const roomTypesRes = await client.query(`SELECT code, name
+    const roomTypesRes = await client.query(`SELECT code, name, bedrooms, bathrooms
      FROM inventory_room_types
      WHERE active = true
      ORDER BY sort_order ASC, code ASC`);
-    const roomTypeNameMap = new Map((roomTypesRes.rows || []).map((row) => [String(row.code || ''), String(row.name || row.code || '')]));
+    const roomTypeRows = (roomTypesRes.rows || []).map((row) => ({
+        code: String(row.code || ''),
+        name: String(row.name || row.code || ''),
+        bedrooms: row.bedrooms == null ? null : Number(row.bedrooms),
+        bathrooms: row.bathrooms == null ? null : Number(row.bathrooms),
+    }));
     const seen = new Set();
     for (const line of normalized) {
         if (!line.room_type_code)
             throw new Error('盘点明细缺少房型');
-        if (!roomTypeNameMap.has(line.room_type_code))
+        const resolvedRoomType = resolveRoomTypeCode(line.room_type_code, roomTypeRows);
+        if (!resolvedRoomType.code)
             throw new Error(`未知房型：${line.room_type_code}`);
         if (!Number.isInteger(line.remaining_sets) || line.remaining_sets < 0)
             throw new Error('盘点剩余套数不能小于 0');
-        if (seen.has(line.room_type_code))
+        if (seen.has(resolvedRoomType.code))
             throw new Error('同一盘点单内房型不能重复');
-        seen.add(line.room_type_code);
+        seen.add(resolvedRoomType.code);
+        line.room_type_code = resolvedRoomType.code;
     }
     return normalized.map((line) => ({
         room_type_code: line.room_type_code,
-        room_type_name: String(roomTypeNameMap.get(line.room_type_code) || line.room_type_code),
+        room_type_name: String(resolveRoomTypeCode(line.room_type_code, roomTypeRows).name || line.room_type_code),
         remaining_sets: line.remaining_sets,
     }));
 }
