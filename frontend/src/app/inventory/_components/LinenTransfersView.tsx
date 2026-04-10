@@ -250,6 +250,7 @@ export default function LinenTransfersView() {
   }
 
   function applyCancelledRecordLocally(record: LinenDeliveryRecord, response?: DeliverySaveResponse | null) {
+    const cancelledStatus: LinenDeliveryRecord['status'] = 'cancelled'
     const nextUpdatedAt = response?.updated_at || dayjs().toISOString()
     const nextCancelledAt = response?.cancelled_at || dayjs().toISOString()
     setRecords((current) => {
@@ -257,7 +258,7 @@ export default function LinenTransfersView() {
         item.id === record.id
           ? {
               ...item,
-              status: 'cancelled',
+              status: cancelledStatus,
               updated_at: nextUpdatedAt,
               cancelled_at: nextCancelledAt,
               cancelled_by: response?.cancelled_by ?? item.cancelled_by ?? null,
@@ -270,7 +271,7 @@ export default function LinenTransfersView() {
       current && current.id === record.id
         ? {
             ...current,
-            status: 'cancelled',
+            status: cancelledStatus,
             updated_at: nextUpdatedAt,
             cancelled_at: nextCancelledAt,
             cancelled_by: response?.cancelled_by ?? current.cancelled_by ?? null,
@@ -567,7 +568,7 @@ export default function LinenTransfersView() {
             placeholder="状态"
             style={{ width: 160 }}
             value={status || undefined}
-            onChange={(value) => setStatus(String(value || ''))}
+            onChange={(value) => setStatus((value || '') as '' | 'completed' | 'cancelled')}
             options={[
               { value: 'completed', label: '已完成' },
               { value: 'cancelled', label: '已作废' },

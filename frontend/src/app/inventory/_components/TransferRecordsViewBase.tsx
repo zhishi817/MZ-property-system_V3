@@ -220,11 +220,12 @@ export default function TransferRecordsViewBase({ category, title, itemLabel }: 
   }
 
   function applyCancelledRecordLocally(recordId: string, response?: TransferRecordRow | null) {
+    const cancelledStatus: TransferRecordRow['status'] = 'cancelled'
     setRows((current) => {
-      const next = current.map((row) => row.id === recordId ? { ...row, status: 'cancelled', cancelled_at: response?.cancelled_at || dayjs().toISOString(), updated_at: response?.updated_at || dayjs().toISOString() } : row)
+      const next = current.map((row) => row.id === recordId ? { ...row, status: cancelledStatus, cancelled_at: response?.cancelled_at || dayjs().toISOString(), updated_at: response?.updated_at || dayjs().toISOString() } : row)
       return status === 'completed' ? next.filter((row) => row.id !== recordId) : next
     })
-    setDetail((current) => current && current.id === recordId ? { ...current, status: 'cancelled', cancelled_at: response?.cancelled_at || dayjs().toISOString(), updated_at: response?.updated_at || dayjs().toISOString() } : current)
+    setDetail((current) => current && current.id === recordId ? { ...current, status: cancelledStatus, cancelled_at: response?.cancelled_at || dayjs().toISOString(), updated_at: response?.updated_at || dayjs().toISOString() } : current)
   }
 
   async function cancelRecord(row: TransferRecordRow) {
