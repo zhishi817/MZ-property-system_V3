@@ -1,8 +1,8 @@
 "use client"
 
-import { Button, Card, Descriptions, Drawer, Form, Input, InputNumber, Select, Space, Switch, Table, Tag, message } from 'antd'
+import { Button, Card, Descriptions, Drawer, Form, Input, InputNumber, Modal, Space, Switch, Table, Tag, message } from 'antd'
 import { useEffect, useState } from 'react'
-import { getJSON, patchJSON, postJSON } from '../../../lib/api'
+import { deleteJSON, getJSON, patchJSON, postJSON } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
 
 type PriceRow = {
@@ -99,6 +99,31 @@ export default function ConsumableItemsPriceListView() {
     }
   }
 
+  async function remove(row: PriceRow) {
+    try {
+      await deleteJSON(`/inventory/consumable-items-prices/${row.id}`)
+      message.success('已删除')
+      if (detailRow?.id === row.id) {
+        setDetailOpen(false)
+        setDetailRow(null)
+      }
+      await load()
+    } catch (e: any) {
+      message.error(e?.message || '删除失败')
+    }
+  }
+
+  function confirmRemove(row: PriceRow) {
+    Modal.confirm({
+      title: '确认删除',
+      content: `是否确认删除消耗品：${row.item_name}？`,
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: () => remove(row),
+    })
+  }
+
   const columns = [
     { title: '物品名称', dataIndex: 'item_name', width: 240 },
     { title: 'SKU', dataIndex: 'sku', width: 140 },
@@ -109,11 +134,12 @@ export default function ConsumableItemsPriceListView() {
     { title: '状态', dataIndex: 'is_active', width: 100, render: (value: boolean | undefined) => value === false ? <Tag color="default">停用</Tag> : <Tag color="green">启用</Tag> },
     {
       title: '操作',
-      width: 180,
+      width: 240,
       render: (_: any, row: PriceRow) => (
         <Space size={8}>
           <Button onClick={() => { setDetailRow(row); setDetailOpen(true) }}>详情</Button>
           {canManage ? <Button onClick={() => openEdit(row)}>编辑</Button> : null}
+          {canManage ? <Button danger onClick={() => confirmRemove(row)}>删除</Button> : null}
         </Space>
       ),
     },

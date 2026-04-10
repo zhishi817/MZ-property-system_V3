@@ -1,13 +1,14 @@
 "use client"
 
-import { App, Button, Card, DatePicker, Descriptions, Divider, Form, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography } from 'antd'
-import { DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined } from '@ant-design/icons'
+import { App, Button, Card, DatePicker, Descriptions, Divider, Drawer, Form, Input, InputNumber, Select, Space, Table, Tag, Typography } from 'antd'
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
-import { getJSON, patchJSON, postJSON } from '../../../lib/api'
+import { getApiFailureKind, getJSON, patchJSON, postJSON } from '../../../lib/api'
 
 type Warehouse = { id: string; code: string; name: string; active: boolean; stocktake_enabled?: boolean }
 type RoomType = { code: string; name: string; sort_order: number; active: boolean }
+type LinenType = { code: string; name: string; sort_order?: number; active?: boolean }
 
 type LinenDeliveryRecord = {
   id: string
@@ -21,6 +22,7 @@ type LinenDeliveryRecord = {
   status: 'completed' | 'cancelled'
   total_sets: number
   room_type_count: number
+  extra_linen_total?: number
   note?: string | null
   dirty_bag_note?: string | null
   created_by?: string | null
@@ -50,6 +52,14 @@ type LinenDeliveryRecordLine = {
 
 type LinenDeliveryRecordDetail = LinenDeliveryRecord & {
   lines: LinenDeliveryRecordLine[]
+  extra_lines: Array<{
+    id: string
+    record_id: string
+    linen_type_code: string
+    linen_type_name: string
+    quantity: number
+    breakdown: LinenDeliveryRecordLineBreakdown[]
+  }>
   stocktake?: {
     id: string
     warehouse_id: string
@@ -87,10 +97,27 @@ type DeliveryEditorValues = {
     room_type_code?: string
     sets?: number
   }>
+  extra_linen_lines: Array<{
+    linen_type_code?: string
+    quantity?: number
+  }>
   stocktake_lines: Array<{
     room_type_code?: string
     remaining_sets?: number
   }>
+}
+
+type DeliverySaveResponse = {
+  id: string
+  delivery_date: string
+  status: string
+  created_at?: string | null
+  updated_at?: string | null
+  cancelled_by?: string | null
+  cancelled_at?: string | null
+  deduped?: boolean
+  details_degraded?: boolean
+  trace_id?: string
 }
 
 const DEFAULT_RANGE: [Dayjs, Dayjs] = [dayjs().subtract(30, 'day'), dayjs()]
@@ -100,14 +127,20 @@ function statusTag(status: string) {
   return <Tag color="green">已完成</Tag>
 }
 
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 export default function LinenTransfersView() {
   const { message, modal } = App.useApp()
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
   const [roomTypes, setRoomTypes] = useState<RoomType[]>([])
+  const [linenTypes, setLinenTypes] = useState<LinenType[]>([])
   const [records, setRecords] = useState<LinenDeliveryRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [cancellingId, setCancellingId] = useState('')
   const [editorOpen, setEditorOpen] = useState(false)
   const [detailOpen, setDetailOpen] = useState(false)
   const [editingRecordId, setEditingRecordId] = useState<string>('')
@@ -115,7 +148,7 @@ export default function LinenTransfersView() {
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>(DEFAULT_RANGE)
   const [fromWarehouseId, setFromWarehouseId] = useState('')
   const [toWarehouseId, setToWarehouseId] = useState('')
-  const [status, setStatus] = useState('')
+  const [status, setStatus] = useState<'completed' | 'cancelled' | ''>('completed')
   const [editorForm] = Form.useForm<DeliveryEditorValues>()
   const submitLockRef = useRef(false)
 
@@ -133,14 +166,29 @@ export default function LinenTransfersView() {
     () => (roomTypes || []).filter((item) => item.active).map((item) => ({ value: item.code, label: item.name })),
     [roomTypes],
   )
+  const linenTypeOptions = useMemo(
+    () => (linenTypes || []).filter((item) => item.active !== false).map((item) => ({ value: item.code, label: item.name })),
+    [linenTypes],
+  )
+  const smWarehouseId = useMemo(() => {
+    const hit = (warehouses || []).find((item) => {
+      const id = String(item.id || '').trim().toLowerCase()
+      const code = String(item.code || '').trim().toLowerCase()
+      const name = String(item.name || '').trim().toLowerCase()
+      return id === 'wh.south_melbourne' || code === 'sm' || code === 'sou' || name.includes('south melbourne')
+    })
+    return String(hit?.id || '')
+  }, [warehouses])
 
   async function loadBase() {
-    const [warehouseRows, roomTypeRows] = await Promise.all([
+    const [warehouseRows, roomTypeRows, linenTypeRows] = await Promise.all([
       getJSON<Warehouse[]>('/inventory/warehouses'),
       getJSON<RoomType[]>('/inventory/room-types'),
+      getJSON<LinenType[]>('/inventory/linen-types'),
     ])
     setWarehouses((warehouseRows || []).filter((item) => item.active))
     setRoomTypes((roomTypeRows || []).filter((item) => item.active).sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)))
+    setLinenTypes((linenTypeRows || []).filter((item) => item.active !== false).sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)))
   }
 
   async function loadRecords() {
@@ -154,6 +202,7 @@ export default function LinenTransfersView() {
       if (status) params.set('status', status)
       const data = await getJSON<LinenDeliveryRecord[]>(`/inventory/linen/delivery-records?${params.toString()}`)
       setRecords(data || [])
+      return data || []
     } finally {
       setLoading(false)
     }
@@ -161,14 +210,74 @@ export default function LinenTransfersView() {
 
   async function loadDetail(id: string, open = true) {
     setDetailLoading(true)
+    if (open) {
+      setDetail(null)
+      setDetailOpen(true)
+    }
     try {
       const data = await getJSON<LinenDeliveryRecordDetail>(`/inventory/linen/delivery-records/${id}`)
       setDetail(data || null)
-      if (open) setDetailOpen(true)
       return data
     } finally {
       setDetailLoading(false)
     }
+  }
+
+  function fillEditorFromDetail(current: LinenDeliveryRecordDetail) {
+    setEditingRecordId(current.id)
+    editorForm.setFieldsValue({
+      delivery_date: current.delivery_date ? dayjs(current.delivery_date) : dayjs(),
+      from_warehouse_id: current.from_warehouse_id,
+      to_warehouse_id: current.to_warehouse_id,
+      note: current.note || '',
+      dirty_bag_note: current.stocktake?.dirty_bag_note || current.dirty_bag_note || '',
+      lines: (current.lines || []).map((line) => ({
+        room_type_code: line.room_type_code,
+        sets: line.sets,
+      })),
+      extra_linen_lines: (current.extra_lines || []).map((line) => ({
+        linen_type_code: line.linen_type_code,
+        quantity: line.quantity,
+      })),
+      stocktake_lines: roomTypes.map((roomType) => {
+        const existing = (current.stocktake?.lines || []).find((line) => line.room_type_code === roomType.code)
+        return {
+          room_type_code: roomType.code,
+          remaining_sets: existing?.remaining_sets ?? 0,
+        }
+      }),
+    })
+  }
+
+  function applyCancelledRecordLocally(record: LinenDeliveryRecord, response?: DeliverySaveResponse | null) {
+    const cancelledStatus: LinenDeliveryRecord['status'] = 'cancelled'
+    const nextUpdatedAt = response?.updated_at || dayjs().toISOString()
+    const nextCancelledAt = response?.cancelled_at || dayjs().toISOString()
+    setRecords((current) => {
+      const next = current.map((item) => (
+        item.id === record.id
+          ? {
+              ...item,
+              status: cancelledStatus,
+              updated_at: nextUpdatedAt,
+              cancelled_at: nextCancelledAt,
+              cancelled_by: response?.cancelled_by ?? item.cancelled_by ?? null,
+            }
+          : item
+      ))
+      return status === 'completed' ? next.filter((item) => item.id !== record.id) : next
+    })
+    setDetail((current) => (
+      current && current.id === record.id
+        ? {
+            ...current,
+            status: cancelledStatus,
+            updated_at: nextUpdatedAt,
+            cancelled_at: nextCancelledAt,
+            cancelled_by: response?.cancelled_by ?? current.cancelled_by ?? null,
+          }
+        : current
+    ))
   }
 
   useEffect(() => {
@@ -182,11 +291,12 @@ export default function LinenTransfersView() {
     editorForm.resetFields()
     editorForm.setFieldsValue({
       delivery_date: dayjs(),
-      from_warehouse_id: '',
+      from_warehouse_id: smWarehouseId || '',
       to_warehouse_id: '',
       note: '',
       dirty_bag_note: '',
-      lines: [{ room_type_code: undefined, sets: 1 }],
+      lines: [],
+      extra_linen_lines: [],
       stocktake_lines: roomTypes.map((roomType) => ({ room_type_code: roomType.code, remaining_sets: 0 })),
     })
   }
@@ -197,27 +307,10 @@ export default function LinenTransfersView() {
   }
 
   async function openEdit(recordId: string) {
-    const current = await loadDetail(recordId, false)
+    const current = detail?.id === recordId ? detail : await loadDetail(recordId, false)
     if (!current) return
-    setEditingRecordId(recordId)
-    editorForm.setFieldsValue({
-      delivery_date: current.delivery_date ? dayjs(current.delivery_date) : dayjs(),
-      from_warehouse_id: current.from_warehouse_id,
-      to_warehouse_id: current.to_warehouse_id,
-      note: current.note || '',
-      dirty_bag_note: current.stocktake?.dirty_bag_note || current.dirty_bag_note || '',
-      lines: (current.lines || []).map((line) => ({
-        room_type_code: line.room_type_code,
-        sets: line.sets,
-      })),
-      stocktake_lines: roomTypes.map((roomType) => {
-        const existing = (current.stocktake?.lines || []).find((line) => line.room_type_code === roomType.code)
-        return {
-          room_type_code: roomType.code,
-          remaining_sets: existing?.remaining_sets ?? 0,
-        }
-      }),
-    })
+    fillEditorFromDetail(current)
+    setDetailOpen(false)
     setEditorOpen(true)
   }
 
@@ -227,14 +320,27 @@ export default function LinenTransfersView() {
       sets: Number(line?.sets || 0),
     })).filter((line) => line.room_type_code || line.sets)
 
-    if (!lines.length) throw new Error('请至少填写一条配送明细')
-
     const seen = new Set<string>()
     for (const line of lines) {
       if (!line.room_type_code) throw new Error('房型不能为空')
       if (!Number.isInteger(line.sets) || line.sets < 1) throw new Error('配送套数必须大于 0')
       if (seen.has(line.room_type_code)) throw new Error('同一配送单内房型不能重复')
       seen.add(line.room_type_code)
+    }
+    return lines
+  }
+
+  function normalizeExtraLinenLines(values: DeliveryEditorValues['extra_linen_lines']) {
+    const lines = (values || []).map((line) => ({
+      linen_type_code: String(line?.linen_type_code || '').trim(),
+      quantity: Number(line?.quantity || 0),
+    })).filter((line) => line.linen_type_code || line.quantity)
+    const seen = new Set<string>()
+    for (const line of lines) {
+      if (!line.linen_type_code) throw new Error('备用床品类型不能为空')
+      if (!Number.isInteger(line.quantity) || line.quantity < 1) throw new Error('备用床品数量必须大于 0')
+      if (seen.has(line.linen_type_code)) throw new Error('同一配送单内备用床品类型不能重复')
+      seen.add(line.linen_type_code)
     }
     return lines
   }
@@ -255,14 +361,78 @@ export default function LinenTransfersView() {
     return lines
   }
 
+  function buildCreateMatchSignature(payload: {
+    delivery_date: string
+    from_warehouse_id: string
+    to_warehouse_id: string
+    note?: string
+    lines: Array<{ room_type_code: string; sets: number }>
+    extra_linen_lines: Array<{ linen_type_code: string; quantity: number }>
+  }) {
+    return {
+      delivery_date: payload.delivery_date,
+      from_warehouse_id: payload.from_warehouse_id,
+      to_warehouse_id: payload.to_warehouse_id,
+      note: String(payload.note || '').trim(),
+      total_sets: (payload.lines || []).reduce((sum, line) => sum + Number(line.sets || 0), 0),
+      room_type_count: (payload.lines || []).length,
+      extra_linen_total: (payload.extra_linen_lines || []).reduce((sum, line) => sum + Number(line.quantity || 0), 0),
+    }
+  }
+
+  function findMatchingSavedRecord(
+    rows: LinenDeliveryRecord[],
+    signature: ReturnType<typeof buildCreateMatchSignature>,
+    requestStartedAt: number,
+  ) {
+    const createdAfterMs = requestStartedAt - 10 * 1000
+    return (rows || []).find((row) => {
+      if (String(row.delivery_date || '') !== signature.delivery_date) return false
+      if (String(row.from_warehouse_id || '') !== signature.from_warehouse_id) return false
+      if (String(row.to_warehouse_id || '') !== signature.to_warehouse_id) return false
+      if (String(row.note || '').trim() !== signature.note) return false
+      if (Number(row.total_sets || 0) !== signature.total_sets) return false
+      if (Number(row.room_type_count || 0) !== signature.room_type_count) return false
+      if (Number((row as any).extra_linen_total || 0) !== signature.extra_linen_total) return false
+      const createdAt = String(row.created_at || '')
+      if (!createdAt) return true
+      const createdAtMs = Date.parse(createdAt.replace(' ', 'T'))
+      if (!Number.isFinite(createdAtMs)) return true
+      return createdAtMs >= createdAfterMs
+    })
+  }
+
+  async function confirmCreateSavedAfterTimeout(
+    payload: {
+      delivery_date: string
+      from_warehouse_id: string
+      to_warehouse_id: string
+      note?: string
+      lines: Array<{ room_type_code: string; sets: number }>
+      extra_linen_lines: Array<{ linen_type_code: string; quantity: number }>
+    },
+    requestStartedAt: number,
+  ) {
+    const signature = buildCreateMatchSignature(payload)
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (attempt > 0) await delay(3000)
+      const refreshed = await loadRecords()
+      const matched = findMatchingSavedRecord(refreshed || [], signature, requestStartedAt)
+      if (matched) return matched
+    }
+    return null
+  }
+
   async function submitEditor() {
     if (submitLockRef.current || saving) return
     submitLockRef.current = true
-    const values = await editorForm.validateFields()
     try {
+      const values = await editorForm.validateFields()
       const lines = normalizeEditorLines(values.lines)
+      const extraLinenLines = normalizeExtraLinenLines(values.extra_linen_lines)
       const stocktakeLines = normalizeStocktakeLines(values.stocktake_lines)
       if (values.from_warehouse_id === values.to_warehouse_id) throw new Error('来源仓和目标分仓不能相同')
+      if (!lines.length && !extraLinenLines.length) throw new Error('请至少填写一条配送明细')
 
       setSaving(true)
       const payload = {
@@ -272,18 +442,51 @@ export default function LinenTransfersView() {
         note: values.note || undefined,
         dirty_bag_note: values.dirty_bag_note || undefined,
         lines,
+        extra_linen_lines: extraLinenLines,
         stocktake_lines: stocktakeLines,
       }
+      const requestStartedAt = Date.now()
       if (editingRecordId) {
-        await patchJSON(`/inventory/linen/delivery-records/${editingRecordId}`, payload)
+        await patchJSON(`/inventory/linen/delivery-records/${editingRecordId}`, payload, { timeoutMs: 30000 })
         message.success('配送单已更新')
       } else {
-        await postJSON('/inventory/linen/delivery-records', payload)
-        message.success('配送单已创建')
+        try {
+          const response = await postJSON<DeliverySaveResponse>('/inventory/linen/delivery-records', payload, { timeoutMs: 30000 })
+          message.success(response?.deduped ? '配送单已保存，无重复创建' : '配送单已创建')
+        } catch (e: any) {
+          const failureKind = getApiFailureKind(e)
+          if (failureKind === 'network_unavailable') {
+            const hide = message.loading('正在确认是否已保存...', 0)
+            try {
+              const matched = await confirmCreateSavedAfterTimeout(payload, requestStartedAt)
+              if (matched) {
+                message.success('已保存，响应超时')
+              } else {
+                const traceSuffix = e?.trace_id ? `（trace: ${e.trace_id}）` : ''
+                throw new Error(`保存结果未确认，请稍后刷新列表检查${traceSuffix}`)
+              }
+            } finally {
+              hide()
+            }
+          } else {
+            throw e
+          }
+        }
       }
       setEditorOpen(false)
       resetEditor()
       await loadRecords()
+    } catch (e: any) {
+      const errorFields = Array.isArray(e?.errorFields) ? e.errorFields : []
+      if (errorFields.length) {
+        const firstField = errorFields[0]
+        try { editorForm.scrollToField(firstField.name, { block: 'center' }) } catch {}
+        const msg = String(firstField?.errors?.[0] || '')
+        message.error(msg || '请先完善表单后再保存')
+        return
+      }
+      const traceSuffix = e?.trace_id ? `（trace: ${e.trace_id}）` : ''
+      message.error(`${e?.message || '保存失败'}${traceSuffix}`)
     } finally {
       setSaving(false)
       submitLockRef.current = false
@@ -298,12 +501,24 @@ export default function LinenTransfersView() {
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        await postJSON(`/inventory/linen/delivery-records/${record.id}/cancel`, {})
-        message.success('配送单已作废')
-        if (detail?.id === record.id) {
-          await loadDetail(record.id, true)
+        if (cancellingId === record.id) return
+        setCancellingId(record.id)
+        try {
+          const response = await postJSON<DeliverySaveResponse>(`/inventory/linen/delivery-records/${record.id}/cancel`, {})
+          applyCancelledRecordLocally(record, response)
+          message.success('配送单已作废')
+        } catch (e: any) {
+          const msg = String(e?.message || '')
+          if (msg.includes('该配送单已作废')) {
+            applyCancelledRecordLocally(record, null)
+            message.info('这张配送单已经作废，列表将自动刷新')
+            await loadRecords().catch(() => {})
+            return
+          }
+          message.error(msg || '作废失败')
+        } finally {
+          setCancellingId('')
         }
-        await loadRecords()
       },
     })
   }
@@ -322,10 +537,10 @@ export default function LinenTransfersView() {
       key: 'actions',
       width: 180,
       render: (_: any, row: LinenDeliveryRecord) => (
-        <Space size="small">
-          <Button size="small" icon={<EyeOutlined />} onClick={() => loadDetail(row.id, true).catch((e) => message.error(e?.message || '加载详情失败'))}>查看</Button>
-          <Button size="small" icon={<EditOutlined />} disabled={row.status !== 'completed'} onClick={() => openEdit(row.id).catch((e) => message.error(e?.message || '加载编辑数据失败'))}>编辑</Button>
-          <Button size="small" danger icon={<DeleteOutlined />} disabled={row.status !== 'completed'} onClick={() => cancelRecord(row).catch((e) => message.error(e?.message || '作废失败'))}>作废</Button>
+        <Space>
+          <Button onClick={() => loadDetail(row.id, true).catch((e) => message.error(e?.message || '加载详情失败'))}>详情</Button>
+          <Button disabled={row.status !== 'completed'} onClick={() => openEdit(row.id).catch((e) => message.error(e?.message || '加载编辑数据失败'))}>编辑</Button>
+          <Button danger loading={cancellingId === row.id} disabled={row.status !== 'completed'} onClick={() => cancelRecord(row).catch((e) => message.error(e?.message || '作废失败'))}>作废</Button>
         </Space>
       ),
     },
@@ -353,7 +568,7 @@ export default function LinenTransfersView() {
             placeholder="状态"
             style={{ width: 160 }}
             value={status || undefined}
-            onChange={(value) => setStatus(String(value || ''))}
+            onChange={(value) => setStatus((value || '') as '' | 'completed' | 'cancelled')}
             options={[
               { value: 'completed', label: '已完成' },
               { value: 'cancelled', label: '已作废' },
@@ -364,7 +579,7 @@ export default function LinenTransfersView() {
             setDateRange(DEFAULT_RANGE)
             setFromWarehouseId('')
             setToWarehouseId('')
-            setStatus('')
+            setStatus('completed')
           }}
           >
             重置
@@ -381,68 +596,175 @@ export default function LinenTransfersView() {
         />
       </Card>
 
-      <Modal
+      <Drawer
         open={editorOpen}
         title={editingRecordId ? '编辑配送单' : '新建配送单'}
-        width={880}
-        destroyOnClose
-        onCancel={() => {
+        placement="right"
+        width={550}
+        onClose={() => {
           if (saving) return
           setEditorOpen(false)
           resetEditor()
         }}
-        onOk={() => submitEditor().catch((e) => message.error(e?.message || '保存失败'))}
-        confirmLoading={saving}
+        extra={
+          <Space>
+            <Button onClick={() => {
+              if (saving) return
+              setEditorOpen(false)
+              resetEditor()
+            }}
+            >
+              取消
+            </Button>
+            <Button type="primary" loading={saving} onClick={() => { void submitEditor() }}>
+              {editingRecordId ? '保存修改' : '保存配送单'}
+            </Button>
+          </Space>
+        }
       >
-        <Form form={editorForm} layout="vertical" initialValues={{ delivery_date: dayjs(), lines: [{ room_type_code: undefined, sets: 1 }], stocktake_lines: roomTypes.map((roomType) => ({ room_type_code: roomType.code, remaining_sets: 0 })) }}>
-          <Space align="start" style={{ width: '100%' }} size={16}>
-            <Form.Item name="delivery_date" label="配送日期" rules={[{ required: true, message: '请选择配送日期' }]} style={{ minWidth: 180 }}>
+        <Form
+          form={editorForm}
+          layout="vertical"
+          scrollToFirstError
+          initialValues={{ delivery_date: dayjs(), lines: [], extra_linen_lines: [], stocktake_lines: roomTypes.map((roomType) => ({ room_type_code: roomType.code, remaining_sets: 0 })) }}
+        >
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '160px minmax(0, 1fr) minmax(0, 1fr)',
+              gap: 12,
+              alignItems: 'start',
+            }}
+          >
+            <Form.Item name="delivery_date" label="配送日期" rules={[{ required: true, message: '请选择配送日期' }]} style={{ marginBottom: 0 }}>
               <DatePicker style={{ width: '100%' }} />
             </Form.Item>
-            <Form.Item name="from_warehouse_id" label="来源仓" rules={[{ required: true, message: '请选择来源仓' }]} style={{ minWidth: 220 }}>
-              <Select options={warehouseOptions} />
+            <Form.Item name="from_warehouse_id" label="来源仓" rules={[{ required: true, message: '来源仓加载失败，请刷新页面后重试' }]} style={{ marginBottom: 0 }}>
+              <Select options={warehouseOptions} disabled />
             </Form.Item>
-            <Form.Item name="to_warehouse_id" label="目标分仓" rules={[{ required: true, message: '请选择目标分仓' }]} style={{ minWidth: 220 }}>
+            <Form.Item name="to_warehouse_id" label="目标分仓" rules={[{ required: true, message: '请选择目标分仓' }]} style={{ marginBottom: 0 }}>
               <Select options={stocktakeWarehouseOptions} />
             </Form.Item>
-          </Space>
-          <Form.Item name="note" label="备注">
-            <Input placeholder="可记录本次配送说明" />
-          </Form.Item>
-          <Form.Item name="dirty_bag_note" label="脏床品袋数备注">
-            <Input placeholder="只做现场备注，不参与库存换算" />
-          </Form.Item>
+          </div>
 
-          <Typography.Title level={5} style={{ marginTop: 8 }}>房型配送明细</Typography.Title>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, marginBottom: 8 }}>
+            <Typography.Title level={5} style={{ margin: 0 }}>房型配送明细</Typography.Title>
+            <Button type="text" icon={<PlusOutlined />} onClick={() => {
+              const current = editorForm.getFieldValue('lines') || []
+              editorForm.setFieldValue('lines', [...current, { room_type_code: undefined, sets: 1 }])
+            }}>
+              添加房型
+            </Button>
+          </div>
           <Form.List name="lines">
-            {(fields, { add, remove }) => (
+            {(fields, { remove }) => (
               <>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(0, 1fr) 156px 28px',
+                    gap: 8,
+                    alignItems: 'center',
+                    marginBottom: 8,
+                    fontWeight: 500,
+                    color: 'rgba(0,0,0,0.88)',
+                  }}
+                >
+                  <div>房型</div>
+                  <div>配送套数</div>
+                  <div />
+                </div>
                 {fields.map((field, index) => (
-                  <Space key={field.key} align="start" style={{ display: 'flex', marginBottom: 12 }}>
+                  <div
+                    key={field.key}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'minmax(0, 1fr) 156px 28px',
+                      gap: 8,
+                      alignItems: 'center',
+                      marginBottom: 12,
+                    }}
+                  >
                     <Form.Item
                       {...field}
                       name={[field.name, 'room_type_code']}
-                      label={index === 0 ? '房型' : ' '}
                       rules={[{ required: true, message: '请选择房型' }]}
-                      style={{ minWidth: 320 }}
+                      style={{ marginBottom: 0 }}
                     >
                       <Select options={roomTypeOptions} placeholder="选择房型" />
                     </Form.Item>
                     <Form.Item
                       {...field}
                       name={[field.name, 'sets']}
-                      label={index === 0 ? '配送套数' : ' '}
                       rules={[{ required: true, message: '请输入套数' }]}
-                      style={{ minWidth: 160 }}
+                      style={{ marginBottom: 0 }}
                     >
                       <InputNumber min={1} precision={0} style={{ width: '100%' }} />
                     </Form.Item>
-                    <Button danger style={{ marginTop: 30 }} onClick={() => remove(field.name)} disabled={fields.length <= 1}>删除</Button>
-                  </Space>
+                    <Button
+                      type="text"
+                      danger
+                      icon={<DeleteOutlined />}
+                      aria-label={`删除第 ${index + 1} 行配送明细`}
+                      onClick={() => remove(field.name)}
+                      disabled={fields.length <= 1}
+                    />
+                  </div>
                 ))}
-                <Button type="dashed" onClick={() => add({ room_type_code: undefined, sets: 1 })} icon={<PlusOutlined />}>
-                  添加房型
-                </Button>
+                {!fields.length ? <Typography.Text type="secondary">可选。不按房型配送时，这里可以留空。</Typography.Text> : null}
+              </>
+            )}
+          </Form.List>
+
+          <Divider />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, marginBottom: 8 }}>
+            <Typography.Title level={5} style={{ margin: 0 }}>备用床品配送</Typography.Title>
+            <Button type="text" icon={<PlusOutlined />} onClick={() => {
+              const current = editorForm.getFieldValue('extra_linen_lines') || []
+              editorForm.setFieldValue('extra_linen_lines', [...current, { linen_type_code: undefined, quantity: 1 }])
+            }}>
+              添加备用床品
+            </Button>
+          </div>
+          <Form.List name="extra_linen_lines">
+            {(fields, { remove }) => (
+              <>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(0, 1fr) 156px 28px',
+                    gap: 8,
+                    alignItems: 'center',
+                    marginBottom: 8,
+                    fontWeight: 500,
+                    color: 'rgba(0,0,0,0.88)',
+                  }}
+                >
+                  <div>床品类型</div>
+                  <div>配送件数</div>
+                  <div />
+                </div>
+                {fields.map((field, index) => (
+                  <div
+                    key={field.key}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'minmax(0, 1fr) 156px 28px',
+                      gap: 8,
+                      alignItems: 'center',
+                      marginBottom: 12,
+                    }}
+                  >
+                    <Form.Item {...field} name={[field.name, 'linen_type_code']} rules={[{ required: true, message: '请选择床品类型' }]} style={{ marginBottom: 0 }}>
+                      <Select options={linenTypeOptions} placeholder="选择床品类型" />
+                    </Form.Item>
+                    <Form.Item {...field} name={[field.name, 'quantity']} rules={[{ required: true, message: '请输入件数' }]} style={{ marginBottom: 0 }}>
+                      <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Button type="text" danger icon={<DeleteOutlined />} aria-label={`删除第 ${index + 1} 行备用床品`} onClick={() => remove(field.name)} />
+                  </div>
+                ))}
+                {!fields.length ? <Typography.Text type="secondary">可选。需要配送备用床品时，再从右上角添加。</Typography.Text> : null}
               </>
             )}
           </Form.List>
@@ -455,39 +777,83 @@ export default function LinenTransfersView() {
           <Form.List name="stocktake_lines">
             {(fields) => (
               <>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(0, 1fr) 156px',
+                    gap: 8,
+                    alignItems: 'center',
+                    marginBottom: 8,
+                    fontWeight: 500,
+                    color: 'rgba(0,0,0,0.88)',
+                  }}
+                >
+                  <div>房型</div>
+                  <div>剩余套数</div>
+                </div>
                 {fields.map((field, index) => (
-                  <Space key={field.key} align="start" style={{ display: 'flex', marginBottom: 12 }}>
+                  <div
+                    key={field.key}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'minmax(0, 1fr) 156px',
+                      gap: 8,
+                      alignItems: 'center',
+                      marginBottom: 12,
+                    }}
+                  >
                     <Form.Item
                       {...field}
                       name={[field.name, 'room_type_code']}
-                      label={index === 0 ? '房型' : ' '}
-                      style={{ minWidth: 320 }}
+                      style={{ marginBottom: 0 }}
                     >
                       <Select options={roomTypeOptions} disabled />
                     </Form.Item>
                     <Form.Item
                       {...field}
                       name={[field.name, 'remaining_sets']}
-                      label={index === 0 ? '剩余套数' : ' '}
                       rules={[{ required: true, message: '请输入剩余套数' }]}
-                      style={{ minWidth: 160 }}
+                      style={{ marginBottom: 0 }}
                     >
                       <InputNumber min={0} precision={0} style={{ width: '100%' }} />
                     </Form.Item>
-                  </Space>
+                  </div>
                 ))}
               </>
             )}
           </Form.List>
-        </Form>
-      </Modal>
 
-      <Modal
+          <Divider />
+          <Form.Item name="dirty_bag_note" label="脏床品袋数备注">
+            <Input placeholder="只做现场备注，不参与库存换算" />
+          </Form.Item>
+          <Form.Item name="note" label="备注">
+            <Input placeholder="可记录本次配送说明" />
+          </Form.Item>
+        </Form>
+      </Drawer>
+
+      <Drawer
         open={detailOpen}
         title="配送单详情"
-        width={960}
-        footer={<Button onClick={() => setDetailOpen(false)}>关闭</Button>}
-        onCancel={() => setDetailOpen(false)}
+        placement="right"
+        width={550}
+        extra={
+          <Space>
+            <Button
+              type="primary"
+              disabled={!detail || detail.status !== 'completed'}
+              onClick={() => {
+                if (!detail?.id) return
+                void openEdit(detail.id).catch((e) => message.error(e?.message || '加载编辑数据失败'))
+              }}
+            >
+              编辑
+            </Button>
+            <Button onClick={() => setDetailOpen(false)}>关闭</Button>
+          </Space>
+        }
+        onClose={() => setDetailOpen(false)}
       >
         {detailLoading ? (
           <Typography.Text>加载中...</Typography.Text>
@@ -525,6 +891,23 @@ export default function LinenTransfersView() {
                 </Card>
               ))}
             </Space>
+
+            <Divider />
+            <Typography.Title level={5}>备用床品配送</Typography.Title>
+            {(detail.extra_lines || []).length ? (
+              <Table
+                size="small"
+                rowKey={(row) => row.id}
+                columns={[
+                  { title: '床品类型', dataIndex: 'linen_type_name' },
+                  { title: '配送件数', dataIndex: 'quantity', width: 120 },
+                ]}
+                dataSource={detail.extra_lines || []}
+                pagination={false}
+              />
+            ) : (
+              <Typography.Text type="secondary">本单没有额外配送备用床品</Typography.Text>
+            )}
 
             <Divider />
             <Typography.Title level={5}>本次盘点</Typography.Title>
@@ -566,7 +949,7 @@ export default function LinenTransfersView() {
             />
           </>
         )}
-      </Modal>
+      </Drawer>
     </>
   )
 }

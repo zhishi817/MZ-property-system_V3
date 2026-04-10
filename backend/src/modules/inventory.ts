@@ -24,6 +24,44 @@ function httpError(statusCode: number, message: string) {
   return err
 }
 
+function remapInventoryPgError(error: any) {
+  const code = String(error?.code || '')
+  if (code === '55P03' || code === '57014') return httpError(409, '库存正在被其他操作占用，请稍后重试')
+  return error
+}
+
+function requestTraceId(req: any) {
+  return String(req?.traceId || req?.headers?.['x-trace-id'] || req?.headers?.['x-request-id'] || '').trim()
+}
+
+function withTracePayload(req: any, payload: Record<string, any>) {
+  const traceId = requestTraceId(req)
+  return traceId ? { ...payload, trace_id: traceId } : payload
+}
+
+function inventoryLog(req: any, level: 'log' | 'warn' | 'error', event: string, payload?: Record<string, any>) {
+  const traceId = requestTraceId(req)
+  const body = {
+    trace_id: traceId || undefined,
+    event,
+    ...(payload || {}),
+  }
+  try {
+    console[level](`[inventory] ${JSON.stringify(body)}`)
+  } catch {
+    console[level](`[inventory] event=${event} trace_id=${traceId}`)
+  }
+}
+
+function sendInventoryError(req: any, res: any, error: any) {
+  const remapped = remapInventoryPgError(error)
+  const statusCode = Number(remapped?.statusCode || remapped?.status || 500)
+  const code = Number.isFinite(statusCode) && statusCode >= 400 && statusCode <= 599 ? statusCode : 500
+  const message = String(remapped?.message || 'failed')
+  inventoryLog(req, code >= 500 ? 'error' : 'warn', 'request_failed', { status: code, message })
+  return res.status(code).json(withTracePayload(req, { message }))
+}
+
 function randomSuffix(len: number) {
   const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
   let s = ''
@@ -366,10 +404,12 @@ async function syncAllConsumableInventoryItems(executor?: any) {
 }
 
 let inventorySchemaEnsured = false
+let inventorySchemaEnsurePromise: Promise<void> | null = null
 let dailyInventorySyncEnsured = false
 let consumableInventorySyncEnsured = false
 let consumablePriceListSeedEnsured = false
 let otherInventorySyncEnsured = false
+let inventoryWarehousesFirstRequestLogged = false
 
 async function ensureDailyInventoryItemsSynced() {
   if (dailyInventorySyncEnsured) return
@@ -422,8 +462,11 @@ async function ensureOtherInventoryItemsSynced() {
 async function ensureInventorySchema() {
   if (!pgPool) return
   if (inventorySchemaEnsured) return
-  inventorySchemaEnsured = true
-  try {
+  if (inventorySchemaEnsurePromise) {
+    await inventorySchemaEnsurePromise
+    return
+  }
+  inventorySchemaEnsurePromise = (async () => {
     await pgPool.query(`CREATE TABLE IF NOT EXISTS warehouses (
       id text PRIMARY KEY,
       code text NOT NULL,
@@ -719,6 +762,45 @@ async function ensureInventorySchema() {
       END IF;
     END $$;`)
 
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS inventory_transfer_records (
+      id text PRIMARY KEY,
+      from_warehouse_id text NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+      to_warehouse_id text NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+      status text NOT NULL DEFAULT 'completed',
+      note text,
+      created_by text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz,
+      cancelled_by text,
+      cancelled_at timestamptz
+    );`)
+    await pgPool.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'inventory_transfer_records_status_check') THEN
+        ALTER TABLE inventory_transfer_records
+          ADD CONSTRAINT inventory_transfer_records_status_check
+          CHECK (status IN ('completed','cancelled'));
+      END IF;
+    END $$;`)
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_transfer_records_created_at ON inventory_transfer_records(created_at DESC);')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_transfer_records_from_wh ON inventory_transfer_records(from_warehouse_id);')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_transfer_records_to_wh ON inventory_transfer_records(to_warehouse_id);')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_transfer_records_status ON inventory_transfer_records(status);')
+
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS inventory_transfer_record_lines (
+      id text PRIMARY KEY,
+      record_id text NOT NULL REFERENCES inventory_transfer_records(id) ON DELETE CASCADE,
+      item_id text NOT NULL REFERENCES inventory_items(id) ON DELETE RESTRICT,
+      quantity integer NOT NULL DEFAULT 0
+    );`)
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_transfer_record_lines_record ON inventory_transfer_record_lines(record_id);')
+    await pgPool.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'inventory_transfer_record_lines_unique_item') THEN
+        ALTER TABLE inventory_transfer_record_lines
+          ADD CONSTRAINT inventory_transfer_record_lines_unique_item
+          UNIQUE (record_id, item_id);
+      END IF;
+    END $$;`)
+
     await pgPool.query(`CREATE TABLE IF NOT EXISTS stock_change_requests (
       id text PRIMARY KEY,
       warehouse_id text NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
@@ -872,6 +954,22 @@ async function ensureInventorySchema() {
       END IF;
     END $$;`)
 
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS linen_delivery_record_extra_lines (
+      id text PRIMARY KEY,
+      record_id text NOT NULL REFERENCES linen_delivery_records(id) ON DELETE CASCADE,
+      linen_type_code text NOT NULL REFERENCES inventory_linen_types(code) ON DELETE RESTRICT,
+      linen_type_name text,
+      quantity integer NOT NULL DEFAULT 0
+    );`)
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_linen_delivery_record_extra_lines_record ON linen_delivery_record_extra_lines(record_id);')
+    await pgPool.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'linen_delivery_record_extra_lines_unique_type') THEN
+        ALTER TABLE linen_delivery_record_extra_lines
+          ADD CONSTRAINT linen_delivery_record_extra_lines_unique_type
+          UNIQUE (record_id, linen_type_code);
+      END IF;
+    END $$;`)
+
     await pgPool.query(`CREATE TABLE IF NOT EXISTS linen_stocktake_records (
       id text PRIMARY KEY,
       warehouse_id text NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
@@ -989,10 +1087,22 @@ async function ensureInventorySchema() {
         WHEN id = 'wh.my80' THEN COALESCE(linen_capacity_sets, 100)
         ELSE linen_capacity_sets
       END;`)
-  } catch (e) {
+    inventorySchemaEnsured = true
+  })().catch((e) => {
     inventorySchemaEnsured = false
+    inventorySchemaEnsurePromise = null
     throw e
+  })
+  try {
+    await inventorySchemaEnsurePromise
+  } finally {
+    if (inventorySchemaEnsured) inventorySchemaEnsurePromise = null
   }
+}
+
+export async function warmupInventoryModule() {
+  if (!(hasPg && pgPool)) return
+  await ensureInventorySchema()
 }
 
 async function pickSupplierIdForRegion(region: string | null) {
@@ -1209,6 +1319,7 @@ async function applyStockDeltaInTx(client: any, input: {
   actor_id?: string | null
   note?: string | null
   photo_url?: string | null
+  return_stock_row?: boolean
 }) {
   await ensureWarehouseStockRow(client, input.warehouse_id, input.item_id)
   const lock = await client.query(
@@ -1225,7 +1336,21 @@ async function applyStockDeltaInTx(client: any, input: {
   const nextQty = Number(row.quantity || 0) + Number(delta || 0)
   if (nextQty < 0) return { ok: false as const, code: 409 as const, message: 'insufficient stock' }
 
-  await client.query(`UPDATE warehouse_stocks SET quantity = $1, updated_at = now() WHERE id = $2`, [nextQty, row.id])
+  const shouldReturnStockRow = input.return_stock_row !== false
+  const updated = shouldReturnStockRow
+    ? await client.query(
+      `UPDATE warehouse_stocks
+       SET quantity = $1, updated_at = now()
+       WHERE id = $2
+       RETURNING *`,
+      [nextQty, row.id],
+    )
+    : await client.query(
+      `UPDATE warehouse_stocks
+       SET quantity = $1, updated_at = now()
+       WHERE id = $2`,
+      [nextQty, row.id],
+    )
 
   const moveId = uuidv4()
   await client.query(
@@ -1247,8 +1372,7 @@ async function applyStockDeltaInTx(client: any, input: {
     ],
   )
 
-  const after = await client.query(`SELECT * FROM warehouse_stocks WHERE id = $1`, [row.id])
-  return { ok: true as const, stock: after.rows?.[0] || null, movement_id: moveId }
+  return { ok: true as const, stock: shouldReturnStockRow ? (updated.rows?.[0] || null) : null, movement_id: moveId }
 }
 
 type LinenDeliveryInputLine = {
@@ -1259,6 +1383,11 @@ type LinenDeliveryInputLine = {
 type LinenStocktakeInputLine = {
   room_type_code: string
   remaining_sets: number
+}
+
+type LinenDeliveryExtraInputLine = {
+  linen_type_code: string
+  quantity: number
 }
 
 type ExpandedLinenDeliveryLine = {
@@ -1273,6 +1402,93 @@ type ExpandedLinenDeliveryLine = {
     quantity_per_set: number
     quantity_total: number
   }>
+}
+
+type ExpandedLinenExtraLine = {
+  linen_type_code: string
+  linen_type_name: string
+  quantity: number
+  breakdown: Array<{
+    linen_type_code: string
+    item_id: string
+    item_name: string
+    item_sku: string
+    quantity_per_set: number
+    quantity_total: number
+  }>
+}
+
+function normalizeRoomTypeLookupKey(value?: string | null) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^房型[:：\s-]*/g, '')
+    .replace(/[（(].*?[）)]/g, '')
+    .replace(/[\s_-]+/g, '')
+}
+
+function buildRoomTypeAliasKeys(row: { code?: string | null; name?: string | null; bedrooms?: number | null; bathrooms?: number | null }) {
+  const keys = new Set<string>()
+  const code = String(row.code || '').trim()
+  const name = String(row.name || '').trim()
+  const bedrooms = Number(row.bedrooms ?? 0)
+  const bathrooms = Number(row.bathrooms ?? 0)
+
+  for (const value of [code, name]) {
+    const normalized = normalizeRoomTypeLookupKey(value)
+    if (normalized) keys.add(normalized)
+  }
+  if (bedrooms > 0 || bathrooms > 0) {
+    keys.add(normalizeRoomTypeLookupKey(`${bedrooms}b${bathrooms}b`))
+    keys.add(normalizeRoomTypeLookupKey(`${bedrooms}房${bathrooms}卫`))
+    keys.add(normalizeRoomTypeLookupKey(`房型${bedrooms}房${bathrooms}卫`))
+  }
+  if (name) {
+    keys.add(normalizeRoomTypeLookupKey(name.replace(/^房型/, '')))
+    keys.add(normalizeRoomTypeLookupKey(`房型${name}`))
+  }
+  return Array.from(keys).filter(Boolean)
+}
+
+function resolveRoomTypeCode(
+  inputCode: string,
+  roomTypeRows: Array<{ code?: string | null; name?: string | null; bedrooms?: number | null; bathrooms?: number | null }>,
+  reqMap?: Map<string, Map<string, number>>,
+) {
+  const rows = roomTypeRows || []
+  const exact = rows.find((row) => String(row.code || '') === inputCode) || null
+  const lookupKeys = new Set<string>(
+    [inputCode, exact?.name].map((value) => normalizeRoomTypeLookupKey(value)).filter(Boolean),
+  )
+  const aliasCandidates = new Set<string>()
+  for (const row of rows) {
+    const aliases = buildRoomTypeAliasKeys(row)
+    if (aliases.some((alias) => lookupKeys.has(alias))) aliasCandidates.add(String(row.code || '').trim())
+  }
+  const inputCodeExists = rows.some((row) => String(row.code || '').trim() === String(inputCode || '').trim())
+  const candidateCodes = Array.from(
+    new Set([
+      ...Array.from(aliasCandidates),
+      ...(inputCodeExists ? [String(inputCode || '').trim()] : []),
+      ...(exact ? [String(exact.code || '').trim()] : []),
+      String(inputCode || '').trim(),
+    ]),
+  ).filter(Boolean)
+  const preferredCode = candidateCodes.find((code) => {
+    if (!reqMap) return false
+    const reqs = reqMap.get(code)
+    return !!reqs && reqs.size > 0
+  })
+  const resolvedCode = preferredCode || candidateCodes[0] || ''
+  const resolvedRow =
+    rows.find((row) => String(row.code || '').trim() === resolvedCode)
+    || exact
+    || rows.find((row) => buildRoomTypeAliasKeys(row).some((alias) => lookupKeys.has(alias)))
+    || null
+  return {
+    code: resolvedCode,
+    name: String(resolvedRow?.name || exact?.name || inputCode || ''),
+  }
 }
 
 async function expandLinenDeliveryInputLines(client: any, lines: LinenDeliveryInputLine[]): Promise<ExpandedLinenDeliveryLine[]> {
@@ -1292,7 +1508,7 @@ async function expandLinenDeliveryInputLines(client: any, lines: LinenDeliveryIn
 
   const [roomTypesRes, reqRows, itemsRes] = await Promise.all([
     client.query(
-      `SELECT code, name
+      `SELECT code, name, bedrooms, bathrooms
        FROM inventory_room_types`,
     ),
     client.query(`SELECT room_type_code, linen_type_code, quantity FROM inventory_room_type_requirements`),
@@ -1303,7 +1519,12 @@ async function expandLinenDeliveryInputLines(client: any, lines: LinenDeliveryIn
     ),
   ])
 
-  const roomTypeNameMap = new Map<string, string>((roomTypesRes.rows || []).map((row: any) => [String(row.code || ''), String(row.name || row.code || '')]))
+  const roomTypeRows = (roomTypesRes.rows || []).map((row: any) => ({
+    code: String(row.code || ''),
+    name: String(row.name || row.code || ''),
+    bedrooms: row.bedrooms == null ? null : Number(row.bedrooms),
+    bathrooms: row.bathrooms == null ? null : Number(row.bathrooms),
+  }))
   const reqMap = new Map<string, Map<string, number>>()
   for (const row of reqRows.rows || []) {
     const roomTypeCode = String(row.room_type_code || '')
@@ -1321,9 +1542,11 @@ async function expandLinenDeliveryInputLines(client: any, lines: LinenDeliveryIn
   }
 
   return normalized.map((line) => {
-    const roomTypeName = String(roomTypeNameMap.get(line.room_type_code) || '')
+    const resolvedRoomType = resolveRoomTypeCode(line.room_type_code, roomTypeRows, reqMap)
+    const roomTypeCode = String(resolvedRoomType.code || '').trim()
+    const roomTypeName = String(resolvedRoomType.name || '')
     if (!roomTypeName) throw new Error(`未知房型：${line.room_type_code}`)
-    const reqs = reqMap.get(line.room_type_code)
+    const reqs = reqMap.get(roomTypeCode)
     if (!reqs || !reqs.size) throw new Error(`房型 ${roomTypeName} 未配置床品占用清单`)
     const breakdown = Array.from(reqs.entries()).map(([linenTypeCode, quantity]) => {
       const item = itemByLinenType.get(String(linenTypeCode))
@@ -1339,7 +1562,7 @@ async function expandLinenDeliveryInputLines(client: any, lines: LinenDeliveryIn
     }).filter((row) => row.quantity_per_set > 0 && row.quantity_total > 0)
     if (!breakdown.length) throw new Error(`房型 ${roomTypeName} 未配置有效床品占用清单`)
     return {
-      room_type_code: line.room_type_code,
+      room_type_code: roomTypeCode,
       room_type_name: roomTypeName,
       sets: line.sets,
       breakdown,
@@ -1355,38 +1578,108 @@ async function normalizeLinenStocktakeLines(client: any, lines: LinenStocktakeIn
   if (!normalized.length) throw new Error('至少需要填写一条盘点明细')
 
   const roomTypesRes = await client.query(
-    `SELECT code, name
+    `SELECT code, name, bedrooms, bathrooms
      FROM inventory_room_types
      WHERE active = true
      ORDER BY sort_order ASC, code ASC`,
   )
-  const roomTypeNameMap = new Map<string, string>((roomTypesRes.rows || []).map((row: any) => [String(row.code || ''), String(row.name || row.code || '')]))
+  const roomTypeRows = (roomTypesRes.rows || []).map((row: any) => ({
+    code: String(row.code || ''),
+    name: String(row.name || row.code || ''),
+    bedrooms: row.bedrooms == null ? null : Number(row.bedrooms),
+    bathrooms: row.bathrooms == null ? null : Number(row.bathrooms),
+  }))
   const seen = new Set<string>()
   for (const line of normalized) {
     if (!line.room_type_code) throw new Error('盘点明细缺少房型')
-    if (!roomTypeNameMap.has(line.room_type_code)) throw new Error(`未知房型：${line.room_type_code}`)
+    const resolvedRoomType = resolveRoomTypeCode(line.room_type_code, roomTypeRows)
+    if (!resolvedRoomType.code) throw new Error(`未知房型：${line.room_type_code}`)
     if (!Number.isInteger(line.remaining_sets) || line.remaining_sets < 0) throw new Error('盘点剩余套数不能小于 0')
-    if (seen.has(line.room_type_code)) throw new Error('同一盘点单内房型不能重复')
-    seen.add(line.room_type_code)
+    if (seen.has(resolvedRoomType.code)) throw new Error('同一盘点单内房型不能重复')
+    seen.add(resolvedRoomType.code)
+    line.room_type_code = resolvedRoomType.code
   }
   return normalized.map((line) => ({
     room_type_code: line.room_type_code,
-    room_type_name: String(roomTypeNameMap.get(line.room_type_code) || line.room_type_code),
+    room_type_name: String(resolveRoomTypeCode(line.room_type_code, roomTypeRows).name || line.room_type_code),
     remaining_sets: line.remaining_sets,
   }))
 }
 
-async function applyLinenDeliveryRecordStockInTx(client: any, input: {
+async function expandLinenDeliveryExtraInputLines(client: any, lines: LinenDeliveryExtraInputLine[]): Promise<ExpandedLinenExtraLine[]> {
+  const normalized = (lines || []).map((line) => ({
+    linen_type_code: String(line?.linen_type_code || '').trim(),
+    quantity: Number(line?.quantity || 0),
+  })).filter((line) => line.linen_type_code || line.quantity)
+
+  if (!normalized.length) return []
+
+  const seen = new Set<string>()
+  for (const line of normalized) {
+    if (!line.linen_type_code) throw new Error('备用床品类型不能为空')
+    if (!Number.isInteger(line.quantity) || line.quantity < 1) throw new Error('备用床品数量必须大于 0')
+    if (seen.has(line.linen_type_code)) throw new Error('同一配送单内备用床品类型不能重复')
+    seen.add(line.linen_type_code)
+  }
+
+  const [linenTypeRowsRes, itemsRes] = await Promise.all([
+    client.query(
+      `SELECT code, name
+       FROM inventory_linen_types
+       WHERE active = true
+       ORDER BY sort_order ASC, code ASC`,
+    ),
+    client.query(
+      `SELECT id, name, sku, linen_type_code
+       FROM inventory_items
+       WHERE category = 'linen' AND active = true`,
+    ),
+  ])
+
+  const linenTypeMap = new Map<string, { code: string; name: string }>()
+  for (const row of linenTypeRowsRes.rows || []) linenTypeMap.set(String(row.code || ''), { code: String(row.code || ''), name: String(row.name || row.code || '') })
+  const itemByLinenType = new Map<string, any>()
+  for (const row of itemsRes.rows || []) {
+    const code = String(row.linen_type_code || '')
+    if (!code || itemByLinenType.has(code)) continue
+    itemByLinenType.set(code, row)
+  }
+
+  return normalized.map((line) => {
+    const linenType = linenTypeMap.get(line.linen_type_code)
+    if (!linenType) throw new Error(`未知床品类型：${line.linen_type_code}`)
+    const item = itemByLinenType.get(line.linen_type_code)
+    if (!item?.id) throw new Error(`床品类型 ${line.linen_type_code} 未配置库存物料`)
+    return {
+      linen_type_code: line.linen_type_code,
+      linen_type_name: linenType.name,
+      quantity: line.quantity,
+      breakdown: [{
+        linen_type_code: line.linen_type_code,
+        item_id: String(item.id),
+        item_name: String(item.name || linenType.name),
+        item_sku: String(item.sku || ''),
+        quantity_per_set: 1,
+        quantity_total: line.quantity,
+      }],
+    }
+  })
+}
+
+async function applyLinenDeliveryBreakdownsInTx(client: any, input: {
   record_id: string
   from_warehouse_id: string
   to_warehouse_id: string
   note?: string | null
   actor_id?: string | null
-  lines: ExpandedLinenDeliveryLine[]
+  breakdowns: Array<Array<{
+    item_id: string
+    quantity_total: number
+  }>>
   direction: 'apply' | 'revert'
 }) {
-  for (const line of input.lines) {
-    for (const item of line.breakdown) {
+  for (const breakdown of input.breakdowns || []) {
+    for (const item of breakdown || []) {
       const fromType = input.direction === 'apply' ? 'out' : 'in'
       const toType = input.direction === 'apply' ? 'in' : 'out'
       const out = await applyStockDeltaInTx(client, {
@@ -1399,6 +1692,7 @@ async function applyLinenDeliveryRecordStockInTx(client: any, input: {
         ref_id: input.record_id,
         actor_id: input.actor_id || null,
         note: input.note || null,
+        return_stock_row: false,
       })
       if (!out.ok) return out
       const inn = await applyStockDeltaInTx(client, {
@@ -1411,11 +1705,27 @@ async function applyLinenDeliveryRecordStockInTx(client: any, input: {
         ref_id: input.record_id,
         actor_id: input.actor_id || null,
         note: input.note || null,
+        return_stock_row: false,
       })
       if (!inn.ok) return inn
     }
   }
   return { ok: true as const }
+}
+
+async function applyLinenDeliveryRecordStockInTx(client: any, input: {
+  record_id: string
+  from_warehouse_id: string
+  to_warehouse_id: string
+  note?: string | null
+  actor_id?: string | null
+  lines: ExpandedLinenDeliveryLine[]
+  direction: 'apply' | 'revert'
+}) {
+  return applyLinenDeliveryBreakdownsInTx(client, {
+    ...input,
+    breakdowns: (input.lines || []).map((line) => line.breakdown || []),
+  })
 }
 
 async function revertLinenDeliveryRecordStockByRefInTx(client: any, input: {
@@ -1460,6 +1770,7 @@ async function revertLinenDeliveryRecordStockByRefInTx(client: any, input: {
       ref_id: input.record_id,
       actor_id: input.actor_id || null,
       note: input.note || null,
+      return_stock_row: false,
     })
     if (!reversed.ok) return reversed
   }
@@ -1523,6 +1834,18 @@ async function loadLinenDeliveryRecordDetail(client: any, id: string) {
     [id],
   )
   const stocktake = stocktakeRes.rows?.[0] || null
+  const extraLinesRes = await client.query(
+    `SELECT el.id,
+            el.record_id,
+            el.linen_type_code,
+            COALESCE(el.linen_type_name, lt.name, el.linen_type_code) AS linen_type_name,
+            el.quantity
+     FROM linen_delivery_record_extra_lines el
+     LEFT JOIN inventory_linen_types lt ON lt.code = el.linen_type_code
+     WHERE el.record_id = $1
+     ORDER BY COALESCE(lt.sort_order, 9999) ASC, el.linen_type_code ASC`,
+    [id],
+  )
   const stocktakeLinesRes = stocktake?.id
     ? await client.query(
       `SELECT sl.id,
@@ -1574,12 +1897,41 @@ async function loadLinenDeliveryRecordDetail(client: any, id: string) {
       breakdown,
     }
   })
+  const extra_lines = (extraLinesRes.rows || []).map((line: any) => {
+    const breakdown = [{
+      linen_type_code: String(line.linen_type_code || ''),
+      item_id: `item.linen_type.${String(line.linen_type_code || '')}`,
+      item_name: String(line.linen_type_name || line.linen_type_code || ''),
+      item_sku: '',
+      quantity_per_set: 1,
+      quantity_total: Number(line.quantity || 0),
+    }]
+    const key = String(line.linen_type_code || '')
+    const current = breakdownTotals.get(key)
+    if (current) current.quantity_total += Number(line.quantity || 0)
+    else breakdownTotals.set(key, {
+      linen_type_code: key,
+      item_id: `item.linen_type.${key}`,
+      item_name: String(line.linen_type_name || line.linen_type_code || ''),
+      item_sku: '',
+      quantity_total: Number(line.quantity || 0),
+    })
+    return {
+      id: String(line.id || ''),
+      record_id: String(line.record_id || ''),
+      linen_type_code: key,
+      linen_type_name: String(line.linen_type_name || line.linen_type_code || ''),
+      quantity: Number(line.quantity || 0),
+      breakdown,
+    }
+  })
   return {
     ...record,
     total_sets: Number(record.total_sets || 0),
     room_type_count: Number(record.room_type_count || 0),
     dirty_bag_note: String(stocktake?.dirty_bag_note || ''),
     lines,
+    extra_lines,
     stocktake: stocktake ? {
       ...stocktake,
       lines: (stocktakeLinesRes.rows || []).map((line: any) => ({
@@ -1591,6 +1943,36 @@ async function loadLinenDeliveryRecordDetail(client: any, id: string) {
       })),
     } : null,
     breakdown_summary: Array.from(breakdownTotals.values()).sort((a, b) => a.item_name.localeCompare(b.item_name, 'zh-Hans-CN')),
+  }
+}
+
+async function loadLinenDeliveryRecordSummary(client: any, id: string) {
+  const res = await client.query(
+    `SELECT id, delivery_date, status, created_at, updated_at
+     FROM linen_delivery_records
+     WHERE id = $1
+     LIMIT 1`,
+    [id],
+  )
+  const row = res.rows?.[0] || null
+  if (!row) return null
+  return {
+    id: String(row.id || ''),
+    delivery_date: String(row.delivery_date || ''),
+    status: String(row.status || ''),
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+  }
+}
+
+function buildDeliverySuccessResponse(row: any, extra?: Record<string, any>) {
+  return {
+    id: String(row?.id || ''),
+    delivery_date: String(row?.delivery_date || ''),
+    status: String(row?.status || ''),
+    created_at: row?.created_at || null,
+    updated_at: row?.updated_at || null,
+    ...(extra || {}),
   }
 }
 
@@ -1717,6 +2099,7 @@ function buildLinenDeliveryRecordFingerprint(input: {
   to_warehouse_id: string
   note?: string | null
   lines: Array<{ room_type_code: string; sets: number }>
+  extra_linen_lines?: Array<{ linen_type_code: string; quantity: number }>
 }) {
   const lines = [...(input.lines || [])]
     .map((line) => ({
@@ -1728,6 +2111,16 @@ function buildLinenDeliveryRecordFingerprint(input: {
       if (byCode !== 0) return byCode
       return a.sets - b.sets
     })
+  const extra_linen_lines = [...(input.extra_linen_lines || [])]
+    .map((line) => ({
+      linen_type_code: String(line.linen_type_code || '').trim(),
+      quantity: Number(line.quantity || 0),
+    }))
+    .sort((a, b) => {
+      const byCode = a.linen_type_code.localeCompare(b.linen_type_code)
+      if (byCode !== 0) return byCode
+      return a.quantity - b.quantity
+    })
   return JSON.stringify({
     actor_id: String(input.actor_id || ''),
     delivery_date: String(input.delivery_date || ''),
@@ -1735,14 +2128,21 @@ function buildLinenDeliveryRecordFingerprint(input: {
     to_warehouse_id: String(input.to_warehouse_id || ''),
     note: String(input.note || '').trim(),
     lines,
+    extra_linen_lines,
   })
 }
 
 router.get('/warehouses', requirePerm('inventory.view'), async (req, res) => {
+  const startedAt = Date.now()
   try {
     if (hasPg && pgPool) {
       await ensureInventorySchema()
       const rows = await pgPool.query(`SELECT id, code, name, linen_capacity_sets, stocktake_enabled, active FROM warehouses ORDER BY code ASC`)
+      const durationMs = Date.now() - startedAt
+      if (!inventoryWarehousesFirstRequestLogged) {
+        inventoryWarehousesFirstRequestLogged = true
+        inventoryLog(req, durationMs > 500 ? 'error' : 'log', 'warehouses_first_request', { duration_ms: durationMs, target_ms: 500 })
+      }
       return res.json(rows.rows || [])
     }
     return res.json([
@@ -1752,7 +2152,7 @@ router.get('/warehouses', requirePerm('inventory.view'), async (req, res) => {
       { id: 'wh.my80', code: 'MY80', name: 'My80', linen_capacity_sets: 100, stocktake_enabled: true, active: true },
     ])
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'failed' })
+    return sendInventoryError(req, res, e)
   }
 })
 
@@ -2090,6 +2490,23 @@ router.patch('/consumable-items-prices/:id', requirePerm('inventory.po.manage'),
   } catch (e: any) {
     const status = Number((e as any)?.statusCode || 500)
     return res.status(status).json({ message: (e as any)?.message || 'failed' })
+  }
+})
+
+router.delete('/consumable-items-prices/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+  const id = String(req.params.id || '').trim()
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureConsumablePriceListSeeded()
+    await ensureInventorySchema()
+    await pgRunInTransaction(async (client) => {
+      await client.query(`DELETE FROM consumable_items_price_list WHERE id = $1`, [id])
+      await client.query(`DELETE FROM inventory_items WHERE id = $1`, [toConsumableInventoryItemId(id)])
+      await client.query(`DELETE FROM warehouse_stocks WHERE item_id = $1`, [toConsumableInventoryItemId(id)])
+    })
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
   }
 })
 
@@ -3040,6 +3457,210 @@ const transferRecordCreateSchema = z.object({
   })).min(1),
 })
 
+const transferRecordUpdateSchema = transferRecordCreateSchema
+
+function normalizeTransferRecordLines(lines: Array<{ item_id: string; quantity: number }>) {
+  const normalized = Array.from(
+    (lines || []).reduce((map, line) => {
+      const itemId = String(line?.item_id || '').trim()
+      const quantity = Number(line?.quantity || 0)
+      if (!itemId || quantity < 1) return map
+      map.set(itemId, (map.get(itemId) || 0) + quantity)
+      return map
+    }, new Map<string, number>()),
+  ).map(([item_id, quantity]) => ({ item_id, quantity }))
+  return normalized
+}
+
+async function loadLegacyTransferRecordDetail(client: any, id: string) {
+  const rs = await client.query(
+    `SELECT
+       m.ref_id,
+       m.warehouse_id,
+       m.item_id,
+       m.type,
+       m.quantity,
+       m.note,
+       m.created_at,
+       i.name AS item_name,
+       i.sku AS item_sku,
+       i.category AS item_category,
+       w.code AS warehouse_code,
+       w.name AS warehouse_name
+     FROM stock_movements m
+     JOIN inventory_items i ON i.id = m.item_id
+     JOIN warehouses w ON w.id = m.warehouse_id
+     WHERE m.ref_type = 'transfer'
+       AND m.ref_id = $1
+       AND COALESCE(m.reason, 'transfer') = 'transfer'
+     ORDER BY m.created_at DESC, m.item_id ASC`,
+    [id],
+  )
+  if (!rs.rows?.length) return null
+  const detail: any = {
+    id,
+    status: 'completed',
+    created_at: rs.rows[0]?.created_at || null,
+    updated_at: null,
+    cancelled_at: null,
+    cancelled_by: null,
+    note: rs.rows.find((row: any) => row.note)?.note || null,
+    from_warehouse_id: '',
+    from_warehouse_code: '',
+    from_warehouse_name: '',
+    to_warehouse_id: '',
+    to_warehouse_code: '',
+    to_warehouse_name: '',
+    lines: [],
+  }
+  for (const row of rs.rows || []) {
+    if (!detail.created_at || String(detail.created_at) < String(row.created_at || '')) detail.created_at = row.created_at
+    if (row.type === 'out') {
+      detail.from_warehouse_id = String(row.warehouse_id || '')
+      detail.from_warehouse_code = String(row.warehouse_code || '')
+      detail.from_warehouse_name = String(row.warehouse_name || '')
+    }
+    if (row.type === 'in') {
+      detail.to_warehouse_id = String(row.warehouse_id || '')
+      detail.to_warehouse_code = String(row.warehouse_code || '')
+      detail.to_warehouse_name = String(row.warehouse_name || '')
+    }
+    let line = detail.lines.find((item: any) => String(item.item_id) === String(row.item_id || ''))
+    if (!line) {
+      line = {
+        item_id: String(row.item_id || ''),
+        item_name: String(row.item_name || ''),
+        item_sku: String(row.item_sku || ''),
+        item_category: String(row.item_category || ''),
+        quantity: 0,
+      }
+      detail.lines.push(line)
+    }
+    if (row.type === 'out') line.quantity = Number(row.quantity || 0)
+  }
+  detail.item_count = Number(detail.lines.length)
+  detail.quantity_total = Number(detail.lines.reduce((sum: number, line: any) => sum + Number(line.quantity || 0), 0))
+  return detail
+}
+
+async function materializeLegacyTransferRecordInTx(client: any, id: string) {
+  const existing = await client.query(`SELECT id FROM inventory_transfer_records WHERE id = $1 LIMIT 1`, [id])
+  if (existing.rows?.[0]?.id) return
+  const legacy = await loadLegacyTransferRecordDetail(client, id)
+  if (!legacy) return
+  await client.query(
+    `INSERT INTO inventory_transfer_records (id, from_warehouse_id, to_warehouse_id, status, note, created_at)
+     VALUES ($1,$2,$3,'completed',$4,$5)
+     ON CONFLICT (id) DO NOTHING`,
+    [id, legacy.from_warehouse_id, legacy.to_warehouse_id, legacy.note || null, legacy.created_at || new Date().toISOString()],
+  )
+  for (const line of legacy.lines || []) {
+    await client.query(
+      `INSERT INTO inventory_transfer_record_lines (id, record_id, item_id, quantity)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (record_id, item_id) DO NOTHING`,
+      [uuidv4(), id, String(line.item_id || ''), Number(line.quantity || 0)],
+    )
+  }
+}
+
+async function loadTransferRecordDetail(client: any, id: string) {
+  const metaRes = await client.query(
+    `SELECT tr.*,
+            fw.code AS from_warehouse_code,
+            fw.name AS from_warehouse_name,
+            tw.code AS to_warehouse_code,
+            tw.name AS to_warehouse_name
+     FROM inventory_transfer_records tr
+     JOIN warehouses fw ON fw.id = tr.from_warehouse_id
+     JOIN warehouses tw ON tw.id = tr.to_warehouse_id
+     WHERE tr.id = $1
+     LIMIT 1`,
+    [id],
+  )
+  const meta = metaRes.rows?.[0] || null
+  if (!meta) return loadLegacyTransferRecordDetail(client, id)
+
+  const linesRes = await client.query(
+    `SELECT l.item_id, l.quantity, i.name AS item_name, i.sku AS item_sku, i.category AS item_category
+     FROM inventory_transfer_record_lines l
+     JOIN inventory_items i ON i.id = l.item_id
+     WHERE l.record_id = $1
+     ORDER BY i.name ASC, l.item_id ASC`,
+    [id],
+  )
+  const lines = (linesRes.rows || []).map((row: any) => ({
+    item_id: String(row.item_id || ''),
+    item_name: String(row.item_name || ''),
+    item_sku: String(row.item_sku || ''),
+    item_category: String(row.item_category || ''),
+    quantity: Number(row.quantity || 0),
+  }))
+  return {
+    id: String(meta.id || ''),
+    created_at: meta.created_at || null,
+    updated_at: meta.updated_at || null,
+    status: String(meta.status || 'completed'),
+    note: meta.note || null,
+    cancelled_by: meta.cancelled_by || null,
+    cancelled_at: meta.cancelled_at || null,
+    from_warehouse_id: String(meta.from_warehouse_id || ''),
+    from_warehouse_code: String(meta.from_warehouse_code || ''),
+    from_warehouse_name: String(meta.from_warehouse_name || ''),
+    to_warehouse_id: String(meta.to_warehouse_id || ''),
+    to_warehouse_code: String(meta.to_warehouse_code || ''),
+    to_warehouse_name: String(meta.to_warehouse_name || ''),
+    item_count: Number(lines.length),
+    quantity_total: Number(lines.reduce((sum: number, line: any) => sum + Number(line.quantity || 0), 0)),
+    lines,
+  }
+}
+
+async function applyTransferRecordStockInTx(client: any, input: {
+  record_id: string
+  from_warehouse_id: string
+  to_warehouse_id: string
+  note?: string | null
+  actor_id?: string | null
+  lines: Array<{ item_id: string; quantity: number }>
+  direction: 'apply' | 'revert'
+  reason: string
+}) {
+  for (const line of input.lines || []) {
+    const fromType = input.direction === 'apply' ? 'out' : 'in'
+    const toType = input.direction === 'apply' ? 'in' : 'out'
+    const out = await applyStockDeltaInTx(client, {
+      warehouse_id: input.from_warehouse_id,
+      item_id: line.item_id,
+      type: fromType,
+      quantity: line.quantity,
+      reason: input.reason,
+      ref_type: 'transfer',
+      ref_id: input.record_id,
+      actor_id: input.actor_id || null,
+      note: input.note || null,
+      photo_url: null,
+      return_stock_row: false,
+    })
+    if (!out.ok) return out
+    const inn = await applyStockDeltaInTx(client, {
+      warehouse_id: input.to_warehouse_id,
+      item_id: line.item_id,
+      type: toType,
+      quantity: line.quantity,
+      reason: input.reason,
+      ref_type: 'transfer',
+      ref_id: input.record_id,
+      actor_id: input.actor_id || null,
+      note: input.note || null,
+      photo_url: null,
+      return_stock_row: false,
+    })
+    if (!inn.ok) return inn
+  }
+  return { ok: true as const }
+}
+
 router.get('/transfers', requirePerm('inventory.view'), async (req, res) => {
   try {
     if (hasPg && pgPool) {
@@ -3283,48 +3904,121 @@ router.get('/transfer-records', requirePerm('inventory.view'), async (req, res) 
     const category = String(q.category || '').trim()
     const from = String(q.from || '').trim()
     const to = String(q.to || '').trim()
+    const status = String(q.status || '').trim()
     const limit = Math.min(500, Math.max(1, Number(q.limit || 200)))
 
     const values: any[] = []
-    const where: string[] = [`m.ref_type = 'transfer'`]
-    if (fromWh) { values.push(fromWh); where.push(`(m.type = 'out' AND m.warehouse_id = $${values.length})`) }
-    if (toWh) { values.push(toWh); where.push(`(m.type = 'in' AND m.warehouse_id = $${values.length})`) }
-    if (from) { values.push(from); where.push(`m.created_at >= $${values.length}::timestamptz`) }
-    if (to) { values.push(to); where.push(`m.created_at <= $${values.length}::timestamptz`) }
-    if (category) { values.push(category); where.push(`i.category = $${values.length}`) }
+    const where: string[] = ['1=1']
+    if (fromWh) { values.push(fromWh); where.push(`tr.from_warehouse_id = $${values.length}`) }
+    if (toWh) { values.push(toWh); where.push(`tr.to_warehouse_id = $${values.length}`) }
+    if (from) { values.push(from); where.push(`tr.created_at >= $${values.length}::timestamptz`) }
+    if (to) { values.push(to); where.push(`tr.created_at <= $${values.length}::timestamptz`) }
+    if (status) { values.push(status); where.push(`tr.status = $${values.length}`) }
+    if (category) {
+      values.push(category)
+      where.push(`EXISTS (
+        SELECT 1
+        FROM inventory_transfer_record_lines l
+        JOIN inventory_items i ON i.id = l.item_id
+        WHERE l.record_id = tr.id AND i.category = $${values.length}
+      )`)
+    }
     values.push(limit)
-
-    const rs = await pgPool.query(
-      `SELECT
-         m.ref_id,
-         m.warehouse_id,
-         m.item_id,
-         m.type,
-         m.quantity,
-         m.note,
-         m.created_at,
-         i.name AS item_name,
-         i.sku AS item_sku,
-         i.category AS item_category,
-         fw.code AS warehouse_code,
-         fw.name AS warehouse_name
-       FROM stock_movements m
-       JOIN inventory_items i ON i.id = m.item_id
-       JOIN warehouses fw ON fw.id = m.warehouse_id
+    const metaRows = await pgPool.query(
+      `SELECT tr.id,
+              tr.created_at,
+              tr.updated_at,
+              tr.status,
+              tr.note,
+              tr.cancelled_by,
+              tr.cancelled_at,
+              tr.from_warehouse_id,
+              tr.to_warehouse_id,
+              fw.code AS from_warehouse_code,
+              fw.name AS from_warehouse_name,
+              tw.code AS to_warehouse_code,
+              tw.name AS to_warehouse_name
+       FROM inventory_transfer_records tr
+       JOIN warehouses fw ON fw.id = tr.from_warehouse_id
+       JOIN warehouses tw ON tw.id = tr.to_warehouse_id
        WHERE ${where.join(' AND ')}
-       ORDER BY m.created_at DESC
+       ORDER BY tr.created_at DESC
        LIMIT $${values.length}`,
       values,
     )
 
-    const groups = new Map<string, any>()
-    for (const row of rs.rows || []) {
+    const legacyRows = status && status !== 'completed'
+      ? { rows: [] as any[] }
+      : await (async () => {
+        const legacyValues: any[] = []
+        const legacyWhere: string[] = [`m.ref_type = 'transfer'`, `COALESCE(m.reason, 'transfer') = 'transfer'`, `tr.id IS NULL`]
+        if (fromWh) { legacyValues.push(fromWh); legacyWhere.push(`(m.type = 'out' AND m.warehouse_id = $${legacyValues.length})`) }
+        if (toWh) { legacyValues.push(toWh); legacyWhere.push(`(m.type = 'in' AND m.warehouse_id = $${legacyValues.length})`) }
+        if (from) { legacyValues.push(from); legacyWhere.push(`m.created_at >= $${legacyValues.length}::timestamptz`) }
+        if (to) { legacyValues.push(to); legacyWhere.push(`m.created_at <= $${legacyValues.length}::timestamptz`) }
+        if (category) { legacyValues.push(category); legacyWhere.push(`i.category = $${legacyValues.length}`) }
+        legacyValues.push(limit)
+        return pgPool.query(
+          `SELECT
+             m.ref_id,
+             m.warehouse_id,
+             m.item_id,
+             m.type,
+             m.quantity,
+             m.note,
+             m.created_at,
+             i.name AS item_name,
+             i.sku AS item_sku,
+             fw.code AS warehouse_code,
+             fw.name AS warehouse_name
+           FROM stock_movements m
+           JOIN inventory_items i ON i.id = m.item_id
+           JOIN warehouses fw ON fw.id = m.warehouse_id
+           LEFT JOIN inventory_transfer_records tr ON tr.id = m.ref_id
+           WHERE ${legacyWhere.join(' AND ')}
+           ORDER BY m.created_at DESC
+           LIMIT $${legacyValues.length}`,
+          legacyValues,
+        )
+      })()
+
+    const byId = new Map<string, any>()
+    for (const row of metaRows.rows || []) {
+      byId.set(String(row.id || ''), { ...row, lines: [] as any[] })
+    }
+    if (byId.size) {
+      const ids = Array.from(byId.keys())
+      const linesRes = await pgPool.query(
+        `SELECT l.record_id, l.item_id, l.quantity, i.name AS item_name, i.sku AS item_sku, i.category AS item_category
+         FROM inventory_transfer_record_lines l
+         JOIN inventory_items i ON i.id = l.item_id
+         WHERE l.record_id = ANY($1::text[])
+         ORDER BY i.name ASC, l.item_id ASC`,
+        [ids],
+      )
+      for (const line of linesRes.rows || []) {
+        const current = byId.get(String(line.record_id || ''))
+        if (!current) continue
+        current.lines.push({
+          item_id: String(line.item_id || ''),
+          item_name: String(line.item_name || ''),
+          item_sku: String(line.item_sku || ''),
+          quantity: Number(line.quantity || 0),
+        })
+      }
+    }
+
+    for (const row of legacyRows.rows || []) {
       const refId = String(row.ref_id || '')
-      if (!refId) continue
-      const current = groups.get(refId) || {
+      if (!refId || byId.has(refId)) continue
+      const current = byId.get(refId) || {
         id: refId,
         created_at: row.created_at,
+        updated_at: null,
+        status: 'completed',
         note: row.note || null,
+        cancelled_by: null,
+        cancelled_at: null,
         from_warehouse_id: '',
         from_warehouse_code: '',
         from_warehouse_name: '',
@@ -3333,8 +4027,6 @@ router.get('/transfer-records', requirePerm('inventory.view'), async (req, res) 
         to_warehouse_name: '',
         lines: [],
       }
-      if (!current.created_at || String(current.created_at) < String(row.created_at || '')) current.created_at = row.created_at
-      if (!current.note && row.note) current.note = row.note
       if (row.type === 'out') {
         current.from_warehouse_id = String(row.warehouse_id || '')
         current.from_warehouse_code = String(row.warehouse_code || '')
@@ -3347,19 +4039,14 @@ router.get('/transfer-records', requirePerm('inventory.view'), async (req, res) 
       }
       let line = current.lines.find((item: any) => String(item.item_id) === String(row.item_id || ''))
       if (!line) {
-        line = {
-          item_id: String(row.item_id || ''),
-          item_name: String(row.item_name || ''),
-          item_sku: String(row.item_sku || ''),
-          quantity: 0,
-        }
+        line = { item_id: String(row.item_id || ''), item_name: String(row.item_name || ''), item_sku: String(row.item_sku || ''), quantity: 0 }
         current.lines.push(line)
       }
       if (row.type === 'out') line.quantity = Number(row.quantity || 0)
-      groups.set(refId, current)
+      byId.set(refId, current)
     }
 
-    const out = Array.from(groups.values())
+    const out = Array.from(byId.values())
       .map((row: any) => ({
         ...row,
         item_count: Number((row.lines || []).length),
@@ -3379,69 +4066,8 @@ router.get('/transfer-records/:id', requirePerm('inventory.view'), async (req, r
     await ensureInventorySchema()
     const id = String(req.params.id || '').trim()
     if (!id) return res.status(400).json({ message: 'id required' })
-
-    const rs = await pgPool.query(
-      `SELECT
-         m.ref_id,
-         m.warehouse_id,
-         m.item_id,
-         m.type,
-         m.quantity,
-         m.note,
-         m.created_at,
-         i.name AS item_name,
-         i.sku AS item_sku,
-         i.category AS item_category,
-         w.code AS warehouse_code,
-         w.name AS warehouse_name
-       FROM stock_movements m
-       JOIN inventory_items i ON i.id = m.item_id
-       JOIN warehouses w ON w.id = m.warehouse_id
-       WHERE m.ref_type = 'transfer' AND m.ref_id = $1
-       ORDER BY m.created_at DESC, m.item_id ASC`,
-      [id],
-    )
-    if (!rs.rows?.length) return res.status(404).json({ message: 'not found' })
-
-    const detail: any = {
-      id,
-      created_at: rs.rows[0]?.created_at || null,
-      note: rs.rows.find((row: any) => row.note)?.note || null,
-      from_warehouse_id: '',
-      from_warehouse_code: '',
-      from_warehouse_name: '',
-      to_warehouse_id: '',
-      to_warehouse_code: '',
-      to_warehouse_name: '',
-      lines: [],
-    }
-    for (const row of rs.rows || []) {
-      if (!detail.created_at || String(detail.created_at) < String(row.created_at || '')) detail.created_at = row.created_at
-      if (row.type === 'out') {
-        detail.from_warehouse_id = String(row.warehouse_id || '')
-        detail.from_warehouse_code = String(row.warehouse_code || '')
-        detail.from_warehouse_name = String(row.warehouse_name || '')
-      }
-      if (row.type === 'in') {
-        detail.to_warehouse_id = String(row.warehouse_id || '')
-        detail.to_warehouse_code = String(row.warehouse_code || '')
-        detail.to_warehouse_name = String(row.warehouse_name || '')
-      }
-      let line = detail.lines.find((item: any) => String(item.item_id) === String(row.item_id || ''))
-      if (!line) {
-        line = {
-          item_id: String(row.item_id || ''),
-          item_name: String(row.item_name || ''),
-          item_sku: String(row.item_sku || ''),
-          item_category: String(row.item_category || ''),
-          quantity: 0,
-        }
-        detail.lines.push(line)
-      }
-      if (row.type === 'out') line.quantity = Number(row.quantity || 0)
-    }
-    detail.item_count = Number(detail.lines.length)
-    detail.quantity_total = Number(detail.lines.reduce((sum: number, line: any) => sum + Number(line.quantity || 0), 0))
+    const detail = await loadTransferRecordDetail(pgPool, id)
+    if (!detail) return res.status(404).json({ message: 'not found' })
     return res.json(detail)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
@@ -3456,51 +4082,143 @@ router.post('/transfer-records', requirePerm('inventory.move'), async (req, res)
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'transfer not available without PG' })
     await ensureInventorySchema()
     const transferId = uuidv4()
-    const uniqueLines = Array.from(
-      parsed.data.lines.reduce((map, line) => {
-        const itemId = String(line.item_id || '').trim()
-        const quantity = Number(line.quantity || 0)
-        if (!itemId || quantity < 1) return map
-        map.set(itemId, (map.get(itemId) || 0) + quantity)
-        return map
-      }, new Map<string, number>()),
-    ).map(([item_id, quantity]) => ({ item_id, quantity }))
+    const uniqueLines = normalizeTransferRecordLines(parsed.data.lines)
     if (!uniqueLines.length) return res.status(400).json({ message: '请至少填写一条调配明细' })
 
     const result = await pgRunInTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO inventory_transfer_records (id, from_warehouse_id, to_warehouse_id, status, note, created_by)
+         VALUES ($1,$2,$3,'completed',$4,$5)`,
+        [transferId, parsed.data.from_warehouse_id, parsed.data.to_warehouse_id, parsed.data.note || null, actorId(req)],
+      )
       for (const line of uniqueLines) {
-        const out = await applyStockDeltaInTx(client, {
-          warehouse_id: parsed.data.from_warehouse_id,
-          item_id: line.item_id,
-          type: 'out',
-          quantity: line.quantity,
-          reason: 'transfer',
-          ref_type: 'transfer',
-          ref_id: transferId,
-          actor_id: actorId(req),
-          note: parsed.data.note || null,
-          photo_url: null,
-        })
-        if (!out.ok) return out
-        const inn = await applyStockDeltaInTx(client, {
-          warehouse_id: parsed.data.to_warehouse_id,
-          item_id: line.item_id,
-          type: 'in',
-          quantity: line.quantity,
-          reason: 'transfer',
-          ref_type: 'transfer',
-          ref_id: transferId,
-          actor_id: actorId(req),
-          note: parsed.data.note || null,
-          photo_url: null,
-        })
-        if (!inn.ok) return inn
+        await client.query(
+          `INSERT INTO inventory_transfer_record_lines (id, record_id, item_id, quantity)
+           VALUES ($1,$2,$3,$4)`,
+          [uuidv4(), transferId, line.item_id, line.quantity],
+        )
       }
-      return { ok: true as const, transfer_id: transferId }
+      const applied = await applyTransferRecordStockInTx(client, {
+        record_id: transferId,
+        from_warehouse_id: parsed.data.from_warehouse_id,
+        to_warehouse_id: parsed.data.to_warehouse_id,
+        note: parsed.data.note || null,
+        actor_id: actorId(req),
+        lines: uniqueLines,
+        direction: 'apply',
+        reason: 'transfer',
+      })
+      if (!applied.ok) return applied
+      const detail = await loadTransferRecordDetail(client, transferId)
+      return { ok: true as const, transfer_id: transferId, detail }
     })
     if (!result) return res.status(500).json({ message: 'db not ready' })
     if (!(result as any).ok) return res.status((result as any).code).json({ message: (result as any).message })
-    return res.json(result)
+    return res.json((result as any).detail || result)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.patch('/transfer-records/:id', requirePerm('inventory.move'), async (req, res) => {
+  const parsed = transferRecordUpdateSchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (parsed.data.from_warehouse_id === parsed.data.to_warehouse_id) return res.status(400).json({ message: 'same warehouse' })
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'transfer not available without PG' })
+    await ensureInventorySchema()
+    const transferId = String(req.params.id || '').trim()
+    const uniqueLines = normalizeTransferRecordLines(parsed.data.lines)
+    if (!uniqueLines.length) return res.status(400).json({ message: '请至少填写一条调配明细' })
+    const result = await pgRunInTransaction(async (client) => {
+      await materializeLegacyTransferRecordInTx(client, transferId)
+      const current = await loadTransferRecordDetail(client, transferId)
+      if (!current) return { ok: false as const, code: 404 as const, message: 'not found' }
+      if (String(current.status || '') !== 'completed') return { ok: false as const, code: 400 as const, message: '仅已完成配送单可编辑' }
+      const reverted = await applyTransferRecordStockInTx(client, {
+        record_id: transferId,
+        from_warehouse_id: current.from_warehouse_id,
+        to_warehouse_id: current.to_warehouse_id,
+        note: current.note || null,
+        actor_id: actorId(req),
+        lines: normalizeTransferRecordLines(current.lines || []),
+        direction: 'revert',
+        reason: 'transfer_edit_revert',
+      })
+      if (!reverted.ok) return reverted
+      await client.query(
+        `UPDATE inventory_transfer_records
+         SET from_warehouse_id = $2,
+             to_warehouse_id = $3,
+             note = $4,
+             updated_at = now()
+         WHERE id = $1`,
+        [transferId, parsed.data.from_warehouse_id, parsed.data.to_warehouse_id, parsed.data.note || null],
+      )
+      await client.query(`DELETE FROM inventory_transfer_record_lines WHERE record_id = $1`, [transferId])
+      for (const line of uniqueLines) {
+        await client.query(
+          `INSERT INTO inventory_transfer_record_lines (id, record_id, item_id, quantity)
+           VALUES ($1,$2,$3,$4)`,
+          [uuidv4(), transferId, line.item_id, line.quantity],
+        )
+      }
+      const applied = await applyTransferRecordStockInTx(client, {
+        record_id: transferId,
+        from_warehouse_id: parsed.data.from_warehouse_id,
+        to_warehouse_id: parsed.data.to_warehouse_id,
+        note: parsed.data.note || null,
+        actor_id: actorId(req),
+        lines: uniqueLines,
+        direction: 'apply',
+        reason: 'transfer',
+      })
+      if (!applied.ok) return applied
+      const detail = await loadTransferRecordDetail(client, transferId)
+      return { ok: true as const, detail }
+    })
+    if (!(result as any)?.ok) return res.status(Number((result as any)?.code || 400)).json({ message: String((result as any)?.message || 'failed') })
+    return res.json((result as any).detail)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.post('/transfer-records/:id/cancel', requirePerm('inventory.move'), async (req, res) => {
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'transfer not available without PG' })
+    await ensureInventorySchema()
+    const transferId = String(req.params.id || '').trim()
+    const result = await pgRunInTransaction(async (client) => {
+      await materializeLegacyTransferRecordInTx(client, transferId)
+      const current = await loadTransferRecordDetail(client, transferId)
+      if (!current) return { ok: false as const, code: 404 as const, message: 'not found' }
+      if (String(current.status || '') === 'cancelled') return { ok: false as const, code: 400 as const, message: '该配送单已作废' }
+      const reverted = await applyTransferRecordStockInTx(client, {
+        record_id: transferId,
+        from_warehouse_id: current.from_warehouse_id,
+        to_warehouse_id: current.to_warehouse_id,
+        note: current.note || null,
+        actor_id: actorId(req),
+        lines: normalizeTransferRecordLines(current.lines || []),
+        direction: 'revert',
+        reason: 'transfer_cancel',
+      })
+      if (!reverted.ok) return reverted
+      await client.query(
+        `UPDATE inventory_transfer_records
+         SET status = 'cancelled',
+             updated_at = now(),
+             cancelled_by = $2,
+             cancelled_at = now()
+         WHERE id = $1`,
+        [transferId, actorId(req)],
+      )
+      const detail = await loadTransferRecordDetail(client, transferId)
+      return { ok: true as const, detail }
+    })
+    if (!(result as any)?.ok) return res.status(Number((result as any)?.code || 400)).json({ message: String((result as any)?.message || 'failed') })
+    return res.json((result as any).detail)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
   }
@@ -5855,6 +6573,11 @@ const linenDeliveryRecordLineSchema = z.object({
   sets: z.number().int().min(1),
 })
 
+const linenDeliveryRecordExtraLineSchema = z.object({
+  linen_type_code: z.string().min(1),
+  quantity: z.number().int().min(1),
+})
+
 const linenStocktakeLineSchema = z.object({
   room_type_code: z.string().min(1),
   remaining_sets: z.number().int().min(0),
@@ -5865,9 +6588,14 @@ const linenDeliveryRecordCreateSchema = z.object({
   from_warehouse_id: z.string().min(1),
   to_warehouse_id: z.string().min(1),
   note: z.string().optional(),
-  lines: z.array(linenDeliveryRecordLineSchema).min(1),
+  lines: z.array(linenDeliveryRecordLineSchema).default([]),
+  extra_linen_lines: z.array(linenDeliveryRecordExtraLineSchema).default([]),
   stocktake_lines: z.array(linenStocktakeLineSchema).min(1),
   dirty_bag_note: z.string().optional(),
+}).superRefine((data, ctx) => {
+  if (!(data.lines?.length || data.extra_linen_lines?.length)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: '至少需要一条配送明细', path: ['lines'] })
+  }
 })
 
 const linenDeliveryRecordUpdateSchema = linenDeliveryRecordCreateSchema
@@ -5908,7 +6636,12 @@ router.get('/linen/delivery-records', requirePerm('inventory.view'), async (req,
               tw.code AS to_warehouse_code,
               tw.name AS to_warehouse_name,
               COALESCE(SUM(l.sets),0)::int AS total_sets,
-              COUNT(l.id)::int AS room_type_count
+              COUNT(l.id)::int AS room_type_count,
+              COALESCE((
+                SELECT SUM(el.quantity)::int
+                FROM linen_delivery_record_extra_lines el
+                WHERE el.record_id = r.id
+              ), 0)::int AS extra_linen_total
        FROM linen_delivery_records r
        JOIN warehouses fw ON fw.id = r.from_warehouse_id
        JOIN warehouses tw ON tw.id = r.to_warehouse_id
@@ -5923,6 +6656,7 @@ router.get('/linen/delivery-records', requirePerm('inventory.view'), async (req,
       ...row,
       total_sets: Number(row.total_sets || 0),
       room_type_count: Number(row.room_type_count || 0),
+      extra_linen_total: Number(row.extra_linen_total || 0),
     })))
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
@@ -5937,7 +6671,7 @@ router.get('/linen/delivery-records/:id', requirePerm('inventory.view'), async (
     if (!record) return res.status(404).json({ message: 'not found' })
     return res.json(record)
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'failed' })
+    return sendInventoryError(req, res, e)
   }
 })
 
@@ -6026,16 +6760,38 @@ router.post('/linen/stocktakes', requirePerm('inventory.move'), async (req, res)
 
 router.post('/linen/delivery-records', requirePerm('inventory.move'), async (req, res) => {
   const parsed = linenDeliveryRecordCreateSchema.safeParse(req.body)
-  if (!parsed.success) return res.status(400).json(parsed.error.format())
-  if (parsed.data.from_warehouse_id === parsed.data.to_warehouse_id) return res.status(400).json({ message: 'same warehouse' })
+  if (!parsed.success) return res.status(400).json(withTracePayload(req, parsed.error.format() as any))
+  if (parsed.data.from_warehouse_id === parsed.data.to_warehouse_id) return res.status(400).json(withTracePayload(req, { message: 'same warehouse' }))
+  const requestStartedAt = Date.now()
   try {
-    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    if (!(hasPg && pgPool)) return res.status(501).json(withTracePayload(req, { message: 'not available without PG' }))
     await ensureInventorySchema()
     const actor = actorId(req)
     const recordId = uuidv4()
+    const metrics = {
+      validate_ms: 0,
+      ensure_idempotency_ms: 0,
+      expand_lines_ms: 0,
+      apply_stock_ms: 0,
+      save_stocktake_ms: 0,
+      build_response_ms: 0,
+      total_ms: 0,
+    }
+    inventoryLog(req, 'log', 'delivery_create_start', {
+      record_id: recordId,
+      from_warehouse_id: parsed.data.from_warehouse_id,
+      to_warehouse_id: parsed.data.to_warehouse_id,
+      delivery_date: parsed.data.delivery_date,
+    })
     const result = await pgRunInTransaction(async (client) => {
+      await client.query(`SET LOCAL lock_timeout = '5000ms'`)
+      const validateStartedAt = Date.now()
       await assertWarehouseAllowsStocktake(client, parsed.data.to_warehouse_id)
+      metrics.validate_ms = Date.now() - validateStartedAt
+      const expandStartedAt = Date.now()
       const expandedLines = await expandLinenDeliveryInputLines(client, parsed.data.lines)
+      const expandedExtraLines = await expandLinenDeliveryExtraInputLines(client, parsed.data.extra_linen_lines || [])
+      metrics.expand_lines_ms = Date.now() - expandStartedAt
       const fingerprint = buildLinenDeliveryRecordFingerprint({
         actor_id: actor,
         delivery_date: parsed.data.delivery_date,
@@ -6046,7 +6802,12 @@ router.post('/linen/delivery-records', requirePerm('inventory.move'), async (req
           room_type_code: line.room_type_code,
           sets: line.sets,
         })),
+        extra_linen_lines: expandedExtraLines.map((line) => ({
+          linen_type_code: line.linen_type_code,
+          quantity: line.quantity,
+        })),
       })
+      const idempotencyStartedAt = Date.now()
       await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [fingerprint])
       const duplicateRes = await client.query(
         `SELECT id
@@ -6080,6 +6841,28 @@ router.post('/linen/delivery-records', requirePerm('inventory.move'), async (req
                WHERE record_id = linen_delivery_records.id
              ) diff2
            )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM (
+               SELECT linen_type_code, quantity
+               FROM linen_delivery_record_extra_lines
+               WHERE record_id = linen_delivery_records.id
+               EXCEPT
+               SELECT linen_type_code, quantity
+               FROM jsonb_to_recordset($7::jsonb) AS y(linen_type_code text, quantity integer)
+             ) diff3
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM (
+               SELECT linen_type_code, quantity
+               FROM jsonb_to_recordset($7::jsonb) AS y(linen_type_code text, quantity integer)
+               EXCEPT
+               SELECT linen_type_code, quantity
+               FROM linen_delivery_record_extra_lines
+               WHERE record_id = linen_delivery_records.id
+             ) diff4
+           )
          ORDER BY created_at DESC
          LIMIT 1`,
         [
@@ -6089,12 +6872,21 @@ router.post('/linen/delivery-records', requirePerm('inventory.move'), async (req
           parsed.data.to_warehouse_id,
           parsed.data.note || null,
           JSON.stringify(expandedLines.map((line) => ({ room_type_code: line.room_type_code, sets: line.sets }))),
+          JSON.stringify(expandedExtraLines.map((line) => ({ linen_type_code: line.linen_type_code, quantity: line.quantity }))),
         ],
       )
+      metrics.ensure_idempotency_ms = Date.now() - idempotencyStartedAt
       const duplicateId = String(duplicateRes.rows?.[0]?.id || '')
       if (duplicateId) {
-        const existing = await loadLinenDeliveryRecordDetail(client, duplicateId)
-        if (existing) return { ok: true as const, detail: existing, row: existing, deduped: true as const }
+        const existing = await loadLinenDeliveryRecordSummary(client, duplicateId)
+        if (existing) {
+          return {
+            ok: true as const,
+            response: buildDeliverySuccessResponse(existing, { deduped: true }),
+            row: existing,
+            deduped: true as const,
+          }
+        }
       }
       const inserted = await client.query(
         `INSERT INTO linen_delivery_records (id, delivery_date, from_warehouse_id, to_warehouse_id, status, note, created_by)
@@ -6109,16 +6901,29 @@ router.post('/linen/delivery-records', requirePerm('inventory.move'), async (req
           [uuidv4(), recordId, line.room_type_code, line.room_type_name, line.sets],
         )
       }
-      const applied = await applyLinenDeliveryRecordStockInTx(client, {
+      for (const line of expandedExtraLines) {
+        await client.query(
+          `INSERT INTO linen_delivery_record_extra_lines (id, record_id, linen_type_code, linen_type_name, quantity)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [uuidv4(), recordId, line.linen_type_code, line.linen_type_name, line.quantity],
+        )
+      }
+      const applyStartedAt = Date.now()
+      const applied = await applyLinenDeliveryBreakdownsInTx(client, {
         record_id: recordId,
         from_warehouse_id: parsed.data.from_warehouse_id,
         to_warehouse_id: parsed.data.to_warehouse_id,
         note: parsed.data.note || null,
         actor_id: actor,
-        lines: expandedLines,
+        breakdowns: [
+          ...expandedLines.map((line) => line.breakdown || []),
+          ...expandedExtraLines.map((line) => line.breakdown || []),
+        ],
         direction: 'apply',
       })
       assertStockTxnOk(applied)
+      metrics.apply_stock_ms = Date.now() - applyStartedAt
+      const stocktakeStartedAt = Date.now()
       await upsertLinenStocktakeRecordInTx(client, {
         delivery_record_id: recordId,
         warehouse_id: parsed.data.to_warehouse_id,
@@ -6128,29 +6933,50 @@ router.post('/linen/delivery-records', requirePerm('inventory.move'), async (req
         actor_id: actor,
         lines: parsed.data.stocktake_lines,
       })
-      const detail = await loadLinenDeliveryRecordDetail(client, recordId)
-      if (!detail) throw httpError(500, '配送单创建后读取详情失败')
-      return { ok: true as const, detail, row: inserted.rows?.[0] || null }
+      metrics.save_stocktake_ms = Date.now() - stocktakeStartedAt
+      const responseStartedAt = Date.now()
+      const summary = await loadLinenDeliveryRecordSummary(client, recordId)
+      metrics.build_response_ms = Date.now() - responseStartedAt
+      if (!summary) {
+        inventoryLog(req, 'error', 'delivery_create_response_degraded', { record_id: recordId, reason: 'summary_read_failed' })
+      }
+      return {
+        ok: true as const,
+        response: buildDeliverySuccessResponse(summary || inserted.rows?.[0] || {}, summary ? {} : { details_degraded: true }),
+        row: inserted.rows?.[0] || null,
+      }
     })
     if (!(result as any)?.deduped) {
-      addAudit('LinenDeliveryRecord', recordId, 'create', null, (result as any).detail || (result as any).row || null, actor)
+      try {
+        addAudit('LinenDeliveryRecord', recordId, 'create', null, (result as any).row || (result as any).response || null, actor)
+      } catch {}
     }
-    return res.status(201).json((result as any).detail)
+    metrics.total_ms = Date.now() - requestStartedAt
+    inventoryLog(req, metrics.total_ms > 3000 ? 'error' : 'log', 'delivery_create_finish', {
+      record_id: String((result as any)?.response?.id || recordId),
+      status: 'success',
+      ...metrics,
+    })
+    return res.status(201).json(withTracePayload(req, (result as any).response))
   } catch (e: any) {
-    return res.status(Number(e?.statusCode || 500)).json({ message: e?.message || 'failed' })
+    inventoryLog(req, 'error', 'delivery_create_finish', { status: 'failed', total_ms: Date.now() - requestStartedAt, message: String(e?.message || 'failed') })
+    return sendInventoryError(req, res, e)
   }
 })
 
 router.patch('/linen/delivery-records/:id', requirePerm('inventory.move'), async (req, res) => {
   const parsed = linenDeliveryRecordUpdateSchema.safeParse(req.body)
-  if (!parsed.success) return res.status(400).json(parsed.error.format())
-  if (parsed.data.from_warehouse_id === parsed.data.to_warehouse_id) return res.status(400).json({ message: 'same warehouse' })
+  if (!parsed.success) return res.status(400).json(withTracePayload(req, parsed.error.format() as any))
+  if (parsed.data.from_warehouse_id === parsed.data.to_warehouse_id) return res.status(400).json(withTracePayload(req, { message: 'same warehouse' }))
   const id = String(req.params.id || '')
+  const requestStartedAt = Date.now()
   try {
-    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    if (!(hasPg && pgPool)) return res.status(501).json(withTracePayload(req, { message: 'not available without PG' }))
     await ensureInventorySchema()
     const actor = actorId(req)
+    inventoryLog(req, 'log', 'delivery_update_start', { record_id: id })
     const result = await pgRunInTransaction(async (client) => {
+      await client.query(`SET LOCAL lock_timeout = '5000ms'`)
       const current = await getEditableLinenDeliveryRecordForUpdate(client, id)
       if (!current) return { ok: false as const, code: 404 as const, message: 'not found' }
       if (String(current.record.status || '') !== 'completed') return { ok: false as const, code: 400 as const, message: '仅已完成配送单可编辑' }
@@ -6163,6 +6989,7 @@ router.patch('/linen/delivery-records/:id', requirePerm('inventory.move'), async
       })
       assertStockTxnOk(reverted)
       const expandedLines = await expandLinenDeliveryInputLines(client, parsed.data.lines)
+      const expandedExtraLines = await expandLinenDeliveryExtraInputLines(client, parsed.data.extra_linen_lines || [])
       await client.query(
         `UPDATE linen_delivery_records
          SET delivery_date = $1::date,
@@ -6174,6 +7001,7 @@ router.patch('/linen/delivery-records/:id', requirePerm('inventory.move'), async
         [parsed.data.delivery_date, parsed.data.from_warehouse_id, parsed.data.to_warehouse_id, parsed.data.note || null, id],
       )
       await client.query(`DELETE FROM linen_delivery_record_lines WHERE record_id = $1`, [id])
+      await client.query(`DELETE FROM linen_delivery_record_extra_lines WHERE record_id = $1`, [id])
       for (const line of expandedLines) {
         await client.query(
           `INSERT INTO linen_delivery_record_lines (id, record_id, room_type_code, room_type_name, sets)
@@ -6181,13 +7009,23 @@ router.patch('/linen/delivery-records/:id', requirePerm('inventory.move'), async
           [uuidv4(), id, line.room_type_code, line.room_type_name, line.sets],
         )
       }
-      const applied = await applyLinenDeliveryRecordStockInTx(client, {
+      for (const line of expandedExtraLines) {
+        await client.query(
+          `INSERT INTO linen_delivery_record_extra_lines (id, record_id, linen_type_code, linen_type_name, quantity)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [uuidv4(), id, line.linen_type_code, line.linen_type_name, line.quantity],
+        )
+      }
+      const applied = await applyLinenDeliveryBreakdownsInTx(client, {
         record_id: id,
         from_warehouse_id: parsed.data.from_warehouse_id,
         to_warehouse_id: parsed.data.to_warehouse_id,
         note: parsed.data.note || null,
         actor_id: actor,
-        lines: expandedLines,
+        breakdowns: [
+          ...expandedLines.map((line) => line.breakdown || []),
+          ...expandedExtraLines.map((line) => line.breakdown || []),
+        ],
         direction: 'apply',
       })
       assertStockTxnOk(applied)
@@ -6205,26 +7043,33 @@ router.patch('/linen/delivery-records/:id', requirePerm('inventory.move'), async
       return { ok: true as const, before, after }
     })
     if (!(result as any)?.ok) {
-      return res.status(Number((result as any)?.code || 400)).json({ message: String((result as any)?.message || 'failed') })
+      return res.status(Number((result as any)?.code || 400)).json(withTracePayload(req, { message: String((result as any)?.message || 'failed') }))
     }
-    addAudit('LinenDeliveryRecord', id, 'update', (result as any).before || null, (result as any).after || null, actor)
+    try {
+      addAudit('LinenDeliveryRecord', id, 'update', (result as any).before || null, (result as any).after || null, actor)
+    } catch {}
+    inventoryLog(req, 'log', 'delivery_update_finish', { record_id: id, total_ms: Date.now() - requestStartedAt, status: 'success' })
     return res.json((result as any).after)
   } catch (e: any) {
-    return res.status(Number(e?.statusCode || 500)).json({ message: e?.message || 'failed' })
+    inventoryLog(req, 'error', 'delivery_update_finish', { record_id: id, total_ms: Date.now() - requestStartedAt, status: 'failed', message: String(e?.message || 'failed') })
+    return sendInventoryError(req, res, e)
   }
 })
 
 router.post('/linen/delivery-records/:id/cancel', requirePerm('inventory.move'), async (req, res) => {
   const id = String(req.params.id || '')
+  const requestStartedAt = Date.now()
   try {
-    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    if (!(hasPg && pgPool)) return res.status(501).json(withTracePayload(req, { message: 'not available without PG' }))
     await ensureInventorySchema()
     const actor = actorId(req)
+    inventoryLog(req, 'log', 'delivery_cancel_start', { record_id: id })
     const result = await pgRunInTransaction(async (client) => {
+      await client.query(`SET LOCAL lock_timeout = '5000ms'`)
       const current = await getEditableLinenDeliveryRecordForUpdate(client, id)
       if (!current) return { ok: false as const, code: 404 as const, message: 'not found' }
       if (String(current.record.status || '') === 'cancelled') return { ok: false as const, code: 400 as const, message: '该配送单已作废' }
-      const before = await loadLinenDeliveryRecordDetail(client, id)
+      const before = loadLinenDeliveryRecordSummary(client, id)
       const reverted = await revertLinenDeliveryRecordStockByRefInTx(client, {
         record_id: id,
         actor_id: actor,
@@ -6240,17 +7085,35 @@ router.post('/linen/delivery-records/:id/cancel', requirePerm('inventory.move'),
          WHERE id = $1`,
         [id, actor],
       )
-      const after = await loadLinenDeliveryRecordDetail(client, id)
-      if (!after) throw httpError(500, '配送单作废后读取详情失败')
-      return { ok: true as const, before, after }
+      const afterRes = await client.query(
+        `SELECT id, delivery_date, status, created_at, updated_at, cancelled_by, cancelled_at
+         FROM linen_delivery_records
+         WHERE id = $1
+         LIMIT 1`,
+        [id],
+      )
+      const afterRow = afterRes.rows?.[0] || null
+      if (!afterRow) throw httpError(500, '配送单作废后读取摘要失败')
+      const [beforeSummary, afterSummary] = await Promise.all([
+        before,
+        Promise.resolve(buildDeliverySuccessResponse(afterRow, {
+          cancelled_by: afterRow.cancelled_by || null,
+          cancelled_at: afterRow.cancelled_at || null,
+        })),
+      ])
+      return { ok: true as const, before: beforeSummary, after: afterSummary }
     })
     if (!(result as any)?.ok) {
-      return res.status(Number((result as any)?.code || 400)).json({ message: String((result as any)?.message || 'failed') })
+      return res.status(Number((result as any)?.code || 400)).json(withTracePayload(req, { message: String((result as any)?.message || 'failed') }))
     }
-    addAudit('LinenDeliveryRecord', id, 'cancel', (result as any).before || null, (result as any).after || null, actor)
+    try {
+      addAudit('LinenDeliveryRecord', id, 'cancel', (result as any).before || null, (result as any).after || null, actor)
+    } catch {}
+    inventoryLog(req, 'log', 'delivery_cancel_finish', { record_id: id, total_ms: Date.now() - requestStartedAt, status: 'success' })
     return res.json((result as any).after)
   } catch (e: any) {
-    return res.status(Number(e?.statusCode || 500)).json({ message: e?.message || 'failed' })
+    inventoryLog(req, 'error', 'delivery_cancel_finish', { record_id: id, total_ms: Date.now() - requestStartedAt, status: 'failed', message: String(e?.message || 'failed') })
+    return sendInventoryError(req, res, e)
   }
 })
 

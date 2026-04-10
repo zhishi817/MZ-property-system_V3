@@ -178,14 +178,15 @@ async function fetchWithDevAuthRecovery(path: string, init?: any, options?: Requ
 
 async function parseErrorResponse(res: Response) {
   const ct = res.headers.get('content-type') || ''
+  const traceId = String(res.headers.get('x-trace-id') || '').trim()
   if (/application\/json/i.test(ct)) {
     const j = await res.json().catch(() => null) as any
     const msg = String(j?.message || j?.error || `HTTP ${res.status}`)
-    throw withApiFailure(buildApiError(msg, { ...(j || {}), status: res.status }), classifyApiFailure({ response: res }), { status: res.status })
+    throw withApiFailure(buildApiError(msg, { ...(j || {}), trace_id: j?.trace_id || traceId || undefined, status: res.status }), classifyApiFailure({ response: res }), { status: res.status, trace_id: j?.trace_id || traceId || undefined })
   }
   const text = await res.text().catch(() => '')
   const msg = text ? text : `HTTP ${res.status}`
-  throw withApiFailure(new Error(msg), classifyApiFailure({ response: res }), { status: res.status })
+  throw withApiFailure(buildApiError(msg, { trace_id: traceId || undefined, status: res.status }), classifyApiFailure({ response: res }), { status: res.status, trace_id: traceId || undefined })
 }
 
 export async function fetchWithTimeout(input: any, init?: any, options?: FetchTimeoutOptions): Promise<Response> {
