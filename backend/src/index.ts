@@ -7,12 +7,13 @@ import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
 import bcrypt from 'bcryptjs'
+import { randomUUID } from 'crypto'
 import { v4 as uuid } from 'uuid'
 import { router as landlordsRouter } from './modules/landlords'
 import { router as propertiesRouter } from './modules/properties'
 import { router as keysRouter } from './modules/keys'
 import { router as ordersRouter } from './modules/orders'
-import { router as inventoryRouter } from './modules/inventory'
+import { router as inventoryRouter, warmupInventoryModule } from './modules/inventory'
 import { router as financeRouter } from './modules/finance'
 import { router as cleaningRouter } from './modules/cleaning'
 import { router as configRouter } from './modules/config'
@@ -86,6 +87,13 @@ if (isProd && hasPg) {
 }
 
 const app = express()
+app.use((req: any, res, next) => {
+  const headerTraceId = String(req.headers['x-trace-id'] || req.headers['x-request-id'] || '').trim()
+  const traceId = headerTraceId || randomUUID()
+  req.traceId = traceId
+  res.setHeader('x-trace-id', traceId)
+  next()
+})
 const allowListSet = new Set(String(process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean))
 const tryOrigin = (raw: any) => {
   try {
@@ -333,7 +341,8 @@ app.use((err: any, _req: express.Request, res: express.Response, next: express.N
     if (type === 'entity.parse.failed') return res.status(400).json({ message: 'invalid_json' })
     const status = Number(err?.status || err?.statusCode || 500)
     const code = Number.isFinite(status) && status >= 400 && status <= 599 ? status : 500
-    return res.status(code).json({ message: msg })
+    const traceId = String(((_req as any)?.traceId) || res.getHeader('x-trace-id') || '')
+    return res.status(code).json(traceId ? { message: msg, trace_id: traceId } : { message: msg })
   } catch {
     try { return res.status(500).json({ message: 'Internal Server Error' }) } catch {}
     return next(err)
@@ -341,7 +350,7 @@ app.use((err: any, _req: express.Request, res: express.Response, next: express.N
 })
 
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001)
-const server = app.listen(port, () => {
+function onServerListening() {
   console.log(`Server listening on port ${port}`)
   console.log(`[DataSources] pg=${hasPg}`)
   try {
@@ -717,16 +726,7 @@ const server = app.listen(port, () => {
       console.error(`[key-upload-reminder][schedule] init error message=${String(e?.message || '')}`)
     }
   })()
-  })
-server.on('error', (err: any) => {
-  const code = String(err?.code || '')
-  if (code === 'EADDRINUSE') {
-    console.error(`❌ Port ${port} is already in use (EADDRINUSE).`)
-    process.exit(1)
-  }
-  console.error(`❌ Server failed to start. code=${code} message=${String(err?.message || '')}`)
-  process.exit(1)
-})
+}
   app.get('/health/login', async (_req, res) => {
     const started = Date.now()
     try {
@@ -752,3 +752,29 @@ server.on('error', (err: any) => {
       return res.status(500).json({ message: String(e?.message || '') })
     }
   })
+
+async function startServer() {
+  try {
+    if (hasPg) {
+      const warmupStartedAt = Date.now()
+      await warmupInventoryModule()
+      console.log(`[inventory] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`)
+    }
+  } catch (err: any) {
+    console.error(`[inventory] warmup_failed message=${String(err?.message || '')}`)
+    process.exit(1)
+  }
+
+  const server = app.listen(port, onServerListening)
+  server.on('error', (err: any) => {
+    const code = String(err?.code || '')
+    if (code === 'EADDRINUSE') {
+      console.error(`❌ Port ${port} is already in use (EADDRINUSE).`)
+      process.exit(1)
+    }
+    console.error(`❌ Server failed to start. code=${code} message=${String(err?.message || '')}`)
+    process.exit(1)
+  })
+}
+
+void startServer()

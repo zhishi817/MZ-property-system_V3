@@ -12,6 +12,7 @@ const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const morgan_1 = __importDefault(require("morgan"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const crypto_1 = require("crypto");
 const uuid_1 = require("uuid");
 const landlords_1 = require("./modules/landlords");
 const properties_1 = require("./modules/properties");
@@ -92,6 +93,13 @@ if (isProd && dbAdapter_1.hasPg) {
         throw new Error('DATABASE_URL 需开启 SSL（例如 sslmode=require）');
 }
 const app = (0, express_1.default)();
+app.use((req, res, next) => {
+    const headerTraceId = String(req.headers['x-trace-id'] || req.headers['x-request-id'] || '').trim();
+    const traceId = headerTraceId || (0, crypto_1.randomUUID)();
+    req.traceId = traceId;
+    res.setHeader('x-trace-id', traceId);
+    next();
+});
 const allowListSet = new Set(String(process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean));
 const tryOrigin = (raw) => {
     try {
@@ -380,7 +388,8 @@ app.use((err, _req, res, next) => {
             return res.status(400).json({ message: 'invalid_json' });
         const status = Number((err === null || err === void 0 ? void 0 : err.status) || (err === null || err === void 0 ? void 0 : err.statusCode) || 500);
         const code = Number.isFinite(status) && status >= 400 && status <= 599 ? status : 500;
-        return res.status(code).json({ message: msg });
+        const traceId = String((_req === null || _req === void 0 ? void 0 : _req.traceId) || res.getHeader('x-trace-id') || '');
+        return res.status(code).json(traceId ? { message: msg, trace_id: traceId } : { message: msg });
     }
     catch (_a) {
         try {
@@ -391,7 +400,7 @@ app.use((err, _req, res, next) => {
     }
 });
 const port = process.env.PORT_OVERRIDE ? Number(process.env.PORT_OVERRIDE) : (process.env.PORT ? Number(process.env.PORT) : 4001);
-const server = app.listen(port, () => {
+function onServerListening() {
     console.log(`Server listening on port ${port}`);
     console.log(`[DataSources] pg=${dbAdapter_1.hasPg}`);
     try {
@@ -834,16 +843,7 @@ const server = app.listen(port, () => {
             console.error(`[key-upload-reminder][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
         }
     })();
-});
-server.on('error', (err) => {
-    const code = String((err === null || err === void 0 ? void 0 : err.code) || '');
-    if (code === 'EADDRINUSE') {
-        console.error(`❌ Port ${port} is already in use (EADDRINUSE).`);
-        process.exit(1);
-    }
-    console.error(`❌ Server failed to start. code=${code} message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
-    process.exit(1);
-});
+}
 app.get('/health/login', async (_req, res) => {
     var _a, _b;
     const started = Date.now();
@@ -872,3 +872,27 @@ app.get('/health/email-sync', async (_req, res) => {
         return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || '') });
     }
 });
+async function startServer() {
+    try {
+        if (dbAdapter_1.hasPg) {
+            const warmupStartedAt = Date.now();
+            await (0, inventory_1.warmupInventoryModule)();
+            console.log(`[inventory] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`);
+        }
+    }
+    catch (err) {
+        console.error(`[inventory] warmup_failed message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
+        process.exit(1);
+    }
+    const server = app.listen(port, onServerListening);
+    server.on('error', (err) => {
+        const code = String((err === null || err === void 0 ? void 0 : err.code) || '');
+        if (code === 'EADDRINUSE') {
+            console.error(`❌ Port ${port} is already in use (EADDRINUSE).`);
+            process.exit(1);
+        }
+        console.error(`❌ Server failed to start. code=${code} message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
+        process.exit(1);
+    });
+}
+void startServer();
