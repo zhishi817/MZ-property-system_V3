@@ -863,34 +863,38 @@ function onServerListening() {
                 console.log('[day-end-handover-reminder][schedule] skipped_reason=pg=false');
                 return;
             }
-            const expr = '0 15 * * *';
-            const at = '15:00';
-            console.log(`[day-end-handover-reminder][schedule] enabled cron=${expr} tz=Australia/Melbourne at=${at}`);
-            const task = node_cron_1.default.schedule(expr, async () => {
-                var _a, _b;
-                const started = Date.now();
-                try {
-                    const lockKey = 1357913579;
-                    const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey]);
-                    const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
-                    if (!ok)
-                        return;
-                    const r = await (0, dayEndHandoverReminderJob_1.runDayEndHandoverReminder)({ at });
-                    const dur = Date.now() - started;
-                    if (r === null || r === void 0 ? void 0 : r.skipped)
-                        console.log(`[day-end-handover-reminder][schedule] skipped_reason=${String(r.skipped)} at=${at}`);
-                    else
-                        console.log(`[day-end-handover-reminder][schedule] ok at=${at} duration_ms=${dur} recipients=${String((r === null || r === void 0 ? void 0 : r.recipients) || 0)}`);
+            const schedules = [
+                { expr: '0 15 * * *', at: '15:00', kind: 'self', lockKey: 1357913579 },
+                { expr: '0 16 * * *', at: '16:00', kind: 'manager', lockKey: 1357913580 },
+            ];
+            const { runDayEndHandoverManagerReminder } = require('./lib/dayEndHandoverReminderJob');
+            for (const s of schedules) {
+                console.log(`[day-end-handover-reminder][schedule] enabled cron=${s.expr} tz=Australia/Melbourne at=${s.at} target=${s.kind}`);
+                const task = node_cron_1.default.schedule(s.expr, async () => {
+                    var _a, _b;
+                    const started = Date.now();
                     try {
-                        await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [lockKey]);
+                        const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [s.lockKey]);
+                        const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
+                        if (!ok)
+                            return;
+                        const r = s.kind === 'manager' ? await runDayEndHandoverManagerReminder({ at: s.at }) : await (0, dayEndHandoverReminderJob_1.runDayEndHandoverReminder)({ at: s.at });
+                        const dur = Date.now() - started;
+                        if (r === null || r === void 0 ? void 0 : r.skipped)
+                            console.log(`[day-end-handover-reminder][schedule] skipped_reason=${String(r.skipped)} at=${s.at} target=${s.kind}`);
+                        else
+                            console.log(`[day-end-handover-reminder][schedule] ok at=${s.at} target=${s.kind} duration_ms=${dur} recipients=${String((r === null || r === void 0 ? void 0 : r.recipients) || 0)}`);
+                        try {
+                            await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [s.lockKey]);
+                        }
+                        catch (_c) { }
                     }
-                    catch (_c) { }
-                }
-                catch (e) {
-                    console.error(`[day-end-handover-reminder][schedule] error at=${at} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-                }
-            }, { scheduled: true, timezone: 'Australia/Melbourne' });
-            task.start();
+                    catch (e) {
+                        console.error(`[day-end-handover-reminder][schedule] error at=${s.at} target=${s.kind} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                    }
+                }, { scheduled: true, timezone: 'Australia/Melbourne' });
+                task.start();
+            }
         }
         catch (e) {
             console.error(`[day-end-handover-reminder][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
