@@ -4,6 +4,7 @@ import { requireAnyPerm, requirePerm } from '../auth'
 import { hasPg, pgPool } from '../dbAdapter'
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
+import { buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 
 export const router = Router()
 
@@ -252,6 +253,17 @@ router.post('/', requirePerm('cleaning.schedule.manage'), async (req, res) => {
         row.created_by, row.updated_by, row.created_at, row.updated_at,
       ]
     )
+    await emitWorkTaskEvent({
+      taskId: `work_task:${row.id}`,
+      sourceType: 'work_tasks',
+      sourceRefIds: [row.id],
+      eventType: 'TASK_CREATED',
+      changeScope: 'list',
+      changedFields: ['task_kind', 'property_id', 'title', 'summary', 'scheduled_date', 'start_time', 'end_time', 'assignee_id', 'status', 'urgency'],
+      patch: row,
+      causedByUserId: String(user.sub || user.username || '').trim() || null,
+      visibilityHints: buildWorkTaskVisibilityHints(row),
+    })
     return res.status(201).json(row)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'create_failed' })
@@ -292,7 +304,20 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
     const sql = `UPDATE work_tasks SET ${set.join(', ')} WHERE id=$${vals.length} RETURNING *`
     const r1 = await pgPool.query(sql, vals)
     const row = r1?.rows?.[0] || cur
+    const changedFields = Object.keys(patch || {}).filter((key) => patch[key] !== undefined)
+    const assigneeChanged = patch.assignee_id !== undefined && String(cur.assignee_id || '') !== String(row.assignee_id || '')
     await propagateToSource(sourceType, sourceId, patch)
+    await emitWorkTaskEvent({
+      taskId: `work_task:${row.id}`,
+      sourceType: 'work_tasks',
+      sourceRefIds: [String(row.id)],
+      eventType: assigneeChanged ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
+      changeScope: assigneeChanged ? 'membership' : 'list',
+      changedFields,
+      patch: Object.fromEntries(changedFields.map((field) => [field, (row as any)[field]])),
+      causedByUserId: String(user.sub || user.username || '').trim() || null,
+      visibilityHints: buildWorkTaskVisibilityHints(row),
+    })
     try {
       const operationId = uuid()
       const assigneeId = String(row.assignee_id || '').trim()

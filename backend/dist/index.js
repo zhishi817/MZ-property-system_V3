@@ -36,6 +36,7 @@ const deep_cleaning_1 = __importDefault(require("./modules/deep_cleaning"));
 const work_tasks_1 = require("./modules/work_tasks");
 const task_center_1 = require("./modules/task_center");
 const mzapp_1 = require("./modules/mzapp");
+const work_task_events_1 = require("./modules/work_task_events");
 const propertyOnboarding_1 = require("./modules/propertyOnboarding");
 const property_guides_1 = require("./modules/property_guides");
 const property_guide_link_sync_1 = require("./modules/property_guide_link_sync");
@@ -47,6 +48,7 @@ const invoices_1 = require("./modules/invoices");
 const cms_company_1 = require("./modules/cms_company");
 const cms_company_secrets_1 = require("./modules/cms_company_secrets");
 const keyUploadReminderJob_1 = require("./lib/keyUploadReminderJob");
+const dayEndHandoverReminderJob_1 = require("./lib/dayEndHandoverReminderJob");
 const auth_2 = require("./auth");
 const public_1 = __importDefault(require("./modules/public"));
 const public_admin_1 = __importDefault(require("./modules/public_admin"));
@@ -357,6 +359,7 @@ app.use('/deep-cleaning', deep_cleaning_1.default);
 app.use('/work-tasks', work_tasks_1.router);
 app.use('/task-center', task_center_1.router);
 app.use('/mzapp', mzapp_1.router);
+app.use('/mzapp/work-task-events', work_task_events_1.router);
 app.use('/property-guides', property_guides_1.router);
 app.use('/property-guide-link-sync', property_guide_link_sync_1.router);
 app.use('/jobs', jobs_1.router);
@@ -843,6 +846,56 @@ function onServerListening() {
             console.error(`[key-upload-reminder][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
         }
     })();
+    (async () => {
+        try {
+            const defaultEnabled = process.env.NODE_ENV === 'production';
+            const enabled = String(process.env.DAY_END_HANDOVER_REMINDER_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true';
+            const featureCleaning = String(process.env.FEATURE_CLEANING_APP || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true';
+            if (!enabled) {
+                console.log('[day-end-handover-reminder][schedule] disabled');
+                return;
+            }
+            if (!featureCleaning) {
+                console.log('[day-end-handover-reminder][schedule] skipped_reason=feature_cleaning_app_disabled');
+                return;
+            }
+            if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool) {
+                console.log('[day-end-handover-reminder][schedule] skipped_reason=pg=false');
+                return;
+            }
+            const expr = '0 15 * * *';
+            const at = '15:00';
+            console.log(`[day-end-handover-reminder][schedule] enabled cron=${expr} tz=Australia/Melbourne at=${at}`);
+            const task = node_cron_1.default.schedule(expr, async () => {
+                var _a, _b;
+                const started = Date.now();
+                try {
+                    const lockKey = 1357913579;
+                    const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey]);
+                    const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
+                    if (!ok)
+                        return;
+                    const r = await (0, dayEndHandoverReminderJob_1.runDayEndHandoverReminder)({ at });
+                    const dur = Date.now() - started;
+                    if (r === null || r === void 0 ? void 0 : r.skipped)
+                        console.log(`[day-end-handover-reminder][schedule] skipped_reason=${String(r.skipped)} at=${at}`);
+                    else
+                        console.log(`[day-end-handover-reminder][schedule] ok at=${at} duration_ms=${dur} recipients=${String((r === null || r === void 0 ? void 0 : r.recipients) || 0)}`);
+                    try {
+                        await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [lockKey]);
+                    }
+                    catch (_c) { }
+                }
+                catch (e) {
+                    console.error(`[day-end-handover-reminder][schedule] error at=${at} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                }
+            }, { scheduled: true, timezone: 'Australia/Melbourne' });
+            task.start();
+        }
+        catch (e) {
+            console.error(`[day-end-handover-reminder][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+        }
+    })();
 }
 app.get('/health/login', async (_req, res) => {
     var _a, _b;
@@ -873,17 +926,6 @@ app.get('/health/email-sync', async (_req, res) => {
     }
 });
 async function startServer() {
-    try {
-        if (dbAdapter_1.hasPg) {
-            const warmupStartedAt = Date.now();
-            await (0, inventory_1.warmupInventoryModule)();
-            console.log(`[inventory] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`);
-        }
-    }
-    catch (err) {
-        console.error(`[inventory] warmup_failed message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
-        process.exit(1);
-    }
     const server = app.listen(port, onServerListening);
     server.on('error', (err) => {
         const code = String((err === null || err === void 0 ? void 0 : err.code) || '');
@@ -894,5 +936,17 @@ async function startServer() {
         console.error(`❌ Server failed to start. code=${code} message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
         process.exit(1);
     });
+    void (async () => {
+        try {
+            if (dbAdapter_1.hasPg) {
+                const warmupStartedAt = Date.now();
+                await (0, inventory_1.warmupInventoryModule)();
+                console.log(`[inventory] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`);
+            }
+        }
+        catch (err) {
+            console.error(`[inventory] warmup_failed message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
+        }
+    })();
 }
 void startServer();

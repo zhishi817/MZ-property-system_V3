@@ -9,6 +9,7 @@ const dbAdapter_1 = require("../dbAdapter");
 const cleaningSync_1 = require("../services/cleaningSync");
 const uuid_1 = require("uuid");
 const notificationEvents_1 = require("../services/notificationEvents");
+const workTaskEvents_1 = require("../services/workTaskEvents");
 exports.router = (0, express_1.Router)();
 const DEFAULT_SUMMARY_CHECKOUT_TIME = '10am';
 const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm';
@@ -689,7 +690,7 @@ const createTaskSchema = zod_1.z.object({
     note: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
 }).strict();
 exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t;
     const parsed = createTaskSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -719,7 +720,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
                     return res.status(400).json({ message: '无效的房源' });
                 normalizedPropertyId = id;
             }
-            catch (_t) { }
+            catch (_u) { }
         }
         else {
             const anyDb = store_1.db;
@@ -762,7 +763,30 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
                     const values = keys.map((k) => row[k]);
                     const sql = `INSERT INTO cleaning_tasks(${cols}) VALUES(${args}) RETURNING *`;
                     const r = await client.query(sql, values);
-                    createdRows.push(((_s = r === null || r === void 0 ? void 0 : r.rows) === null || _s === void 0 ? void 0 : _s[0]) || row);
+                    const created = ((_s = r === null || r === void 0 ? void 0 : r.rows) === null || _s === void 0 ? void 0 : _s[0]) || row;
+                    createdRows.push(created);
+                    await (0, workTaskEvents_1.emitWorkTaskEvent)({
+                        taskId: `cleaning_task:${String(created.id)}`,
+                        sourceType: 'cleaning_tasks',
+                        sourceRefIds: [String(created.id)],
+                        eventType: 'TASK_CREATED',
+                        changeScope: 'list',
+                        changedFields: ['task_type', 'task_date', 'date', 'status', 'assignee_id', 'cleaner_id', 'inspector_id', 'scheduled_at', 'property_id'],
+                        patch: {
+                            id: created.id,
+                            task_type: created.task_type,
+                            task_date: created.task_date,
+                            date: created.date,
+                            status: created.status,
+                            assignee_id: created.assignee_id,
+                            cleaner_id: created.cleaner_id,
+                            inspector_id: created.inspector_id,
+                            scheduled_at: created.scheduled_at,
+                            property_id: created.property_id,
+                        },
+                        causedByUserId: String(((_t = req === null || req === void 0 ? void 0 : req.user) === null || _t === void 0 ? void 0 : _t.sub) || '').trim() || null,
+                        visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(created),
+                    }, client);
                 }
                 await client.query('COMMIT');
             }
@@ -770,7 +794,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
                 try {
                     await client.query('ROLLBACK');
                 }
-                catch (_u) { }
+                catch (_v) { }
                 throw e;
             }
             finally {
@@ -806,6 +830,17 @@ exports.router.delete('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assig
                 return res.status(404).json({ message: 'task not found' });
             const r1 = await dbAdapter_1.pgPool.query(`UPDATE cleaning_tasks SET status='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)]);
             const after = ((_b = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
+            await (0, workTaskEvents_1.emitWorkTaskEvent)({
+                taskId: `cleaning_task:${String(id)}`,
+                sourceType: 'cleaning_tasks',
+                sourceRefIds: [String(id)],
+                eventType: 'TASK_REMOVED',
+                changeScope: 'membership',
+                changedFields: ['status'],
+                patch: { status: 'cancelled' },
+                causedByUserId: actorId || null,
+                visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
+            });
             (0, store_1.addAudit)('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') });
             return res.json({ ok: true });
         }
@@ -843,6 +878,17 @@ exports.router.post('/tasks/bulk-delete', (0, auth_1.requirePerm)('cleaning.task
                         continue;
                     const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [id]);
                     const after = ((_b = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
+                    await (0, workTaskEvents_1.emitWorkTaskEvent)({
+                        taskId: `cleaning_task:${String(id)}`,
+                        sourceType: 'cleaning_tasks',
+                        sourceRefIds: [String(id)],
+                        eventType: 'TASK_REMOVED',
+                        changeScope: 'membership',
+                        changedFields: ['status'],
+                        patch: { status: 'cancelled' },
+                        causedByUserId: actorId || null,
+                        visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
+                    }, client);
                     (0, store_1.addAudit)('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') });
                 }
                 await client.query('COMMIT');
@@ -917,7 +963,7 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
         }
         for (const id of ids) {
             const r = await (async () => {
-                var _a, _b, _c, _d, _e, _f, _g;
+                var _a, _b, _c, _d, _e, _f, _g, _h;
                 if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
                     const r0 = await dbAdapter_1.pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id]);
                     const before = ((_a = r0 === null || r0 === void 0 ? void 0 : r0.rows) === null || _a === void 0 ? void 0 : _a[0]) || null;
@@ -946,7 +992,21 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
                     const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`;
                     const r1 = await dbAdapter_1.pgPool.query(sql, [...values, id]);
-                    return ((_g = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _g === void 0 ? void 0 : _g[0]) || before;
+                    const after = ((_g = r1 === null || r1 === void 0 ? void 0 : r1.rows) === null || _g === void 0 ? void 0 : _g[0]) || before;
+                    const changedFields = Object.keys(basePatch || {}).filter((key) => basePatch[key] !== undefined);
+                    const assignmentChanged = ['assignee_id', 'cleaner_id', 'inspector_id'].some((key) => changedFields.includes(key));
+                    await (0, workTaskEvents_1.emitWorkTaskEvent)({
+                        taskId: `cleaning_task:${String(id)}`,
+                        sourceType: 'cleaning_tasks',
+                        sourceRefIds: [String(id)],
+                        eventType: assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : (String((after === null || after === void 0 ? void 0 : after.status) || '').trim().toLowerCase() === 'cancelled' ? 'TASK_REMOVED' : 'TASK_UPDATED'),
+                        changeScope: assignmentChanged ? 'membership' : (String((after === null || after === void 0 ? void 0 : after.status) || '').trim().toLowerCase() === 'cancelled' ? 'membership' : 'list'),
+                        changedFields,
+                        patch: Object.fromEntries(changedFields.map((field) => [field, after === null || after === void 0 ? void 0 : after[field]])),
+                        causedByUserId: String(((_h = req === null || req === void 0 ? void 0 : req.user) === null || _h === void 0 ? void 0 : _h.sub) || '').trim() || null,
+                        visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(after || before),
+                    });
+                    return after;
                 }
                 const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
                 if (!task)

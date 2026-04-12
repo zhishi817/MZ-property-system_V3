@@ -6,6 +6,7 @@ import { hasPg, pgPool } from '../dbAdapter'
 import { backfillCleaningTasks, syncOrderToCleaningTasks } from '../services/cleaningSync'
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
+import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 
 export const router = Router()
 
@@ -700,7 +701,30 @@ router.post('/tasks', requirePerm('cleaning.task.assign'), async (req, res) => {
           const values = keys.map((k) => row[k])
           const sql = `INSERT INTO cleaning_tasks(${cols}) VALUES(${args}) RETURNING *`
           const r = await client.query(sql, values)
-          createdRows.push(r?.rows?.[0] || row)
+          const created = r?.rows?.[0] || row
+          createdRows.push(created)
+          await emitWorkTaskEvent({
+            taskId: `cleaning_task:${String(created.id)}`,
+            sourceType: 'cleaning_tasks',
+            sourceRefIds: [String(created.id)],
+            eventType: 'TASK_CREATED',
+            changeScope: 'list',
+            changedFields: ['task_type', 'task_date', 'date', 'status', 'assignee_id', 'cleaner_id', 'inspector_id', 'scheduled_at', 'property_id'],
+            patch: {
+              id: created.id,
+              task_type: created.task_type,
+              task_date: created.task_date,
+              date: created.date,
+              status: created.status,
+              assignee_id: created.assignee_id,
+              cleaner_id: created.cleaner_id,
+              inspector_id: created.inspector_id,
+              scheduled_at: created.scheduled_at,
+              property_id: created.property_id,
+            },
+            causedByUserId: String((req as any)?.user?.sub || '').trim() || null,
+            visibilityHints: buildCleaningTaskVisibilityHints(created),
+          }, client)
         }
         await client.query('COMMIT')
       } catch (e) {
@@ -735,6 +759,17 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res
       if (!before) return res.status(404).json({ message: 'task not found' })
       const r1 = await pgPool.query(`UPDATE cleaning_tasks SET status='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)])
       const after = r1?.rows?.[0] || null
+      await emitWorkTaskEvent({
+        taskId: `cleaning_task:${String(id)}`,
+        sourceType: 'cleaning_tasks',
+        sourceRefIds: [String(id)],
+        eventType: 'TASK_REMOVED',
+        changeScope: 'membership',
+        changedFields: ['status'],
+        patch: { status: 'cancelled' },
+        causedByUserId: actorId || null,
+        visibilityHints: buildCleaningTaskVisibilityHints(after || before),
+      })
       addAudit('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
       return res.json({ ok: true })
     }
@@ -768,6 +803,17 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), async (re
           if (!before) continue
           const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [id])
           const after = r1?.rows?.[0] || null
+          await emitWorkTaskEvent({
+            taskId: `cleaning_task:${String(id)}`,
+            sourceType: 'cleaning_tasks',
+            sourceRefIds: [String(id)],
+            eventType: 'TASK_REMOVED',
+            changeScope: 'membership',
+            changedFields: ['status'],
+            patch: { status: 'cancelled' },
+            causedByUserId: actorId || null,
+            visibilityHints: buildCleaningTaskVisibilityHints(after || before),
+          }, client)
           addAudit('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
         }
         await client.query('COMMIT')
@@ -855,7 +901,21 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), async (req
           const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]))
           const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`
           const r1 = await pgPool.query(sql, [...values, id])
-          return r1?.rows?.[0] || before
+          const after = r1?.rows?.[0] || before
+          const changedFields = Object.keys(basePatch || {}).filter((key) => (basePatch as any)[key] !== undefined)
+          const assignmentChanged = ['assignee_id', 'cleaner_id', 'inspector_id'].some((key) => changedFields.includes(key))
+          await emitWorkTaskEvent({
+            taskId: `cleaning_task:${String(id)}`,
+            sourceType: 'cleaning_tasks',
+            sourceRefIds: [String(id)],
+            eventType: assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : (String(after?.status || '').trim().toLowerCase() === 'cancelled' ? 'TASK_REMOVED' : 'TASK_UPDATED'),
+            changeScope: assignmentChanged ? 'membership' : (String(after?.status || '').trim().toLowerCase() === 'cancelled' ? 'membership' : 'list'),
+            changedFields,
+            patch: Object.fromEntries(changedFields.map((field) => [field, (after as any)?.[field]])),
+            causedByUserId: String((req as any)?.user?.sub || '').trim() || null,
+            visibilityHints: buildCleaningTaskVisibilityHints(after || before),
+          })
+          return after
         }
         const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
         if (!task) return null

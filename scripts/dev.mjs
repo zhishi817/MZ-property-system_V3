@@ -1,8 +1,11 @@
 import { spawn } from 'node:child_process'
+import { execSync } from 'node:child_process'
 
-const BACKEND_HEALTH_URL = 'http://localhost:4002/health'
+const BACKEND_PORT = process.env.PORT_OVERRIDE || process.env.PORT || '4001'
+const BACKEND_HEALTH_URL = `http://localhost:${BACKEND_PORT}/health`
 const BACKEND_CWD = new URL('../backend/', import.meta.url)
 const FRONTEND_CWD = new URL('../frontend/', import.meta.url)
+const FRONTEND_PORT = process.env.FRONTEND_PORT || '3000'
 
 function npmCmd() {
   return process.platform === 'win32' ? 'npm.cmd' : 'npm'
@@ -10,6 +13,19 @@ function npmCmd() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function cleanupPort(port) {
+  try {
+    const raw = execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+    const pids = raw.split(/\s+/g).map((x) => x.trim()).filter(Boolean)
+    for (const pid of pids) {
+      try {
+        process.kill(Number(pid), 'SIGKILL')
+        console.log(`[dev] killed stale listener pid=${pid} port=${port}`)
+      } catch {}
+    }
+  } catch {}
 }
 
 async function waitForBackendHealth() {
@@ -59,6 +75,8 @@ backend.on('exit', () => {
 })
 
 try {
+  cleanupPort(BACKEND_PORT)
+  cleanupPort(FRONTEND_PORT)
   console.log('[dev] waiting for backend health before starting frontend...')
   await waitForBackendHealth()
   if (shuttingDown) process.exit(0)

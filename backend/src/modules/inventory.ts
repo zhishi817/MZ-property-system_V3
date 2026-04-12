@@ -525,6 +525,9 @@ async function ensureInventorySchema() {
       ('bedsheet','床单',true,1,10,true),
       ('duvet_cover','被套',true,1,20,true),
       ('pillowcase','枕套',true,2,30,true),
+      ('hand_towel','手巾',true,1,35,true),
+      ('bath_mat','地巾',true,1,36,true),
+      ('tea_towel','茶巾',true,1,37,true),
       ('bath_towel','浴巾',true,1,40,true)
     ON CONFLICT (code) DO NOTHING;`)
 
@@ -533,6 +536,9 @@ async function ensureInventorySchema() {
         ('item.linen_type.bedsheet','床单','LT:bedsheet','linen','bedsheet','pcs',0,NULL,true,false),
         ('item.linen_type.duvet_cover','被套','LT:duvet_cover','linen','duvet_cover','pcs',0,NULL,true,false),
         ('item.linen_type.pillowcase','枕套','LT:pillowcase','linen','pillowcase','pcs',0,NULL,true,false),
+        ('item.linen_type.hand_towel','手巾','LT:hand_towel','linen','hand_towel','pcs',0,NULL,true,false),
+        ('item.linen_type.bath_mat','地巾','LT:bath_mat','linen','bath_mat','pcs',0,NULL,true,false),
+        ('item.linen_type.tea_towel','茶巾','LT:tea_towel','linen','tea_towel','pcs',0,NULL,true,false),
         ('item.linen_type.bath_towel','浴巾','LT:bath_towel','linen','bath_towel','pcs',0,NULL,true,false)
       ON CONFLICT (id) DO NOTHING;`)
     await pgPool.query(`
@@ -761,6 +767,37 @@ async function ensureInventorySchema() {
           CHECK (type IN ('in','out','adjust'));
       END IF;
     END $$;`)
+
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS inventory_linen_usage_records (
+      id text PRIMARY KEY,
+      usage_key text NOT NULL,
+      usage_date date NOT NULL,
+      source_type text NOT NULL,
+      source_ref text NOT NULL,
+      cleaning_task_id text,
+      property_id text REFERENCES properties(id) ON DELETE SET NULL,
+      property_code text,
+      room_type_code text REFERENCES inventory_room_types(code) ON DELETE SET NULL,
+      warehouse_id text REFERENCES warehouses(id) ON DELETE SET NULL,
+      linen_type_code text NOT NULL REFERENCES inventory_linen_types(code) ON DELETE RESTRICT,
+      quantity integer NOT NULL DEFAULT 0,
+      actor_id text,
+      note text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz
+    );`)
+    await pgPool.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'inventory_linen_usage_records_usage_key_unique') THEN
+        ALTER TABLE inventory_linen_usage_records
+          ADD CONSTRAINT inventory_linen_usage_records_usage_key_unique
+          UNIQUE (usage_key);
+      END IF;
+    END $$;`)
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_linen_usage_records_date ON inventory_linen_usage_records(usage_date DESC, created_at DESC);')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_linen_usage_records_source ON inventory_linen_usage_records(source_type, source_ref);')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_linen_usage_records_property ON inventory_linen_usage_records(property_id);')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_linen_usage_records_wh ON inventory_linen_usage_records(warehouse_id);')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_inventory_linen_usage_records_linen_type ON inventory_linen_usage_records(linen_type_code);')
 
     await pgPool.query(`CREATE TABLE IF NOT EXISTS inventory_transfer_records (
       id text PRIMARY KEY,
@@ -1243,6 +1280,288 @@ async function getRoomTypeRequirementMaps(client: any) {
     reqMap.get(roomTypeCode)!.set(linenTypeCode, quantity)
   }
   return { roomTypes, reqMap }
+}
+
+function buildLinenUsageSourceLabel(sourceType: string) {
+  const source = String(sourceType || '').trim()
+  if (source === 'cleaning_task_standard') return '清洁完成自动记录'
+  if (source === 'day_end_reject_usage') return '备用床品补记'
+  return source || '床品使用'
+}
+
+async function syncLinenUsageEntriesInTx(client: any, input: {
+  source_type: string
+  source_ref: string
+  desired: Array<{
+    usage_key: string
+    usage_date: string
+    cleaning_task_id?: string | null
+    property_id?: string | null
+    property_code?: string | null
+    room_type_code?: string | null
+    warehouse_id?: string | null
+    linen_type_code: string
+    quantity: number
+    actor_id?: string | null
+    note?: string | null
+  }>
+}) {
+  const sourceType = String(input.source_type || '').trim()
+  const sourceRef = String(input.source_ref || '').trim()
+  if (!sourceType || !sourceRef) throw new Error('linen usage source is required')
+
+  const normalized = (input.desired || [])
+    .map((item) => ({
+      usage_key: String(item.usage_key || '').trim(),
+      usage_date: String(item.usage_date || '').trim().slice(0, 10),
+      cleaning_task_id: String(item.cleaning_task_id || '').trim() || null,
+      property_id: String(item.property_id || '').trim() || null,
+      property_code: String(item.property_code || '').trim() || null,
+      room_type_code: String(item.room_type_code || '').trim() || null,
+      warehouse_id: String(item.warehouse_id || '').trim() || null,
+      linen_type_code: String(item.linen_type_code || '').trim(),
+      quantity: Math.max(0, Number(item.quantity || 0)),
+      actor_id: String(item.actor_id || '').trim() || null,
+      note: String(item.note || '').trim() || null,
+    }))
+    .filter((item) => item.usage_key && item.usage_date && item.linen_type_code)
+
+  const desiredMap = new Map<string, (typeof normalized)[number]>()
+  for (const item of normalized) desiredMap.set(item.usage_key, item)
+
+  const existingRes = await client.query(
+    `SELECT id, usage_key
+     FROM inventory_linen_usage_records
+     WHERE source_type = $1 AND source_ref = $2`,
+    [sourceType, sourceRef],
+  )
+  const existingRows = existingRes.rows || []
+  const existingMap = new Map<string, any>(existingRows.map((row: any) => [String(row.usage_key || ''), row]))
+
+  for (const row of existingRows) {
+    const usageKey = String(row.usage_key || '')
+    if (!usageKey || desiredMap.has(usageKey)) continue
+    await client.query(`DELETE FROM inventory_linen_usage_records WHERE id = $1`, [String(row.id || '')])
+  }
+
+  for (const item of desiredMap.values()) {
+    const existing = existingMap.get(item.usage_key) || null
+    if (existing?.id) {
+      await client.query(
+        `UPDATE inventory_linen_usage_records
+         SET usage_date = $2::date,
+             cleaning_task_id = $3,
+             property_id = $4,
+             property_code = $5,
+             room_type_code = $6,
+             warehouse_id = $7,
+             linen_type_code = $8,
+             quantity = $9,
+             actor_id = $10,
+             note = $11,
+             updated_at = now()
+         WHERE id = $1`,
+        [
+          String(existing.id),
+          item.usage_date,
+          item.cleaning_task_id,
+          item.property_id,
+          item.property_code,
+          item.room_type_code,
+          item.warehouse_id,
+          item.linen_type_code,
+          item.quantity,
+          item.actor_id,
+          item.note,
+        ],
+      )
+    } else {
+      await client.query(
+        `INSERT INTO inventory_linen_usage_records (
+           id, usage_key, usage_date, source_type, source_ref, cleaning_task_id,
+           property_id, property_code, room_type_code, warehouse_id, linen_type_code,
+           quantity, actor_id, note, created_at, updated_at
+         )
+         VALUES ($1,$2,$3::date,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),now())`,
+        [
+          uuidv4(),
+          item.usage_key,
+          item.usage_date,
+          sourceType,
+          sourceRef,
+          item.cleaning_task_id,
+          item.property_id,
+          item.property_code,
+          item.room_type_code,
+          item.warehouse_id,
+          item.linen_type_code,
+          item.quantity,
+          item.actor_id,
+          item.note,
+        ],
+      )
+    }
+  }
+}
+
+export async function recordCleaningTaskStandardLinenUsage(params: { cleaningTaskId: string; actorId?: string | null }) {
+  if (!(hasPg && pgPool)) return { ok: false as const, reason: 'pg_unavailable' as const }
+  await ensureInventorySchema()
+  const taskId = String(params.cleaningTaskId || '').trim()
+  if (!taskId) return { ok: false as const, reason: 'missing_task_id' as const }
+  const actor = String(params.actorId || '').trim() || null
+
+  return pgRunInTransaction(async (client) => {
+    const taskRes = await client.query(
+      `SELECT
+         t.id::text AS task_id,
+         COALESCE(t.task_date, t.date)::date AS usage_date,
+         COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
+         COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code,
+         COALESCE(p_id.room_type_code, p_code.room_type_code) AS room_type_code,
+         COALESCE(p_id.type, p_code.type) AS property_type,
+         COALESCE(p_id.linen_service_warehouse_id, p_code.linen_service_warehouse_id) AS linen_service_warehouse_id,
+         COALESCE(p_id.region, p_code.region) AS region
+       FROM cleaning_tasks t
+       LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+       WHERE t.id::text = $1
+       LIMIT 1`,
+      [taskId],
+    )
+    const task = taskRes.rows?.[0] || null
+    if (!task?.task_id || !task?.usage_date || !task?.property_code) return { ok: false as const, reason: 'task_not_ready' as const }
+
+    const { roomTypes, reqMap } = await getRoomTypeRequirementMaps(client)
+    const resolvedRoomType = resolveRoomTypeCode(String(task.room_type_code || task.property_type || '').trim(), roomTypes, reqMap)
+    const roomTypeCode = String(resolvedRoomType.code || '').trim()
+    if (!roomTypeCode) return { ok: false as const, reason: 'missing_room_type' as const }
+    const reqs = reqMap.get(roomTypeCode)
+    if (!reqs || !reqs.size) return { ok: false as const, reason: 'room_type_requirements_missing' as const }
+
+    const whRes = await client.query(`SELECT id, code, name FROM warehouses WHERE active = true ORDER BY code ASC`)
+    const warehouseId = resolveWarehouseForProperty(task, whRes.rows || [])
+    const desired = Array.from(reqs.entries()).map(([linenTypeCode, quantity]) => ({
+      usage_key: `cleaning_task_standard:${taskId}:${linenTypeCode}`,
+      usage_date: String(task.usage_date || '').slice(0, 10),
+      cleaning_task_id: taskId,
+      property_id: String(task.property_id || '').trim() || null,
+      property_code: String(task.property_code || '').trim() || null,
+      room_type_code: roomTypeCode,
+      warehouse_id: String(warehouseId || '').trim() || null,
+      linen_type_code: String(linenTypeCode || '').trim(),
+      quantity: Number(quantity || 0),
+      actor_id: actor,
+      note: `按房型 ${resolvedRoomType.name || roomTypeCode} 自动登记`,
+    })).filter((item) => item.linen_type_code && item.quantity > 0)
+
+    await syncLinenUsageEntriesInTx(client, {
+      source_type: 'cleaning_task_standard',
+      source_ref: taskId,
+      desired,
+    })
+    return { ok: true as const, count: desired.length }
+  })
+}
+
+export async function syncDayEndRejectLinenUsage(params: {
+  userId: string
+  date: string
+  actorId?: string | null
+  rejectItems: Array<{ linen_type: string; quantity: number; used_room: string }>
+}) {
+  if (!(hasPg && pgPool)) return { ok: false as const, reason: 'pg_unavailable' as const }
+  await ensureInventorySchema()
+  const userId = String(params.userId || '').trim()
+  const date = String(params.date || '').trim().slice(0, 10)
+  const actor = String(params.actorId || '').trim() || null
+  if (!userId || !date) return { ok: false as const, reason: 'missing_source' as const }
+
+  return pgRunInTransaction(async (client) => {
+    const sourceRef = `${userId}:${date}`
+    const rows = (Array.isArray(params.rejectItems) ? params.rejectItems : [])
+      .map((item) => ({
+        linen_type: String(item?.linen_type || '').trim(),
+        quantity: Math.max(0, Number(item?.quantity || 0)),
+        used_room: String(item?.used_room || '').trim(),
+      }))
+      .filter((item) => item.linen_type && item.quantity > 0 && item.used_room)
+
+    if (!rows.length) {
+      await syncLinenUsageEntriesInTx(client, {
+        source_type: 'day_end_reject_usage',
+        source_ref: sourceRef,
+        desired: [],
+      })
+      return { ok: true as const, count: 0 }
+    }
+
+    const roomCodes = Array.from(new Set(rows.map((item) => item.used_room.toUpperCase())))
+    const propertiesRes = await client.query(
+      `SELECT id::text AS id, code, room_type_code, type, linen_service_warehouse_id, region
+       FROM properties
+       WHERE upper(code) = ANY($1::text[]) OR id::text = ANY($2::text[])`,
+      [roomCodes, rows.map((item) => item.used_room)],
+    )
+    const whRes = await client.query(`SELECT id, code, name FROM warehouses WHERE active = true ORDER BY code ASC`)
+    const propertyByCode = new Map<string, any>()
+    for (const property of propertiesRes.rows || []) {
+      const code = String(property.code || '').trim().toUpperCase()
+      const id = String(property.id || '').trim()
+      if (code) propertyByCode.set(code, property)
+      if (id) propertyByCode.set(id, property)
+    }
+
+    const aggregate = new Map<string, {
+      property_id: string | null
+      property_code: string | null
+      room_type_code: string | null
+      warehouse_id: string | null
+      linen_type_code: string
+      quantity: number
+    }>()
+
+    for (const row of rows) {
+      const property = propertyByCode.get(row.used_room.toUpperCase()) || propertyByCode.get(row.used_room) || null
+      const warehouseId = property ? resolveWarehouseForProperty(property, whRes.rows || []) : null
+      const propertyId = property ? String(property.id || '').trim() || null : null
+      const propertyCode = property ? String(property.code || '').trim() || row.used_room : row.used_room
+      const roomTypeCode = property ? String(property.room_type_code || property.type || '').trim() || null : null
+      const key = `${propertyCode}:${row.linen_type}`
+      const current = aggregate.get(key)
+      if (current) current.quantity += row.quantity
+      else {
+        aggregate.set(key, {
+          property_id: propertyId,
+          property_code: propertyCode,
+          room_type_code: roomTypeCode,
+          warehouse_id: String(warehouseId || '').trim() || null,
+          linen_type_code: row.linen_type,
+          quantity: row.quantity,
+        })
+      }
+    }
+
+    const desired = Array.from(aggregate.values()).map((item) => ({
+      usage_key: `day_end_reject_usage:${sourceRef}:${item.property_code || 'unknown'}:${item.linen_type_code}`,
+      usage_date: date,
+      property_id: item.property_id,
+      property_code: item.property_code,
+      room_type_code: item.room_type_code,
+      warehouse_id: item.warehouse_id,
+      linen_type_code: item.linen_type_code,
+      quantity: item.quantity,
+      actor_id: actor,
+      note: '日终 Reject 备用床品补记',
+    }))
+
+    await syncLinenUsageEntriesInTx(client, {
+      source_type: 'day_end_reject_usage',
+      source_ref: sourceRef,
+      desired,
+    })
+    return { ok: true as const, count: desired.length }
+  })
 }
 
 function computeSetsForRoomType(countsByLinenType: Record<string, number>, requirements: Map<string, number> | undefined | null) {
@@ -4888,6 +5207,74 @@ router.get('/movements', requirePerm('inventory.view'), async (req, res) => {
       return res.json(rows.rows || [])
     }
     return res.json(db.stockMovements || [])
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.get('/linen-usage-records', requirePerm('inventory.view'), async (req, res) => {
+  try {
+    if (!(hasPg && pgPool)) return res.json([])
+    await ensureInventorySchema()
+    const q: any = req.query || {}
+    const wh = String(q.warehouse_id || '').trim()
+    const prop = String(q.property_id || '').trim()
+    const roomType = String(q.room_type_code || '').trim()
+    const linenType = String(q.linen_type_code || '').trim()
+    const sourceType = String(q.source_type || '').trim()
+    const from = String(q.from || '').trim()
+    const to = String(q.to || '').trim()
+    const limit = Math.min(500, Math.max(1, Number(q.limit || 200)))
+
+    const where: string[] = []
+    const values: any[] = []
+    if (wh) { values.push(wh); where.push(`r.warehouse_id = $${values.length}`) }
+    if (prop) { values.push(prop); where.push(`r.property_id = $${values.length}`) }
+    if (roomType) { values.push(roomType); where.push(`r.room_type_code = $${values.length}`) }
+    if (linenType) { values.push(linenType); where.push(`r.linen_type_code = $${values.length}`) }
+    if (sourceType) { values.push(sourceType); where.push(`r.source_type = $${values.length}`) }
+    if (from) { values.push(from); where.push(`r.usage_date >= $${values.length}::date`) }
+    if (to) { values.push(to); where.push(`r.usage_date <= $${values.length}::date`) }
+    values.push(limit)
+
+    const rows = await pgPool.query(
+      `SELECT
+         r.id,
+         r.usage_key,
+         r.usage_date,
+         r.source_type,
+         r.source_ref,
+         r.cleaning_task_id,
+         r.property_id,
+         COALESCE(p.code, r.property_code) AS property_code,
+         p.address AS property_address,
+         r.room_type_code,
+         COALESCE(rt.name, r.room_type_code) AS room_type_name,
+         r.warehouse_id,
+         w.code AS warehouse_code,
+         w.name AS warehouse_name,
+         r.linen_type_code,
+         lt.name AS linen_type_name,
+         r.quantity,
+         r.actor_id,
+         r.note,
+         r.created_at,
+         r.updated_at
+       FROM inventory_linen_usage_records r
+       LEFT JOIN properties p ON p.id = r.property_id
+       LEFT JOIN inventory_room_types rt ON rt.code = r.room_type_code
+       LEFT JOIN warehouses w ON w.id = r.warehouse_id
+       LEFT JOIN inventory_linen_types lt ON lt.code = r.linen_type_code
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY r.usage_date DESC, r.created_at DESC, r.id DESC
+       LIMIT $${values.length}`,
+      values,
+    )
+    const out = (rows.rows || []).map((row: any) => ({
+      ...row,
+      source_label: buildLinenUsageSourceLabel(String(row.source_type || '')),
+    }))
+    return res.json(out)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
   }

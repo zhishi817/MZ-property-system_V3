@@ -10,6 +10,7 @@ import { roleHasPermission } from '../store'
 import sharp from 'sharp'
 import fs from 'fs'
 import { emitNotificationEvent } from '../services/notificationEvents'
+import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -181,11 +182,46 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
         lng: parsed.data.lng,
       }
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
+      await emitWorkTaskEvent({
+        taskId: `cleaning_task:${String(id)}`,
+        sourceType: 'cleaning_tasks',
+        sourceRefIds: [String(id)],
+        eventType: 'TASK_UPDATED',
+        changeScope: 'list',
+        changedFields: ['status', 'started_at', 'key_photo_uploaded_at'],
+        patch: {
+          status: patch.status,
+          started_at: patch.started_at,
+          key_photo_uploaded_at: patch.key_photo_uploaded_at,
+        },
+        causedByUserId: String(user?.sub || '').trim() || null,
+        visibilityHints: buildCleaningTaskVisibilityHints(up || patch),
+      })
       try { broadcastCleaningEvent({ event: 'started', task_id: id }) } catch {}
       try {
         const operationId = require('uuid').v4()
         const propertyId = String((up as any)?.property_id || '').trim()
         if (propertyId) {
+          let propertyCode = ''
+          try {
+            const { pgPool } = require('../dbAdapter')
+            if (pgPool) {
+              const r0 = await pgPool.query(
+                `SELECT COALESCE(p_id.code, p_code.code, '') AS property_code
+                 FROM cleaning_tasks t
+                 LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+                 LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+                 WHERE t.id::text = $1::text
+                 LIMIT 1`,
+                [String(id)],
+              )
+              propertyCode = String(r0?.rows?.[0]?.property_code || '').trim()
+            }
+          } catch {}
+          const title = propertyCode ? `钥匙已上传：${propertyCode}` : '钥匙已上传'
+          const body = [propertyCode ? `房源：${propertyCode}` : '', '清洁员已上传钥匙照片', parsed.data.media_url ? `照片：${parsed.data.media_url}` : '']
+            .filter(Boolean)
+            .join('\n')
           await emitNotificationEvent(
             {
               type: 'KEY_PHOTO_UPLOADED',
@@ -193,9 +229,9 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
               entityId: String(id),
               propertyId,
               updatedAt: now,
-              title: '钥匙已上传',
-              body: '清洁员已上传钥匙照片',
-              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'key_photo_uploaded', task_id: id },
+              title,
+              body,
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_notice', kind: 'key_photo_uploaded', task_id: id, property_code: propertyCode || undefined, photo_url: parsed.data.media_url || undefined },
               actorUserId: String(user?.sub || ''),
             },
             { operationId },
@@ -233,6 +269,17 @@ async function handleDeleteKeyPhoto(req: any, res: any) {
 
     await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id::text = $1::text AND type = 'key_photo'`, [String(id || '').trim()])
     await pgPool.query(`UPDATE cleaning_tasks SET key_photo_uploaded_at = NULL WHERE id::text = $1::text`, [String(id || '').trim()])
+    await emitWorkTaskEvent({
+      taskId: `cleaning_task:${String(id)}`,
+      sourceType: 'cleaning_tasks',
+      sourceRefIds: [String(id)],
+      eventType: 'TASK_DETAIL_ASSET_CHANGED',
+      changeScope: 'detail',
+      changedFields: ['key_photo_uploaded_at', 'key_photo_url'],
+      patch: { key_photo_uploaded_at: null, key_photo_url: null },
+      causedByUserId: userId,
+      visibilityHints: buildCleaningTaskVisibilityHints({ cleaner_id: cleanerId, property_id: propertyId }),
+    })
 
     try { broadcastCleaningEvent({ event: 'key_photo_deleted', task_id: id }) } catch {}
     try {
@@ -280,6 +327,17 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
         const media = { id: require('uuid').v4(), task_id: id, type: 'issue_photo', url: parsed.data.media_url, captured_at: new Date().toISOString() }
         try { await pgInsert('cleaning_task_media', media as any) } catch {}
       }
+      await emitWorkTaskEvent({
+        taskId: `cleaning_task:${String(id)}`,
+        sourceType: 'cleaning_tasks',
+        sourceRefIds: [String(id)],
+        eventType: 'TASK_DETAIL_ASSET_CHANGED',
+        changeScope: 'detail',
+        changedFields: ['issues'],
+        patch: { issue_reported: true },
+        causedByUserId: String(user?.sub || '').trim() || null,
+        visibilityHints: buildCleaningTaskVisibilityHints({ id }),
+      })
       try { broadcastCleaningEvent({ event: 'issue', task_id: id }) } catch {}
       try {
         const operationId = require('uuid').v4()
@@ -328,6 +386,37 @@ const consumableSchema = z.object({
     }),
   ),
 })
+router.get('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+  const { id } = req.params
+  try {
+    if (!hasPg) return res.json({ items: [] })
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.json({ items: [] })
+    const rows = await pgPool.query(
+      `SELECT id, item_id, qty, need_restock, note, status, photo_url, item_label, created_at
+       FROM cleaning_consumable_usages
+       WHERE task_id = $1
+       ORDER BY created_at ASC, id ASC`,
+      [String(id)],
+    )
+    return res.json({
+      items: (rows.rows || []).map((x: any) => ({
+        id: String(x.id || ''),
+        item_id: String(x.item_id || ''),
+        qty: Number(x.qty || 0) || 0,
+        need_restock: !!x.need_restock,
+        note: x.note == null ? null : String(x.note),
+        status: String(x.status || ''),
+        photo_url: x.photo_url == null ? null : String(x.photo_url),
+        item_label: x.item_label == null ? null : String(x.item_label),
+        created_at: x.created_at == null ? null : String(x.created_at),
+      })),
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
 router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
   const user = (req as any).user
   const { id } = req.params
@@ -371,15 +460,27 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       const missing = activeItems.map((x: any) => String(x.id)).filter((x: string) => !submittedIds.has(x))
       if (missing.length) return res.status(400).json({ message: '缺少必填项', missing })
 
+      const taskRow = await pgPool.query(`SELECT id, status, property_id::text AS property_id, finished_at FROM cleaning_tasks WHERE id=$1 LIMIT 1`, [String(id)])
+      const task = taskRow?.rows?.[0]
+      if (!task) return res.status(404).json({ message: 'task not found' })
+      const existingRows = await pgPool.query(`SELECT id FROM cleaning_consumable_usages WHERE task_id=$1 LIMIT 1`, [String(id)])
+      const hadExisting = !!existingRows?.rowCount
+
+      for (const row of parsed.data.items) {
+        const meta: any = byId.get(String(row.item_id)) || null
+        const requiresPhoto = meta ? !!meta.requires_photo_when_low : true
+        if (row.status === 'low' && requiresPhoto && !String(row.photo_url || '').trim()) {
+          return res.status(400).json({ message: '不足项必须拍照', item_id: row.item_id })
+        }
+        if (row.status === 'low' && (!row.qty || row.qty < 1)) {
+          return res.status(400).json({ message: '不足项必须填写数量', item_id: row.item_id })
+        }
+      }
+
+      await pgPool.query(`DELETE FROM cleaning_consumable_usages WHERE task_id=$1`, [String(id)])
+
       for (const it of parsed.data.items) {
         const meta: any = byId.get(String(it.item_id)) || null
-        const requiresPhoto = meta ? !!meta.requires_photo_when_low : true
-        if (it.status === 'low' && requiresPhoto && !String(it.photo_url || '').trim()) {
-          return res.status(400).json({ message: '不足项必须拍照', item_id: it.item_id })
-        }
-        if (it.status === 'low' && (!it.qty || it.qty < 1)) {
-          return res.status(400).json({ message: '不足项必须填写数量', item_id: it.item_id })
-        }
         const row = {
           id: require('uuid').v4(),
           task_id: id,
@@ -394,8 +495,24 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
         await pgInsert('cleaning_consumable_usages', row as any)
       }
       const needsRestock = parsed.data.items.some((i) => i.status === 'low')
-      const patch: any = { status: needsRestock ? 'restock_pending' : 'cleaned', finished_at: new Date().toISOString() }
-      const up = await pgUpdate('cleaning_tasks', id, patch)
+      const now = new Date().toISOString()
+      const taskStatus = String(task.status || '').trim().toLowerCase()
+      const isFinishedTask = ['cleaned', 'restock_pending', 'restocked', 'to_inspect', 'to_hang_keys', 'keys_hung', 'done', 'completed', 'ready'].includes(taskStatus)
+      const patch: any = {}
+      if (!isFinishedTask) patch.status = needsRestock ? 'restock_pending' : 'cleaned'
+      if (!task.finished_at) patch.finished_at = now
+      const up = Object.keys(patch).length ? await pgUpdate('cleaning_tasks', id, patch) : task
+      await emitWorkTaskEvent({
+        taskId: `cleaning_task:${String(id)}`,
+        sourceType: 'cleaning_tasks',
+        sourceRefIds: [String(id)],
+        eventType: needsRestock ? 'TASK_UPDATED' : 'TASK_COMPLETED',
+        changeScope: Object.keys(patch).length ? 'list' : 'detail',
+        changedFields: Array.from(new Set([...Object.keys(patch), 'restock_items'])),
+        patch: { ...patch, restock_items_updated: true },
+        causedByUserId: String(user?.sub || '').trim() || null,
+        visibilityHints: buildCleaningTaskVisibilityHints(up || task),
+      })
       try { broadcastCleaningEvent({ event: 'consumables_submitted', task_id: id, restock_pending: needsRestock }) } catch {}
       try {
         const operationId = require('uuid').v4()
@@ -414,18 +531,18 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
             propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
           }
         } catch {}
-        const propertyId = String((up as any)?.property_id || '').trim()
+        const propertyId = String((up as any)?.property_id || task.property_id || '').trim()
         if (propertyId) {
           await emitNotificationEvent(
             {
-              type: 'CLEANING_COMPLETED',
+              type: hadExisting ? 'CLEANING_TASK_UPDATED' : 'CLEANING_COMPLETED',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
-              updatedAt: String(patch.finished_at || ''),
-              title: propertyCode ? `清洁完成：${propertyCode}` : '清洁完成',
-              body: needsRestock ? '清洁已完成，待补货' : '清洁已完成，待检查',
-              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'consumables_submitted', task_id: id, restock_pending: needsRestock, property_code: propertyCode },
+              updatedAt: String(now),
+              title: propertyCode ? `${hadExisting ? '补品已更新' : '清洁完成'}：${propertyCode}` : (hadExisting ? '补品已更新' : '清洁完成'),
+              body: hadExisting ? '清洁补品记录已修改，请检查更新' : (needsRestock ? '清洁已完成，待补货' : '清洁已完成，待检查'),
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: hadExisting ? 'consumables_updated' : 'consumables_submitted', task_id: id, restock_pending: needsRestock, property_code: propertyCode },
               actorUserId: String(user?.sub || ''),
             },
             { operationId },
@@ -447,6 +564,17 @@ router.patch('/tasks/:id/restock', requireAnyPerm(['cleaning_app.restock.manage'
   try {
     if (hasPg) {
       const up = await pgUpdate('cleaning_tasks', id, { status: 'restocked' } as any)
+      await emitWorkTaskEvent({
+        taskId: `cleaning_task:${String(id)}`,
+        sourceType: 'cleaning_tasks',
+        sourceRefIds: [String(id)],
+        eventType: 'TASK_UPDATED',
+        changeScope: 'list',
+        changedFields: ['status'],
+        patch: { status: 'restocked' },
+        causedByUserId: String(user?.sub || '').trim() || null,
+        visibilityHints: buildCleaningTaskVisibilityHints(up),
+      })
       try { broadcastCleaningEvent({ event: 'restock_done', task_id: id }) } catch {}
       try {
         const operationId = require('uuid').v4()
@@ -492,6 +620,17 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
       const up = await pgUpdate('cleaning_tasks', id, patch)
       const media = { id: require('uuid').v4(), task_id: id, type: 'lockbox_video', url: parsed.data.media_url, captured_at: parsed.data.captured_at || now, lat: parsed.data.lat, lng: parsed.data.lng }
       try { await pgInsert('cleaning_task_media', media as any) } catch {}
+      await emitWorkTaskEvent({
+        taskId: `cleaning_task:${String(id)}`,
+        sourceType: 'cleaning_tasks',
+        sourceRefIds: [String(id)],
+        eventType: 'TASK_COMPLETED',
+        changeScope: 'list',
+        changedFields: ['status', 'lockbox_video_uploaded_at', 'lockbox_video_url'],
+        patch: { status: patch.status, lockbox_video_uploaded_at: patch.lockbox_video_uploaded_at },
+        causedByUserId: String(user?.sub || '').trim() || null,
+        visibilityHints: buildCleaningTaskVisibilityHints(up || patch),
+      })
       try { broadcastCleaningEvent({ event: 'inspected', task_id: id }) } catch {}
       try {
         const operationId = require('uuid').v4()
@@ -550,11 +689,48 @@ async function ensureCleaningDayEndMediaTable() {
   } catch {}
 }
 
+async function ensureCleaningDayEndHandoverTable() {
+  try {
+    if (!hasPg) return
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return
+    await ensureCleaningDayEndMediaTable()
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_day_end_handover (
+      user_id text NOT NULL,
+      date date NOT NULL,
+      no_dirty_linen boolean NOT NULL DEFAULT false,
+      submitted_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, date)
+    );`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_day_end_handover_date ON cleaning_day_end_handover(date);`)
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_day_end_reject_items (
+      id text PRIMARY KEY,
+      user_id text NOT NULL,
+      date date NOT NULL,
+      linen_type text NOT NULL,
+      quantity integer NOT NULL DEFAULT 1,
+      used_room text NOT NULL,
+      photos_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_day_end_reject_items_user_date ON cleaning_day_end_reject_items(user_id, date);`)
+  } catch {}
+}
+
+function canViewDayEndForAllUsers(user: any) {
+  const role = String(user?.role || '').trim()
+  const roles = Array.isArray(user?.roles) ? user.roles.map((x: any) => String(x || '').trim()) : []
+  const all = new Set([role, ...roles].filter(Boolean))
+  return all.has('admin') || all.has('offline_manager') || all.has('customer_service') || all.has('inventory_manager')
+}
+
 const inspectionPhotosSchema = z
   .object({
     items: z.array(
       z.object({
-        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'unclean']),
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'shower_drain', 'unclean']),
         url: z.string().trim().min(1),
         note: z.string().trim().max(800).optional().nullable(),
         captured_at: z.string().trim().max(64).optional(),
@@ -602,7 +778,7 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
   const parsed = inspectionPhotosSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
-    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, unclean: 12 }
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, shower_drain: 1, unclean: 12 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
       const a = String(it.area)
@@ -664,7 +840,7 @@ const completionPhotosSchema = z
   .object({
     items: z.array(
       z.object({
-        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen']),
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'shower_drain']),
         url: z.string().trim().min(1),
         note: z.string().trim().max(800).optional().nullable(),
         captured_at: z.string().trim().max(64).optional(),
@@ -712,7 +888,7 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
   const parsed = completionPhotosSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
-    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2 }
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, shower_drain: 1 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
       const a = String(it.area)
@@ -851,7 +1027,7 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
         `SELECT type FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'completion_%'`,
         [String(id)],
       )
-      const requiredAreas = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen']
+      const requiredAreas = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'shower_drain']
       const got = new Set<string>()
       for (const row of rComp?.rows || []) {
         const type = String(row.type || '')
@@ -880,6 +1056,13 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
       if (!task.finished_at) patch.finished_at = now
       if (Object.keys(patch).length) {
         const up = await pgUpdate('cleaning_tasks', id, patch)
+        try {
+          const { recordCleaningTaskStandardLinenUsage } = require('./inventory')
+          await recordCleaningTaskStandardLinenUsage({
+            cleaningTaskId: String(id),
+            actorId: String(user?.sub || '').trim() || null,
+          })
+        } catch {}
         try { broadcastCleaningEvent({ event: 'self_completed', task_id: id }) } catch {}
         try {
           const operationId = require('uuid').v4()
@@ -903,6 +1086,13 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
         } catch {}
         return res.json(up || { id, ...patch })
       }
+      try {
+        const { recordCleaningTaskStandardLinenUsage } = require('./inventory')
+        await recordCleaningTaskStandardLinenUsage({
+          cleaningTaskId: String(id),
+          actorId: String(user?.sub || '').trim() || null,
+        })
+      } catch {}
       return res.json({ ok: true, id: String(id) })
     }
     return res.json({ ok: true, id: String(id) })
@@ -1068,6 +1258,96 @@ router.patch('/tasks/:id/ready', requirePerm('cleaning_app.ready.set'), async (r
 
 const dayEndBackupKeysListSchema = z.object({ date: z.string().trim().min(10).max(32).optional(), user_id: z.string().trim().max(80).optional() })
 
+const dayEndHandoverListSchema = z.object({ date: z.string().trim().min(10).max(32).optional(), user_id: z.string().trim().max(80).optional() })
+
+router.get('/linen-types', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.calendar.view.all']), async (_req, res) => {
+  try {
+    if (!hasPg) return res.json([])
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.json([])
+    await pgPool.query(
+      `INSERT INTO inventory_linen_types (code, name, in_set, set_divisor, sort_order, active)
+       VALUES
+         ('bedsheet','床单',true,1,10,true),
+         ('duvet_cover','被套',true,1,20,true),
+         ('pillowcase','枕套',true,2,30,true),
+         ('hand_towel','手巾',true,1,35,true),
+         ('bath_mat','地巾',true,1,36,true),
+         ('tea_towel','茶巾',true,1,37,true),
+         ('bath_towel','浴巾',true,1,40,true)
+       ON CONFLICT (code) DO NOTHING`,
+    )
+    const rows = await pgPool.query(
+      `SELECT code, name, sort_order
+       FROM inventory_linen_types
+       WHERE active = true
+         AND COALESCE(NULLIF(TRIM(name), ''), code, '') <> ''
+       ORDER BY COALESCE(sort_order, 9999) ASC, code ASC`,
+    )
+    const seen = new Set<string>()
+    const out = []
+    for (const row of rows.rows || []) {
+      const name = String(row.name || '').trim()
+      if (!name || seen.has(name)) continue
+      seen.add(name)
+      out.push({
+        code: String(row.code || ''),
+        name,
+        sort_order: Number(row.sort_order || 0) || 0,
+      })
+    }
+    return res.json(out)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+router.get('/property-codes', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.calendar.view.all']), async (req, res) => {
+  try {
+    if (!hasPg) return res.json([])
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.json([])
+    const q = String((req.query as any)?.q || '').trim()
+    const values: any[] = []
+    let where = `WHERE COALESCE(code, '') <> ''`
+    if (q) {
+      values.push(`%${q}%`)
+      where += ` AND code ILIKE $${values.length}`
+    }
+    values.push(q ? 100 : 5000)
+    const rows = await pgPool.query(
+      `SELECT id::text AS id, code
+       FROM properties
+       ${where}
+       ORDER BY code ASC
+       LIMIT $${values.length}`,
+      values,
+    )
+    return res.json((rows.rows || []).map((x: any) => ({
+      id: String(x.id || ''),
+      code: String(x.code || ''),
+    })))
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+const dayEndHandoverPostSchema = z
+  .object({
+    date: z.string().trim().min(10).max(32),
+    key_photos: z.array(z.object({ url: z.string().trim().min(1).max(800), captured_at: z.string().trim().max(64).optional() })).min(1).max(30),
+    dirty_linen_photos: z.array(z.object({ url: z.string().trim().min(1).max(800), captured_at: z.string().trim().max(64).optional() })).max(30).default([]),
+    return_wash_photos: z.array(z.object({ url: z.string().trim().min(1).max(800), captured_at: z.string().trim().max(64).optional() })).max(30).default([]),
+    reject_items: z.array(z.object({
+      linen_type: z.string().trim().min(1).max(80),
+      quantity: z.coerce.number().int().min(1).max(999),
+      used_room: z.string().trim().min(1).max(80),
+      photos: z.array(z.object({ url: z.string().trim().min(1).max(800), captured_at: z.string().trim().max(64).optional() })).min(1).max(10),
+    })).max(30).default([]),
+    no_dirty_linen: z.boolean().optional(),
+  })
+  .strict()
+
 router.get('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.calendar.view.all']), async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
@@ -1079,7 +1359,7 @@ router.get('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish', 
     if (!pgPool) return res.json({ items: [] })
     await ensureCleaningDayEndMediaTable()
     const date = String(parsed.data.date || '').slice(0, 10)
-    const canAll = String(user?.role || '') === 'admin' || String(user?.role || '') === 'offline_manager' || String(user?.role || '') === 'customer_service'
+    const canAll = canViewDayEndForAllUsers(user)
     const userId = canAll && parsed.data.user_id ? String(parsed.data.user_id) : String(user.sub || '')
     if (!userId) return res.status(401).json({ message: 'unauthorized' })
     const r = await pgPool.query(
@@ -1103,6 +1383,96 @@ router.get('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish', 
   }
 })
 
+router.get('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.calendar.view.all']), async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = dayEndHandoverListSchema.safeParse(req.query || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!hasPg) return res.json({ key_photos: [], dirty_linen_photos: [], return_wash_photos: [], reject_items: [], no_dirty_linen: false, submitted_at: null, updated_at: null })
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.json({ key_photos: [], dirty_linen_photos: [], return_wash_photos: [], reject_items: [], no_dirty_linen: false, submitted_at: null, updated_at: null })
+    await ensureCleaningDayEndHandoverTable()
+    const date = String(parsed.data.date || '').slice(0, 10)
+    const canAll = canViewDayEndForAllUsers(user)
+    const userId = canAll && parsed.data.user_id ? String(parsed.data.user_id) : String(user.sub || '')
+    if (!userId) return res.status(401).json({ message: 'unauthorized' })
+    const [mediaRes, statusRes, rejectRes] = await Promise.all([
+      pgPool.query(
+        `SELECT id, kind, url, captured_at, created_at
+         FROM cleaning_day_end_media
+         WHERE user_id = $1::text
+           AND ($2::date IS NULL OR date = $2::date)
+           AND kind IN ('backup_key_return', 'dirty_linen_return', 'return_wash_linen')
+         ORDER BY created_at ASC`,
+        [userId, date ? date : null],
+      ),
+      pgPool.query(
+        `SELECT no_dirty_linen, submitted_at, updated_at
+         FROM cleaning_day_end_handover
+         WHERE user_id = $1::text
+           AND ($2::date IS NULL OR date = $2::date)
+         ORDER BY date DESC
+        LIMIT 1`,
+        [userId, date ? date : null],
+      ),
+      pgPool.query(
+        `SELECT id, linen_type, quantity, used_room, photos_json, created_at, updated_at
+         FROM cleaning_day_end_reject_items
+         WHERE user_id = $1::text
+           AND ($2::date IS NULL OR date = $2::date)
+         ORDER BY created_at ASC`,
+        [userId, date ? date : null],
+      ),
+    ])
+    const rows = mediaRes?.rows || []
+    const key_photos = rows
+      .filter((x: any) => String(x.kind || '') === 'backup_key_return')
+      .map((x: any) => ({
+        id: String(x.id || ''),
+        url: String(x.url || ''),
+        captured_at: x.captured_at ? String(x.captured_at) : null,
+        created_at: x.created_at ? String(x.created_at) : null,
+      }))
+    const return_wash_photos = rows
+      .filter((x: any) => {
+        const kind = String(x.kind || '')
+        return kind === 'dirty_linen_return' || kind === 'return_wash_linen'
+      })
+      .map((x: any) => ({
+        id: String(x.id || ''),
+        url: String(x.url || ''),
+        captured_at: x.captured_at ? String(x.captured_at) : null,
+        created_at: x.created_at ? String(x.created_at) : null,
+      }))
+    const reject_items = (rejectRes?.rows || []).map((x: any) => ({
+      id: String(x.id || ''),
+      linen_type: String(x.linen_type || ''),
+      quantity: Number(x.quantity || 0) || 0,
+      used_room: String(x.used_room || ''),
+      photos: Array.isArray(x.photos_json) ? x.photos_json.map((p: any, idx: number) => ({
+        id: `${String(x.id || 'reject')}_${idx}`,
+        url: String(p?.url || ''),
+        captured_at: p?.captured_at ? String(p.captured_at) : null,
+      })).filter((p: any) => !!p.url) : [],
+      created_at: x.created_at ? String(x.created_at) : null,
+      updated_at: x.updated_at ? String(x.updated_at) : null,
+    }))
+    const statusRow = statusRes?.rows?.[0] || null
+    return res.json({
+      key_photos,
+      dirty_linen_photos: return_wash_photos,
+      return_wash_photos,
+      reject_items,
+      no_dirty_linen: !!statusRow?.no_dirty_linen,
+      submitted_at: statusRow?.submitted_at ? String(statusRow.submitted_at) : null,
+      updated_at: statusRow?.updated_at ? String(statusRow.updated_at) : null,
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
 const dayEndBackupKeysPostSchema = z
   .object({
     date: z.string().trim().min(10).max(32),
@@ -1110,7 +1480,7 @@ const dayEndBackupKeysPostSchema = z
   })
   .strict()
 
-router.post('/day-end/backup-keys', requirePerm('cleaning_app.tasks.finish'), async (req, res) => {
+router.post('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish']), async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const parsed = dayEndBackupKeysPostSchema.safeParse(req.body || {})
@@ -1132,6 +1502,106 @@ router.post('/day-end/backup-keys', requirePerm('cleaning_app.tasks.finish'), as
         [uuid.v4(), userId, date, String(it.url), capturedAt ? capturedAt.toISOString() : null],
       )
     }
+    return res.status(201).json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish']), async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = dayEndHandoverPostSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!hasPg) return res.status(201).json({ ok: true })
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+    await ensureCleaningDayEndHandoverTable()
+    const uuid = require('uuid')
+    const userId = String(user.sub || '').trim()
+    const date = String(parsed.data.date || '').slice(0, 10)
+    const keyPhotos = Array.isArray(parsed.data.key_photos) ? parsed.data.key_photos : []
+    const returnWashPhotos = Array.isArray(parsed.data.return_wash_photos) && parsed.data.return_wash_photos.length
+      ? parsed.data.return_wash_photos
+      : (Array.isArray(parsed.data.dirty_linen_photos) ? parsed.data.dirty_linen_photos : [])
+    const rejectItems = Array.isArray(parsed.data.reject_items) ? parsed.data.reject_items : []
+    const noDirtyLinen = !!parsed.data.no_dirty_linen
+    if (!keyPhotos.length) return res.status(400).json({ message: '请先上传备用钥匙照片' })
+    if (!returnWashPhotos.length && !noDirtyLinen) return res.status(400).json({ message: '请上传退洗床品照片' })
+
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query(
+        `DELETE FROM cleaning_day_end_media
+         WHERE user_id = $1::text
+           AND date = $2::date
+           AND kind IN ('backup_key_return', 'dirty_linen_return', 'return_wash_linen')`,
+        [userId, date],
+      )
+      await client.query(
+        `DELETE FROM cleaning_day_end_reject_items
+         WHERE user_id = $1::text
+           AND date = $2::date`,
+        [userId, date],
+      )
+      for (const it of keyPhotos) {
+        const cap = String(it.captured_at || '').trim()
+        const capturedAt = cap ? new Date(cap) : null
+        await client.query(
+          `INSERT INTO cleaning_day_end_media (id, user_id, date, kind, url, captured_at)
+           VALUES ($1,$2,$3,'backup_key_return',$4,$5)`,
+          [uuid.v4(), userId, date, String(it.url), capturedAt ? capturedAt.toISOString() : null],
+        )
+      }
+      for (const it of returnWashPhotos) {
+        const cap = String(it.captured_at || '').trim()
+        const capturedAt = cap ? new Date(cap) : null
+        await client.query(
+          `INSERT INTO cleaning_day_end_media (id, user_id, date, kind, url, captured_at)
+           VALUES ($1,$2,$3,'return_wash_linen',$4,$5)`,
+          [uuid.v4(), userId, date, String(it.url), capturedAt ? capturedAt.toISOString() : null],
+        )
+      }
+      for (const it of rejectItems) {
+        const photos = (Array.isArray(it.photos) ? it.photos : []).map((p: any) => ({
+          url: String(p?.url || ''),
+          captured_at: String(p?.captured_at || '').trim() || null,
+        })).filter((p: any) => !!p.url)
+        await client.query(
+          `INSERT INTO cleaning_day_end_reject_items (id, user_id, date, linen_type, quantity, used_room, photos_json, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,now(),now())`,
+          [uuid.v4(), userId, date, String(it.linen_type || ''), Number(it.quantity || 0) || 1, String(it.used_room || ''), JSON.stringify(photos)],
+        )
+      }
+      await client.query(
+        `INSERT INTO cleaning_day_end_handover (user_id, date, no_dirty_linen, submitted_at, updated_at)
+         VALUES ($1,$2,$3,now(),now())
+         ON CONFLICT (user_id, date)
+         DO UPDATE SET no_dirty_linen = EXCLUDED.no_dirty_linen, submitted_at = now(), updated_at = now()`,
+        [userId, date, noDirtyLinen],
+      )
+      await client.query('COMMIT')
+    } catch (e) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw e
+    } finally {
+      client.release()
+    }
+    try {
+      const { syncDayEndRejectLinenUsage } = require('./inventory')
+      await syncDayEndRejectLinenUsage({
+        userId,
+        date,
+        actorId: String(user.sub || '').trim() || null,
+        rejectItems: rejectItems.map((item: any) => ({
+          linen_type: String(item?.linen_type || '').trim(),
+          quantity: Number(item?.quantity || 0) || 0,
+          used_room: String(item?.used_room || '').trim(),
+        })),
+      })
+    } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'error' })
