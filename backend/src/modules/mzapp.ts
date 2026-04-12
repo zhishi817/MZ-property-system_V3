@@ -5,10 +5,14 @@ import multer from 'multer'
 import path from 'path'
 import { hasR2, r2Upload } from '../r2'
 import crypto from 'crypto'
+import sharp from 'sharp'
+import fs from 'fs'
+import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 
 export const router = Router()
 
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
+const PHOTO_ID_WATERMARK_TEXT = '仅用于MZ Property（ABN：42 657 925 365）记录,不做任何其他用途。\nFor the records of MZ Property (ABN: 42 657 925 365) only, not for other purpose.'
 
 function dayOnly(v: any): string | null {
   const s = String(v ?? '').slice(0, 10)
@@ -560,7 +564,7 @@ const inspectionPhotosSchema = z
   .object({
     items: z.array(
       z.object({
-        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'unclean']),
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'shower_drain', 'unclean']),
         url: z.string().trim().min(1).max(800),
         note: z.string().trim().max(800).optional().nullable(),
         captured_at: z.string().trim().max(64).optional(),
@@ -631,7 +635,7 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
     if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
 
-    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, unclean: 12 }
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, shower_drain: 1, unclean: 12 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
       const a = String(it.area)
@@ -1334,6 +1338,49 @@ router.post('/cleaning-tasks/order-keys-required', async (req, res) => {
       const { broadcastCleaningEvent } = require('./events')
       for (const id of allTaskIds) broadcastCleaningEvent({ event: 'cleaning_task_manager_fields_updated', task_id: String(id) })
     } catch {}
+    if (allTaskIds.length) {
+      try {
+        const vis = await pgPool.query(
+          `SELECT id::text AS id, assignee_id, cleaner_id, inspector_id, lower(COALESCE(task_type, '')) AS task_type
+           FROM cleaning_tasks
+           WHERE id::text = ANY($1::text[])`,
+          [allTaskIds],
+        )
+        const byId = new Map<string, any>((vis?.rows || []).map((row: any) => [String(row.id || ''), row]))
+        for (const id of allTaskIds) {
+          const row = byId.get(String(id)) || { id }
+          const taskType = String(row?.task_type || '').trim()
+          const isCheckoutTask = taskType === 'checkout_clean'
+          const isCheckinTask = taskType === 'checkin_clean'
+          await emitWorkTaskEvent({
+            taskId: `cleaning_task:${String(id)}`,
+            sourceType: 'cleaning_tasks',
+            sourceRefIds: [String(id)],
+            eventType: 'TASK_UPDATED',
+            changeScope: 'list',
+            changedFields: [
+              'keys_required',
+              ...(isCheckoutTask ? ['keys_required_checkout'] : []),
+              ...(isCheckinTask ? ['keys_required_checkin'] : []),
+              'key_tags',
+            ],
+            patch: {
+              keys_required: nextK,
+              ...(isCheckoutTask ? { keys_required_checkout: nextK } : {}),
+              ...(isCheckinTask ? { keys_required_checkin: nextK } : {}),
+              key_tags: {
+                checkout_sets: isCheckoutTask ? nextK : 0,
+                checkin_sets: isCheckinTask ? nextK : 0,
+                show_checkout: isCheckoutTask && nextK >= 2,
+                show_checkin: isCheckinTask && nextK >= 2,
+              },
+            },
+            causedByUserId: String(user?.sub || '').trim() || null,
+            visibilityHints: buildCleaningTaskVisibilityHints(row),
+          })
+        }
+      } catch {}
+    }
 
     try {
       let propertyCode = ''
@@ -1556,6 +1603,78 @@ async function handleManagerFields(req: any, res: any) {
       const { broadcastCleaningEvent } = require('./events')
       for (const id of Array.from(affectedTaskIds)) broadcastCleaningEvent({ event: 'cleaning_task_manager_fields_updated', task_id: String(id) })
     } catch {}
+    if (affectedTaskIds.size) {
+      try {
+        const affectedIds = Array.from(affectedTaskIds)
+        const vis = await pgPool.query(
+          `SELECT id::text AS id, assignee_id, cleaner_id, inspector_id, lower(COALESCE(task_type, '')) AS task_type
+           FROM cleaning_tasks
+           WHERE id::text = ANY($1::text[])`,
+          [affectedIds],
+        )
+        const byId = new Map<string, any>((vis?.rows || []).map((row: any) => [String(row.id || ''), row]))
+        const changedFields = [
+          ...(parsed.data.checkout_time !== undefined ? ['checkout_time'] : []),
+          ...(parsed.data.checkin_time !== undefined ? ['checkin_time'] : []),
+          ...(parsed.data.old_code !== undefined ? ['old_code'] : []),
+          ...(parsed.data.new_code !== undefined ? ['new_code'] : []),
+          ...(parsed.data.guest_special_request !== undefined ? ['guest_special_request'] : []),
+          ...(parsed.data.keys_required !== undefined ? ['keys_required'] : []),
+        ]
+        const scope = parsed.data.checkout_time !== undefined
+          || parsed.data.checkin_time !== undefined
+          || parsed.data.keys_required !== undefined
+          ? 'list'
+          : 'detail'
+        for (const id of affectedIds) {
+          const row = byId.get(String(id)) || { id }
+          const taskType = String(row?.task_type || '').trim()
+          const isCheckoutTask = taskType === 'checkout_clean'
+          const isCheckinTask = taskType === 'checkin_clean'
+          const changedFieldsForTask = [
+            ...(parsed.data.checkout_time !== undefined ? ['checkout_time'] : []),
+            ...(parsed.data.checkin_time !== undefined ? ['checkin_time'] : []),
+            ...(parsed.data.old_code !== undefined ? ['old_code'] : []),
+            ...(parsed.data.new_code !== undefined ? ['new_code'] : []),
+            ...(parsed.data.guest_special_request !== undefined ? ['guest_special_request'] : []),
+            ...(parsed.data.keys_required !== undefined ? ['keys_required'] : []),
+            ...(parsed.data.keys_required !== undefined && isCheckoutTask ? ['keys_required_checkout'] : []),
+            ...(parsed.data.keys_required !== undefined && isCheckinTask ? ['keys_required_checkin'] : []),
+            ...(parsed.data.keys_required !== undefined ? ['key_tags'] : []),
+          ]
+          await emitWorkTaskEvent({
+            taskId: `cleaning_task:${String(id)}`,
+            sourceType: 'cleaning_tasks',
+            sourceRefIds: [String(id)],
+            eventType: 'TASK_UPDATED',
+            changeScope: scope,
+            changedFields: changedFieldsForTask,
+            patch: {
+              ...(parsed.data.checkout_time !== undefined ? { checkout_time: parsed.data.checkout_time ?? null } : {}),
+              ...(parsed.data.checkin_time !== undefined ? { checkin_time: parsed.data.checkin_time ?? null } : {}),
+              ...(parsed.data.old_code !== undefined ? { old_code: parsed.data.old_code ?? null } : {}),
+              ...(parsed.data.new_code !== undefined ? { new_code: parsed.data.new_code ?? null } : {}),
+              ...(parsed.data.guest_special_request !== undefined ? { guest_special_request: parsed.data.guest_special_request ?? null } : {}),
+              ...(parsed.data.keys_required !== undefined && nextKeysRequired != null ? { keys_required: nextKeysRequired } : {}),
+              ...(parsed.data.keys_required !== undefined && nextKeysRequired != null && isCheckoutTask ? { keys_required_checkout: nextKeysRequired } : {}),
+              ...(parsed.data.keys_required !== undefined && nextKeysRequired != null && isCheckinTask ? { keys_required_checkin: nextKeysRequired } : {}),
+              ...(parsed.data.keys_required !== undefined && nextKeysRequired != null
+                ? {
+                    key_tags: {
+                      checkout_sets: isCheckoutTask ? nextKeysRequired : 0,
+                      checkin_sets: isCheckinTask ? nextKeysRequired : 0,
+                      show_checkout: isCheckoutTask && nextKeysRequired >= 2,
+                      show_checkin: isCheckinTask && nextKeysRequired >= 2,
+                    },
+                  }
+                : {}),
+            },
+            causedByUserId: String(user?.sub || '').trim() || null,
+            visibilityHints: buildCleaningTaskVisibilityHints(row),
+          })
+        }
+      } catch {}
+    }
     try {
       const { notifyExpoUsers, listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
       const fmt = (label: string, next: any, prev: any) => `${label}：${norm(next) || '-'}（原：${norm(prev) || '-'}）`
@@ -1738,10 +1857,72 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   if (!req.file) return res.status(400).json({ message: 'missing file' })
   try {
+    const body: any = (req as any).body || {}
+    const watermarkMode = String(body.watermark_mode || '').trim().toLowerCase()
+    const watermarkRequested = watermarkMode === 'photo_id_full'
+    const isImage = String(req.file.mimetype || '').startsWith('image/')
+    const esc = (s: string) =>
+      String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+    const applyPhotoIdWatermark = async (input: Buffer) => {
+      if (!watermarkRequested || !isImage) return input
+      const image = sharp(input)
+      const meta = await image.metadata()
+      const width = Math.max(1, Number(meta.width || 0))
+      const height = Math.max(1, Number(meta.height || 0))
+      if (!width || !height) return input
+      const fontSize = Math.max(18, Math.round(Math.min(width, height) * 0.042))
+      const blockWidth = Math.max(320, Math.round(width * 0.68))
+      const lineHeight = Math.round(fontSize * 1.35)
+      const watermarkLines = PHOTO_ID_WATERMARK_TEXT.split('\n').map((line) => esc(line))
+      const textY = fontSize + 8
+      const svg = `
+        <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+          <g transform="translate(${Math.round(width * 0.16)}, ${Math.round(height * 0.18)}) rotate(-24 ${Math.round(width * 0.34)} ${Math.round(height * 0.28)})">
+            ${Array.from({ length: 5 }).map((_, row) => {
+              const y = row * Math.max(lineHeight * 3, Math.round(height * 0.18))
+              return Array.from({ length: 3 }).map((__, col) => {
+                const x = col * Math.max(blockWidth + 56, Math.round(width * 0.34))
+                return `
+                  <g transform="translate(${x}, ${y})" opacity="0.18">
+                    <rect x="-18" y="-${fontSize}" width="${blockWidth}" height="${lineHeight * watermarkLines.length + fontSize}" rx="18" fill="rgba(255,255,255,0.08)" />
+                    ${watermarkLines
+                      .map((line, idx) => `<text x="0" y="${textY + idx * lineHeight}" font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}" font-weight="700" fill="rgba(220,38,38,0.82)">${line}</text>`)
+                      .join('')}
+                  </g>
+                `
+              }).join('')
+            }).join('')}
+          </g>
+        </svg>
+      `
+      return await image
+        .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+        .jpeg({ quality: 90 })
+        .toBuffer()
+    }
+
     if (hasR2 && (req.file as any).buffer) {
-      const ext = path.extname(req.file.originalname) || ''
+      let buffer: Buffer = (req.file as any).buffer
+      buffer = await applyPhotoIdWatermark(buffer)
+      const ext = watermarkRequested && isImage ? '.jpg' : (path.extname(req.file.originalname) || '')
       const key = `mzapp/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
-      const url = await r2Upload(key, req.file.mimetype || 'application/octet-stream', (req.file as any).buffer)
+      const mime = watermarkRequested && isImage ? 'image/jpeg' : (req.file.mimetype || 'application/octet-stream')
+      const url = await r2Upload(key, mime, buffer)
+      return res.status(201).json({ url })
+    }
+    const filePath = (req.file as any).path ? String((req.file as any).path) : ''
+    if (filePath && watermarkRequested && isImage) {
+      const buf = await fs.promises.readFile(filePath)
+      const out = await applyPhotoIdWatermark(buf)
+      const nextPath = `${filePath}.jpg`
+      await fs.promises.writeFile(nextPath, out)
+      try { await fs.promises.unlink(filePath) } catch {}
+      const url = `/uploads/${path.basename(nextPath)}`
       return res.status(201).json({ url })
     }
     const url = `/uploads/${req.file.filename}`
@@ -2132,7 +2313,7 @@ router.get('/work-tasks', async (req, res) => {
               if (k) completionAreas.add(k)
             }
           }
-          const requiredAreas = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen']
+          const requiredAreas = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'shower_drain']
           const completionPhotosOk = requiredAreas.every((a) => completionAreas.has(a))
           const restockItems: any[] = []
           const seen = new Set<string>()

@@ -83,6 +83,11 @@ const patchSchema = z.object({
   expires_at: z.string().optional(),
 }).strict()
 
+const appListSchema = z.object({
+  type: pageTypeSchema,
+  category: categorySchema.optional(),
+}).strict()
+
 function normalizeDate(v: any) {
   const s = String(v || '').trim()
   if (!s) return null
@@ -99,6 +104,37 @@ function normalizeSlug(type: string, slug?: string, title?: string, id?: string)
   }
   if (id) return `${type}:${id.slice(0, 12)}`
   return `${type}:${Math.random().toString(36).slice(2, 10)}`
+}
+
+function roleNamesOf(user: any) {
+  const roles: string[] = Array.isArray(user?.roles) ? user.roles.map((v: any) => String(v || '').trim()).filter(Boolean) : []
+  const primary = String(user?.role || '').trim()
+  if (primary) roles.unshift(primary)
+  return Array.from(new Set(roles.filter(Boolean)))
+}
+
+function appAudienceAllowed(user: any, audienceScope: string | null | undefined) {
+  const scope = String(audienceScope || '').trim()
+  if (!scope || scope === 'all_staff') return true
+  const roles = roleNamesOf(user)
+  if (!roles.length) return false
+  const hasManagerOverride = roles.some((role) =>
+    ['admin', 'offline_manager', 'customer_service', 'cleaning_manager', 'inventory_manager', 'finance_staff'].includes(role),
+  )
+  if (hasManagerOverride) return true
+  if (scope === 'cleaners') {
+    return roles.some((role) => ['cleaner', 'cleaning_inspector', 'cleaner_inspector'].includes(role))
+  }
+  if (scope === 'warehouse_staff') {
+    return roles.some((role) => ['inventory_manager', 'warehouse_staff'].includes(role))
+  }
+  if (scope === 'maintenance_staff') {
+    return roles.includes('maintenance_staff')
+  }
+  if (scope === 'managers') {
+    return roles.some((role) => ['admin', 'offline_manager', 'customer_service', 'cleaning_manager', 'inventory_manager', 'finance_staff'].includes(role))
+  }
+  return false
 }
 
 router.get('/company/pages', requirePerm('cms_pages.view'), async (req, res) => {
@@ -257,3 +293,42 @@ router.delete('/company/pages/:id', requirePerm('cms_pages.delete'), async (req,
   }
 })
 
+router.get('/company/pages/app-list', async (req, res) => {
+  const actor = (req as any).user
+  if (!actor) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = appListSchema.safeParse({
+    type: String((req.query as any)?.type || '').trim(),
+    category: String((req.query as any)?.category || '').trim() || undefined,
+  })
+  if (!parsed.success) return res.status(400).json({ message: 'invalid params' })
+  if (!hasPg) return res.status(500).json({ message: 'no database configured' })
+  await ensureCmsPagesCompanyColumns()
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool) return res.status(500).json({ message: 'no database configured' })
+  try {
+    const { type, category } = parsed.data
+    const where: string[] = [
+      `page_type = $1`,
+      `status = 'published'`,
+      `(expires_at IS NULL OR expires_at >= CURRENT_DATE)`,
+    ]
+    const values: any[] = [type]
+    if (type === 'doc' && category) {
+      values.push(category)
+      where.push(`category = $${values.length}`)
+    }
+    const orderBy =
+      type === 'announce'
+        ? 'pinned DESC, published_at DESC NULLS LAST, updated_at DESC NULLS LAST, created_at DESC'
+        : 'updated_at DESC NULLS LAST, published_at DESC NULLS LAST, created_at DESC'
+    const sql = `SELECT id, title, content, published_at, updated_at, pinned, urgent, audience_scope, page_type, category, expires_at, created_at
+                 FROM cms_pages
+                 WHERE ${where.join(' AND ')}
+                 ORDER BY ${orderBy}`
+    const r = await pgPool.query(sql, values)
+    const rows = (r.rows || []).filter((row: any) => appAudienceAllowed(actor, row?.audience_scope))
+    return res.json(rows)
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'list_failed') })
+  }
+})

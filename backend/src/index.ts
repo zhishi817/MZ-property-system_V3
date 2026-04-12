@@ -31,6 +31,7 @@ import deepCleaningRouter from './modules/deep_cleaning'
 import { router as workTasksRouter } from './modules/work_tasks'
 import { router as taskCenterRouter } from './modules/task_center'
 import { router as mzappRouter } from './modules/mzapp'
+import { router as workTaskEventsRouter } from './modules/work_task_events'
 import { router as propertyOnboardingRouter } from './modules/propertyOnboarding'
 import { router as propertyGuidesRouter } from './modules/property_guides'
 import { router as propertyGuideLinkSyncRouter } from './modules/property_guide_link_sync'
@@ -42,6 +43,7 @@ import { router as invoicesRouter } from './modules/invoices'
 import { router as cmsCompanyRouter } from './modules/cms_company'
 import { router as cmsCompanySecretsRouter } from './modules/cms_company_secrets'
 import { runKeyUploadReminder } from './lib/keyUploadReminderJob'
+import { runDayEndHandoverReminder } from './lib/dayEndHandoverReminderJob'
 import { auth } from './auth'
 import publicRouter from './modules/public'
 import publicAdminRouter from './modules/public_admin'
@@ -312,6 +314,7 @@ app.use('/deep-cleaning', deepCleaningRouter)
 app.use('/work-tasks', workTasksRouter)
 app.use('/task-center', taskCenterRouter)
 app.use('/mzapp', mzappRouter)
+app.use('/mzapp/work-task-events', workTaskEventsRouter)
 app.use('/property-guides', propertyGuidesRouter)
 app.use('/property-guide-link-sync', propertyGuideLinkSyncRouter)
 app.use('/jobs', jobsRouter)
@@ -726,6 +729,57 @@ function onServerListening() {
       console.error(`[key-upload-reminder][schedule] init error message=${String(e?.message || '')}`)
     }
   })()
+
+  ;(async () => {
+    try {
+      const defaultEnabled = process.env.NODE_ENV === 'production'
+      const enabled = String(process.env.DAY_END_HANDOVER_REMINDER_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true'
+      const featureCleaning = String(process.env.FEATURE_CLEANING_APP || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true'
+      if (!enabled) {
+        console.log('[day-end-handover-reminder][schedule] disabled')
+        return
+      }
+      if (!featureCleaning) {
+        console.log('[day-end-handover-reminder][schedule] skipped_reason=feature_cleaning_app_disabled')
+        return
+      }
+      if (!hasPg || !pgPool) {
+        console.log('[day-end-handover-reminder][schedule] skipped_reason=pg=false')
+        return
+      }
+
+      const schedules: Array<{ expr: string; at: string; kind: 'self' | 'manager'; lockKey: number }> = [
+        { expr: '0 15 * * *', at: '15:00', kind: 'self', lockKey: 1357913579 },
+        { expr: '0 16 * * *', at: '16:00', kind: 'manager', lockKey: 1357913580 },
+      ]
+      const { runDayEndHandoverManagerReminder } = require('./lib/dayEndHandoverReminderJob')
+      for (const s of schedules) {
+        console.log(`[day-end-handover-reminder][schedule] enabled cron=${s.expr} tz=Australia/Melbourne at=${s.at} target=${s.kind}`)
+        const task = cron.schedule(
+          s.expr,
+          async () => {
+            const started = Date.now()
+            try {
+              const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [s.lockKey])
+              const ok = !!(lock?.rows?.[0]?.ok)
+              if (!ok) return
+              const r = s.kind === 'manager' ? await runDayEndHandoverManagerReminder({ at: s.at }) : await runDayEndHandoverReminder({ at: s.at })
+              const dur = Date.now() - started
+              if ((r as any)?.skipped) console.log(`[day-end-handover-reminder][schedule] skipped_reason=${String((r as any).skipped)} at=${s.at} target=${s.kind}`)
+              else console.log(`[day-end-handover-reminder][schedule] ok at=${s.at} target=${s.kind} duration_ms=${dur} recipients=${String((r as any)?.recipients || 0)}`)
+              try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [s.lockKey]) } catch {}
+            } catch (e: any) {
+              console.error(`[day-end-handover-reminder][schedule] error at=${s.at} target=${s.kind} message=${String(e?.message || '')}`)
+            }
+          },
+          { scheduled: true, timezone: 'Australia/Melbourne' },
+        )
+        task.start()
+      }
+    } catch (e: any) {
+      console.error(`[day-end-handover-reminder][schedule] init error message=${String(e?.message || '')}`)
+    }
+  })()
 }
   app.get('/health/login', async (_req, res) => {
     const started = Date.now()
@@ -754,17 +808,6 @@ function onServerListening() {
   })
 
 async function startServer() {
-  try {
-    if (hasPg) {
-      const warmupStartedAt = Date.now()
-      await warmupInventoryModule()
-      console.log(`[inventory] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`)
-    }
-  } catch (err: any) {
-    console.error(`[inventory] warmup_failed message=${String(err?.message || '')}`)
-    process.exit(1)
-  }
-
   const server = app.listen(port, onServerListening)
   server.on('error', (err: any) => {
     const code = String(err?.code || '')
@@ -775,6 +818,18 @@ async function startServer() {
     console.error(`❌ Server failed to start. code=${code} message=${String(err?.message || '')}`)
     process.exit(1)
   })
+
+  void (async () => {
+    try {
+      if (hasPg) {
+        const warmupStartedAt = Date.now()
+        await warmupInventoryModule()
+        console.log(`[inventory] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`)
+      }
+    } catch (err: any) {
+      console.error(`[inventory] warmup_failed message=${String(err?.message || '')}`)
+    }
+  })()
 }
 
 void startServer()
