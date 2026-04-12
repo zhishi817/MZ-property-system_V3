@@ -71,6 +71,7 @@ export default function TaskCenterPage() {
   const [taskCenterDay, setTaskCenterDay] = useState<TaskCenterDay | null>(null)
 
   const [dragOverKey, setDragOverKey] = useState<string | null>(null)
+  const [pendingTaskKeys, setPendingTaskKeys] = useState<string[]>([])
 
   const [createOpen, setCreateOpen] = useState(false)
   const [createLoading, setCreateLoading] = useState(false)
@@ -92,6 +93,31 @@ export default function TaskCenterPage() {
   const [staffFocusId, setStaffFocusId] = useState<string | null>(null)
   const [expandedStaff, setExpandedStaff] = useState<Record<string, 'preview' | 'expanded' | 'collapsed'>>({})
 
+  const staffFilterOptions = useMemo(() => ([
+    { label: '全部人员', value: 'all' },
+    { label: '有任务', value: 'busy' },
+    { label: '空闲', value: 'idle' },
+  ]), [])
+
+  const cleaningPoolFilterOptions = useMemo(() => ([
+    { label: '全部', value: 'all' },
+    { label: '清洁', value: 'cleaning' },
+    { label: '检查', value: 'inspection' },
+    { label: '自完成', value: 'self_complete' },
+    { label: '维修', value: 'maintenance' },
+    { label: '深清', value: 'deep_cleaning' },
+    { label: '其他', value: 'other' },
+  ]), [])
+
+  const workPoolFilterOptions = useMemo(() => ([
+    { label: '全部', value: 'all' },
+    { label: '清洁', value: 'cleaning' },
+    { label: '检查', value: 'inspection' },
+    { label: '维修', value: 'maintenance' },
+    { label: '深清', value: 'deep_cleaning' },
+    { label: '其他', value: 'other' },
+  ]), [])
+
   const entityIds = useCallback((it: CalendarItem) => {
     const ids = Array.isArray(it.entity_ids) && it.entity_ids.length ? it.entity_ids : [it.entity_id]
     return Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
@@ -108,6 +134,80 @@ export default function TaskCenterPage() {
       return { ids: [] }
     }
   }, [])
+
+  const activateDragTarget = useCallback((key: string) => {
+    setDragOverKey((prev) => (prev === key ? prev : key))
+  }, [])
+
+  const clearDragTarget = useCallback((key?: string | null) => {
+    setDragOverKey((prev) => {
+      if (!key) return prev == null ? prev : null
+      return prev === key ? null : prev
+    })
+  }, [])
+
+  const handlePoolViewChange = useCallback((value: string | number) => {
+    const val = value as typeof poolView
+    if (val === 'maintenance') { setPoolView('maintenance'); setTab('maintenance'); return }
+    if (val === 'deep_cleaning') { setPoolView('deep_cleaning'); setTab('deep_cleaning'); return }
+    if (val === 'inspection') { setPoolView('inspection'); setTab('inspection'); return }
+    if (val === 'cleaning') { setPoolView('cleaning'); setTab('cleaning'); return }
+    if (val === 'self_complete') { setPoolView('self_complete'); setTab('cleaning'); return }
+    if (val === 'other') { setPoolView('other'); return }
+    setPoolView('all')
+  }, [])
+
+  const renderPoolTools = useCallback((options: { label: string; value: string }[]) => (
+    <div className={`${styles.poolTools} ${styles.taskCenterPoolTools}`}>
+      <div className={styles.taskCenterToolBlock}>
+        <div className={styles.taskCenterToolLabel}>任务范围</div>
+        <Segmented
+          size="small"
+          className={styles.taskCenterPoolSegment}
+          options={options}
+          value={poolView}
+          onChange={handlePoolViewChange}
+        />
+      </div>
+      <div className={styles.taskCenterToolBlock}>
+        <div className={styles.taskCenterToolLabel}>快速搜索</div>
+        <Input
+          className={styles.taskCenterPoolSearch}
+          value={filterText}
+          onChange={(e) => setFilterText(e.target.value)}
+          placeholder="搜索房源、区域或任务..."
+          allowClear
+        />
+      </div>
+    </div>
+  ), [filterText, handlePoolViewChange, poolView])
+
+  const renderStaffTools = useCallback(() => (
+    <div className={`${styles.staffTools} ${styles.taskCenterStaffTools}`}>
+      <div className={styles.taskCenterStaffToolsBar}>
+        <div className={styles.taskCenterToolBlock}>
+          <div className={styles.taskCenterToolLabel}>人员状态</div>
+          <Segmented
+            size="small"
+            className={styles.taskCenterStaffSegment}
+            options={staffFilterOptions}
+            value={staffFilter}
+            onChange={(v) => setStaffFilter(v as any)}
+          />
+        </div>
+        <div className={`${styles.taskCenterToolBlock} ${styles.taskCenterStaffSearchBlock}`}>
+          <div className={styles.taskCenterToolLabel}>搜索定位</div>
+          <Input
+            className={`${styles.staffJump} ${styles.taskCenterStaffSearch}`}
+            value={staffSearch}
+            onChange={(e) => setStaffSearch(e.target.value)}
+            placeholder="搜索人员并定位..."
+            allowClear
+          />
+        </div>
+      </div>
+    </div>
+  ), [staffFilter, staffFilterOptions, staffSearch])
 
   const loadStaff = useCallback(async () => {
     const rows = await getJSON<Staff[]>('/cleaning/staff').catch(() => [])
@@ -266,7 +366,9 @@ export default function TaskCenterPage() {
 
   useEffect(() => {
     if (!staffFocusId) return
-    const mode = tab === 'maintenance' ? 'maintenance' : (tab === 'inspection' ? 'inspection' : 'cleaning')
+    const mode = tab === 'maintenance'
+      ? 'maintenance'
+      : (tab === 'inspection' ? 'inspection' : (tab === 'deep_cleaning' ? 'deep-cleaning' : 'cleaning'))
     const el = document.getElementById(`staffcol-${mode}-${staffFocusId}`)
     if (el) el.scrollIntoView({ block: 'start' })
   }, [staffFocusId, tab])
@@ -540,10 +642,22 @@ export default function TaskCenterPage() {
     return s
   }, [])
 
+  const cleaningPendingKeys = useCallback((ids: string[]) => (
+    Array.from(new Set(ids.map((id) => `cleaning:${String(id)}`).filter(Boolean)))
+  ), [])
+
+  const workPendingKey = useCallback((id: string) => `work:${String(id)}`, [])
+
+  const hasPendingKey = useCallback((key: string) => pendingTaskKeys.includes(key), [pendingTaskKeys])
+
+  const hasAnyPendingKey = useCallback((keys: string[]) => keys.some((key) => pendingTaskKeys.includes(key)), [pendingTaskKeys])
+
   const updateCleaningTasks = useCallback(async (ids: string[], patch: any) => {
     const normIds = Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
     if (!normIds.length) return
-    await postJSON('/cleaning/tasks/bulk-patch', { ids: normIds, patch })
+    const nextPendingKeys = cleaningPendingKeys(normIds)
+    if (hasAnyPendingKey(nextPendingKeys)) return
+    setPendingTaskKeys((prev) => Array.from(new Set([...prev, ...nextPendingKeys])))
     setCleaningItems((prev) => {
       const idSet = new Set(normIds)
       return prev.map((it) => {
@@ -564,10 +678,20 @@ export default function TaskCenterPage() {
         return next
       })
     })
-  }, [])
+    try {
+      await postJSON('/cleaning/tasks/bulk-patch', { ids: normIds, patch })
+    } catch (e) {
+      await loadDay().catch(() => {})
+      throw e
+    } finally {
+      setPendingTaskKeys((prev) => prev.filter((key) => !nextPendingKeys.includes(key)))
+    }
+  }, [cleaningPendingKeys, hasAnyPendingKey, loadDay])
 
   const updateWorkTask = useCallback(async (id: string, patch: Partial<Pick<WorkTask, 'status' | 'urgency' | 'title' | 'summary' | 'property_id' | 'assignee_id' | 'scheduled_date'>>) => {
-    await patchJSON(`/work-tasks/${encodeURIComponent(id)}`, patch, { timeoutMs: 20000 })
+    const pendingKey = workPendingKey(id)
+    if (hasPendingKey(pendingKey)) return
+    setPendingTaskKeys((prev) => Array.from(new Set([...prev, pendingKey])))
     setTaskCenterDay((prev) => {
       if (!prev) return prev
       const nextTasks = prev.tasks.map((t) => (String(t.id) === String(id) ? { ...t, ...patch } as any : t))
@@ -583,7 +707,15 @@ export default function TaskCenterPage() {
       }
       return { ...prev, tasks: nextTasks, pool, groups }
     })
-  }, [])
+    try {
+      await patchJSON(`/work-tasks/${encodeURIComponent(id)}`, patch, { timeoutMs: 20000 })
+    } catch (e) {
+      await loadDay().catch(() => {})
+      throw e
+    } finally {
+      setPendingTaskKeys((prev) => prev.filter((key) => key !== pendingKey))
+    }
+  }, [hasPendingKey, loadDay, workPendingKey])
 
   const openCreateModal = useCallback(() => {
     setOfflineCreate({
@@ -695,63 +827,34 @@ export default function TaskCenterPage() {
     const poolKey = mode === 'cleaning' ? 'pool:cleaning' : 'pool:inspection'
     const poolTitle = '未安排任务'
     return (
-      <div className={styles.boardWrap}>
+      <div className={`${styles.boardWrap} ${styles.taskCenterBoardWrap}`}>
         <div
-          className={`${styles.poolPane} ${dragOverKey === poolKey ? styles.dropActive : ''}`}
-          onDragOver={(e) => { e.preventDefault(); setDragOverKey(poolKey) }}
-          onDragLeave={() => setDragOverKey((k) => (k === poolKey ? null : k))}
+          className={`${styles.poolPane} ${styles.taskCenterPoolPane} ${dragOverKey === poolKey ? styles.dropActive : ''}`}
+          onDragOver={(e) => { e.preventDefault(); activateDragTarget(poolKey) }}
+          onDragLeave={() => clearDragTarget(poolKey)}
           onDrop={(e) => {
             e.preventDefault()
             const { ids, task_type, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
-            if (!ids.length) { setDragOverKey(null); return }
+            if (!ids.length) { clearDragTarget(); return }
             if (source === 'work') {
               const id = ids[0]
-              if (!id) { setDragOverKey(null); return }
+              if (!id || hasPendingKey(workPendingKey(id))) { clearDragTarget(); return }
               updateWorkTask(id, { assignee_id: null, scheduled_date: dateStr }).catch((err: any) => message.error(err?.message || '更新失败'))
-                .finally(() => setDragOverKey(null))
+                .finally(() => clearDragTarget())
               return
             }
+            if (hasAnyPendingKey(cleaningPendingKeys(ids))) { clearDragTarget(); return }
             const patch: any = mode === 'cleaning' ? { cleaner_id: null } : { inspector_id: null }
             if (mode === 'inspection' && isCheckinLikeTaskType(task_type || null)) patch.status = 'pending'
             updateCleaningTasks(ids, patch).catch((err: any) => message.error(err?.message || '更新失败'))
-              .finally(() => setDragOverKey(null))
+              .finally(() => clearDragTarget())
           }}
         >
-          <div className={styles.poolHead}>
+          <div className={`${styles.poolHead} ${styles.taskCenterPoolHead}`}>
             <div className={styles.poolTitle}>{poolTitle}</div>
             <div className={styles.poolCount}>{pool.length}</div>
           </div>
-          <div className={styles.poolTools}>
-            <Segmented
-              size="small"
-              options={[
-                { label: '全部', value: 'all' },
-                { label: '清洁', value: 'cleaning' },
-                { label: '检查', value: 'inspection' },
-                { label: '自完成', value: 'self_complete' },
-                { label: '维修', value: 'maintenance' },
-                { label: '深清', value: 'deep_cleaning' },
-                { label: '其他', value: 'other' },
-              ]}
-              value={poolView}
-              onChange={(v) => {
-                const val = v as any
-                if (val === 'maintenance') { setPoolView('maintenance'); setTab('maintenance'); return }
-                if (val === 'deep_cleaning') { setPoolView('deep_cleaning'); setTab('deep_cleaning'); return }
-                if (val === 'inspection') { setPoolView('inspection'); setTab('inspection'); return }
-                if (val === 'cleaning') { setPoolView('cleaning'); setTab('cleaning'); return }
-                if (val === 'self_complete') { setPoolView('self_complete'); setTab('cleaning'); return }
-                if (val === 'other') { setPoolView('other'); return }
-                setPoolView('all')
-              }}
-            />
-            <Input
-              value={filterText}
-              onChange={(e) => setFilterText(e.target.value)}
-              placeholder="搜索房源..."
-              allowClear
-            />
-          </div>
+          {renderPoolTools(cleaningPoolFilterOptions)}
           <div className={styles.poolList}>
             {loading && !pool.length ? (
               <>
@@ -761,6 +864,7 @@ export default function TaskCenterPage() {
             ) : pool.length ? pool.map((x) => {
               if (x.source === 'work') {
                 const t = x.it
+                const pending = hasPendingKey(workPendingKey(t.id))
                 const stripe = stripeColorForUrgency(t.urgency)
                 const code = propertyCodeById(t.property_id || null)
                 const title = String(t.title || '').trim()
@@ -769,15 +873,17 @@ export default function TaskCenterPage() {
                 return (
                   <div
                     key={`work:${t.id}`}
-                    className={`${styles.taskChip} ${styles.taskChipDraggable}`}
-                    draggable
+                    className={`${styles.taskChip} ${pending ? styles.taskChipDisabled : styles.taskChipDraggable}`}
+                    draggable={!pending}
                     onDragStart={(e) => {
+                      if (pending) return
                       e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'work', ids: [t.id] }))
                       e.dataTransfer.effectAllowed = 'move'
                     }}
-                    onDragEnd={() => setDragOverKey(null)}
+                    onDragEnd={() => clearDragTarget()}
                     title={title}
                     onDoubleClick={() => {
+                      if (pending) return
                       const next = t.status === 'done' ? 'todo' : 'done'
                       updateWorkTask(t.id, { status: next }).catch((err: any) => message.error(err?.message || '更新失败'))
                     }}
@@ -804,7 +910,8 @@ export default function TaskCenterPage() {
               const sum = summaryText(it)
               const title = taskTextForCleaningItem(it)
               const st = effectiveCleaningStatus(it)
-              const draggable = !dayLocked && (it.auto_sync_enabled !== false || !String(it.order_id || '').trim())
+              const pending = hasAnyPendingKey(cleaningPendingKeys(ids))
+              const draggable = !pending && !dayLocked && (it.auto_sync_enabled !== false || !String(it.order_id || '').trim())
               const isMerged = Array.isArray(it.entity_ids) && it.entity_ids.length > 1
               const hasAssignee = !!String(it.cleaner_id || it.assignee_id || '').trim()
               const isKeyUploaded = !!(it.has_key_photo || it.key_photo_uploaded_at)
@@ -819,7 +926,7 @@ export default function TaskCenterPage() {
                     e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'cleaning', ids, task_type: it.task_type || null }))
                     e.dataTransfer.effectAllowed = 'move'
                   }}
-                  onDragEnd={() => setDragOverKey(null)}
+                  onDragEnd={() => clearDragTarget()}
                   title={title}
                 >
                   <span className={styles.taskGrip}><HolderOutlined /></span>
@@ -844,29 +951,9 @@ export default function TaskCenterPage() {
           </div>
         </div>
 
-        <div className={styles.staffPane}>
-          <div className={styles.staffTools}>
-            <div className={styles.staffToolsRow}>
-              <Segmented
-                size="small"
-                options={[
-                  { label: '全部人员', value: 'all' },
-                  { label: '有任务', value: 'busy' },
-                  { label: '空闲', value: 'idle' },
-                ]}
-                value={staffFilter}
-                onChange={(v) => setStaffFilter(v as any)}
-              />
-              <Input
-                className={styles.staffJump}
-                value={staffSearch}
-                onChange={(e) => setStaffSearch(e.target.value)}
-                placeholder="搜索人员并定位…"
-                allowClear
-              />
-            </div>
-          </div>
-          <div className={styles.staffBoard}>
+        <div className={`${styles.staffPane} ${styles.taskCenterStaffPane}`}>
+          {renderStaffTools()}
+          <div className={`${styles.staffBoard} ${styles.taskCenterStaffBoard}`}>
           {staffList.map((s) => {
             const sid = String(s.id)
             const key = `staff:${mode}:${sid}`
@@ -879,28 +966,29 @@ export default function TaskCenterPage() {
               <div
                 key={sid}
                 id={`staffcol-${mode}-${sid}`}
-                className={`${styles.staffCol} ${dragOverKey === key ? styles.dropActive : ''} ${staffFocusId === sid ? styles.staffHighlight : ''}`}
-                onDragOver={(e) => { e.preventDefault(); setDragOverKey(key) }}
-                onDragLeave={() => setDragOverKey((k) => (k === key ? null : k))}
+                className={`${styles.staffCol} ${styles.taskCenterStaffRow} ${dragOverKey === key ? styles.dropActive : ''} ${staffFocusId === sid ? styles.staffHighlight : ''}`}
+                onDragOver={(e) => { e.preventDefault(); activateDragTarget(key) }}
+                onDragLeave={() => clearDragTarget(key)}
                 onDrop={(e) => {
                   e.preventDefault()
                   const { ids, task_type, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
-                  if (!ids.length) { setDragOverKey(null); return }
+                  if (!ids.length) { clearDragTarget(); return }
                   if (source === 'work') {
                     const id = ids[0]
-                    if (!id) { setDragOverKey(null); return }
+                    if (!id || hasPendingKey(workPendingKey(id))) { clearDragTarget(); return }
                     updateWorkTask(id, { assignee_id: sid, scheduled_date: dateStr }).catch((err: any) => message.error(err?.message || '更新失败'))
-                      .finally(() => setDragOverKey(null))
+                      .finally(() => clearDragTarget())
                     return
                   }
+                  if (hasAnyPendingKey(cleaningPendingKeys(ids))) { clearDragTarget(); return }
                   const patch: any = mode === 'cleaning' ? { cleaner_id: sid } : { inspector_id: sid }
                   if (mode === 'inspection' && isCheckinLikeTaskType(task_type || null)) patch.status = 'assigned'
                   updateCleaningTasks(ids, patch).catch((err: any) => message.error(err?.message || '更新失败'))
-                    .finally(() => setDragOverKey(null))
+                    .finally(() => clearDragTarget())
                 }}
               >
                 <div
-                  className={styles.staffColHead}
+                  className={`${styles.staffColHead} ${styles.taskCenterStaffRowHead}`}
                   onClick={() => setExpandedStaff((p) => {
                     const cur = p[expKey] || 'preview'
                     const next = cur === 'expanded' ? 'collapsed' : 'expanded'
@@ -914,13 +1002,14 @@ export default function TaskCenterPage() {
                     {expanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
                   </div>
                 </div>
-                <div className={styles.staffColBody}>
-                  {dragOverKey === key ? <div className={styles.dropHint}>放至此处分配</div> : null}
+                <div className={`${styles.staffColBody} ${styles.taskCenterStaffRowBody}`}>
+                  {dragOverKey === key ? <div className={`${styles.dropHint} ${styles.taskCenterDropHint}`}>放至此处分配</div> : null}
                   {!collapsed ? (
-                    <div className={expanded ? styles.staffExpandedList : styles.staffPreviewList}>
+                    <div className={`${expanded ? styles.staffExpandedList : styles.staffPreviewList} ${styles.taskCenterTaskRail} ${expanded ? styles.taskCenterTaskRailExpanded : styles.taskCenterTaskRailPreview}`}>
                       {arr.map((x) => {
                     if (x.source === 'work') {
                       const t = x.it
+                      const pending = hasPendingKey(workPendingKey(t.id))
                       const stripe = stripeColorForUrgency(t.urgency)
                       const code = propertyCodeById(t.property_id || null)
                       const title = String(t.title || '').trim()
@@ -929,15 +1018,17 @@ export default function TaskCenterPage() {
                       return (
                         <div
                           key={`work:assigned:${t.id}`}
-                          className={`${styles.taskChip} ${styles.taskChipDraggable}`}
-                          draggable
+                          className={`${styles.taskChip} ${pending ? styles.taskChipDisabled : styles.taskChipDraggable} ${styles.taskCenterAssignedChip}`}
+                          draggable={!pending}
                           onDragStart={(e) => {
+                            if (pending) return
                             e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'work', ids: [t.id] }))
                             e.dataTransfer.effectAllowed = 'move'
                           }}
-                          onDragEnd={() => setDragOverKey(null)}
+                          onDragEnd={() => clearDragTarget()}
                           title={title}
                           onDoubleClick={() => {
+                            if (pending) return
                             const next = t.status === 'done' ? 'todo' : 'done'
                             updateWorkTask(t.id, { status: next }).catch((err: any) => message.error(err?.message || '更新失败'))
                           }}
@@ -964,20 +1055,21 @@ export default function TaskCenterPage() {
                     const sum = summaryText(it)
                     const title = taskTextForCleaningItem(it)
                     const st = effectiveCleaningStatus(it)
-                    const draggable = !dayLocked && (it.auto_sync_enabled !== false || !String(it.order_id || '').trim())
+                    const pending = hasAnyPendingKey(cleaningPendingKeys(ids))
+                    const draggable = !pending && !dayLocked && (it.auto_sync_enabled !== false || !String(it.order_id || '').trim())
                     const isMerged = Array.isArray(it.entity_ids) && it.entity_ids.length > 1
                     const isSelfComplete = isSelfCompleteCleaningItem(it)
                     return (
                       <div
                         key={`assigned:${it.entity_id}`}
-                        className={`${styles.taskChip} ${draggable ? styles.taskChipDraggable : styles.taskChipDisabled}`}
+                        className={`${styles.taskChip} ${draggable ? styles.taskChipDraggable : styles.taskChipDisabled} ${styles.taskCenterAssignedChip}`}
                         draggable={draggable}
                         onDragStart={(e) => {
                           if (!draggable) return
                           e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'cleaning', ids, task_type: it.task_type || null }))
                           e.dataTransfer.effectAllowed = 'move'
                         }}
-                        onDragEnd={() => setDragOverKey(null)}
+                        onDragEnd={() => clearDragTarget()}
                         title={title}
                       >
                         <span className={styles.taskGrip}><HolderOutlined /></span>
@@ -999,7 +1091,7 @@ export default function TaskCenterPage() {
                   })}
                     </div>
                   ) : null}
-                  {!expanded ? <div className={`${styles.dropZone} ${collapsed ? styles.dropZoneCollapsed : (arr.length ? styles.dropZoneCompact : '')}`}>放入分配</div> : null}
+                  {!expanded ? <div className={`${styles.dropZone} ${styles.taskCenterDropZone} ${collapsed ? styles.dropZoneCollapsed : (arr.length ? styles.dropZoneCompact : '')}`}>放入分配</div> : null}
                 </div>
               </div>
             )
@@ -1008,7 +1100,7 @@ export default function TaskCenterPage() {
         </div>
       </div>
     )
-  }, [activeCleaners, activeInspectors, dateStr, dayLocked, dragOverKey, effectiveCleaningStatus, entityIds, expandedStaff, filterCleanItems, filterOfflineItems, filterText, isCheckinLikeTaskType, isSelfCompleteCleaningItem, kindOfCleaningItem, loading, mergedCleaningItems, parseDragPayload, poolView, propertyCodeById, staffFilter, staffFocusId, staffSearch, statusChipCls, statusText, stripeColorForKind, stripeColorForUrgency, summaryText, tab, taskCenterDay, taskTextForCleaningItem, updateCleaningTasks, updateWorkTask, workSummaryText])
+  }, [activateDragTarget, activeCleaners, activeInspectors, cleaningPendingKeys, cleaningPoolFilterOptions, clearDragTarget, dateStr, dayLocked, dragOverKey, effectiveCleaningStatus, entityIds, expandedStaff, filterCleanItems, filterOfflineItems, hasAnyPendingKey, hasPendingKey, isCheckinLikeTaskType, isSelfCompleteCleaningItem, kindOfCleaningItem, loading, mergedCleaningItems, parseDragPayload, poolView, propertyCodeById, renderPoolTools, renderStaffTools, staffFilter, staffFocusId, statusChipCls, statusText, stripeColorForKind, stripeColorForUrgency, summaryText, tab, taskCenterDay, taskTextForCleaningItem, updateCleaningTasks, updateWorkTask, workPendingKey, workSummaryText])
 
   const TaskBoardMaintenance = useMemo(() => {
     if (tab !== 'maintenance') return null
@@ -1038,54 +1130,26 @@ export default function TaskCenterPage() {
       return true
     })
     return (
-      <div className={styles.boardWrap}>
+      <div className={`${styles.boardWrap} ${styles.taskCenterBoardWrap}`}>
         <div
-          className={`${styles.poolPane} ${dragOverKey === poolKey ? styles.dropActive : ''}`}
-          onDragOver={(e) => { e.preventDefault(); setDragOverKey(poolKey) }}
-          onDragLeave={() => setDragOverKey((k) => (k === poolKey ? null : k))}
+          className={`${styles.poolPane} ${styles.taskCenterPoolPane} ${dragOverKey === poolKey ? styles.dropActive : ''}`}
+          onDragOver={(e) => { e.preventDefault(); activateDragTarget(poolKey) }}
+          onDragLeave={() => clearDragTarget(poolKey)}
           onDrop={(e) => {
             e.preventDefault()
             const { ids, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
-            if (source !== 'work') { setDragOverKey(null); return }
+            if (source !== 'work') { clearDragTarget(); return }
             const id = ids[0]
-            if (!id) { setDragOverKey(null); return }
+            if (!id || hasPendingKey(workPendingKey(id))) { clearDragTarget(); return }
             updateWorkTask(id, { assignee_id: null, scheduled_date: null }).catch((err: any) => message.error(err?.message || '更新失败'))
-              .finally(() => setDragOverKey(null))
+              .finally(() => clearDragTarget())
           }}
         >
-          <div className={styles.poolHead}>
+          <div className={`${styles.poolHead} ${styles.taskCenterPoolHead}`}>
             <div className={styles.poolTitle}>未安排维修</div>
             <div className={styles.poolCount}>{pool.length}</div>
           </div>
-          <div className={styles.poolTools}>
-            <Segmented
-              size="small"
-              options={[
-                { label: '全部', value: 'all' },
-                { label: '清洁', value: 'cleaning' },
-                { label: '检查', value: 'inspection' },
-                { label: '维修', value: 'maintenance' },
-                { label: '深清', value: 'deep_cleaning' },
-                { label: '其他', value: 'other' },
-              ]}
-              value={poolView}
-              onChange={(v) => {
-                const val = v as any
-                if (val === 'maintenance') { setPoolView('maintenance'); setTab('maintenance'); return }
-                if (val === 'deep_cleaning') { setPoolView('deep_cleaning'); setTab('deep_cleaning'); return }
-                if (val === 'inspection') { setPoolView('inspection'); setTab('inspection'); return }
-                if (val === 'cleaning') { setPoolView('cleaning'); setTab('cleaning'); return }
-                if (val === 'other') { setPoolView('other'); setTab('cleaning'); return }
-                setPoolView('all')
-              }}
-            />
-            <Input
-              value={filterText}
-              onChange={(e) => setFilterText(e.target.value)}
-              placeholder="搜索房源..."
-              allowClear
-            />
-          </div>
+          {renderPoolTools(workPoolFilterOptions)}
           <div className={styles.poolList}>
             {loading && !pool.length ? (
               <>
@@ -1093,6 +1157,7 @@ export default function TaskCenterPage() {
                 <div className={styles.taskChip}><Skeleton active paragraph={{ rows: 1 }} /></div>
               </>
             ) : pool.length ? pool.map((r) => {
+              const pending = hasPendingKey(workPendingKey(r.id))
               const stripe = stripeColorForUrgency(String(r.urgency || ''))
               const workNo = String(r.title || '').trim()
               const code = propertyCodeById(r.property_id || null)
@@ -1102,13 +1167,14 @@ export default function TaskCenterPage() {
               return (
                 <div
                   key={`work:maintenance:${r.id}`}
-                  className={`${styles.taskChip} ${styles.taskChipDraggable}`}
-                  draggable
+                  className={`${styles.taskChip} ${pending ? styles.taskChipDisabled : styles.taskChipDraggable}`}
+                  draggable={!pending}
                   onDragStart={(e) => {
+                    if (pending) return
                     e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'work', ids: [r.id] }))
                     e.dataTransfer.effectAllowed = 'move'
                   }}
-                  onDragEnd={() => setDragOverKey(null)}
+                  onDragEnd={() => clearDragTarget()}
                   title={title}
                 >
                   <span className={styles.taskGrip}><HolderOutlined /></span>
@@ -1131,29 +1197,9 @@ export default function TaskCenterPage() {
           </div>
         </div>
 
-        <div className={styles.staffPane}>
-          <div className={styles.staffTools}>
-            <div className={styles.staffToolsRow}>
-              <Segmented
-                size="small"
-                options={[
-                  { label: '全部人员', value: 'all' },
-                  { label: '有任务', value: 'busy' },
-                  { label: '空闲', value: 'idle' },
-                ]}
-                value={staffFilter}
-                onChange={(v) => setStaffFilter(v as any)}
-              />
-              <Input
-                className={styles.staffJump}
-                value={staffSearch}
-                onChange={(e) => setStaffSearch(e.target.value)}
-                placeholder="搜索人员并定位…"
-                allowClear
-              />
-            </div>
-          </div>
-          <div className={styles.staffBoard}>
+        <div className={`${styles.staffPane} ${styles.taskCenterStaffPane}`}>
+          {renderStaffTools()}
+          <div className={`${styles.staffBoard} ${styles.taskCenterStaffBoard}`}>
           {staffList.map((s) => {
             const sid = String(s.id)
             const key = `staff:maintenance:${sid}`
@@ -1166,21 +1212,21 @@ export default function TaskCenterPage() {
               <div
                 key={sid}
                 id={`staffcol-maintenance-${sid}`}
-                className={`${styles.staffCol} ${dragOverKey === key ? styles.dropActive : ''} ${staffFocusId === sid ? styles.staffHighlight : ''}`}
-                onDragOver={(e) => { e.preventDefault(); setDragOverKey(key) }}
-                onDragLeave={() => setDragOverKey((k) => (k === key ? null : k))}
+                className={`${styles.staffCol} ${styles.taskCenterStaffRow} ${dragOverKey === key ? styles.dropActive : ''} ${staffFocusId === sid ? styles.staffHighlight : ''}`}
+                onDragOver={(e) => { e.preventDefault(); activateDragTarget(key) }}
+                onDragLeave={() => clearDragTarget(key)}
                 onDrop={(e) => {
                   e.preventDefault()
                   const { ids, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
-                  if (source !== 'work') { setDragOverKey(null); return }
+                  if (source !== 'work') { clearDragTarget(); return }
                   const id = ids[0]
-                  if (!id) { setDragOverKey(null); return }
+                  if (!id || hasPendingKey(workPendingKey(id))) { clearDragTarget(); return }
                   updateWorkTask(id, { assignee_id: sid, scheduled_date: dateStr }).catch((err: any) => message.error(err?.message || '更新失败'))
-                    .finally(() => setDragOverKey(null))
+                    .finally(() => clearDragTarget())
                 }}
               >
                 <div
-                  className={styles.staffColHead}
+                  className={`${styles.staffColHead} ${styles.taskCenterStaffRowHead}`}
                   onClick={() => setExpandedStaff((p) => {
                     const cur = p[expKey] || 'preview'
                     const next = cur === 'expanded' ? 'collapsed' : 'expanded'
@@ -1194,11 +1240,12 @@ export default function TaskCenterPage() {
                     {expanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
                   </div>
                 </div>
-                <div className={styles.staffColBody}>
-                  {dragOverKey === key ? <div className={styles.dropHint}>放至此处分配</div> : null}
+                <div className={`${styles.staffColBody} ${styles.taskCenterStaffRowBody}`}>
+                  {dragOverKey === key ? <div className={`${styles.dropHint} ${styles.taskCenterDropHint}`}>放至此处分配</div> : null}
                   {!collapsed ? (
-                    <div className={expanded ? styles.staffExpandedList : styles.staffPreviewList}>
+                    <div className={`${expanded ? styles.staffExpandedList : styles.staffPreviewList} ${styles.taskCenterTaskRail} ${expanded ? styles.taskCenterTaskRailExpanded : styles.taskCenterTaskRailPreview}`}>
                       {arr.map((r) => {
+                    const pending = hasPendingKey(workPendingKey(r.id))
                     const stripe = stripeColorForUrgency(String(r.urgency || ''))
                     const workNo = String(r.title || '').trim()
                     const code = propertyCodeById(r.property_id || null)
@@ -1208,13 +1255,14 @@ export default function TaskCenterPage() {
                     return (
                       <div
                         key={`work:maintenance:assigned:${r.id}`}
-                        className={`${styles.taskChip} ${styles.taskChipDraggable}`}
-                        draggable
+                        className={`${styles.taskChip} ${pending ? styles.taskChipDisabled : styles.taskChipDraggable} ${styles.taskCenterAssignedChip}`}
+                        draggable={!pending}
                         onDragStart={(e) => {
+                          if (pending) return
                           e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'work', ids: [r.id] }))
                           e.dataTransfer.effectAllowed = 'move'
                         }}
-                        onDragEnd={() => setDragOverKey(null)}
+                        onDragEnd={() => clearDragTarget()}
                         title={title}
                       >
                         <span className={styles.taskGrip}><HolderOutlined /></span>
@@ -1234,7 +1282,7 @@ export default function TaskCenterPage() {
                   })}
                     </div>
                   ) : null}
-                  {!expanded ? <div className={`${styles.dropZone} ${collapsed ? styles.dropZoneCollapsed : (arr.length ? styles.dropZoneCompact : '')}`}>放入分配</div> : null}
+                  {!expanded ? <div className={`${styles.dropZone} ${styles.taskCenterDropZone} ${collapsed ? styles.dropZoneCollapsed : (arr.length ? styles.dropZoneCompact : '')}`}>放入分配</div> : null}
                 </div>
               </div>
             )
@@ -1243,7 +1291,7 @@ export default function TaskCenterPage() {
         </div>
       </div>
     )
-  }, [activeMaintenanceStaff, dateStr, dragOverKey, expandedStaff, filterRepairs, filterText, loading, parseDragPayload, poolView, propertyCodeById, staffFilter, staffFocusId, staffSearch, statusChipCls, statusText, stripeColorForUrgency, tab, taskCenterDay, updateWorkTask, workSummaryText])
+  }, [activateDragTarget, activeMaintenanceStaff, clearDragTarget, dateStr, dragOverKey, expandedStaff, filterRepairs, hasPendingKey, loading, parseDragPayload, propertyCodeById, renderPoolTools, renderStaffTools, staffFilter, staffFocusId, statusChipCls, statusText, stripeColorForUrgency, tab, taskCenterDay, updateWorkTask, workPendingKey, workPoolFilterOptions, workSummaryText])
 
   const TaskBoardDeepCleaning = useMemo(() => {
     if (tab !== 'deep_cleaning') return null
@@ -1273,54 +1321,26 @@ export default function TaskCenterPage() {
       return true
     })
     return (
-      <div className={styles.boardWrap}>
+      <div className={`${styles.boardWrap} ${styles.taskCenterBoardWrap}`}>
         <div
-          className={`${styles.poolPane} ${dragOverKey === poolKey ? styles.dropActive : ''}`}
-          onDragOver={(e) => { e.preventDefault(); setDragOverKey(poolKey) }}
-          onDragLeave={() => setDragOverKey((k) => (k === poolKey ? null : k))}
+          className={`${styles.poolPane} ${styles.taskCenterPoolPane} ${dragOverKey === poolKey ? styles.dropActive : ''}`}
+          onDragOver={(e) => { e.preventDefault(); activateDragTarget(poolKey) }}
+          onDragLeave={() => clearDragTarget(poolKey)}
           onDrop={(e) => {
             e.preventDefault()
             const { ids, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
-            if (source !== 'work') { setDragOverKey(null); return }
+            if (source !== 'work') { clearDragTarget(); return }
             const id = ids[0]
-            if (!id) { setDragOverKey(null); return }
+            if (!id || hasPendingKey(workPendingKey(id))) { clearDragTarget(); return }
             updateWorkTask(id, { assignee_id: null, scheduled_date: null }).catch((err: any) => message.error(err?.message || '更新失败'))
-              .finally(() => setDragOverKey(null))
+              .finally(() => clearDragTarget())
           }}
         >
-          <div className={styles.poolHead}>
+          <div className={`${styles.poolHead} ${styles.taskCenterPoolHead}`}>
             <div className={styles.poolTitle}>未安排深清</div>
             <div className={styles.poolCount}>{pool.length}</div>
           </div>
-          <div className={styles.poolTools}>
-            <Segmented
-              size="small"
-              options={[
-                { label: '全部', value: 'all' },
-                { label: '清洁', value: 'cleaning' },
-                { label: '检查', value: 'inspection' },
-                { label: '维修', value: 'maintenance' },
-                { label: '深清', value: 'deep_cleaning' },
-                { label: '其他', value: 'other' },
-              ]}
-              value={poolView}
-              onChange={(v) => {
-                const val = v as any
-                if (val === 'maintenance') { setPoolView('maintenance'); setTab('maintenance'); return }
-                if (val === 'deep_cleaning') { setPoolView('deep_cleaning'); setTab('deep_cleaning'); return }
-                if (val === 'inspection') { setPoolView('inspection'); setTab('inspection'); return }
-                if (val === 'cleaning') { setPoolView('cleaning'); setTab('cleaning'); return }
-                if (val === 'other') { setPoolView('other'); setTab('cleaning'); return }
-                setPoolView('all')
-              }}
-            />
-            <Input
-              value={filterText}
-              onChange={(e) => setFilterText(e.target.value)}
-              placeholder="搜索房源..."
-              allowClear
-            />
-          </div>
+          {renderPoolTools(workPoolFilterOptions)}
           <div className={styles.poolList}>
             {loading && !pool.length ? (
               <>
@@ -1328,6 +1348,7 @@ export default function TaskCenterPage() {
                 <div className={styles.taskChip}><Skeleton active paragraph={{ rows: 1 }} /></div>
               </>
             ) : pool.length ? pool.map((r) => {
+              const pending = hasPendingKey(workPendingKey(r.id))
               const stripe = stripeColorForUrgency(String(r.urgency || ''))
               const workNo = String(r.title || '').trim()
               const code = propertyCodeById(r.property_id || null)
@@ -1337,13 +1358,14 @@ export default function TaskCenterPage() {
               return (
                 <div
                   key={`work:deep:${r.id}`}
-                  className={`${styles.taskChip} ${styles.taskChipDraggable}`}
-                  draggable
+                  className={`${styles.taskChip} ${pending ? styles.taskChipDisabled : styles.taskChipDraggable}`}
+                  draggable={!pending}
                   onDragStart={(e) => {
+                    if (pending) return
                     e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'work', ids: [r.id] }))
                     e.dataTransfer.effectAllowed = 'move'
                   }}
-                  onDragEnd={() => setDragOverKey(null)}
+                  onDragEnd={() => clearDragTarget()}
                   title={title}
                 >
                   <span className={styles.taskGrip}><HolderOutlined /></span>
@@ -1366,29 +1388,9 @@ export default function TaskCenterPage() {
           </div>
         </div>
 
-        <div className={styles.staffPane}>
-          <div className={styles.staffTools}>
-            <div className={styles.staffToolsRow}>
-              <Segmented
-                size="small"
-                options={[
-                  { label: '全部人员', value: 'all' },
-                  { label: '有任务', value: 'busy' },
-                  { label: '空闲', value: 'idle' },
-                ]}
-                value={staffFilter}
-                onChange={(v) => setStaffFilter(v as any)}
-              />
-              <Input
-                className={styles.staffJump}
-                value={staffSearch}
-                onChange={(e) => setStaffSearch(e.target.value)}
-                placeholder="搜索人员并定位…"
-                allowClear
-              />
-            </div>
-          </div>
-          <div className={styles.staffBoard}>
+        <div className={`${styles.staffPane} ${styles.taskCenterStaffPane}`}>
+          {renderStaffTools()}
+          <div className={`${styles.staffBoard} ${styles.taskCenterStaffBoard}`}>
           {staffList.map((s) => {
             const sid = String(s.id)
             const key = `staff:deep_cleaning:${sid}`
@@ -1401,21 +1403,21 @@ export default function TaskCenterPage() {
               <div
                 key={sid}
                 id={`staffcol-deep-cleaning-${sid}`}
-                className={`${styles.staffCol} ${dragOverKey === key ? styles.dropActive : ''} ${staffFocusId === sid ? styles.staffHighlight : ''}`}
-                onDragOver={(e) => { e.preventDefault(); setDragOverKey(key) }}
-                onDragLeave={() => setDragOverKey((k) => (k === key ? null : k))}
+                className={`${styles.staffCol} ${styles.taskCenterStaffRow} ${dragOverKey === key ? styles.dropActive : ''} ${staffFocusId === sid ? styles.staffHighlight : ''}`}
+                onDragOver={(e) => { e.preventDefault(); activateDragTarget(key) }}
+                onDragLeave={() => clearDragTarget(key)}
                 onDrop={(e) => {
                   e.preventDefault()
                   const { ids, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
-                  if (source !== 'work') { setDragOverKey(null); return }
+                  if (source !== 'work') { clearDragTarget(); return }
                   const id = ids[0]
-                  if (!id) { setDragOverKey(null); return }
+                  if (!id || hasPendingKey(workPendingKey(id))) { clearDragTarget(); return }
                   updateWorkTask(id, { assignee_id: sid, scheduled_date: dateStr }).catch((err: any) => message.error(err?.message || '更新失败'))
-                    .finally(() => setDragOverKey(null))
+                    .finally(() => clearDragTarget())
                 }}
               >
                 <div
-                  className={styles.staffColHead}
+                  className={`${styles.staffColHead} ${styles.taskCenterStaffRowHead}`}
                   onClick={() => setExpandedStaff((p) => {
                     const cur = p[expKey] || 'preview'
                     const next = cur === 'expanded' ? 'collapsed' : 'expanded'
@@ -1429,11 +1431,12 @@ export default function TaskCenterPage() {
                     {expanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
                   </div>
                 </div>
-                <div className={styles.staffColBody}>
-                  {dragOverKey === key ? <div className={styles.dropHint}>放至此处分配</div> : null}
+                <div className={`${styles.staffColBody} ${styles.taskCenterStaffRowBody}`}>
+                  {dragOverKey === key ? <div className={`${styles.dropHint} ${styles.taskCenterDropHint}`}>放至此处分配</div> : null}
                   {!collapsed ? (
-                    <div className={expanded ? styles.staffExpandedList : styles.staffPreviewList}>
+                    <div className={`${expanded ? styles.staffExpandedList : styles.staffPreviewList} ${styles.taskCenterTaskRail} ${expanded ? styles.taskCenterTaskRailExpanded : styles.taskCenterTaskRailPreview}`}>
                       {arr.map((r) => {
+                    const pending = hasPendingKey(workPendingKey(r.id))
                     const stripe = stripeColorForUrgency(String(r.urgency || ''))
                     const workNo = String(r.title || '').trim()
                     const code = propertyCodeById(r.property_id || null)
@@ -1443,13 +1446,14 @@ export default function TaskCenterPage() {
                     return (
                       <div
                         key={`work:deep:assigned:${r.id}`}
-                        className={`${styles.taskChip} ${styles.taskChipDraggable}`}
-                        draggable
+                        className={`${styles.taskChip} ${pending ? styles.taskChipDisabled : styles.taskChipDraggable} ${styles.taskCenterAssignedChip}`}
+                        draggable={!pending}
                         onDragStart={(e) => {
+                          if (pending) return
                           e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'work', ids: [r.id] }))
                           e.dataTransfer.effectAllowed = 'move'
                         }}
-                        onDragEnd={() => setDragOverKey(null)}
+                        onDragEnd={() => clearDragTarget()}
                         title={title}
                       >
                         <span className={styles.taskGrip}><HolderOutlined /></span>
@@ -1469,7 +1473,7 @@ export default function TaskCenterPage() {
                   })}
                     </div>
                   ) : null}
-                  {!expanded ? <div className={`${styles.dropZone} ${collapsed ? styles.dropZoneCollapsed : (arr.length ? styles.dropZoneCompact : '')}`}>放入分配</div> : null}
+                  {!expanded ? <div className={`${styles.dropZone} ${styles.taskCenterDropZone} ${collapsed ? styles.dropZoneCollapsed : (arr.length ? styles.dropZoneCompact : '')}`}>放入分配</div> : null}
                 </div>
               </div>
             )
@@ -1478,7 +1482,7 @@ export default function TaskCenterPage() {
         </div>
       </div>
     )
-  }, [activeCleaners, dateStr, dragOverKey, expandedStaff, filterDeepCleaning, filterText, loading, parseDragPayload, poolView, propertyCodeById, staffFilter, staffFocusId, staffSearch, statusChipCls, statusText, stripeColorForUrgency, tab, taskCenterDay, updateWorkTask, workSummaryText])
+  }, [activateDragTarget, activeCleaners, clearDragTarget, dateStr, dragOverKey, expandedStaff, filterDeepCleaning, hasPendingKey, loading, parseDragPayload, propertyCodeById, renderPoolTools, renderStaffTools, staffFilter, staffFocusId, statusChipCls, statusText, stripeColorForUrgency, tab, taskCenterDay, updateWorkTask, workPendingKey, workPoolFilterOptions, workSummaryText])
 
   const staffOptionsAll = useMemo(() => (
     activeAllStaff.map((s) => ({ value: s.id, label: s.name }))
@@ -1515,31 +1519,11 @@ export default function TaskCenterPage() {
           </div>
         </div>
 
-        <div className={styles.card}>
+        <div className={`${styles.card} ${styles.taskCenterCard}`}>
           <div className={styles.detailsHead}>
             <div>
               <div className={styles.detailsTitle}>任务分配</div>
               <div className={styles.detailsDate}>拖拽任务到人员列完成分配</div>
-            </div>
-            <div className={styles.filters}>
-              <Segmented
-                options={[
-                  { label: '清洁', value: 'cleaning' },
-                  { label: '检查', value: 'inspection' },
-                  { label: '维修', value: 'maintenance' },
-                  { label: '深清', value: 'deep_cleaning' },
-                ]}
-                value={tab}
-                onChange={(v) => {
-                  const next = v as any
-                  setTab(next)
-                  setDragOverKey(null)
-                  if (next === 'maintenance') setPoolView('maintenance')
-                  else if (next === 'deep_cleaning') setPoolView('deep_cleaning')
-                  else if (next === 'inspection') setPoolView('inspection')
-                  else setPoolView('all')
-                }}
-              />
             </div>
           </div>
 
