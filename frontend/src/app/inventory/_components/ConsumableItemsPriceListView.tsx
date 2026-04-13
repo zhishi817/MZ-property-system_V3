@@ -61,6 +61,7 @@ export default function ConsumableItemsPriceListView() {
   function openEdit(row: PriceRow) {
     setEditingRow(row)
     form.setFieldsValue({
+      item_name: row.item_name || '',
       unit: row.unit || '',
       default_quantity: row.default_quantity ?? 1,
       cost_unit_price: Number(row.cost_unit_price || 0),
@@ -196,7 +197,7 @@ export default function ConsumableItemsPriceListView() {
         <Form form={form} layout="vertical">
           {editingRow ? <Form.Item label="SKU"><Input value={editingRow.sku} disabled /></Form.Item> : null}
           <Form.Item name="item_name" label="物品名称" rules={[{ required: true, message: '请输入物品名称' }]}>
-            <Input disabled={!!editingRow} placeholder="请输入消耗品名称" />
+            <Input placeholder="请输入消耗品名称" />
           </Form.Item>
           <Form.Item name="unit" label="单位">
             <Input placeholder="如 件 / 包 / 瓶" />

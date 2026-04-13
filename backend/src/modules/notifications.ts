@@ -147,6 +147,22 @@ router.post('/expo/register', async (req, res) => {
   }
 })
 
+router.post('/expo/unregister', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const userId = String(user.sub || '').trim()
+  const token = String(req.body?.expo_push_token || '').trim()
+  if (!token) return res.status(400).json({ message: 'missing expo_push_token' })
+  if (!hasPg || !pgPool) return res.json({ ok: true })
+  try {
+    await ensureExpoPushTokensTable()
+    await pgPool.query(`DELETE FROM expo_push_tokens WHERE token = $1 AND user_id = $2`, [token, userId])
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'expo_unregister_failed' })
+  }
+})
+
 router.get('/inbox', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
@@ -309,6 +325,25 @@ export async function listCleaningTaskUserIds(task_id: string) {
   const row = r?.rows?.[0] || null
   if (!row) return []
   const ids = [row.cleaner_id, row.inspector_id, row.assignee_id]
+    .map((x: any) => String(x || '').trim())
+    .filter(Boolean)
+  return Array.from(new Set(ids))
+}
+
+export async function listInspectionTaskUserIds(task_id: string) {
+  if (!hasPg || !pgPool) return []
+  const id = String(task_id || '').trim()
+  if (!id) return []
+  const r = await pgPool.query(
+    `SELECT inspector_id::text AS inspector_id, assignee_id::text AS assignee_id
+     FROM cleaning_tasks
+     WHERE id::text = $1
+     LIMIT 1`,
+    [id],
+  )
+  const row = r?.rows?.[0] || null
+  if (!row) return []
+  const ids = [row.inspector_id, row.assignee_id]
     .map((x: any) => String(x || '').trim())
     .filter(Boolean)
   return Array.from(new Set(ids))

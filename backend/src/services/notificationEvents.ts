@@ -1,6 +1,6 @@
 import { v4 as uuid } from 'uuid'
 import { hasPg, pgPool } from '../dbAdapter'
-import { listManagerUserIds, listCleaningTaskUserIds } from '../modules/notifications'
+import { listInspectionTaskUserIds, listManagerUserIds, listCleaningTaskUserIds } from '../modules/notifications'
 
 export type NotificationPriority = 'high' | 'medium' | 'low'
 
@@ -17,6 +17,7 @@ export type EmitNotificationEventParams = {
   type: NotificationEventType
   entity: 'order' | 'cleaning_task' | 'work_task'
   entityId: string
+  eventId?: string | null
   propertyId?: string | null
   updatedAt?: string | null
   changes?: string[] | null
@@ -185,8 +186,9 @@ async function resolveRecipients(params: EmitNotificationEventParams, client: an
   }
 
   if (type === 'INSPECTION_COMPLETED') {
+    const rel = await listInspectionTaskUserIds(entityId)
     const mgr = await listManagerUserIds()
-    return mgr
+    return Array.from(new Set([...rel, ...mgr]))
   }
 
   if (type === 'KEY_PHOTO_UPLOADED') {
@@ -247,7 +249,8 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
   if (!entity || !entityId) return { ok: false, sent: 0 }
 
   const updatedAt = normalizeEventTimestamp(params.updatedAt) || new Date().toISOString()
-  const eventId = `${type}_${entity}_${entityId}_${updatedAt}`
+  const explicitEventId = String(params.eventId || '').trim()
+  const eventId = explicitEventId || `${type}_${entity}_${entityId}_${updatedAt}`
 
   const resolved = await resolveRecipients(params, client)
   const propertyId = String(params.propertyId || '').trim()

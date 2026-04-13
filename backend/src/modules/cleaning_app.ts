@@ -59,6 +59,33 @@ async function notifyRecipientsForTask(taskId: string, actorId: string) {
   return Array.from(new Set([...taskUsers, ...managerUsers]))
 }
 
+async function listInspectionNotificationUserIds(taskId: string, actorId?: string) {
+  const { listInspectionTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
+  const inspectionUsers = await listInspectionTaskUserIds(taskId)
+  const managerUsers = await listManagerUserIds()
+  return excludeUserIds(Array.from(new Set([...inspectionUsers, ...managerUsers])), actorId)
+}
+
+async function listInspectionPhotoUrls(taskId: string) {
+  if (!hasPg) return []
+  try {
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return []
+    const r = await pgPool.query(
+      `SELECT url
+       FROM cleaning_task_media
+       WHERE task_id = $1
+         AND type LIKE 'inspection_%'
+         AND COALESCE(url, '') <> ''
+       ORDER BY captured_at ASC NULLS LAST, created_at ASC NULLS LAST, id ASC`,
+      [String(taskId || '').trim()],
+    )
+    return Array.from(new Set((r?.rows || []).map((row: any) => String(row?.url || '').trim()).filter(Boolean)))
+  } catch {
+    return []
+  }
+}
+
 async function listDayEndManagerUserIds() {
   const { listManagerUserIds } = require('./notifications')
   return await listManagerUserIds({ roles: ['admin', 'offline_manager'] })
@@ -199,7 +226,51 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), async (
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
     if (hasPg) {
+      const { pgPool } = require('../dbAdapter')
+      if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       const now = new Date().toISOString()
+      const beforeRes = await pgPool.query(
+        `SELECT t.*,
+                (
+                  SELECT m.url
+                  FROM cleaning_task_media m
+                  WHERE m.task_id::text = t.id::text
+                    AND m.type = 'key_photo'
+                  ORDER BY m.created_at DESC NULLS LAST, m.captured_at DESC NULLS LAST, m.id DESC
+                  LIMIT 1
+                ) AS current_key_photo_url
+         FROM cleaning_tasks t
+         WHERE t.id::text = $1::text
+         LIMIT 1`,
+        [String(id)],
+      )
+      const before = beforeRes?.rows?.[0] || null
+      if (!before) return res.status(404).json({ message: 'task not found' })
+      const alreadyHasKeyPhoto = !!String(before.current_key_photo_url || '').trim() || !!before.key_photo_uploaded_at
+      if (alreadyHasKeyPhoto) {
+        const patchExisting: any = {}
+        if (String(before.status || '').trim().toLowerCase() !== 'in_progress') patchExisting.status = 'in_progress'
+        if (!before.started_at) patchExisting.started_at = now
+        if (!before.key_photo_uploaded_at) patchExisting.key_photo_uploaded_at = now
+        if (parsed.data.lat !== undefined) patchExisting.geo_lat = parsed.data.lat
+        if (parsed.data.lng !== undefined) patchExisting.geo_lng = parsed.data.lng
+        const upExisting = Object.keys(patchExisting).length ? await pgUpdate('cleaning_tasks', id, patchExisting) : before
+        if (Object.keys(patchExisting).length) {
+          await emitWorkTaskEvent({
+            taskId: `cleaning_task:${String(id)}`,
+            sourceType: 'cleaning_tasks',
+            sourceRefIds: [String(id)],
+            eventType: 'TASK_UPDATED',
+            changeScope: 'list',
+            changedFields: Object.keys(patchExisting),
+            patch: patchExisting,
+            causedByUserId: String(user?.sub || '').trim() || null,
+            visibilityHints: buildCleaningTaskVisibilityHints(upExisting || patchExisting),
+          })
+          try { broadcastCleaningEvent({ event: 'started', task_id: id }) } catch {}
+        }
+        return res.json(upExisting || before)
+      }
       const patch: any = { status: 'in_progress', started_at: now, key_photo_uploaded_at: now }
       if (parsed.data.lat !== undefined) patch.geo_lat = parsed.data.lat
       if (parsed.data.lng !== undefined) patch.geo_lng = parsed.data.lng
@@ -374,6 +445,7 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
       try {
         const operationId = require('uuid').v4()
         let propertyId = ''
+        let managerRecipients: string[] = []
         try {
           const { pgPool } = require('../dbAdapter')
           if (pgPool) {
@@ -381,7 +453,11 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
             propertyId = String(r?.rows?.[0]?.property_id || '').trim()
           }
         } catch {}
-        if (propertyId) {
+        try {
+          const { listManagerUserIds } = require('./notifications')
+          managerRecipients = Array.from(new Set(await listManagerUserIds({ roles: ['admin', 'offline_manager', 'customer_service'] })))
+        } catch {}
+        if (propertyId || managerRecipients.length) {
           await emitNotificationEvent(
             {
               type: 'ISSUE_REPORTED',
@@ -393,6 +469,7 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
               body: `收到新的问题反馈：${String(issue.title || '').trim() || '问题'}`.slice(0, 240),
               data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'issue_reported', task_id: id, issue_id: issue.id },
               actorUserId: String(user?.sub || ''),
+              recipientUserIds: managerRecipients,
             },
             { operationId },
           )
@@ -408,6 +485,7 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
 
 // Submit consumables checklist (cannot skip; low requires photo)
 const consumableSchema = z.object({
+  living_room_photo_url: z.string().min(1),
   items: z.array(
     z.object({
       item_id: z.string().min(1),
@@ -431,7 +509,17 @@ router.get('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), a
        ORDER BY created_at ASC, id ASC`,
       [String(id)],
     )
+    const livingPhotoRow = await pgPool.query(
+      `SELECT url
+       FROM cleaning_task_media
+       WHERE task_id::text = $1::text
+         AND type = 'consumable_living_room_photo'
+       ORDER BY captured_at DESC NULLS LAST, created_at DESC
+       LIMIT 1`,
+      [String(id)],
+    )
     return res.json({
+      living_room_photo_url: String(livingPhotoRow?.rows?.[0]?.url || '').trim() || null,
       items: (rows.rows || []).map((x: any) => ({
         id: String(x.id || ''),
         item_id: String(x.item_id || ''),
@@ -509,7 +597,11 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
         }
       }
 
+      const livingRoomPhotoUrl = String(parsed.data.living_room_photo_url || '').trim()
+      if (!livingRoomPhotoUrl) return res.status(400).json({ message: '请上传客厅照片' })
+
       await pgPool.query(`DELETE FROM cleaning_consumable_usages WHERE task_id=$1`, [String(id)])
+      await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id::text=$1::text AND type='consumable_living_room_photo'`, [String(id)])
 
       for (const it of parsed.data.items) {
         const meta: any = byId.get(String(it.item_id)) || null
@@ -526,6 +618,13 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
         }
         await pgInsert('cleaning_consumable_usages', row as any)
       }
+      await pgInsert('cleaning_task_media', {
+        id: require('uuid').v4(),
+        task_id: String(id),
+        type: 'consumable_living_room_photo',
+        url: livingRoomPhotoUrl,
+        captured_at: new Date().toISOString(),
+      } as any)
       const needsRestock = parsed.data.items.some((i) => i.status === 'low')
       const now = new Date().toISOString()
       const taskStatus = String(task.status || '').trim().toLowerCase()
@@ -667,18 +766,30 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
       try {
         const operationId = require('uuid').v4()
         const propertyId = String((up as any)?.property_id || '').trim()
-        if (propertyId) {
+        const photoUrls = await listInspectionPhotoUrls(String(id))
+        const recipients = await listInspectionNotificationUserIds(String(id), String(user?.sub || ''))
+        if (propertyId && recipients.length) {
           await emitNotificationEvent(
             {
               type: 'INSPECTION_COMPLETED',
               entity: 'cleaning_task',
               entityId: String(id),
+              eventId: `inspection_complete:${String(id)}`,
               propertyId,
               updatedAt: now,
               title: '检查已完成',
               body: '检查员已提交挂钥匙视频并标记完成',
-              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'inspection_complete', task_id: id },
+              data: {
+                entity: 'cleaning_task',
+                entityId: String(id),
+                action: 'open_task',
+                kind: 'inspection_complete',
+                task_id: id,
+                photo_url: photoUrls[0] || null,
+                photo_urls: photoUrls,
+              },
               actorUserId: String(user?.sub || ''),
+              recipientUserIds: recipients,
             },
             { operationId },
           )
@@ -834,7 +945,6 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
       const uuid = require('uuid')
-      const batchId = uuid.v4()
       await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
       for (const it of parsed.data.items) {
         const type = `inspection_${it.area}`
@@ -847,30 +957,6 @@ router.post('/tasks/:id/inspection-photos', requirePerm('cleaning_app.inspect.fi
         )
       }
       try { broadcastCleaningEvent({ event: 'inspection_photos_saved', task_id: id }) } catch {}
-      try {
-        const operationId = require('uuid').v4()
-        let propertyId = ''
-        try {
-          const r2 = await pgPool.query(`SELECT property_id::text AS property_id FROM cleaning_tasks WHERE id::text=$1::text LIMIT 1`, [String(id)])
-          propertyId = String(r2?.rows?.[0]?.property_id || '').trim()
-        } catch {}
-        if (propertyId) {
-          await emitNotificationEvent(
-            {
-              type: 'CLEANING_TASK_UPDATED',
-              entity: 'cleaning_task',
-              entityId: String(id),
-              propertyId,
-              updatedAt: new Date().toISOString(),
-              title: '检查照片已提交',
-              body: '检查员已上传检查照片',
-              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'inspection_photos_saved', task_id: id, batch_id: batchId },
-              actorUserId: String(user?.sub || ''),
-            },
-            { operationId },
-          )
-        }
-      } catch {}
       return res.status(201).json({ ok: true })
     }
     return res.status(201).json({ ok: true })

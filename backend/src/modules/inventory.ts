@@ -2787,6 +2787,7 @@ router.patch('/consumable-items-prices/:id', requirePerm('inventory.po.manage'),
       const existing = current.rows?.[0]
       if (!existing) throw httpError(404, 'not found')
       const nextPayload: any = {
+        ...(parsed.data.item_name !== undefined ? { item_name: String(parsed.data.item_name || '').trim() } : {}),
         ...(parsed.data.cost_unit_price !== undefined ? { cost_unit_price: Number(parsed.data.cost_unit_price || 0) } : {}),
         ...(parsed.data.unit_price !== undefined ? { unit_price: Number(parsed.data.unit_price || 0) } : {}),
         ...(parsed.data.currency !== undefined ? { currency: parsed.data.currency || 'AUD' } : {}),
@@ -2946,6 +2947,7 @@ router.patch('/other-items-prices/:id', requirePerm('inventory.po.manage'), asyn
       const existing = current.rows?.[0]
       if (!existing) throw httpError(404, 'not found')
       const nextPayload: any = {
+        ...(parsed.data.item_name !== undefined ? { item_name: String(parsed.data.item_name || '').trim() } : {}),
         ...(parsed.data.cost_unit_price !== undefined ? { cost_unit_price: Number(parsed.data.cost_unit_price || 0) } : {}),
         ...(parsed.data.unit_price !== undefined ? { unit_price: Number(parsed.data.unit_price || 0) } : {}),
         ...(parsed.data.currency !== undefined ? { currency: parsed.data.currency || 'AUD' } : {}),
