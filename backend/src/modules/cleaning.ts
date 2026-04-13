@@ -93,32 +93,47 @@ router.get('/staff', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
     if (k === 'inspector') return ['cleaning_inspector', 'cleaner_inspector']
     return ['cleaner', 'cleaning_inspector', 'cleaner_inspector']
   }
+  const kindsForRoles = (roleNames: string[], requestedKind: string): Array<'cleaner' | 'inspector'> => {
+    const out = new Set<'cleaner' | 'inspector'>()
+    const all = Array.from(new Set(roleNames.map((x) => String(x || '').trim()).filter(Boolean)))
+    if (all.includes('cleaner') || all.includes('cleaner_inspector')) {
+      if (requestedKind !== 'inspector') out.add('cleaner')
+    }
+    if (all.includes('cleaning_inspector') || all.includes('cleaner_inspector')) {
+      if (requestedKind !== 'cleaner') out.add('inspector')
+    }
+    return Array.from(out)
+  }
   const roles = rolesForKind(kind)
   try {
     if (hasPg && pgPool) {
       const r = await pgPool.query(
         `SELECT
-           id,
-           username,
-           email,
-           role,
-           (color_hex::text) AS color_hex
-         FROM users
-         WHERE role = ANY($1::text[])
-         ORDER BY COALESCE(username, email) ASC, id ASC`,
-        [roles]
+           u.id,
+           u.username,
+           u.email,
+           u.role,
+           (u.color_hex::text) AS color_hex,
+           COALESCE(
+             ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL),
+             ARRAY[]::text[]
+           ) AS roles
+         FROM users u
+         LEFT JOIN user_roles ur ON ur.user_id = u.id::text
+         GROUP BY u.id
+         ORDER BY COALESCE(u.username, u.email) ASC, u.id ASC`,
       )
       const out: any[] = []
       for (const u of (r?.rows || []) as any[]) {
-        const role = String(u.role || '')
+        const roleNames = Array.from(new Set([
+          String(u.role || '').trim(),
+          ...((Array.isArray(u.roles) ? u.roles : []).map((x: any) => String(x || '').trim())),
+        ].filter(Boolean)))
+        if (!roleNames.some((role) => roles.includes(role))) continue
         const name = String(u.username || u.email || u.id || '').trim() || String(u.id)
         const base = { id: String(u.id), name, capacity_per_day: 0, is_active: true, color_hex: String(u.color_hex || '#3B82F6') }
-        if (role === 'cleaner' && kind !== 'inspector') out.push({ ...base, kind: 'cleaner' })
-        else if (role === 'cleaning_inspector' && kind !== 'cleaner') out.push({ ...base, kind: 'inspector' })
-        else if (role === 'cleaner_inspector') {
-          if (kind === 'cleaner') out.push({ ...base, kind: 'cleaner' })
-          else if (kind === 'inspector') out.push({ ...base, kind: 'inspector' })
-          else out.push({ ...base, kind: 'cleaner' }, { ...base, kind: 'inspector' })
+        for (const resolvedKind of kindsForRoles(roleNames, kind)) {
+          out.push({ ...base, kind: resolvedKind })
         }
       }
       return res.json(out)
