@@ -1,4 +1,6 @@
 import { pgPool, hasPg } from '../dbAdapter'
+import { listManagerUserIds } from '../modules/notifications'
+import { emitNotificationEvent } from '../services/notificationEvents'
 
 type Level = 'remind' | 'escalate'
 
@@ -101,13 +103,7 @@ export async function runKeyUploadSlaCheck(position: number, level: Level) {
 
   if (!rows.length) return { ok: true, created: 0 }
 
-  const managers = await pgPool.query(
-    `SELECT DISTINCT u.id, u.username, u.phone_au, u.role
-     FROM users u
-     LEFT JOIN user_roles ur ON ur.user_id = u.id::text
-     WHERE u.role IN ('admin','offline_manager') OR ur.role_name IN ('admin','offline_manager')`,
-  )
-  const managersRows = managers?.rows || []
+  const managerIds = await listManagerUserIds()
 
   for (const r of rows) {
     const cleanerId = String(r.cleaner_id || '')
@@ -142,39 +138,45 @@ export async function runKeyUploadSlaCheck(position: number, level: Level) {
         [id, kind, cleanerId, level, date, position, JSON.stringify(payload)],
       )
       if (ins?.rowCount) {
-        try {
-          const { notifyExpoUsers } = require('../modules/notifications')
-          const title = '上传钥匙提醒'
-          const body = `${property_code || '房源'}：请尽快上传钥匙照片（第 ${position} 个任务）`
-          await notifyExpoUsers({ user_ids: [cleanerId], title, body, data: { kind, level, position, event_id: id, cleaning_task_ids: task_ids, property_code } })
-        } catch {}
+        const title = '上传钥匙提醒'
+        const body = `${property_code || '房源'}：请尽快上传钥匙照片（第 ${position} 个任务）`
+        await emitNotificationEvent({
+          type: 'KEY_UPLOAD_SLA_REMINDER',
+          entity: 'work_task',
+          entityId: id,
+          eventId: id,
+          title,
+          body,
+          recipientUserIds: [cleanerId],
+          priority: 'high',
+          data: { kind, level, position, event_id: id, cleaning_task_ids: task_ids, property_code },
+        })
       }
     } else {
-      const notifyIds: string[] = []
-      for (const m of managersRows) {
-        const mid = String(m.id || '').trim()
-        if (!mid) continue
-        const id = `${kind}:${date}:${position}:${level}:${mid}:${cleanerId}`
+      for (const mid of managerIds) {
+        const managerId = String(mid || '').trim()
+        if (!managerId) continue
+        const id = `${kind}:${date}:${position}:${level}:${managerId}:${cleanerId}`
         const ins = await pgPool.query(
           `INSERT INTO mzapp_alerts (id, kind, target_user_id, level, date, position, payload)
            VALUES ($1,$2,$3,$4,$5::date,$6::int,$7::jsonb)
            ON CONFLICT DO NOTHING`,
-          [id, kind, mid, level, date, position, JSON.stringify(payload)],
+          [id, kind, managerId, level, date, position, JSON.stringify(payload)],
         )
-        if (ins?.rowCount) notifyIds.push(mid)
-      }
-      if (notifyIds.length) {
-        try {
-          const { notifyExpoUsers } = require('../modules/notifications')
-          const title = '上传钥匙超时提醒'
-          const body = `${property_code || '房源'}：清洁员未按时上传钥匙照片（第 ${position} 个任务）`
-          await notifyExpoUsers({
-            user_ids: notifyIds,
-            title,
-            body,
-            data: { kind, level, position, event_id: `${kind}:${date}:${position}:${level}:${cleanerId}`, cleaning_task_ids: task_ids, property_code, cleaner_id: cleanerId },
-          })
-        } catch {}
+        if (!ins?.rowCount) continue
+        const title = '上传钥匙超时提醒'
+        const body = `${property_code || '房源'}：清洁员未按时上传钥匙照片（第 ${position} 个任务）`
+        await emitNotificationEvent({
+          type: 'KEY_UPLOAD_SLA_ESCALATION',
+          entity: 'work_task',
+          entityId: id,
+          eventId: id,
+          title,
+          body,
+          recipientUserIds: [managerId],
+          priority: 'high',
+          data: { kind, level, position, event_id: id, cleaning_task_ids: task_ids, property_code, cleaner_id: cleanerId },
+        })
       }
     }
   }

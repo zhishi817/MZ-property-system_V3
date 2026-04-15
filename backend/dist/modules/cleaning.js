@@ -22,6 +22,16 @@ function dayOnly(s) {
     const v = String(s || '').slice(0, 10);
     return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
 }
+function enqueueNotification(task) {
+    setImmediate(() => {
+        task().catch((e) => {
+            try {
+                console.error(`[cleaning][notification_async_failed] message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+            }
+            catch (_a) { }
+        });
+    });
+}
 async function ensureOfflineTasksTable() {
     var _a, _b;
     if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool)
@@ -474,7 +484,7 @@ async function isValidStaffId(id, kind) {
     return !!found;
 }
 exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
     const { id } = req.params;
     const operationId = (0, uuid_1.v4)();
     const opNow = new Date().toISOString();
@@ -534,7 +544,7 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                  AND COALESCE(status,'') <> 'cancelled'
                  AND COALESCE(keys_required, 1) <> $1`, [nextK, orderId]);
                     }
-                    catch (_r) { }
+                    catch (_p) { }
                 }
             }
             try {
@@ -555,19 +565,22 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                     changes.push('keys');
                 const propertyId = String(updated.property_id || '').trim();
                 if (changes.length && propertyId) {
-                    await (0, notificationEvents_1.emitNotificationEvent)({
-                        type: 'CLEANING_TASK_UPDATED',
-                        entity: 'cleaning_task',
-                        entityId: String(id),
-                        propertyId,
-                        updatedAt: opNow,
-                        changes,
-                        data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
-                        actorUserId: (_m = req.user) === null || _m === void 0 ? void 0 : _m.sub,
-                    }, { operationId });
+                    enqueueNotification(() => {
+                        var _a;
+                        return (0, notificationEvents_1.emitNotificationEvent)({
+                            type: 'CLEANING_TASK_UPDATED',
+                            entity: 'cleaning_task',
+                            entityId: String(id),
+                            propertyId,
+                            updatedAt: opNow,
+                            changes,
+                            data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
+                            actorUserId: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub,
+                        }, { operationId });
+                    });
                 }
             }
-            catch (_s) { }
+            catch (_q) { }
             return res.json(updated);
         }
         const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
@@ -653,23 +666,26 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                 changes.push('note');
             if (String(before.status || '') !== String(task.status || ''))
                 changes.push('status');
-            if (String((_o = before.keys_required) !== null && _o !== void 0 ? _o : '') !== String((_p = task.keys_required) !== null && _p !== void 0 ? _p : ''))
+            if (String((_m = before.keys_required) !== null && _m !== void 0 ? _m : '') !== String((_o = task.keys_required) !== null && _o !== void 0 ? _o : ''))
                 changes.push('keys');
             const propertyId = String(task.property_id || '').trim();
             if (changes.length && propertyId) {
-                await (0, notificationEvents_1.emitNotificationEvent)({
-                    type: 'CLEANING_TASK_UPDATED',
-                    entity: 'cleaning_task',
-                    entityId: String(id),
-                    propertyId,
-                    updatedAt: opNow,
-                    changes,
-                    data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
-                    actorUserId: (_q = req.user) === null || _q === void 0 ? void 0 : _q.sub,
-                }, { operationId });
+                enqueueNotification(() => {
+                    var _a;
+                    return (0, notificationEvents_1.emitNotificationEvent)({
+                        type: 'CLEANING_TASK_UPDATED',
+                        entity: 'cleaning_task',
+                        entityId: String(id),
+                        propertyId,
+                        updatedAt: opNow,
+                        changes,
+                        data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
+                        actorUserId: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub,
+                    }, { operationId });
+                });
             }
         }
-        catch (_t) { }
+        catch (_r) { }
         return res.json(task);
     }
     catch (e) {

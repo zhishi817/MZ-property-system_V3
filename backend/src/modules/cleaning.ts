@@ -24,6 +24,14 @@ function dayOnly(s?: any): string | null {
   return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null
 }
 
+function enqueueNotification(task: () => Promise<any>) {
+  setImmediate(() => {
+    task().catch((e: any) => {
+      try { console.error(`[cleaning][notification_async_failed] message=${String(e?.message || '')}`) } catch {}
+    })
+  })
+}
+
 async function ensureOfflineTasksTable() {
   if (!hasPg || !pgPool) return
   const r = await pgPool.query(`SELECT to_regclass('public.cleaning_offline_tasks') AS t`)
@@ -524,18 +532,20 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
         if (String(before.keys_required ?? '') !== String(updated.keys_required ?? '')) changes.push('keys')
         const propertyId = String(updated.property_id || '').trim()
         if (changes.length && propertyId) {
-          await emitNotificationEvent(
-            {
-              type: 'CLEANING_TASK_UPDATED',
-              entity: 'cleaning_task',
-              entityId: String(id),
-              propertyId,
-              updatedAt: opNow,
-              changes,
-              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
-              actorUserId: (req as any).user?.sub,
-            },
-            { operationId },
+          enqueueNotification(() =>
+            emitNotificationEvent(
+              {
+                type: 'CLEANING_TASK_UPDATED',
+                entity: 'cleaning_task',
+                entityId: String(id),
+                propertyId,
+                updatedAt: opNow,
+                changes,
+                data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
+                actorUserId: (req as any).user?.sub,
+              },
+              { operationId },
+            ),
           )
         }
       } catch {}
@@ -602,18 +612,20 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), async (req, res)
       if (String((before as any).keys_required ?? '') !== String((task as any).keys_required ?? '')) changes.push('keys')
       const propertyId = String((task as any).property_id || '').trim()
       if (changes.length && propertyId) {
-        await emitNotificationEvent(
-          {
-            type: 'CLEANING_TASK_UPDATED',
-            entity: 'cleaning_task',
-            entityId: String(id),
-            propertyId,
-            updatedAt: opNow,
-            changes,
-            data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
-            actorUserId: (req as any).user?.sub,
-          },
-          { operationId },
+        enqueueNotification(() =>
+          emitNotificationEvent(
+            {
+              type: 'CLEANING_TASK_UPDATED',
+              entity: 'cleaning_task',
+              entityId: String(id),
+              propertyId,
+              updatedAt: opNow,
+              changes,
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
+              actorUserId: (req as any).user?.sub,
+            },
+            { operationId },
+          ),
         )
       }
     } catch {}

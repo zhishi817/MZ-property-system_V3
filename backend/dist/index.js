@@ -48,6 +48,7 @@ const invoices_1 = require("./modules/invoices");
 const cms_company_1 = require("./modules/cms_company");
 const cms_company_secrets_1 = require("./modules/cms_company_secrets");
 const keyUploadReminderJob_1 = require("./lib/keyUploadReminderJob");
+const keyUploadSlaJob_1 = require("./lib/keyUploadSlaJob");
 const dayEndHandoverReminderJob_1 = require("./lib/dayEndHandoverReminderJob");
 const auth_2 = require("./auth");
 const public_1 = __importDefault(require("./modules/public"));
@@ -770,7 +771,6 @@ function onServerListening() {
     })();
     (async () => {
         try {
-            const defaultEnabled = process.env.NODE_ENV === 'production';
             const enabled = String(process.env.KEY_UPLOAD_SLA_ENABLED || 'false').toLowerCase() === 'true';
             const featureCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true';
             if (!enabled) {
@@ -784,6 +784,41 @@ function onServerListening() {
             if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool) {
                 console.log('[key-upload-sla][schedule] skipped_reason=pg=false');
                 return;
+            }
+            const schedules = [
+                { expr: String(process.env.KEY_UPLOAD_SLA_P1_REMIND_CRON || '30 10 * * *').trim(), position: 1, level: 'remind', lockKey: 975310101 },
+                { expr: String(process.env.KEY_UPLOAD_SLA_P1_ESCALATE_CRON || '0 11 * * *').trim(), position: 1, level: 'escalate', lockKey: 975310102 },
+                { expr: String(process.env.KEY_UPLOAD_SLA_P2_REMIND_CRON || '30 12 * * *').trim(), position: 2, level: 'remind', lockKey: 975310201 },
+                { expr: String(process.env.KEY_UPLOAD_SLA_P2_ESCALATE_CRON || '0 13 * * *').trim(), position: 2, level: 'escalate', lockKey: 975310202 },
+                { expr: String(process.env.KEY_UPLOAD_SLA_P3_REMIND_CRON || '30 14 * * *').trim(), position: 3, level: 'remind', lockKey: 975310301 },
+                { expr: String(process.env.KEY_UPLOAD_SLA_P3_ESCALATE_CRON || '0 15 * * *').trim(), position: 3, level: 'escalate', lockKey: 975310302 },
+            ].filter((x) => !!x.expr);
+            for (const s of schedules) {
+                console.log(`[key-upload-sla][schedule] enabled cron=${s.expr} tz=Australia/Melbourne position=${s.position} level=${s.level}`);
+                const task = node_cron_1.default.schedule(s.expr, async () => {
+                    var _a, _b;
+                    const started = Date.now();
+                    try {
+                        const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [s.lockKey]);
+                        const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
+                        if (!ok)
+                            return;
+                        const r = await (0, keyUploadSlaJob_1.runKeyUploadSlaCheck)(s.position, s.level);
+                        const dur = Date.now() - started;
+                        if (r === null || r === void 0 ? void 0 : r.skipped)
+                            console.log(`[key-upload-sla][schedule] skipped_reason=${String(r.skipped)} position=${s.position} level=${s.level}`);
+                        else
+                            console.log(`[key-upload-sla][schedule] ok position=${s.position} level=${s.level} duration_ms=${dur} created=${String((r === null || r === void 0 ? void 0 : r.created) || 0)}`);
+                        try {
+                            await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [s.lockKey]);
+                        }
+                        catch (_c) { }
+                    }
+                    catch (e) {
+                        console.error(`[key-upload-sla][schedule] error position=${s.position} level=${s.level} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                    }
+                }, { scheduled: true, timezone: 'Australia/Melbourne' });
+                task.start();
             }
         }
         catch (e) {

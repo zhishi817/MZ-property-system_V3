@@ -6,6 +6,15 @@ import { requirePerm, auth } from '../auth'
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import bcrypt from 'bcryptjs'
 import { getPermissionMeta } from '../permissionsCatalog'
+import {
+  ALL_NOTIFICATION_EVENT_TYPES,
+  getNotificationRule,
+  isManagedNotificationEventType,
+  listNotificationRules,
+  NOTIFICATION_AUDIENCE_OPTIONS,
+  resetNotificationRule,
+  saveNotificationRule,
+} from '../services/notificationRules'
 
 export const router = Router()
 
@@ -331,6 +340,90 @@ router.get('/role-permissions', async (req, res) => {
     return res.json(codes.map((permission_code) => ({ role_id, permission_code })))
   }
   res.json(db.rolePermissions)
+})
+
+router.get('/notification-rules', requirePerm('rbac.manage'), async (_req, res) => {
+  try {
+    const roles = await (async () => {
+      if (hasPg) {
+        await ensureRolesTable()
+        const rows = await pgSelect('roles', '*') as any[] || []
+        return rows.map((x: any) => ({ id: String(x.id || ''), name: String(x.name || ''), description: x.description == null ? null : String(x.description || '') }))
+      }
+      return (db.roles || []).map((x: any) => ({ id: String(x.id || ''), name: String(x.name || ''), description: x.description == null ? null : String(x.description || '') }))
+    })()
+    const users = await (async () => {
+      if (hasPg) {
+        const { pgPool } = require('../dbAdapter')
+        if (!pgPool) return []
+        const ur = await pgPool.query(
+          `SELECT u.id::text AS id,
+                  COALESCE(NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.legal_name), ''), NULLIF(TRIM(u.email), ''), u.id::text) AS username,
+                  u.role::text AS role,
+                  COALESCE(ARRAY_REMOVE(ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL), NULL), ARRAY[]::text[]) AS roles
+           FROM users u
+           LEFT JOIN user_roles ur ON ur.user_id = u.id::text
+           GROUP BY u.id, u.username, u.legal_name, u.email, u.role
+           ORDER BY username ASC`,
+        )
+        return (ur?.rows || []).map((x: any) => ({
+          id: String(x.id || ''),
+          username: String(x.username || ''),
+          role: String(x.role || ''),
+          roles: Array.isArray(x.roles) ? x.roles.map((v: any) => String(v || '').trim()).filter(Boolean) : [],
+        }))
+      }
+      return (db.users || []).map((x: any) => ({ id: String(x.id || ''), username: String(x.username || x.email || x.id || ''), role: String(x.role || ''), roles: [String(x.role || '')].filter(Boolean) }))
+    })()
+    const rules = await listNotificationRules()
+    return res.json({ rules, roles, users, event_types: ALL_NOTIFICATION_EVENT_TYPES, audience_options: NOTIFICATION_AUDIENCE_OPTIONS })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'load_failed') })
+  }
+})
+
+router.get('/notification-rules/:eventType', requirePerm('rbac.manage'), async (req, res) => {
+  const eventType = String(req.params.eventType || '').trim()
+  if (!isManagedNotificationEventType(eventType)) return res.status(404).json({ message: 'event_type_not_found' })
+  try {
+    return res.json(await getNotificationRule(eventType))
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'load_failed') })
+  }
+})
+
+const notificationRuleSetSchema = z.object({
+  enabled: z.boolean(),
+  note: z.string().max(500).nullable().optional(),
+  selectors: z.array(
+    z.object({
+      recipient_type: z.enum(['role', 'audience', 'user']),
+      recipient_value: z.string().min(1).max(120),
+    }),
+  ).optional(),
+})
+
+router.put('/notification-rules/:eventType', requirePerm('rbac.manage'), async (req, res) => {
+  const eventType = String(req.params.eventType || '').trim()
+  if (!isManagedNotificationEventType(eventType)) return res.status(404).json({ message: 'event_type_not_found' })
+  const parsed = notificationRuleSetSchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    const saved = await saveNotificationRule(eventType, parsed.data, String((req as any)?.user?.sub || '').trim() || null)
+    return res.json(saved)
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'save_failed') })
+  }
+})
+
+router.post('/notification-rules/:eventType/reset', requirePerm('rbac.manage'), async (req, res) => {
+  const eventType = String(req.params.eventType || '').trim()
+  if (!isManagedNotificationEventType(eventType)) return res.status(404).json({ message: 'event_type_not_found' })
+  try {
+    return res.json(await resetNotificationRule(eventType, String((req as any)?.user?.sub || '').trim() || null))
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'reset_failed') })
+  }
 })
 
 const setSchema = z.object({ role_id: z.string(), permissions: z.array(z.string().min(1)) })

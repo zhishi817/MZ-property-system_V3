@@ -6,7 +6,6 @@ import { requirePerm, requireAnyPerm } from '../auth'
 // Supabase removed
 import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
 import { v4 as uuid } from 'uuid'
-import { emitNotificationEvent } from '../services/notificationEvents'
 
 export const router = Router()
 
@@ -867,35 +866,6 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
         addAudit('Order', String(id), action, base, row, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
       } catch {}
       try { broadcastOrdersUpdated({ action: 'update', id }) } catch {}
-      try {
-        const beforeRow: any = base || {}
-        const afterRow: any = row || {}
-        const changes: string[] = []
-        const beforeCi = String(beforeRow.checkin || '').slice(0, 10)
-        const afterCi = String(afterRow.checkin || '').slice(0, 10)
-        const beforeCo = String(beforeRow.checkout || '').slice(0, 10)
-        const afterCo = String(afterRow.checkout || '').slice(0, 10)
-        if (beforeCi !== afterCi || beforeCo !== afterCo) changes.push('time')
-        if (String(beforeRow.checkin_time || '') !== String(afterRow.checkin_time || '')) changes.push('time')
-        if (String(beforeRow.checkout_time || '') !== String(afterRow.checkout_time || '')) changes.push('time')
-        if (String(beforeRow.note || '') !== String(afterRow.note || '')) changes.push('note')
-        const propertyId = String(afterRow.property_id || '').trim()
-        if (changes.length && propertyId) {
-          await emitNotificationEvent(
-            {
-              type: 'ORDER_UPDATED',
-              entity: 'order',
-              entityId: String(id),
-              propertyId,
-              updatedAt: opNow,
-              changes,
-              data: { entity: 'order', entityId: String(id), action: 'open_order' },
-              actorUserId: (req as any).user?.sub,
-            },
-            { operationId },
-          )
-        }
-      } catch {}
       return res.json(row)
     } catch (e: any) {
       const msg = String(e?.message || '')
@@ -935,35 +905,6 @@ router.patch('/:id', requirePerm('order.write'), async (req, res) => {
             const as = String((row as any)?.status || '')
             const action = bs !== as ? 'status_changed' : 'update'
             addAudit('Order', String(id), action, base, row, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
-          } catch {}
-          try {
-            const beforeRow: any = base || {}
-            const afterRow: any = row || {}
-            const changes: string[] = []
-            const beforeCi = String(beforeRow.checkin || '').slice(0, 10)
-            const afterCi = String(afterRow.checkin || '').slice(0, 10)
-            const beforeCo = String(beforeRow.checkout || '').slice(0, 10)
-            const afterCo = String(afterRow.checkout || '').slice(0, 10)
-            if (beforeCi !== afterCi || beforeCo !== afterCo) changes.push('time')
-            if (String(beforeRow.checkin_time || '') !== String(afterRow.checkin_time || '')) changes.push('time')
-            if (String(beforeRow.checkout_time || '') !== String(afterRow.checkout_time || '')) changes.push('time')
-            if (String(beforeRow.note || '') !== String(afterRow.note || '')) changes.push('note')
-            const propertyId = String(afterRow.property_id || '').trim()
-            if (changes.length && propertyId) {
-              await emitNotificationEvent(
-                {
-                  type: 'ORDER_UPDATED',
-                  entity: 'order',
-                  entityId: String(id),
-                  propertyId,
-                  updatedAt: opNow,
-                  changes,
-                  data: { entity: 'order', entityId: String(id), action: 'open_order' },
-                  actorUserId: (req as any).user?.sub,
-                },
-                { operationId },
-              )
-            }
           } catch {}
           return res.json(row)
         } catch (e2: any) {

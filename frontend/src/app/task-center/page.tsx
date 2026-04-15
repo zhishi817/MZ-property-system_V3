@@ -516,6 +516,31 @@ export default function TaskCenterPage() {
     return out
   }, [cleaningItems, mergedStatus])
 
+  const isLateCheckoutTime = useCallback((raw: string | null | undefined) => {
+    const s = String(raw || '').trim().toLowerCase()
+    if (!s) return false
+    const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/)
+    if (!m) return false
+    let hour = Number(m[1] || 0)
+    const minute = Number(m[2] || 0)
+    const meridiem = String(m[3] || '').trim()
+    if (meridiem === 'am') {
+      if (hour === 12) hour = 0
+    } else if (meridiem === 'pm') {
+      if (hour < 12) hour += 12
+    }
+    return hour * 60 + minute > 10 * 60
+  }, [])
+
+  const hasLateCheckout = useCallback((it: CalendarItem) => {
+    const type = String(it.task_type || '').toLowerCase()
+    const label = String(it.label || '')
+    const isTurnover = type === 'turnover' || (label.includes('退房') && label.includes('入住'))
+    const isCheckout = type === 'checkout_clean' || label.includes('退房')
+    if (!isTurnover && !isCheckout) return false
+    return isLateCheckoutTime(it.summary_checkout_time)
+  }, [isLateCheckoutTime])
+
   const summaryText = useCallback((it: CalendarItem) => {
     const region = String(it.property_region || '').trim()
     const code = String(it.property_code || '').trim() || String(it.property_id || '').trim()
@@ -536,8 +561,9 @@ export default function TaskCenterPage() {
       const checkinT = String(it.summary_checkin_time || '').trim() || '3pm'
       parts.push(`${checkinT}入住`)
     }
+    if (hasLateCheckout(it)) parts.push('晚退房')
     return { region, code, detail: parts.join(' ') }
-  }, [])
+  }, [hasLateCheckout])
 
   const isSelfCompleteCleaningItem = useCallback((it: CalendarItem) => {
     if (String(it.source || '') !== 'cleaning_tasks') return false
@@ -935,6 +961,7 @@ export default function TaskCenterPage() {
                     <div className={styles.taskTopRow}>
                       <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
                       {isMerged ? <Tag>合并 {ids.length}</Tag> : null}
+                      {hasLateCheckout(it) ? <Tag color="orange">晚退房</Tag> : null}
                       {showKeyMissing ? <Tag color="red">钥匙未上传</Tag> : null}
                     </div>
                     <div className={styles.taskTitleRow}>
@@ -1100,7 +1127,7 @@ export default function TaskCenterPage() {
         </div>
       </div>
     )
-  }, [activateDragTarget, activeCleaners, activeInspectors, cleaningPendingKeys, cleaningPoolFilterOptions, clearDragTarget, dateStr, dayLocked, dragOverKey, effectiveCleaningStatus, entityIds, expandedStaff, filterCleanItems, filterOfflineItems, hasAnyPendingKey, hasPendingKey, isCheckinLikeTaskType, isSelfCompleteCleaningItem, kindOfCleaningItem, loading, mergedCleaningItems, parseDragPayload, poolView, propertyCodeById, renderPoolTools, renderStaffTools, staffFilter, staffFocusId, statusChipCls, statusText, stripeColorForKind, stripeColorForUrgency, summaryText, tab, taskCenterDay, taskTextForCleaningItem, updateCleaningTasks, updateWorkTask, workPendingKey, workSummaryText])
+  }, [activateDragTarget, activeCleaners, activeInspectors, cleaningPendingKeys, cleaningPoolFilterOptions, clearDragTarget, dateStr, dayLocked, dragOverKey, effectiveCleaningStatus, entityIds, expandedStaff, filterCleanItems, filterOfflineItems, hasAnyPendingKey, hasLateCheckout, hasPendingKey, isCheckinLikeTaskType, isSelfCompleteCleaningItem, kindOfCleaningItem, loading, mergedCleaningItems, parseDragPayload, poolView, propertyCodeById, renderPoolTools, renderStaffTools, staffFilter, staffFocusId, statusChipCls, statusText, stripeColorForKind, stripeColorForUrgency, summaryText, tab, taskCenterDay, taskTextForCleaningItem, updateCleaningTasks, updateWorkTask, workPendingKey, workSummaryText])
 
   const TaskBoardMaintenance = useMemo(() => {
     if (tab !== 'maintenance') return null

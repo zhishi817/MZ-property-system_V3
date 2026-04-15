@@ -2542,6 +2542,7 @@ exports.router.patch('/consumable-items-prices/:id', (0, auth_1.requirePerm)('in
             if (!existing)
                 throw httpError(404, 'not found');
             const nextPayload = {
+                ...(parsed.data.item_name !== undefined ? { item_name: String(parsed.data.item_name || '').trim() } : {}),
                 ...(parsed.data.cost_unit_price !== undefined ? { cost_unit_price: Number(parsed.data.cost_unit_price || 0) } : {}),
                 ...(parsed.data.unit_price !== undefined ? { unit_price: Number(parsed.data.unit_price || 0) } : {}),
                 ...(parsed.data.currency !== undefined ? { currency: parsed.data.currency || 'AUD' } : {}),
@@ -2706,6 +2707,7 @@ exports.router.patch('/other-items-prices/:id', (0, auth_1.requirePerm)('invento
             if (!existing)
                 throw httpError(404, 'not found');
             const nextPayload = {
+                ...(parsed.data.item_name !== undefined ? { item_name: String(parsed.data.item_name || '').trim() } : {}),
                 ...(parsed.data.cost_unit_price !== undefined ? { cost_unit_price: Number(parsed.data.cost_unit_price || 0) } : {}),
                 ...(parsed.data.unit_price !== undefined ? { unit_price: Number(parsed.data.unit_price || 0) } : {}),
                 ...(parsed.data.currency !== undefined ? { currency: parsed.data.currency || 'AUD' } : {}),

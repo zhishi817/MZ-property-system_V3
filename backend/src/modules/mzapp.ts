@@ -649,6 +649,58 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
   }
 })
 
+router.get('/cleaning-tasks/:id/consumables', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const userId = String(user.sub || '')
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureCleaningTaskMediaTable()
+    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const row = r0?.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
+    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
+    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
+    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+
+    const rows = await pgPool.query(
+      `SELECT id, item_id, qty, need_restock, note, status, photo_url, item_label, created_at
+       FROM cleaning_consumable_usages
+       WHERE task_id = $1
+       ORDER BY created_at ASC, id ASC`,
+      [String(id)],
+    )
+    const livingPhotoRow = await pgPool.query(
+      `SELECT url
+       FROM cleaning_task_media
+       WHERE task_id::text = $1::text
+         AND type = 'consumable_living_room_photo'
+       ORDER BY captured_at DESC NULLS LAST, created_at DESC
+       LIMIT 1`,
+      [String(id)],
+    )
+    return res.json({
+      living_room_photo_url: String(livingPhotoRow?.rows?.[0]?.url || '').trim() || null,
+      items: (rows.rows || []).map((x: any) => ({
+        id: String(x.id || ''),
+        item_id: String(x.item_id || ''),
+        qty: Number(x.qty || 0) || 0,
+        need_restock: !!x.need_restock,
+        note: x.note == null ? null : String(x.note),
+        status: String(x.status || ''),
+        photo_url: x.photo_url == null ? null : String(x.photo_url),
+        item_label: x.item_label == null ? null : String(x.item_label),
+        created_at: x.created_at == null ? null : String(x.created_at),
+      })),
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'consumables_failed' })
+  }
+})
+
 router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
@@ -697,6 +749,47 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
     return res.status(201).json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'inspection_photos_failed' })
+  }
+})
+
+router.get('/cleaning-tasks/:id/completion-photos', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const userId = String(user.sub || '')
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureCleaningTaskMediaTable()
+    const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    const row = r0?.rows?.[0] || null
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const inspectorId = row.inspector_id ? String(row.inspector_id) : ''
+    const cleanerId = row.cleaner_id ? String(row.cleaner_id) : ''
+    const assigneeId = row.assignee_id ? String(row.assignee_id) : ''
+    if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
+
+    const r = await pgPool.query(
+      `SELECT type, url, note, captured_at, created_at
+       FROM cleaning_task_media
+       WHERE task_id=$1 AND type LIKE 'completion_%'
+       ORDER BY created_at ASC`,
+      [id],
+    )
+    const items = (r?.rows || []).map((x: any) => {
+      const type = String(x.type || '')
+      const area = type.startsWith('completion_') ? type.slice('completion_'.length) : type
+      return {
+        area,
+        url: String(x.url || ''),
+        note: x.note == null ? null : String(x.note || ''),
+        captured_at: x.captured_at ? String(x.captured_at) : null,
+        created_at: x.created_at ? String(x.created_at) : null,
+      }
+    })
+    return res.json({ items })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'completion_photos_failed' })
   }
 })
 
@@ -877,7 +970,7 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
         broadcastCleaningEvent({ event: 'guest_checked_out_cancelled', task_id: id })
       } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds } = require('./notifications')
+        const { listCleaningTaskUserIds, listManagerUserIds } = require('./notifications')
         let propertyCode = ''
         let propertyId = ''
         try {
@@ -895,12 +988,6 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
         } catch {}
         const to = Array.from(new Set([...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())]))
         const eventId = `guest_checked_out_cancelled:${propertyCode || id}:${prevCheckedOutAt || ''}`
-        await notifyExpoUsers({
-          user_ids: to,
-          title: propertyCode ? `待退房：${propertyCode}` : '待退房',
-          body: '房源还未退房，待退房',
-          data: { kind: 'guest_checked_out_cancelled', task_id: id, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
-        })
         if (propertyId && to.length) {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
@@ -908,6 +995,7 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
             entity: 'cleaning_task',
             entityId: String(id),
             propertyId,
+            eventId,
             updatedAt: new Date().toISOString(),
             changes: ['status'],
             title: propertyCode ? `待退房：${propertyCode}` : '待退房',
@@ -933,13 +1021,14 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
       broadcastCleaningEvent({ event: 'guest_checked_out', task_id: id })
     } catch {}
     try {
-      const { notifyExpoUsers, listCleaningTaskUserIds, listManagerUserIds } = require('./notifications')
+      const { listCleaningTaskUserIds, listManagerUserIds } = require('./notifications')
       let checkedOutAt: string | null = null
       let propertyCode = ''
+      let propertyId = ''
       let keysRequired: number | null = null
       try {
         const r = await pgPool.query(
-          `SELECT t.checked_out_at, COALESCE(o.keys_required, 1) AS keys_required, COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+          `SELECT t.checked_out_at, t.property_id::text AS property_id, COALESCE(o.keys_required, 1) AS keys_required, COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
            FROM cleaning_tasks t
            LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
            LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
@@ -948,17 +1037,30 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
           [id],
         )
         checkedOutAt = r?.rows?.[0]?.checked_out_at ? String(r.rows[0].checked_out_at) : null
+        propertyId = String(r?.rows?.[0]?.property_id || '').trim()
         propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
         keysRequired = r?.rows?.[0]?.keys_required == null ? null : Number(r.rows[0].keys_required)
       } catch {}
       const to = Array.from(new Set([...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())]))
+      const eventId = `guest_checked_out:${propertyCode || id}:${checkedOutAt || ''}`
       const body = keysRequired && keysRequired >= 2 ? `已退房（${keysRequired}把钥匙）` : '已退房'
-      await notifyExpoUsers({
-        user_ids: to,
-        title: propertyCode ? `已退房：${propertyCode}` : '已退房',
-        body,
-        data: { kind: 'guest_checked_out', task_id: id, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: `guest_checked_out:${propertyCode || id}:${checkedOutAt || ''}` },
-      })
+      if (propertyId && to.length) {
+        const { emitNotificationEvent } = require('../services/notificationEvents')
+        await emitNotificationEvent({
+          type: 'CLEANING_TASK_UPDATED',
+          entity: 'cleaning_task',
+          entityId: String(id),
+          propertyId,
+          eventId,
+          updatedAt: checkedOutAt || new Date().toISOString(),
+          changes: ['status', 'keys'],
+          title: propertyCode ? `已退房：${propertyCode}` : '已退房',
+          body,
+          data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'guest_checked_out', task_id: id, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: eventId },
+          actorUserId: userId,
+          recipientUserIds: to,
+        })
+      }
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -1037,15 +1139,9 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
         propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
       } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
+        const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
         const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(ids2)), ...(await listManagerUserIds())]))
         const eventId = `guest_checked_out_cancelled:${propertyCode || ids2[0]}:${prevCheckedOutAt || ''}`
-        await notifyExpoUsers({
-          user_ids: to,
-          title: propertyCode ? `待退房：${propertyCode}` : '待退房',
-          body: '房源还未退房，待退房',
-          data: { kind: 'guest_checked_out_cancelled', task_ids: ids2, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
-        })
         if (propertyId && to.length) {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
@@ -1053,6 +1149,7 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
             entity: 'cleaning_task',
             entityId: String(ids2[0]),
             propertyId,
+            eventId,
             updatedAt: new Date().toISOString(),
             changes: ['status'],
             title: propertyCode ? `待退房：${propertyCode}` : '待退房',
@@ -1098,15 +1195,36 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
     } catch {}
     const eventId = `guest_checked_out:${propertyCode || ids2[0]}:${checkedOutAt || ''}`
     try {
-      const { notifyExpoUsers, listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
+      const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
       const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(ids2)), ...(await listManagerUserIds())]))
       const body = keysRequired && keysRequired >= 2 ? `已退房（${keysRequired}把钥匙）` : '已退房'
-      await notifyExpoUsers({
-        user_ids: to,
-        title: propertyCode ? `已退房：${propertyCode}` : '已退房',
-        body,
-        data: { kind: 'guest_checked_out', task_ids: ids2, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: eventId },
-      })
+      if (propertyCode && to.length) {
+        const r0 = await pgPool.query(
+          `SELECT property_id::text AS property_id
+           FROM cleaning_tasks
+           WHERE id::text = $1::text
+           LIMIT 1`,
+          [ids2[0]],
+        )
+        const propertyId = String(r0?.rows?.[0]?.property_id || '').trim()
+        if (propertyId) {
+          const { emitNotificationEvent } = require('../services/notificationEvents')
+          await emitNotificationEvent({
+            type: 'CLEANING_TASK_UPDATED',
+            entity: 'cleaning_task',
+            entityId: String(ids2[0]),
+            propertyId,
+            eventId,
+            updatedAt: checkedOutAt || new Date().toISOString(),
+            changes: ['status', 'keys'],
+            title: propertyCode ? `已退房：${propertyCode}` : '已退房',
+            body,
+            data: { entity: 'cleaning_task', entityId: String(ids2[0]), action: 'open_task', kind: 'guest_checked_out', task_ids: ids2, property_code: propertyCode, checked_out_at: checkedOutAt, keys_required: keysRequired, event_id: eventId },
+            actorUserId: userId,
+            recipientUserIds: to,
+          })
+        }
+      }
     } catch {}
     return res.status(201).json({ ok: true })
   } catch (e: any) {
@@ -1184,15 +1302,9 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
         propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
       } catch {}
       try {
-        const { notifyExpoUsers, listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
+        const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
         const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(taskIds)), ...(await listManagerUserIds())]))
         const eventId = `guest_checked_out_cancelled:${propertyCode || taskIds[0]}:${prevCheckedOutAt || ''}`
-        await notifyExpoUsers({
-          user_ids: to,
-          title: propertyCode ? `待退房：${propertyCode}` : '待退房',
-          body: '房源还未退房，待退房',
-          data: { kind: 'guest_checked_out_cancelled', task_ids: taskIds, property_code: propertyCode, checked_out_at: prevCheckedOutAt, event_id: eventId },
-        })
         if (propertyId && to.length) {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
@@ -1200,6 +1312,7 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
             entity: 'cleaning_task',
             entityId: String(taskIds[0]),
             propertyId,
+            eventId,
             updatedAt: new Date().toISOString(),
             changes: ['status'],
             title: propertyCode ? `待退房：${propertyCode}` : '待退房',
@@ -1262,6 +1375,7 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
             entity: 'cleaning_task',
             entityId: String(taskIds[0]),
             propertyId,
+            eventId,
             updatedAt: checkedOutAt || new Date().toISOString(),
             changes: ['status', 'keys'],
             title: propertyCode ? `已退房：${propertyCode}` : '已退房',
@@ -1419,6 +1533,7 @@ async function handleManagerFields(req: any, res: any) {
   const parsed = managerFieldsSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  const pool = pgPool
   try {
     await ensureCleaningCustomerColumns()
     const repId = String(parsed.data.task_ids[0] || '').trim()
@@ -1426,7 +1541,7 @@ async function handleManagerFields(req: any, res: any) {
     let propertyId = ''
     let prevRow: any = null
     try {
-      const r = await pgPool.query(
+      const r = await pool.query(
         `SELECT t.order_id::text AS order_id, t.property_id::text AS property_id, t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
                 COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
          FROM cleaning_tasks t
@@ -1463,7 +1578,7 @@ async function handleManagerFields(req: any, res: any) {
         const nextK2 = Math.max(1, Math.min(2, Math.trunc(nextK)))
         try {
           const ids0 = Array.from(new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean)))
-          const rrIds = await pgPool.query(
+          const rrIds = await pool.query(
             `SELECT id::text AS id, order_id::text AS order_id, task_type::text AS task_type
              FROM cleaning_tasks
              WHERE id::text = ANY($1::text[])`,
@@ -1483,7 +1598,7 @@ async function handleManagerFields(req: any, res: any) {
             prevKeysRequiredMin = 1
             prevKeysRequiredMax = 1
           } else {
-            const rrk = await pgPool.query(
+            const rrk = await pool.query(
               `WITH o AS (SELECT unnest($1::text[]) AS order_id),
                     i AS (SELECT unnest($2::text[]) AS id)
                SELECT
@@ -1515,13 +1630,11 @@ async function handleManagerFields(req: any, res: any) {
     if (fields.length) {
       vals.push(parsed.data.task_ids)
       const sql = `UPDATE cleaning_tasks SET ${fields.join(', ')}, updated_at = now() WHERE id::text = ANY($${vals.length}::text[])`
-      await pgPool.query(sql, vals)
+      await pool.query(sql, vals)
     }
 
     const affectedTaskIds = new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean))
     if (nextKeysRequired != null) {
-      const pool = pgPool
-      if (!pool) return res.status(500).json({ message: 'pg not available' })
       try {
         const doUpdateOrder = async () => {
           if (!keysOrderIds.length) return
@@ -1562,165 +1675,157 @@ async function handleManagerFields(req: any, res: any) {
       } catch {}
     }
 
-    try {
-      const { broadcastCleaningEvent } = require('./events')
-      for (const id of Array.from(affectedTaskIds)) broadcastCleaningEvent({ event: 'cleaning_task_manager_fields_updated', task_id: String(id) })
-    } catch {}
-    if (affectedTaskIds.size) {
-      try {
-        const affectedIds = Array.from(affectedTaskIds)
-        const vis = await pgPool.query(
-          `SELECT id::text AS id, assignee_id, cleaner_id, inspector_id, lower(COALESCE(task_type, '')) AS task_type
-           FROM cleaning_tasks
-           WHERE id::text = ANY($1::text[])`,
-          [affectedIds],
-        )
-        const byId = new Map<string, any>((vis?.rows || []).map((row: any) => [String(row.id || ''), row]))
-        const changedFields = [
-          ...(parsed.data.checkout_time !== undefined ? ['checkout_time'] : []),
-          ...(parsed.data.checkin_time !== undefined ? ['checkin_time'] : []),
-          ...(parsed.data.old_code !== undefined ? ['old_code'] : []),
-          ...(parsed.data.new_code !== undefined ? ['new_code'] : []),
-          ...(parsed.data.guest_special_request !== undefined ? ['guest_special_request'] : []),
-          ...(parsed.data.keys_required !== undefined ? ['keys_required'] : []),
-        ]
-        const scope = parsed.data.checkout_time !== undefined
-          || parsed.data.checkin_time !== undefined
-          || parsed.data.keys_required !== undefined
-          ? 'list'
-          : 'detail'
-        for (const id of affectedIds) {
-          const row = byId.get(String(id)) || { id }
-          const taskType = String(row?.task_type || '').trim()
-          const isCheckoutTask = taskType === 'checkout_clean'
-          const isCheckinTask = taskType === 'checkin_clean'
-          const changedFieldsForTask = [
-            ...(parsed.data.checkout_time !== undefined ? ['checkout_time'] : []),
-            ...(parsed.data.checkin_time !== undefined ? ['checkin_time'] : []),
-            ...(parsed.data.old_code !== undefined ? ['old_code'] : []),
-            ...(parsed.data.new_code !== undefined ? ['new_code'] : []),
-            ...(parsed.data.guest_special_request !== undefined ? ['guest_special_request'] : []),
-            ...(parsed.data.keys_required !== undefined ? ['keys_required'] : []),
-            ...(parsed.data.keys_required !== undefined && isCheckoutTask ? ['keys_required_checkout'] : []),
-            ...(parsed.data.keys_required !== undefined && isCheckinTask ? ['keys_required_checkin'] : []),
-            ...(parsed.data.keys_required !== undefined ? ['key_tags'] : []),
-          ]
-          await emitWorkTaskEvent({
-            taskId: `cleaning_task:${String(id)}`,
-            sourceType: 'cleaning_tasks',
-            sourceRefIds: [String(id)],
-            eventType: 'TASK_UPDATED',
-            changeScope: scope,
-            changedFields: changedFieldsForTask,
-            patch: {
-              ...(parsed.data.checkout_time !== undefined ? { checkout_time: parsed.data.checkout_time ?? null } : {}),
-              ...(parsed.data.checkin_time !== undefined ? { checkin_time: parsed.data.checkin_time ?? null } : {}),
-              ...(parsed.data.old_code !== undefined ? { old_code: parsed.data.old_code ?? null } : {}),
-              ...(parsed.data.new_code !== undefined ? { new_code: parsed.data.new_code ?? null } : {}),
-              ...(parsed.data.guest_special_request !== undefined ? { guest_special_request: parsed.data.guest_special_request ?? null } : {}),
-              ...(parsed.data.keys_required !== undefined && nextKeysRequired != null ? { keys_required: nextKeysRequired } : {}),
-              ...(parsed.data.keys_required !== undefined && nextKeysRequired != null && isCheckoutTask ? { keys_required_checkout: nextKeysRequired } : {}),
-              ...(parsed.data.keys_required !== undefined && nextKeysRequired != null && isCheckinTask ? { keys_required_checkin: nextKeysRequired } : {}),
-              ...(parsed.data.keys_required !== undefined && nextKeysRequired != null
-                ? {
-                    key_tags: {
-                      checkout_sets: isCheckoutTask ? nextKeysRequired : 0,
-                      checkin_sets: isCheckinTask ? nextKeysRequired : 0,
-                      show_checkout: isCheckoutTask && nextKeysRequired >= 2,
-                      show_checkin: isCheckinTask && nextKeysRequired >= 2,
-                    },
-                  }
-                : {}),
-            },
-            causedByUserId: String(user?.sub || '').trim() || null,
-            visibilityHints: buildCleaningTaskVisibilityHints(row),
-          })
+    setImmediate(() => {
+      ;(async () => {
+        try {
+          const { broadcastCleaningEvent } = require('./events')
+          for (const id of Array.from(affectedTaskIds)) broadcastCleaningEvent({ event: 'cleaning_task_manager_fields_updated', task_id: String(id) })
+        } catch {}
+        if (affectedTaskIds.size) {
+          try {
+            const affectedIds = Array.from(affectedTaskIds)
+            const vis = await pool.query(
+              `SELECT id::text AS id, assignee_id, cleaner_id, inspector_id, lower(COALESCE(task_type, '')) AS task_type
+               FROM cleaning_tasks
+               WHERE id::text = ANY($1::text[])`,
+              [affectedIds],
+            )
+            const byId = new Map<string, any>((vis?.rows || []).map((row: any) => [String(row.id || ''), row]))
+            const scope = parsed.data.checkout_time !== undefined
+              || parsed.data.checkin_time !== undefined
+              || parsed.data.keys_required !== undefined
+              ? 'list'
+              : 'detail'
+            for (const id of affectedIds) {
+              const row = byId.get(String(id)) || { id }
+              const taskType = String(row?.task_type || '').trim()
+              const isCheckoutTask = taskType === 'checkout_clean'
+              const isCheckinTask = taskType === 'checkin_clean'
+              const changedFieldsForTask = [
+                ...(parsed.data.checkout_time !== undefined ? ['checkout_time'] : []),
+                ...(parsed.data.checkin_time !== undefined ? ['checkin_time'] : []),
+                ...(parsed.data.old_code !== undefined ? ['old_code'] : []),
+                ...(parsed.data.new_code !== undefined ? ['new_code'] : []),
+                ...(parsed.data.guest_special_request !== undefined ? ['guest_special_request'] : []),
+                ...(parsed.data.keys_required !== undefined ? ['keys_required'] : []),
+                ...(parsed.data.keys_required !== undefined && isCheckoutTask ? ['keys_required_checkout'] : []),
+                ...(parsed.data.keys_required !== undefined && isCheckinTask ? ['keys_required_checkin'] : []),
+                ...(parsed.data.keys_required !== undefined ? ['key_tags'] : []),
+              ]
+              await emitWorkTaskEvent({
+                taskId: `cleaning_task:${String(id)}`,
+                sourceType: 'cleaning_tasks',
+                sourceRefIds: [String(id)],
+                eventType: 'TASK_UPDATED',
+                changeScope: scope,
+                changedFields: changedFieldsForTask,
+                patch: {
+                  ...(parsed.data.checkout_time !== undefined ? { checkout_time: parsed.data.checkout_time ?? null } : {}),
+                  ...(parsed.data.checkin_time !== undefined ? { checkin_time: parsed.data.checkin_time ?? null } : {}),
+                  ...(parsed.data.old_code !== undefined ? { old_code: parsed.data.old_code ?? null } : {}),
+                  ...(parsed.data.new_code !== undefined ? { new_code: parsed.data.new_code ?? null } : {}),
+                  ...(parsed.data.guest_special_request !== undefined ? { guest_special_request: parsed.data.guest_special_request ?? null } : {}),
+                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null ? { keys_required: nextKeysRequired } : {}),
+                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null && isCheckoutTask ? { keys_required_checkout: nextKeysRequired } : {}),
+                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null && isCheckinTask ? { keys_required_checkin: nextKeysRequired } : {}),
+                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null
+                    ? {
+                        key_tags: {
+                          checkout_sets: isCheckoutTask ? nextKeysRequired : 0,
+                          checkin_sets: isCheckinTask ? nextKeysRequired : 0,
+                          show_checkout: isCheckoutTask && nextKeysRequired >= 2,
+                          show_checkin: isCheckinTask && nextKeysRequired >= 2,
+                        },
+                      }
+                    : {}),
+                },
+                causedByUserId: String(user?.sub || '').trim() || null,
+                visibilityHints: buildCleaningTaskVisibilityHints(row),
+              })
+            }
+          } catch {}
         }
-      } catch {}
-    }
-    try {
-      const { notifyExpoUsers, listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
-      const fmt = (label: string, next: any, prev: any) => `${label}：${norm(next) || '-'}（原：${norm(prev) || '-'}）`
-      const lines: string[] = []
-      if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) lines.push(fmt('退房时间', parsed.data.checkout_time, prevRow?.checkout_time))
-      if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) lines.push(fmt('入住时间', parsed.data.checkin_time, prevRow?.checkin_time))
-      if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) lines.push(fmt('旧密码', parsed.data.old_code, prevRow?.old_code))
-      if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) lines.push(fmt('新密码', parsed.data.new_code, prevRow?.new_code))
-      if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) lines.push(fmt('客人需求', parsed.data.guest_special_request, prevRow?.guest_special_request))
-      if (parsed.data.keys_required !== undefined) {
-        const nextK = parsed.data.keys_required == null ? 1 : Number(parsed.data.keys_required)
-        if (Number.isFinite(nextK) && nextKeysRequired != null) {
-          const prevLabel =
-            prevKeysRequiredMin != null && prevKeysRequiredMax != null && prevKeysRequiredMin !== prevKeysRequiredMax
-              ? `${prevKeysRequiredMin}/${prevKeysRequiredMax}`
-              : (prevKeysRequiredMax != null ? String(prevKeysRequiredMax) : (prevRow?.keys_required == null ? '1' : String(prevRow.keys_required)))
-          lines.push(fmt('需挂钥匙套数', nextKeysRequired, prevLabel))
-        }
-      }
-      if (!lines.length) return res.json({ ok: true, skipped: 'no_change' })
-      const hashText = (s: string) => {
-        let h = 0
-        for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
-        return String(h)
-      }
-      let afterRow: any = null
-      try {
-        const rAfter = await pgPool.query(
-          `SELECT t.property_id::text AS property_id, t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
-                  COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
-           FROM cleaning_tasks t
-           LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
-           LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
-           WHERE t.id=$1 LIMIT 1`,
-          [repId],
-        )
-        afterRow = rAfter?.rows?.[0] || null
-        if (!propertyId) propertyId = String(afterRow?.property_id || '').trim()
-        if (!propertyCode) propertyCode = String(afterRow?.property_code || '').trim()
-      } catch {}
-      const keyObj = {
-        checkout_time: afterRow?.checkout_time == null ? null : String(afterRow.checkout_time),
-        checkin_time: afterRow?.checkin_time == null ? null : String(afterRow.checkin_time),
-        old_code: afterRow?.old_code == null ? null : String(afterRow.old_code),
-        new_code: afterRow?.new_code == null ? null : String(afterRow.new_code),
-        guest_special_request: afterRow?.guest_special_request == null ? null : String(afterRow.guest_special_request),
-        keys_required: afterRow?.keys_required == null ? 1 : Number(afterRow.keys_required),
-      }
-      const fieldsKey = hashText(JSON.stringify(keyObj))
-      const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(Array.from(affectedTaskIds))), ...(await listManagerUserIds())]))
-      const changes: string[] = []
-      if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) changes.push('time')
-      if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) changes.push('time')
-      if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) changes.push('password')
-      if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) changes.push('password')
-      if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) changes.push('note')
-      if (parsed.data.keys_required !== undefined && nextKeysRequired != null) changes.push('keys')
-      const title = propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新'
-      const body = lines.length ? lines.join('\n') : '任务信息已更新'
-      const data = { entity: 'cleaning_task', entityId: String(repId), action: 'open_task', kind: 'cleaning_task_manager_fields_updated', task_ids: Array.from(affectedTaskIds), property_code: propertyCode, fields_key: fieldsKey, event_id: `manager_fields:${propertyCode || repId}:${fieldsKey}` }
-      await notifyExpoUsers({
-        user_ids: to,
-        title,
-        body,
-        data,
-      })
-      if (propertyId && to.length) {
-        const { emitNotificationEvent } = require('../services/notificationEvents')
-        await emitNotificationEvent({
-          type: 'CLEANING_TASK_UPDATED',
-          entity: 'cleaning_task',
-          entityId: String(repId),
-          propertyId,
-          updatedAt: new Date().toISOString(),
-          changes,
-          title,
-          body,
-          data,
-          actorUserId: String(user?.sub || ''),
-          recipientUserIds: to,
-        })
-      }
-    } catch {}
+        try {
+          const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
+          const fmt = (label: string, next: any, prev: any) => `${label}：${norm(next) || '-'}（原：${norm(prev) || '-'}）`
+          const lines: string[] = []
+          if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) lines.push(fmt('退房时间', parsed.data.checkout_time, prevRow?.checkout_time))
+          if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) lines.push(fmt('入住时间', parsed.data.checkin_time, prevRow?.checkin_time))
+          if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) lines.push(fmt('旧密码', parsed.data.old_code, prevRow?.old_code))
+          if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) lines.push(fmt('新密码', parsed.data.new_code, prevRow?.new_code))
+          if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) lines.push(fmt('客人需求', parsed.data.guest_special_request, prevRow?.guest_special_request))
+          if (parsed.data.keys_required !== undefined) {
+            const nextK = parsed.data.keys_required == null ? 1 : Number(parsed.data.keys_required)
+            if (Number.isFinite(nextK) && nextKeysRequired != null) {
+              const prevLabel =
+                prevKeysRequiredMin != null && prevKeysRequiredMax != null && prevKeysRequiredMin !== prevKeysRequiredMax
+                  ? `${prevKeysRequiredMin}/${prevKeysRequiredMax}`
+                  : (prevKeysRequiredMax != null ? String(prevKeysRequiredMax) : (prevRow?.keys_required == null ? '1' : String(prevRow.keys_required)))
+              lines.push(fmt('需挂钥匙套数', nextKeysRequired, prevLabel))
+            }
+          }
+          if (!lines.length) return
+          const hashText = (s: string) => {
+            let h = 0
+            for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+            return String(h)
+          }
+          let afterRow: any = null
+          try {
+            const rAfter = await pool.query(
+              `SELECT t.property_id::text AS property_id, t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
+                      COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+               FROM cleaning_tasks t
+               LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+               LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+               WHERE t.id=$1 LIMIT 1`,
+              [repId],
+            )
+            afterRow = rAfter?.rows?.[0] || null
+            if (!propertyId) propertyId = String(afterRow?.property_id || '').trim()
+            if (!propertyCode) propertyCode = String(afterRow?.property_code || '').trim()
+          } catch {}
+          const keyObj = {
+            checkout_time: afterRow?.checkout_time == null ? null : String(afterRow.checkout_time),
+            checkin_time: afterRow?.checkin_time == null ? null : String(afterRow.checkin_time),
+            old_code: afterRow?.old_code == null ? null : String(afterRow.old_code),
+            new_code: afterRow?.new_code == null ? null : String(afterRow.new_code),
+            guest_special_request: afterRow?.guest_special_request == null ? null : String(afterRow.guest_special_request),
+            keys_required: afterRow?.keys_required == null ? 1 : Number(afterRow.keys_required),
+          }
+          const fieldsKey = hashText(JSON.stringify(keyObj))
+          const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(Array.from(affectedTaskIds))), ...(await listManagerUserIds())]))
+          const changes: string[] = []
+          if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) changes.push('time')
+          if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) changes.push('time')
+          if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) changes.push('password')
+          if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) changes.push('password')
+          if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) changes.push('note')
+          if (parsed.data.keys_required !== undefined && nextKeysRequired != null) changes.push('keys')
+          const title = propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新'
+          const body = lines.join('\n')
+          const eventId = `manager_fields:${propertyCode || repId}:${fieldsKey}`
+          const data = { entity: 'cleaning_task', entityId: String(repId), action: 'open_task', kind: 'cleaning_task_manager_fields_updated', task_ids: Array.from(affectedTaskIds), property_code: propertyCode, fields_key: fieldsKey, event_id: eventId }
+          if (propertyId && to.length) {
+            const { emitNotificationEvent } = require('../services/notificationEvents')
+            await emitNotificationEvent({
+              type: 'CLEANING_TASK_UPDATED',
+              entity: 'cleaning_task',
+              entityId: String(repId),
+              propertyId,
+              eventId,
+              updatedAt: new Date().toISOString(),
+              changes,
+              title,
+              body,
+              data,
+              actorUserId: String(user?.sub || ''),
+              recipientUserIds: to,
+            })
+          }
+        } catch {}
+      })().catch(() => {})
+    })
     return res.status(201).json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'manager_fields_failed' })

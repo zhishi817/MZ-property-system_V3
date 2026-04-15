@@ -43,6 +43,7 @@ import { router as invoicesRouter } from './modules/invoices'
 import { router as cmsCompanyRouter } from './modules/cms_company'
 import { router as cmsCompanySecretsRouter } from './modules/cms_company_secrets'
 import { runKeyUploadReminder } from './lib/keyUploadReminderJob'
+import { runKeyUploadSlaCheck } from './lib/keyUploadSlaJob'
 import { runDayEndHandoverReminder } from './lib/dayEndHandoverReminderJob'
 import { auth } from './auth'
 import publicRouter from './modules/public'
@@ -655,7 +656,6 @@ function onServerListening() {
 
   ;(async () => {
     try {
-      const defaultEnabled = process.env.NODE_ENV === 'production'
       const enabled = String(process.env.KEY_UPLOAD_SLA_ENABLED || 'false').toLowerCase() === 'true'
       const featureCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true'
       if (!enabled) {
@@ -671,6 +671,38 @@ function onServerListening() {
         return
       }
 
+      const schedules: Array<{ expr: string; position: number; level: 'remind' | 'escalate'; lockKey: number }> = [
+        { expr: String(process.env.KEY_UPLOAD_SLA_P1_REMIND_CRON || '30 10 * * *').trim(), position: 1, level: 'remind' as const, lockKey: 975310101 },
+        { expr: String(process.env.KEY_UPLOAD_SLA_P1_ESCALATE_CRON || '0 11 * * *').trim(), position: 1, level: 'escalate' as const, lockKey: 975310102 },
+        { expr: String(process.env.KEY_UPLOAD_SLA_P2_REMIND_CRON || '30 12 * * *').trim(), position: 2, level: 'remind' as const, lockKey: 975310201 },
+        { expr: String(process.env.KEY_UPLOAD_SLA_P2_ESCALATE_CRON || '0 13 * * *').trim(), position: 2, level: 'escalate' as const, lockKey: 975310202 },
+        { expr: String(process.env.KEY_UPLOAD_SLA_P3_REMIND_CRON || '30 14 * * *').trim(), position: 3, level: 'remind' as const, lockKey: 975310301 },
+        { expr: String(process.env.KEY_UPLOAD_SLA_P3_ESCALATE_CRON || '0 15 * * *').trim(), position: 3, level: 'escalate' as const, lockKey: 975310302 },
+      ].filter((x) => !!x.expr)
+
+      for (const s of schedules) {
+        console.log(`[key-upload-sla][schedule] enabled cron=${s.expr} tz=Australia/Melbourne position=${s.position} level=${s.level}`)
+        const task = cron.schedule(
+          s.expr,
+          async () => {
+            const started = Date.now()
+            try {
+              const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [s.lockKey])
+              const ok = !!(lock?.rows?.[0]?.ok)
+              if (!ok) return
+              const r = await runKeyUploadSlaCheck(s.position, s.level)
+              const dur = Date.now() - started
+              if ((r as any)?.skipped) console.log(`[key-upload-sla][schedule] skipped_reason=${String((r as any).skipped)} position=${s.position} level=${s.level}`)
+              else console.log(`[key-upload-sla][schedule] ok position=${s.position} level=${s.level} duration_ms=${dur} created=${String((r as any)?.created || 0)}`)
+              try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [s.lockKey]) } catch {}
+            } catch (e: any) {
+              console.error(`[key-upload-sla][schedule] error position=${s.position} level=${s.level} message=${String(e?.message || '')}`)
+            }
+          },
+          { scheduled: true, timezone: 'Australia/Melbourne' },
+        )
+        task.start()
+      }
     } catch (e: any) {
       console.error(`[key-upload-sla][schedule] init error message=${String(e?.message || '')}`)
     }
