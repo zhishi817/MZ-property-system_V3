@@ -2690,6 +2690,49 @@ router.get('/work-tasks', async (req, res) => {
 
 const dailyNecessitiesStatusSchema = z.enum(['need_replace', 'replaced', 'no_action'])
 
+router.get('/daily-necessities-options', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  try {
+    if (!hasPg || !pgPool) return res.json([])
+    const keyword = String((req.query as any)?.keyword || '').trim()
+    const limitRaw = Number((req.query as any)?.limit)
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(120, Math.trunc(limitRaw))) : 80
+    const values: any[] = []
+    const where: string[] = [`COALESCE(is_active, true) = true`]
+    if (keyword) {
+      values.push(`%${keyword.toLowerCase()}%`)
+      where.push(`(
+        LOWER(COALESCE(item_name, '')) LIKE $${values.length}
+        OR LOWER(COALESCE(sku, '')) LIKE $${values.length}
+        OR LOWER(COALESCE(category, '')) LIKE $${values.length}
+      )`)
+    }
+    const rows = await pgPool.query(
+      `SELECT id, category, item_name, sku, unit, default_quantity
+         FROM daily_items_price_list
+        WHERE ${where.join(' AND ')}
+        ORDER BY COALESCE(category, ''), item_name ASC
+        LIMIT ${limit}`,
+      values,
+    )
+    return res.json(
+      (rows.rows || []).map((row: any) => ({
+        id: String(row.id || ''),
+        category: row.category ? String(row.category) : null,
+        item_name: String(row.item_name || ''),
+        sku: row.sku ? String(row.sku) : null,
+        unit: row.unit ? String(row.unit) : null,
+        default_quantity: row.default_quantity == null ? null : Number(row.default_quantity),
+      })),
+    )
+  } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (/relation\s+"?daily_items_price_list"?\s+does\s+not\s+exist/i.test(msg)) return res.json([])
+    return res.status(500).json({ message: msg || 'daily_necessities_options_failed' })
+  }
+})
+
 const feedbackCreateSchema = z
   .object({
     kind: z.enum(['maintenance', 'deep_cleaning', 'daily_necessities']),
@@ -2727,12 +2770,77 @@ const feedbackCreateSchema = z
   })
   .strict()
 
+const feedbackProjectCreateSchema = z
+  .object({
+    name: z.string().min(1),
+    area: z.string().optional(),
+    category: z.string().optional(),
+    detail: z.string().optional(),
+    note: z.string().optional(),
+  })
+  .strict()
+
+const feedbackProjectPatchSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    area: z.string().optional(),
+    category: z.string().optional(),
+    detail: z.string().optional(),
+    note: z.string().optional(),
+  })
+  .strict()
+
+const feedbackPatchSchema = z
+  .object({
+    area: z.string().optional(),
+    areas: z.array(z.string().min(1)).optional(),
+    category: z.string().optional(),
+    detail: z.string().optional(),
+    status: dailyNecessitiesStatusSchema.optional(),
+    item_name: z.string().min(1).optional(),
+    quantity: z
+      .preprocess((v) => {
+        if (v == null) return v
+        if (typeof v === 'number') return v
+        const n = Number(v)
+        return Number.isFinite(n) ? n : v
+      }, z.number().int().min(1))
+      .optional(),
+    note: z.string().optional(),
+    media_urls: z.array(z.string().min(1)).optional(),
+    repair_photo_urls: z.array(z.string().min(1)).optional(),
+  })
+  .strict()
+
+const feedbackProjectCompleteSchema = z
+  .object({
+    note: z.string().optional(),
+    detail: z.string().optional(),
+    source_task_id: z.string().optional(),
+    started_at: z.string().optional(),
+    ended_at: z.string().optional(),
+    before_photos: z.array(z.string().min(1)).optional(),
+    after_photos: z.array(z.string().min(1)).optional(),
+  })
+  .strict()
+
 function mapWorkStatus(raw: any): 'open' | 'in_progress' | 'resolved' | 'cancelled' {
   const s = String(raw ?? '').trim().toLowerCase()
   if (s === 'in_progress') return 'in_progress'
   if (s === 'completed' || s === 'done' || s === 'ready') return 'resolved'
   if (s === 'canceled' || s === 'cancelled') return 'cancelled'
   return 'open'
+}
+
+function feedbackStatusWhereSql(alias: string, want: string[]) {
+  const wants = new Set((want || []).map((s) => String(s || '').trim()).filter(Boolean))
+  if (!wants.size) wants.add('open')
+  const clauses: string[] = []
+  if (wants.has('open')) clauses.push(`(${alias}.status IS NULL OR lower(${alias}.status) NOT IN ('in_progress','completed','done','ready','canceled','cancelled'))`)
+  if (wants.has('in_progress')) clauses.push(`lower(COALESCE(${alias}.status, '')) = 'in_progress'`)
+  if (wants.has('resolved')) clauses.push(`lower(COALESCE(${alias}.status, '')) IN ('completed','done','ready')`)
+  if (wants.has('cancelled')) clauses.push(`lower(COALESCE(${alias}.status, '')) IN ('canceled','cancelled')`)
+  return clauses.length ? `(${clauses.join(' OR ')})` : 'true'
 }
 
 const colTypeCache = new Map<string, 'jsonb' | 'text[]' | 'unknown'>()
@@ -2797,75 +2905,278 @@ function makeFeedbackFingerprint(args: {
   return sha256Hex([pid, kind, areas.join(','), detail].join('|'))
 }
 
+let propertyMaintenanceColumnsEnsured = false
+let propertyMaintenanceColumnsEnsuring: Promise<void> | null = null
+let propertyDeepCleaningColumnsEnsured = false
+let propertyDeepCleaningColumnsEnsuring: Promise<void> | null = null
+let propertyDailyNecessitiesColumnsEnsured = false
+let propertyDailyNecessitiesColumnsEnsuring: Promise<void> | null = null
+
 async function ensurePropertyMaintenanceColumns() {
   if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_maintenance (
-    id text PRIMARY KEY,
-    property_id text,
-    occurred_at date,
-    worker_name text,
-    details text,
-    notes text,
-    created_by text,
-    created_at timestamptz DEFAULT now()
-  );`)
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category_detail text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_maintenance_dedup ON property_maintenance(property_id, dedup_fingerprint, submitted_at);')
+  if (propertyMaintenanceColumnsEnsured) return
+  if (propertyMaintenanceColumnsEnsuring) return propertyMaintenanceColumnsEnsuring
+  propertyMaintenanceColumnsEnsuring = (async () => {
+    try {
+      await pgPool.query(`CREATE TABLE IF NOT EXISTS property_maintenance (
+        id text PRIMARY KEY,
+        property_id text,
+        occurred_at date,
+        worker_name text,
+        details text,
+        notes text,
+        created_by text,
+        created_at timestamptz DEFAULT now()
+      );`)
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category_detail text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS updated_at timestamptz;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS review_status text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS reviewed_by text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS review_notes text;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS project_items jsonb;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+      await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_maintenance_dedup ON property_maintenance(property_id, dedup_fingerprint, submitted_at);')
+      propertyMaintenanceColumnsEnsured = true
+    } finally {
+      propertyMaintenanceColumnsEnsuring = null
+    }
+  })().catch(() => {})
+  return propertyMaintenanceColumnsEnsuring
 }
 
 async function ensurePropertyDeepCleaningColumns() {
   if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_deep_cleaning (
-    id text PRIMARY KEY,
-    property_id text,
-    occurred_at date,
-    details text,
-    notes text,
-    created_by text,
-    created_at timestamptz DEFAULT now()
-  );`)
-  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS property_code text;')
-  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS status text;')
-  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
-  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS submitter_name text;')
-  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_desc text;')
-  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
-  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;')
-  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS work_no text;')
-  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_dedup ON property_deep_cleaning(property_id, dedup_fingerprint, submitted_at);')
+  if (propertyDeepCleaningColumnsEnsured) return
+  if (propertyDeepCleaningColumnsEnsuring) return propertyDeepCleaningColumnsEnsuring
+  propertyDeepCleaningColumnsEnsuring = (async () => {
+    try {
+      await pgPool.query(`CREATE TABLE IF NOT EXISTS property_deep_cleaning (
+        id text PRIMARY KEY,
+        property_id text,
+        occurred_at date,
+        details text,
+        notes text,
+        created_by text,
+        created_at timestamptz DEFAULT now()
+      );`)
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS property_code text;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS status text;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS submitter_name text;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_desc text;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS started_at timestamptz;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS ended_at timestamptz;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS duration_minutes integer;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS repair_notes text;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS work_no text;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS completed_at timestamptz;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS updated_at timestamptz;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS review_status text;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_by text;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS review_notes text;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_items jsonb;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+      await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_dedup ON property_deep_cleaning(property_id, dedup_fingerprint, submitted_at);')
+      propertyDeepCleaningColumnsEnsured = true
+    } finally {
+      propertyDeepCleaningColumnsEnsuring = null
+    }
+  })().catch(() => {})
+  return propertyDeepCleaningColumnsEnsuring
+}
+
+type FeedbackKind = 'maintenance' | 'deep_cleaning'
+
+type PropertyFeedbackProjectItem = {
+  id: string
+  name: string
+  area?: string | null
+  category?: string | null
+  detail?: string | null
+  note?: string | null
+  started_at?: string | null
+  ended_at?: string | null
+  duration_minutes?: number | null
+  before_photos: string[]
+  after_photos: string[]
+  status: 'open' | 'completed'
+  completed_by?: string | null
+  completed_at?: string | null
+}
+
+function normalizeUrlArray(raw: any): string[] {
+  if (!raw) return []
+  const input = typeof raw === 'string' ? (() => {
+    const s = String(raw || '').trim()
+    if (!s) return []
+    if (s.startsWith('[') || s.startsWith('{')) {
+      try { return JSON.parse(s) } catch { return [s] }
+    }
+    return [s]
+  })() : raw
+  if (!Array.isArray(input)) return []
+  return input.map((x) => String(x || '').trim()).filter(Boolean)
+}
+
+function safeJsonParse(raw: any) {
+  if (raw == null) return null
+  if (typeof raw === 'object') return raw
+  const s = String(raw || '').trim()
+  if (!s) return null
+  try {
+    return JSON.parse(s)
+  } catch {
+    return null
+  }
+}
+
+function toIsoOrNull(raw: any) {
+  const s = String(raw || '').trim()
+  if (!s) return null
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toISOString()
+}
+
+function summarizeProjectItems(kind: FeedbackKind, itemsRaw: any, fallback?: any) {
+  const items = (Array.isArray(itemsRaw) ? itemsRaw : safeJsonParse(itemsRaw) || [])
+    .map((it: any) => {
+      const startedAt = toIsoOrNull(it?.started_at)
+      const endedAt = toIsoOrNull(it?.ended_at)
+      const duration0 = Number(it?.duration_minutes)
+      const duration = Number.isFinite(duration0) && duration0 >= 0 ? Math.trunc(duration0) : null
+      return {
+        id: String(it?.id || '').trim() || require('uuid').v4(),
+        name: String(it?.name || '').trim(),
+        area: String(it?.area || '').trim() || null,
+        category: String(it?.category || '').trim() || null,
+        detail: String(it?.detail || '').trim() || null,
+        note: String(it?.note || '').trim() || null,
+        started_at: startedAt,
+        ended_at: endedAt,
+        duration_minutes: duration,
+        before_photos: normalizeUrlArray(it?.before_photos),
+        after_photos: normalizeUrlArray(it?.after_photos),
+        status: String(it?.status || '').trim().toLowerCase() === 'completed' ? 'completed' : 'open',
+        completed_by: String(it?.completed_by || '').trim() || null,
+        completed_at: toIsoOrNull(it?.completed_at),
+      } as PropertyFeedbackProjectItem
+    })
+    .filter((it: PropertyFeedbackProjectItem) => it.name || it.detail || it.note || it.before_photos.length || it.after_photos.length)
+
+  if (!items.length && fallback) {
+    const fallbackBefore = normalizeUrlArray(fallback?.photo_urls)
+    const fallbackAfter = normalizeUrlArray(fallback?.repair_photo_urls || fallback?.attachment_urls)
+    const fallbackStatus = mapWorkStatus(fallback?.status) === 'resolved' ? 'completed' : 'open'
+    const fallbackProject = {
+      id: String(fallback?.id || '').trim() ? `legacy-${String(fallback.id).trim()}` : require('uuid').v4(),
+      name:
+        kind === 'deep_cleaning'
+          ? String(fallback?.project_desc || '').trim() || '深度清洁'
+          : String(fallback?.category_detail || fallback?.category || '').trim() || '维修项目',
+      area: kind === 'maintenance' ? String(fallback?.area || '').trim() || null : null,
+      category: kind === 'maintenance' ? String(fallback?.category_detail || fallback?.category || '').trim() || null : null,
+      detail: String(fallback?.details || fallback?.notes || '').trim() || null,
+      note: String(fallback?.repair_notes || '').trim() || null,
+      started_at: kind === 'deep_cleaning' ? toIsoOrNull(fallback?.started_at) : null,
+      ended_at: kind === 'deep_cleaning' ? toIsoOrNull(fallback?.ended_at) : null,
+      duration_minutes: kind === 'deep_cleaning' && Number.isFinite(Number(fallback?.duration_minutes)) ? Math.trunc(Number(fallback?.duration_minutes)) : null,
+      before_photos: fallbackBefore,
+      after_photos: fallbackAfter,
+      status: fallbackStatus,
+      completed_by: null,
+      completed_at: toIsoOrNull(fallback?.completed_at),
+    } as PropertyFeedbackProjectItem
+    items.push(fallbackProject)
+  }
+
+  const names = items.map((it: PropertyFeedbackProjectItem) => it.name).filter(Boolean)
+  const started = items.map((it: PropertyFeedbackProjectItem) => it.started_at).filter(Boolean).sort()[0] || null
+  const ended = items.map((it: PropertyFeedbackProjectItem) => it.ended_at).filter(Boolean).sort().slice(-1)[0] || null
+  const duration = items.reduce((sum: number, it: PropertyFeedbackProjectItem) => sum + (Number(it.duration_minutes) || 0), 0)
+  const fallbackBefore = normalizeUrlArray(fallback?.photo_urls)
+  const fallbackAfter = normalizeUrlArray(fallback?.repair_photo_urls || fallback?.attachment_urls)
+  const beforePhotos = Array.from(new Set([
+    ...items.flatMap((it: PropertyFeedbackProjectItem) => it.before_photos),
+    ...fallbackBefore,
+  ]))
+  const afterPhotos = Array.from(new Set([
+    ...items.flatMap((it: PropertyFeedbackProjectItem) => it.after_photos),
+    ...fallbackAfter,
+  ]))
+  const allCompleted = items.length > 0 && items.every((it: PropertyFeedbackProjectItem) => it.status === 'completed')
+  const anyCompleted = items.some((it: PropertyFeedbackProjectItem) => it.status === 'completed')
+  return {
+    items,
+    project_desc: names.join('；') || null,
+    started_at: started,
+    ended_at: ended,
+    duration_minutes: duration > 0 ? duration : null,
+    photo_urls: beforePhotos,
+    repair_photo_urls: afterPhotos,
+    status: allCompleted ? 'completed' : anyCompleted ? 'in_progress' : 'pending',
+    completed_at: allCompleted ? (items.map((it: PropertyFeedbackProjectItem) => it.completed_at).filter(Boolean).sort().slice(-1)[0] || new Date().toISOString()) : null,
+  }
+}
+
+async function syncFeedbackWorkTask(kind: FeedbackKind, id: string, status: string) {
+  if (!pgPool) return
+  const sourceType = kind === 'maintenance' ? 'property_maintenance' : 'property_deep_cleaning'
+  const workStatus = mapWorkStatus(status)
+  if (workStatus === 'resolved' || workStatus === 'cancelled') {
+    await pgPool.query(`DELETE FROM work_tasks WHERE source_type = $1 AND source_id = $2`, [sourceType, id])
+    return
+  }
+  await pgPool.query(`UPDATE work_tasks SET status = $1, updated_at = now() WHERE source_type = $2 AND source_id = $3`, [workStatus === 'in_progress' ? 'in_progress' : 'todo', sourceType, id])
 }
 
 async function ensurePropertyDailyNecessitiesColumns() {
   if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_daily_necessities (
-    id text PRIMARY KEY,
-    property_id text,
-    created_by text,
-    created_at timestamptz DEFAULT now()
-  );`)
-  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS property_code text;')
-  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS status text;')
-  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS item_name text;')
-  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS quantity integer;')
-  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS note text;')
-  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
-  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS source_task_id text;')
-  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
-  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitter_name text;')
-  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_prop ON property_daily_necessities(property_id);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_status ON property_daily_necessities(status);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_created_at ON property_daily_necessities(created_at);')
+  if (propertyDailyNecessitiesColumnsEnsured) return
+  if (propertyDailyNecessitiesColumnsEnsuring) return propertyDailyNecessitiesColumnsEnsuring
+  propertyDailyNecessitiesColumnsEnsuring = (async () => {
+    try {
+      await pgPool.query(`CREATE TABLE IF NOT EXISTS property_daily_necessities (
+        id text PRIMARY KEY,
+        property_id text,
+        created_by text,
+        created_at timestamptz DEFAULT now()
+      );`)
+      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS property_code text;')
+      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS status text;')
+      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS item_name text;')
+      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS quantity integer;')
+      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS note text;')
+      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
+      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS source_task_id text;')
+      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
+      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitter_name text;')
+      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+      await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_prop ON property_daily_necessities(property_id);')
+      await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_status ON property_daily_necessities(status);')
+      await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_created_at ON property_daily_necessities(created_at);')
+      propertyDailyNecessitiesColumnsEnsured = true
+    } finally {
+      propertyDailyNecessitiesColumnsEnsuring = null
+    }
+  })().catch(() => {})
+  return propertyDailyNecessitiesColumnsEnsuring
 }
 
 router.get('/property-feedbacks', async (req, res) => {
@@ -2881,12 +3192,6 @@ router.get('/property-feedbacks', async (req, res) => {
     .map((s) => String(s || '').trim())
     .filter(Boolean)
 
-  const wantOpen = want.length ? want.includes('open') : true
-  const wantInProgress = want.length ? want.includes('in_progress') : true
-  const wantResolved = want.length ? want.includes('resolved') : false
-  const wantCancelled = want.length ? want.includes('cancelled') : false
-  const openView = wantOpen && wantInProgress && !wantResolved && !wantCancelled
-
   const dailyStatusSet = new Set(['need_replace', 'replaced', 'no_action'])
   const dailyWanted = want.filter((s) => dailyStatusSet.has(String(s || '').trim()))
   const dailyFilter = dailyWanted.length ? dailyWanted : ['need_replace']
@@ -2896,179 +3201,179 @@ router.get('/property-feedbacks', async (req, res) => {
 
   try {
     if (!hasPg || !pgPool) return res.json([])
-    const out: any[] = []
-    const errors: string[] = []
-
-    const unresolvedMaintSql = openView
-      ? `(m.status IS NULL OR lower(m.status) NOT IN ('completed','done','ready','canceled','cancelled'))`
-      : `true`
-    const unresolvedDeepSql = openView
-      ? `(d.status IS NULL OR lower(d.status) NOT IN ('completed','done','ready','canceled','cancelled'))`
-      : `true`
-    const unresolvedRepairSql = openView
-      ? `(r.status IS NULL OR lower(r.status) NOT IN ('completed','done','ready','canceled','cancelled'))`
-      : `true`
-
-    try {
+    const pool = pgPool
+    const unresolvedMaintSql = feedbackStatusWhereSql('m', want)
+    const unresolvedDeepSql = feedbackStatusWhereSql('d', want)
+    const unresolvedRepairSql = feedbackStatusWhereSql('r', want)
+    const settle = async (label: string, loader: () => Promise<any[]>) => {
       try {
-        await ensurePropertyMaintenanceColumns()
-      } catch {}
-      const r = await pgPool.query(
-        `SELECT m.id, m.property_id, COALESCE(m.property_code, p.code) AS property_code,
-                m.area, m.category, m.category_detail, m.details, m.notes, m.photo_urls, m.submitter_name,
-                m.submitted_at, m.created_at, m.status
-           FROM property_maintenance m
-           LEFT JOIN properties p ON p.id = m.property_id
-          WHERE (
-              ($1::text IS NOT NULL AND m.property_id = $1)
-              OR (
-                $2::text IS NOT NULL
-                AND (
-                  COALESCE(m.property_code, p.code) = $2
-                  OR m.property_id = $2
-                  OR m.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
+        return { items: await loader(), error: null as string | null }
+      } catch (e: any) {
+        return { items: [] as any[], error: `${label}:${String(e?.message || e)}`.slice(0, 220) }
+      }
+    }
+    const [maintenanceResult, repairResult, deepResult, dailyResult] = await Promise.all([
+      settle('maintenance', async () => {
+        try {
+          await ensurePropertyMaintenanceColumns()
+        } catch {}
+        const r = await pool.query(
+          `SELECT m.id, m.property_id, COALESCE(m.property_code, p.code) AS property_code,
+                  m.area, m.category, m.category_detail, m.details, m.notes, m.photo_urls, m.repair_photo_urls,
+                  m.repair_notes, m.submitter_name, m.submitted_at, m.created_at, m.status, m.completed_at,
+                  m.review_status, m.project_items
+             FROM property_maintenance m
+             LEFT JOIN properties p ON p.id = m.property_id
+            WHERE (
+                ($1::text IS NOT NULL AND m.property_id = $1)
+                OR (
+                  $2::text IS NOT NULL
+                  AND (
+                    COALESCE(m.property_code, p.code) = $2
+                    OR m.property_id = $2
+                    OR m.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
+                  )
                 )
               )
-            )
-            AND (${unresolvedMaintSql})
-          ORDER BY COALESCE(m.submitted_at, m.created_at) DESC
-          LIMIT $3`,
-        [propertyId || null, propertyCode || null, limit],
-      )
-      for (const row of (r?.rows || [])) {
-        const mapped = mapWorkStatus(row.status)
-        out.push({
-          id: String(row.id),
-          property_id: row.property_id ? String(row.property_id) : propertyId || null,
-          kind: 'maintenance',
-          area: row.area || null,
-          category: row.category_detail || row.category || null,
-          detail: String(row.notes || row.details || ''),
-          media_urls: Array.isArray(row.photo_urls) ? row.photo_urls : row.photo_urls ? row.photo_urls : [],
-          created_by_name: row.submitter_name || null,
-          created_at: row.submitted_at || row.created_at || null,
-          status: mapped,
+              AND (${unresolvedMaintSql})
+            ORDER BY COALESCE(m.submitted_at, m.created_at) DESC
+            LIMIT $3`,
+          [propertyId || null, propertyCode || null, limit],
+        )
+        return (r?.rows || []).map((row: any) => {
+          const summary = summarizeProjectItems('maintenance', row.project_items, row)
+          return {
+            id: String(row.id),
+            property_id: row.property_id ? String(row.property_id) : propertyId || null,
+            kind: 'maintenance',
+            area: row.area || null,
+            category: row.category_detail || row.category || null,
+            detail: String(row.notes || row.details || ''),
+            media_urls: summary.photo_urls,
+            repair_photo_urls: summary.repair_photo_urls,
+            repair_notes: row.repair_notes ? String(row.repair_notes) : null,
+            created_by_name: row.submitter_name || null,
+            created_at: row.submitted_at || row.created_at || null,
+            status: mapWorkStatus(row.status),
+            review_status: row.review_status ? String(row.review_status) : null,
+            completed_at: row.completed_at || summary.completed_at || null,
+            project_items: summary.items,
+          }
         })
-      }
-    } catch (e: any) {
-      errors.push(`maintenance:${String(e?.message || e)}`.slice(0, 220))
-    }
-
-    try {
-      const r = await pgPool.query(
-        `SELECT r.id, r.property_id, p.code AS property_code,
-                r.category, r.category_detail, r.detail, r.remark, r.attachment_urls, r.submitter_name,
-                r.submitted_at, r.created_at, r.status
-           FROM repair_orders r
-           LEFT JOIN properties p ON p.id = r.property_id
-          WHERE (($1::text IS NOT NULL AND r.property_id = $1) OR ($2::text IS NOT NULL AND p.code = $2))
-            AND (${unresolvedRepairSql})
-          ORDER BY COALESCE(r.submitted_at, r.created_at) DESC
-          LIMIT $3`,
-        [propertyId || null, propertyCode || null, limit],
-      )
-      for (const row of (r?.rows || [])) {
-        const mapped = mapWorkStatus(row.status)
-        out.push({
-          id: String(row.id),
-          property_id: row.property_id ? String(row.property_id) : propertyId || null,
-          kind: 'maintenance',
-          area: null,
-          category: row.category_detail || row.category || null,
-          detail: String(row.detail || row.remark || ''),
-          media_urls: Array.isArray(row.attachment_urls) ? row.attachment_urls : row.attachment_urls ? row.attachment_urls : [],
-          created_by_name: row.submitter_name || null,
-          created_at: row.submitted_at || row.created_at || null,
-          status: mapped,
+      }),
+      settle('repair_orders', async () => {
+        const r = await pool.query(
+          `SELECT r.id, r.property_id, p.code AS property_code,
+                  r.category, r.category_detail, r.detail, r.remark, r.attachment_urls, r.repair_photo_urls,
+                  r.repair_notes, r.submitter_name, r.submitted_at, r.created_at, r.status, r.completed_at,
+                  r.review_status, r.project_items
+             FROM repair_orders r
+             LEFT JOIN properties p ON p.id = r.property_id
+            WHERE (($1::text IS NOT NULL AND r.property_id = $1) OR ($2::text IS NOT NULL AND p.code = $2))
+              AND (${unresolvedRepairSql})
+            ORDER BY COALESCE(r.submitted_at, r.created_at) DESC
+            LIMIT $3`,
+          [propertyId || null, propertyCode || null, limit],
+        )
+        return (r?.rows || []).map((row: any) => {
+          const summary = summarizeProjectItems('maintenance', row.project_items, row)
+          return {
+            id: String(row.id),
+            property_id: row.property_id ? String(row.property_id) : propertyId || null,
+            kind: 'maintenance',
+            area: null,
+            category: row.category_detail || row.category || null,
+            detail: String(row.detail || row.remark || ''),
+            media_urls: summary.photo_urls.length ? summary.photo_urls : (Array.isArray(row.attachment_urls) ? row.attachment_urls : row.attachment_urls ? row.attachment_urls : []),
+            repair_photo_urls: summary.repair_photo_urls,
+            repair_notes: row.repair_notes ? String(row.repair_notes) : null,
+            created_by_name: row.submitter_name || null,
+            created_at: row.submitted_at || row.created_at || null,
+            status: mapWorkStatus(row.status),
+            review_status: row.review_status ? String(row.review_status) : null,
+            completed_at: row.completed_at || summary.completed_at || null,
+            project_items: summary.items,
+          }
         })
-      }
-    } catch (e: any) {
-      errors.push(`repair_orders:${String(e?.message || e)}`.slice(0, 220))
-    }
-
-    try {
-      try {
-        await ensurePropertyDeepCleaningColumns()
-      } catch {}
-      const r = await pgPool.query(
-        `SELECT d.id, d.property_id, COALESCE(d.property_code, p.code) AS property_code,
-                d.project_desc, d.details, d.notes, d.photo_urls, d.attachment_urls, d.submitter_name,
-                d.submitted_at, d.created_at, d.status
-           FROM property_deep_cleaning d
-           LEFT JOIN properties p ON p.id = d.property_id
-          WHERE (
-              ($1::text IS NOT NULL AND d.property_id = $1)
-              OR (
-                $2::text IS NOT NULL
-                AND (
-                  COALESCE(d.property_code, p.code) = $2
-                  OR d.property_id = $2
-                  OR d.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
+      }),
+      settle('deep_cleaning', async () => {
+        try {
+          await ensurePropertyDeepCleaningColumns()
+        } catch {}
+        const r = await pool.query(
+          `SELECT d.id, d.property_id, COALESCE(d.property_code, p.code) AS property_code,
+                  d.project_desc, d.details, d.notes, d.photo_urls, d.attachment_urls, d.repair_photo_urls,
+                  d.repair_notes, d.submitter_name, d.submitted_at, d.created_at, d.status, d.completed_at,
+                  d.review_status, d.project_items
+             FROM property_deep_cleaning d
+             LEFT JOIN properties p ON p.id = d.property_id
+            WHERE (
+                ($1::text IS NOT NULL AND d.property_id = $1)
+                OR (
+                  $2::text IS NOT NULL
+                  AND (
+                    COALESCE(d.property_code, p.code) = $2
+                    OR d.property_id = $2
+                    OR d.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
+                  )
                 )
               )
-            )
-            AND (${unresolvedDeepSql})
-          ORDER BY COALESCE(d.submitted_at, d.created_at) DESC
-          LIMIT $3`,
-        [propertyId || null, propertyCode || null, limit],
-      )
-      for (const row of (r?.rows || [])) {
-        const mapped = mapWorkStatus(row.status)
-        const areas = String(row.project_desc || '')
-          .split('、')
-          .map((s) => String(s || '').trim())
-          .filter(Boolean)
-        const media =
-          Array.isArray(row.attachment_urls) && row.attachment_urls.length
-            ? row.attachment_urls
-            : Array.isArray(row.photo_urls)
-              ? row.photo_urls
-              : []
-        out.push({
-          id: String(row.id),
-          property_id: row.property_id ? String(row.property_id) : propertyId || null,
-          kind: 'deep_cleaning',
-          areas,
-          detail: String(row.details || row.notes || ''),
-          media_urls: media,
-          created_by_name: row.submitter_name || null,
-          created_at: row.submitted_at || row.created_at || null,
-          status: mapped,
+              AND (${unresolvedDeepSql})
+            ORDER BY COALESCE(d.submitted_at, d.created_at) DESC
+            LIMIT $3`,
+          [propertyId || null, propertyCode || null, limit],
+        )
+        return (r?.rows || []).map((row: any) => {
+          const summary = summarizeProjectItems('deep_cleaning', row.project_items, row)
+          return {
+            id: String(row.id),
+            property_id: row.property_id ? String(row.property_id) : propertyId || null,
+            kind: 'deep_cleaning',
+            areas: String(row.project_desc || '')
+              .split('、')
+              .map((s) => String(s || '').trim())
+              .filter(Boolean),
+            detail: String(row.details || row.notes || ''),
+            media_urls: summary.photo_urls,
+            repair_photo_urls: summary.repair_photo_urls,
+            repair_notes: row.repair_notes ? String(row.repair_notes) : null,
+            created_by_name: row.submitter_name || null,
+            created_at: row.submitted_at || row.created_at || null,
+            status: mapWorkStatus(row.status),
+            review_status: row.review_status ? String(row.review_status) : null,
+            completed_at: row.completed_at || summary.completed_at || null,
+            project_items: summary.items,
+          }
         })
-      }
-    } catch (e: any) {
-      errors.push(`deep_cleaning:${String(e?.message || e)}`.slice(0, 220))
-    }
-
-    try {
-      try {
-        await ensurePropertyDailyNecessitiesColumns()
-      } catch {}
-      const params: any[] = [propertyId || null, propertyCode || null, dailyFilter, limit]
-      const r = await pgPool.query(
-        `SELECT n.id, n.property_id, COALESCE(n.property_code, p.code) AS property_code,
-                n.status, n.item_name, n.quantity, n.note, n.photo_urls, n.submitter_name,
-                n.submitted_at, n.created_at
-           FROM property_daily_necessities n
-           LEFT JOIN properties p ON p.id = n.property_id
-          WHERE (
-              ($1::text IS NOT NULL AND n.property_id = $1)
-              OR (
-                $2::text IS NOT NULL
-                AND (
-                  COALESCE(n.property_code, p.code) = $2
-                  OR n.property_id = $2
-                  OR n.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
+      }),
+      settle('daily_necessities', async () => {
+        try {
+          await ensurePropertyDailyNecessitiesColumns()
+        } catch {}
+        const params: any[] = [propertyId || null, propertyCode || null, dailyFilter, limit]
+        const r = await pool.query(
+          `SELECT n.id, n.property_id, COALESCE(n.property_code, p.code) AS property_code,
+                  n.status, n.item_name, n.quantity, n.note, n.photo_urls, n.submitter_name,
+                  n.submitted_at, n.created_at
+             FROM property_daily_necessities n
+             LEFT JOIN properties p ON p.id = n.property_id
+            WHERE (
+                ($1::text IS NOT NULL AND n.property_id = $1)
+                OR (
+                  $2::text IS NOT NULL
+                  AND (
+                    COALESCE(n.property_code, p.code) = $2
+                    OR n.property_id = $2
+                    OR n.property_id IN (SELECT id FROM properties WHERE code = $2 LIMIT 5)
+                  )
                 )
               )
-            )
-            AND COALESCE(n.status, '') = ANY($3::text[])
-          ORDER BY COALESCE(n.submitted_at, n.created_at) DESC
-          LIMIT $4`,
-        params,
-      )
-      for (const row of (r?.rows || [])) {
-        out.push({
+              AND COALESCE(n.status, '') = ANY($3::text[])
+            ORDER BY COALESCE(n.submitted_at, n.created_at) DESC
+            LIMIT $4`,
+          params,
+        )
+        return (r?.rows || []).map((row: any) => ({
           id: String(row.id),
           property_id: row.property_id ? String(row.property_id) : propertyId || null,
           kind: 'daily_necessities',
@@ -3080,12 +3385,21 @@ router.get('/property-feedbacks', async (req, res) => {
           media_urls: Array.isArray(row.photo_urls) ? row.photo_urls : row.photo_urls ? row.photo_urls : [],
           created_by_name: row.submitter_name || null,
           created_at: row.submitted_at || row.created_at || null,
-        })
-      }
-    } catch (e: any) {
-      errors.push(`daily_necessities:${String(e?.message || e)}`.slice(0, 220))
-    }
-
+        }))
+      }),
+    ])
+    const out = [
+      ...maintenanceResult.items,
+      ...repairResult.items,
+      ...deepResult.items,
+      ...dailyResult.items,
+    ]
+    const errors = [
+      maintenanceResult.error,
+      repairResult.error,
+      deepResult.error,
+      dailyResult.error,
+    ].filter(Boolean) as string[]
     out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
     if (!out.length && errors.length) return res.status(500).json({ message: 'property_feedbacks_failed', errors })
     return res.json(out.slice(0, limit))
@@ -3371,6 +3685,413 @@ router.post('/property-feedbacks', async (req, res) => {
     return res.status(201).json({ ok: true, id })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'property_feedbacks_create_failed' })
+  }
+})
+
+async function loadPropertyFeedbackRow(kind: FeedbackKind, id: string) {
+  if (!pgPool) return null
+  if (kind === 'maintenance') {
+    await ensurePropertyMaintenanceColumns()
+    const r = await pgPool.query(`SELECT * FROM property_maintenance WHERE id = $1 LIMIT 1`, [id])
+    return r.rows?.[0] || null
+  }
+  await ensurePropertyDeepCleaningColumns()
+  const r = await pgPool.query(`SELECT * FROM property_deep_cleaning WHERE id = $1 LIMIT 1`, [id])
+  return r.rows?.[0] || null
+}
+
+router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  const kind = String(req.params.kind || '').trim()
+  const id = String(req.params.id || '').trim()
+  if (kind !== 'maintenance' && kind !== 'deep_cleaning' && kind !== 'daily_necessities') return res.status(400).json({ message: 'invalid kind' })
+  const parsed = feedbackPatchSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (kind === 'maintenance') {
+      await ensurePropertyMaintenanceColumns()
+      const existing = await pgPool.query(`SELECT * FROM property_maintenance WHERE id = $1 LIMIT 1`, [id])
+      if (!existing.rowCount) return res.status(404).json({ message: 'not found' })
+      const row = existing.rows[0]
+      const nextArea = parsed.data.area !== undefined ? String(parsed.data.area || '').trim() : String(row.area || '').trim()
+      const nextCategory = parsed.data.category !== undefined ? String(parsed.data.category || '').trim() : String(row.category_detail || row.category || '').trim()
+      const nextDetail = parsed.data.detail !== undefined ? String(parsed.data.detail || '').trim() : String(row.details || row.notes || '').trim()
+      const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.repair_notes || '').trim()
+      const nextMedia = parsed.data.media_urls !== undefined ? normalizeUrlArray(parsed.data.media_urls) : normalizeUrlArray(row.photo_urls)
+      const nextRepairMedia = parsed.data.repair_photo_urls !== undefined ? normalizeUrlArray(parsed.data.repair_photo_urls) : normalizeUrlArray(row.repair_photo_urls)
+      const currentResolved = mapWorkStatus(row.status) === 'resolved'
+      const markCompleted = currentResolved || nextRepairMedia.length > 0
+      const nextStatus = markCompleted ? 'completed' : String(row.status || '').trim() || 'pending'
+      const nextReviewStatus = markCompleted ? 'pending' : (row.review_status ? String(row.review_status) : null)
+      const nextCompletedAt = markCompleted ? (row.completed_at || new Date().toISOString()) : null
+      if (!nextArea || !nextCategory || !nextDetail) return res.status(400).json({ message: 'missing maintenance fields' })
+      const beforeType = await getColumnType('property_maintenance', 'photo_urls')
+      const afterType = await getColumnType('property_maintenance', 'repair_photo_urls')
+      const beforeExpr = beforeType === 'text[]' ? '$5::text[]' : '$5::jsonb'
+      const afterExpr = afterType === 'text[]' ? '$7::text[]' : '$7::jsonb'
+      await pgPool.query(
+        `UPDATE property_maintenance
+            SET area = $2,
+                category = $3,
+                category_detail = $3,
+                details = $4,
+                notes = $4,
+                photo_urls = ${beforeExpr},
+                repair_notes = $6,
+                repair_photo_urls = ${afterExpr},
+                status = $8,
+                review_status = $9,
+                completed_at = $10,
+                updated_at = now()
+          WHERE id = $1`,
+        [
+          id,
+          nextArea,
+          nextCategory,
+          nextDetail,
+          beforeType === 'text[]' ? nextMedia : JSON.stringify(nextMedia),
+          nextNote || null,
+          afterType === 'text[]' ? nextRepairMedia : JSON.stringify(nextRepairMedia),
+          nextStatus,
+          nextReviewStatus,
+          nextCompletedAt,
+        ],
+      )
+      return res.json({
+        ok: true,
+        row: {
+          id,
+          property_id: row.property_id ? String(row.property_id) : null,
+          kind: 'maintenance',
+          area: nextArea,
+          category: nextCategory,
+          detail: nextDetail,
+          note: nextNote || null,
+          repair_notes: nextNote || null,
+          media_urls: nextMedia,
+          repair_photo_urls: nextRepairMedia,
+          created_by_name: row.submitter_name ? String(row.submitter_name) : null,
+          created_at: row.submitted_at || row.created_at || null,
+          status: mapWorkStatus(nextStatus),
+          review_status: nextReviewStatus,
+          completed_at: nextCompletedAt,
+        },
+      })
+    }
+    if (kind === 'deep_cleaning') {
+      await ensurePropertyDeepCleaningColumns()
+      const existing = await pgPool.query(`SELECT * FROM property_deep_cleaning WHERE id = $1 LIMIT 1`, [id])
+      if (!existing.rowCount) return res.status(404).json({ message: 'not found' })
+      const row = existing.rows[0]
+      const nextAreas = parsed.data.areas !== undefined ? parsed.data.areas.map((x) => String(x || '').trim()).filter(Boolean) : String(row.project_desc || '').split('、').map((x: string) => String(x || '').trim()).filter(Boolean)
+      const nextDetail = parsed.data.detail !== undefined ? String(parsed.data.detail || '').trim() : String(row.details || row.notes || '').trim()
+      const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.repair_notes || '').trim()
+      const nextMedia = parsed.data.media_urls !== undefined ? normalizeUrlArray(parsed.data.media_urls) : normalizeUrlArray(row.photo_urls)
+      const nextRepairMedia = parsed.data.repair_photo_urls !== undefined ? normalizeUrlArray(parsed.data.repair_photo_urls) : normalizeUrlArray(row.repair_photo_urls)
+      const currentResolved = mapWorkStatus(row.status) === 'resolved'
+      const markCompleted = currentResolved || nextRepairMedia.length > 0
+      const nextStatus = markCompleted ? 'completed' : String(row.status || '').trim() || 'pending'
+      const nextReviewStatus = markCompleted ? 'pending' : (row.review_status ? String(row.review_status) : null)
+      const nextCompletedAt = markCompleted ? (row.completed_at || new Date().toISOString()) : null
+      if (!nextAreas.length || !nextDetail) return res.status(400).json({ message: 'missing deep cleaning fields' })
+      const beforeType = await getColumnType('property_deep_cleaning', 'photo_urls')
+      const attachmentType = await getColumnType('property_deep_cleaning', 'attachment_urls')
+      const afterType = await getColumnType('property_deep_cleaning', 'repair_photo_urls')
+      const beforeExpr = beforeType === 'text[]' ? '$4::text[]' : '$4::jsonb'
+      const attachmentExpr = attachmentType === 'text[]' ? '$5::text[]' : '$5::jsonb'
+      const afterExpr = afterType === 'text[]' ? '$7::text[]' : '$7::jsonb'
+      await pgPool.query(
+        `UPDATE property_deep_cleaning
+            SET project_desc = $2,
+                details = $3,
+                notes = $3,
+                photo_urls = ${beforeExpr},
+                attachment_urls = ${attachmentExpr},
+                repair_notes = $6,
+                repair_photo_urls = ${afterExpr},
+                status = $8,
+                review_status = $9,
+                completed_at = $10,
+                updated_at = now()
+          WHERE id = $1`,
+        [
+          id,
+          nextAreas.join('、'),
+          nextDetail,
+          beforeType === 'text[]' ? nextMedia : JSON.stringify(nextMedia),
+          attachmentType === 'text[]' ? nextMedia : JSON.stringify(nextMedia),
+          nextNote || null,
+          afterType === 'text[]' ? nextRepairMedia : JSON.stringify(nextRepairMedia),
+          nextStatus,
+          nextReviewStatus,
+          nextCompletedAt,
+        ],
+      )
+      return res.json({
+        ok: true,
+        row: {
+          id,
+          property_id: row.property_id ? String(row.property_id) : null,
+          kind: 'deep_cleaning',
+          areas: nextAreas,
+          detail: nextDetail,
+          note: nextNote || null,
+          repair_notes: nextNote || null,
+          media_urls: nextMedia,
+          repair_photo_urls: nextRepairMedia,
+          created_by_name: row.submitter_name ? String(row.submitter_name) : null,
+          created_at: row.submitted_at || row.created_at || null,
+          status: mapWorkStatus(nextStatus),
+          review_status: nextReviewStatus,
+          completed_at: nextCompletedAt,
+        },
+      })
+    }
+    await ensurePropertyDailyNecessitiesColumns()
+    const existing = await pgPool.query(`SELECT * FROM property_daily_necessities WHERE id = $1 LIMIT 1`, [id])
+    if (!existing.rowCount) return res.status(404).json({ message: 'not found' })
+    const row = existing.rows[0]
+    const nextStatus = parsed.data.status !== undefined ? String(parsed.data.status || '').trim() : String(row.status || '').trim()
+    const nextItemName = parsed.data.item_name !== undefined ? String(parsed.data.item_name || '').trim() : String(row.item_name || '').trim()
+    const nextQuantity = parsed.data.quantity !== undefined ? Math.trunc(Number(parsed.data.quantity)) : Math.trunc(Number(row.quantity || 0))
+    const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.note || '').trim()
+    const nextMedia = parsed.data.media_urls !== undefined ? normalizeUrlArray(parsed.data.media_urls) : normalizeUrlArray(row.photo_urls)
+    if (!dailyNecessitiesStatusSchema.safeParse(nextStatus).success) return res.status(400).json({ message: 'invalid status' })
+    if (!nextItemName) return res.status(400).json({ message: 'missing item_name' })
+    if (!Number.isFinite(nextQuantity) || nextQuantity < 1) return res.status(400).json({ message: 'invalid quantity' })
+    if (!nextNote && !nextMedia.length) return res.status(400).json({ message: 'missing note' })
+    const photoType = await getColumnType('property_daily_necessities', 'photo_urls')
+    const photoExpr = photoType === 'text[]' ? '$6::text[]' : '$6::jsonb'
+    await pgPool.query(
+      `UPDATE property_daily_necessities
+          SET status = $2,
+              item_name = $3,
+              quantity = $4,
+              note = $5,
+              photo_urls = ${photoExpr}
+        WHERE id = $1`,
+      [id, nextStatus, nextItemName, nextQuantity, nextNote || null, photoType === 'text[]' ? nextMedia : JSON.stringify(nextMedia)],
+    )
+    return res.json({
+      ok: true,
+      row: {
+        id,
+        property_id: row.property_id ? String(row.property_id) : null,
+        kind: 'daily_necessities',
+        item_name: nextItemName,
+        quantity: nextQuantity,
+        note: nextNote || null,
+        detail: nextNote || '',
+        media_urls: nextMedia,
+        created_by_name: row.submitter_name ? String(row.submitter_name) : null,
+        created_at: row.submitted_at || row.created_at || null,
+        status: nextStatus,
+      },
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'property_feedback_patch_failed' })
+  }
+})
+
+function projectStatusFromItems(items: PropertyFeedbackProjectItem[]) {
+  if (!items.length) return 'pending'
+  if (items.every((it) => it.status === 'completed')) return 'completed'
+  if (items.some((it) => it.status === 'completed')) return 'in_progress'
+  return 'pending'
+}
+
+async function persistFeedbackProjects(kind: FeedbackKind, row: any, items: PropertyFeedbackProjectItem[]) {
+  if (!pgPool) throw new Error('pg not available')
+  const summary = summarizeProjectItems(kind, items)
+  const status = projectStatusFromItems(summary.items)
+  const sourceTable = kind === 'maintenance' ? 'property_maintenance' : 'property_deep_cleaning'
+  const reviewStatus = status === 'completed' ? 'pending' : (row?.review_status ? String(row.review_status) : 'pending')
+  const projectJson = JSON.stringify(summary.items)
+  const beforeJson = JSON.stringify(summary.photo_urls)
+  const afterJson = JSON.stringify(summary.repair_photo_urls)
+  if (kind === 'maintenance') {
+    const beforeType = await getColumnType(sourceTable, 'photo_urls')
+    const afterType = await getColumnType(sourceTable, 'repair_photo_urls')
+    const beforeExpr = beforeType === 'text[]' ? '$5::text[]' : '$5::jsonb'
+    const afterExpr = afterType === 'text[]' ? '$6::text[]' : '$6::jsonb'
+    await pgPool.query(
+      `UPDATE property_maintenance
+          SET project_items = $2::jsonb,
+              details = COALESCE(NULLIF($3, ''), details),
+              notes = COALESCE(NULLIF($4, ''), notes),
+              photo_urls = ${beforeExpr},
+              repair_photo_urls = ${afterExpr},
+              repair_notes = $7,
+              status = $8,
+              completed_at = $9::timestamptz,
+              review_status = $10,
+              updated_at = now()
+        WHERE id = $1`,
+      [
+        row.id,
+        projectJson,
+        summary.project_desc || '',
+        summary.project_desc || '',
+        beforeType === 'text[]' ? summary.photo_urls : beforeJson,
+        afterType === 'text[]' ? summary.repair_photo_urls : afterJson,
+        String(row?.repair_notes || '').trim() || null,
+        status,
+        summary.completed_at,
+        reviewStatus,
+      ],
+    )
+  } else {
+    const beforeType = await getColumnType(sourceTable, 'photo_urls')
+    const afterType = await getColumnType(sourceTable, 'repair_photo_urls')
+    const beforeExpr = beforeType === 'text[]' ? '$7::text[]' : '$7::jsonb'
+    const afterExpr = afterType === 'text[]' ? '$8::text[]' : '$8::jsonb'
+    await pgPool.query(
+      `UPDATE property_deep_cleaning
+          SET project_items = $2::jsonb,
+              project_desc = COALESCE(NULLIF($3, ''), project_desc),
+              started_at = $4::timestamptz,
+              ended_at = $5::timestamptz,
+              duration_minutes = $6,
+              photo_urls = ${beforeExpr},
+              repair_photo_urls = ${afterExpr},
+              repair_notes = $9,
+              status = $10,
+              completed_at = $11::timestamptz,
+              review_status = $12,
+              updated_at = now()
+        WHERE id = $1`,
+      [
+        row.id,
+        projectJson,
+        summary.project_desc || '',
+        summary.started_at,
+        summary.ended_at,
+        summary.duration_minutes,
+        beforeType === 'text[]' ? summary.photo_urls : beforeJson,
+        afterType === 'text[]' ? summary.repair_photo_urls : afterJson,
+        String(row?.repair_notes || '').trim() || null,
+        status,
+        summary.completed_at,
+        reviewStatus,
+      ],
+    )
+  }
+  await syncFeedbackWorkTask(kind, String(row.id), status)
+  return loadPropertyFeedbackRow(kind, String(row.id))
+}
+
+router.post('/property-feedbacks/:kind/:id/projects', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const kind = String(req.params.kind || '').trim() as FeedbackKind
+  const id = String(req.params.id || '').trim()
+  if (kind !== 'maintenance' && kind !== 'deep_cleaning') return res.status(400).json({ message: 'invalid kind' })
+  const parsed = feedbackProjectCreateSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    const row = await loadPropertyFeedbackRow(kind, id)
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const current = summarizeProjectItems(kind, row.project_items, row).items
+    const item: PropertyFeedbackProjectItem = {
+      id: require('uuid').v4(),
+      name: String(parsed.data.name || '').trim(),
+      area: String(parsed.data.area || '').trim() || null,
+      category: kind === 'maintenance' ? String(parsed.data.category || '').trim() || null : null,
+      detail: kind === 'maintenance' ? String(parsed.data.detail || '').trim() || null : null,
+      note: kind === 'deep_cleaning' ? String(parsed.data.note || '').trim() || null : String(parsed.data.note || '').trim() || null,
+      started_at: null,
+      ended_at: null,
+      duration_minutes: null,
+      before_photos: [],
+      after_photos: [],
+      status: 'open',
+      completed_by: null,
+      completed_at: null,
+    }
+    const updated = await persistFeedbackProjects(kind, row, [...current, item])
+    return res.status(201).json({ ok: true, item, row: updated })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'property_feedback_project_create_failed' })
+  }
+})
+
+router.patch('/property-feedbacks/:kind/:id/projects/:projectId', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const kind = String(req.params.kind || '').trim() as FeedbackKind
+  const id = String(req.params.id || '').trim()
+  const projectId = String(req.params.projectId || '').trim()
+  if (kind !== 'maintenance' && kind !== 'deep_cleaning') return res.status(400).json({ message: 'invalid kind' })
+  const parsed = feedbackProjectPatchSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    const row = await loadPropertyFeedbackRow(kind, id)
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const current = summarizeProjectItems(kind, row.project_items, row).items
+    const found = current.find((it: PropertyFeedbackProjectItem) => it.id === projectId)
+    if (!found) return res.status(404).json({ message: 'project_not_found' })
+    Object.assign(found, {
+      name: parsed.data.name !== undefined ? String(parsed.data.name || '').trim() : found.name,
+      area: parsed.data.area !== undefined ? String(parsed.data.area || '').trim() || null : found.area,
+      category: kind === 'maintenance' && parsed.data.category !== undefined ? String(parsed.data.category || '').trim() || null : found.category,
+      detail: parsed.data.detail !== undefined ? String(parsed.data.detail || '').trim() || null : found.detail,
+      note: parsed.data.note !== undefined ? String(parsed.data.note || '').trim() || null : found.note,
+    })
+    const updated = await persistFeedbackProjects(kind, row, current)
+    return res.json({ ok: true, item: found, row: updated })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'property_feedback_project_patch_failed' })
+  }
+})
+
+router.post('/property-feedbacks/:kind/:id/projects/:projectId/complete', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const kind = String(req.params.kind || '').trim() as FeedbackKind
+  const id = String(req.params.id || '').trim()
+  const projectId = String(req.params.projectId || '').trim()
+  if (kind !== 'maintenance' && kind !== 'deep_cleaning') return res.status(400).json({ message: 'invalid kind' })
+  const parsed = feedbackProjectCompleteSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    const row = await loadPropertyFeedbackRow(kind, id)
+    if (!row) return res.status(404).json({ message: 'not found' })
+    const current = summarizeProjectItems(kind, row.project_items, row).items
+    const found = current.find((it: PropertyFeedbackProjectItem) => it.id === projectId)
+    if (!found) return res.status(404).json({ message: 'project_not_found' })
+    const afterPhotos = normalizeUrlArray(parsed.data.after_photos)
+    const beforePhotos = normalizeUrlArray(parsed.data.before_photos)
+    const note = String(parsed.data.note || '').trim()
+    if (!afterPhotos.length) return res.status(400).json({ message: 'missing after_photos' })
+    if (kind === 'deep_cleaning') {
+      const startedAt = toIsoOrNull(parsed.data.started_at)
+      const endedAt = toIsoOrNull(parsed.data.ended_at)
+      if (!startedAt || !endedAt) return res.status(400).json({ message: 'missing started_or_ended_at' })
+      if (endedAt < startedAt) return res.status(400).json({ message: 'ended_before_started' })
+      if (!beforePhotos.length) return res.status(400).json({ message: 'missing before_photos' })
+      found.started_at = startedAt
+      found.ended_at = endedAt
+      found.duration_minutes = Math.max(0, Math.trunc((new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 60000))
+      found.before_photos = beforePhotos
+      found.note = note || found.note
+    } else if (beforePhotos.length) {
+      found.before_photos = beforePhotos
+    } else if (!found.before_photos.length) {
+      found.before_photos = normalizeUrlArray(row.photo_urls)
+    }
+    if (parsed.data.detail !== undefined) found.detail = String(parsed.data.detail || '').trim() || found.detail
+    found.after_photos = afterPhotos
+    found.status = 'completed'
+    found.completed_by = String(user.username || user.sub || '').trim() || 'unknown'
+    found.completed_at = new Date().toISOString()
+    if (note) found.note = note
+    row.repair_notes = note || row.repair_notes || found.note || null
+    const updated = await persistFeedbackProjects(kind, row, current)
+    return res.json({ ok: true, item: found, row: updated })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'property_feedback_project_complete_failed' })
   }
 })
 

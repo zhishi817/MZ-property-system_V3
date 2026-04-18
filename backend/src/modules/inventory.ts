@@ -5304,9 +5304,11 @@ async function ensureDailyNecessitiesSchema() {
   await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS item_id text;')
   await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS replacement_at timestamptz;')
   await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS replacer_name text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS pay_method text;')
   await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_prop ON property_daily_necessities(property_id);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_status ON property_daily_necessities(status);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_pay_method ON property_daily_necessities(pay_method);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_created_at ON property_daily_necessities(created_at);')
 }
 
@@ -5333,6 +5335,7 @@ const dailyReplacementCreateSchema = z.object({
   after_photo_urls: z.array(z.string()).optional(),
   replacement_at: z.string().optional().nullable(),
   replacer_name: z.string().optional(),
+  pay_method: z.enum(['rent_deduction', 'tenant_pay', 'company_pay', 'landlord_pay', 'other_pay']).optional().nullable(),
   status: z.enum(['need_replace', 'replaced', 'no_action']).optional(),
 })
 
@@ -5346,6 +5349,7 @@ const dailyReplacementPatchSchema = z.object({
   after_photo_urls: z.array(z.string()).optional(),
   replacement_at: z.string().optional().nullable(),
   replacer_name: z.string().optional(),
+  pay_method: z.enum(['rent_deduction', 'tenant_pay', 'company_pay', 'landlord_pay', 'other_pay']).optional().nullable(),
   status: z.enum(['need_replace', 'replaced', 'no_action']).optional(),
 })
 
@@ -5364,6 +5368,7 @@ router.get('/daily-replacements', requirePerm('inventory.view'), async (req, res
         : []
       const prop = String(q.property_id || '').trim()
       const code = String(q.property_code || '').trim()
+      const payMethod = String(q.pay_method || '').trim()
       const from = String(q.from || '').trim()
       const to = String(q.to || '').trim()
       const limit = Math.min(500, Math.max(1, Number(q.limit || 100)))
@@ -5373,6 +5378,7 @@ router.get('/daily-replacements', requirePerm('inventory.view'), async (req, res
       if (prop) { values.push(prop); where.push(`n.property_id = $${values.length}`) }
       if (code) { values.push(code); where.push(`COALESCE(n.property_code, p.code) = $${values.length}`) }
       if (statuses.length) { values.push(statuses); where.push(`COALESCE(n.status,'') = ANY($${values.length}::text[])`) }
+      if (payMethod) { values.push(payMethod); where.push(`COALESCE(n.pay_method,'') = $${values.length}`) }
       if (from) { values.push(from); where.push(`COALESCE(n.submitted_at, n.created_at) >= $${values.length}::timestamptz`) }
       if (to) { values.push(to); where.push(`COALESCE(n.submitted_at, n.created_at) <= $${values.length}::timestamptz`) }
       values.push(limit)
@@ -5395,6 +5401,7 @@ router.get('/daily-replacements', requirePerm('inventory.view'), async (req, res
           n.submitted_at,
           n.replacement_at,
           n.replacer_name,
+          n.pay_method,
           n.created_at,
           n.updated_at
         FROM property_daily_necessities n
@@ -5427,13 +5434,14 @@ router.post('/daily-replacements', requirePerm('inventory.move'), async (req, re
       if (!property) return { ok: false as const, code: 400 as const, message: '房号不存在' }
       const submitterName = await getActorDisplayName(client, actor)
       const nextStatus = String(parsed.data.status || 'need_replace').trim()
+      const nextPayMethod = parsed.data.pay_method ? String(parsed.data.pay_method).trim() : null
       const created = await client.query(
         `INSERT INTO property_daily_necessities (
            id, property_id, property_code, status, item_id, item_name, quantity, note,
            photo_urls, before_photo_urls, after_photo_urls, submitted_at, replacement_at,
-           submitter_name, replacer_name, created_by, updated_at
+           submitter_name, replacer_name, pay_method, created_by, updated_at
          )
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12::timestamptz,$13::timestamptz,$14,$15,$16,now())
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12::timestamptz,$13::timestamptz,$14,$15,$16,$17,now())
          RETURNING *`,
         [
           id,
@@ -5451,6 +5459,7 @@ router.post('/daily-replacements', requirePerm('inventory.move'), async (req, re
           parsed.data.replacement_at || null,
           submitterName || null,
           parsed.data.replacer_name || null,
+          nextPayMethod,
           actor || null,
         ],
       )
@@ -5490,6 +5499,7 @@ router.patch('/daily-replacements/:id', requirePerm('inventory.move'), async (re
     if (parsed.data.after_photo_urls !== undefined) patch.after_photo_urls = JSON.stringify(parsed.data.after_photo_urls || [])
     if (parsed.data.replacement_at !== undefined) patch.replacement_at = parsed.data.replacement_at || null
     if (parsed.data.replacer_name !== undefined) patch.replacer_name = parsed.data.replacer_name || null
+    if (parsed.data.pay_method !== undefined) patch.pay_method = parsed.data.pay_method ? String(parsed.data.pay_method).trim() : null
     if (parsed.data.status !== undefined) patch.status = parsed.data.status
     patch.updated_at = new Date().toISOString()
 

@@ -2,8 +2,46 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { requirePerm } from '../auth'
 import { hasPg } from '../dbAdapter'
+import crypto from 'crypto'
 
 export const router = Router()
+
+function sha256Hex(input: string) {
+  return crypto.createHash('sha256').update(input).digest('hex')
+}
+
+function linkTokenKey() {
+  const secret = String(process.env.JWT_SECRET || 'dev-secret')
+  return crypto.createHash('sha256').update(secret).digest()
+}
+
+function encryptLinkToken(token: string) {
+  const key = linkTokenKey()
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
+  const ciphertext = Buffer.concat([cipher.update(Buffer.from(token, 'utf8')), cipher.final()])
+  const tag = cipher.getAuthTag()
+  return `${iv.toString('base64')}:${tag.toString('base64')}:${ciphertext.toString('base64')}`
+}
+
+function decryptLinkToken(tokenEnc: string) {
+  const parts = String(tokenEnc || '').split(':')
+  if (parts.length !== 3) return ''
+  const [ivB64, tagB64, ctB64] = parts
+  const iv = Buffer.from(ivB64, 'base64')
+  const tag = Buffer.from(tagB64, 'base64')
+  const ciphertext = Buffer.from(ctB64, 'base64')
+  const key = linkTokenKey()
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv)
+  decipher.setAuthTag(tag)
+  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+  return plaintext.toString('utf8')
+}
+
+function randomToken(bytes = 24) {
+  const b64 = crypto.randomBytes(bytes).toString('base64')
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
 
 function slugifyName(v: string) {
   const raw = String(v || '').trim().toLowerCase()
@@ -49,6 +87,26 @@ async function ensureCmsPagesCompanyColumns() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_type ON cms_pages(page_type);`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_pinned ON cms_pages(pinned, published_at);`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_expires ON cms_pages(expires_at);`)
+  } catch {}
+}
+
+async function ensureCmsCompanyPublicLinksTable() {
+  if (!hasPg) return
+  try {
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return
+    await ensureCmsPagesCompanyColumns()
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS cms_company_public_links (
+      token_hash text PRIMARY KEY,
+      token_enc text,
+      page_id text NOT NULL REFERENCES cms_pages(id) ON DELETE CASCADE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      expires_at timestamptz NOT NULL,
+      revoked_at timestamptz
+    );`)
+    await pgPool.query(`ALTER TABLE cms_company_public_links ADD COLUMN IF NOT EXISTS token_enc text;`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_company_public_links_page_id ON cms_company_public_links(page_id, created_at DESC);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_company_public_links_active ON cms_company_public_links(page_id, revoked_at, expires_at);`)
   } catch {}
 }
 
@@ -290,6 +348,87 @@ router.delete('/company/pages/:id', requirePerm('cms_pages.delete'), async (req,
     return res.json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: String(e?.message || 'delete_failed') })
+  }
+})
+
+router.post('/company/pages/:id/public-link', requirePerm('cms_pages.write'), async (req, res) => {
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  if (!hasPg) return res.status(500).json({ message: 'no database configured' })
+  await ensureCmsCompanyPublicLinksTable()
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool) return res.status(500).json({ message: 'no database configured' })
+  try {
+    const r0 = await pgPool.query('SELECT id, page_type, status FROM cms_pages WHERE id=$1 LIMIT 1', [id])
+    const row = r0?.rows?.[0]
+    if (!row) return res.status(404).json({ message: 'not found' })
+    if (String(row.page_type || '') !== 'warehouse') return res.status(400).json({ message: 'only warehouse page supports public link' })
+    if (String(row.status || '') !== 'published') return res.status(400).json({ message: 'page must be published' })
+    const expiresAtRaw = req.body?.expires_at ? String(req.body.expires_at) : ''
+    const expiresAt = (() => {
+      if (expiresAtRaw) {
+        const d = new Date(expiresAtRaw)
+        if (!Number.isNaN(d.getTime())) return d.toISOString()
+      }
+      return new Date(Date.now() + 180 * 24 * 3600 * 1000).toISOString()
+    })()
+    const token = randomToken(24)
+    const tokenHash = sha256Hex(token)
+    const tokenEnc = encryptLinkToken(token)
+    await pgPool.query(
+      'INSERT INTO cms_company_public_links(token_hash, token_enc, page_id, expires_at) VALUES($1,$2,$3,$4)',
+      [tokenHash, tokenEnc, id, expiresAt],
+    )
+    return res.json({ token, expires_at: expiresAt })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'create_public_link_failed' })
+  }
+})
+
+router.get('/company/pages/:id/public-links', requirePerm('cms_pages.view'), async (req, res) => {
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  if (!hasPg) return res.status(500).json({ message: 'no database configured' })
+  await ensureCmsCompanyPublicLinksTable()
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool) return res.status(500).json({ message: 'no database configured' })
+  try {
+    const rows = await pgPool.query(
+      'SELECT token_hash, token_enc, page_id, created_at, expires_at, revoked_at FROM cms_company_public_links WHERE page_id=$1 ORDER BY created_at DESC',
+      [id],
+    )
+    const out = (rows?.rows || []).map((r: any) => {
+      let token = ''
+      try { token = r?.token_enc ? decryptLinkToken(String(r.token_enc)) : '' } catch {}
+      return {
+        token_hash: String(r.token_hash || ''),
+        page_id: String(r.page_id || ''),
+        created_at: r.created_at || null,
+        expires_at: r.expires_at || null,
+        revoked_at: r.revoked_at || null,
+        token: token || null,
+      }
+    })
+    return res.json(out)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'list_public_links_failed' })
+  }
+})
+
+router.post('/company/pages/public-links/:tokenHash/revoke', requirePerm('cms_pages.write'), async (req, res) => {
+  const tokenHash = String(req.params.tokenHash || '').trim()
+  if (!tokenHash) return res.status(400).json({ message: 'missing token_hash' })
+  if (!hasPg) return res.status(500).json({ message: 'no database configured' })
+  await ensureCmsCompanyPublicLinksTable()
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool) return res.status(500).json({ message: 'no database configured' })
+  try {
+    const now = new Date().toISOString()
+    const r = await pgPool.query('UPDATE cms_company_public_links SET revoked_at=$1 WHERE token_hash=$2 AND revoked_at IS NULL', [now, tokenHash])
+    if (!r?.rowCount) return res.status(404).json({ message: 'not found' })
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'revoke_public_link_failed' })
   }
 })
 

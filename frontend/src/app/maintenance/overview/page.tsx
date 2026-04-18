@@ -24,7 +24,7 @@ export default function MaintenanceOverviewPage() {
     { value: 'pending', label: '待维修' },
     { value: 'assigned', label: '已分配' },
     { value: 'in_progress', label: '维修中' },
-    { value: 'completed', label: '已完成' },
+    { value: 'completed', label: '待审核' },
     { value: 'canceled', label: '已取消' },
   ]
   function statusLabel(s?: string) {
@@ -32,7 +32,7 @@ export default function MaintenanceOverviewPage() {
     if (v === 'pending') return '待维修'
     if (v === 'assigned') return '已分配'
     if (v === 'in_progress') return '维修中'
-    if (v === 'completed') return '已完成'
+    if (v === 'completed') return '待审核'
     if (v === 'canceled') return '已取消'
     return v || '-'
   }
@@ -42,7 +42,7 @@ export default function MaintenanceOverviewPage() {
     if (v === 'pending') return <Tag color="default">{label}</Tag>
     if (v === 'assigned') return <Tag color="blue">{label}</Tag>
     if (v === 'in_progress') return <Tag color="orange">{label}</Tag>
-    if (v === 'completed') return <Tag color="green">{label}</Tag>
+    if (v === 'completed') return <Tag color="purple">{label}</Tag>
     if (v === 'canceled') return <Tag color="red">{label}</Tag>
     return <Tag>{label}</Tag>
   }
@@ -127,7 +127,7 @@ export default function MaintenanceOverviewPage() {
           <Card size="small" title="总记录数" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center', fontSize: 22, fontWeight: 700 } }}>{total}</Card>
           <Card size="small" title="本月维修" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center', fontSize: 22, fontWeight: 700 } }}>{thisMonthCount}</Card>
           <Card size="small" title="待维修" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center', fontSize: 22, fontWeight: 700 } }}>{pendingCount}</Card>
-          <Card size="small" title="已完成" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center', fontSize: 22, fontWeight: 700 } }}>{completedCount}</Card>
+          <Card size="small" title="待审核" styles={{ body:{ display:'flex', alignItems:'center', justifyContent:'center', fontSize: 22, fontWeight: 700 } }}>{completedCount}</Card>
         </div>
         <Card size="small" title="状态分布" style={{ marginBottom: 12 }}>
           <div style={{ display:'flex', flexWrap:'wrap', gap: 10 }}>

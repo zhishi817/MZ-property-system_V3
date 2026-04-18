@@ -29,6 +29,7 @@ type ReplacementRow = {
   submitted_at?: string | null
   replacement_at?: string | null
   replacer_name?: string | null
+  pay_method?: string | null
   created_at?: string | null
   updated_at?: string | null
 }
@@ -50,6 +51,7 @@ export default function DailyReplacementsPage() {
   const [rows, setRows] = useState<ReplacementRow[]>([])
   const [propertyId, setPropertyId] = useState<string>('')
   const [status, setStatus] = useState<string>('need_replace,replaced,no_action')
+  const [payMethod, setPayMethod] = useState<string>('')
   const [range, setRange] = useState<[any, any] | null>(null)
   const [q, setQ] = useState<string>('')
   const [detailOpen, setDetailOpen] = useState(false)
@@ -83,6 +85,7 @@ export default function DailyReplacementsPage() {
     const params: Record<string, string> = { limit: '200' }
     if (propertyId) params.property_id = propertyId
     if (status) params.status = status
+    if (payMethod) params.pay_method = payMethod
     if (range?.[0]) params.from = dayjs(range[0]).toISOString()
     if (range?.[1]) params.to = dayjs(range[1]).toISOString()
     const data = await getJSON<ReplacementRow[]>(`/inventory/daily-replacements?${new URLSearchParams(params as any).toString()}`)
@@ -108,16 +111,34 @@ export default function DailyReplacementsPage() {
   const statusOptions = [
     { value: 'need_replace,replaced,no_action', label: '全部状态' },
     { value: 'need_replace', label: '待更换' },
-    { value: 'replaced', label: '已更换' },
+    { value: 'replaced', label: '待审核' },
     { value: 'no_action', label: '无需更换' },
+  ]
+  const payMethodOptions = [
+    { value: '', label: '全部扣款方式' },
+    { value: 'rent_deduction', label: '租金扣除' },
+    { value: 'tenant_pay', label: '房客支付' },
+    { value: 'company_pay', label: '公司承担' },
+    { value: 'landlord_pay', label: '房东支付' },
+    { value: 'other_pay', label: '其他人支付' },
   ]
 
   const statusTag = (value: any) => {
     const s = String(value || '').trim()
     if (s === 'need_replace') return <Tag color="orange">待更换</Tag>
-    if (s === 'replaced') return <Tag color="green">已更换</Tag>
+    if (s === 'replaced') return <Tag color="purple">待审核</Tag>
     if (s === 'no_action') return <Tag>无需更换</Tag>
     return <Tag>{s || '-'}</Tag>
+  }
+  const payMethodLabel = (value: any) => {
+    const s = String(value || '').trim()
+    if (!s) return '-'
+    if (s === 'rent_deduction') return '租金扣除'
+    if (s === 'tenant_pay') return '房客支付'
+    if (s === 'company_pay') return '公司承担'
+    if (s === 'landlord_pay') return '房东支付'
+    if (s === 'other_pay') return '其他人支付'
+    return s
   }
 
   function resetEditor() {
@@ -137,6 +158,7 @@ export default function DailyReplacementsPage() {
       status: 'need_replace',
       replacement_at: dayjs(),
       replacer_name: '',
+      pay_method: undefined,
     })
   }
 
@@ -163,6 +185,7 @@ export default function DailyReplacementsPage() {
       status: row.status || 'need_replace',
       replacement_at: row.replacement_at ? dayjs(row.replacement_at) : null,
       replacer_name: row.replacer_name || '',
+      pay_method: row.pay_method || undefined,
     })
     setEditorOpen(true)
   }
@@ -227,19 +250,21 @@ export default function DailyReplacementsPage() {
       if (values.status === 'replaced') {
         payload.replacement_at = values.replacement_at ? dayjs(values.replacement_at).toISOString() : null
         payload.replacer_name = values.replacer_name || undefined
+        payload.pay_method = values.pay_method ? String(values.pay_method) : undefined
         payload.after_photo_urls = afterUrls
       } else {
         payload.replacement_at = null
         payload.replacer_name = null
+        payload.pay_method = null
         payload.after_photo_urls = []
       }
 
       if (!editing) {
         await postJSON('/inventory/daily-replacements', payload)
-        message.success(values.status === 'replaced' ? '更换记录已提交' : values.status === 'no_action' ? '无需更换记录已提交' : '待更换记录已提交')
+        message.success(values.status === 'replaced' ? '待审核记录已提交' : values.status === 'no_action' ? '无需更换记录已提交' : '待更换记录已提交')
       } else {
         await patchJSON(`/inventory/daily-replacements/${editing.id}`, payload)
-        message.success(values.status === 'replaced' ? '已更新为已更换记录' : '更换记录已更新')
+        message.success(values.status === 'replaced' ? '已更新为待审核记录' : '更换记录已更新')
       }
       setEditorOpen(false)
       resetEditor()
@@ -257,6 +282,7 @@ export default function DailyReplacementsPage() {
     { title: '状态', dataIndex: 'status', width: 100, render: statusTag },
     { title: '更换物品', dataIndex: 'item_name', width: 180, render: (value: string) => value || '-' },
     { title: '数量', dataIndex: 'quantity', width: 80, render: (value: any) => (value == null ? '-' : value) },
+    { title: '扣款方式', dataIndex: 'pay_method', width: 140, render: payMethodLabel },
     { title: '提交人', dataIndex: 'submitter_name', width: 120, render: (value: string) => value || '-' },
     { title: '更换人', dataIndex: 'replacer_name', width: 120, render: (value: string) => value || '-' },
     {
@@ -298,6 +324,7 @@ export default function DailyReplacementsPage() {
             placeholder="按房号筛选"
           />
           <Select value={status} options={statusOptions} onChange={setStatus} style={{ width: 180 }} />
+          <Select value={payMethod} options={payMethodOptions} onChange={setPayMethod} style={{ width: 180 }} />
           <DatePicker.RangePicker value={range as any} onChange={(v) => setRange(v as any)} allowClear />
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="关键字筛选" style={{ width: 180 }} allowClear />
           <Button type="primary" onClick={() => load().catch((e) => message.error(e?.message || '加载失败'))}>查询</Button>
@@ -346,7 +373,7 @@ export default function DailyReplacementsPage() {
               <Select
                 options={[
                   { value: 'need_replace', label: '待更换' },
-                  { value: 'replaced', label: '已更换' },
+                  { value: 'replaced', label: '待审核' },
                   { value: 'no_action', label: '无需更换' },
                 ]}
               />
@@ -371,6 +398,9 @@ export default function DailyReplacementsPage() {
                   </Form.Item>
                   <Form.Item name="replacer_name" label="更换人" rules={[{ required: true, message: '请输入更换人' }]}>
                     <Input placeholder="请输入更换人" />
+                  </Form.Item>
+                  <Form.Item name="pay_method" label="扣款方式" rules={[{ required: true, message: '请选择扣款方式' }]}>
+                    <Select options={payMethodOptions.filter((item) => item.value)} placeholder="请选择扣款方式" />
                   </Form.Item>
                 </div>
                 <div style={{ marginBottom: 8, fontWeight: 600 }}>更换后照片</div>
@@ -398,6 +428,7 @@ export default function DailyReplacementsPage() {
               <Descriptions.Item label="状态">{statusTag(viewing.status)}</Descriptions.Item>
               <Descriptions.Item label="更换物品">{viewing.item_name || '-'}</Descriptions.Item>
               <Descriptions.Item label="数量">{viewing.quantity ?? '-'}</Descriptions.Item>
+              <Descriptions.Item label="扣款方式">{payMethodLabel(viewing.pay_method)}</Descriptions.Item>
               <Descriptions.Item label="提交人">{viewing.submitter_name || '-'}</Descriptions.Item>
               <Descriptions.Item label="更换人">{viewing.replacer_name || '-'}</Descriptions.Item>
               <Descriptions.Item label="更换日期">{viewing.replacement_at ? dayjs(viewing.replacement_at).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
