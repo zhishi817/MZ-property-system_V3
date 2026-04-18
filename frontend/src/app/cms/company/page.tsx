@@ -1,11 +1,11 @@
 "use client"
 
-import { App, Button, Card, Checkbox, DatePicker, Form, Input, Modal, Select, Space, Table, Tabs, Tag, Typography, Upload } from 'antd'
+import { App, Button, Card, Checkbox, DatePicker, Drawer, Form, Input, Modal, Select, Space, Table, Tabs, Tag, Typography, Upload } from 'antd'
 import type { UploadProps } from 'antd'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../../lib/api'
-import { CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, CloseOutlined, CopyOutlined, EditOutlined, FileTextOutlined, InboxOutlined, NotificationOutlined, PrinterOutlined, UserOutlined } from '@ant-design/icons'
+import { CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, CloseOutlined, CopyOutlined, EditOutlined, FileTextOutlined, InboxOutlined, LinkOutlined, NotificationOutlined, PrinterOutlined, UserOutlined } from '@ant-design/icons'
 
 type PageType = 'announce' | 'doc' | 'warehouse'
 type PageStatus = 'draft' | 'published'
@@ -28,6 +28,14 @@ type CompanyPageRow = {
   updated_at?: string | null
   updated_by?: string | null
   created_at?: string | null
+}
+
+type CompanyPagePublicLinkRow = {
+  token_hash: string
+  token?: string | null
+  created_at?: string | null
+  expires_at?: string | null
+  revoked_at?: string | null
 }
 
 type StepItem = { type: 'text' | 'image' | 'video'; text?: string; url?: string; caption?: string }
@@ -74,6 +82,7 @@ function isVideoFileUrl(url: string) {
 }
 
 function BlocksRenderer({ blocks }: { blocks: Block[] }) {
+  let stepNo = 0
   return (
     <div style={{ lineHeight: 1.7 }}>
       {blocks.map((b, idx) => {
@@ -105,11 +114,13 @@ function BlocksRenderer({ blocks }: { blocks: Block[] }) {
           )
         }
         if (b.type === 'step') {
+          stepNo += 1
           const items = Array.isArray(b.contents) ? b.contents : []
           return (
-            <ol key={idx} style={{ margin: '12px 0 12px 20px' }}>
-              <li>
-                <strong>{b.title}</strong>
+            <div key={idx} style={{ margin: '14px 0 18px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <div style={{ minWidth: 28, color: '#111827', fontWeight: 700 }}>{`${stepNo}.`}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700 }}>{b.title}</div>
                 {items.length ? (
                   <div style={{ marginTop: 6 }}>
                     {items.map((it, i) => {
@@ -140,8 +151,8 @@ function BlocksRenderer({ blocks }: { blocks: Block[] }) {
                     })}
                   </div>
                 ) : null}
-              </li>
-            </ol>
+              </div>
+            </div>
           )
         }
         return null
@@ -225,16 +236,23 @@ function BlocksEditor({ blocks, setBlocks }: { blocks: Block[]; setBlocks: (b: B
     beforeUpload: (file) => { uploadImage(file as any); return false },
   }), [blocks])
 
+  const quickActions = (
+    <Space wrap size={8}>
+      <Button onClick={addHeading}>添加标题</Button>
+      <Button onClick={addStep}>添加步骤</Button>
+      <Button onClick={addParagraph}>添加文字</Button>
+      <Button onClick={addCallout}>添加提示块</Button>
+      <Upload {...uploadProps}><Button>上传图片</Button></Upload>
+      <Button onClick={addVideo}>添加视频链接</Button>
+    </Space>
+  )
+
   return (
     <div>
-      <Space style={{ marginBottom: 8 }} wrap>
-        <Button onClick={addHeading}>添加标题</Button>
-        <Button onClick={addStep}>添加步骤</Button>
-        <Button onClick={addParagraph}>添加文字</Button>
-        <Button onClick={addCallout}>添加提示块</Button>
-        <Upload {...uploadProps}><Button>上传图片</Button></Upload>
-        <Button onClick={addVideo}>添加视频链接</Button>
-      </Space>
+      <div style={{ position: 'sticky', top: 0, zIndex: 5, marginBottom: 12, padding: 12, border: '1px solid #eef2f7', borderRadius: 14, background: 'rgba(255,255,255,0.96)', backdropFilter: 'blur(6px)' }}>
+        <div style={{ fontWeight: 700, marginBottom: 8, color: '#334155' }}>内容工具条</div>
+        {quickActions}
+      </div>
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 320 }}>
           {blocks.map((b, i) => (
@@ -321,6 +339,10 @@ function CompanyPagesTab({ type }: { type: PageType }) {
   const [viewOpen, setViewOpen] = useState(false)
   const [viewing, setViewing] = useState<CompanyPageRow | null>(null)
   const [viewBlocks, setViewBlocks] = useState<Block[]>([])
+  const [linkOpen, setLinkOpen] = useState(false)
+  const [linkTarget, setLinkTarget] = useState<CompanyPageRow | null>(null)
+  const [linkRows, setLinkRows] = useState<CompanyPagePublicLinkRow[]>([])
+  const [linkLoading, setLinkLoading] = useState(false)
   const [form] = Form.useForm()
   const [blocks, setBlocks] = useState<Block[]>([])
   const [rawContent, setRawContent] = useState('')
@@ -351,6 +373,7 @@ function CompanyPagesTab({ type }: { type: PageType }) {
       render: (_: any, r: CompanyPageRow) => (
         <Space>
           <Button onClick={() => openView(r)}>查看</Button>
+          {type === 'warehouse' ? <Button icon={<LinkOutlined />} onClick={() => openPublicLinks(r)}>外链</Button> : null}
           <Button onClick={() => openEdit(r)}>编辑</Button>
           <Button danger onClick={() => remove(r)}>删除</Button>
         </Space>
@@ -410,6 +433,66 @@ function CompanyPagesTab({ type }: { type: PageType }) {
     const p = parseBlocks(r.content || '')
     setViewBlocks(p.blocks)
     setViewOpen(true)
+  }
+
+  async function openPublicLinks(r: CompanyPageRow) {
+    setLinkTarget(r)
+    setLinkOpen(true)
+    await loadPublicLinks(r)
+  }
+
+  async function loadPublicLinks(r?: CompanyPageRow | null) {
+    const row = r || linkTarget
+    const id = String(row?.id || '').trim()
+    if (!id) {
+      setLinkRows([])
+      return
+    }
+    setLinkLoading(true)
+    try {
+      const data = await getJSON<CompanyPagePublicLinkRow[]>(`/cms/company/pages/${encodeURIComponent(id)}/public-links`)
+      setLinkRows(Array.isArray(data) ? data : [])
+    } catch (e: any) {
+      message.error(String(e?.message || '加载外链失败'))
+      setLinkRows([])
+    } finally {
+      setLinkLoading(false)
+    }
+  }
+
+  function buildPublicWarehouseUrl(token?: string | null) {
+    const tk = String(token || '').trim()
+    if (!tk) return ''
+    if (typeof window === 'undefined') return `/public/company-warehouse/${tk}`
+    return `${window.location.origin}/public/company-warehouse/${tk}`
+  }
+
+  async function createPublicLink() {
+    const id = String(linkTarget?.id || '').trim()
+    if (!id) return
+    try {
+      const j = await postJSON<{ token: string; expires_at?: string | null }>(`/cms/company/pages/${encodeURIComponent(id)}/public-link`, {})
+      const url = buildPublicWarehouseUrl(j?.token)
+      if (url) {
+        try { await navigator.clipboard?.writeText?.(url) } catch {}
+        message.success('已创建并复制外链')
+      } else {
+        message.success('已创建外链')
+      }
+      await loadPublicLinks(linkTarget)
+    } catch (e: any) {
+      message.error(String(e?.message || '创建外链失败'))
+    }
+  }
+
+  async function revokePublicLink(tokenHash: string) {
+    try {
+      await postJSON(`/cms/company/pages/public-links/${encodeURIComponent(tokenHash)}/revoke`, {})
+      message.success('已撤销')
+      await loadPublicLinks(linkTarget)
+    } catch (e: any) {
+      message.error(String(e?.message || '撤销失败'))
+    }
   }
 
   function closeView() {
@@ -600,41 +683,119 @@ function CompanyPagesTab({ type }: { type: PageType }) {
           </div>
         </div>
       </Modal>
-      <Modal
-        open={open}
-        onCancel={() => { setOpen(false); setEditing(null) }}
-        onOk={submit}
-        width={980}
-        title={editing ? '编辑' : '新建'}
-      >
-        <Form form={form} layout="vertical" initialValues={{ status: 'draft', pinned: false, urgent: false }}>
-          <Form.Item name="slug" label="Slug（可选）"><Input placeholder={type === 'warehouse' ? '例如 warehouse:docklands' : '例如 announce:xxxx'} /></Form.Item>
-          <Form.Item name="title" label="标题" rules={[{ required: true }]}><Input /></Form.Item>
-          {type === 'doc' ? (
-            <Form.Item name="category" label="分类" rules={[{ required: true }]}>
-              <Select options={[{ value: 'company_rule', label: 'company_rule' }, { value: 'work_guide', label: 'work_guide' }]} />
+      {type === 'warehouse' ? (
+        <Drawer
+          open={open}
+          onClose={() => { setOpen(false); setEditing(null) }}
+          title={editing ? '编辑仓库指南' : '新建仓库指南'}
+          width={1080}
+          destroyOnHidden={false}
+          extra={<Space><Button onClick={() => { setOpen(false); setEditing(null) }}>取消</Button><Button type="primary" onClick={submit}>保存</Button></Space>}
+        >
+          <Form form={form} layout="vertical" initialValues={{ status: 'draft', pinned: false, urgent: false }}>
+            <Form.Item name="slug" label="Slug（可选）"><Input placeholder="例如 warehouse:docklands" /></Form.Item>
+            <Form.Item name="title" label="标题" rules={[{ required: true }]}><Input /></Form.Item>
+            <Form.Item name="status" label="状态" rules={[{ required: true }]}>
+              <Select options={[{ value: 'draft', label: 'draft' }, { value: 'published', label: 'published' }]} />
             </Form.Item>
+            <Form.Item name="audience_scope" label="受众范围（可选）">
+              <Select allowClear options={audienceOptions} />
+            </Form.Item>
+            <Form.Item label="内容">
+              <BlocksEditor blocks={blocks} setBlocks={setBlocks} />
+            </Form.Item>
+          </Form>
+        </Drawer>
+      ) : (
+        <Modal
+          open={open}
+          onCancel={() => { setOpen(false); setEditing(null) }}
+          onOk={submit}
+          width={980}
+          title={editing ? '编辑' : '新建'}
+        >
+          <Form form={form} layout="vertical" initialValues={{ status: 'draft', pinned: false, urgent: false }}>
+            <Form.Item name="slug" label="Slug（可选）"><Input placeholder="例如 announce:xxxx" /></Form.Item>
+            <Form.Item name="title" label="标题" rules={[{ required: true }]}><Input /></Form.Item>
+            {type === 'doc' ? (
+              <Form.Item name="category" label="分类" rules={[{ required: true }]}>
+                <Select options={[{ value: 'company_rule', label: 'company_rule' }, { value: 'work_guide', label: 'work_guide' }]} />
+              </Form.Item>
+            ) : null}
+            <Form.Item name="status" label="状态" rules={[{ required: true }]}>
+              <Select options={[{ value: 'draft', label: 'draft' }, { value: 'published', label: 'published' }]} />
+            </Form.Item>
+            <Form.Item name="audience_scope" label="受众范围（可选）">
+              <Select allowClear options={audienceOptions} />
+            </Form.Item>
+            {type === 'announce' ? (
+              <>
+                <Form.Item name="published_at" label="发布日期（可选）"><DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" /></Form.Item>
+                <Form.Item name="expires_at" label="过期时间（可选）"><DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" /></Form.Item>
+                <Space style={{ marginBottom: 8 }} wrap>
+                  <Form.Item name="pinned" valuePropName="checked" style={{ marginBottom: 0 }}><Checkbox>置顶</Checkbox></Form.Item>
+                  <Form.Item name="urgent" valuePropName="checked" style={{ marginBottom: 0 }}><Checkbox>紧急</Checkbox></Form.Item>
+                </Space>
+              </>
+            ) : null}
+            <Form.Item label="内容">
+              <BlocksEditor blocks={blocks} setBlocks={setBlocks} />
+            </Form.Item>
+          </Form>
+        </Modal>
+      )}
+
+      <Modal
+        open={linkOpen}
+        onCancel={() => { setLinkOpen(false); setLinkTarget(null); setLinkRows([]) }}
+        footer={null}
+        width={860}
+        title="仓库指南外部访问链接"
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontWeight: 700, color: '#111827' }}>{String(linkTarget?.title || '') || '仓库指南'}</div>
+              <div style={{ color: '#64748b', marginTop: 4 }}>仅已发布的仓库指南可生成外部访问链接。</div>
+            </div>
+            <Button type="primary" icon={<LinkOutlined />} disabled={String(linkTarget?.status || '') !== 'published'} onClick={createPublicLink}>
+              生成新外链
+            </Button>
+          </div>
+          {String(linkTarget?.status || '') !== 'published' ? (
+            <Typography.Text type="warning">当前记录不是 `published` 状态，暂时不能生成外链。</Typography.Text>
           ) : null}
-          <Form.Item name="status" label="状态" rules={[{ required: true }]}>
-            <Select options={[{ value: 'draft', label: 'draft' }, { value: 'published', label: 'published' }]} />
-          </Form.Item>
-          <Form.Item name="audience_scope" label="受众范围（可选）">
-            <Select allowClear options={audienceOptions} />
-          </Form.Item>
-          {type === 'announce' ? (
-            <>
-              <Form.Item name="published_at" label="发布日期（可选）"><DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" /></Form.Item>
-              <Form.Item name="expires_at" label="过期时间（可选）"><DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" /></Form.Item>
-              <Space style={{ marginBottom: 8 }} wrap>
-                <Form.Item name="pinned" valuePropName="checked" style={{ marginBottom: 0 }}><Checkbox>置顶</Checkbox></Form.Item>
-                <Form.Item name="urgent" valuePropName="checked" style={{ marginBottom: 0 }}><Checkbox>紧急</Checkbox></Form.Item>
-              </Space>
-            </>
-          ) : null}
-          <Form.Item label="内容">
-            <BlocksEditor blocks={blocks} setBlocks={setBlocks} />
-          </Form.Item>
-        </Form>
+          <Table
+            rowKey={(r) => String(r.token_hash)}
+            loading={linkLoading}
+            pagination={false}
+            dataSource={linkRows}
+            columns={[
+              {
+                title: '外链',
+                dataIndex: 'token',
+                render: (_: any, r: CompanyPagePublicLinkRow) => {
+                  const url = buildPublicWarehouseUrl(r.token)
+                  return url ? (
+                    <Space wrap>
+                      <Input value={url} readOnly style={{ width: 420, maxWidth: '100%' }} />
+                      <Button onClick={() => { navigator.clipboard?.writeText?.(url); message.success('已复制') }}>复制</Button>
+                      <Button onClick={() => window.open(url, '_blank')}>打开</Button>
+                    </Space>
+                  ) : <Typography.Text type="secondary">无法恢复原始 token</Typography.Text>
+                },
+              },
+              { title: '创建时间', dataIndex: 'created_at', width: 180 },
+              { title: '过期时间', dataIndex: 'expires_at', width: 180 },
+              { title: '状态', dataIndex: 'revoked_at', width: 120, render: (v: any) => v ? <Tag color="red">已撤销</Tag> : <Tag color="green">有效</Tag> },
+              {
+                title: '操作',
+                width: 100,
+                render: (_: any, r: CompanyPagePublicLinkRow) => !r.revoked_at ? <Button danger size="small" onClick={() => revokePublicLink(r.token_hash)}>撤销</Button> : null,
+              },
+            ] as any}
+          />
+        </Space>
       </Modal>
     </div>
   )

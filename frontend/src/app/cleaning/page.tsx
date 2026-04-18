@@ -217,6 +217,31 @@ export default function CleaningPage() {
     return (it.property_code || byId || (it.property_id ? String(it.property_id) : '')) || ''
   }, [propertyLabelById])
 
+  const isLateCheckoutTime = useCallback((raw: string | null | undefined) => {
+    const s = String(raw || '').trim().toLowerCase()
+    if (!s) return false
+    const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/)
+    if (!m) return false
+    let hour = Number(m[1] || 0)
+    const minute = Number(m[2] || 0)
+    const meridiem = String(m[3] || '').trim()
+    if (meridiem === 'am') {
+      if (hour === 12) hour = 0
+    } else if (meridiem === 'pm') {
+      if (hour < 12) hour += 12
+    }
+    return hour * 60 + minute > 10 * 60
+  }, [])
+
+  const hasLateCheckout = useCallback((it: CalendarItem) => {
+    const type = String(it.task_type || '').toLowerCase()
+    const label = String(it.label || '')
+    const isTurnover = type === 'turnover' || (label.includes('退房') && label.includes('入住'))
+    const isCheckout = type === 'checkout_clean' || label.includes('退房')
+    if (!isTurnover && !isCheckout) return false
+    return isLateCheckoutTime(it.summary_checkout_time)
+  }, [isLateCheckoutTime])
+
   const summaryText = useCallback((it: CalendarItem) => {
     const region = String(it.property_region || '').trim()
     const code = String(it.property_code || '').trim() || propertyLabelForItem(it)
@@ -240,8 +265,9 @@ export default function CleaningPage() {
       const checkinT = String(it.summary_checkin_time || '').trim() || '3pm'
       parts.push(`${checkinT}入住`)
     }
+    if (hasLateCheckout(it)) parts.push('晚退房')
     return { region, code, detail: parts.join(' ') }
-  }, [propertyLabelForItem])
+  }, [hasLateCheckout, propertyLabelForItem])
 
   const entityIds = useCallback((it: CalendarItem) => {
     const ids = Array.isArray(it.entity_ids) && it.entity_ids.length ? it.entity_ids : [it.entity_id]
@@ -1329,6 +1355,7 @@ export default function CleaningPage() {
                   </div>
                   <div className={styles.metaRow}>
                     {it.nights != null ? <span className={styles.metaChip}>{`${it.nights}晚`}</span> : null}
+                    {hasLateCheckout(it) ? <span className={styles.metaChip}>晚退房</span> : null}
                     {showKeyMissing ? <span className={`${styles.metaChip} ${styles.metaChipDanger}`}>钥匙未上传</span> : null}
                     {checkoutCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>退房</span>{checkoutCode}</span> : null}
                     {isTurnover && checkinCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>入住</span>{checkinCode}</span> : null}

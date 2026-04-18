@@ -418,14 +418,14 @@ export default function MaintenanceRecordsUnified() {
     { value: 'pending', label: '待维修' },
     { value: 'assigned', label: '已分配' },
     { value: 'in_progress', label: '维修中' },
-    { value: 'completed', label: '已完成' },
+    { value: 'completed', label: '待审核' },
   ]
   function statusLabel(s?: string) {
     const v = String(s || '')
     if (v === 'pending') return '待维修'
     if (v === 'assigned') return '已分配'
     if (v === 'in_progress') return '维修中'
-    if (v === 'completed') return '已完成'
+    if (v === 'completed') return '待审核'
     if (v === 'canceled') return '已取消'
     return v || '-'
   }
@@ -435,7 +435,7 @@ export default function MaintenanceRecordsUnified() {
     if (v === 'pending') return <Tag color="default">{label}</Tag>
     if (v === 'assigned') return <Tag color="blue">{label}</Tag>
     if (v === 'in_progress') return <Tag color="orange">{label}</Tag>
-    if (v === 'completed') return <Tag color="green">{label}</Tag>
+    if (v === 'completed') return <Tag color="purple">{label}</Tag>
     if (v === 'canceled') return <Tag color="red">{label}</Tag>
     return <Tag>{label}</Tag>
   }

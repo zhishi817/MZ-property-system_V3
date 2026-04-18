@@ -135,7 +135,7 @@ export default function RepairsPage() {
     { value: 'pending', label: '待处理' },
     { value: 'assigned', label: '已分配' },
     { value: 'in_progress', label: '维修中' },
-    { value: 'completed', label: '已完成' },
+    { value: 'completed', label: '待审核' },
     { value: 'canceled', label: '已取消' },
   ]
 

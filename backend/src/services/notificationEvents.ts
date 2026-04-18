@@ -1,6 +1,14 @@
 import { v4 as uuid } from 'uuid'
 import { hasPg, pgPool } from '../dbAdapter'
-import { listInspectionTaskUserIds, listManagerUserIds, listCleaningTaskUserIds } from '../modules/notifications'
+import { listInspectionTaskUserIds, listCleaningTaskUserIds, listUserIdsByRoles } from '../modules/notifications'
+import {
+  getNotificationRule,
+  isManagedNotificationEventType,
+  NotificationAudienceType,
+  NotificationManagedEventType,
+  NotificationRuleConfigState,
+  resolveManagerUsersAudience,
+} from './notificationRules'
 
 export type NotificationPriority = 'high' | 'medium' | 'low'
 
@@ -11,6 +19,11 @@ export type NotificationEventType =
   | 'INSPECTION_COMPLETED'
   | 'KEY_PHOTO_UPLOADED'
   | 'ISSUE_REPORTED'
+  | 'DAY_END_HANDOVER_REMINDER'
+  | 'DAY_END_HANDOVER_MANAGER_REMINDER'
+  | 'KEY_UPLOAD_REMINDER'
+  | 'KEY_UPLOAD_SLA_REMINDER'
+  | 'KEY_UPLOAD_SLA_ESCALATION'
   | 'WORK_TASK_UPDATED'
 
 export type EmitNotificationEventParams = {
@@ -120,6 +133,11 @@ function buildDefaultTitleBody(params: EmitNotificationEventParams) {
   if (type === 'INSPECTION_COMPLETED') return { title: '房源已完成检查', body: '检查已完成' }
   if (type === 'KEY_PHOTO_UPLOADED') return { title: '钥匙照片已上传', body: '钥匙照片已上传' }
   if (type === 'ISSUE_REPORTED') return { title: '房源问题反馈', body: '收到新的问题反馈' }
+  if (type === 'DAY_END_HANDOVER_REMINDER') return { title: '提醒：提交日终交接', body: '请完成并提交日终交接任务' }
+  if (type === 'DAY_END_HANDOVER_MANAGER_REMINDER') return { title: '提醒：有人未提交日终交接', body: '有人仍未提交日终交接，请及时跟进。' }
+  if (type === 'KEY_UPLOAD_REMINDER') return { title: '提醒：上传钥匙照片', body: '请检查并上传钥匙照片' }
+  if (type === 'KEY_UPLOAD_SLA_REMINDER') return { title: '上传钥匙提醒', body: '请尽快上传钥匙照片' }
+  if (type === 'KEY_UPLOAD_SLA_ESCALATION') return { title: '上传钥匙超时提醒', body: '清洁员未按时上传钥匙照片' }
   if (type === 'WORK_TASK_UPDATED') return { title: '任务有更新', body: '任务已更新' }
   return { title: '通知', body: '有新的更新' }
 }
@@ -160,52 +178,6 @@ async function filterUserIdsByPropertyScope(userIds: string[], propertyId: strin
 }
 
 async function resolveRecipients(params: EmitNotificationEventParams, client: any) {
-  if (Array.isArray(params.recipientUserIds) && params.recipientUserIds.length) {
-    return Array.from(new Set(params.recipientUserIds.map((x) => String(x || '').trim()).filter(Boolean)))
-  }
-  const type = params.type
-  const entityId = String(params.entityId || '').trim()
-  if (!entityId) return []
-
-  if (type === 'ORDER_UPDATED') {
-    const rel = await listCleaningTaskUserIdsByOrderId(entityId, client)
-    const mgr = await listManagerUserIds()
-    return Array.from(new Set([...rel, ...mgr]))
-  }
-
-  if (type === 'CLEANING_TASK_UPDATED') {
-    const rel = await listCleaningTaskUserIds(entityId)
-    const mgr = await listManagerUserIds()
-    return Array.from(new Set([...rel, ...mgr]))
-  }
-
-  if (type === 'CLEANING_COMPLETED') {
-    const rel = await listCleaningTaskUserIds(entityId)
-    const mgr = await listManagerUserIds()
-    return Array.from(new Set([...rel, ...mgr]))
-  }
-
-  if (type === 'INSPECTION_COMPLETED') {
-    const rel = await listInspectionTaskUserIds(entityId)
-    const mgr = await listManagerUserIds()
-    return Array.from(new Set([...rel, ...mgr]))
-  }
-
-  if (type === 'KEY_PHOTO_UPLOADED') {
-    const rel = await listCleaningTaskUserIds(entityId)
-    const mgr = await listManagerUserIds()
-    return Array.from(new Set([...rel, ...mgr]))
-  }
-
-  if (type === 'ISSUE_REPORTED') {
-    const mgr = await listManagerUserIds()
-    return mgr
-  }
-
-  if (type === 'WORK_TASK_UPDATED') {
-    return []
-  }
-
   return []
 }
 
@@ -227,6 +199,11 @@ function resolvePriority(params: EmitNotificationEventParams): NotificationPrior
   if (params.type === 'INSPECTION_COMPLETED') return 'high'
   if (params.type === 'KEY_PHOTO_UPLOADED') return 'high'
   if (params.type === 'ISSUE_REPORTED') return 'high'
+  if (params.type === 'DAY_END_HANDOVER_REMINDER') return 'high'
+  if (params.type === 'DAY_END_HANDOVER_MANAGER_REMINDER') return 'high'
+  if (params.type === 'KEY_UPLOAD_REMINDER') return 'high'
+  if (params.type === 'KEY_UPLOAD_SLA_REMINDER') return 'high'
+  if (params.type === 'KEY_UPLOAD_SLA_ESCALATION') return 'high'
   return 'low'
 }
 
@@ -238,7 +215,54 @@ function normalizeEventTimestamp(raw: any) {
   return d.toISOString()
 }
 
+function logNoRecipients(params: EmitNotificationEventParams, eventId: string, hasExplicitRecipients: boolean, propertyId: string) {
+  try {
+    console.error(
+      `[notifications][no_recipients] type=${String(params.type || '')} entity=${String(params.entity || '')} entity_id=${String(params.entityId || '')} event_id=${eventId} actor_user_id=${String(params.actorUserId || '')} has_explicit_recipients=${hasExplicitRecipients ? 'true' : 'false'} property_id=${propertyId || ''}`,
+    )
+  } catch {}
+}
+
+function logResolution(params: EmitNotificationEventParams, payload: {
+  eventId: string
+  configState: NotificationRuleConfigState
+  ruleVersion: number
+  selectedRoles: string[]
+  selectedAudiences: string[]
+  selectedUsersCount: number
+  resolvedCountBeforeScope: number
+  resolvedCountAfterScope: number
+  resolvedCountAfterActor: number
+  finalCount: number
+  audienceCounts: Record<string, number>
+}) {
+  try {
+    console.log(
+      `[notifications][resolve] type=${String(params.type || '')} event_id=${payload.eventId} entity=${String(params.entity || '')} entity_id=${String(params.entityId || '')} rule_version=${payload.ruleVersion} config_state=${payload.configState} actor_user_id=${String(params.actorUserId || '')} has_explicit_recipients=${Array.isArray(params.recipientUserIds) && params.recipientUserIds.length ? 'true' : 'false'} selected_roles=${payload.selectedRoles.join(',')} selected_audiences=${payload.selectedAudiences.join(',')} selected_users_count=${payload.selectedUsersCount} audience_counts=${JSON.stringify(payload.audienceCounts)} resolved_count_before_scope=${payload.resolvedCountBeforeScope} resolved_count_after_scope=${payload.resolvedCountAfterScope} resolved_count_after_actor=${payload.resolvedCountAfterActor} final_count=${payload.finalCount}`,
+    )
+  } catch {}
+}
+
+function logDisabledRule(params: EmitNotificationEventParams, eventId: string, ruleVersion: number) {
+  try {
+    console.log(
+      `[notifications][disabled] type=${String(params.type || '')} event_id=${eventId} entity=${String(params.entity || '')} entity_id=${String(params.entityId || '')} rule_version=${ruleVersion} config_state=disabled`,
+    )
+  } catch {}
+}
+
+async function resolveAudienceRecipients(audience: NotificationAudienceType, params: EmitNotificationEventParams, client: any) {
+  const entityId = String(params.entityId || '').trim()
+  if (!entityId) return []
+  if (audience === 'order_related_users') return await listCleaningTaskUserIdsByOrderId(entityId, client)
+  if (audience === 'cleaning_task_users') return await listCleaningTaskUserIds(entityId)
+  if (audience === 'inspection_task_users') return await listInspectionTaskUserIds(entityId)
+  if (audience === 'manager_users') return await resolveManagerUsersAudience()
+  return []
+}
+
 export async function emitNotificationEvent(params: EmitNotificationEventParams, opts?: EmitNotificationEventOptions) {
+  // Business code must enter notifications here so inbox persistence and queued push delivery stay in sync.
   if (!hasPg || !pgPool) return { ok: true, sent: 0 }
   await ensureNotificationStorage()
 
@@ -251,16 +275,61 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
   const updatedAt = normalizeEventTimestamp(params.updatedAt) || new Date().toISOString()
   const explicitEventId = String(params.eventId || '').trim()
   const eventId = explicitEventId || `${type}_${entity}_${entityId}_${updatedAt}`
-
-  const resolved = await resolveRecipients(params, client)
+  let configState: NotificationRuleConfigState = 'configured'
+  let ruleVersion = 0
+  let selectedRoles: string[] = []
+  let selectedAudiences: string[] = []
+  let selectedUsers: string[] = []
+  const audienceCounts: Record<string, number> = {}
+  const resolved: string[] = []
+  if (isManagedNotificationEventType(type)) {
+    const rule = await getNotificationRule(type as NotificationManagedEventType)
+    configState = rule.config_state
+    ruleVersion = Number(rule.version || 0)
+    if (configState === 'disabled') {
+      logDisabledRule(params, eventId, ruleVersion)
+      return { ok: true, sent: 0, skipped: 'RULE_DISABLED', event_id: eventId, rule_version: ruleVersion, config_state: configState }
+    }
+    const selectors = configState === 'no_config' ? rule.default_template.selectors : rule.selectors
+    selectedRoles = selectors.filter((x) => x.recipient_type === 'role').map((x) => x.recipient_value)
+    selectedAudiences = selectors.filter((x) => x.recipient_type === 'audience').map((x) => x.recipient_value)
+    selectedUsers = selectors.filter((x) => x.recipient_type === 'user').map((x) => x.recipient_value)
+    for (const audience of selectedAudiences) {
+      const ids = await resolveAudienceRecipients(audience as NotificationAudienceType, params, client)
+      audienceCounts[audience] = ids.length
+      resolved.push(...ids)
+    }
+    if (selectedRoles.length) {
+      const roleIds = await listUserIdsByRoles(selectedRoles)
+      resolved.push(...roleIds)
+    }
+    resolved.push(...selectedUsers)
+  }
   const propertyId = String(params.propertyId || '').trim()
   const hasExplicitRecipients = Array.isArray(params.recipientUserIds) && params.recipientUserIds.length > 0
-  const filtered = hasExplicitRecipients
-    ? resolved
-    : (propertyId ? await filterUserIdsByPropertyScope(resolved, propertyId, client) : resolved)
+  if (hasExplicitRecipients) resolved.push(...params.recipientUserIds!.map((x) => String(x || '').trim()).filter(Boolean))
+  const mergedResolved = Array.from(new Set(resolved.filter(Boolean)))
+  const filtered = propertyId ? await filterUserIdsByPropertyScope(mergedResolved, propertyId, client) : mergedResolved
   const actor = String(params.actorUserId || '').trim()
   const excludeActor = shouldExcludeActor(params)
   const to = excludeActor && actor ? filtered.filter((x) => x !== actor) : filtered
+  logResolution(params, {
+    eventId,
+    configState,
+    ruleVersion,
+    selectedRoles,
+    selectedAudiences,
+    selectedUsersCount: selectedUsers.length,
+    resolvedCountBeforeScope: mergedResolved.length,
+    resolvedCountAfterScope: filtered.length,
+    resolvedCountAfterActor: to.length,
+    finalCount: to.length,
+    audienceCounts,
+  })
+  if (!to.length) {
+    logNoRecipients(params, eventId, hasExplicitRecipients, propertyId)
+    return { ok: false, sent: 0, error_code: 'NO_RECIPIENTS', event_id: eventId, rule_version: ruleVersion, config_state: configState }
+  }
   const priority = resolvePriority(params)
 
   const { title: autoTitle, body: autoBody } = buildDefaultTitleBody(params)
@@ -312,5 +381,5 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
     inserted++
   }
 
-  return { ok: true, sent: inserted, event_id: eventId }
+  return { ok: true, sent: inserted, event_id: eventId, rule_version: ruleVersion, config_state: configState }
 }

@@ -88,7 +88,7 @@ async function listInspectionPhotoUrls(taskId: string) {
 
 async function listDayEndManagerUserIds() {
   const { listManagerUserIds } = require('./notifications')
-  return await listManagerUserIds({ roles: ['admin', 'offline_manager'] })
+  return await listManagerUserIds()
 }
 
 async function resolveUserDisplayName(userId: string) {
@@ -618,6 +618,21 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
         }
         await pgInsert('cleaning_consumable_usages', row as any)
       }
+      const restockItemsPayload = parsed.data.items
+        .filter((it) => String(it.status || '').trim().toLowerCase() === 'low')
+        .map((it) => {
+          const meta: any = byId.get(String(it.item_id)) || null
+          const qty0 = Number(it.qty || 1)
+          const qty = Number.isFinite(qty0) && qty0 > 0 ? qty0 : 1
+          return {
+            item_id: String(it.item_id || '').trim(),
+            label: meta ? String(meta.label || it.item_id || '').trim() : String(it.item_id || '').trim(),
+            qty,
+            status: 'low',
+            photo_url: String(it.photo_url || '').trim() || null,
+            note: it.note == null ? null : String(it.note || '').trim(),
+          }
+        })
       await pgInsert('cleaning_task_media', {
         id: require('uuid').v4(),
         task_id: String(id),
@@ -633,54 +648,75 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       if (!isFinishedTask) patch.status = needsRestock ? 'restock_pending' : 'cleaned'
       if (!task.finished_at) patch.finished_at = now
       const up = Object.keys(patch).length ? await pgUpdate('cleaning_tasks', id, patch) : task
-      await emitWorkTaskEvent({
-        taskId: `cleaning_task:${String(id)}`,
-        sourceType: 'cleaning_tasks',
-        sourceRefIds: [String(id)],
-        eventType: needsRestock ? 'TASK_UPDATED' : 'TASK_COMPLETED',
-        changeScope: Object.keys(patch).length ? 'list' : 'detail',
-        changedFields: Array.from(new Set([...Object.keys(patch), 'restock_items'])),
-        patch: { ...patch, restock_items_updated: true },
-        causedByUserId: String(user?.sub || '').trim() || null,
-        visibilityHints: buildCleaningTaskVisibilityHints(up || task),
-      })
-      try { broadcastCleaningEvent({ event: 'consumables_submitted', task_id: id, restock_pending: needsRestock }) } catch {}
-      try {
-        const operationId = require('uuid').v4()
-        let propertyCode = ''
+      const responsePayload = up || patch
+      res.json(responsePayload)
+      void (async () => {
         try {
-          const { pgPool } = require('../dbAdapter')
-          if (pgPool) {
-            const r = await pgPool.query(
-              `SELECT COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
-               FROM cleaning_tasks t
-               LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
-               LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
-               WHERE t.id=$1 LIMIT 1`,
-              [id],
-            )
-            propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
-          }
-        } catch {}
-        const propertyId = String((up as any)?.property_id || task.property_id || '').trim()
-        if (propertyId) {
-          await emitNotificationEvent(
-            {
-              type: hadExisting ? 'CLEANING_TASK_UPDATED' : 'CLEANING_COMPLETED',
-              entity: 'cleaning_task',
-              entityId: String(id),
-              propertyId,
-              updatedAt: String(now),
-              title: propertyCode ? `${hadExisting ? '补品已更新' : '清洁完成'}：${propertyCode}` : (hadExisting ? '补品已更新' : '清洁完成'),
-              body: hadExisting ? '清洁补品记录已修改，请检查更新' : (needsRestock ? '清洁已完成，待补货' : '清洁已完成，待检查'),
-              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: hadExisting ? 'consumables_updated' : 'consumables_submitted', task_id: id, restock_pending: needsRestock, property_code: propertyCode },
-              actorUserId: String(user?.sub || ''),
-            },
-            { operationId },
-          )
+          await emitWorkTaskEvent({
+            taskId: `cleaning_task:${String(id)}`,
+            sourceType: 'cleaning_tasks',
+            sourceRefIds: [String(id)],
+            eventType: needsRestock ? 'TASK_UPDATED' : 'TASK_COMPLETED',
+            changeScope: Object.keys(patch).length ? 'list' : 'detail',
+            changedFields: Array.from(new Set([...Object.keys(patch), 'restock_items'])),
+            patch: { ...patch, restock_items: restockItemsPayload },
+            causedByUserId: String(user?.sub || '').trim() || null,
+            visibilityHints: buildCleaningTaskVisibilityHints(up || task),
+          })
+        } catch (eventError: any) {
+          try { console.error(`[cleaning-app] consumables work_task_event_failed task_id=${String(id)} message=${String(eventError?.message || eventError)}`) } catch {}
         }
-      } catch {}
-      return res.json(up || patch)
+        try { broadcastCleaningEvent({ event: 'consumables_submitted', task_id: id, restock_pending: needsRestock }) } catch {}
+        try {
+          const operationId = require('uuid').v4()
+          let propertyCode = ''
+          try {
+            const { pgPool } = require('../dbAdapter')
+            if (pgPool) {
+              const r = await pgPool.query(
+                `SELECT COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
+                 FROM cleaning_tasks t
+                 LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+                 LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+                 WHERE t.id=$1 LIMIT 1`,
+                [id],
+              )
+              propertyCode = String(r?.rows?.[0]?.property_code || '').trim()
+            }
+          } catch {}
+          const propertyId = String((up as any)?.property_id || task.property_id || '').trim()
+          const restockLabels = restockItemsPayload.map((it) => (it.qty != null ? `${it.label} x${it.qty}` : it.label)).filter(Boolean)
+          const restockSummary = restockLabels.length ? `待补货：${restockLabels.join('、')}` : ''
+          if (propertyId) {
+            await emitNotificationEvent(
+              {
+                type: hadExisting ? 'CLEANING_TASK_UPDATED' : 'CLEANING_COMPLETED',
+                entity: 'cleaning_task',
+                entityId: String(id),
+                propertyId,
+                updatedAt: String(now),
+                title: propertyCode ? `${hadExisting ? '补品已更新' : '清洁完成'}：${propertyCode}` : (hadExisting ? '补品已更新' : '清洁完成'),
+                body: needsRestock ? restockSummary || '清洁已完成，待补货' : (hadExisting ? '清洁补品记录已修改，请检查更新' : '清洁已完成，待检查'),
+                data: {
+                  entity: 'cleaning_task',
+                  entityId: String(id),
+                  action: 'open_task',
+                  kind: hadExisting ? 'consumables_updated' : 'consumables_submitted',
+                  task_id: id,
+                  restock_pending: needsRestock,
+                  property_code: propertyCode,
+                  restock_items: restockItemsPayload,
+                },
+                actorUserId: String(user?.sub || ''),
+              },
+              { operationId },
+            )
+          }
+        } catch (notificationError: any) {
+          try { console.error(`[cleaning-app] consumables notification_failed task_id=${String(id)} message=${String(notificationError?.message || notificationError)}`) } catch {}
+        }
+      })()
+      return
     }
     return res.json({ id, status: 'cleaned' })
   } catch (e: any) {

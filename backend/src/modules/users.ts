@@ -46,13 +46,56 @@ async function ensureProfileColumns() {
   } catch {}
 }
 
+let usersColumnCache: { expiresAt: number; columns: Set<string> } | null = null
+
+async function getUsersColumns() {
+  if (!hasPg) return new Set<string>()
+  const now = Date.now()
+  if (usersColumnCache && usersColumnCache.expiresAt > now) return usersColumnCache.columns
+  try {
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return new Set<string>()
+    const rs = await pgPool.query(
+      `SELECT column_name
+         FROM information_schema.columns
+        WHERE table_schema='public'
+          AND table_name='users'`,
+    )
+    const columns = new Set<string>(((rs?.rows || []) as any[]).map((row) => String(row?.column_name || '').trim()).filter(Boolean))
+    usersColumnCache = { expiresAt: now + 60_000, columns }
+    return columns
+  } catch {
+    return new Set<string>()
+  }
+}
+
+function buildUserSelect(columns: Set<string>, required: string[], optional: readonly string[]) {
+  const selected = [...required]
+  for (const name of optional) {
+    selected.push(columns.has(name) ? name : `NULL AS ${name}`)
+  }
+  return selected.join(', ')
+}
+
+function filterPatchByExistingColumns(patch: Record<string, any>, columns: Set<string>) {
+  const next: Record<string, any> = {}
+  for (const key of Object.keys(patch)) {
+    if (columns.has(key)) next[key] = patch[key]
+  }
+  return next
+}
+
 router.get('/contacts', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   try {
     await ensureProfileColumns()
     if (hasPg) {
-      const rows = (await pgSelect('users', 'id, username, phone_au, role, display_name, avatar_url') as any[]) || []
+      const columns = await getUsersColumns()
+      const rows = (await pgSelect(
+        'users',
+        buildUserSelect(columns, ['id', 'username', 'role'], ['phone_au', 'display_name', 'avatar_url']),
+      ) as any[]) || []
       return res.json(rows)
     }
     const rows = (db.users || []).map((u: any) => ({
@@ -77,7 +120,16 @@ router.get('/me', async (req, res) => {
   try {
     await ensureProfileColumns()
     if (hasPg) {
-      const rows = (await pgSelect('users', 'id, username, role, phone_au, display_name, avatar_url, legal_name, bank_account_name, bank_bsb, bank_account_number, personal_abn, photo_id_url', { id }) as any[]) || []
+      const columns = await getUsersColumns()
+      const rows = (await pgSelect(
+        'users',
+        buildUserSelect(
+          columns,
+          ['id', 'username', 'role'],
+          ['phone_au', 'display_name', 'avatar_url', 'legal_name', 'bank_account_name', 'bank_bsb', 'bank_account_number', 'personal_abn', 'photo_id_url'],
+        ),
+        { id },
+      ) as any[]) || []
       const row = rows[0]
       if (!row) return res.status(404).json({ message: 'user not found' })
       return res.json(row)
@@ -115,6 +167,7 @@ router.patch('/me', async (req, res) => {
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'no database configured' })
+      const columns = await getUsersColumns()
       const patch: any = {}
       if (parsed.data.display_name !== undefined) patch.display_name = parsed.data.display_name
       if (parsed.data.phone_au !== undefined) patch.phone_au = parsed.data.phone_au
@@ -125,11 +178,17 @@ router.patch('/me', async (req, res) => {
       if (parsed.data.bank_account_number !== undefined) patch.bank_account_number = parsed.data.bank_account_number
       if (parsed.data.personal_abn !== undefined) patch.personal_abn = parsed.data.personal_abn
       if (parsed.data.photo_id_url !== undefined) patch.photo_id_url = parsed.data.photo_id_url
-      const keys = Object.keys(patch)
+      const safePatch = filterPatchByExistingColumns(patch, columns)
+      const keys = Object.keys(safePatch)
       if (!keys.length) return res.json({ ok: true })
       const set = keys.map((k, i) => `"${k}"=$${i + 1}`).join(', ')
-      const values = keys.map((k) => patch[k] === undefined ? null : patch[k])
-      const sql = `UPDATE users SET ${set} WHERE id=$${keys.length + 1} RETURNING id, username, role, phone_au, display_name, avatar_url, legal_name, bank_account_name, bank_bsb, bank_account_number, personal_abn, photo_id_url`
+      const values = keys.map((k) => safePatch[k] === undefined ? null : safePatch[k])
+      const returning = buildUserSelect(
+        columns,
+        ['id', 'username', 'role'],
+        ['phone_au', 'display_name', 'avatar_url', 'legal_name', 'bank_account_name', 'bank_bsb', 'bank_account_number', 'personal_abn', 'photo_id_url'],
+      )
+      const sql = `UPDATE users SET ${set} WHERE id=$${keys.length + 1} RETURNING ${returning}`
       const r = await pgPool.query(sql, [...values, id])
       const row = r?.rows?.[0]
       return res.json(row || { ok: true })
@@ -202,7 +261,11 @@ router.post('/me/change-password', async (req, res) => {
 router.get('/', requireAnyPerm(['rbac.manage', 'cleaning.schedule.manage', 'cleaning.task.assign']), async (_req, res) => {
   try {
     if (hasPg) {
-      const rows = await pgSelect('users', 'id, username, email, phone_au, role, color_hex, created_at') as any[] || []
+      const columns = await getUsersColumns()
+      const rows = await pgSelect(
+        'users',
+        buildUserSelect(columns, ['id', 'username', 'role'], ['email', 'phone_au', 'color_hex', 'created_at']),
+      ) as any[] || []
       return res.json(rows)
     }
     const rows = (db.users || []).map((u: any) => ({ id: u.id, username: u.username, email: u.email, phone_au: (u as any).phone_au, role: u.role, color_hex: u.color_hex, created_at: u.created_at }))
@@ -217,7 +280,12 @@ router.get('/:id', requireAnyPerm(['rbac.manage', 'cleaning.schedule.manage', 'c
   if (!id) return res.status(400).json({ message: 'id required' })
   try {
     if (hasPg) {
-      const rows = await pgSelect('users', 'id, username, email, phone_au, role, color_hex, created_at', { id }) as any[] || []
+      const columns = await getUsersColumns()
+      const rows = await pgSelect(
+        'users',
+        buildUserSelect(columns, ['id', 'username', 'role'], ['email', 'phone_au', 'color_hex', 'created_at']),
+        { id },
+      ) as any[] || []
       const row = rows[0]
       if (!row) return res.status(404).json({ message: 'user not found' })
       return res.json(row)

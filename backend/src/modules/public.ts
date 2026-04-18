@@ -23,6 +23,7 @@ const DEFAULT_PUBLIC_PROPERTY_GUIDE_PASSWORD = process.env.PROPERTY_GUIDE_PUBLIC
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
+let ensureMaintenanceProgressSubmitSchemaPromise: Promise<void> | null = null
 
 router.get('/r2-image', async (req, res) => {
   try {
@@ -106,6 +107,11 @@ async function generateWorkNo(): Promise<string> {
   }
 }
 
+function generateWorkNoFast(): string {
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  return `R-${date}-${randomSuffix(6)}`
+}
+
 async function generateDeepCleaningWorkNo(): Promise<string> {
   const date = new Date().toISOString().slice(0,10).replace(/-/g,'')
   const prefix = `DC-${date}-`
@@ -170,6 +176,22 @@ async function ensureCmsPagesTable() {
   try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_type ON cms_pages(page_type);`) } catch {}
   try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_pinned ON cms_pages(pinned, published_at);`) } catch {}
   try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_expires ON cms_pages(expires_at);`) } catch {}
+}
+
+async function ensureCmsCompanyPublicLinksTable() {
+  if (!pgPool) return
+  await ensureCmsPagesTable()
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS cms_company_public_links (
+    token_hash text PRIMARY KEY,
+    token_enc text,
+    page_id text NOT NULL REFERENCES cms_pages(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL,
+    revoked_at timestamptz
+  );`)
+  try { await pgPool.query(`ALTER TABLE cms_company_public_links ADD COLUMN IF NOT EXISTS token_enc text;`) } catch {}
+  try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_company_public_links_page_id ON cms_company_public_links(page_id, created_at DESC);`) } catch {}
+  try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_company_public_links_active ON cms_company_public_links(page_id, revoked_at, expires_at);`) } catch {}
 }
 
 async function getOrInitCleaningAccess(): Promise<{ area: string; password_hash: string; password_updated_at: string } | null> {
@@ -481,6 +503,50 @@ async function ensurePropertyMaintenanceShareColumns() {
   await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
 }
 
+async function ensureMaintenanceProgressSubmitSchema() {
+  if (!pgPool) return
+  if (ensureMaintenanceProgressSubmitSchemaPromise) return ensureMaintenanceProgressSubmitSchemaPromise
+  ensureMaintenanceProgressSubmitSchemaPromise = (async () => {
+    await ensurePropertyMaintenanceShareColumns()
+    await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+    await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS notes text;`)
+    await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS worker_name text;`)
+    await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS occurred_at date;`)
+    const c = await pgPool!.query(
+      `SELECT data_type, udt_name
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'property_maintenance'
+         AND column_name = 'photo_urls'
+       LIMIT 1`
+    )
+    const dataType = String(c?.rows?.[0]?.data_type || '')
+    const udtName = String(c?.rows?.[0]?.udt_name || '')
+    const isTextArray = dataType === 'ARRAY' && udtName === '_text'
+    if (!isTextArray) {
+      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];`)
+      await pgPool!.query(`UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;`)
+      await pgPool!.query(`
+        UPDATE property_maintenance
+        SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
+        WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array'
+      `)
+      await pgPool!.query(`
+        UPDATE property_maintenance
+        SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
+        WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string'
+      `)
+      await pgPool!.query(`ALTER TABLE property_maintenance DROP COLUMN photo_urls;`)
+      await pgPool!.query(`ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;`)
+      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
+    }
+  })().catch((e) => {
+    ensureMaintenanceProgressSubmitSchemaPromise = null
+    throw e
+  })
+  return ensureMaintenanceProgressSubmitSchemaPromise
+}
+
 async function ensurePropertyDeepCleaningShareColumns() {
   if (!pgPool) return
   await pgPool.query(`CREATE TABLE IF NOT EXISTS property_deep_cleaning (
@@ -632,6 +698,34 @@ router.get('/cleaning-guide/:id', async (req, res) => {
     return res.status(404).json({ message: 'not found' })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'get failed' })
+  }
+})
+
+router.get('/company-warehouse/:token', async (req, res) => {
+  const token = String((req.params as any)?.token || '').trim()
+  if (!token || token.length < 16) return res.status(404).json({ message: 'not found' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensureCmsCompanyPublicLinksTable()
+    const tokenHash = sha256Hex(token)
+    const r = await pgPool.query(
+      `SELECT p.id, p.slug, p.title, p.content, p.status, p.updated_at, p.published_at
+         FROM cms_company_public_links l
+         JOIN cms_pages p ON p.id = l.page_id
+        WHERE l.token_hash=$1
+          AND l.revoked_at IS NULL
+          AND l.expires_at > now()
+          AND p.page_type='warehouse'
+          AND p.status='published'
+          AND (p.expires_at IS NULL OR p.expires_at >= CURRENT_DATE)
+        LIMIT 1`,
+      [tokenHash],
+    )
+    const row = r?.rows?.[0]
+    if (!row) return res.status(404).json({ message: 'not found' })
+    return res.json(row)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'get warehouse guide failed' })
   }
 })
 
@@ -929,45 +1023,11 @@ router.post('/maintenance-progress/submit', async (req, res) => {
     const iatSec = Number(v.iat || 0) * 1000
     const pwdAt = new Date(access.password_updated_at).getTime()
     if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
-    await ensurePropertyMaintenanceShareColumns()
+    await ensureMaintenanceProgressSubmitSchema()
     const pool = pgPool
     if (!pool) return res.status(500).json({ message: 'no database configured' })
-    await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-    try {
-      const c = await pool.query(
-        `SELECT data_type, udt_name
-         FROM information_schema.columns
-         WHERE table_schema = 'public'
-           AND table_name = 'property_maintenance'
-           AND column_name = 'photo_urls'
-         LIMIT 1`
-      )
-      const dataType = String(c?.rows?.[0]?.data_type || '')
-      const udtName = String(c?.rows?.[0]?.udt_name || '')
-      const isTextArray = dataType === 'ARRAY' && udtName === '_text'
-      if (!isTextArray) {
-        await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls_text text[];`)
-        await pool.query(`UPDATE property_maintenance SET photo_urls_text = ARRAY[]::text[] WHERE photo_urls_text IS NULL;`)
-        await pool.query(`
-          UPDATE property_maintenance
-          SET photo_urls_text = ARRAY(SELECT jsonb_array_elements_text(to_jsonb(photo_urls)))
-          WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'array'
-        `)
-        await pool.query(`
-          UPDATE property_maintenance
-          SET photo_urls_text = ARRAY[trim(both '"' from to_jsonb(photo_urls)::text)]
-          WHERE jsonb_typeof(to_jsonb(photo_urls)) = 'string'
-        `)
-        await pool.query(`ALTER TABLE property_maintenance DROP COLUMN photo_urls;`)
-        await pool.query(`ALTER TABLE property_maintenance RENAME COLUMN photo_urls_text TO photo_urls;`)
-        await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-      }
-    } catch (e: any) {
-      return res.status(500).json({ message: String(e?.message || 'photo_urls type migration failed') })
-    }
-    await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS notes text;`)
-    await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS worker_name text;`)
-    await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS occurred_at date;`)
+    const propRow = await pool.query(`SELECT code FROM properties WHERE id = $1 LIMIT 1`, [property_id])
+    const propertyCode = String(propRow.rows?.[0]?.code || '').trim() || null
     const nowIso = new Date().toISOString()
     const completedIso = /^\d{4}-\d{2}-\d{2}$/.test(occurred_at) ? `${occurred_at}T12:00:00.000Z` : nowIso
     const sql = `INSERT INTO property_maintenance (
@@ -981,49 +1041,59 @@ router.post('/maintenance-progress/submit', async (req, res) => {
       $15,$16,$17,$18,$19,$20,$21,$22
     ) RETURNING id`
     let created = 0
-    for (const d of detailsArr) {
-      const category = String(d?.category || d?.content || '').trim()
-      const item = String(d?.item || '').trim()
-      if (!category) continue
-      const id = uuidv4()
-      const workNo = await generateWorkNo()
-      const detailText = item ? JSON.stringify([{ content: item }]) : JSON.stringify([])
-      const prePhotos = Array.isArray(d?.pre_photo_urls) ? d.pre_photo_urls : (d?.pre_photo_urls ? [d.pre_photo_urls] : [])
-      const postPhotos = Array.isArray(d?.post_photo_urls) ? d.post_photo_urls : (d?.post_photo_urls ? [d.post_photo_urls] : [])
-      const prePhotoUrls = prePhotos.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
-      const postPhotoUrls = postPhotos.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
-      const maintenance_amount = d?.maintenance_amount !== undefined ? Number(d.maintenance_amount || 0) : null
-      const has_parts = d?.has_parts !== undefined ? (d.has_parts === true) : null
-      const parts_amount = d?.parts_amount !== undefined ? Number(d.parts_amount || 0) : null
-      const pay_method = d?.pay_method ? String(d.pay_method) : null
-      const pay_other_note = d?.pay_other_note ? String(d.pay_other_note) : null
-      const values = [
-        id,
-        property_id || null,
-        occurred_at || new Date().toISOString().slice(0, 10),
-        worker_name || '',
-        detailText,
-        notes || '',
-        null,
-        prePhotoUrls,
-        JSON.stringify(postPhotoUrls || []),
-        null,
-        workNo,
-        category || null,
-        'completed',
-        null,
-        nowIso,
-        worker_name,
-        completedIso,
-        maintenance_amount,
-        has_parts,
-        parts_amount,
-        pay_method,
-        pay_other_note
-      ]
-      const r = await pgPool.query(sql, values)
-      if (r.rowCount) created += 1
-      addAudit('property_maintenance', id, 'create', null, { id })
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      for (const d of detailsArr) {
+        const category = String(d?.category || d?.content || '').trim()
+        const item = String(d?.item || '').trim()
+        if (!category) continue
+        const id = uuidv4()
+        const workNo = generateWorkNoFast()
+        const detailText = item ? JSON.stringify([{ content: item }]) : JSON.stringify([])
+        const prePhotos = Array.isArray(d?.pre_photo_urls) ? d.pre_photo_urls : (d?.pre_photo_urls ? [d.pre_photo_urls] : [])
+        const postPhotos = Array.isArray(d?.post_photo_urls) ? d.post_photo_urls : (d?.post_photo_urls ? [d.post_photo_urls] : [])
+        const prePhotoUrls = prePhotos.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
+        const postPhotoUrls = postPhotos.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
+        const maintenance_amount = d?.maintenance_amount !== undefined ? Number(d.maintenance_amount || 0) : null
+        const has_parts = d?.has_parts !== undefined ? (d.has_parts === true) : null
+        const parts_amount = d?.parts_amount !== undefined ? Number(d.parts_amount || 0) : null
+        const pay_method = d?.pay_method ? String(d.pay_method) : null
+        const pay_other_note = d?.pay_other_note ? String(d.pay_other_note) : null
+        const values = [
+          id,
+          property_id || null,
+          occurred_at || new Date().toISOString().slice(0, 10),
+          worker_name || '',
+          detailText,
+          notes || '',
+          null,
+          prePhotoUrls,
+          JSON.stringify(postPhotoUrls || []),
+          propertyCode,
+          workNo,
+          category || null,
+          'completed',
+          null,
+          nowIso,
+          worker_name,
+          completedIso,
+          maintenance_amount,
+          has_parts,
+          parts_amount,
+          pay_method,
+          pay_other_note
+        ]
+        const r = await client.query(sql, values)
+        if (r.rowCount) created += 1
+        addAudit('property_maintenance', id, 'create', null, { id })
+      }
+      await client.query('COMMIT')
+    } catch (e) {
+      await client.query('ROLLBACK')
+      throw e
+    } finally {
+      client.release()
     }
     return res.status(201).json({ ok: true, created })
   } catch (e: any) {

@@ -8,6 +8,14 @@ import { buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/wor
 
 export const router = Router()
 
+function enqueueNotification(task: () => Promise<any>) {
+  setImmediate(() => {
+    task().catch((e: any) => {
+      try { console.error(`[work-tasks][notification_async_failed] message=${String(e?.message || '')}`) } catch {}
+    })
+  })
+}
+
 async function ensureWorkTasksTable() {
   if (!hasPg || !pgPool) return
   await pgPool.query(`CREATE TABLE IF NOT EXISTS work_tasks (
@@ -325,20 +333,22 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
       const to = assigneeId && assigneeId !== actorId ? [assigneeId] : []
       const propertyId = row.property_id ? String(row.property_id) : ''
       if (to.length && propertyId) {
-        await emitNotificationEvent(
-          {
-            type: 'WORK_TASK_UPDATED',
-            entity: 'work_task',
-            entityId: String(row.id),
-            propertyId,
-            updatedAt: String(row.updated_at || '').trim() || new Date().toISOString(),
-            title: '任务有更新',
-            body: `${String(row.title || '任务')} 已更新`,
-            data: { entity: 'work_task', entityId: String(row.id), action: 'open_work_task', kind: 'work_task_updated', task_id: String(row.id) },
-            actorUserId: actorId,
-            recipientUserIds: to,
-          },
-          { operationId },
+        enqueueNotification(() =>
+          emitNotificationEvent(
+            {
+              type: 'WORK_TASK_UPDATED',
+              entity: 'work_task',
+              entityId: String(row.id),
+              propertyId,
+              updatedAt: String(row.updated_at || '').trim() || new Date().toISOString(),
+              title: '任务有更新',
+              body: `${String(row.title || '任务')} 已更新`,
+              data: { entity: 'work_task', entityId: String(row.id), action: 'open_work_task', kind: 'work_task_updated', task_id: String(row.id) },
+              actorUserId: actorId,
+              recipientUserIds: to,
+            },
+            { operationId },
+          ),
         )
       }
     } catch {}

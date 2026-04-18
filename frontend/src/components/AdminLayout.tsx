@@ -239,7 +239,15 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     { key: 'task-center', label: <Link href="/task-center" prefetch={false}>任务安排</Link> },
     { key: 'cleaning-schedule', label: <Link href="/cleaning" prefetch={false}>每日清洁</Link> },
   ] })
-  if (hasPerm('menu.rbac') || hasPerm('rbac.manage')) items.push({ key: 'rbac', icon: <ProfileOutlined />, label: <Link href="/rbac" prefetch={false}>角色权限</Link> })
+  if (hasPerm('menu.rbac') || hasPerm('rbac.manage')) items.push({
+    key: 'rbac',
+    icon: <ProfileOutlined />,
+    label: '角色权限',
+    children: [
+      { key: 'rbac-home', label: <Link href="/rbac" prefetch={false}>角色权限</Link> },
+      { key: 'rbac-notification-rules', label: <Link href="/rbac/notification-rules" prefetch={false}>通知规则</Link> },
+    ],
+  })
   if (hasPerm('menu.jobs.email_sync.visible')) items.push({ key: 'jobs', icon: <ProfileOutlined />, label: '系统任务', children: [
     { key: 'jobs-email-sync', label: <Link href="/jobs/email-sync" prefetch={false}>邮件同步</Link> },
     { key: 'jobs-cleaning-sync-jobs', label: <Link href="/jobs/cleaning-sync-jobs" prefetch={false}>清洁同步队列</Link> },

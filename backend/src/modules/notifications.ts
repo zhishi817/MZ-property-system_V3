@@ -278,6 +278,7 @@ export async function notifyExpoAll(params: { exclude_user_id?: string; title: s
 }
 
 export async function notifyExpoUsers(params: { user_ids: string[]; title: string; body: string; data?: any }) {
+  // Keep push delivery behind the notification queue worker. Business code should use emitNotificationEvent instead.
   if (!hasPg || !pgPool) return { sent: 0, failed: 0 }
   await ensureExpoPushTokensTable()
   const ids = Array.from(new Set((params.user_ids || []).map((x) => String(x || '').trim()).filter(Boolean)))

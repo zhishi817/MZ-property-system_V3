@@ -119,10 +119,12 @@ export async function runDayEndHandoverReminder(params?: { at?: string; date?: s
   const title = '提醒：提交日终交接'
   const body = `请在今天 ${at} 前后完成并提交日终交接任务`
   const updatedAt = `${date}T${at}:00+10:00`
+  const eventId = `day_end_handover_reminder:${date}:${at}`
   const result = await emitNotificationEvent({
-    type: 'WORK_TASK_UPDATED',
+    type: 'DAY_END_HANDOVER_REMINDER',
     entity: 'work_task',
-    entityId: `day_end_handover_reminder:${date}:${at}`,
+    entityId: eventId,
+    eventId,
     updatedAt,
     title,
     body,
@@ -133,7 +135,7 @@ export async function runDayEndHandoverReminder(params?: { at?: string; date?: s
       date,
       at,
       action: 'open_day_end_handover',
-      event_id: `day_end_handover_reminder:${date}:${at}`,
+      event_id: eventId,
     },
   })
   return { ok: true, date, at, recipients: userIds.length, sent: Number((result as any)?.sent || 0) }
@@ -145,7 +147,7 @@ export async function runDayEndHandoverManagerReminder(params?: { at?: string; d
   const date = String(params?.date || '').trim() || melbourneYmd()
   const pendingUsers = await listPendingDayEndHandoverUsers(date)
   if (!pendingUsers.length) return { ok: true, skipped: 'no_pending_users', date, at, sent: 0 }
-  const managerIds = await listManagerUserIds({ roles: ['admin', 'offline_manager'] })
+  const managerIds = await listManagerUserIds()
   if (!managerIds.length) return { ok: true, skipped: 'no_manager_users', date, at, sent: 0 }
   let sent = 0
   for (const user of pendingUsers) {
@@ -153,10 +155,12 @@ export async function runDayEndHandoverManagerReminder(params?: { at?: string; d
     const name = String(user.user_name || user.user_id).trim()
     const body = `${name} 在今天 ${at} 仍未提交日终交接，请及时跟进。`
     const updatedAt = `${date}T${at}:00+10:00`
+    const eventId = `day_end_handover_manager_reminder:${date}:${at}:${user.user_id}`
     const result = await emitNotificationEvent({
-      type: 'WORK_TASK_UPDATED',
+      type: 'DAY_END_HANDOVER_MANAGER_REMINDER',
       entity: 'work_task',
-      entityId: `day_end_handover_manager_reminder:${date}:${at}:${user.user_id}`,
+      entityId: eventId,
+      eventId,
       updatedAt,
       title,
       body,
@@ -167,7 +171,7 @@ export async function runDayEndHandoverManagerReminder(params?: { at?: string; d
         date,
         at,
         action: 'open_day_end_handover',
-        event_id: `day_end_handover_manager_reminder:${date}:${at}:${user.user_id}`,
+        event_id: eventId,
         target_user_id: user.user_id,
         target_user_name: name,
         handover_status: 'pending',
