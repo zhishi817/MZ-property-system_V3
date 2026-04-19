@@ -3,6 +3,7 @@ import { listManagerUserIds } from '../modules/notifications'
 import { emitNotificationEvent } from '../services/notificationEvents'
 
 type Level = 'remind' | 'escalate'
+const FIELD_ROLE_EXCLUDES = ['cleaner', 'cleaner_inspector', 'cleaning_inspector']
 
 function melbourneYmd(d: Date) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d)
@@ -103,7 +104,7 @@ export async function runKeyUploadSlaCheck(position: number, level: Level) {
 
   if (!rows.length) return { ok: true, created: 0 }
 
-  const managerIds = await listManagerUserIds()
+  const managerIds = await listManagerUserIds({ excludeRoles: FIELD_ROLE_EXCLUDES })
 
   for (const r of rows) {
     const cleanerId = String(r.cleaner_id || '')

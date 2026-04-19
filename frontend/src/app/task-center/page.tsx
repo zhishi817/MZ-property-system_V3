@@ -1,7 +1,7 @@
 "use client"
 
-import { Alert, Button, DatePicker, Empty, Modal, Segmented, Select, Skeleton, Space, Tag, message, Input } from 'antd'
-import { CaretDownOutlined, CaretRightOutlined, HolderOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
+import { Alert, Button, DatePicker, Empty, Modal, Segmented, Select, Skeleton, Space, Tag, Tooltip, message, Input } from 'antd'
+import { CalendarOutlined, CaretDownOutlined, CaretRightOutlined, HolderOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { getJSON, patchJSON, postJSON } from '../../lib/api'
@@ -30,6 +30,11 @@ type CalendarItem = {
   key_photo_uploaded_at?: string | null
   has_key_photo?: boolean
   auto_sync_enabled?: boolean
+  inspection_mode?: 'pending_decision' | 'same_day' | 'self_complete' | 'deferred' | null
+  inspection_due_date?: string | null
+  cleaning_board_enabled?: boolean
+  inspection_board_enabled?: boolean
+  deferred_inspection_view?: boolean
   old_code?: string | null
   new_code?: string | null
   nights?: number | null
@@ -75,6 +80,12 @@ export default function TaskCenterPage() {
 
   const [createOpen, setCreateOpen] = useState(false)
   const [createLoading, setCreateLoading] = useState(false)
+  const [inspectionPlanOpen, setInspectionPlanOpen] = useState(false)
+  const [inspectionPlanLoading, setInspectionPlanLoading] = useState(false)
+  const [inspectionPlanItem, setInspectionPlanItem] = useState<CalendarItem | null>(null)
+  const [inspectionPlanMode, setInspectionPlanMode] = useState<'pending_decision' | 'same_day' | 'self_complete' | 'deferred'>('pending_decision')
+  const [inspectionPlanDate, setInspectionPlanDate] = useState<Dayjs | null>(null)
+  const [inspectionPlanInspectorId, setInspectionPlanInspectorId] = useState<string | null>(null)
 
   const [offlineCreate, setOfflineCreate] = useState<{
     date: Dayjs
@@ -225,7 +236,7 @@ export default function TaskCenterPage() {
     try {
       const day = dateStr
       const [itemsRes, dayRes] = await Promise.allSettled([
-        getJSON<CalendarItem[]>(`/cleaning/calendar-range?from=${encodeURIComponent(day)}&to=${encodeURIComponent(day)}`),
+        getJSON<CalendarItem[]>(`/cleaning/calendar-range?from=${encodeURIComponent(day)}&to=${encodeURIComponent(day)}&include_deferred_inspection=1`),
         getJSON<TaskCenterDay>(`/task-center/day?date=${encodeURIComponent(day)}&include_overdue=1&include_unscheduled=1&include_future=1`, { timeoutMs: 20000 }),
       ])
 
@@ -388,18 +399,65 @@ export default function TaskCenterPage() {
     return 'pending'
   }, [])
 
-  const isCheckinLikeTaskType = useCallback((taskType: string | null | undefined) => {
-    const tt = String(taskType || '').toLowerCase()
-    return tt === 'checkin_clean' || tt === 'turnover'
+  const inspectionModeOf = useCallback((it: CalendarItem) => {
+    const raw = String(it.inspection_mode || '').trim().toLowerCase()
+    if (raw === 'pending_decision' || raw === 'same_day' || raw === 'self_complete' || raw === 'deferred') return raw
+    const tt = String(it.task_type || '').trim().toLowerCase()
+    if (tt === 'stayover_clean') return 'self_complete'
+    if (tt === 'checkin_clean') return 'same_day'
+    if (String(it.inspector_id || '').trim()) return 'same_day'
+    return 'pending_decision'
   }, [])
 
-  const effectiveCleaningStatus = useCallback((it: CalendarItem) => {
+  const inspectionModeLabel = useCallback((it: CalendarItem) => {
+    const mode = inspectionModeOf(it)
+    if (mode === 'pending_decision') return '待确认检查安排'
+    if (mode === 'self_complete') return '自完成'
+    if (mode === 'deferred') {
+      const due = String(it.inspection_due_date || '').trim()
+      return due ? `延后检查 ${due}` : '延后检查'
+    }
+    return '同日检查'
+  }, [inspectionModeOf])
+
+  const canConfigureInspection = useCallback((it: CalendarItem) => {
+    if (String(it.source || '') !== 'cleaning_tasks') return false
+    if (it.deferred_inspection_view) return false
+    const tt = String(it.task_type || '').trim().toLowerCase()
+    return tt === 'checkout_clean' || tt === 'turnover'
+  }, [])
+
+  const shouldShowInspectionPlanAction = useCallback((it: CalendarItem) => {
+    if (!canConfigureInspection(it)) return false
+    if (String(it.inspector_id || '').trim()) return false
+    return true
+  }, [canConfigureInspection])
+
+  const inspectionActionLabel = useCallback((it: CalendarItem) => {
+    const mode = inspectionModeOf(it)
+    return mode === 'pending_decision' ? '安排检查' : '修改检查安排'
+  }, [inspectionModeOf])
+
+  const effectiveCleaningStatus = useCallback((it: CalendarItem, board: 'cleaning' | 'inspection') => {
     const raw = String(it.status || 'pending')
-    if (raw === 'completed' || raw === 'in_progress' || raw === 'cancelled') return raw
+    const lowered = raw.trim().toLowerCase()
+    const cleaner = String(it.cleaner_id || it.assignee_id || '').trim()
     const inspector = String(it.inspector_id || '').trim()
-    if (inspector && isCheckinLikeTaskType(it.task_type || null)) return 'assigned'
-    return raw
-  }, [isCheckinLikeTaskType])
+    const doneLike = lowered === 'completed' || lowered === 'done' || lowered === 'ready' || lowered === 'inspected' || lowered === 'keys_hung'
+    const cleanedLike = lowered === 'cleaned' || lowered === 'restock_pending' || lowered === 'restocked'
+    if (lowered === 'cancelled') return 'cancelled'
+    if (board === 'inspection') {
+      if (doneLike) return 'completed'
+      if (lowered === 'in_progress') return 'in_progress'
+      if (cleanedLike) return inspector ? 'assigned' : 'pending'
+      if (lowered === 'assigned') return inspector ? 'assigned' : 'pending'
+      return inspector ? 'assigned' : 'pending'
+    }
+    if (doneLike || cleanedLike) return 'completed'
+    if (lowered === 'in_progress') return 'in_progress'
+    if (lowered === 'assigned') return 'assigned'
+    return cleaner || inspector ? 'assigned' : 'pending'
+  }, [])
 
   const statusText = useCallback((s: string | null | undefined) => {
     const v = String(s || '').trim()
@@ -427,9 +485,10 @@ export default function TaskCenterPage() {
     const byProp = new Map<string, CalendarItem[]>()
     for (const it of list) {
       const pid = String(it.property_id || '').trim()
-      const arr = byProp.get(pid) || []
+      const groupKey = `${pid}|${it.deferred_inspection_view ? `deferred:${String(it.inspection_due_date || '').trim() || String(it.task_date || '').trim()}` : 'normal'}`
+      const arr = byProp.get(groupKey) || []
       arr.push(it)
-      byProp.set(pid, arr)
+      byProp.set(groupKey, arr)
     }
 
     const isStayover = (x: CalendarItem) => String(x.task_type || '').toLowerCase() === 'stayover_clean' || String(x.label || '').includes('入住中清洁') || `${x.label}`.toLowerCase().includes('stayover')
@@ -465,6 +524,7 @@ export default function TaskCenterPage() {
         const autoSync = all.every((x) => x.auto_sync_enabled !== false)
         const checkout = checkouts0[0]
         const checkin = checkins0[0]
+        const inspectionBase = checkout || checkin || all[0]
         out.push({
           source: 'cleaning_tasks',
           entity_id: ids.join(','),
@@ -485,6 +545,11 @@ export default function TaskCenterPage() {
           key_photo_uploaded_at: firstKeyUploadedAt(all),
           has_key_photo: anyKeyUploaded(all),
           auto_sync_enabled: autoSync,
+          inspection_mode: inspectionBase?.inspection_mode || null,
+          inspection_due_date: inspectionBase?.inspection_due_date || null,
+          cleaning_board_enabled: all.some((x) => x.cleaning_board_enabled !== false),
+          inspection_board_enabled: all.some((x) => x.inspection_board_enabled === true),
+          deferred_inspection_view: all.every((x) => x.deferred_inspection_view === true),
           nights: all.find((x) => x.nights != null)?.nights ?? null,
           summary_checkout_time: checkout?.summary_checkout_time || null,
           summary_checkin_time: checkin?.summary_checkin_time || null,
@@ -567,16 +632,9 @@ export default function TaskCenterPage() {
 
   const isSelfCompleteCleaningItem = useCallback((it: CalendarItem) => {
     if (String(it.source || '') !== 'cleaning_tasks') return false
-    if (String(it.inspector_id || '').trim()) return false
-    const type = String(it.task_type || '').toLowerCase()
-    const label = String(it.label || '')
-    const isStayover = type === 'stayover_clean' || label.includes('入住中清洁')
-    const isCheckin = (type === 'checkin_clean' || label.includes('入住')) && !isStayover
-    const isCheckout = type === 'checkout_clean' || label.includes('退房')
-    if (isStayover) return false
-    if (isCheckin && !isCheckout) return false
-    return isCheckout
-  }, [])
+    if (it.deferred_inspection_view) return false
+    return inspectionModeOf(it) === 'self_complete'
+  }, [inspectionModeOf])
 
   const taskTextForCleaningItem = useCallback((it: CalendarItem) => {
     const region = String(it.property_region || '').trim()
@@ -688,18 +746,46 @@ export default function TaskCenterPage() {
       const idSet = new Set(normIds)
       return prev.map((it) => {
         if (it.source !== 'cleaning_tasks') return it
-        if (!idSet.has(String(it.entity_id))) return it
+        const itemIds = Array.isArray(it.entity_ids) && it.entity_ids.length ? it.entity_ids.map((x) => String(x)) : [String(it.entity_id)]
+        if (!itemIds.some((x) => idSet.has(x))) return it
         const next: any = { ...it }
+        const touchesCleaner = Object.prototype.hasOwnProperty.call(patch, 'cleaner_id')
+        const touchesAssignee = Object.prototype.hasOwnProperty.call(patch, 'assignee_id')
+        const touchesInspector = Object.prototype.hasOwnProperty.call(patch, 'inspector_id')
+        const touchesInspectionPlan = Object.prototype.hasOwnProperty.call(patch, 'inspection_mode') || Object.prototype.hasOwnProperty.call(patch, 'inspection_due_date')
+        const touchesStatus = Object.prototype.hasOwnProperty.call(patch, 'status')
         if (Object.prototype.hasOwnProperty.call(patch, 'cleaner_id')) {
           const v = patch.cleaner_id == null ? null : String(patch.cleaner_id)
           next.cleaner_id = v
+          if (!touchesAssignee) next.assignee_id = v
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'assignee_id')) {
+          const v = patch.assignee_id == null ? null : String(patch.assignee_id)
           next.assignee_id = v
+          if (!touchesCleaner) next.cleaner_id = v
         }
         if (Object.prototype.hasOwnProperty.call(patch, 'inspector_id')) {
           next.inspector_id = patch.inspector_id == null ? null : String(patch.inspector_id)
         }
-        if (Object.prototype.hasOwnProperty.call(patch, 'status')) {
+        if (Object.prototype.hasOwnProperty.call(patch, 'inspection_mode')) {
+          next.inspection_mode = patch.inspection_mode == null ? null : String(patch.inspection_mode)
+          if (next.inspection_mode === 'pending_decision' || next.inspection_mode === 'self_complete') {
+            next.inspector_id = null
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'inspection_due_date')) {
+          next.inspection_due_date = patch.inspection_due_date == null ? null : String(patch.inspection_due_date)
+        }
+        if (touchesStatus) {
           next.status = String(patch.status)
+        } else {
+          const beforeStatus = String(it.status || 'pending')
+          const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned'
+          if ((touchesCleaner || touchesAssignee || touchesInspector || touchesInspectionPlan) && statusAutoEligible) {
+            const cleaner = String(next.cleaner_id || next.assignee_id || '').trim()
+            const inspector = String(next.inspector_id || '').trim()
+            next.status = cleaner || inspector ? 'assigned' : 'pending'
+          }
         }
         return next
       })
@@ -787,10 +873,48 @@ export default function TaskCenterPage() {
     }
   }, [dateStr, loadDay, offlineCreate])
 
+  const openInspectionPlanModal = useCallback((it: CalendarItem) => {
+    setInspectionPlanItem(it)
+    setInspectionPlanMode((inspectionModeOf(it) as any) || 'pending_decision')
+    setInspectionPlanDate(it.inspection_due_date ? dayjs(it.inspection_due_date) : null)
+    setInspectionPlanInspectorId(it.inspector_id ? String(it.inspector_id) : null)
+    setInspectionPlanOpen(true)
+  }, [inspectionModeOf])
+
+  const submitInspectionPlan = useCallback(async () => {
+    if (!inspectionPlanItem) return
+    const ids = entityIds(inspectionPlanItem)
+    if (!ids.length) return
+    if (inspectionPlanMode === 'deferred' && !inspectionPlanDate) {
+      message.warning('请选择延后检查日期')
+      return
+    }
+    const patch: any = {
+      inspection_mode: inspectionPlanMode,
+      inspection_due_date: inspectionPlanMode === 'deferred' ? inspectionPlanDate?.format('YYYY-MM-DD') : null,
+      inspector_id: inspectionPlanMode === 'pending_decision' || inspectionPlanMode === 'self_complete'
+        ? null
+        : (inspectionPlanInspectorId || null),
+    }
+    setInspectionPlanLoading(true)
+    try {
+      await updateCleaningTasks(ids, patch)
+      message.success('检查安排已更新')
+      setInspectionPlanOpen(false)
+      setInspectionPlanItem(null)
+    } catch (e: any) {
+      message.error(String(e?.message || '更新失败'))
+    } finally {
+      setInspectionPlanLoading(false)
+    }
+  }, [entityIds, inspectionPlanDate, inspectionPlanInspectorId, inspectionPlanItem, inspectionPlanMode, updateCleaningTasks])
+
   const TaskBoardCleaning = useMemo(() => {
-    const base = filterCleanItems(mergedCleaningItems)
     if (tab !== 'cleaning' && tab !== 'inspection') return null
     const mode = tab
+    const base = filterCleanItems(
+      mergedCleaningItems.filter((it) => (mode === 'cleaning' ? it.cleaning_board_enabled !== false : it.inspection_board_enabled === true)),
+    )
     const allWork = Array.isArray(taskCenterDay?.tasks) ? taskCenterDay!.tasks : []
     const offlineBase = filterOfflineItems(
       allWork
@@ -800,13 +924,13 @@ export default function TaskCenterPage() {
     )
     const poolCleaning = base.filter((it) => {
       if (mode === 'inspection') {
-        const st = effectiveCleaningStatus(it)
-        if (st === 'assigned') return false
+        const st = effectiveCleaningStatus(it, 'inspection')
+        if (st === 'assigned' || st === 'completed' || st === 'cancelled') return false
         return !String(it.inspector_id || '').trim()
       }
       {
-        const st = effectiveCleaningStatus(it)
-        if (st === 'assigned') return false
+        const st = effectiveCleaningStatus(it, 'cleaning')
+        if (st === 'assigned' || st === 'completed' || st === 'cancelled') return false
         return !String(it.cleaner_id || it.assignee_id || '').trim()
       }
     })
@@ -860,7 +984,7 @@ export default function TaskCenterPage() {
           onDragLeave={() => clearDragTarget(poolKey)}
           onDrop={(e) => {
             e.preventDefault()
-            const { ids, task_type, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
+            const { ids, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
             if (!ids.length) { clearDragTarget(); return }
             if (source === 'work') {
               const id = ids[0]
@@ -870,8 +994,13 @@ export default function TaskCenterPage() {
               return
             }
             if (hasAnyPendingKey(cleaningPendingKeys(ids))) { clearDragTarget(); return }
-            const patch: any = mode === 'cleaning' ? { cleaner_id: null } : { inspector_id: null }
-            if (mode === 'inspection' && isCheckinLikeTaskType(task_type || null)) patch.status = 'pending'
+            const patch: any = mode === 'cleaning' ? { cleaner_id: null } : {}
+            if (mode === 'inspection') {
+              const targetItems = mergedCleaningItems.filter((it) => ids.some((id) => entityIds(it).includes(id)))
+              const hasDeferredProjection = targetItems.some((it) => it.deferred_inspection_view)
+              patch.inspector_id = null
+              if (!hasDeferredProjection) patch.inspection_mode = 'pending_decision'
+            }
             updateCleaningTasks(ids, patch).catch((err: any) => message.error(err?.message || '更新失败'))
               .finally(() => clearDragTarget())
           }}
@@ -935,13 +1064,15 @@ export default function TaskCenterPage() {
               const stripe = stripeColorForKind(kind)
               const sum = summaryText(it)
               const title = taskTextForCleaningItem(it)
-              const st = effectiveCleaningStatus(it)
+              const st = effectiveCleaningStatus(it, mode)
               const pending = hasAnyPendingKey(cleaningPendingKeys(ids))
               const draggable = !pending && !dayLocked && (it.auto_sync_enabled !== false || !String(it.order_id || '').trim())
               const isMerged = Array.isArray(it.entity_ids) && it.entity_ids.length > 1
               const hasAssignee = !!String(it.cleaner_id || it.assignee_id || '').trim()
               const isKeyUploaded = !!(it.has_key_photo || it.key_photo_uploaded_at)
-              const showKeyMissing = hasAssignee && !isKeyUploaded && String(st || '').toLowerCase() !== 'cancelled' && String(st || '').toLowerCase() !== 'done' && String(st || '').toLowerCase() !== 'completed'
+              const showKeyMissing = mode === 'cleaning' && hasAssignee && !isKeyUploaded && String(st || '').toLowerCase() !== 'cancelled' && String(st || '').toLowerCase() !== 'done' && String(st || '').toLowerCase() !== 'completed'
+              const planLabel = inspectionModeLabel(it)
+              const showInspectionAction = shouldShowInspectionPlanAction(it)
               return (
                 <div
                   key={`cleaning:${it.entity_id}`}
@@ -958,11 +1089,31 @@ export default function TaskCenterPage() {
                   <span className={styles.taskGrip}><HolderOutlined /></span>
                   <div className={styles.taskStripe} style={{ backgroundColor: stripe }} />
                   <div className={styles.taskMain}>
-                    <div className={styles.taskTopRow}>
-                      <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
-                      {isMerged ? <Tag>合并 {ids.length}</Tag> : null}
-                      {hasLateCheckout(it) ? <Tag color="orange">晚退房</Tag> : null}
-                      {showKeyMissing ? <Tag color="red">钥匙未上传</Tag> : null}
+                    <div className={styles.taskTopMetaRow}>
+                      <div className={styles.taskTopRow}>
+                        <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
+                        {isMerged ? <Tag>合并 {ids.length}</Tag> : null}
+                        {canConfigureInspection(it) ? <Tag color="geekblue">{planLabel}</Tag> : null}
+                        {!canConfigureInspection(it) && mode === 'inspection' && it.deferred_inspection_view ? <Tag color="geekblue">{planLabel}</Tag> : null}
+                        {hasLateCheckout(it) ? <Tag color="orange">晚退房</Tag> : null}
+                        {showKeyMissing ? <Tag color="red">钥匙未上传</Tag> : null}
+                      </div>
+                      {showInspectionAction ? (
+                        <Tooltip title={inspectionActionLabel(it)}>
+                          <Button
+                            size="small"
+                            shape="circle"
+                            icon={<CalendarOutlined />}
+                            aria-label={inspectionActionLabel(it)}
+                            className={styles.taskInlineActionBtn}
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              openInspectionPlanModal(it)
+                            }}
+                          />
+                        </Tooltip>
+                      ) : null}
                     </div>
                     <div className={styles.taskTitleRow}>
                       {sum.region ? <span className={styles.taskRegion}>{sum.region}</span> : null}
@@ -998,7 +1149,7 @@ export default function TaskCenterPage() {
                 onDragLeave={() => clearDragTarget(key)}
                 onDrop={(e) => {
                   e.preventDefault()
-                  const { ids, task_type, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
+                  const { ids, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
                   if (!ids.length) { clearDragTarget(); return }
                   if (source === 'work') {
                     const id = ids[0]
@@ -1008,8 +1159,10 @@ export default function TaskCenterPage() {
                     return
                   }
                   if (hasAnyPendingKey(cleaningPendingKeys(ids))) { clearDragTarget(); return }
-                  const patch: any = mode === 'cleaning' ? { cleaner_id: sid } : { inspector_id: sid }
-                  if (mode === 'inspection' && isCheckinLikeTaskType(task_type || null)) patch.status = 'assigned'
+                  const patch: any =
+                    mode === 'cleaning'
+                      ? { cleaner_id: sid }
+                      : { inspector_id: sid, inspection_mode: 'same_day' }
                   updateCleaningTasks(ids, patch).catch((err: any) => message.error(err?.message || '更新失败'))
                     .finally(() => clearDragTarget())
                 }}
@@ -1081,11 +1234,13 @@ export default function TaskCenterPage() {
                     const stripe = stripeColorForKind(kind)
                     const sum = summaryText(it)
                     const title = taskTextForCleaningItem(it)
-                    const st = effectiveCleaningStatus(it)
+                    const st = effectiveCleaningStatus(it, mode)
                     const pending = hasAnyPendingKey(cleaningPendingKeys(ids))
                     const draggable = !pending && !dayLocked && (it.auto_sync_enabled !== false || !String(it.order_id || '').trim())
                     const isMerged = Array.isArray(it.entity_ids) && it.entity_ids.length > 1
                     const isSelfComplete = isSelfCompleteCleaningItem(it)
+                    const planLabel = inspectionModeLabel(it)
+                    const showInspectionAction = shouldShowInspectionPlanAction(it)
                     return (
                       <div
                         key={`assigned:${it.entity_id}`}
@@ -1102,10 +1257,30 @@ export default function TaskCenterPage() {
                         <span className={styles.taskGrip}><HolderOutlined /></span>
                         <div className={styles.taskStripe} style={{ backgroundColor: stripe }} />
                         <div className={styles.taskMain}>
-                          <div className={styles.taskTopRow}>
-                            <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
-                            {isMerged ? <Tag>合并 {ids.length}</Tag> : null}
-                            {isSelfComplete ? <Tag color="blue">自完成</Tag> : null}
+                          <div className={styles.taskTopMetaRow}>
+                            <div className={styles.taskTopRow}>
+                              <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
+                              {isMerged ? <Tag>合并 {ids.length}</Tag> : null}
+                              {isSelfComplete ? <Tag color="blue">自完成</Tag> : null}
+                              {canConfigureInspection(it) ? <Tag color="geekblue">{planLabel}</Tag> : null}
+                              {!canConfigureInspection(it) && mode === 'inspection' && it.deferred_inspection_view ? <Tag color="geekblue">{planLabel}</Tag> : null}
+                            </div>
+                            {showInspectionAction ? (
+                              <Tooltip title={inspectionActionLabel(it)}>
+                                <Button
+                                  size="small"
+                                  shape="circle"
+                                  icon={<CalendarOutlined />}
+                                  aria-label={inspectionActionLabel(it)}
+                                  className={styles.taskInlineActionBtn}
+                                  onClick={(e) => {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    openInspectionPlanModal(it)
+                                  }}
+                                />
+                              </Tooltip>
+                            ) : null}
                           </div>
                           <div className={styles.taskTitleRow}>
                             {sum.region ? <span className={styles.taskRegion}>{sum.region}</span> : null}
@@ -1127,7 +1302,7 @@ export default function TaskCenterPage() {
         </div>
       </div>
     )
-  }, [activateDragTarget, activeCleaners, activeInspectors, cleaningPendingKeys, cleaningPoolFilterOptions, clearDragTarget, dateStr, dayLocked, dragOverKey, effectiveCleaningStatus, entityIds, expandedStaff, filterCleanItems, filterOfflineItems, hasAnyPendingKey, hasLateCheckout, hasPendingKey, isCheckinLikeTaskType, isSelfCompleteCleaningItem, kindOfCleaningItem, loading, mergedCleaningItems, parseDragPayload, poolView, propertyCodeById, renderPoolTools, renderStaffTools, staffFilter, staffFocusId, statusChipCls, statusText, stripeColorForKind, stripeColorForUrgency, summaryText, tab, taskCenterDay, taskTextForCleaningItem, updateCleaningTasks, updateWorkTask, workPendingKey, workSummaryText])
+  }, [activateDragTarget, activeCleaners, activeInspectors, canConfigureInspection, cleaningPendingKeys, cleaningPoolFilterOptions, clearDragTarget, dateStr, dayLocked, dragOverKey, effectiveCleaningStatus, entityIds, expandedStaff, filterCleanItems, filterOfflineItems, hasAnyPendingKey, hasLateCheckout, hasPendingKey, inspectionActionLabel, inspectionModeLabel, isSelfCompleteCleaningItem, kindOfCleaningItem, loading, mergedCleaningItems, openInspectionPlanModal, parseDragPayload, poolView, propertyCodeById, renderPoolTools, renderStaffTools, shouldShowInspectionPlanAction, staffFilter, staffFocusId, statusChipCls, statusText, stripeColorForKind, stripeColorForUrgency, summaryText, tab, taskCenterDay, taskTextForCleaningItem, updateCleaningTasks, updateWorkTask, workPendingKey, workSummaryText])
 
   const TaskBoardMaintenance = useMemo(() => {
     if (tab !== 'maintenance') return null
@@ -1559,6 +1734,69 @@ export default function TaskCenterPage() {
           {tab === 'deep_cleaning' ? TaskBoardDeepCleaning : null}
         </div>
       </div>
+
+      <Modal
+        open={inspectionPlanOpen}
+        title="检查安排"
+        okText="保存"
+        confirmLoading={inspectionPlanLoading}
+        onOk={() => submitInspectionPlan().catch(() => {})}
+        onCancel={() => {
+          if (inspectionPlanLoading) return
+          setInspectionPlanOpen(false)
+          setInspectionPlanItem(null)
+        }}
+      >
+        {inspectionPlanItem ? (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Alert
+              type="info"
+              showIcon
+              message={taskTextForCleaningItem(inspectionPlanItem)}
+              description="退房任务由线下经理确认检查安排；未确认前不会进入检查池。"
+            />
+            <div>
+              <div className={styles.fieldLabel}>检查安排</div>
+              <Select
+                value={inspectionPlanMode}
+                onChange={(v) => {
+                  const mode = String(v) as 'pending_decision' | 'same_day' | 'self_complete' | 'deferred'
+                  setInspectionPlanMode(mode)
+                  if (mode !== 'deferred') setInspectionPlanDate(null)
+                  if (mode === 'pending_decision' || mode === 'self_complete') setInspectionPlanInspectorId(null)
+                }}
+                style={{ width: '100%' }}
+                options={[
+                  { label: '待确认', value: 'pending_decision' },
+                  { label: '同日检查', value: 'same_day' },
+                  { label: '自完成', value: 'self_complete' },
+                  { label: '延后检查', value: 'deferred' },
+                ]}
+              />
+            </div>
+            {inspectionPlanMode === 'deferred' ? (
+              <div>
+                <div className={styles.fieldLabel}>检查日期</div>
+                <DatePicker value={inspectionPlanDate} onChange={(v) => setInspectionPlanDate(v)} style={{ width: '100%' }} />
+              </div>
+            ) : null}
+            {(inspectionPlanMode === 'same_day' || inspectionPlanMode === 'deferred') ? (
+              <div>
+                <div className={styles.fieldLabel}>检查人员（可选）</div>
+                <Select
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  value={inspectionPlanInspectorId || undefined}
+                  onChange={(v) => setInspectionPlanInspectorId(v ? String(v) : null)}
+                  style={{ width: '100%' }}
+                  options={activeInspectors.map((s) => ({ value: s.id, label: s.name }))}
+                />
+              </div>
+            ) : null}
+          </Space>
+        ) : null}
+      </Modal>
 
       <Modal
         open={createOpen}

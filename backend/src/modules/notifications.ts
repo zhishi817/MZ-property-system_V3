@@ -18,13 +18,16 @@ async function ensureExpoPushTokensTable() {
       `CREATE TABLE IF NOT EXISTS expo_push_tokens (
         token text PRIMARY KEY,
         user_id text NOT NULL,
+        device_id text,
         platform text,
         ua text,
         created_at timestamptz DEFAULT now(),
         updated_at timestamptz DEFAULT now()
       );`,
     )
+    await pgPool.query(`ALTER TABLE expo_push_tokens ADD COLUMN IF NOT EXISTS device_id text;`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS expo_push_tokens_user_id_idx ON expo_push_tokens (user_id);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS expo_push_tokens_user_device_idx ON expo_push_tokens (user_id, device_id);`)
     expoTokensEnsured = true
   })()
     .catch(() => {})
@@ -128,19 +131,38 @@ router.post('/expo/register', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const userId = String(user.sub || '')
-  const { expo_push_token, platform, ua } = req.body || {}
+  const { expo_push_token, device_id, platform, ua } = req.body || {}
   const token = String(expo_push_token || '').trim()
+  const deviceId = String(device_id || '').trim() || null
+  const platformText = platform == null ? null : String(platform || '')
+  const uaText = ua == null ? null : String(ua || '')
   if (!token) return res.status(400).json({ message: 'missing expo_push_token' })
   if (!hasPg || !pgPool) return res.json({ ok: true })
   try {
     await ensureExpoPushTokensTable()
     await pgPool.query(
-      `INSERT INTO expo_push_tokens (token, user_id, platform, ua, updated_at)
-       VALUES ($1,$2,$3,$4,now())
+      `INSERT INTO expo_push_tokens (token, user_id, device_id, platform, ua, updated_at)
+       VALUES ($1,$2,$3,$4,$5,now())
        ON CONFLICT (token)
-       DO UPDATE SET user_id=EXCLUDED.user_id, platform=EXCLUDED.platform, ua=EXCLUDED.ua, updated_at=now()`,
-      [token, userId, platform == null ? null : String(platform || ''), ua == null ? null : String(ua || '')],
+       DO UPDATE SET user_id=EXCLUDED.user_id, device_id=EXCLUDED.device_id, platform=EXCLUDED.platform, ua=EXCLUDED.ua, updated_at=now()`,
+      [token, userId, deviceId, platformText, uaText],
     )
+    if (deviceId) {
+      await pgPool.query(
+        `DELETE FROM expo_push_tokens
+         WHERE user_id = $1
+           AND token <> $2
+           AND (
+             device_id = $3
+             OR (
+               device_id IS NULL
+               AND COALESCE(platform, '') = COALESCE($4, '')
+               AND COALESCE(ua, '') = COALESCE($5, '')
+             )
+           )`,
+        [userId, token, deviceId, platformText, uaText],
+      )
+    }
     return res.json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'expo_register_failed' })
@@ -288,24 +310,45 @@ export async function notifyExpoUsers(params: { user_ids: string[]; title: strin
   return await sendExpoPush(tokens, { title: params.title, body: params.body, data: params.data || {} })
 }
 
-export async function listUserIdsByRoles(roles0: string[]) {
+export async function listUserIdsByRoles(roles0: string[], opts?: { excludeRoles?: string[] }) {
   if (!hasPg || !pgPool) return []
   const roles = Array.from(new Set((roles0 || []).map((x) => String(x || '').trim()).filter(Boolean)))
+  const excludeRoles = Array.from(new Set((opts?.excludeRoles || []).map((x) => String(x || '').trim()).filter(Boolean)))
   if (!roles.length) return []
   const r = await pgPool.query(
     `SELECT DISTINCT u.id::text AS id
      FROM users u
-     LEFT JOIN user_roles ur ON ur.user_id = u.id::text
-     WHERE u.role = ANY($1::text[]) OR ur.role_name = ANY($1::text[])`,
-    [roles],
+     WHERE
+       (
+         u.role = ANY($1::text[])
+         OR EXISTS (
+           SELECT 1
+           FROM user_roles ur
+           WHERE ur.user_id = u.id::text
+             AND ur.role_name = ANY($1::text[])
+         )
+       )
+       AND (
+         COALESCE(array_length($2::text[], 1), 0) = 0
+         OR (
+           u.role <> ALL($2::text[])
+           AND NOT EXISTS (
+             SELECT 1
+             FROM user_roles urx
+             WHERE urx.user_id = u.id::text
+               AND urx.role_name = ANY($2::text[])
+           )
+         )
+       )`,
+    [roles, excludeRoles],
   )
   return Array.from(new Set((r?.rows || []).map((x: any) => String(x.id || '').trim()).filter(Boolean)))
 }
 
-export async function listManagerUserIds(params?: { roles?: string[] }) {
+export async function listManagerUserIds(params?: { roles?: string[]; excludeRoles?: string[] }) {
   if (!hasPg || !pgPool) return []
   const roles0 = Array.isArray(params?.roles) && params!.roles.length ? params!.roles : ['admin', 'offline_manager', 'customer_service']
-  return await listUserIdsByRoles(roles0)
+  return await listUserIdsByRoles(roles0, { excludeRoles: params?.excludeRoles || [] })
 }
 
 export async function listCleanerUserIds() {
@@ -348,6 +391,23 @@ export async function listInspectionTaskUserIds(task_id: string) {
     .map((x: any) => String(x || '').trim())
     .filter(Boolean)
   return Array.from(new Set(ids))
+}
+
+export async function listWorkTaskUserIds(task_id: string) {
+  if (!hasPg || !pgPool) return []
+  const id = String(task_id || '').trim()
+  if (!id) return []
+  const r = await pgPool.query(
+    `SELECT assignee_id::text AS assignee_id
+     FROM work_tasks
+     WHERE id::text = $1
+     LIMIT 1`,
+    [id],
+  )
+  const row = r?.rows?.[0] || null
+  if (!row) return []
+  const assigneeId = String(row.assignee_id || '').trim()
+  return assigneeId ? [assigneeId] : []
 }
 
 export async function listCleaningTaskUserIdsBulk(task_ids: string[]) {

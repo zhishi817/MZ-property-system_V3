@@ -31,6 +31,7 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   KEY_PHOTO_UPLOADED: '上传钥匙照片',
   ISSUE_REPORTED: '问题上报',
   WORK_TASK_UPDATED: '真实 work task 更新',
+  WORK_TASK_COMPLETED: '房源 / 公司 / 其他任务完成',
   DAY_END_HANDOVER_REMINDER: '日终交接提醒',
   DAY_END_HANDOVER_MANAGER_REMINDER: '日终交接 manager 提醒',
   KEY_UPLOAD_REMINDER: '普通提醒：提醒执行人上传钥匙照片',

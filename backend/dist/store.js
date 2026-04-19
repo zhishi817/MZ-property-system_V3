@@ -143,6 +143,7 @@ if (exports.db.payouts.length === 0 && exports.db.landlords.length) {
 if (exports.db.roles.length === 0) {
     const adminId = 'role.admin';
     const csId = 'role.customer_service';
+    const offlineMgrId = 'role.offline_manager';
     const cleanMgrId = 'role.cleaning_manager';
     const cleanerOnlyId = 'role.cleaner';
     const inspectorId = 'role.cleaning_inspector';
@@ -150,7 +151,7 @@ if (exports.db.roles.length === 0) {
     const financeId = 'role.finance_staff';
     const inventoryId = 'role.inventory_manager';
     const maintenanceId = 'role.maintenance_staff';
-    exports.db.roles.push({ id: adminId, name: 'admin', description: '系统管理员（全权限）' }, { id: csId, name: 'customer_service', description: '客服' }, { id: cleanMgrId, name: 'cleaning_manager', description: '清洁/检查管理员' }, { id: cleanerOnlyId, name: 'cleaner', description: '清洁人员' }, { id: inspectorId, name: 'cleaning_inspector', description: '检查人员' }, { id: legacyCleanerInspectorId, name: 'cleaner_inspector', description: '清洁/检查人员（兼容旧角色名）' }, { id: financeId, name: 'finance_staff', description: '财务人员' }, { id: inventoryId, name: 'inventory_manager', description: '仓库管理员' }, { id: maintenanceId, name: 'maintenance_staff', description: '维修人员' });
+    exports.db.roles.push({ id: adminId, name: 'admin', description: '系统管理员（全权限）' }, { id: csId, name: 'customer_service', description: '客服' }, { id: offlineMgrId, name: 'offline_manager', description: '线下运营' }, { id: cleanMgrId, name: 'cleaning_manager', description: '清洁/检查管理员' }, { id: cleanerOnlyId, name: 'cleaner', description: '清洁人员' }, { id: inspectorId, name: 'cleaning_inspector', description: '检查人员' }, { id: legacyCleanerInspectorId, name: 'cleaner_inspector', description: '清洁/检查人员（兼容旧角色名）' }, { id: financeId, name: 'finance_staff', description: '财务人员' }, { id: inventoryId, name: 'inventory_manager', description: '仓库管理员' }, { id: maintenanceId, name: 'maintenance_staff', description: '维修人员' });
     exports.db.permissions = [
         { code: 'property.write' },
         { code: 'order.view' },
@@ -231,7 +232,9 @@ if (exports.db.roles.length === 0) {
     // 管理员：所有权限
     grant(adminId, exports.db.permissions.map(p => p.code));
     // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
-    grant(csId, ['property.write', 'order.view', 'order.write', 'order.manage', 'order.deduction.manage', 'order.cancel', 'cleaning.view', 'finance.tx.write', 'invoice.view', 'invoice.draft.create', 'onboarding.manage', 'onboarding.read', 'menu.dashboard', 'menu.properties', 'menu.finance', 'menu.finance.invoices.visible', 'menu.cleaning', 'menu.cms', 'menu.onboarding', 'cleaning_app.sse.subscribe']);
+    grant(csId, ['property.write', 'order.view', 'order.write', 'order.manage', 'order.deduction.manage', 'order.cancel', 'cleaning.view', 'finance.tx.write', 'invoice.view', 'invoice.draft.create', 'onboarding.manage', 'onboarding.read', 'menu.dashboard', 'menu.properties', 'menu.finance', 'menu.finance.invoices.visible', 'menu.cleaning', 'menu.cms', 'menu.onboarding', 'cleaning_app.sse.subscribe', 'cleaning_app.issues.report', 'cleaning_app.media.upload']);
+    // 线下运营：可在 App 管理页进入任务详情、提交房源问题反馈并上传证据
+    grant(offlineMgrId, ['menu.dashboard', 'menu.cleaning', 'cleaning.view', 'cleaning_app.sse.subscribe', 'cleaning_app.issues.report', 'cleaning_app.media.upload']);
     // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
     grant(cleanMgrId, ['cleaning.schedule.manage', 'cleaning.task.assign', 'menu.cleaning', 'menu.dashboard', 'cleaning_app.calendar.view.all', 'cleaning_app.assign', 'cleaning_app.sse.subscribe']);
     // 清洁人员：与清洁/检查人员一致（兼容数据库中 role=cleaner 的账号）

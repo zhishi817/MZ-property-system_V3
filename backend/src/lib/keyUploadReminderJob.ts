@@ -1,6 +1,8 @@
 import { hasPg, pgPool } from '../dbAdapter'
-import { listCleanerUserIds, listManagerUserIds } from '../modules/notifications'
+import { listManagerUserIds } from '../modules/notifications'
 import { emitNotificationEvent } from '../services/notificationEvents'
+
+const FIELD_ROLE_EXCLUDES = ['cleaner', 'cleaner_inspector', 'cleaning_inspector']
 
 function melbourneYmd(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -21,8 +23,26 @@ export async function runKeyUploadReminder(params: { at: string }) {
   const at = String(params.at || '').trim() || 'now'
   const date = melbourneYmd()
 
-  const cleanerIds = await listCleanerUserIds()
-  const managerIds = await listManagerUserIds()
+  const pendingCleanersRes = await pgPool.query(
+    `SELECT DISTINCT COALESCE(NULLIF(TRIM(t.cleaner_id::text), ''), NULLIF(TRIM(t.assignee_id::text), '')) AS user_id
+     FROM cleaning_tasks t
+     WHERE COALESCE(t.task_date, t.date) = $1::date
+       AND lower(COALESCE(t.status, '')) NOT IN ('cancelled', 'canceled')
+       AND lower(COALESCE(t.task_kind, '')) = 'cleaning'
+       AND COALESCE(NULLIF(TRIM(t.cleaner_id::text), ''), NULLIF(TRIM(t.assignee_id::text), '')) IS NOT NULL
+       AND NOT (
+         t.key_photo_uploaded_at IS NOT NULL
+         OR EXISTS (
+           SELECT 1
+           FROM cleaning_task_media m
+           WHERE m.task_id = t.id
+             AND m.type = 'key_photo'
+         )
+       )`,
+    [date],
+  )
+  const cleanerIds = Array.from(new Set((pendingCleanersRes?.rows || []).map((row: any) => String(row.user_id || '').trim()).filter(Boolean)))
+  const managerIds = cleanerIds.length ? await listManagerUserIds({ excludeRoles: FIELD_ROLE_EXCLUDES }) : []
 
   const t0 = Date.now()
   let cleanerSent = 0

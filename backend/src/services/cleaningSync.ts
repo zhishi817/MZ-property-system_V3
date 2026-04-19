@@ -2,6 +2,7 @@ import { hasPg, pgPool } from '../dbAdapter'
 import { db } from '../store'
 import { createHash } from 'crypto'
 import { v4 as uuid } from 'uuid'
+import { defaultInspectionModeForTaskType } from '../lib/cleaningInspection'
 
 export type CleaningSyncAction =
   | 'created'
@@ -140,6 +141,12 @@ export async function ensureCleaningSchemaV2(): Promise<void> {
       await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
     } catch {}
     try {
+      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_mode text;`)
+    } catch {}
+    try {
+      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
+    } catch {}
+    try {
       await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
     } catch {}
   })().catch((e) => {
@@ -236,16 +243,21 @@ async function insertTask(row: any, client?: any): Promise<any> {
         status, assignee_id, scheduled_at,
         checkout_time, checkin_time,
         cleaner_id, inspector_id,
-        keys_required,
+        keys_required, inspection_mode, inspection_due_date,
         auto_sync_enabled, sync_fingerprint, source,
         updated_at
       )
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,now())
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,now())
       ON CONFLICT ON CONSTRAINT uniq_cleaning_tasks_order_task_type_v3
       DO UPDATE SET
         property_id = EXCLUDED.property_id,
         task_date = EXCLUDED.task_date,
         date = EXCLUDED.date,
+        inspection_mode = COALESCE(cleaning_tasks.inspection_mode, EXCLUDED.inspection_mode),
+        inspection_due_date = CASE
+          WHEN cleaning_tasks.inspection_mode = 'deferred' AND cleaning_tasks.inspection_due_date IS NOT NULL THEN cleaning_tasks.inspection_due_date
+          ELSE EXCLUDED.inspection_due_date
+        END,
         sync_fingerprint = EXCLUDED.sync_fingerprint,
         source = EXCLUDED.source,
         updated_at = now()
@@ -267,6 +279,8 @@ async function insertTask(row: any, client?: any): Promise<any> {
       row.cleaner_id != null ? String(row.cleaner_id) : null,
       row.inspector_id != null ? String(row.inspector_id) : null,
       keysRequired,
+      row.inspection_mode ? String(row.inspection_mode) : null,
+      row.inspection_due_date ? String(row.inspection_due_date).slice(0, 10) : null,
       row.auto_sync_enabled !== false,
       row.sync_fingerprint ? String(row.sync_fingerprint) : null,
       row.source ? String(row.source) : 'auto',
@@ -341,6 +355,8 @@ async function syncOneTask(params: {
       old_code: taskType === CHECKOUT_TASK_TYPE ? (derivedCode || null) : null,
       new_code: taskType === CHECKIN_TASK_TYPE ? (derivedCode || null) : null,
       keys_required: keysRequired,
+      inspection_mode: defaultInspectionModeForTaskType(taskType),
+      inspection_due_date: null,
       auto_sync_enabled: true,
       sync_fingerprint: fingerprint,
       source: 'auto',
@@ -372,6 +388,8 @@ async function syncOneTask(params: {
     source: 'auto',
     auto_sync_enabled: true,
     keys_required: keysRequired,
+    inspection_mode: beforeTask.inspection_mode ?? defaultInspectionModeForTaskType(taskType),
+    inspection_due_date: beforeTask.inspection_due_date ?? null,
   }
   if (derivedCode) {
     if (taskType === CHECKOUT_TASK_TYPE) patch.old_code = derivedCode

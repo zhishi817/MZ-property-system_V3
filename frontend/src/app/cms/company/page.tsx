@@ -11,6 +11,7 @@ type PageType = 'announce' | 'doc' | 'warehouse'
 type PageStatus = 'draft' | 'published'
 type AudienceScope = 'all_staff' | 'cleaners' | 'warehouse_staff' | 'maintenance_staff' | 'managers'
 type DocCategory = 'company_rule' | 'work_guide'
+type CompanyGuideRole = 'cleaner' | 'cleaning_inspector'
 
 type CompanyPageRow = {
   id: string
@@ -21,6 +22,7 @@ type CompanyPageRow = {
   published_at?: string | null
   page_type?: string | null
   category?: string | null
+  guide_role?: CompanyGuideRole | null
   pinned?: boolean | null
   urgent?: boolean | null
   audience_scope?: string | null
@@ -47,6 +49,82 @@ type Block =
   | { type: 'video'; url: string; caption?: string }
   | { type: 'step'; title: string; contents: StepItem[] }
   | { type: 'legacy_html'; html: string }
+
+const GUIDE_ROLE_OPTIONS = [
+  { value: 'cleaner' as const, label: '清洁员' },
+  { value: 'cleaning_inspector' as const, label: '检查员' },
+]
+
+const GUIDE_ROLE_LABEL: Record<CompanyGuideRole, string> = {
+  cleaner: '清洁员',
+  cleaning_inspector: '检查员',
+}
+
+const STARTER_GUIDE_TEMPLATES: Array<{ title: string; guide_role: CompanyGuideRole; blocks: Block[] }> = [
+  {
+    title: '清洁员入门',
+    guide_role: 'cleaner',
+    blocks: [
+      { type: 'heading', text: '第一天先完成这 5 件事' },
+      { type: 'paragraph', text: '这份指南面向现场清洁员，帮助你快速熟悉移动端里最常用的入口和提交流程。' },
+      {
+        type: 'step',
+        title: '先进入任务页，确认今天的房号、退房/入住时间和客人需求',
+        contents: [{ type: 'text', text: '任务卡里优先看房号、地址、密码、入住指南和是否需要上传钥匙。' }],
+      },
+      {
+        type: 'step',
+        title: '按任务要求上传钥匙或查看钥匙记录',
+        contents: [{ type: 'text', text: '未完成的清洁任务通常需要先处理钥匙照片；如果卡片显示“钥匙记录”，说明当前任务已经有照片或已提交。' }],
+      },
+      {
+        type: 'step',
+        title: '发现房源问题时进入“房源问题反馈”提交说明和照片',
+        contents: [{ type: 'text', text: '维修、深清、日用品异常都从这里提交；尽量写清位置、现象和处理建议。' }],
+      },
+      {
+        type: 'step',
+        title: '根据任务类型完成“补品填报”或“补充与完成”',
+        contents: [{ type: 'text', text: '无检查员跟进的任务会走“补充与完成”；有后续检查时通常先做补品填报。' }],
+      },
+      {
+        type: 'step',
+        title: '收工前完成“日终交接”',
+        contents: [{ type: 'text', text: '至少确认备用钥匙和脏床品照片已上传；否则当天流程会不完整。' }],
+      },
+      { type: 'callout', text: '常见错误：忘记上传钥匙、问题反馈只有标题没有照片、日终交接漏传备用钥匙或脏床品。' },
+    ],
+  },
+  {
+    title: '检查员入门',
+    guide_role: 'cleaning_inspector',
+    blocks: [
+      { type: 'heading', text: '检查员第一天重点' },
+      { type: 'paragraph', text: '这份指南面向现场检查员，重点是检查任务、补充记录、房源问题反馈和日终交接。' },
+      {
+        type: 'step',
+        title: '优先识别检查任务卡，并进入“检查与补充”',
+        contents: [{ type: 'text', text: '检查任务通常会要求补拍房间照片、确认清洁问题、补录消耗品和客需完成情况。' }],
+      },
+      {
+        type: 'step',
+        title: '需要运营或维修跟进的内容，统一从“房源问题反馈”提交',
+        contents: [{ type: 'text', text: '不要把维修问题只写在备注里；应在反馈页补齐类别、描述和现场照片。' }],
+      },
+      {
+        type: 'step',
+        title: '检查通过后点“标记已完成”',
+        contents: [{ type: 'text', text: '完成前请确认必要照片、补货证明或挂钥匙视频已经补齐。' }],
+      },
+      {
+        type: 'step',
+        title: '日终交接里完成剩余消耗品和 Reject 床品登记',
+        contents: [{ type: 'text', text: '检查员常见入口是“上传剩余消耗品”和“登记 Reject 床品”，两项都要看当天实际任务。' }],
+      },
+      { type: 'callout', text: '常见错误：照片拍了但没提交、问题反馈与检查备注重复记录、Reject 床品只口头说明没有登记。' },
+    ],
+  },
+]
 
 function safeHttpUrl(url: string) {
   const s = String(url || '').trim()
@@ -346,6 +424,7 @@ function CompanyPagesTab({ type }: { type: PageType }) {
   const [form] = Form.useForm()
   const [blocks, setBlocks] = useState<Block[]>([])
   const [rawContent, setRawContent] = useState('')
+  const watchedCategory = Form.useWatch('category', form) as DocCategory | undefined
 
   const columns = useMemo(() => {
     const base: any[] = [
@@ -361,6 +440,15 @@ function CompanyPagesTab({ type }: { type: PageType }) {
     }
     if (type === 'doc') {
       base.push({ title: '分类', dataIndex: 'category', width: 140 })
+      base.push({
+        title: '适用角色',
+        dataIndex: 'guide_role',
+        width: 140,
+        render: (v: CompanyGuideRole | null | undefined) => {
+          const label = v ? GUIDE_ROLE_LABEL[v] : ''
+          return label ? <Tag color="blue">{label}</Tag> : <Tag>-</Tag>
+        },
+      })
       base.push({ title: '受众', dataIndex: 'audience_scope', width: 150 })
     }
     if (type === 'warehouse') {
@@ -397,6 +485,12 @@ function CompanyPagesTab({ type }: { type: PageType }) {
 
   useEffect(() => { load() }, [type])
 
+  useEffect(() => {
+    if (type !== 'doc') return
+    if (String(watchedCategory || '') === 'work_guide') return
+    form.setFieldValue('guide_role', undefined)
+  }, [form, type, watchedCategory])
+
   function resetEditorContent(content: string | null | undefined) {
     const p = parseBlocks(content)
     setBlocks(p.blocks)
@@ -422,6 +516,7 @@ function CompanyPagesTab({ type }: { type: PageType }) {
       pinned: !!r.pinned,
       urgent: !!r.urgent,
       category: r.category || undefined,
+      guide_role: r.guide_role || undefined,
       audience_scope: r.audience_scope || undefined,
     })
     resetEditorContent(r.content || '')
@@ -570,11 +665,15 @@ function CompanyPagesTab({ type }: { type: PageType }) {
       payload.pinned = !!v.pinned
       payload.urgent = !!v.urgent
     }
-    if (type === 'doc') payload.category = v.category
+    if (type === 'doc') {
+      payload.category = v.category
+      if (String(v.category || '') === 'work_guide') payload.guide_role = v.guide_role || undefined
+    }
     if (!payload.slug) delete payload.slug
     if (!payload.published_at) delete payload.published_at
     if (!payload.expires_at) delete payload.expires_at
     if (!payload.audience_scope) delete payload.audience_scope
+    if (!payload.guide_role) delete payload.guide_role
 
     try {
       if (editing?.id) {
@@ -602,10 +701,44 @@ function CompanyPagesTab({ type }: { type: PageType }) {
     { value: 'managers', label: 'managers' },
   ]
 
+  async function createStarterGuides() {
+    const existingRoles = new Set(
+      rows
+        .filter((row) => String(row.category || '').trim() === 'work_guide')
+        .map((row) => String(row.guide_role || '').trim())
+        .filter(Boolean),
+    )
+    const pending = STARTER_GUIDE_TEMPLATES.filter((item) => !existingRoles.has(item.guide_role))
+    if (!pending.length) {
+      message.info('双角色新手指南已存在，无需重复创建。')
+      return
+    }
+    Modal.confirm({
+      title: '生成双角色新手指南模板',
+      content: `将创建 ${pending.length} 篇已发布的工作指南模板，并默认设置为 cleaners 受众。已存在的角色指南会自动跳过。`,
+      onOk: async () => {
+        for (const item of pending) {
+          await postJSON('/cms/company/pages', {
+            type: 'doc',
+            title: item.title,
+            content: blocksToPayload(item.blocks, ''),
+            status: 'published',
+            category: 'work_guide',
+            guide_role: item.guide_role,
+            audience_scope: 'cleaners',
+          })
+        }
+        message.success(`已创建 ${pending.length} 篇新手指南模板`)
+        await load()
+      },
+    })
+  }
+
   return (
     <div>
       <Space style={{ marginBottom: 12 }} wrap>
         <Button type="primary" onClick={openCreate}>新建</Button>
+        {type === 'doc' ? <Button onClick={createStarterGuides}>生成双角色新手指南模板</Button> : null}
         <Button onClick={load} loading={loading}>刷新</Button>
       </Space>
       <Table
@@ -650,6 +783,7 @@ function CompanyPagesTab({ type }: { type: PageType }) {
               {viewing?.status ? pill({ icon: <CheckCircleOutlined />, text: String(viewing.status || '').toUpperCase(), tone: String(viewing.status) === 'published' ? 'success' : 'default' }) : null}
               {viewing?.audience_scope ? pill({ icon: <UserOutlined />, text: `受众: ${String(viewing.audience_scope)}` }) : null}
               {type === 'doc' && viewing?.category ? pill({ icon: <UserOutlined />, text: `分类: ${String(viewing.category)}` }) : null}
+              {type === 'doc' && viewing?.guide_role ? pill({ icon: <UserOutlined />, text: `适用角色: ${GUIDE_ROLE_LABEL[viewing.guide_role] || String(viewing.guide_role)}` }) : null}
               {type === 'announce' && viewing?.published_at ? pill({ icon: <CalendarOutlined />, text: `发布: ${String(viewing.published_at)}` }) : null}
               {type === 'announce' && viewing?.expires_at ? pill({ icon: <CalendarOutlined />, text: `过期: ${String(viewing.expires_at)}` }) : null}
               {type === 'announce' && viewing?.pinned ? pill({ text: '置顶', tone: 'default' }) : null}
@@ -718,9 +852,16 @@ function CompanyPagesTab({ type }: { type: PageType }) {
             <Form.Item name="slug" label="Slug（可选）"><Input placeholder="例如 announce:xxxx" /></Form.Item>
             <Form.Item name="title" label="标题" rules={[{ required: true }]}><Input /></Form.Item>
             {type === 'doc' ? (
-              <Form.Item name="category" label="分类" rules={[{ required: true }]}>
-                <Select options={[{ value: 'company_rule', label: 'company_rule' }, { value: 'work_guide', label: 'work_guide' }]} />
-              </Form.Item>
+              <>
+                <Form.Item name="category" label="分类" rules={[{ required: true }]}>
+                  <Select options={[{ value: 'company_rule', label: 'company_rule' }, { value: 'work_guide', label: 'work_guide' }]} />
+                </Form.Item>
+                {watchedCategory === 'work_guide' ? (
+                  <Form.Item name="guide_role" label="适用角色（可选）">
+                    <Select allowClear options={GUIDE_ROLE_OPTIONS} />
+                  </Form.Item>
+                ) : null}
+              </>
             ) : null}
             <Form.Item name="status" label="状态" rules={[{ required: true }]}>
               <Select options={[{ value: 'draft', label: 'draft' }, { value: 'published', label: 'published' }]} />
@@ -1072,7 +1213,7 @@ function PasswordConfigTab() {
 export default function Page() {
   const tabs = [
     { key: 'announce', label: '发布公告', children: <CompanyPagesTab type="announce" /> },
-    { key: 'doc', label: '公司规定', children: <CompanyPagesTab type="doc" /> },
+    { key: 'doc', label: '公司文档', children: <CompanyPagesTab type="doc" /> },
     { key: 'warehouse', label: '仓库指南', children: <CompanyPagesTab type="warehouse" /> },
     { key: 'passwords', label: '密码配置', children: <PasswordConfigTab /> },
   ]

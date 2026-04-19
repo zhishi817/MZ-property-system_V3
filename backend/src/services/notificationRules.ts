@@ -9,6 +9,7 @@ export const ALL_NOTIFICATION_EVENT_TYPES = [
   'KEY_PHOTO_UPLOADED',
   'ISSUE_REPORTED',
   'WORK_TASK_UPDATED',
+  'WORK_TASK_COMPLETED',
   'DAY_END_HANDOVER_REMINDER',
   'DAY_END_HANDOVER_MANAGER_REMINDER',
   'KEY_UPLOAD_REMINDER',
@@ -17,7 +18,7 @@ export const ALL_NOTIFICATION_EVENT_TYPES = [
 ] as const
 
 export type NotificationManagedEventType = (typeof ALL_NOTIFICATION_EVENT_TYPES)[number]
-export type NotificationAudienceType = 'order_related_users' | 'cleaning_task_users' | 'inspection_task_users' | 'manager_users'
+export type NotificationAudienceType = 'order_related_users' | 'cleaning_task_users' | 'inspection_task_users' | 'work_task_users' | 'manager_users'
 export type NotificationRuleRecipientType = 'role' | 'audience' | 'user'
 export type NotificationRuleConfigState = 'no_config' | 'configured' | 'empty_config' | 'disabled'
 
@@ -36,6 +37,7 @@ export const NOTIFICATION_AUDIENCE_OPTIONS: Array<{ value: NotificationAudienceT
   { value: 'order_related_users', label: '订单关联人', description: '关联 cleaning task 的 cleaner / inspector / assignee' },
   { value: 'cleaning_task_users', label: '清洁任务参与人', description: '当前 cleaning task 的 cleaner / inspector / assignee' },
   { value: 'inspection_task_users', label: '检查任务参与人', description: '当前 inspection task 的 inspector / assignee' },
+  { value: 'work_task_users', label: '任务执行人', description: '当前 work task 的 assignee' },
   { value: 'manager_users', label: '默认经理组', description: 'admin + offline_manager + customer_service' },
 ]
 
@@ -86,6 +88,14 @@ export const DEFAULT_NOTIFICATION_RULE_TEMPLATES: Record<NotificationManagedEven
     selectors: [{ recipient_type: 'audience', recipient_value: 'manager_users' }],
   },
   WORK_TASK_UPDATED: { enabled: true, note: '默认无固定收件人，需显式追加', selectors: [] },
+  WORK_TASK_COMPLETED: {
+    enabled: true,
+    note: '默认通知任务执行人和经理组',
+    selectors: [
+      { recipient_type: 'audience', recipient_value: 'work_task_users' },
+      { recipient_type: 'audience', recipient_value: 'manager_users' },
+    ],
+  },
   DAY_END_HANDOVER_REMINDER: { enabled: true, note: '默认无固定收件人，依赖调用方追加', selectors: [] },
   DAY_END_HANDOVER_MANAGER_REMINDER: {
     enabled: true,
