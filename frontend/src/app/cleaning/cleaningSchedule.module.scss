@@ -1193,11 +1193,20 @@
   gap: 6px;
 }
 
+.taskTopMetaRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .taskTopRow {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .taskTitleRow {
@@ -1241,6 +1250,29 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.taskInlineActionBtn {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 999px;
+  border-color: rgba(148, 163, 184, 0.26);
+  background: rgba(248, 250, 252, 0.96);
+  color: #64748b;
+  box-shadow: none;
+  flex: 0 0 auto;
+}
+
+.taskInlineActionBtn:global(.ant-btn:hover),
+.taskInlineActionBtn:global(.ant-btn:focus),
+.taskInlineActionBtn:global(.ant-btn:focus-visible),
+.taskInlineActionBtn:global(.ant-btn:active) {
+  border-color: rgba(59, 130, 246, 0.24);
+  background: rgba(239, 246, 255, 0.98);
+  color: #2563eb;
+  box-shadow: none;
 }
 
 .dropActive {

@@ -68,6 +68,16 @@ function dayOnly(v: any): string | null {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null
 }
 
+function taskCompletedTitle(title: any) {
+  const base = String(title || '').trim()
+  return base ? `任务已完成：${base}` : '任务已完成'
+}
+
+function taskCompletedBody(title: any) {
+  const base = String(title || '').trim()
+  return base ? `${base} 已标记完成` : '任务已标记完成'
+}
+
 const createSchema = z.object({
   task_kind: z.string().min(1),
   property_id: z.string().nullable().optional(),
@@ -272,6 +282,35 @@ router.post('/', requirePerm('cleaning.schedule.manage'), async (req, res) => {
       causedByUserId: String(user.sub || user.username || '').trim() || null,
       visibilityHints: buildWorkTaskVisibilityHints(row),
     })
+    if (normStatus(row.status) === 'done') {
+      await emitWorkTaskEvent({
+        taskId: `work_task:${row.id}`,
+        sourceType: 'work_tasks',
+        sourceRefIds: [row.id],
+        eventType: 'TASK_COMPLETED',
+        changeScope: 'list',
+        changedFields: ['status'],
+        patch: { status: 'done' },
+        causedByUserId: String(user.sub || user.username || '').trim() || null,
+        visibilityHints: buildWorkTaskVisibilityHints(row),
+      })
+      enqueueNotification(() =>
+        emitNotificationEvent(
+          {
+            type: 'WORK_TASK_COMPLETED',
+            entity: 'work_task',
+            entityId: String(row.id),
+            propertyId: row.property_id ? String(row.property_id) : undefined,
+            updatedAt: String(row.updated_at || '').trim() || now,
+            title: taskCompletedTitle(row.title),
+            body: taskCompletedBody(row.title),
+            data: { entity: 'work_task', entityId: String(row.id), action: 'open_work_task', kind: 'work_task_completed', task_id: String(row.id) },
+            actorUserId: String(user.sub || '').trim() || null,
+          },
+          { operationId: uuid() },
+        ),
+      )
+    }
     return res.status(201).json(row)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'create_failed' })
@@ -314,12 +353,13 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
     const row = r1?.rows?.[0] || cur
     const changedFields = Object.keys(patch || {}).filter((key) => patch[key] !== undefined)
     const assigneeChanged = patch.assignee_id !== undefined && String(cur.assignee_id || '') !== String(row.assignee_id || '')
+    const completedChanged = normStatus(cur.status) !== 'done' && normStatus(row.status) === 'done'
     await propagateToSource(sourceType, sourceId, patch)
     await emitWorkTaskEvent({
       taskId: `work_task:${row.id}`,
       sourceType: 'work_tasks',
       sourceRefIds: [String(row.id)],
-      eventType: assigneeChanged ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
+      eventType: completedChanged ? 'TASK_COMPLETED' : assigneeChanged ? 'TASK_ASSIGNMENT_CHANGED' : 'TASK_UPDATED',
       changeScope: assigneeChanged ? 'membership' : 'list',
       changedFields,
       patch: Object.fromEntries(changedFields.map((field) => [field, (row as any)[field]])),
@@ -348,6 +388,28 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
               recipientUserIds: to,
             },
             { operationId },
+          ),
+        )
+      }
+    } catch {}
+    try {
+      const actorId = String(user.sub || '').trim()
+      const propertyId = row.property_id ? String(row.property_id) : ''
+      if (completedChanged) {
+        enqueueNotification(() =>
+          emitNotificationEvent(
+            {
+              type: 'WORK_TASK_COMPLETED',
+              entity: 'work_task',
+              entityId: String(row.id),
+              propertyId: propertyId || undefined,
+              updatedAt: String(row.updated_at || '').trim() || new Date().toISOString(),
+              title: taskCompletedTitle(row.title),
+              body: taskCompletedBody(row.title),
+              data: { entity: 'work_task', entityId: String(row.id), action: 'open_work_task', kind: 'work_task_completed', task_id: String(row.id) },
+              actorUserId: actorId || null,
+            },
+            { operationId: uuid() },
           ),
         )
       }

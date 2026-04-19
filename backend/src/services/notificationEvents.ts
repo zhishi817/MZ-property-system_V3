@@ -1,6 +1,6 @@
 import { v4 as uuid } from 'uuid'
 import { hasPg, pgPool } from '../dbAdapter'
-import { listInspectionTaskUserIds, listCleaningTaskUserIds, listUserIdsByRoles } from '../modules/notifications'
+import { listInspectionTaskUserIds, listCleaningTaskUserIds, listUserIdsByRoles, listWorkTaskUserIds } from '../modules/notifications'
 import {
   getNotificationRule,
   isManagedNotificationEventType,
@@ -19,6 +19,7 @@ export type NotificationEventType =
   | 'INSPECTION_COMPLETED'
   | 'KEY_PHOTO_UPLOADED'
   | 'ISSUE_REPORTED'
+  | 'WORK_TASK_COMPLETED'
   | 'DAY_END_HANDOVER_REMINDER'
   | 'DAY_END_HANDOVER_MANAGER_REMINDER'
   | 'KEY_UPLOAD_REMINDER'
@@ -133,6 +134,7 @@ function buildDefaultTitleBody(params: EmitNotificationEventParams) {
   if (type === 'INSPECTION_COMPLETED') return { title: '房源已完成检查', body: '检查已完成' }
   if (type === 'KEY_PHOTO_UPLOADED') return { title: '钥匙照片已上传', body: '钥匙照片已上传' }
   if (type === 'ISSUE_REPORTED') return { title: '房源问题反馈', body: '收到新的问题反馈' }
+  if (type === 'WORK_TASK_COMPLETED') return { title: '任务已完成', body: '任务已标记完成' }
   if (type === 'DAY_END_HANDOVER_REMINDER') return { title: '提醒：提交日终交接', body: '请完成并提交日终交接任务' }
   if (type === 'DAY_END_HANDOVER_MANAGER_REMINDER') return { title: '提醒：有人未提交日终交接', body: '有人仍未提交日终交接，请及时跟进。' }
   if (type === 'KEY_UPLOAD_REMINDER') return { title: '提醒：上传钥匙照片', body: '请检查并上传钥匙照片' }
@@ -199,6 +201,7 @@ function resolvePriority(params: EmitNotificationEventParams): NotificationPrior
   if (params.type === 'INSPECTION_COMPLETED') return 'high'
   if (params.type === 'KEY_PHOTO_UPLOADED') return 'high'
   if (params.type === 'ISSUE_REPORTED') return 'high'
+  if (params.type === 'WORK_TASK_COMPLETED') return 'high'
   if (params.type === 'DAY_END_HANDOVER_REMINDER') return 'high'
   if (params.type === 'DAY_END_HANDOVER_MANAGER_REMINDER') return 'high'
   if (params.type === 'KEY_UPLOAD_REMINDER') return 'high'
@@ -257,6 +260,7 @@ async function resolveAudienceRecipients(audience: NotificationAudienceType, par
   if (audience === 'order_related_users') return await listCleaningTaskUserIdsByOrderId(entityId, client)
   if (audience === 'cleaning_task_users') return await listCleaningTaskUserIds(entityId)
   if (audience === 'inspection_task_users') return await listInspectionTaskUserIds(entityId)
+  if (audience === 'work_task_users') return await listWorkTaskUserIds(entityId)
   if (audience === 'manager_users') return await resolveManagerUsersAudience()
   return []
 }

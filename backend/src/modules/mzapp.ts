@@ -7,9 +7,13 @@ import { hasR2, r2Upload } from '../r2'
 import crypto from 'crypto'
 import sharp from 'sharp'
 import fs from 'fs'
-import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
+import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
+import { emitNotificationEvent } from '../services/notificationEvents'
+import { deferredProjectionDate, effectiveInspectionMode, isInspectionFinishedStatus } from '../lib/cleaningInspection'
 
 export const router = Router()
+
+const REQUIRED_COMPLETION_PHOTO_AREAS = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen'] as const
 
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
 const PHOTO_ID_WATERMARK_TEXT = '仅用于MZ Property（ABN：42 657 925 365）记录,不做任何其他用途。\nFor the records of MZ Property (ABN: 42 657 925 365) only, not for other purpose.'
@@ -32,6 +36,27 @@ function normUrgency(v: any): string {
   const s = String(v ?? '').trim().toLowerCase()
   if (s === 'low' || s === 'medium' || s === 'high' || s === 'urgent') return s
   return 'medium'
+}
+
+function normalizeWorkTaskPhotoUrls(input: any) {
+  const values = Array.isArray(input) ? input : []
+  return Array.from(new Set(values.map((item) => String(item || '').trim()).filter(Boolean)))
+}
+
+function workTaskCompletedTitle(title: any) {
+  const base = String(title || '').trim()
+  return base ? `任务已完成：${base}` : '任务已完成'
+}
+
+function workTaskCompletedBody(title: any) {
+  const base = String(title || '').trim()
+  return base ? `${base} 已标记完成` : '任务已标记完成'
+}
+
+function workTaskSortNumber(raw: any) {
+  if (raw == null) return null
+  const n = Number(raw)
+  return Number.isFinite(n) ? Math.trunc(n) : null
 }
 
 function randomBase62(len = 4) {
@@ -204,11 +229,19 @@ async function ensureWorkTasksTable() {
     assignee_id text,
     status text NOT NULL DEFAULT 'todo',
     urgency text NOT NULL DEFAULT 'medium',
+    sort_index integer,
+    completion_photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
+    completion_note text,
+    completion_reason text,
     created_by text,
     updated_by text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
   );`)
+  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS sort_index integer;`)
+  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb;`)
+  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_note text;`)
+  await pgPool.query(`ALTER TABLE IF EXISTS work_tasks ADD COLUMN IF NOT EXISTS completion_reason text;`)
   await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_work_tasks_source ON work_tasks(source_type, source_id);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`)
@@ -362,6 +395,28 @@ async function ensureCleaningCustomerColumns() {
       cleaningCustomerEnsuring = null
     })
   return cleaningCustomerEnsuring
+}
+
+let cleaningInspectionEnsured = false
+let cleaningInspectionEnsuring: Promise<void> | null = null
+
+async function ensureCleaningInspectionColumns() {
+  if (!hasPg || !pgPool) return
+  if (cleaningInspectionEnsured) return
+  if (cleaningInspectionEnsuring) return cleaningInspectionEnsuring
+  cleaningInspectionEnsuring = (async () => {
+    try {
+      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_mode text;`)
+      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
+    } finally {
+      cleaningInspectionEnsured = true
+    }
+  })()
+    .catch(() => {})
+    .finally(() => {
+      cleaningInspectionEnsuring = null
+    })
+  return cleaningInspectionEnsuring
 }
 
 let checklistEnsured = false
@@ -2007,6 +2062,7 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
   const id = String(req.params.id || '').trim()
   const action = String(req.body?.action || '').trim().toLowerCase()
   const photoUrl = String(req.body?.photo_url || '').trim() || null
+  const photoUrls = normalizeWorkTaskPhotoUrls(req.body?.photo_urls)
   const note = String(req.body?.note || '').trim() || null
   const reason = String(req.body?.reason || '').trim() || null
   const deferTo = dayOnly(req.body?.defer_to)
@@ -2021,28 +2077,180 @@ router.post('/work-tasks/:id/mark', async (req, res) => {
     if (!row) return res.status(404).json({ message: 'not found' })
     const assignee = row.assignee_id == null ? '' : String(row.assignee_id)
     if (!canViewAll(user) && assignee !== userId) return res.status(403).json({ message: 'forbidden' })
-
-    const parts: string[] = []
-    if (photoUrl) parts.push(`照片: ${photoUrl}`)
-    if (note) parts.push(`备注: ${note}`)
-    if (action === 'defer' && reason) parts.push(`未完成原因: ${reason}`)
-    if (action === 'defer' && deferTo) parts.push(`已挪到: ${deferTo}`)
-    const append = parts.length ? `\n${parts.join('\n')}` : ''
-    const nextSummary = `${String(row.summary || '')}${append}`.trim() || null
+    const completionPhotoUrls = normalizeWorkTaskPhotoUrls(photoUrls.length ? photoUrls : (photoUrl ? [photoUrl] : []))
 
     if (action === 'done') {
-      await pgPool.query('UPDATE work_tasks SET status=$1, summary=$2, updated_at=now() WHERE id=$3', ['done', nextSummary, id])
-      return res.json({ ok: true })
+      const completedAt = new Date().toISOString()
+      await pgPool.query(
+        `UPDATE work_tasks
+         SET status=$1,
+             completion_photo_urls=$2::jsonb,
+             completion_note=$3,
+             completion_reason=NULL,
+             updated_at=now()
+         WHERE id=$4`,
+        ['done', JSON.stringify(completionPhotoUrls), note, id],
+      )
+      try {
+        await emitWorkTaskEvent({
+          taskId: `work_task:${id}`,
+          sourceType: 'work_tasks',
+          sourceRefIds: [id],
+          eventType: 'TASK_COMPLETED',
+          changeScope: 'list',
+          changedFields: ['status', 'completion_photo_urls', 'completion_note'],
+          patch: {
+            status: 'done',
+            completion_photo_urls: completionPhotoUrls,
+            completion_note: note,
+            completion_reason: null,
+          },
+          occurredAt: completedAt,
+          causedByUserId: userId,
+          visibilityHints: buildWorkTaskVisibilityHints(row),
+        })
+      } catch {}
+      try {
+        await emitNotificationEvent(
+          {
+            type: 'WORK_TASK_COMPLETED',
+            entity: 'work_task',
+            entityId: id,
+            propertyId: row.property_id ? String(row.property_id) : undefined,
+            updatedAt: completedAt,
+            title: workTaskCompletedTitle(row.title),
+            body: workTaskCompletedBody(row.title),
+            data: {
+              entity: 'work_task',
+              entityId: id,
+              action: 'open_work_task',
+              kind: 'work_task_completed',
+              task_id: id,
+              photo_url: completionPhotoUrls[0] || null,
+              photo_urls: completionPhotoUrls,
+              note,
+            },
+            actorUserId: userId,
+          },
+          { operationId: require('uuid').v4() },
+        )
+      } catch {}
+      return res.json({ ok: true, completion_photo_urls: completionPhotoUrls, completion_note: note, completion_reason: null })
     }
     if (!reason) return res.status(400).json({ message: 'missing reason' })
     if (deferTo) {
-      await pgPool.query('UPDATE work_tasks SET status=$1, scheduled_date=$2::date, summary=$3, updated_at=now() WHERE id=$4', ['todo', deferTo, nextSummary, id])
-      return res.json({ ok: true })
+      await pgPool.query(
+        `UPDATE work_tasks
+         SET status=$1,
+             scheduled_date=$2::date,
+             completion_photo_urls=$3::jsonb,
+             completion_note=$4,
+             completion_reason=$5,
+             updated_at=now()
+         WHERE id=$6`,
+        ['todo', deferTo, JSON.stringify(completionPhotoUrls), note, reason, id],
+      )
+      return res.json({ ok: true, completion_photo_urls: completionPhotoUrls, completion_note: note, completion_reason: reason })
     }
-    await pgPool.query('UPDATE work_tasks SET status=$1, summary=$2, updated_at=now() WHERE id=$3', ['todo', nextSummary, id])
-    return res.json({ ok: true })
+    await pgPool.query(
+      `UPDATE work_tasks
+       SET status=$1,
+           completion_photo_urls=$2::jsonb,
+           completion_note=$3,
+           completion_reason=$4,
+           updated_at=now()
+       WHERE id=$5`,
+      ['todo', JSON.stringify(completionPhotoUrls), note, reason, id],
+    )
+    return res.json({ ok: true, completion_photo_urls: completionPhotoUrls, completion_note: note, completion_reason: reason })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'mark_failed' })
+  }
+})
+
+const workTaskReorderSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  task_ids: z.array(z.string().min(1)).min(1),
+}).strict()
+
+router.post('/work-tasks/reorder', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const userId = String(user.sub || '').trim()
+  if (!userId && !canViewAll(user)) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = workTaskReorderSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+
+  const date = parsed.data.date
+  const taskIds = Array.from(new Set(parsed.data.task_ids.map((item) => String(item || '').trim()).filter(Boolean)))
+  if (!taskIds.length) return res.status(400).json({ message: 'missing task_ids' })
+
+  try {
+    await ensureWorkTasksTable()
+    const r0 = await pgPool.query(
+      `SELECT id, assignee_id, scheduled_date, source_type
+       FROM work_tasks
+       WHERE id = ANY($1::text[])`,
+      [taskIds],
+    )
+    const rows = Array.isArray(r0?.rows) ? r0.rows : []
+    if (rows.length !== taskIds.length) return res.status(404).json({ message: 'task not found' })
+    if (rows.some((row: any) => String(row.source_type || '').trim() === 'cleaning_tasks')) {
+      return res.status(400).json({ message: 'cleaning tasks use dedicated reorder api' })
+    }
+    if (rows.some((row: any) => String(row.scheduled_date || '').slice(0, 10) !== date)) {
+      return res.status(400).json({ message: 'task date mismatch' })
+    }
+
+    const assignees = Array.from(new Set(rows.map((row: any) => String(row.assignee_id || '').trim())))
+    if (!canViewAll(user)) {
+      if (rows.some((row: any) => String(row.assignee_id || '').trim() !== userId)) {
+        return res.status(403).json({ message: 'forbidden' })
+      }
+    } else {
+      const nonEmptyAssignees = assignees.filter(Boolean)
+      if (nonEmptyAssignees.length > 1) return res.status(400).json({ message: 'only one assignee can be reordered at a time' })
+    }
+
+    const scopeAssignee = canViewAll(user) ? (assignees.find(Boolean) || '') : userId
+    await pgPool.query('BEGIN')
+    try {
+      if (scopeAssignee) {
+        await pgPool.query(
+          `UPDATE work_tasks
+           SET sort_index = NULL, updated_at = now()
+           WHERE scheduled_date = $1::date
+             AND source_type <> 'cleaning_tasks'
+             AND COALESCE(assignee_id, '') = $2`,
+          [date, scopeAssignee],
+        )
+      } else {
+        await pgPool.query(
+          `UPDATE work_tasks
+           SET sort_index = NULL, updated_at = now()
+           WHERE scheduled_date = $1::date
+             AND source_type <> 'cleaning_tasks'
+             AND COALESCE(assignee_id, '') = ''`,
+          [date],
+        )
+      }
+      for (let i = 0; i < taskIds.length; i++) {
+        await pgPool.query(
+          `UPDATE work_tasks
+           SET sort_index = $1, updated_at = now()
+           WHERE id = $2`,
+          [i + 1, taskIds[i]],
+        )
+      }
+      await pgPool.query('COMMIT')
+    } catch (e) {
+      await pgPool.query('ROLLBACK')
+      throw e
+    }
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'work_task_reorder_failed' })
   }
 })
 
@@ -2065,6 +2273,7 @@ router.get('/work-tasks', async (req, res) => {
     await ensureCleaningTaskMediaTable()
     await ensureCleaningCheckoutColumns()
     await ensureCleaningCustomerColumns()
+    await ensureCleaningInspectionColumns()
     try {
       await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
     } catch {}
@@ -2093,9 +2302,15 @@ router.get('/work-tasks', async (req, res) => {
         FROM work_tasks w
         LEFT JOIN properties p ON p.id = w.property_id
         WHERE ${where.join(' AND ')}
-        ORDER BY w.scheduled_date ASC, w.urgency DESC, w.updated_at DESC, w.id DESC`
+        ORDER BY
+          w.scheduled_date ASC,
+          COALESCE(w.sort_index, 2147483647) ASC,
+          w.urgency DESC,
+          w.updated_at DESC,
+          w.id DESC`
       const r = await pgPool.query(sql, vals)
       for (const x of (r?.rows || [])) {
+        const completionPhotoUrls = normalizeWorkTaskPhotoUrls(x.completion_photo_urls)
         out.push({
           id: String(x.id),
           task_kind: String(x.task_kind || ''),
@@ -2110,6 +2325,10 @@ router.get('/work-tasks', async (req, res) => {
           assignee_id: x.assignee_id ? String(x.assignee_id) : null,
           status: normStatus(x.status),
           urgency: normUrgency(x.urgency),
+          sort_index: workTaskSortNumber(x.sort_index),
+          completion_photo_urls: completionPhotoUrls,
+          completion_note: x.completion_note == null ? null : String(x.completion_note || ''),
+          completion_reason: x.completion_reason == null ? null : String(x.completion_reason || ''),
           property: x.property_id
             ? {
                 id: String(x.property_id),
@@ -2155,6 +2374,8 @@ router.get('/work-tasks', async (req, res) => {
             t.assignee_id,
             t.cleaner_id,
             t.inspector_id,
+            t.inspection_mode,
+            t.inspection_due_date::text AS inspection_due_date,
             COALESCE(cu.username, cu.email, cu.id::text) AS cleaner_name,
             COALESCE(iu.username, iu.email, iu.id::text) AS inspector_name,
             t.checkout_time,
@@ -2162,6 +2383,7 @@ router.get('/work-tasks', async (req, res) => {
             t.old_code,
             t.new_code,
             t.guest_special_request,
+            t.note,
             CASE
               WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1)
               ELSE COALESCE(o.keys_required, 1)
@@ -2200,7 +2422,10 @@ router.get('/work-tasks', async (req, res) => {
           LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
           LEFT JOIN users cu ON (cu.id::text) = (COALESCE(t.cleaner_id, t.assignee_id)::text)
           LEFT JOIN users iu ON (iu.id::text) = (t.inspector_id::text)
-          WHERE (COALESCE(t.task_date, t.date)::date) >= ($1::date) AND (COALESCE(t.task_date, t.date)::date) <= ($2::date)
+          WHERE (
+              ((COALESCE(t.task_date, t.date)::date) >= ($1::date) AND (COALESCE(t.task_date, t.date)::date) <= ($2::date))
+              OR (t.inspection_due_date IS NOT NULL AND (t.inspection_due_date::date) <= ($2::date))
+            )
             AND COALESCE(t.status,'') <> 'cancelled'
             AND (t.order_id IS NULL OR o.id IS NOT NULL)
             AND (
@@ -2261,7 +2486,7 @@ router.get('/work-tasks', async (req, res) => {
         const cleanerGroups = new Map<string, any[]>()
         const inspectorGroups = new Map<string, any[]>()
         for (const row of (r?.rows || [])) {
-          const d = String(row.task_date || row.date || '').slice(0, 10)
+          const taskDate = String(row.task_date || row.date || '').slice(0, 10)
           const propId = row.property_id ? String(row.property_id) : null
           const prop = propId
             ? {
@@ -2279,6 +2504,15 @@ router.get('/work-tasks', async (req, res) => {
 
           const raw_status = String(row.status ?? '').trim().toLowerCase()
           const status = mapCleaningTaskStatus(raw_status)
+          const inspectionMode = effectiveInspectionMode(row)
+          const inspectionDueDate = dayOnly(row.inspection_due_date)
+          const deferredDate = deferredProjectionDate({
+            inspectionMode,
+            inspectionDueDate,
+            dateFrom,
+            dateTo,
+            status: raw_status,
+          })
 
           const effectiveCleanerId = row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null)
           const inspectorId = row.inspector_id ? String(row.inspector_id) : null
@@ -2287,10 +2521,13 @@ router.get('/work-tasks', async (req, res) => {
 
           const base = {
             __raw_id: String(row.id),
-            __date: d,
+            __date: taskDate,
             __prop_id: propId,
             __assignee_cleaner: effectiveCleanerId,
             __assignee_inspector: inspectorId,
+            __inspection_mode: inspectionMode,
+            __inspection_due_date: inspectionDueDate,
+            __deferred_projection_date: deferredDate,
             order_id: orderId,
             order_keys_required: orderKeysRequired,
             raw_status,
@@ -2300,6 +2537,7 @@ router.get('/work-tasks', async (req, res) => {
             old_code: row.old_code,
             new_code: row.new_code,
             guest_special_request: row.guest_special_request,
+            note: row.note == null ? null : String(row.note || '').trim() || null,
             keys_required: row.keys_required == null ? 1 : Number(row.keys_required),
             keys_required_checkout: cleaningType(row.task_type) === 'checkout' ? clampInt(row.keys_required == null ? 1 : Number(row.keys_required), 1, 2) : null,
             keys_required_checkin: cleaningType(row.task_type) === 'checkin' ? clampInt(row.keys_required == null ? 1 : Number(row.keys_required), 1, 2) : null,
@@ -2321,17 +2559,21 @@ router.get('/work-tasks', async (req, res) => {
             property: prop,
           }
 
-          if (wantCleaner && effectiveCleanerId && (allowAll || effectiveCleanerId === userId)) {
-            const k = `${d}|${propId || ''}|${effectiveCleanerId}`
+          if (wantCleaner && effectiveCleanerId && taskDate >= dateFrom && taskDate <= dateTo && (allowAll || effectiveCleanerId === userId)) {
+            const k = `${taskDate}|${propId || ''}|${effectiveCleanerId}`
             const arr = cleanerGroups.get(k) || []
             arr.push(base)
             cleanerGroups.set(k, arr)
           }
 
-          if (wantInspector && inspectorId && (allowAll || inspectorId === userId)) {
-            const k = `${d}|${propId || ''}|${inspectorId}`
+          const inspectorDisplayDate =
+            inspectionMode === 'deferred'
+              ? deferredDate
+              : (inspectionMode === 'same_day' && taskDate >= dateFrom && taskDate <= dateTo ? taskDate : null)
+          if (wantInspector && inspectorId && inspectorDisplayDate && cleaningType(row.task_type) !== 'stayover' && (allowAll || inspectorId === userId)) {
+            const k = `${inspectorDisplayDate}|${propId || ''}|${inspectorId}`
             const arr = inspectorGroups.get(k) || []
-            arr.push(base)
+            arr.push({ ...base, __date: inspectorDisplayDate, __is_deferred_projection: inspectionMode === 'deferred' })
             inspectorGroups.set(k, arr)
           }
         }
@@ -2370,17 +2612,18 @@ router.get('/work-tasks', async (req, res) => {
           const oldCode = firstNonEmpty(p.a.old_code, p.b?.old_code, ...rows.map((x) => x.old_code))
           const newCode = firstNonEmpty(p.a.new_code, p.b?.new_code, ...rows.map((x) => x.new_code))
           const guestSpecialRequest = firstNonEmpty(p.a.guest_special_request, p.b?.guest_special_request, ...rows.map((x) => x.guest_special_request))
+          const taskNote = firstNonEmpty(p.a.note, p.b?.note, ...rows.map((x) => x.note))
           const checkedOutAt = firstNonEmpty(p.a.checked_out_at, p.b?.checked_out_at, ...rows.map((x) => x.checked_out_at))
           const keyPhotoUrl = firstNonEmpty(p.a.key_photo_url, p.b?.key_photo_url, ...rows.map((x) => x.key_photo_url))
           const lockboxVideoUrl = firstNonEmpty(p.a.lockbox_video_url, p.b?.lockbox_video_url, ...rows.map((x) => x.lockbox_video_url))
           const keysRequired = Math.max(...rows.map((x) => (x.keys_required == null ? 1 : Number(x.keys_required))).filter((x) => Number.isFinite(x) && x > 0), 1)
           const cleanerName = firstNonEmpty(p.a.cleaner_name, p.b?.cleaner_name, ...rows.map((x) => x.cleaner_name))
-          const inspectorName = firstNonEmpty(p.a.inspector_name, p.b?.inspector_name, ...rows.map((x) => x.inspector_name))
-          const inspectorAssigned = firstNonEmpty(p.a.__assignee_inspector, p.b?.__assignee_inspector, ...rows.map((x) => x.__assignee_inspector))
-          const requireSelfComplete =
-            roleKind === 'cleaner' &&
-            (p.kind === 'checkout' || p.kind === 'turnover') &&
-            !String(inspectorAssigned || '').trim()
+          const inspectorName = p.kind === 'stayover' ? null : firstNonEmpty(p.a.inspector_name, p.b?.inspector_name, ...rows.map((x) => x.inspector_name))
+          const inspectorAssigned = p.kind === 'stayover' ? null : firstNonEmpty(p.a.__assignee_inspector, p.b?.__assignee_inspector, ...rows.map((x) => x.__assignee_inspector))
+          const inspectionMode = String(p.a.__inspection_mode || p.b?.__inspection_mode || '').trim() || 'pending_decision'
+          const inspectionDueDate = firstNonEmpty(p.a.__inspection_due_date, p.b?.__inspection_due_date, ...rows.map((x) => x.__inspection_due_date))
+          const requireSelfComplete = roleKind === 'cleaner' && inspectionMode === 'self_complete'
+          const requireLockboxBeforeDone = requireSelfComplete && p.kind !== 'stayover'
           const completionAreas = new Set<string>()
           for (const sId of p.ids) {
             const arr = rows.filter((x) => String(x.__raw_id) === String(sId)).flatMap((x) => (Array.isArray(x.completion_areas) ? x.completion_areas : []))
@@ -2389,8 +2632,7 @@ router.get('/work-tasks', async (req, res) => {
               if (k) completionAreas.add(k)
             }
           }
-          const requiredAreas = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'shower_drain']
-          const completionPhotosOk = requiredAreas.every((a) => completionAreas.has(a))
+          const completionPhotosOk = REQUIRED_COMPLETION_PHOTO_AREAS.every((a) => completionAreas.has(a))
           const restockItems: any[] = []
           const seen = new Set<string>()
           for (const sId of p.ids) {
@@ -2429,10 +2671,22 @@ router.get('/work-tasks', async (req, res) => {
           })()
           const statusOut =
             roleKind === 'inspector'
-              ? (lockboxVideoUrl ? 'keys_hung' : (raw === 'cleaned' || raw === 'restock_pending' ? 'to_inspect' : p.a.status))
-              : (requireSelfComplete && isDoneLike && !lockboxVideoUrl ? 'to_hang_keys'
-                  : requireSelfComplete && isDoneLike && !completionPhotosOk ? 'to_complete'
-                    : (raw === 'cleaned' || raw === 'restock_pending' ? 'done' : p.a.status))
+              ? (
+                  lockboxVideoUrl
+                    ? 'keys_hung'
+                    : isInspectionFinishedStatus(raw)
+                      ? 'done'
+                      : (raw === 'cleaned' || raw === 'restock_pending' || raw === 'restocked')
+                        ? 'to_inspect'
+                        : (String(inspectorAssigned || '').trim() ? 'assigned' : 'todo')
+                )
+              : (
+                  requireLockboxBeforeDone && isDoneLike && !lockboxVideoUrl
+                    ? 'to_hang_keys'
+                    : requireSelfComplete && isDoneLike && !completionPhotosOk
+                      ? 'to_complete'
+                      : (raw === 'cleaned' || raw === 'restock_pending' ? 'done' : p.a.status)
+                )
           const sortIndex =
             roleKind === 'cleaner'
               ? Math.min(...rows.map((x) => (x.sort_index_cleaner == null ? Number.POSITIVE_INFINITY : Number(x.sort_index_cleaner))).filter((x) => Number.isFinite(x)))
@@ -2491,6 +2745,9 @@ router.get('/work-tasks', async (req, res) => {
             old_code: oldCode,
             new_code: newCode,
             guest_special_request: guestSpecialRequest,
+            note: taskNote,
+            inspection_mode: inspectionMode,
+            inspection_due_date: inspectionDueDate,
             keys_required: keysRequired,
             keys_required_checkout: checkoutKeysOut,
             keys_required_checkin: checkinKeysOut,
@@ -2602,6 +2859,8 @@ router.get('/work-tasks', async (req, res) => {
         const checkedOutAtMerged = firstNonEmpty(...arr.map((x) => x.checked_out_at))
         const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
         const inspectorName = firstNonEmpty(...arr.map((x) => x.inspector_name))
+        const inspectionMode = firstNonEmpty(...arr.map((x) => x.inspection_mode)) || null
+        const inspectionDueDate = firstNonEmpty(...arr.map((x) => x.inspection_due_date)) || null
         const restockItems: any[] = []
         const seenRestock = new Set<string>()
         for (const it of arr.flatMap((x) => (Array.isArray(x?.restock_items) ? x.restock_items : []))) {
@@ -2638,6 +2897,8 @@ router.get('/work-tasks', async (req, res) => {
           order_id: null,
           order_id_checkin: orderIdCheckin || null,
           order_id_checkout: orderIdCheckout || null,
+          inspection_mode: inspectionMode,
+          inspection_due_date: inspectionDueDate,
           keys_required: keysRequired,
           keys_required_checkout: checkoutKeysOut,
           keys_required_checkin: checkinKeysOut,
@@ -2662,20 +2923,19 @@ router.get('/work-tasks', async (req, res) => {
       const bd = String(b.scheduled_date || '')
       const d = ad.localeCompare(bd)
       if (d) return d
+      const ai = a.sort_index == null ? Number.POSITIVE_INFINITY : Number(a.sort_index)
+      const bi = b.sort_index == null ? Number.POSITIVE_INFINITY : Number(b.sort_index)
+      const o = ai - bi
+      if (o) return o
       const aIsCleaning = String(a.source_type || '') === 'cleaning_tasks'
       const bIsCleaning = String(b.source_type || '') === 'cleaning_tasks'
-      if (aIsCleaning && bIsCleaning) {
-        if (allowAll) {
-          const aa = String(a.assignee_id || '')
-          const ba = String(b.assignee_id || '')
-          const u0 = aa.localeCompare(ba)
-          if (u0) return u0
-        }
-        const ai = a.sort_index == null ? Number.POSITIVE_INFINITY : Number(a.sort_index)
-        const bi = b.sort_index == null ? Number.POSITIVE_INFINITY : Number(b.sort_index)
-        const o = ai - bi
-        if (o) return o
-      } else {
+      if (aIsCleaning && bIsCleaning && allowAll) {
+        const aa = String(a.assignee_id || '')
+        const ba = String(b.assignee_id || '')
+        const u0 = aa.localeCompare(ba)
+        if (u0) return u0
+      }
+      if (!(aIsCleaning && bIsCleaning)) {
         const ur = urgencyRank(String(b.urgency || '')) - urgencyRank(String(a.urgency || ''))
         if (ur) return ur
       }
@@ -3054,6 +3314,16 @@ function toIsoOrNull(raw: any) {
   return d.toISOString()
 }
 
+function feedbackPhotoFallbacks(kind: FeedbackKind, fallback?: any) {
+  const fallbackBefore = normalizeUrlArray(
+    fallback?.photo_urls || (kind === 'deep_cleaning' ? fallback?.attachment_urls : null),
+  )
+  const fallbackAfter = kind === 'deep_cleaning'
+    ? normalizeUrlArray(fallback?.repair_photo_urls)
+    : normalizeUrlArray(fallback?.repair_photo_urls || fallback?.attachment_urls)
+  return { fallbackBefore, fallbackAfter }
+}
+
 function summarizeProjectItems(kind: FeedbackKind, itemsRaw: any, fallback?: any) {
   const items = (Array.isArray(itemsRaw) ? itemsRaw : safeJsonParse(itemsRaw) || [])
     .map((it: any) => {
@@ -3081,8 +3351,7 @@ function summarizeProjectItems(kind: FeedbackKind, itemsRaw: any, fallback?: any
     .filter((it: PropertyFeedbackProjectItem) => it.name || it.detail || it.note || it.before_photos.length || it.after_photos.length)
 
   if (!items.length && fallback) {
-    const fallbackBefore = normalizeUrlArray(fallback?.photo_urls)
-    const fallbackAfter = normalizeUrlArray(fallback?.repair_photo_urls || fallback?.attachment_urls)
+    const { fallbackBefore, fallbackAfter } = feedbackPhotoFallbacks(kind, fallback)
     const fallbackStatus = mapWorkStatus(fallback?.status) === 'resolved' ? 'completed' : 'open'
     const fallbackProject = {
       id: String(fallback?.id || '').trim() ? `legacy-${String(fallback.id).trim()}` : require('uuid').v4(),
@@ -3110,8 +3379,7 @@ function summarizeProjectItems(kind: FeedbackKind, itemsRaw: any, fallback?: any
   const started = items.map((it: PropertyFeedbackProjectItem) => it.started_at).filter(Boolean).sort()[0] || null
   const ended = items.map((it: PropertyFeedbackProjectItem) => it.ended_at).filter(Boolean).sort().slice(-1)[0] || null
   const duration = items.reduce((sum: number, it: PropertyFeedbackProjectItem) => sum + (Number(it.duration_minutes) || 0), 0)
-  const fallbackBefore = normalizeUrlArray(fallback?.photo_urls)
-  const fallbackAfter = normalizeUrlArray(fallback?.repair_photo_urls || fallback?.attachment_urls)
+  const { fallbackBefore, fallbackAfter } = feedbackPhotoFallbacks(kind, fallback)
   const beforePhotos = Array.from(new Set([
     ...items.flatMap((it: PropertyFeedbackProjectItem) => it.before_photos),
     ...fallbackBefore,

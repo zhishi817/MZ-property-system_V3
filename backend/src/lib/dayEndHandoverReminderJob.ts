@@ -2,6 +2,8 @@ import { hasPg, pgPool } from '../dbAdapter'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { listManagerUserIds } from '../modules/notifications'
 
+const FIELD_ROLE_EXCLUDES = ['cleaner', 'cleaner_inspector', 'cleaning_inspector']
+
 function melbourneYmd(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Australia/Melbourne',
@@ -147,7 +149,7 @@ export async function runDayEndHandoverManagerReminder(params?: { at?: string; d
   const date = String(params?.date || '').trim() || melbourneYmd()
   const pendingUsers = await listPendingDayEndHandoverUsers(date)
   if (!pendingUsers.length) return { ok: true, skipped: 'no_pending_users', date, at, sent: 0 }
-  const managerIds = await listManagerUserIds()
+  const managerIds = await listManagerUserIds({ excludeRoles: FIELD_ROLE_EXCLUDES })
   if (!managerIds.length) return { ok: true, skipped: 'no_manager_users', date, at, sent: 0 }
   let sent = 0
   for (const user of pendingUsers) {

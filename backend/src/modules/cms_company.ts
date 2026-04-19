@@ -67,6 +67,7 @@ async function ensureCmsPagesCompanyColumns() {
       published_at date,
       page_type text NOT NULL DEFAULT 'generic',
       category text,
+      guide_role text,
       pinned boolean NOT NULL DEFAULT false,
       urgent boolean NOT NULL DEFAULT false,
       audience_scope text,
@@ -77,6 +78,7 @@ async function ensureCmsPagesCompanyColumns() {
     );`)
     await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS page_type text NOT NULL DEFAULT 'generic';`)
     await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS category text;`)
+    await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS guide_role text;`)
     await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false;`)
     await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS urgent boolean NOT NULL DEFAULT false;`)
     await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS audience_scope text;`)
@@ -85,6 +87,7 @@ async function ensureCmsPagesCompanyColumns() {
     await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS updated_by text;`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_status ON cms_pages(status);`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_type ON cms_pages(page_type);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_guide_role ON cms_pages(guide_role);`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_pinned ON cms_pages(pinned, published_at);`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_expires ON cms_pages(expires_at);`)
   } catch {}
@@ -113,6 +116,7 @@ async function ensureCmsCompanyPublicLinksTable() {
 const pageTypeSchema = z.enum(['announce', 'doc', 'warehouse'])
 const audienceScopeSchema = z.enum(['all_staff', 'cleaners', 'warehouse_staff', 'maintenance_staff', 'managers']).optional()
 const categorySchema = z.enum(['company_rule', 'work_guide']).optional()
+const guideRoleSchema = z.enum(['cleaner', 'cleaning_inspector']).optional()
 
 const createSchema = z.object({
   type: pageTypeSchema,
@@ -124,6 +128,7 @@ const createSchema = z.object({
   pinned: z.boolean().optional(),
   urgent: z.boolean().optional(),
   category: categorySchema,
+  guide_role: guideRoleSchema,
   audience_scope: audienceScopeSchema,
   expires_at: z.string().optional(),
 }).strict()
@@ -137,6 +142,7 @@ const patchSchema = z.object({
   pinned: z.boolean().optional(),
   urgent: z.boolean().optional(),
   category: categorySchema.optional(),
+  guide_role: guideRoleSchema.optional(),
   audience_scope: audienceScopeSchema.optional(),
   expires_at: z.string().optional(),
 }).strict()
@@ -243,6 +249,10 @@ router.post('/company/pages', requirePerm('cms_pages.write'), async (req, res) =
     const cat = String(parsed.data.category || '').trim()
     if (!cat) return res.status(400).json({ message: 'missing category' })
   }
+  const guideRole =
+    type === 'doc' && String(parsed.data.category || '').trim() === 'work_guide'
+      ? String(parsed.data.guide_role || '').trim() || null
+      : null
 
   const title = String(parsed.data.title || '').trim()
   const slug = normalizeSlug(type, parsed.data.slug, title, id)
@@ -255,6 +265,7 @@ router.post('/company/pages', requirePerm('cms_pages.write'), async (req, res) =
     published_at: normalizeDate(parsed.data.published_at),
     page_type: type,
     category: type === 'doc' ? (parsed.data.category || null) : null,
+    guide_role: guideRole,
     pinned: type === 'announce' ? !!parsed.data.pinned : false,
     urgent: type === 'announce' ? !!parsed.data.urgent : false,
     audience_scope: parsed.data.audience_scope || null,
@@ -309,7 +320,19 @@ router.patch('/company/pages/:id', requirePerm('cms_pages.write'), async (req, r
     if (patch.published_at !== undefined) patch.published_at = normalizeDate(patch.published_at)
     if (patch.expires_at !== undefined) patch.expires_at = normalizeDate(patch.expires_at)
     if (type !== 'announce') { delete patch.pinned; delete patch.urgent }
-    if (type !== 'doc') { delete patch.category }
+    if (type !== 'doc') {
+      delete patch.category
+      delete patch.guide_role
+    } else {
+      const nextCategory = patch.category === undefined ? String(before.category || '').trim() : String(patch.category || '').trim()
+      if (nextCategory !== 'work_guide') {
+        patch.guide_role = null
+      } else if (patch.guide_role === undefined) {
+        patch.guide_role = String(before.guide_role || '').trim() || null
+      } else {
+        patch.guide_role = String(patch.guide_role || '').trim() || null
+      }
+    }
 
     patch.updated_at = new Date().toISOString()
     patch.updated_by = userId
@@ -460,7 +483,7 @@ router.get('/company/pages/app-list', async (req, res) => {
       type === 'announce'
         ? 'pinned DESC, published_at DESC NULLS LAST, updated_at DESC NULLS LAST, created_at DESC'
         : 'updated_at DESC NULLS LAST, published_at DESC NULLS LAST, created_at DESC'
-    const sql = `SELECT id, title, content, published_at, updated_at, pinned, urgent, audience_scope, page_type, category, expires_at, created_at
+    const sql = `SELECT id, title, content, published_at, updated_at, pinned, urgent, audience_scope, page_type, category, guide_role, expires_at, created_at
                  FROM cms_pages
                  WHERE ${where.join(' AND ')}
                  ORDER BY ${orderBy}`

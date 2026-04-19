@@ -11,8 +11,11 @@ import sharp from 'sharp'
 import fs from 'fs'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
+import { effectiveInspectionMode } from '../lib/cleaningInspection'
 
 export const router = Router()
+
+const REQUIRED_COMPLETION_PHOTO_AREAS = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen'] as const
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
 
 function parseYmd(value: string): { y: number; m: number; d: number } | null {
@@ -1170,7 +1173,8 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
 
       const rTask = await pgPool.query(
-        `SELECT id::text AS id, COALESCE(status,'') AS status, finished_at, lockbox_video_uploaded_at
+        `SELECT id::text AS id, COALESCE(status,'') AS status, finished_at, lockbox_video_uploaded_at, LOWER(COALESCE(task_type, '')) AS task_type,
+                inspection_mode, inspection_due_date::text AS inspection_due_date, inspector_id
          FROM cleaning_tasks
          WHERE id::text=$1
          LIMIT 1`,
@@ -1179,45 +1183,55 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
       const task = rTask?.rows?.[0] || null
       if (!task) return res.status(404).json({ message: 'task not found' })
       const st0 = String(task.status || '').trim().toLowerCase()
+      const taskType = String(task.task_type || '').trim().toLowerCase()
+      const isStayoverTask = taskType === 'stayover_clean'
+      const inspectionMode = effectiveInspectionMode(task)
       if (st0 === 'cancelled' || st0 === 'canceled') return res.status(400).json({ message: 'task is cancelled' })
+      if (!isStayoverTask && inspectionMode !== 'self_complete') {
+        return res.status(400).json({ message: '待经理确认检查安排，当前任务不能直接自完成' })
+      }
 
-      const rLock = await pgPool.query(
-        `SELECT 1 FROM cleaning_task_media WHERE task_id=$1 AND type='lockbox_video' LIMIT 1`,
-        [String(id)],
-      )
-      const hasLock = !!rLock?.rowCount || !!task.lockbox_video_uploaded_at
-      if (!hasLock) return res.status(400).json({ message: '缺少挂钥匙视频' })
+      if (!isStayoverTask) {
+        const rLock = await pgPool.query(
+          `SELECT 1 FROM cleaning_task_media WHERE task_id=$1 AND type='lockbox_video' LIMIT 1`,
+          [String(id)],
+        )
+        const hasLock = !!rLock?.rowCount || !!task.lockbox_video_uploaded_at
+        if (!hasLock) return res.status(400).json({ message: '缺少挂钥匙视频' })
+      }
 
       const rComp = await pgPool.query(
         `SELECT type FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'completion_%'`,
         [String(id)],
       )
-      const requiredAreas = ['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'shower_drain']
       const got = new Set<string>()
       for (const row of rComp?.rows || []) {
         const type = String(row.type || '')
         const a = type.startsWith('completion_') ? type.slice('completion_'.length) : type
         if (a) got.add(a)
       }
-      const missingAreas = requiredAreas.filter((a) => !got.has(a))
+      const missingAreas = REQUIRED_COMPLETION_PHOTO_AREAS.filter((a) => !got.has(a))
       if (missingAreas.length) return res.status(400).json({ message: '房间完成照片未齐', missing_areas: missingAreas })
 
-      const rConsum = await pgPool.query(`SELECT 1 FROM cleaning_consumable_usages WHERE task_id=$1 LIMIT 1`, [String(id)])
-      const hasConsum = !!rConsum?.rowCount
-      if (!hasConsum) return res.status(400).json({ message: '请先完成消耗品补充' })
+      let needsRestock = false
+      if (!isStayoverTask) {
+        const rConsum = await pgPool.query(`SELECT 1 FROM cleaning_consumable_usages WHERE task_id=$1 LIMIT 1`, [String(id)])
+        const hasConsum = !!rConsum?.rowCount
+        if (!hasConsum) return res.status(400).json({ message: '请先完成消耗品补充' })
 
-      const rNeed = await pgPool.query(
-        `SELECT 1
-         FROM cleaning_consumable_usages
-         WHERE task_id=$1 AND (need_restock = true OR COALESCE(status,'') = 'low')
-         LIMIT 1`,
-        [String(id)],
-      )
-      const needsRestock = !!rNeed?.rowCount
+        const rNeed = await pgPool.query(
+          `SELECT 1
+           FROM cleaning_consumable_usages
+           WHERE task_id=$1 AND (need_restock = true OR COALESCE(status,'') = 'low')
+           LIMIT 1`,
+          [String(id)],
+        )
+        needsRestock = !!rNeed?.rowCount
+      }
 
       const now = new Date().toISOString()
       const patch: any = {}
-      if (st0 !== 'restocked' && st0 !== 'ready') patch.status = needsRestock ? 'restock_pending' : 'cleaned'
+      if (st0 !== 'restocked' && st0 !== 'ready') patch.status = isStayoverTask ? 'cleaned' : (needsRestock ? 'restock_pending' : 'cleaned')
       if (!task.finished_at) patch.finished_at = now
       if (Object.keys(patch).length) {
         const up = await pgUpdate('cleaning_tasks', id, patch)
@@ -1240,8 +1254,8 @@ router.post('/tasks/:id/self-complete', requirePerm('cleaning_app.tasks.finish')
                 entityId: String(id),
                 propertyId,
                 updatedAt: now,
-                title: '任务已完成',
-                body: '清洁员已标记任务完成',
+                title: isStayoverTask ? '入住中清洁已完成' : '任务已完成',
+                body: isStayoverTask ? '清洁员已完成入住中清洁' : '清洁员已标记任务完成',
                 data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'self_completed', task_id: id },
                 actorUserId: String(user?.sub || ''),
               },
