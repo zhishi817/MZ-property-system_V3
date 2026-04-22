@@ -99,6 +99,7 @@ async function ensurePropertyDeepCleaningTable() {
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS pay_method text;')
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS gst_type text;')
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS total_cost numeric;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS invoice_description_en text;')
 }
 
 router.post('/upload', requireAnyPerm(['property_deep_cleaning.write','rbac.manage','property.write']), upload.single('file'), async (req, res) => {

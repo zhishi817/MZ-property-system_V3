@@ -74,7 +74,7 @@ import { getRole, hasPerm } from '../../../lib/auth'
         occurred_at: occurredDay.format('YYYY-MM-DD'),
         worker_name: v.worker_name || '',
         submitter_name: v.worker_name || '',
-        notes: v.notes || '',
+        repair_notes: v.notes || '',
         status: 'completed',
         submitted_at: new Date().toISOString()
       }
@@ -86,9 +86,8 @@ import { getRole, hasPerm } from '../../../lib/auth'
         const d = detailsArr[i] || {}
         const payload: any = {
           ...base,
-          // 问题区域映射到 category；问题摘要映射到 details[0].content
-          category: String(d?.content || ''),
-          details: [{ content: String(d?.item || ''), item: String(d?.item || '') }],
+          area: String(d?.content || ''),
+          details: [{ content: String(d?.item || ''), item: '问题摘要' }],
           completed_at: completedAtIso
         }
         if (d?.maintenance_amount !== undefined) payload.maintenance_amount = Number(d.maintenance_amount || 0)

@@ -119,7 +119,7 @@ function autoMaintenanceIssueSummary(row: any): string {
   if (a) return a
   const b = autoToSummaryText(row?.repair_notes)
   if (b) return b
-  return autoToSummaryText(row?.category)
+  return ''
 }
 
 function autoDeepCleaningProjectSummary(row: any): string {
@@ -181,11 +181,11 @@ export async function reconcileMonthlyAutoExpenses(input: { monthKey: string; pr
   })()
   return await pgRunInTransaction(async (client) => {
     const maintenanceRs = await client.query(
-      `SELECT id, property_id, status, pay_method, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, category
+      `SELECT id, property_id, status, pay_method, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes
        FROM property_maintenance
        WHERE property_id=$1
-         AND coalesce(completed_at::date, occurred_at, created_at::date) >= $2::date
-         AND coalesce(completed_at::date, occurred_at, created_at::date) < $3::date`,
+         AND coalesce(completed_at::date, occurred_at) >= $2::date
+         AND coalesce(completed_at::date, occurred_at) < $3::date`,
       [propertyId, start, next]
     )
     const deepRs = await client.query(
@@ -217,7 +217,7 @@ export async function reconcileMonthlyAutoExpenses(input: { monthKey: string; pr
       }
       const status = autoNormStatus(row?.status)
       const payMethod = autoNormPayMethod(row?.pay_method)
-      const occurredAt = autoToISODateOnly(row?.completed_at) || autoToISODateOnly(row?.occurred_at) || autoToISODateOnly(row?.created_at)
+      const occurredAt = autoToISODateOnly(row?.completed_at) || autoToISODateOnly(row?.occurred_at)
       const amount = it.kind === 'maintenance'
         ? autoCalcMaintenanceTotal(row)
         : autoToNum(row?.total_cost ?? autoComputeDeepCleaningTotalCost(row?.labor_cost, row?.consumables))

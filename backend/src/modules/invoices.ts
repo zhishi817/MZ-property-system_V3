@@ -1433,7 +1433,7 @@ async function buildDraftForSource(source_type: string, source_id: string) {
     } catch { items = [] }
     const sum = round2((Array.isArray(items) ? items : []).reduce((s: number, x: any) => s + Number(x.amount || 0), 0))
     const amt = sum || round2(m.maintenance_amount || 0) || round2(m.parts_amount || 0)
-    const desc = `Work order ${String(m.work_no || m.id)}`
+    const desc = String(m.invoice_description_en || '').trim() || `Work order ${String(m.work_no || m.id)}`
     return {
       bill_to_name: null,
       bill_to_email: null,
@@ -1450,7 +1450,7 @@ async function buildDraftForSource(source_type: string, source_id: string) {
     const d = rs?.rows?.[0]
     if (!d) throw new Error('source_not_found')
     const price = round2((d.total_cost !== undefined && d.total_cost !== null) ? d.total_cost : (d.labor_cost || 0))
-    const desc = `Deep cleaning ${String(d.work_no || d.id)}`
+    const desc = String(d.invoice_description_en || '').trim() || `Deep cleaning ${String(d.work_no || d.id)}`
     const gstTypeRaw = String(d.gst_type || '').trim()
     const gstType: GstType = (gstTypeRaw === 'GST_10' || gstTypeRaw === 'GST_INCLUDED_10' || gstTypeRaw === 'GST_FREE' || gstTypeRaw === 'INPUT_TAXED')
       ? (gstTypeRaw as GstType)

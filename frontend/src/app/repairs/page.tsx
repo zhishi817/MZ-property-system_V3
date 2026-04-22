@@ -9,6 +9,7 @@ import { hasPerm } from '../../lib/auth'
 
 type RepairOrder = {
   id: string
+  area?: string
   property_id?: string
   category?: string
   category_detail?: string
@@ -77,7 +78,7 @@ export default function RepairsPage() {
     const okWorkNo = filterWorkNo ? String(((r as any).work_no || (r as any).id || '')).toLowerCase().includes(filterWorkNo.toLowerCase()) : true
     const okSubmitter = filterSubmitter ? String((r as any).submitter_name || (r as any).worker_name || (r as any).created_by || '').toLowerCase().includes(filterSubmitter.toLowerCase()) : true
     const okStatus = filterStatus ? String(r.status || '') === filterStatus : true
-    const okCat = filterCat ? String((r as any).category || (r as any).category_detail || '') === filterCat : true
+    const okCat = filterCat ? String((r as any).area || (r as any).category || (r as any).category_detail || '') === filterCat : true
     const okDate = dateRange ? (() => {
       const d = r.submitted_at ? new Date(r.submitted_at) : null
       if (!d) return true
@@ -205,11 +206,11 @@ export default function RepairsPage() {
           const columns = [
             { title:'房号', dataIndex:'code', width: 120 },
             { title:'工单号', dataIndex:'work_no', width: 160, render: (_: any, r: any) => String((r as any)?.work_no || (r as any)?.id || '') },
-            { title:'问题区域', dataIndex:'category', width: 120, render: (_: any, r: any) => String((r as any)?.category || (r as any)?.category_detail || '') },
+            { title:'问题区域', dataIndex:'area', width: 120, render: (_: any, r: any) => String((r as any)?.area || (r as any)?.category || (r as any)?.category_detail || '') },
             { title:'问题摘要', dataIndex:'details', ellipsis: true, width: 280, render:(d:string)=> summaryFromDetails(d) },
             { title:'提交人', dataIndex:'submitter_name', width: 120, render: (_: any, r: any) => String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '') },
             { title:'提交时间', dataIndex:'submitted_at', width: 180, render: (_: any, r: any) => {
-              const v = (r as any)?.submitted_at || (r as any)?.occurred_at || (r as any)?.created_at
+              const v = (r as any)?.submitted_at
               return v ? dayjs(v).format('YYYY-MM-DD') : '-'
             } },
             { title:'紧急程度', dataIndex:'urgency', width: 120, render:(u:string)=> urgencyTag(u) },
@@ -240,10 +241,10 @@ export default function RepairsPage() {
         <Space direction="vertical" style={{ width: '100%' }}>
           <div>工单ID：{viewRow?.id}</div>
           <div>房号：{(viewRow as any)?.code || viewRow?.property_id}</div>
-          <div>问题区域：{(viewRow as any)?.category || (viewRow as any)?.category_detail}</div>
+          <div>问题区域：{(viewRow as any)?.area || (viewRow as any)?.category || (viewRow as any)?.category_detail}</div>
           <div>紧急程度：{urgencyLabel(viewRow?.urgency)}</div>
           <div>提交人：{(viewRow as any)?.submitter_name || (viewRow as any)?.worker_name || (viewRow as any)?.created_by}</div>
-          <div>提交时间：{((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at) ? dayjs((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at).format('YYYY-MM-DD') : '-'}</div>
+          <div>提交时间：{(viewRow as any)?.submitted_at ? dayjs((viewRow as any)?.submitted_at).format('YYYY-MM-DD') : '-'}</div>
           <div>问题详情：</div>
           <div style={{ whiteSpace:'pre-wrap', border:'1px solid #eee', padding:8, borderRadius:6 }}>{summaryFromDetails(viewRow?.details) || viewRow?.detail || ''}</div>
           <div>附件：</div>

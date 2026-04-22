@@ -5136,6 +5136,7 @@ async function ensureDailyNecessitiesSchema() {
     await dbAdapter_1.pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS replacement_at timestamptz;');
     await dbAdapter_1.pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS replacer_name text;');
     await dbAdapter_1.pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS pay_method text;');
+    await dbAdapter_1.pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS invoice_description_en text;');
     await dbAdapter_1.pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();');
     await dbAdapter_1.pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_prop ON property_daily_necessities(property_id);');
     await dbAdapter_1.pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_status ON property_daily_necessities(status);');
@@ -5163,6 +5164,7 @@ const dailyReplacementCreateSchema = zod_1.z.object({
     item_name: zod_1.z.string().min(1),
     quantity: zod_1.z.number().int().min(1).default(1),
     note: zod_1.z.string().optional(),
+    invoice_description_en: zod_1.z.string().optional(),
     before_photo_urls: zod_1.z.array(zod_1.z.string()).optional(),
     after_photo_urls: zod_1.z.array(zod_1.z.string()).optional(),
     replacement_at: zod_1.z.string().optional().nullable(),
@@ -5176,6 +5178,7 @@ const dailyReplacementPatchSchema = zod_1.z.object({
     item_name: zod_1.z.string().min(1).optional(),
     quantity: zod_1.z.number().int().min(1).optional(),
     note: zod_1.z.string().optional(),
+    invoice_description_en: zod_1.z.string().optional(),
     before_photo_urls: zod_1.z.array(zod_1.z.string()).optional(),
     after_photo_urls: zod_1.z.array(zod_1.z.string()).optional(),
     replacement_at: zod_1.z.string().optional().nullable(),
@@ -5240,6 +5243,7 @@ exports.router.get('/daily-replacements', (0, auth_1.requirePerm)('inventory.vie
           n.item_name,
           n.quantity,
           n.note,
+          n.invoice_description_en,
           n.photo_urls,
           n.before_photo_urls,
           n.after_photo_urls,
@@ -5287,10 +5291,10 @@ exports.router.post('/daily-replacements', (0, auth_1.requirePerm)('inventory.mo
             const nextPayMethod = parsed.data.pay_method ? String(parsed.data.pay_method).trim() : null;
             const created = await client.query(`INSERT INTO property_daily_necessities (
            id, property_id, property_code, status, item_id, item_name, quantity, note,
-           photo_urls, before_photo_urls, after_photo_urls, submitted_at, replacement_at,
+           invoice_description_en, photo_urls, before_photo_urls, after_photo_urls, submitted_at, replacement_at,
            submitter_name, replacer_name, pay_method, created_by, updated_at
          )
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12::timestamptz,$13::timestamptz,$14,$15,$16,$17,now())
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13::timestamptz,$14::timestamptz,$15,$16,$17,$18,now())
          RETURNING *`, [
                 id,
                 parsed.data.property_id,
@@ -5300,6 +5304,7 @@ exports.router.post('/daily-replacements', (0, auth_1.requirePerm)('inventory.mo
                 parsed.data.item_name,
                 parsed.data.quantity,
                 parsed.data.note || null,
+                parsed.data.invoice_description_en || null,
                 JSON.stringify(parsed.data.before_photo_urls || []),
                 JSON.stringify(parsed.data.before_photo_urls || []),
                 JSON.stringify(parsed.data.after_photo_urls || []),
@@ -5349,6 +5354,8 @@ exports.router.patch('/daily-replacements/:id', (0, auth_1.requirePerm)('invento
             patch.quantity = parsed.data.quantity;
         if (parsed.data.note !== undefined)
             patch.note = parsed.data.note || null;
+        if (parsed.data.invoice_description_en !== undefined)
+            patch.invoice_description_en = parsed.data.invoice_description_en || null;
         if (parsed.data.before_photo_urls !== undefined) {
             patch.before_photo_urls = JSON.stringify(parsed.data.before_photo_urls || []);
             patch.photo_urls = JSON.stringify(parsed.data.before_photo_urls || []);

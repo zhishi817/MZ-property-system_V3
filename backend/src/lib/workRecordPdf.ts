@@ -49,6 +49,7 @@ async function ensurePropertyMaintenanceTable() {
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category_detail text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS invoice_description_en text;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS started_at timestamptz;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS updated_at timestamptz;')
@@ -100,6 +101,7 @@ async function ensurePropertyDeepCleaningTable() {
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS pay_method text;')
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS gst_type text;')
   await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS total_cost numeric;')
+  await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS invoice_description_en text;')
 }
 
 function dayStrAtTZ(d: Date, tz: string): string {
@@ -237,7 +239,7 @@ export async function generateWorkRecordPdf(opts: GenerateWorkRecordPdfOptions):
     showChinese,
     jobNumber: String(row?.work_no || row?.id || ''),
     completionText: completionTextForRow(kind, row, tz),
-    areaText: kind === 'maintenance' ? String(row?.category_detail || row?.category || '') : String(row?.category || ''),
+    areaText: kind === 'maintenance' ? String(row?.area || row?.category_detail || row?.category || '') : String(row?.category || ''),
     beforeUrls,
     afterUrls,
   })

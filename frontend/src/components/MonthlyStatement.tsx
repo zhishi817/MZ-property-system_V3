@@ -1243,7 +1243,7 @@ export default forwardRef<HTMLDivElement, {
                   const labelCompletion = showChinese ? '完成时间  COMPLETION DATE' : 'COMPLETION DATE'
                   const labelArea = showChinese ? '维护区域  SERVICE AREA' : 'SERVICE AREA'
                   const labelDetails = showChinese ? '维护详情对比  Service Details' : 'Service Details'
-                  const areaCn = String(m?.category_detail || m?.category || '').trim()
+                  const areaCn = String(m?.area || m?.category_detail || m?.category || '').trim()
                   const areaEn = areaToEn(areaCn)
                   const areaShow = showChinese ? [areaCn, areaEn].filter(Boolean).join(' ') : (areaEn || areaCn)
                   const jobNo = String(m?.work_no || m?.id || '')

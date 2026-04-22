@@ -1,7 +1,7 @@
 "use client"
 
-import { Alert, Button, DatePicker, Empty, Modal, Segmented, Select, Skeleton, Space, Tag, Tooltip, message, Input } from 'antd'
-import { CalendarOutlined, CaretDownOutlined, CaretRightOutlined, HolderOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
+import { Alert, Button, DatePicker, Empty, Modal, Popconfirm, Segmented, Select, Skeleton, Space, Tag, Tooltip, message, Input } from 'antd'
+import { CalendarOutlined, CaretDownOutlined, CaretRightOutlined, HolderOutlined, KeyOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { getJSON, patchJSON, postJSON } from '../../lib/api'
@@ -438,6 +438,42 @@ export default function TaskCenterPage() {
     return mode === 'pending_decision' ? '安排检查' : '修改检查安排'
   }, [inspectionModeOf])
 
+  const isStayoverTask = useCallback((it: CalendarItem) => {
+    const taskType = String(it.task_type || '').trim().toLowerCase()
+    const label = String(it.label || '').trim().toLowerCase()
+    return taskType === 'stayover_clean' || label.includes('入住中清洁') || label.includes('stayover')
+  }, [])
+
+  const isCheckinOnlyTask = useCallback((it: CalendarItem) => {
+    if (String(it.source || '') !== 'cleaning_tasks') return false
+    if (Array.isArray(it.entity_ids) && it.entity_ids.length > 1) return false
+    if (isStayoverTask(it)) return false
+    const taskType = String(it.task_type || '').trim().toLowerCase()
+    const label = String(it.label || '').trim()
+    return taskType === 'checkin_clean' || (label.includes('入住') && !label.includes('退房'))
+  }, [isStayoverTask])
+
+  const canDirectMarkHungKeys = useCallback((it: CalendarItem) => {
+    if (!isCheckinOnlyTask(it)) return false
+    const raw = String(it.status || '').trim().toLowerCase()
+    if (raw === 'cancelled' || raw === 'canceled') return false
+    if (raw === 'ready' || raw === 'keys_hung' || raw === 'done' || raw === 'completed') return false
+    return true
+  }, [isCheckinOnlyTask])
+
+  const shouldKeepHungKeyTaskVisible = useCallback((it: CalendarItem) => {
+    if (!isCheckinOnlyTask(it)) return false
+    const raw = String(it.status || '').trim().toLowerCase()
+    return raw === 'ready' || raw === 'keys_hung'
+  }, [isCheckinOnlyTask])
+
+  const canUndoHungKeys = useCallback((it: CalendarItem) => {
+    if (!isCheckinOnlyTask(it)) return false
+    const raw = String(it.status || '').trim().toLowerCase()
+    if (raw === 'cancelled' || raw === 'canceled') return false
+    return raw === 'ready' || raw === 'keys_hung'
+  }, [isCheckinOnlyTask])
+
   const effectiveCleaningStatus = useCallback((it: CalendarItem, board: 'cleaning' | 'inspection') => {
     const raw = String(it.status || 'pending')
     const lowered = raw.trim().toLowerCase()
@@ -470,6 +506,12 @@ export default function TaskCenterPage() {
     if (v === 'done') return '已完成'
     return v || '-'
   }, [])
+
+  const boardStatusText = useCallback((it: CalendarItem, status: string | null | undefined) => {
+    const raw = String(it.status || '').trim().toLowerCase()
+    if (isCheckinOnlyTask(it) && (raw === 'ready' || raw === 'keys_hung')) return '已挂钥匙'
+    return statusText(status)
+  }, [isCheckinOnlyTask, statusText])
 
   const statusChipCls = useCallback((s: string | null | undefined) => {
     const v = String(s || '').trim()
@@ -800,6 +842,34 @@ export default function TaskCenterPage() {
     }
   }, [cleaningPendingKeys, hasAnyPendingKey, loadDay])
 
+  const markTaskHungKeys = useCallback(async (it: CalendarItem) => {
+    if (!canDirectMarkHungKeys(it)) return
+    const id = String(it.entity_id || '').trim()
+    if (!id) return
+    const pendingKey = `cleaning:${id}`
+    if (hasPendingKey(pendingKey)) return
+    setPendingTaskKeys((prev) => Array.from(new Set([...prev, pendingKey])))
+    setCleaningItems((prev) => prev.map((row) => (String(row.entity_id) === id ? { ...row, status: 'ready' } : row)))
+    try {
+      await patchJSON(`/cleaning-app/tasks/${encodeURIComponent(id)}/ready`, {}, { timeoutMs: 20000 })
+      message.success('已标记为已挂钥匙')
+    } catch (e) {
+      await loadDay().catch(() => {})
+      throw e
+    } finally {
+      setPendingTaskKeys((prev) => prev.filter((key) => key !== pendingKey))
+    }
+  }, [canDirectMarkHungKeys, hasPendingKey, loadDay])
+
+  const undoTaskHungKeys = useCallback(async (it: CalendarItem) => {
+    if (!canUndoHungKeys(it)) return
+    const cleaner = String(it.cleaner_id || it.assignee_id || '').trim()
+    const inspector = String(it.inspector_id || '').trim()
+    const fallbackStatus = cleaner || inspector ? 'assigned' : 'pending'
+    await updateCleaningTasks([String(it.entity_id || '').trim()], { status: fallbackStatus })
+    message.success('已取消已挂钥匙标记')
+  }, [canUndoHungKeys, updateCleaningTasks])
+
   const updateWorkTask = useCallback(async (id: string, patch: Partial<Pick<WorkTask, 'status' | 'urgency' | 'title' | 'summary' | 'property_id' | 'assignee_id' | 'scheduled_date'>>) => {
     const pendingKey = workPendingKey(id)
     if (hasPendingKey(pendingKey)) return
@@ -930,7 +1000,10 @@ export default function TaskCenterPage() {
       }
       {
         const st = effectiveCleaningStatus(it, 'cleaning')
-        if (st === 'assigned' || st === 'completed' || st === 'cancelled') return false
+        const keepVisible = shouldKeepHungKeyTaskVisible(it)
+        if (st === 'assigned' || st === 'cancelled') return false
+        if (st === 'completed' && !keepVisible) return false
+        if (keepVisible) return true
         return !String(it.cleaner_id || it.assignee_id || '').trim()
       }
     })
@@ -1091,7 +1164,7 @@ export default function TaskCenterPage() {
                   <div className={styles.taskMain}>
                     <div className={styles.taskTopMetaRow}>
                       <div className={styles.taskTopRow}>
-                        <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
+                        <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{boardStatusText(it, st)}</span>
                         {isMerged ? <Tag>合并 {ids.length}</Tag> : null}
                         {canConfigureInspection(it) ? <Tag color="geekblue">{planLabel}</Tag> : null}
                         {!canConfigureInspection(it) && mode === 'inspection' && it.deferred_inspection_view ? <Tag color="geekblue">{planLabel}</Tag> : null}
@@ -1113,6 +1186,35 @@ export default function TaskCenterPage() {
                             }}
                           />
                         </Tooltip>
+                      ) : null}
+                      {mode === 'cleaning' && (canDirectMarkHungKeys(it) || canUndoHungKeys(it)) ? (
+                        <Popconfirm
+                          title={canUndoHungKeys(it) ? '取消已挂钥匙标记？' : '确认标记为已挂钥匙？'}
+                          description={canUndoHungKeys(it) ? '取消后任务会恢复为未完成状态，仍可继续处理。' : '确认后客服可据此通知客人可以直接入住。'}
+                          okText={canUndoHungKeys(it) ? '确认取消' : '确认标记'}
+                          cancelText="取消"
+                          onConfirm={(e) => {
+                            e?.stopPropagation?.()
+                            const action = canUndoHungKeys(it) ? undoTaskHungKeys(it) : markTaskHungKeys(it)
+                            return action.catch((err: any) => {
+                              message.error(err?.message || '更新失败')
+                            })
+                          }}
+                        >
+                          <Tooltip title={canUndoHungKeys(it) ? '取消已挂钥匙标记' : '直接标记为已挂钥匙'}>
+                            <Button
+                              size="small"
+                              shape="circle"
+                              icon={<KeyOutlined />}
+                              aria-label={canUndoHungKeys(it) ? '取消已挂钥匙标记' : '直接标记为已挂钥匙'}
+                              className={`${styles.taskInlineActionBtn} ${canUndoHungKeys(it) ? styles.taskInlineActionBtnActive : ''}`}
+                              onClick={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                              }}
+                            />
+                          </Tooltip>
+                        </Popconfirm>
                       ) : null}
                     </div>
                     <div className={styles.taskTitleRow}>
@@ -1259,7 +1361,7 @@ export default function TaskCenterPage() {
                         <div className={styles.taskMain}>
                           <div className={styles.taskTopMetaRow}>
                             <div className={styles.taskTopRow}>
-                              <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
+                              <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{boardStatusText(it, st)}</span>
                               {isMerged ? <Tag>合并 {ids.length}</Tag> : null}
                               {isSelfComplete ? <Tag color="blue">自完成</Tag> : null}
                               {canConfigureInspection(it) ? <Tag color="geekblue">{planLabel}</Tag> : null}
@@ -1280,6 +1382,35 @@ export default function TaskCenterPage() {
                                   }}
                                 />
                               </Tooltip>
+                            ) : null}
+                            {mode === 'cleaning' && (canDirectMarkHungKeys(it) || canUndoHungKeys(it)) ? (
+                              <Popconfirm
+                                title={canUndoHungKeys(it) ? '取消已挂钥匙标记？' : '确认标记为已挂钥匙？'}
+                                description={canUndoHungKeys(it) ? '取消后任务会恢复为未完成状态，仍可继续处理。' : '确认后客服可据此通知客人可以直接入住。'}
+                                okText={canUndoHungKeys(it) ? '确认取消' : '确认标记'}
+                                cancelText="取消"
+                                onConfirm={(e) => {
+                                  e?.stopPropagation?.()
+                                  const action = canUndoHungKeys(it) ? undoTaskHungKeys(it) : markTaskHungKeys(it)
+                                  return action.catch((err: any) => {
+                                    message.error(err?.message || '更新失败')
+                                  })
+                                }}
+                              >
+                                <Tooltip title={canUndoHungKeys(it) ? '取消已挂钥匙标记' : '直接标记为已挂钥匙'}>
+                                  <Button
+                                    size="small"
+                                    shape="circle"
+                                    icon={<KeyOutlined />}
+                                    aria-label={canUndoHungKeys(it) ? '取消已挂钥匙标记' : '直接标记为已挂钥匙'}
+                                    className={`${styles.taskInlineActionBtn} ${canUndoHungKeys(it) ? styles.taskInlineActionBtnActive : ''}`}
+                                    onClick={(e) => {
+                                      e.preventDefault()
+                                      e.stopPropagation()
+                                    }}
+                                  />
+                                </Tooltip>
+                              </Popconfirm>
                             ) : null}
                           </div>
                           <div className={styles.taskTitleRow}>
@@ -1302,7 +1433,7 @@ export default function TaskCenterPage() {
         </div>
       </div>
     )
-  }, [activateDragTarget, activeCleaners, activeInspectors, canConfigureInspection, cleaningPendingKeys, cleaningPoolFilterOptions, clearDragTarget, dateStr, dayLocked, dragOverKey, effectiveCleaningStatus, entityIds, expandedStaff, filterCleanItems, filterOfflineItems, hasAnyPendingKey, hasLateCheckout, hasPendingKey, inspectionActionLabel, inspectionModeLabel, isSelfCompleteCleaningItem, kindOfCleaningItem, loading, mergedCleaningItems, openInspectionPlanModal, parseDragPayload, poolView, propertyCodeById, renderPoolTools, renderStaffTools, shouldShowInspectionPlanAction, staffFilter, staffFocusId, statusChipCls, statusText, stripeColorForKind, stripeColorForUrgency, summaryText, tab, taskCenterDay, taskTextForCleaningItem, updateCleaningTasks, updateWorkTask, workPendingKey, workSummaryText])
+  }, [activateDragTarget, activeCleaners, activeInspectors, boardStatusText, canConfigureInspection, canDirectMarkHungKeys, canUndoHungKeys, cleaningPendingKeys, cleaningPoolFilterOptions, clearDragTarget, dateStr, dayLocked, dragOverKey, effectiveCleaningStatus, entityIds, expandedStaff, filterCleanItems, filterOfflineItems, hasAnyPendingKey, hasLateCheckout, hasPendingKey, inspectionActionLabel, inspectionModeLabel, isSelfCompleteCleaningItem, kindOfCleaningItem, loading, markTaskHungKeys, mergedCleaningItems, openInspectionPlanModal, parseDragPayload, poolView, propertyCodeById, renderPoolTools, renderStaffTools, shouldKeepHungKeyTaskVisible, shouldShowInspectionPlanAction, staffFilter, staffFocusId, statusChipCls, stripeColorForKind, stripeColorForUrgency, summaryText, tab, taskCenterDay, taskTextForCleaningItem, undoTaskHungKeys, updateCleaningTasks, updateWorkTask, workPendingKey, workSummaryText])
 
   const TaskBoardMaintenance = useMemo(() => {
     if (tab !== 'maintenance') return null

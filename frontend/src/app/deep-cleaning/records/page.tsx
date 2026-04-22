@@ -32,6 +32,7 @@ type DeepCleaningRecord = {
   eta?: string
   completed_at?: string
   details?: any
+  invoice_description_en?: string
   notes?: string
   photo_urls?: string[]
   repair_notes?: string
@@ -395,6 +396,7 @@ export default function DeepCleaningRecordsPage() {
       duration_minutes: durationFinal,
       eta: v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : null,
       details: v.details ? String(v.details) : '[]',
+      invoice_description_en: v.invoice_description_en ? String(v.invoice_description_en) : '',
       notes: v.notes ? String(v.notes) : '',
       photo_urls: beforeUrls,
       attachment_urls: attachUrls,
@@ -431,6 +433,7 @@ export default function DeepCleaningRecordsPage() {
       duration_minutes: (r as any).duration_minutes !== undefined ? Number((r as any).duration_minutes || 0) : undefined,
       category: r.category || '',
       details: typeof r.details === 'string' ? r.details : (r.details ? JSON.stringify(r.details) : ''),
+      invoice_description_en: r.invoice_description_en || '',
       notes: r.notes || '',
       repair_notes: r.repair_notes || '',
       checklist,
@@ -481,6 +484,7 @@ export default function DeepCleaningRecordsPage() {
           duration_minutes: durationFinal,
           category: v.category || '',
           details: v.details ? String(v.details) : '[]',
+          invoice_description_en: v.invoice_description_en ? String(v.invoice_description_en) : '',
           notes: v.notes ? String(v.notes) : '',
           repair_notes: v.repair_notes ? String(v.repair_notes) : '',
           photo_urls: beforeUrls,
@@ -786,6 +790,9 @@ export default function DeepCleaningRecordsPage() {
           <Form.Item name="details" label="清洁摘要（可写清洁重点）">
             <Input.TextArea rows={3} placeholder="例如：厨房重油污、浴室除垢、全屋消毒" />
           </Form.Item>
+          <Form.Item name="invoice_description_en" label="开票英文描述">
+            <Input.TextArea rows={3} placeholder="Optional English description for invoices" />
+          </Form.Item>
           <Form.Item name="checklist" label="清洁项目清单">
             <Form.List name="checklist">
               {(fields, { add, remove }) => (
@@ -972,6 +979,9 @@ export default function DeepCleaningRecordsPage() {
           </div>
           <Form.Item name="details" label="清洁摘要">
             <Input.TextArea rows={3} />
+          </Form.Item>
+          <Form.Item name="invoice_description_en" label="开票英文描述">
+            <Input.TextArea rows={3} placeholder="Optional English description for invoices" />
           </Form.Item>
           <Form.Item name="notes" label="备注">
             <Input.TextArea rows={2} />
@@ -1209,8 +1219,11 @@ export default function DeepCleaningRecordsPage() {
 
             <Divider orientation="left">清洁项目</Divider>
             <Descriptions bordered column={2} labelStyle={{ width: '120px' }}>
-              <Descriptions.Item label="项目描述" span={2} style={{ whiteSpace: 'pre-wrap' }}>
+            <Descriptions.Item label="项目描述" span={2} style={{ whiteSpace: 'pre-wrap' }}>
                 {String(viewing?.project_desc || summaryFromDetails(viewing?.details) || viewing?.details || '') || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="开票英文描述" span={2} style={{ whiteSpace: 'pre-wrap' }}>
+                {String(viewing?.invoice_description_en || '-')}
               </Descriptions.Item>
               <Descriptions.Item label="开始时间">{viewing?.started_at ? dayjs(viewing.started_at).format('HH:mm') : '-'}</Descriptions.Item>
               <Descriptions.Item label="结束时间">{viewing?.ended_at ? dayjs(viewing.ended_at).format('HH:mm') : '-'}</Descriptions.Item>

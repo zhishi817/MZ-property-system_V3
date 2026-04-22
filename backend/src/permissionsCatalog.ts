@@ -29,7 +29,6 @@ const resourceNames: Record<string, string> = {
   order_import_staging: '订单导入暂存',
   property_maintenance: '维修记录',
   property_deep_cleaning: '深度清洁',
-  repair_orders: '报修工单',
   property_guides: '入住指南',
   company_secret_items: '内部机密项',
 }

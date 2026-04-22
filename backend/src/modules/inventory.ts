@@ -5305,6 +5305,7 @@ async function ensureDailyNecessitiesSchema() {
   await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS replacement_at timestamptz;')
   await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS replacer_name text;')
   await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS pay_method text;')
+  await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS invoice_description_en text;')
   await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_prop ON property_daily_necessities(property_id);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_status ON property_daily_necessities(status);')
@@ -5331,6 +5332,7 @@ const dailyReplacementCreateSchema = z.object({
   item_name: z.string().min(1),
   quantity: z.number().int().min(1).default(1),
   note: z.string().optional(),
+  invoice_description_en: z.string().optional(),
   before_photo_urls: z.array(z.string()).optional(),
   after_photo_urls: z.array(z.string()).optional(),
   replacement_at: z.string().optional().nullable(),
@@ -5345,6 +5347,7 @@ const dailyReplacementPatchSchema = z.object({
   item_name: z.string().min(1).optional(),
   quantity: z.number().int().min(1).optional(),
   note: z.string().optional(),
+  invoice_description_en: z.string().optional(),
   before_photo_urls: z.array(z.string()).optional(),
   after_photo_urls: z.array(z.string()).optional(),
   replacement_at: z.string().optional().nullable(),
@@ -5394,6 +5397,7 @@ router.get('/daily-replacements', requirePerm('inventory.view'), async (req, res
           n.item_name,
           n.quantity,
           n.note,
+          n.invoice_description_en,
           n.photo_urls,
           n.before_photo_urls,
           n.after_photo_urls,
@@ -5438,10 +5442,10 @@ router.post('/daily-replacements', requirePerm('inventory.move'), async (req, re
       const created = await client.query(
         `INSERT INTO property_daily_necessities (
            id, property_id, property_code, status, item_id, item_name, quantity, note,
-           photo_urls, before_photo_urls, after_photo_urls, submitted_at, replacement_at,
+           invoice_description_en, photo_urls, before_photo_urls, after_photo_urls, submitted_at, replacement_at,
            submitter_name, replacer_name, pay_method, created_by, updated_at
          )
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12::timestamptz,$13::timestamptz,$14,$15,$16,$17,now())
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13::timestamptz,$14::timestamptz,$15,$16,$17,$18,now())
          RETURNING *`,
         [
           id,
@@ -5452,6 +5456,7 @@ router.post('/daily-replacements', requirePerm('inventory.move'), async (req, re
           parsed.data.item_name,
           parsed.data.quantity,
           parsed.data.note || null,
+          parsed.data.invoice_description_en || null,
           JSON.stringify(parsed.data.before_photo_urls || []),
           JSON.stringify(parsed.data.before_photo_urls || []),
           JSON.stringify(parsed.data.after_photo_urls || []),
@@ -5492,6 +5497,7 @@ router.patch('/daily-replacements/:id', requirePerm('inventory.move'), async (re
     if (parsed.data.item_name !== undefined) patch.item_name = parsed.data.item_name
     if (parsed.data.quantity !== undefined) patch.quantity = parsed.data.quantity
     if (parsed.data.note !== undefined) patch.note = parsed.data.note || null
+    if (parsed.data.invoice_description_en !== undefined) patch.invoice_description_en = parsed.data.invoice_description_en || null
     if (parsed.data.before_photo_urls !== undefined) {
       patch.before_photo_urls = JSON.stringify(parsed.data.before_photo_urls || [])
       patch.photo_urls = JSON.stringify(parsed.data.before_photo_urls || [])

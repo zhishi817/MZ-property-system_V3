@@ -3003,6 +3003,7 @@ const feedbackCreateSchema = z
     areas: z.array(z.string().min(1)).optional(),
     category: z.string().optional(),
     detail: z.string().optional(),
+    invoice_description_en: z.string().optional(),
     media_urls: z.array(z.string().min(1)).optional(),
 
     items: z
@@ -3056,6 +3057,7 @@ const feedbackPatchSchema = z
     areas: z.array(z.string().min(1)).optional(),
     category: z.string().optional(),
     detail: z.string().optional(),
+    invoice_description_en: z.string().optional(),
     status: dailyNecessitiesStatusSchema.optional(),
     item_name: z.string().min(1).optional(),
     quantity: z
@@ -3184,7 +3186,6 @@ async function ensurePropertyMaintenanceColumns() {
         occurred_at date,
         worker_name text,
         details text,
-        notes text,
         created_by text,
         created_at timestamptz DEFAULT now()
       );`)
@@ -3192,7 +3193,6 @@ async function ensurePropertyMaintenanceColumns() {
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;')
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;')
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category_detail text;')
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;')
@@ -3206,6 +3206,7 @@ async function ensurePropertyMaintenanceColumns() {
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;')
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS review_notes text;')
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS project_items jsonb;')
+      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS invoice_description_en text;')
       await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
       await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_maintenance_dedup ON property_maintenance(property_id, dedup_fingerprint, submitted_at);')
       propertyMaintenanceColumnsEnsured = true
@@ -3251,6 +3252,7 @@ async function ensurePropertyDeepCleaningColumns() {
       await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;')
       await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS review_notes text;')
       await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_items jsonb;')
+      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS invoice_description_en text;')
       await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
       await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_dedup ON property_deep_cleaning(property_id, dedup_fingerprint, submitted_at);')
       propertyDeepCleaningColumnsEnsured = true
@@ -3316,7 +3318,7 @@ function toIsoOrNull(raw: any) {
 
 function feedbackPhotoFallbacks(kind: FeedbackKind, fallback?: any) {
   const fallbackBefore = normalizeUrlArray(
-    fallback?.photo_urls || (kind === 'deep_cleaning' ? fallback?.attachment_urls : null),
+    fallback?.photo_urls || fallback?.attachment_urls || (kind === 'deep_cleaning' ? fallback?.attachment_urls : null),
   )
   const fallbackAfter = kind === 'deep_cleaning'
     ? normalizeUrlArray(fallback?.repair_photo_urls)
@@ -3358,10 +3360,10 @@ function summarizeProjectItems(kind: FeedbackKind, itemsRaw: any, fallback?: any
       name:
         kind === 'deep_cleaning'
           ? String(fallback?.project_desc || '').trim() || '深度清洁'
-          : String(fallback?.category_detail || fallback?.category || '').trim() || '维修项目',
-      area: kind === 'maintenance' ? String(fallback?.area || '').trim() || null : null,
-      category: kind === 'maintenance' ? String(fallback?.category_detail || fallback?.category || '').trim() || null : null,
-      detail: String(fallback?.details || fallback?.notes || '').trim() || null,
+          : String(fallback?.area || fallback?.category || '').trim() || '维修项目',
+      area: kind === 'maintenance' ? String(fallback?.area || fallback?.category || '').trim() || null : null,
+      category: null,
+      detail: String(fallback?.details || fallback?.notes || fallback?.detail || fallback?.remark || '').trim() || null,
       note: String(fallback?.repair_notes || '').trim() || null,
       started_at: kind === 'deep_cleaning' ? toIsoOrNull(fallback?.started_at) : null,
       ended_at: kind === 'deep_cleaning' ? toIsoOrNull(fallback?.ended_at) : null,
@@ -3435,6 +3437,7 @@ async function ensurePropertyDailyNecessitiesColumns() {
       await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS source_task_id text;')
       await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
       await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitter_name text;')
+      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS invoice_description_en text;')
       await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
       await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_prop ON property_daily_necessities(property_id);')
       await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_status ON property_daily_necessities(status);')
@@ -3472,7 +3475,6 @@ router.get('/property-feedbacks', async (req, res) => {
     const pool = pgPool
     const unresolvedMaintSql = feedbackStatusWhereSql('m', want)
     const unresolvedDeepSql = feedbackStatusWhereSql('d', want)
-    const unresolvedRepairSql = feedbackStatusWhereSql('r', want)
     const settle = async (label: string, loader: () => Promise<any[]>) => {
       try {
         return { items: await loader(), error: null as string | null }
@@ -3480,15 +3482,15 @@ router.get('/property-feedbacks', async (req, res) => {
         return { items: [] as any[], error: `${label}:${String(e?.message || e)}`.slice(0, 220) }
       }
     }
-    const [maintenanceResult, repairResult, deepResult, dailyResult] = await Promise.all([
+    const [maintenanceResult, deepResult, dailyResult] = await Promise.all([
       settle('maintenance', async () => {
         try {
           await ensurePropertyMaintenanceColumns()
         } catch {}
         const r = await pool.query(
           `SELECT m.id, m.property_id, COALESCE(m.property_code, p.code) AS property_code,
-                  m.area, m.category, m.category_detail, m.details, m.notes, m.photo_urls, m.repair_photo_urls,
-                  m.repair_notes, m.submitter_name, m.submitted_at, m.created_at, m.status, m.completed_at,
+                  m.area, m.category_detail, m.details, m.photo_urls, m.repair_photo_urls,
+                  m.repair_notes, m.invoice_description_en, m.submitter_name, m.submitted_at, m.created_at, m.status, m.completed_at,
                   m.review_status, m.project_items
              FROM property_maintenance m
              LEFT JOIN properties p ON p.id = m.property_id
@@ -3515,44 +3517,10 @@ router.get('/property-feedbacks', async (req, res) => {
             property_id: row.property_id ? String(row.property_id) : propertyId || null,
             kind: 'maintenance',
             area: row.area || null,
-            category: row.category_detail || row.category || null,
-            detail: String(row.notes || row.details || ''),
+            category: null,
+            detail: String(row.details || ''),
+            invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null,
             media_urls: summary.photo_urls,
-            repair_photo_urls: summary.repair_photo_urls,
-            repair_notes: row.repair_notes ? String(row.repair_notes) : null,
-            created_by_name: row.submitter_name || null,
-            created_at: row.submitted_at || row.created_at || null,
-            status: mapWorkStatus(row.status),
-            review_status: row.review_status ? String(row.review_status) : null,
-            completed_at: row.completed_at || summary.completed_at || null,
-            project_items: summary.items,
-          }
-        })
-      }),
-      settle('repair_orders', async () => {
-        const r = await pool.query(
-          `SELECT r.id, r.property_id, p.code AS property_code,
-                  r.category, r.category_detail, r.detail, r.remark, r.attachment_urls, r.repair_photo_urls,
-                  r.repair_notes, r.submitter_name, r.submitted_at, r.created_at, r.status, r.completed_at,
-                  r.review_status, r.project_items
-             FROM repair_orders r
-             LEFT JOIN properties p ON p.id = r.property_id
-            WHERE (($1::text IS NOT NULL AND r.property_id = $1) OR ($2::text IS NOT NULL AND p.code = $2))
-              AND (${unresolvedRepairSql})
-            ORDER BY COALESCE(r.submitted_at, r.created_at) DESC
-            LIMIT $3`,
-          [propertyId || null, propertyCode || null, limit],
-        )
-        return (r?.rows || []).map((row: any) => {
-          const summary = summarizeProjectItems('maintenance', row.project_items, row)
-          return {
-            id: String(row.id),
-            property_id: row.property_id ? String(row.property_id) : propertyId || null,
-            kind: 'maintenance',
-            area: null,
-            category: row.category_detail || row.category || null,
-            detail: String(row.detail || row.remark || ''),
-            media_urls: summary.photo_urls.length ? summary.photo_urls : (Array.isArray(row.attachment_urls) ? row.attachment_urls : row.attachment_urls ? row.attachment_urls : []),
             repair_photo_urls: summary.repair_photo_urls,
             repair_notes: row.repair_notes ? String(row.repair_notes) : null,
             created_by_name: row.submitter_name || null,
@@ -3571,7 +3539,7 @@ router.get('/property-feedbacks', async (req, res) => {
         const r = await pool.query(
           `SELECT d.id, d.property_id, COALESCE(d.property_code, p.code) AS property_code,
                   d.project_desc, d.details, d.notes, d.photo_urls, d.attachment_urls, d.repair_photo_urls,
-                  d.repair_notes, d.submitter_name, d.submitted_at, d.created_at, d.status, d.completed_at,
+                  d.repair_notes, d.invoice_description_en, d.submitter_name, d.submitted_at, d.created_at, d.status, d.completed_at,
                   d.review_status, d.project_items
              FROM property_deep_cleaning d
              LEFT JOIN properties p ON p.id = d.property_id
@@ -3602,6 +3570,7 @@ router.get('/property-feedbacks', async (req, res) => {
               .map((s) => String(s || '').trim())
               .filter(Boolean),
             detail: String(row.details || row.notes || ''),
+            invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null,
             media_urls: summary.photo_urls,
             repair_photo_urls: summary.repair_photo_urls,
             repair_notes: row.repair_notes ? String(row.repair_notes) : null,
@@ -3621,7 +3590,7 @@ router.get('/property-feedbacks', async (req, res) => {
         const params: any[] = [propertyId || null, propertyCode || null, dailyFilter, limit]
         const r = await pool.query(
           `SELECT n.id, n.property_id, COALESCE(n.property_code, p.code) AS property_code,
-                  n.status, n.item_name, n.quantity, n.note, n.photo_urls, n.submitter_name,
+                  n.status, n.item_name, n.quantity, n.note, n.invoice_description_en, n.photo_urls, n.submitter_name,
                   n.submitted_at, n.created_at
              FROM property_daily_necessities n
              LEFT JOIN properties p ON p.id = n.property_id
@@ -3650,6 +3619,7 @@ router.get('/property-feedbacks', async (req, res) => {
           quantity: row.quantity == null ? null : Number(row.quantity),
           note: row.note ? String(row.note) : null,
           detail: String(row.note || ''),
+          invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null,
           media_urls: Array.isArray(row.photo_urls) ? row.photo_urls : row.photo_urls ? row.photo_urls : [],
           created_by_name: row.submitter_name || null,
           created_at: row.submitted_at || row.created_at || null,
@@ -3658,13 +3628,11 @@ router.get('/property-feedbacks', async (req, res) => {
     ])
     const out = [
       ...maintenanceResult.items,
-      ...repairResult.items,
       ...deepResult.items,
       ...dailyResult.items,
     ]
     const errors = [
       maintenanceResult.error,
-      repairResult.error,
       deepResult.error,
       dailyResult.error,
     ].filter(Boolean) as string[]
@@ -3696,7 +3664,8 @@ router.post('/property-feedbacks', async (req, res) => {
         await ensurePropertyMaintenanceColumns()
       } catch {}
       const photoType = await getColumnType('property_maintenance', 'photo_urls')
-      const photoExpr = photoType === 'jsonb' ? '$13::jsonb' : photoType === 'text[]' ? '$13::text[]' : '$13'
+      const invoiceDescriptionEn = String((parsed.data as any).invoice_description_en || '').trim()
+      const photoExpr = photoType === 'jsonb' ? '$10::jsonb' : photoType === 'text[]' ? '$10::text[]' : '$10'
 
       const items = Array.isArray((parsed.data as any).items) && (parsed.data as any).items.length ? ((parsed.data as any).items as any[]) : null
       const prepared = (items || []).map((x) => ({
@@ -3709,7 +3678,6 @@ router.post('/property-feedbacks', async (req, res) => {
       if (items) {
         for (const it of prepared) {
           if (!it.area) return res.status(400).json({ message: 'missing area' })
-          if (!it.category) return res.status(400).json({ message: 'missing category' })
           if (!it.detail) return res.status(400).json({ message: 'missing detail' })
         }
         for (const it of prepared) {
@@ -3748,26 +3716,24 @@ router.post('/property-feedbacks', async (req, res) => {
           const photoValue = photoType === 'jsonb' ? JSON.stringify(it.media_urls || []) : (it.media_urls || [])
           await pgPool.query(
             `INSERT INTO property_maintenance(
-              id, property_id, occurred_at, details, notes, created_by, created_at,
-              status, submitted_at, submitter_name, category, category_detail, photo_urls, work_no, area, dedup_fingerprint
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,${photoExpr},$14,$15,$16)
+              id, property_id, occurred_at, details, created_by, created_at,
+              status, submitted_at, submitter_name, photo_urls, work_no, area, invoice_description_en, dedup_fingerprint
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,${photoExpr},$11,$12,$13,$14)
             RETURNING id`,
             [
               rowId,
               parsed.data.property_id,
               occurredAt,
               it.detail,
-              it.detail,
               createdBy,
               createdAt,
               'pending',
               createdAt,
               submitterName,
-              it.area,
-              it.category,
               photoValue,
               workNo,
               it.area,
+              invoiceDescriptionEn || null,
               fingerprint,
             ],
           )
@@ -3777,10 +3743,9 @@ router.post('/property-feedbacks', async (req, res) => {
       }
 
       const area = String(parsed.data.area || '').trim()
-      const categoryLabel = String(parsed.data.category || '').trim()
       const detail = String((parsed.data as any).detail || '').trim()
+      const singleInvoiceDescriptionEn = String((parsed.data as any).invoice_description_en || '').trim()
       if (!area) return res.status(400).json({ message: 'missing area' })
-      if (!categoryLabel) return res.status(400).json({ message: 'missing category' })
       if (!detail) return res.status(400).json({ message: 'missing detail' })
       const mediaUrls = (parsed.data as any).media_urls || []
       const photoValue = photoType === 'jsonb' ? JSON.stringify(mediaUrls) : mediaUrls
@@ -3789,7 +3754,7 @@ router.post('/property-feedbacks', async (req, res) => {
         kind: 'maintenance',
         property_id: parsed.data.property_id,
         area,
-        category_detail: categoryLabel,
+        category_detail: '',
         detail,
       })
       const dup = await pgPool.query(
@@ -3806,26 +3771,24 @@ router.post('/property-feedbacks', async (req, res) => {
       if (dup.rowCount) return res.status(409).json({ message: 'duplicate', existing_id: String(dup.rows[0].id) })
       await pgPool.query(
         `INSERT INTO property_maintenance(
-          id, property_id, occurred_at, details, notes, created_by, created_at,
-          status, submitted_at, submitter_name, category, category_detail, photo_urls, work_no, area, dedup_fingerprint
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,${photoExpr},$14,$15,$16)
+          id, property_id, occurred_at, details, created_by, created_at,
+          status, submitted_at, submitter_name, photo_urls, work_no, area, invoice_description_en, dedup_fingerprint
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,${photoExpr},$11,$12,$13,$14)
         RETURNING id`,
         [
           id,
           parsed.data.property_id,
           occurredAt,
           detail,
-          detail,
           createdBy,
           createdAt,
           'pending',
           createdAt,
           submitterName,
-          area,
-          categoryLabel,
           photoValue,
           workNo,
           area,
+          singleInvoiceDescriptionEn || null,
           fingerprint,
         ],
       )
@@ -3841,6 +3804,7 @@ router.post('/property-feedbacks', async (req, res) => {
       const quantity0 = (parsed.data as any).quantity
       const quantity = quantity0 == null ? NaN : Number(quantity0)
       const note = String((parsed.data as any).note || '').trim()
+      const invoiceDescriptionEn = String((parsed.data as any).invoice_description_en || '').trim()
       const mediaUrls = Array.isArray((parsed.data as any).media_urls) ? (parsed.data as any).media_urls : []
       if (!dailyNecessitiesStatusSchema.safeParse(status).success) return res.status(400).json({ message: 'invalid status' })
       if (!itemName) return res.status(400).json({ message: 'missing item_name' })
@@ -3863,8 +3827,8 @@ router.post('/property-feedbacks', async (req, res) => {
       await pgPool.query(
         `INSERT INTO property_daily_necessities(
           id, property_id, status, item_name, quantity, note, photo_urls,
-          source_task_id, created_by, created_at, submitted_at, submitter_name, dedup_fingerprint
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13)
+          source_task_id, created_by, created_at, submitted_at, submitter_name, invoice_description_en, dedup_fingerprint
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14)
         RETURNING id`,
         [
           id,
@@ -3879,6 +3843,7 @@ router.post('/property-feedbacks', async (req, res) => {
           createdAt,
           createdAt,
           submitterName,
+          invoiceDescriptionEn || null,
           fingerprint,
         ],
       )
@@ -3890,6 +3855,7 @@ router.post('/property-feedbacks', async (req, res) => {
     const mediaUrls = parsed.data.media_urls || []
     if (!mediaUrls.length) return res.status(400).json({ message: 'missing photos' })
     const detail = String((parsed.data as any).detail || '').trim()
+    const invoiceDescriptionEn = String((parsed.data as any).invoice_description_en || '').trim()
     if (!detail) return res.status(400).json({ message: 'missing detail' })
     const projectDesc = areas.join('、')
     const deepPhotoType = await getColumnType('property_deep_cleaning', 'photo_urls')
@@ -3921,8 +3887,8 @@ router.post('/property-feedbacks', async (req, res) => {
     await pgPool.query(
       `INSERT INTO property_deep_cleaning(
         id, property_id, occurred_at, project_desc, details, created_by, created_at,
-        status, submitted_at, submitter_name, work_no, photo_urls, attachment_urls, review_status, dedup_fingerprint
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,${photoExpr},${attachExpr},$14,$15)
+        status, submitted_at, submitter_name, work_no, photo_urls, attachment_urls, review_status, invoice_description_en, dedup_fingerprint
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,${photoExpr},${attachExpr},$14,$15,$16)
       RETURNING id`,
       [
         id,
@@ -3939,6 +3905,7 @@ router.post('/property-feedbacks', async (req, res) => {
         photoValue,
         attachValue,
         'pending',
+        invoiceDescriptionEn || null,
         fingerprint,
       ],
     )
@@ -3960,7 +3927,10 @@ async function loadPropertyFeedbackRow(kind: FeedbackKind, id: string) {
   if (!pgPool) return null
   if (kind === 'maintenance') {
     await ensurePropertyMaintenanceColumns()
-    const r = await pgPool.query(`SELECT * FROM property_maintenance WHERE id = $1 LIMIT 1`, [id])
+    const r = await pgPool.query(
+      `SELECT *, 'property_maintenance'::text AS feedback_source_table FROM property_maintenance WHERE id = $1 LIMIT 1`,
+      [id],
+    )
     return r.rows?.[0] || null
   }
   await ensurePropertyDeepCleaningColumns()
@@ -3980,13 +3950,12 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
   try {
     if (kind === 'maintenance') {
       await ensurePropertyMaintenanceColumns()
-      const existing = await pgPool.query(`SELECT * FROM property_maintenance WHERE id = $1 LIMIT 1`, [id])
-      if (!existing.rowCount) return res.status(404).json({ message: 'not found' })
-      const row = existing.rows[0]
+      const row = await loadPropertyFeedbackRow('maintenance', id)
+      if (!row) return res.status(404).json({ message: 'not found' })
       const nextArea = parsed.data.area !== undefined ? String(parsed.data.area || '').trim() : String(row.area || '').trim()
-      const nextCategory = parsed.data.category !== undefined ? String(parsed.data.category || '').trim() : String(row.category_detail || row.category || '').trim()
-      const nextDetail = parsed.data.detail !== undefined ? String(parsed.data.detail || '').trim() : String(row.details || row.notes || '').trim()
+      const nextDetail = parsed.data.detail !== undefined ? String(parsed.data.detail || '').trim() : String(row.details || '').trim()
       const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.repair_notes || '').trim()
+      const nextInvoiceDescriptionEn = parsed.data.invoice_description_en !== undefined ? String(parsed.data.invoice_description_en || '').trim() : String(row.invoice_description_en || '').trim()
       const nextMedia = parsed.data.media_urls !== undefined ? normalizeUrlArray(parsed.data.media_urls) : normalizeUrlArray(row.photo_urls)
       const nextRepairMedia = parsed.data.repair_photo_urls !== undefined ? normalizeUrlArray(parsed.data.repair_photo_urls) : normalizeUrlArray(row.repair_photo_urls)
       const currentResolved = mapWorkStatus(row.status) === 'resolved'
@@ -3994,7 +3963,7 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
       const nextStatus = markCompleted ? 'completed' : String(row.status || '').trim() || 'pending'
       const nextReviewStatus = markCompleted ? 'pending' : (row.review_status ? String(row.review_status) : null)
       const nextCompletedAt = markCompleted ? (row.completed_at || new Date().toISOString()) : null
-      if (!nextArea || !nextCategory || !nextDetail) return res.status(400).json({ message: 'missing maintenance fields' })
+      if (!nextArea || !nextDetail) return res.status(400).json({ message: 'missing maintenance fields' })
       const beforeType = await getColumnType('property_maintenance', 'photo_urls')
       const afterType = await getColumnType('property_maintenance', 'repair_photo_urls')
       const beforeExpr = beforeType === 'text[]' ? '$5::text[]' : '$5::jsonb'
@@ -4002,13 +3971,11 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
       await pgPool.query(
         `UPDATE property_maintenance
             SET area = $2,
-                category = $3,
-                category_detail = $3,
-                details = $4,
-                notes = $4,
+                details = $3,
                 photo_urls = ${beforeExpr},
-                repair_notes = $6,
+                repair_notes = $5,
                 repair_photo_urls = ${afterExpr},
+                invoice_description_en = $7,
                 status = $8,
                 review_status = $9,
                 completed_at = $10,
@@ -4017,11 +3984,11 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
         [
           id,
           nextArea,
-          nextCategory,
           nextDetail,
           beforeType === 'text[]' ? nextMedia : JSON.stringify(nextMedia),
           nextNote || null,
           afterType === 'text[]' ? nextRepairMedia : JSON.stringify(nextRepairMedia),
+          nextInvoiceDescriptionEn || null,
           nextStatus,
           nextReviewStatus,
           nextCompletedAt,
@@ -4034,8 +4001,9 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
           property_id: row.property_id ? String(row.property_id) : null,
           kind: 'maintenance',
           area: nextArea,
-          category: nextCategory,
+          category: null,
           detail: nextDetail,
+          invoice_description_en: nextInvoiceDescriptionEn || null,
           note: nextNote || null,
           repair_notes: nextNote || null,
           media_urls: nextMedia,
@@ -4056,6 +4024,7 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
       const nextAreas = parsed.data.areas !== undefined ? parsed.data.areas.map((x) => String(x || '').trim()).filter(Boolean) : String(row.project_desc || '').split('、').map((x: string) => String(x || '').trim()).filter(Boolean)
       const nextDetail = parsed.data.detail !== undefined ? String(parsed.data.detail || '').trim() : String(row.details || row.notes || '').trim()
       const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.repair_notes || '').trim()
+      const nextInvoiceDescriptionEn = parsed.data.invoice_description_en !== undefined ? String(parsed.data.invoice_description_en || '').trim() : String(row.invoice_description_en || '').trim()
       const nextMedia = parsed.data.media_urls !== undefined ? normalizeUrlArray(parsed.data.media_urls) : normalizeUrlArray(row.photo_urls)
       const nextRepairMedia = parsed.data.repair_photo_urls !== undefined ? normalizeUrlArray(parsed.data.repair_photo_urls) : normalizeUrlArray(row.repair_photo_urls)
       const currentResolved = mapWorkStatus(row.status) === 'resolved'
@@ -4079,9 +4048,10 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
                 attachment_urls = ${attachmentExpr},
                 repair_notes = $6,
                 repair_photo_urls = ${afterExpr},
-                status = $8,
-                review_status = $9,
-                completed_at = $10,
+                invoice_description_en = $8,
+                status = $9,
+                review_status = $10,
+                completed_at = $11,
                 updated_at = now()
           WHERE id = $1`,
         [
@@ -4092,6 +4062,7 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
           attachmentType === 'text[]' ? nextMedia : JSON.stringify(nextMedia),
           nextNote || null,
           afterType === 'text[]' ? nextRepairMedia : JSON.stringify(nextRepairMedia),
+          nextInvoiceDescriptionEn || null,
           nextStatus,
           nextReviewStatus,
           nextCompletedAt,
@@ -4105,6 +4076,7 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
           kind: 'deep_cleaning',
           areas: nextAreas,
           detail: nextDetail,
+          invoice_description_en: nextInvoiceDescriptionEn || null,
           note: nextNote || null,
           repair_notes: nextNote || null,
           media_urls: nextMedia,
@@ -4125,6 +4097,7 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
     const nextItemName = parsed.data.item_name !== undefined ? String(parsed.data.item_name || '').trim() : String(row.item_name || '').trim()
     const nextQuantity = parsed.data.quantity !== undefined ? Math.trunc(Number(parsed.data.quantity)) : Math.trunc(Number(row.quantity || 0))
     const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.note || '').trim()
+    const nextInvoiceDescriptionEn = parsed.data.invoice_description_en !== undefined ? String(parsed.data.invoice_description_en || '').trim() : String(row.invoice_description_en || '').trim()
     const nextMedia = parsed.data.media_urls !== undefined ? normalizeUrlArray(parsed.data.media_urls) : normalizeUrlArray(row.photo_urls)
     if (!dailyNecessitiesStatusSchema.safeParse(nextStatus).success) return res.status(400).json({ message: 'invalid status' })
     if (!nextItemName) return res.status(400).json({ message: 'missing item_name' })
@@ -4138,9 +4111,10 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
               item_name = $3,
               quantity = $4,
               note = $5,
-              photo_urls = ${photoExpr}
+              photo_urls = ${photoExpr},
+              invoice_description_en = $7
         WHERE id = $1`,
-      [id, nextStatus, nextItemName, nextQuantity, nextNote || null, photoType === 'text[]' ? nextMedia : JSON.stringify(nextMedia)],
+      [id, nextStatus, nextItemName, nextQuantity, nextNote || null, photoType === 'text[]' ? nextMedia : JSON.stringify(nextMedia), nextInvoiceDescriptionEn || null],
     )
     return res.json({
       ok: true,
@@ -4152,6 +4126,7 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
         quantity: nextQuantity,
         note: nextNote || null,
         detail: nextNote || '',
+        invoice_description_en: nextInvoiceDescriptionEn || null,
         media_urls: nextMedia,
         created_by_name: row.submitter_name ? String(row.submitter_name) : null,
         created_at: row.submitted_at || row.created_at || null,

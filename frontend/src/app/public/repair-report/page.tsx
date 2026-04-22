@@ -47,7 +47,6 @@ export default function RepairReportPage() {
     { value: '浴室', label: '浴室' },
     { value: '其他', label: '其他' },
   ]
-  const [cat, setCat] = useState<string>('客厅')
   const typeOptions = [
     { value: 'appliance', label: '电器' },
     { value: 'furniture', label: '家具' },
@@ -96,7 +95,7 @@ export default function RepairReportPage() {
       }
       const payload = {
         property_id: v.property_id,
-        category: v.category,
+        area: v.area,
         detail: v.detail,
         attachment_urls: urls,
         item_type: v.item_type || 'other',
@@ -127,8 +126,8 @@ export default function RepairReportPage() {
               return Promise.resolve()
             } }]}><Input.Password placeholder="例如 1234" /></Form.Item>
             <Form.Item name="property_id" label="房号" rules={[{ required: true }]}><Select options={options} showSearch optionFilterProp="label" /></Form.Item>
-            <Form.Item name="category" label="问题区域" rules={[{ required: true }]}>
-              <Select options={categories.map(c=>({ value: c.value, label: c.label }))} value={cat} onChange={v=>setCat(String(v))} />
+            <Form.Item name="area" label="问题区域" rules={[{ required: true }]}>
+              <Select options={categories.map(c=>({ value: c.value, label: c.label }))} />
             </Form.Item>
             <Form.Item name="item_type" label="问题类型" rules={[{ required: true }]}>
               <Select options={typeOptions} value={itemType} onChange={v=>setItemType(String(v))} />
