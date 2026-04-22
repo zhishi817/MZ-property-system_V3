@@ -48,7 +48,6 @@ async function ensurePropertyMaintenanceTable() {
     occurred_at date,
     worker_name text,
     details text,
-    notes text,
     created_by text,
     created_at timestamptz DEFAULT now()
   );`)
@@ -59,9 +58,9 @@ async function ensurePropertyMaintenanceTable() {
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category_detail text;')
-  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS started_at timestamptz;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS invoice_description_en text;')
+  await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;')
   await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS updated_at timestamptz;')
 }

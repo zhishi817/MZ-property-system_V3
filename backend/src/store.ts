@@ -568,7 +568,7 @@ if (adminRole) {
 
 // granular CRUD resource permissions
 const resources = [
-  'properties','landlords','orders','cleaning_tasks','finance_transactions','company_expenses','property_expenses','fixed_expenses','company_incomes','property_incomes','recurring_payments','cms_pages','payouts','company_payouts','users','property_maintenance','property_deep_cleaning','order_import_staging','repair_orders','property_guides'
+  'properties','landlords','orders','cleaning_tasks','finance_transactions','company_expenses','property_expenses','fixed_expenses','company_incomes','property_incomes','recurring_payments','cms_pages','payouts','company_payouts','users','property_maintenance','property_deep_cleaning','order_import_staging','property_guides'
 ]
 resources.forEach(r => {
   const viewCode = `${r}.view`

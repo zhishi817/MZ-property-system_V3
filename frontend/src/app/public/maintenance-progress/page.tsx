@@ -156,7 +156,7 @@ export default function PublicMaintenanceProgressPage() {
         worker_name: String(v.worker_name || '').trim(),
         notes: String(v.notes || '').trim(),
         details: detailsArr.map((d, idx) => ({
-          category: String(d?.content || '').trim(),
+          area: String(d?.content || '').trim(),
           item: String(d?.item || '').trim(),
           maintenance_amount: d?.maintenance_amount !== undefined ? Number(d.maintenance_amount || 0) : undefined,
           has_parts: d?.has_parts === true,

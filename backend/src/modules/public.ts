@@ -487,7 +487,6 @@ async function ensurePropertyGuidePublicSessionsTable() {
 async function ensurePropertyMaintenanceShareColumns() {
   if (!pgPool) return
   await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;`)
-  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;`)
   await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;`)
   await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS urgency text;`)
   await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS assignee_id text;`)
@@ -501,6 +500,7 @@ async function ensurePropertyMaintenanceShareColumns() {
   await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS parts_amount numeric;`)
   await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_method text;`)
   await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS pay_other_note text;`)
+  await pgPool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;`)
 }
 
 async function ensureMaintenanceProgressSubmitSchema() {
@@ -509,7 +509,6 @@ async function ensureMaintenanceProgressSubmitSchema() {
   ensureMaintenanceProgressSubmitSchemaPromise = (async () => {
     await ensurePropertyMaintenanceShareColumns()
     await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
-    await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS notes text;`)
     await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS worker_name text;`)
     await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS occurred_at date;`)
     const c = await pgPool!.query(
@@ -768,7 +767,7 @@ router.post('/repair/report', async (req, res) => {
   if (!v.ok) return res.status(401).json({ message: 'unauthorized' })
   const body = req.body || {}
   const property_id = String(body.property_id || '').trim()
-  const category = String(body.category || '').trim()
+  const area = String(body.area || body.category || '').trim()
   const detail = String(body.detail || '').trim()
   const attachments0 = Array.isArray(body.attachment_urls) ? body.attachment_urls : (body.attachment_urls ? [body.attachment_urls] : [])
   const attachments = attachments0.filter((x: any) => typeof x === 'string').map((x: string) => x.trim()).filter(Boolean)
@@ -778,7 +777,7 @@ router.post('/repair/report', async (req, res) => {
   const submitter_id = String(body.submitter_id || '').trim()
   const urgency = body.urgency ? String(body.urgency) : ''
   if (!property_id) return res.status(400).json({ message: 'missing property_id' })
-  if (!category) return res.status(400).json({ message: 'missing category' })
+  if (!area) return res.status(400).json({ message: 'missing area' })
   if (!detail) return res.status(400).json({ message: 'missing detail' })
   if (!submitter_name) return res.status(400).json({ message: 'missing submitter_name' })
   if (item_type === 'appliance' && (!labelPhotos || labelPhotos.length === 0)) return res.status(400).json({ message: 'appliance requires label photos' })
@@ -786,7 +785,6 @@ router.post('/repair/report', async (req, res) => {
     if (hasPg) {
       // ensure property_maintenance columns exist
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;`)
-      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category text;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS urgency text;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS assignee_id text;`)
@@ -798,6 +796,7 @@ router.post('/repair/report', async (req, res) => {
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS item_type text;`)
       await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS label_photo_urls jsonb;`)
+      await pgPool!.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;`)
       const pool = pgPool!
       await pool.query(`ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls text[];`)
       try {
@@ -834,22 +833,21 @@ router.post('/repair/report', async (req, res) => {
       }
       const id = uuidv4()
       const workNo = await generateWorkNo()
-      const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, notes, created_by, photo_urls, label_photo_urls, item_type, property_code, work_no, category, status, urgency, assignee_id, eta, submitted_at, submitter_name)
-        VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::text[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`
+      const sql = `INSERT INTO property_maintenance (id, property_id, occurred_at, worker_name, details, created_by, photo_urls, label_photo_urls, item_type, property_code, work_no, area, status, urgency, assignee_id, eta, submitted_at, submitter_name)
+        VALUES ($1,$2,$3,$4,$5::text,$6,$7::text[],$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`
       const values = [
         id,
         property_id || null,
         new Date().toISOString().slice(0,10),
         '',
         detail ? JSON.stringify([{ content: detail }]) : JSON.stringify([]),
-        '',
         submitter_id || null,
         attachments,
         JSON.stringify(labelPhotos || []),
         item_type || null,
         null,
         workNo,
-        category || null,
+        area || null,
         'pending',
         (urgency || null),
         null,
@@ -868,7 +866,7 @@ router.post('/repair/report', async (req, res) => {
     }
     const id = uuidv4()
     const row = {
-      id, property_id, category, status: 'pending',
+      id, property_id, area, status: 'pending',
       details: JSON.stringify([{ content: detail }]),
       photo_urls: attachments,
       label_photo_urls: labelPhotos,
@@ -1011,7 +1009,7 @@ router.post('/maintenance-progress/submit', async (req, res) => {
   const property_id = String(body.property_id || '').trim()
   const occurred_at = String(body.occurred_at || '').trim() || new Date().toISOString().slice(0, 10)
   const worker_name = String(body.worker_name || '').trim()
-  const notes = String(body.notes || '').trim()
+  const repairNotes = String(body.notes || body.repair_notes || '').trim()
   const detailsArr = Array.isArray(body.details) ? body.details : []
   if (!property_id) return res.status(400).json({ message: 'missing property_id' })
   if (!worker_name) return res.status(400).json({ message: 'missing worker_name' })
@@ -1031,23 +1029,23 @@ router.post('/maintenance-progress/submit', async (req, res) => {
     const nowIso = new Date().toISOString()
     const completedIso = /^\d{4}-\d{2}-\d{2}$/.test(occurred_at) ? `${occurred_at}T12:00:00.000Z` : nowIso
     const sql = `INSERT INTO property_maintenance (
-      id, property_id, occurred_at, worker_name, details, notes, created_by,
-      photo_urls, repair_photo_urls, property_code, work_no, category, status, urgency,
-      submitted_at, submitter_name, completed_at, maintenance_amount, has_parts, parts_amount, pay_method, pay_other_note
+      id, property_id, occurred_at, worker_name, details, created_by,
+      photo_urls, repair_photo_urls, property_code, work_no, area, status, urgency,
+      submitted_at, submitter_name, completed_at, maintenance_amount, has_parts, parts_amount, pay_method, pay_other_note, repair_notes
     )
     VALUES (
-      $1,$2,$3,$4,$5::text,$6,$7,
-      $8::text[],$9::jsonb,$10,$11,$12,$13,$14,
-      $15,$16,$17,$18,$19,$20,$21,$22
+      $1,$2,$3,$4,$5::text,$6,
+      $7::text[],$8::jsonb,$9,$10,$11,$12,$13,
+      $14,$15,$16,$17,$18,$19,$20,$21,$22
     ) RETURNING id`
     let created = 0
     const client = await pool.connect()
     try {
       await client.query('BEGIN')
       for (const d of detailsArr) {
-        const category = String(d?.category || d?.content || '').trim()
+        const area = String(d?.area || d?.category || d?.content || '').trim()
         const item = String(d?.item || '').trim()
-        if (!category) continue
+        if (!area) continue
         const id = uuidv4()
         const workNo = generateWorkNoFast()
         const detailText = item ? JSON.stringify([{ content: item }]) : JSON.stringify([])
@@ -1066,13 +1064,12 @@ router.post('/maintenance-progress/submit', async (req, res) => {
           occurred_at || new Date().toISOString().slice(0, 10),
           worker_name || '',
           detailText,
-          notes || '',
           null,
           prePhotoUrls,
           JSON.stringify(postPhotoUrls || []),
           propertyCode,
           workNo,
-          category || null,
+          area || null,
           'completed',
           null,
           nowIso,
@@ -1082,7 +1079,8 @@ router.post('/maintenance-progress/submit', async (req, res) => {
           has_parts,
           parts_amount,
           pay_method,
-          pay_other_note
+          pay_other_note,
+          repairNotes || null,
         ]
         const r = await client.query(sql, values)
         if (r.rowCount) created += 1

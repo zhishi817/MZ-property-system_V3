@@ -22,6 +22,7 @@ type ReplacementRow = {
   item_name?: string | null
   quantity?: number | null
   note?: string | null
+  invoice_description_en?: string | null
   photo_urls?: string[] | null
   before_photo_urls?: string[] | null
   after_photo_urls?: string[] | null
@@ -154,6 +155,7 @@ export default function DailyReplacementsPage() {
       item_id: undefined,
       quantity: 1,
       note: '',
+      invoice_description_en: '',
       submitter_name: me?.display_name || me?.username || '',
       status: 'need_replace',
       replacement_at: dayjs(),
@@ -181,6 +183,7 @@ export default function DailyReplacementsPage() {
       item_id: row.item_id || undefined,
       quantity: Number(row.quantity || 1),
       note: row.note || '',
+      invoice_description_en: row.invoice_description_en || '',
       submitter_name: row.submitter_name || me?.display_name || me?.username || '',
       status: row.status || 'need_replace',
       replacement_at: row.replacement_at ? dayjs(row.replacement_at) : null,
@@ -243,6 +246,7 @@ export default function DailyReplacementsPage() {
         item_name: selectedItem?.itemName || selectedItem?.label || '',
         quantity: Number(values.quantity || 1),
         note: values.note || undefined,
+        invoice_description_en: values.invoice_description_en || undefined,
         before_photo_urls: beforeUrls,
         status: values.status,
       }
@@ -383,6 +387,9 @@ export default function DailyReplacementsPage() {
           <Form.Item name="note" label="备注">
             <Input.TextArea rows={3} placeholder="可选" />
           </Form.Item>
+          <Form.Item name="invoice_description_en" label="开票英文描述">
+            <Input.TextArea rows={3} placeholder="Optional English description for invoices" />
+          </Form.Item>
 
           <div style={{ marginBottom: 8, fontWeight: 600 }}>更换前照片</div>
           <Upload {...makeUploadProps('before')}>
@@ -433,6 +440,7 @@ export default function DailyReplacementsPage() {
               <Descriptions.Item label="更换人">{viewing.replacer_name || '-'}</Descriptions.Item>
               <Descriptions.Item label="更换日期">{viewing.replacement_at ? dayjs(viewing.replacement_at).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
               <Descriptions.Item label="备注">{viewing.note || '-'}</Descriptions.Item>
+              <Descriptions.Item label="开票英文描述">{viewing.invoice_description_en || '-'}</Descriptions.Item>
             </Descriptions>
 
             <div>

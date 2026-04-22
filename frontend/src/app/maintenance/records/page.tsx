@@ -15,8 +15,9 @@ import styles from './records.module.scss'
 type RepairOrder = {
   id: string
   property_id?: string
+  area?: string
   category?: string
-  category_detail?: string
+  invoice_description_en?: string
   detail?: string
   details?: string
   attachment_urls?: string[]
@@ -52,7 +53,6 @@ export default function MaintenanceRecordsUnified() {
   const [filterSubmitter, setFilterSubmitter] = useState('')
   const [filterPayMethod, setFilterPayMethod] = useState<string | undefined>(undefined)
   const [filterStatus, setFilterStatus] = useState<string | undefined>(undefined)
-  const [filterCat, setFilterCat] = useState<string | undefined>(undefined)
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
@@ -170,7 +170,6 @@ export default function MaintenanceRecordsUnified() {
       filterSubmitter: String(filterSubmitter || ''),
       filterPayMethod: String(filterPayMethod || ''),
       filterStatus: String(filterStatus || ''),
-      filterCat: String(filterCat || ''),
       dateRange: [dr0, dr1],
       pageSize: Number(pageSize || 10),
       page: 1,
@@ -190,7 +189,6 @@ export default function MaintenanceRecordsUnified() {
         offset: String(Math.max(0, (effectivePage - 1) * pageSize)),
       }
       if (filterStatus) params.status = filterStatus
-      if (filterCat) params.category = filterCat
       if (filterPropertyId) params.property_id = filterPropertyId
       if (filterPayMethod) params.pay_method = filterPayMethod
       if (dateRange?.[0]) params.submitted_at_from = dayjs(dateRange[0]).startOf('day').toISOString()
@@ -256,7 +254,7 @@ export default function MaintenanceRecordsUnified() {
     if (skipInitialFilterEffectRef.current) { skipInitialFilterEffectRef.current = false; return }
     const t = setTimeout(() => { setPage(1); loadMaintenance(true, { page: 1 }) }, 250)
     return () => clearTimeout(t)
-  }, [filterCode, filterPropertyId, filterWorkNo, filterSubmitter, filterPayMethod, filterStatus, filterCat, dateRange, pageSize])
+  }, [filterCode, filterPropertyId, filterWorkNo, filterSubmitter, filterPayMethod, filterStatus, dateRange, pageSize])
   useEffect(() => {
     if (skipInitialPageEffectRef.current) { skipInitialPageEffectRef.current = false; return }
     loadMaintenance(page === 1, { page })
@@ -283,9 +281,9 @@ export default function MaintenanceRecordsUnified() {
       status: row.status || 'pending',
       assignee_id: row.assignee_id || '',
       eta: row.eta ? dayjs(row.eta) : null,
-      notes: (row as any).notes || (row as any).remark || '',
       urgency: row.urgency || 'normal',
       details: summaryFromDetails(row.details),
+      invoice_description_en: (row as any).invoice_description_en || '',
       submitter_name: String((row as any)?.submitter_name || (row as any)?.worker_name || (row as any)?.created_by || ''),
       completed_at: row.completed_at ? dayjs(row.completed_at) : null,
       maintenance_amount: (row as any)?.maintenance_amount !== undefined ? Number((row as any)?.maintenance_amount || 0) : undefined,
@@ -330,7 +328,6 @@ export default function MaintenanceRecordsUnified() {
         status: v.status,
         assignee_id: v.assignee_id || undefined,
         eta: v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : undefined,
-        notes: v.notes || undefined,
         urgency: v.urgency || undefined,
       }
       if (Object.prototype.hasOwnProperty.call(v, 'details')) {
@@ -344,6 +341,10 @@ export default function MaintenanceRecordsUnified() {
         } else {
           payload.details = null
         }
+      }
+      if (Object.prototype.hasOwnProperty.call(v, 'invoice_description_en')) {
+        const invoiceDescriptionEn = String(v.invoice_description_en || '').trim()
+        payload.invoice_description_en = invoiceDescriptionEn || null
       }
       const st = String(v.status || '')
       if (st === 'in_progress' || st === 'completed') {
@@ -513,8 +514,8 @@ export default function MaintenanceRecordsUnified() {
     if (s === 'other_pay') return '其他人支付'
     return s
   }
-  function issueAreaLabel(r?: any): string {
-    const direct = String(r?.category || r?.category_detail || '').trim()
+function issueAreaLabel(r?: any): string {
+    const direct = String(r?.area || r?.category || '').trim()
     if (direct) return direct
     const known = new Set(['入户走廊','客厅','厨房','卧室','阳台','浴室','其他'])
     const s = String(r?.details || '')
@@ -632,7 +633,6 @@ export default function MaintenanceRecordsUnified() {
     for (;;) {
       const params: Record<string, any> = { limit: String(limit), offset: String(offset) }
       if (filterStatus) params.status = filterStatus
-      if (filterCat) params.category = filterCat
       if (filterPropertyId) params.property_id = filterPropertyId
       if (filterPayMethod) params.pay_method = filterPayMethod
       if (dateRange?.[0]) params.submitted_at_from = dayjs(dateRange[0]).startOf('day').toISOString()
@@ -740,7 +740,6 @@ export default function MaintenanceRecordsUnified() {
             setFilterSubmitter('')
             setFilterPayMethod(undefined)
             setFilterStatus(undefined)
-            setFilterCat(undefined)
             setDateRange(null)
             setPage(1)
             loadMaintenance(true)
@@ -785,7 +784,7 @@ export default function MaintenanceRecordsUnified() {
                           <div>问题区域：{issueAreaLabel(r) || '-'}</div>
                           <div>提交人：{String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '-')}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>完成日期：{(r as any)?.completed_at ? dayjs((r as any).completed_at).format('YYYY-MM-DD') : '-'}</div>
-                          <div style={{ gridColumn:'1 / span 2' }}>提交时间：{(r.submitted_at || (r as any).occurred_at || (r as any).created_at) ? dayjs(r.submitted_at || (r as any).occurred_at || (r as any).created_at).format('YYYY-MM-DD') : '-'}</div>
+                          <div style={{ gridColumn:'1 / span 2' }}>提交时间：{r.submitted_at ? dayjs(r.submitted_at).format('YYYY-MM-DD') : '-'}</div>
                           <div style={{ gridColumn:'1 / span 2' }}>问题摘要：{summaryFromDetails(r.details)}</div>
                           <div>维修金额：{fmtAmount(calcTotalAmount(r)?.total)}</div>
                           <div>是否有配件费：{(r as any).has_parts === true ? '是' : (r as any).has_parts === false ? '否' : '-'}</div>
@@ -820,7 +819,7 @@ export default function MaintenanceRecordsUnified() {
               { title:'提交人', dataIndex:'submitter_name', width: 120, render: (_: any, r: any) => String((r as any)?.submitter_name || (r as any)?.worker_name || (r as any)?.created_by || '') },
               { title:'完成时间', dataIndex:'completed_at', width: 180, render:(d:string)=> d ? dayjs(d).format('YYYY-MM-DD') : '-' },
               { title:'提交时间', dataIndex:'submitted_at', width: 180, render: (_: any, r: any) => {
-                const v = (r as any)?.submitted_at || (r as any)?.occurred_at || (r as any)?.created_at
+                const v = (r as any)?.submitted_at
                 return v ? dayjs(v).format('YYYY-MM-DD') : '-'
               } },
               { title:'维修金额', dataIndex:'maintenance_amount', width: 140, render:(_:any, r:any)=> fmtAmount(calcTotalAmount(r)?.total) },
@@ -927,7 +926,7 @@ export default function MaintenanceRecordsUnified() {
               <Descriptions.Item label="紧急程度">{urgencyTag((viewRow as any)?.urgency)}</Descriptions.Item>
               <Descriptions.Item label="问题区域">{issueAreaLabel(viewRow) || '-'}</Descriptions.Item>
               <Descriptions.Item label="提交人">{String((viewRow as any)?.submitter_name || (viewRow as any)?.worker_name || (viewRow as any)?.created_by || '-')}</Descriptions.Item>
-              <Descriptions.Item label="提交时间">{((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at) ? dayjs((viewRow as any)?.submitted_at || (viewRow as any)?.occurred_at || (viewRow as any)?.created_at).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
+              <Descriptions.Item label="提交时间">{(viewRow as any)?.submitted_at ? dayjs((viewRow as any)?.submitted_at).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
               <Descriptions.Item label="完成日期">{(viewRow as any)?.completed_at ? dayjs((viewRow as any).completed_at).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
             </Descriptions>
 
@@ -935,6 +934,9 @@ export default function MaintenanceRecordsUnified() {
             <Descriptions bordered column={1} labelStyle={{ width: '120px' }}>
               <Descriptions.Item label="问题摘要" style={{ whiteSpace: 'pre-wrap' }}>
                 {summaryFromDetails(viewRow?.details) || (viewRow as any)?.detail || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="开票英文描述" style={{ whiteSpace: 'pre-wrap' }}>
+                {String((viewRow as any)?.invoice_description_en || '-')}
               </Descriptions.Item>
             </Descriptions>
 
@@ -1035,13 +1037,14 @@ export default function MaintenanceRecordsUnified() {
         const v = await createForm.validateFields()
         const payload: any = {
           property_id: v.property_id,
-          category: v.category,
+          area: v.area,
           status: 'pending',
           submitted_at: new Date().toISOString(),
         }
         if (v.details) {
           try { payload.details = JSON.stringify([{ content: String(v.details || '') }]) } catch { payload.details = String(v.details || '') }
         }
+        if (v.invoice_description_en) payload.invoice_description_en = String(v.invoice_description_en || '').trim()
         if (v.submitter_name) payload.submitter_name = v.submitter_name
         if (createPhotos.length) payload.photo_urls = createPhotos
         try {
@@ -1064,7 +1067,7 @@ export default function MaintenanceRecordsUnified() {
               filterSort={(a, b) => String((a as any).label || '').localeCompare(String((b as any).label || ''), 'zh')}
             />
           </Form.Item>
-          <Form.Item name="category" label="问题区域" rules={[{ required: true }]}>
+          <Form.Item name="area" label="问题区域" rules={[{ required: true }]}>
             <Select options={['入户走廊','客厅','厨房','卧室','阳台','浴室','其他'].map(x => ({ value:x, label:x }))} />
           </Form.Item>
           <Form.Item name="submitter_name" label="提交人" rules={[{ required: true }]}>
@@ -1072,6 +1075,9 @@ export default function MaintenanceRecordsUnified() {
           </Form.Item>
           <Form.Item name="details" label="问题摘要" rules={[{ required: true, min: 3 }]}>
             <Input.TextArea rows={3} />
+          </Form.Item>
+          <Form.Item name="invoice_description_en" label="开票英文描述">
+            <Input.TextArea rows={3} placeholder="Optional English description for invoices" />
           </Form.Item>
           <Form.Item label="维修前照片">
             <Upload listType="picture" multiple fileList={createFiles} onRemove={(f)=>{ setCreateFiles(fl=>fl.filter(x=>x.uid!==f.uid)); if (f.url) setCreatePhotos(u=>u.filter(x=>x!==f.url)) }}
@@ -1181,6 +1187,11 @@ export default function MaintenanceRecordsUnified() {
             </Col>
             <Col span={24}>
               <Form.Item name="details" label="问题摘要"><Input.TextArea rows={3} /></Form.Item>
+            </Col>
+            <Col span={24}>
+              <Form.Item name="invoice_description_en" label="开票英文描述">
+                <Input.TextArea rows={3} placeholder="Optional English description for invoices" />
+              </Form.Item>
             </Col>
             <Col span={24}>
               <Form.Item label="维修前照片">
@@ -1393,8 +1404,6 @@ export default function MaintenanceRecordsUnified() {
               </div>
             </>
           ) : null}
-          <Divider orientation="left">其他</Divider>
-          <Form.Item name="notes" label="内部备注"><Input.TextArea rows={2} /></Form.Item>
         </Form>
         </Spin>
       </Drawer>

@@ -294,14 +294,18 @@ function autoPickSummaryFromDetails(detailsRaw: any): string {
 }
 
 function autoMaintenanceIssueSummary(row: any): string {
+  const invoiceDesc = autoToSummaryText(row?.invoice_description_en)
+  if (invoiceDesc) return invoiceDesc
   const a = autoPickSummaryFromDetails(row?.details)
   if (a) return a
   const b = autoToSummaryText(row?.repair_notes)
   if (b) return b
-  return autoToSummaryText(row?.category)
+  return ''
 }
 
 function autoDeepCleaningProjectSummary(row: any): string {
+  const invoiceDesc = autoToSummaryText(row?.invoice_description_en)
+  if (invoiceDesc) return invoiceDesc
   const a = autoToSummaryText(row?.project_desc)
   if (a) return a
   const b = autoPickSummaryFromDetails(row?.details)
@@ -524,11 +528,11 @@ async function collectAutoExpenseSourceItems(executor: any, input: { from: strin
   const propertyIdFilter = String(input.propertyIdFilter || '').trim()
   if (input.type === 'all' || input.type === 'maintenance') {
     const mt = await executor.query(
-      `SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, category
+      `SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes
          FROM property_maintenance
-        WHERE coalesce(completed_at::date, occurred_at, created_at::date) BETWEEN $1::date AND $2::date
+        WHERE coalesce(completed_at::date, occurred_at) BETWEEN $1::date AND $2::date
           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
-        ORDER BY coalesce(completed_at::date, occurred_at, created_at::date) ASC
+        ORDER BY coalesce(completed_at::date, occurred_at) ASC
         LIMIT $3`,
       [input.from, input.to, input.limit, propertyIdFilter]
     )
@@ -573,7 +577,7 @@ router.post('/auto-expenses/backfill', requireAnyPerm(['finance.tx.write','prope
         if (await autoHasManualOverrideForRef(pgPool, refType, refId)) { skipped_manual_override++; continue }
         const st = autoNormStatus(r?.status)
         const pm = autoNormPayMethod(r?.pay_method)
-        const occurredAt = autoToISODateOnly(r?.completed_at) || autoToISODateOnly(r?.occurred_at) || autoToISODateOnly(r?.created_at)
+        const occurredAt = autoToISODateOnly(r?.completed_at) || autoToISODateOnly(r?.occurred_at)
         const amount = it.kind === 'maintenance'
           ? autoCalcMaintenanceTotal(r)
           : (() => {
@@ -601,7 +605,7 @@ router.post('/auto-expenses/backfill', requireAnyPerm(['finance.tx.write','prope
 
         const st = autoNormStatus(r?.status)
         const pm = autoNormPayMethod(r?.pay_method)
-        const occurredAt = autoToISODateOnly(r?.completed_at) || autoToISODateOnly(r?.occurred_at) || autoToISODateOnly(r?.created_at)
+        const occurredAt = autoToISODateOnly(r?.completed_at) || autoToISODateOnly(r?.occurred_at)
         const amount = it.kind === 'maintenance'
           ? autoCalcMaintenanceTotal(r)
           : (() => {

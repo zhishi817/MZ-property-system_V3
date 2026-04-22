@@ -8,7 +8,7 @@ import { jsPDF } from 'jspdf'
 import type { UploadFile } from 'antd/es/upload/interface'
 
 type Property = { id: string; code?: string }
-type RecordRow = { id: string; property_id: string; occurred_at: string; worker_name: string; details?: any; notes?: string }
+type RecordRow = { id: string; property_id: string; occurred_at: string; worker_name: string; details?: any; repair_notes?: string; notes?: string }
 type Detail = { content?: string; item?: string; hours?: number; amount?: number }
 
 export default function MaintenancePage() {
@@ -42,7 +42,7 @@ export default function MaintenancePage() {
   function openCreate() { setEditing(null); form.resetFields(); setSelectedProp(null); setDetails([{ content: '', item: '', hours: 0, amount: 0 }]); setOpen(true) }
   function openEdit(row: RecordRow) {
     setEditing(row)
-    form.setFieldsValue({ property_id: row.property_id, occurred_at: dayjs(row.occurred_at), worker_name: row.worker_name, notes: row.notes })
+    form.setFieldsValue({ property_id: row.property_id, occurred_at: dayjs(row.occurred_at), worker_name: row.worker_name, repair_notes: (row as any).repair_notes || row.notes })
     setDetails(Array.isArray(row.details) ? row.details : (row.details ? JSON.parse(row.details) : []))
     const urls: string[] = Array.isArray((row as any).photo_urls) ? ((row as any).photo_urls as string[]) : []
     setPhotos(urls)
@@ -55,7 +55,7 @@ export default function MaintenancePage() {
   async function save() {
     const v = await form.validateFields()
     const selected = props.find(p => String(p.id) === String(v.property_id))
-    const payload = { property_id: v.property_id, property_code: selected?.code, occurred_at: v.occurred_at.format('YYYY-MM-DD'), worker_name: v.worker_name, details, notes: v.notes || '', photo_urls: photos }
+    const payload = { property_id: v.property_id, property_code: selected?.code, occurred_at: v.occurred_at.format('YYYY-MM-DD'), worker_name: v.worker_name, details, repair_notes: v.repair_notes || '', photo_urls: photos }
     if (editing) {
       const res = await fetch(`${API_BASE}/crud/property_maintenance/${editing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
       if (res.ok) { message.success('已更新'); setOpen(false); load() } else { try { const j = await res.json(); message.error(j?.message || '更新失败') } catch { message.error('更新失败') } }
@@ -247,7 +247,7 @@ export default function MaintenancePage() {
           ]} />
           <Button style={{ marginTop: 8 }} icon={<PlusOutlined />} onClick={addDetail}>
           </Button>
-          <Form.Item name="notes" label="其他备注"><Input.TextArea rows={3} /></Form.Item>
+          <Form.Item name="repair_notes" label="处理备注"><Input.TextArea rows={3} /></Form.Item>
         </Form>
       </Modal>
     </Space>

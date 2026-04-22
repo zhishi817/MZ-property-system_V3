@@ -62,10 +62,6 @@ export const MENU_PERMISSION_MAP: Record<string, MenuPermNode> = {
       'property_maintenance.write',
       'property_maintenance.delete',
       'property_maintenance.archive',
-      'repair_orders.view',
-      'repair_orders.write',
-      'repair_orders.delete',
-      'repair_orders.archive',
     ],
   },
   'menu.properties.deep_cleaning.visible': {

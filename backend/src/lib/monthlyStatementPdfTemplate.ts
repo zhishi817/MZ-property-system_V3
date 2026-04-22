@@ -134,7 +134,7 @@ export function renderMonthlyStatementPdfHtml(input: MonthlyStatementPdfTemplate
       const jobNumber = String(r?.work_no || r?.id || '').trim()
       const completionText = completionTextOf(r)
       const areaText = kind === 'maintenance'
-        ? String((r as any)?.category_detail || (r as any)?.category || '').trim()
+        ? String((r as any)?.area || (r as any)?.category_detail || (r as any)?.category || '').trim()
         : String((r as any)?.category || '').trim()
       const frag = renderWorkRecordBodyFragment({
         kind,
