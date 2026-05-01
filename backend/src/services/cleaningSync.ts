@@ -21,6 +21,7 @@ const DEFAULT_CHECKOUT_TIME = '10am'
 const DEFAULT_CHECKIN_TIME = '3pm'
 
 let schemaEnsured: Promise<void> | null = null
+let schemaBootstrapped: Promise<void> | null = null
 
 function sha256(input: string): string {
   return createHash('sha256').update(input).digest('hex')
@@ -119,6 +120,10 @@ export async function ensureCleaningSchemaV2(): Promise<void> {
          EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_sync_logs' AND column_name='job_id') AS has_logs_job_id,
          EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='cleaner_id') AS has_tasks_cleaner_id,
          EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspector_id') AS has_tasks_inspector_id,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='keys_required') AS has_tasks_keys_required,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspection_mode') AS has_tasks_inspection_mode,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cleaning_tasks' AND column_name='inspection_due_date') AS has_tasks_inspection_due_date,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='orders' AND column_name='keys_required') AS has_orders_keys_required,
          EXISTS (SELECT 1 FROM pg_constraint WHERE conname='uniq_cleaning_tasks_order_task_type_v3') AS has_tasks_uq_v3`
     )
     const row = rc?.rows?.[0] || {}
@@ -132,28 +137,43 @@ export async function ensureCleaningSchemaV2(): Promise<void> {
       err.code = 'CLEANING_SCHEMA_MISSING'
       throw err
     }
+    if (!row?.has_tasks_keys_required || !row?.has_tasks_inspection_mode || !row?.has_tasks_inspection_due_date) {
+      const err: any = new Error('cleaning_tasks_missing_sync_columns')
+      err.code = 'CLEANING_SCHEMA_MISSING'
+      throw err
+    }
+    if (!row?.has_orders_keys_required) {
+      const err: any = new Error('orders_missing_keys_required')
+      err.code = 'CLEANING_SCHEMA_MISSING'
+      throw err
+    }
     if (!row?.has_tasks_uq_v3) {
       const err: any = new Error('cleaning_tasks_missing_unique_constraint_v3')
       err.code = 'CLEANING_SCHEMA_MISSING'
       throw err
     }
-    try {
-      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
-    } catch {}
-    try {
-      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_mode text;`)
-    } catch {}
-    try {
-      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
-    } catch {}
-    try {
-      await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
-    } catch {}
   })().catch((e) => {
     schemaEnsured = null
     throw e
   })
   return schemaEnsured
+}
+
+export async function bootstrapCleaningSyncSchemaV2(): Promise<void> {
+  if (!hasPg || !pgPool) return
+  if (schemaBootstrapped) return schemaBootstrapped
+  schemaBootstrapped = (async () => {
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_mode text;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
+    await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
+    schemaEnsured = null
+    await ensureCleaningSchemaV2()
+  })().catch((e) => {
+    schemaBootstrapped = null
+    throw e
+  })
+  return schemaBootstrapped
 }
 
 export async function logCleaningSync(params: {

@@ -91,7 +91,7 @@ export function workRecordPdfCssText(): string {
   return `
     @page { size: A4; margin: 12mm; }
     html, body { margin: 0; padding: 0; background: #fff; color: #000; font-family: "Times New Roman", Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .keep-pack { break-inside: avoid; page-break-inside: avoid; }
+    .keep-pack { break-inside: auto; page-break-inside: auto; }
     .titlebar { background: #eef3fb; padding: 6px 8px; margin-bottom: 10px; }
     .title { font-size: 16px; font-weight: 700; }
     .top-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 22px; padding: 2px 0 10px; }
@@ -102,11 +102,11 @@ export function workRecordPdfCssText(): string {
     .section-head { margin-top: 16px; display: flex; align-items: center; gap: 10px; }
     .section-bar { width: 4px; height: 16px; background: #1f5cff; border-radius: 2px; }
     .section-title { font-size: 16px; font-weight: 700; color: #2b3a55; letter-spacing: 0.2px; line-height: 1.2; }
-    .phase-pack { width: 100%; margin-top: 18px; break-inside: avoid; page-break-inside: avoid; }
+    .phase-pack { width: 100%; margin-top: 18px; break-inside: auto; page-break-inside: auto; }
     .phase-head { width: 100%; break-after: avoid; page-break-after: avoid; }
     .phase-text { font-size: 16px; font-weight: 700; color: #111; }
     .phase-line { height: 2px; background: #c4cddd; margin-top: 10px; margin-bottom: 12px; }
-    .phase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+    .phase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; break-inside: auto; page-break-inside: auto; }
     .img-cell { min-width: 0; padding: 0; margin: 0; border: none; border-radius: 0; background: transparent; box-shadow: none; break-inside: avoid; page-break-inside: avoid; }
     .img-cell img { width: 100%; height: 76mm; object-fit: contain; display: block; background: #fff; border: none; border-radius: 0; box-shadow: none; outline: none; }
   `
@@ -116,7 +116,7 @@ export function workRecordPdfCssTextScoped(scope: string): string {
   const s = String(scope || '').trim()
   if (!s) return ''
   return `
-    ${s} .keep-pack { break-inside: avoid; page-break-inside: avoid; }
+    ${s} .keep-pack { break-inside: auto; page-break-inside: auto; }
     ${s} .titlebar { background: #eef3fb; padding: 6px 8px; margin-bottom: 10px; }
     ${s} .title { font-size: 16px; font-weight: 700; }
     ${s} .top-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 22px; padding: 2px 0 10px; }
@@ -127,11 +127,11 @@ export function workRecordPdfCssTextScoped(scope: string): string {
     ${s} .section-head { margin-top: 16px; display: flex; align-items: center; gap: 10px; }
     ${s} .section-bar { width: 4px; height: 16px; background: #1f5cff; border-radius: 2px; }
     ${s} .section-title { font-size: 16px; font-weight: 700; color: #2b3a55; letter-spacing: 0.2px; line-height: 1.2; }
-    ${s} .phase-pack { width: 100%; margin-top: 18px; break-inside: avoid; page-break-inside: avoid; }
+    ${s} .phase-pack { width: 100%; margin-top: 18px; break-inside: auto; page-break-inside: auto; }
     ${s} .phase-head { width: 100%; break-after: avoid; page-break-after: avoid; }
     ${s} .phase-text { font-size: 16px; font-weight: 700; color: #111; }
     ${s} .phase-line { height: 2px; background: #c4cddd; margin-top: 10px; margin-bottom: 12px; }
-    ${s} .phase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+    ${s} .phase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; break-inside: auto; page-break-inside: auto; }
     ${s} .img-cell { min-width: 0; padding: 0; margin: 0; border: none; border-radius: 0; background: transparent; box-shadow: none; break-inside: avoid; page-break-inside: avoid; }
     ${s} .img-cell img { width: 100%; height: 76mm; object-fit: contain; display: block; background: #fff; border: none; border-radius: 0; box-shadow: none; outline: none; }
   `

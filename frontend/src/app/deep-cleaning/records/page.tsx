@@ -191,7 +191,8 @@ export default function DeepCleaningRecordsPage() {
     { value: 'pending', label: '待清洁' },
     { value: 'assigned', label: '已分配' },
     { value: 'in_progress', label: '清洁中' },
-    { value: 'completed', label: '待审核' },
+    { value: 'review_pending', label: '待审核' },
+    { value: 'completed', label: '已完成' },
     { value: 'canceled', label: '已取消' },
   ]
   const catOptions = ['入户走廊','客厅','厨房','卧室','阳台','浴室','全屋','其他'].map(x => ({ value: x, label: x }))
@@ -224,6 +225,7 @@ export default function DeepCleaningRecordsPage() {
     if (v === 'pending') return <Tag color="default">{label}</Tag>
     if (v === 'assigned') return <Tag color="blue">{label}</Tag>
     if (v === 'in_progress') return <Tag color="orange">{label}</Tag>
+    if (v === 'review_pending') return <Tag color="gold">{label}</Tag>
     if (v === 'completed') return <Tag color="purple">{label}</Tag>
     if (v === 'canceled') return <Tag color="red">{label}</Tag>
     return <Tag>{label}</Tag>
@@ -380,7 +382,7 @@ export default function DeepCleaningRecordsPage() {
     const durationValue = durationValueRaw === undefined || durationValueRaw === null || durationValueRaw === '' ? null : Number(durationValueRaw)
     const durationFinal = Number.isFinite(durationValue as any) ? Number(durationValue) : (durationFromTimes !== null ? durationFromTimes : null)
     const status = String(v.status || 'pending')
-    const completedAtIso = v.completed_at ? dayjs(v.completed_at).toISOString() : (status === 'completed' ? (endedIso || null) : null)
+    const completedAtIso = v.completed_at ? dayjs(v.completed_at).toISOString() : ((status === 'review_pending' || status === 'completed') ? (endedIso || null) : null)
     const payload: any = {
       property_id: v.property_id,
       occurred_at: baseDate.format('YYYY-MM-DD'),
@@ -472,13 +474,19 @@ export default function DeepCleaningRecordsPage() {
         const durationValueRaw = (v as any).duration_minutes
         const durationValue = durationValueRaw === undefined || durationValueRaw === null || durationValueRaw === '' ? null : Number(durationValueRaw)
         const durationFinal = Number.isFinite(durationValue as any) ? Number(durationValue) : (durationFromTimes !== null ? durationFromTimes : null)
+        const nextStatus = String(v.status || '')
+        const existingCompletedAt = String((editing as any)?.completed_at || '').trim()
         const payload: any = {
           status: v.status,
           urgency: v.urgency,
           worker_name: String(v.worker_name || '').trim(),
           submitter_name: String(v.submitter_name || '').trim(),
           eta: v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : null,
-          completed_at: v.completed_at ? dayjs(v.completed_at).toISOString() : null,
+          completed_at:
+            v.completed_at ? dayjs(v.completed_at).toISOString()
+              : (nextStatus === 'review_pending' || nextStatus === 'completed')
+                ? (existingCompletedAt || endedIso || null)
+                : null,
           started_at: startedIso,
           ended_at: endedIso,
           duration_minutes: durationFinal,

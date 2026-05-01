@@ -75,7 +75,7 @@ import { getRole, hasPerm } from '../../../lib/auth'
         worker_name: v.worker_name || '',
         submitter_name: v.worker_name || '',
         repair_notes: v.notes || '',
-        status: 'completed',
+        status: 'review_pending',
         submitted_at: new Date().toISOString()
       }
       const completedAtIso = occurredDay.hour(12).minute(0).second(0).millisecond(0).toISOString()

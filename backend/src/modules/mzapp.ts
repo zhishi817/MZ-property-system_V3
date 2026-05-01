@@ -563,6 +563,14 @@ async function ensureCleaningTaskMediaTable() {
   return mediaEnsuring
 }
 
+export async function warmupMzappModule() {
+  if (!(hasPg && pgPool)) return
+  await ensureCleaningTaskMediaTable()
+  try {
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type_captured_created ON cleaning_task_media(task_id, type, captured_at DESC, created_at DESC)`)
+  } catch {}
+}
+
 let checkoutEnsured = false
 let checkoutEnsuring: Promise<void> | null = null
 
@@ -2598,6 +2606,24 @@ router.get('/work-tasks', async (req, res) => {
 
       if (wantCleaner || wantInspector) {
         const sql = `
+          WITH latest_media_raw AS (
+            SELECT DISTINCT ON (m.task_id::text, m.type)
+              m.task_id::text AS task_id,
+              m.type,
+              m.url
+            FROM cleaning_task_media m
+            WHERE m.type IN ('key_photo', 'lockbox_video', 'consumable_living_room_photo')
+            ORDER BY m.task_id::text, m.type, m.captured_at DESC NULLS LAST, m.created_at DESC
+          ),
+          latest_media AS (
+            SELECT
+              task_id,
+              MAX(url) FILTER (WHERE type = 'key_photo') AS key_photo_url,
+              MAX(url) FILTER (WHERE type = 'lockbox_video') AS lockbox_video_url,
+              MAX(url) FILTER (WHERE type = 'consumable_living_room_photo') AS living_room_photo_url
+            FROM latest_media_raw
+            GROUP BY task_id
+          )
           SELECT
             t.id,
             t.order_id,
@@ -2636,27 +2662,9 @@ router.get('/work-tasks', async (req, res) => {
             o.checkin::text AS order_checkin,
             o.checkout::text AS order_checkout,
             COALESCE(t.nights_override, o.nights, (o.checkout - o.checkin)) AS order_nights,
-            (
-              SELECT m.url
-              FROM cleaning_task_media m
-              WHERE m.task_id::text = t.id::text AND m.type = 'key_photo'
-              ORDER BY m.captured_at DESC NULLS LAST, m.created_at DESC
-              LIMIT 1
-            ) AS key_photo_url,
-            (
-              SELECT m.url
-              FROM cleaning_task_media m
-              WHERE m.task_id::text = t.id::text AND m.type = 'lockbox_video'
-              ORDER BY m.captured_at DESC NULLS LAST, m.created_at DESC
-              LIMIT 1
-            ) AS lockbox_video_url,
-            (
-              SELECT m.url
-              FROM cleaning_task_media m
-              WHERE m.task_id::text = t.id::text AND m.type = 'consumable_living_room_photo'
-              ORDER BY m.captured_at DESC NULLS LAST, m.created_at DESC
-              LIMIT 1
-            ) AS living_room_photo_url,
+            lm.key_photo_url,
+            lm.lockbox_video_url,
+            lm.living_room_photo_url,
             t.sort_index_cleaner,
             t.sort_index_inspector,
             t.updated_at
@@ -2666,6 +2674,7 @@ router.get('/work-tasks', async (req, res) => {
           LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
           LEFT JOIN users cu ON (cu.id::text) = (COALESCE(t.cleaner_id, t.assignee_id)::text)
           LEFT JOIN users iu ON (iu.id::text) = (t.inspector_id::text)
+          LEFT JOIN latest_media lm ON lm.task_id = t.id::text
           WHERE (
               ((COALESCE(t.task_date, t.date)::date) >= ($1::date) AND (COALESCE(t.task_date, t.date)::date) <= ($2::date))
               OR (t.inspection_due_date IS NOT NULL AND (t.inspection_due_date::date) <= ($2::date))

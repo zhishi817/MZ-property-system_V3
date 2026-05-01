@@ -28,6 +28,13 @@ async function main() {
     return
   }
   console.log('[cleaning-backfill][worker] starting')
+  try {
+    const { bootstrapCleaningSyncSchemaV2 } = require('./services/cleaningSync')
+    await bootstrapCleaningSyncSchemaV2()
+  } catch (e: any) {
+    console.error(`[cleaning-backfill][worker] bootstrap_failed message=${String(e?.message || '')}`)
+    return
+  }
   const lockName = String(process.env.CLEANING_BACKFILL_LOCK_NAME || 'cleaning_backfill')
   const lockTtlMs = Math.max(60000, Number(process.env.CLEANING_BACKFILL_LOCK_TTL_MS || (6 * 60 * 60 * 1000)))
   const minIntervalMs = Math.max(0, Number(process.env.CLEANING_BACKFILL_MIN_INTERVAL_MS || 0))

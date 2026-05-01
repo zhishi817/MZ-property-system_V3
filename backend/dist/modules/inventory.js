@@ -390,6 +390,7 @@ async function syncAllConsumableInventoryItems(executor) {
 }
 let inventorySchemaEnsured = false;
 let inventorySchemaEnsurePromise = null;
+let inventorySchemaBootstrapPromise = null;
 let dailyInventorySyncEnsured = false;
 let consumableInventorySyncEnsured = false;
 let consumablePriceListSeedEnsured = false;
@@ -461,6 +462,80 @@ async function ensureInventorySchema() {
         return;
     }
     inventorySchemaEnsurePromise = (async () => {
+        var _a, _b;
+        const r = await dbAdapter_1.pgPool.query(`SELECT
+         to_regclass('public.warehouses') AS warehouses,
+         to_regclass('public.inventory_items') AS inventory_items,
+         to_regclass('public.inventory_linen_types') AS inventory_linen_types,
+         to_regclass('public.inventory_room_types') AS inventory_room_types,
+         to_regclass('public.inventory_room_type_requirements') AS inventory_room_type_requirements,
+         to_regclass('public.warehouse_stocks') AS warehouse_stocks,
+         to_regclass('public.inventory_stock_policies') AS inventory_stock_policies,
+         to_regclass('public.stock_movements') AS stock_movements,
+         to_regclass('public.purchase_orders') AS purchase_orders,
+         to_regclass('public.linen_delivery_records') AS linen_delivery_records`);
+        const row = ((_a = r === null || r === void 0 ? void 0 : r.rows) === null || _a === void 0 ? void 0 : _a[0]) || {};
+        const requiredRelations = [
+            'warehouses',
+            'inventory_items',
+            'inventory_linen_types',
+            'inventory_room_types',
+            'inventory_room_type_requirements',
+            'warehouse_stocks',
+            'inventory_stock_policies',
+            'stock_movements',
+            'purchase_orders',
+            'linen_delivery_records',
+        ];
+        for (const key of requiredRelations) {
+            if (!(row === null || row === void 0 ? void 0 : row[key])) {
+                const err = new Error(`inventory_schema_missing:${key}`);
+                err.code = 'INVENTORY_SCHEMA_MISSING';
+                throw err;
+            }
+        }
+        const rc = await dbAdapter_1.pgPool.query(`SELECT
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='warehouses' AND column_name='stocktake_enabled') AS has_warehouses_stocktake_enabled,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='inventory_items' AND column_name='sub_type') AS has_inventory_items_sub_type,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='inventory_items' AND column_name='linen_type_code') AS has_inventory_items_linen_type_code,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='inventory_linen_types' AND column_name='psl_code') AS has_inventory_linen_types_psl_code,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='properties' AND column_name='room_type_code') AS has_properties_room_type_code,
+         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='properties' AND column_name='linen_service_warehouse_id') AS has_properties_linen_service_warehouse_id,
+         EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='idx_linen_delivery_records_delivery_date') AS has_linen_delivery_records_delivery_date_idx`);
+        const cols = ((_b = rc === null || rc === void 0 ? void 0 : rc.rows) === null || _b === void 0 ? void 0 : _b[0]) || {};
+        if (!(cols === null || cols === void 0 ? void 0 : cols.has_warehouses_stocktake_enabled)
+            || !(cols === null || cols === void 0 ? void 0 : cols.has_inventory_items_sub_type)
+            || !(cols === null || cols === void 0 ? void 0 : cols.has_inventory_items_linen_type_code)
+            || !(cols === null || cols === void 0 ? void 0 : cols.has_inventory_linen_types_psl_code)
+            || !(cols === null || cols === void 0 ? void 0 : cols.has_properties_room_type_code)
+            || !(cols === null || cols === void 0 ? void 0 : cols.has_properties_linen_service_warehouse_id)
+            || !(cols === null || cols === void 0 ? void 0 : cols.has_linen_delivery_records_delivery_date_idx)) {
+            const err = new Error('inventory_schema_missing_columns_or_indexes');
+            err.code = 'INVENTORY_SCHEMA_MISSING';
+            throw err;
+        }
+        inventorySchemaEnsured = true;
+    })().catch((e) => {
+        inventorySchemaEnsured = false;
+        inventorySchemaEnsurePromise = null;
+        throw e;
+    });
+    try {
+        await inventorySchemaEnsurePromise;
+    }
+    finally {
+        if (inventorySchemaEnsured)
+            inventorySchemaEnsurePromise = null;
+    }
+}
+async function bootstrapInventorySchema() {
+    if (!dbAdapter_1.pgPool)
+        return;
+    if (inventorySchemaBootstrapPromise) {
+        await inventorySchemaBootstrapPromise;
+        return;
+    }
+    inventorySchemaBootstrapPromise = (async () => {
         await dbAdapter_1.pgPool.query(`CREATE TABLE IF NOT EXISTS warehouses (
       id text PRIMARY KEY,
       code text NOT NULL,
@@ -1082,24 +1157,26 @@ async function ensureInventorySchema() {
         WHEN id = 'wh.my80' THEN COALESCE(linen_capacity_sets, 100)
         ELSE linen_capacity_sets
       END;`);
-        inventorySchemaEnsured = true;
-    })().catch((e) => {
         inventorySchemaEnsured = false;
         inventorySchemaEnsurePromise = null;
+        await ensureInventorySchema();
+    })().catch((e) => {
+        inventorySchemaEnsured = false;
+        inventorySchemaBootstrapPromise = null;
         throw e;
     });
     try {
-        await inventorySchemaEnsurePromise;
+        await inventorySchemaBootstrapPromise;
     }
     finally {
         if (inventorySchemaEnsured)
-            inventorySchemaEnsurePromise = null;
+            inventorySchemaBootstrapPromise = null;
     }
 }
 async function warmupInventoryModule() {
     if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
         return;
-    await ensureInventorySchema();
+    await bootstrapInventorySchema();
 }
 async function pickSupplierIdForRegion(region) {
     var _a, _b;
