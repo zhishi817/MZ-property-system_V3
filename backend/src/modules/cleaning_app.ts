@@ -1008,7 +1008,7 @@ const completionPhotosSchema = z
   .object({
     items: z.array(
       z.object({
-        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'shower_drain']),
+        area: z.enum(['toilet', 'living', 'sofa', 'bedroom', 'kitchen', 'vacuum_used', 'shower_drain']),
         url: z.string().trim().min(1),
         note: z.string().trim().max(800).optional().nullable(),
         captured_at: z.string().trim().max(64).optional(),
@@ -1056,7 +1056,7 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
   const parsed = completionPhotosSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
-    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, shower_drain: 1 }
+    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, vacuum_used: 1, shower_drain: 1 }
     const byArea = new Map<string, number>()
     for (const it of parsed.data.items) {
       const a = String(it.area)
