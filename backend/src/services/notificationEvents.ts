@@ -25,6 +25,7 @@ export type NotificationEventType =
   | 'KEY_UPLOAD_REMINDER'
   | 'KEY_UPLOAD_SLA_REMINDER'
   | 'KEY_UPLOAD_SLA_ESCALATION'
+  | 'CUSTOMER_SERVICE_MEMO_REMINDER'
   | 'WORK_TASK_UPDATED'
 
 export type EmitNotificationEventParams = {
@@ -140,6 +141,7 @@ function buildDefaultTitleBody(params: EmitNotificationEventParams) {
   if (type === 'KEY_UPLOAD_REMINDER') return { title: '提醒：上传钥匙照片', body: '请检查并上传钥匙照片' }
   if (type === 'KEY_UPLOAD_SLA_REMINDER') return { title: '上传钥匙提醒', body: '请尽快上传钥匙照片' }
   if (type === 'KEY_UPLOAD_SLA_ESCALATION') return { title: '上传钥匙超时提醒', body: '清洁员未按时上传钥匙照片' }
+  if (type === 'CUSTOMER_SERVICE_MEMO_REMINDER') return { title: '客服备忘录提醒', body: '你有一条需要处理的客服备忘录。' }
   if (type === 'WORK_TASK_UPDATED') return { title: '任务有更新', body: '任务已更新' }
   return { title: '通知', body: '有新的更新' }
 }
@@ -207,6 +209,7 @@ function resolvePriority(params: EmitNotificationEventParams): NotificationPrior
   if (params.type === 'KEY_UPLOAD_REMINDER') return 'high'
   if (params.type === 'KEY_UPLOAD_SLA_REMINDER') return 'high'
   if (params.type === 'KEY_UPLOAD_SLA_ESCALATION') return 'high'
+  if (params.type === 'CUSTOMER_SERVICE_MEMO_REMINDER') return 'high'
   return 'low'
 }
 

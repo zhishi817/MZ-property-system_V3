@@ -266,6 +266,41 @@ async function ensureMzappAlertsTable() {
   await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_mzapp_alerts_dedupe ON mzapp_alerts(kind, target_user_id, date, position, level);`)
 }
 
+async function ensureMzappCustomerServiceMemosTable() {
+  if (!hasPg || !pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS mzapp_customer_service_memos (
+    id text PRIMARY KEY,
+    user_id text NOT NULL,
+    content text NOT NULL,
+    is_done boolean NOT NULL DEFAULT false,
+    is_alert boolean NOT NULL DEFAULT false,
+    sort_index integer NOT NULL DEFAULT 0,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );`)
+  await pgPool.query(`ALTER TABLE mzapp_customer_service_memos ADD COLUMN IF NOT EXISTS reminder_at timestamptz;`)
+  await pgPool.query(`ALTER TABLE mzapp_customer_service_memos ADD COLUMN IF NOT EXISTS reminder_sent_at timestamptz;`)
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_mzapp_customer_service_memos_user ON mzapp_customer_service_memos(user_id, sort_index, created_at DESC);`)
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_mzapp_customer_service_memos_user_updated ON mzapp_customer_service_memos(user_id, updated_at DESC);`)
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_mzapp_customer_service_memos_reminder_due ON mzapp_customer_service_memos(reminder_at, reminder_sent_at);`)
+}
+
+function parseOptionalIsoDateTime(raw: any) {
+  if (raw == null) return { ok: true as const, value: null as string | null }
+  const text = String(raw || '').trim()
+  if (!text) return { ok: true as const, value: null as string | null }
+  const ms = Date.parse(text)
+  if (!Number.isFinite(ms)) return { ok: false as const, value: null as string | null }
+  return { ok: true as const, value: new Date(ms).toISOString() }
+}
+
+function normalizeCustomerServiceMemoContent(raw: any) {
+  return String(raw || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+}
+
 router.get('/alerts', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
@@ -312,6 +347,181 @@ router.post('/alerts/:id/read', async (req, res) => {
     return res.json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: String(e?.message || 'alerts_read_failed') })
+  }
+})
+
+const customerServiceMemoCreateSchema = z.object({
+  content: z.string().trim().min(1).max(500),
+  is_done: z.boolean().optional(),
+  is_alert: z.boolean().optional(),
+  sort_index: z.number().int().min(0).max(100000).optional(),
+  reminder_at: z.any().optional(),
+})
+
+const customerServiceMemoPatchSchema = z
+  .object({
+    content: z.string().trim().min(1).max(500).optional(),
+    is_done: z.boolean().optional(),
+    is_alert: z.boolean().optional(),
+    sort_index: z.number().int().min(0).max(100000).optional(),
+    reminder_at: z.any().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: 'missing patch fields' })
+
+router.get('/customer-service-memos', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!hasRole(user, 'customer_service')) return res.status(403).json({ message: 'forbidden' })
+  const userId = String(user.sub || '').trim()
+  if (!userId) return res.status(401).json({ message: 'unauthorized' })
+  try {
+    if (!hasPg || !pgPool) return res.json([])
+    await ensureMzappCustomerServiceMemosTable()
+    const r = await pgPool.query(
+      `SELECT id, user_id, content, is_done, is_alert, sort_index, reminder_at::text AS reminder_at, reminder_sent_at::text AS reminder_sent_at, created_at::text AS created_at, updated_at::text AS updated_at
+       FROM mzapp_customer_service_memos
+       WHERE user_id = $1
+       ORDER BY is_done ASC, is_alert DESC, sort_index ASC, created_at DESC`,
+      [userId],
+    )
+    return res.json(
+      (r?.rows || []).map((row: any) => ({
+        id: String(row.id || ''),
+        user_id: String(row.user_id || ''),
+        content: String(row.content || ''),
+        is_done: !!row.is_done,
+        is_alert: !!row.is_alert,
+        sort_index: Number.isFinite(Number(row.sort_index)) ? Number(row.sort_index) : 0,
+        reminder_at: row.reminder_at ? String(row.reminder_at || '') : null,
+        reminder_sent_at: row.reminder_sent_at ? String(row.reminder_sent_at || '') : null,
+        created_at: String(row.created_at || ''),
+        updated_at: String(row.updated_at || ''),
+      })),
+    )
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'customer_service_memos_failed') })
+  }
+})
+
+router.post('/customer-service-memos', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!hasRole(user, 'customer_service')) return res.status(403).json({ message: 'forbidden' })
+  const userId = String(user.sub || '').trim()
+  if (!userId) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = customerServiceMemoCreateSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+    await ensureMzappCustomerServiceMemosTable()
+    const reminderParsed = parseOptionalIsoDateTime(parsed.data.reminder_at)
+    if (!reminderParsed.ok) return res.status(400).json({ message: 'invalid reminder_at' })
+    const content = String(parsed.data.content || '').trim()
+    const contentKey = normalizeCustomerServiceMemoContent(content)
+    const dup = await pgPool.query(
+      `SELECT id
+       FROM mzapp_customer_service_memos
+       WHERE user_id = $1
+         AND is_done = false
+         AND lower(regexp_replace(trim(content), '\s+', ' ', 'g')) = $2
+       LIMIT 1`,
+      [userId, contentKey],
+    )
+    if (dup?.rowCount) return res.status(409).json({ message: '已有相同的未完成备忘录' })
+    const id = require('uuid').v4()
+    const r = await pgPool.query(
+      `INSERT INTO mzapp_customer_service_memos (id, user_id, content, is_done, is_alert, sort_index, reminder_at, reminder_sent_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz)
+       RETURNING id, user_id, content, is_done, is_alert, sort_index, reminder_at::text AS reminder_at, reminder_sent_at::text AS reminder_sent_at, created_at::text AS created_at, updated_at::text AS updated_at`,
+      [
+        id,
+        userId,
+        content,
+        parsed.data.is_done === true,
+        parsed.data.is_alert === true,
+        parsed.data.sort_index == null ? 0 : Number(parsed.data.sort_index),
+        reminderParsed.value,
+        null,
+      ],
+    )
+    return res.json(r?.rows?.[0] || null)
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'customer_service_memo_create_failed') })
+  }
+})
+
+router.patch('/customer-service-memos/:id', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!hasRole(user, 'customer_service')) return res.status(403).json({ message: 'forbidden' })
+  const userId = String(user.sub || '').trim()
+  const id = String(req.params.id || '').trim()
+  if (!userId) return res.status(401).json({ message: 'unauthorized' })
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  const parsed = customerServiceMemoPatchSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+    await ensureMzappCustomerServiceMemosTable()
+    const reminderParsed = parsed.data.reminder_at !== undefined ? parseOptionalIsoDateTime(parsed.data.reminder_at) : null
+    if (reminderParsed && !reminderParsed.ok) return res.status(400).json({ message: 'invalid reminder_at' })
+    const sets: string[] = []
+    const vals: any[] = []
+    if (parsed.data.content !== undefined) {
+      vals.push(String(parsed.data.content || '').trim())
+      sets.push(`content = $${vals.length}`)
+    }
+    if (parsed.data.is_done !== undefined) {
+      vals.push(parsed.data.is_done === true)
+      sets.push(`is_done = $${vals.length}`)
+    }
+    if (parsed.data.is_alert !== undefined) {
+      vals.push(parsed.data.is_alert === true)
+      sets.push(`is_alert = $${vals.length}`)
+    }
+    if (parsed.data.sort_index !== undefined) {
+      vals.push(Number(parsed.data.sort_index))
+      sets.push(`sort_index = $${vals.length}`)
+    }
+    if (parsed.data.reminder_at !== undefined) {
+      vals.push(reminderParsed ? reminderParsed.value : null)
+      sets.push(`reminder_at = $${vals.length}::timestamptz`)
+      sets.push(`reminder_sent_at = NULL`)
+    }
+    if (parsed.data.is_done === true) {
+      sets.push(`reminder_sent_at = COALESCE(reminder_sent_at, now())`)
+    }
+    vals.push(id)
+    vals.push(userId)
+    const r = await pgPool.query(
+      `UPDATE mzapp_customer_service_memos
+       SET ${sets.join(', ')}, updated_at = now()
+       WHERE id = $${vals.length - 1} AND user_id = $${vals.length}
+       RETURNING id, user_id, content, is_done, is_alert, sort_index, reminder_at::text AS reminder_at, reminder_sent_at::text AS reminder_sent_at, created_at::text AS created_at, updated_at::text AS updated_at`,
+      vals,
+    )
+    if (!r?.rowCount) return res.status(404).json({ message: 'memo not found' })
+    return res.json(r.rows[0] || null)
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'customer_service_memo_update_failed') })
+  }
+})
+
+router.delete('/customer-service-memos/:id', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!hasRole(user, 'customer_service')) return res.status(403).json({ message: 'forbidden' })
+  const userId = String(user.sub || '').trim()
+  const id = String(req.params.id || '').trim()
+  if (!userId) return res.status(401).json({ message: 'unauthorized' })
+  if (!id) return res.status(400).json({ message: 'missing id' })
+  try {
+    if (!hasPg || !pgPool) return res.json({ ok: true })
+    await ensureMzappCustomerServiceMemosTable()
+    await pgPool.query(`DELETE FROM mzapp_customer_service_memos WHERE id = $1 AND user_id = $2`, [id, userId])
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'customer_service_memo_delete_failed') })
   }
 })
 
@@ -593,6 +803,18 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
     const propertyId = row.property_id ? String(row.property_id) : ''
     if (!canViewAll(user) && inspectorId !== userId) return res.status(403).json({ message: 'forbidden' })
 
+    const restockCheck = await pgPool.query(
+      `SELECT 1
+       FROM cleaning_task_media
+       WHERE task_id=$1
+         AND (type LIKE 'restock_proof:%' OR type='inspection_consumables_confirmed')
+       LIMIT 1`,
+      [id],
+    )
+    if (!restockCheck?.rows?.length) {
+      return res.status(400).json({ message: '请先确认消耗品是否充足，或完成消耗品补充提交' })
+    }
+
     const uuid = require('uuid')
     const mediaId = uuid.v4()
     await pgPool.query(
@@ -859,6 +1081,7 @@ const restockProofSchema = z
         proof_url: z.string().trim().min(1).max(800).optional().nullable(),
       }),
     ),
+    confirmed_sufficient: z.boolean().optional(),
   })
   .strict()
 
@@ -883,11 +1106,13 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     const r = await pgPool.query(
       `SELECT type, url, note, created_at
        FROM cleaning_task_media
-       WHERE task_id=$1 AND type LIKE 'restock_proof:%'
+       WHERE task_id=$1 AND (type LIKE 'restock_proof:%' OR type='inspection_consumables_confirmed')
        ORDER BY created_at ASC`,
       [id],
     )
-    const items = (r?.rows || []).map((x: any) => {
+    const rows = r?.rows || []
+    const confirmRow = rows.find((x: any) => String(x.type || '').trim() === 'inspection_consumables_confirmed') || null
+    const items = rows.filter((x: any) => String(x.type || '').trim().startsWith('restock_proof:')).map((x: any) => {
       const type = String(x.type || '')
       const itemId = type.includes(':') ? type.split(':').slice(1).join(':') : type
       let meta: any = null
@@ -907,7 +1132,11 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
         created_at: x.created_at ? String(x.created_at) : null,
       }
     })
-    return res.json({ items })
+    return res.json({
+      items,
+      confirmed_sufficient: !!confirmRow,
+      confirmed_at: confirmRow?.created_at ? String(confirmRow.created_at) : null,
+    })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'restock_proof_failed' })
   }
@@ -941,7 +1170,15 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
       uniq.add(k)
     }
 
-    await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'restock_proof:%'`, [id])
+    const confirmedSufficient = !!parsed.data.confirmed_sufficient
+    const restockActionKind = parsed.data.items.length ? 'restock_proof_saved' : 'restock_sufficient_confirmed'
+    const restockActionTitle = parsed.data.items.length ? '补货凭证已提交' : '消耗品已确认充足'
+    const restockActionBody = parsed.data.items.length ? '检查员已提交补货凭证' : '检查员已确认现场消耗品充足'
+    if (!parsed.data.items.length && !confirmedSufficient) {
+      return res.status(400).json({ message: '请确认消耗品是否充足，或提交补充记录' })
+    }
+
+    await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND (type LIKE 'restock_proof:%' OR type='inspection_consumables_confirmed')`, [id])
     const uuid = require('uuid')
     const batchId = uuid.v4()
     for (const it of parsed.data.items) {
@@ -953,9 +1190,16 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
         [uuid.v4(), id, `restock_proof:${it.item_id}`, url || 'no_photo', JSON.stringify(meta), userId],
       )
     }
+    if (confirmedSufficient) {
+      await pgPool.query(
+        `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
+         VALUES ($1,$2,'inspection_consumables_confirmed',$3,$4,now(),$5)`,
+        [uuid.v4(), id, 'confirmed', JSON.stringify({ confirmed_sufficient: true }), userId],
+      )
+    }
     try {
       const { broadcastCleaningEvent } = require('./events')
-      broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id })
+      broadcastCleaningEvent({ event: restockActionKind, task_id: id })
     } catch {}
     try {
       const { listCleaningTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
@@ -977,9 +1221,9 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
             entityId: String(id),
             propertyId,
             updatedAt: new Date().toISOString(),
-            title: '补货凭证已提交',
-            body: '检查员已提交补货凭证',
-            data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'restock_proof_saved', task_id: id, batch_id: batchId },
+            title: restockActionTitle,
+            body: restockActionBody,
+            data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: restockActionKind, task_id: id, batch_id: batchId },
             actorUserId: userId,
             recipientUserIds: to,
           },

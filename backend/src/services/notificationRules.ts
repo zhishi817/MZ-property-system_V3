@@ -15,6 +15,7 @@ export const ALL_NOTIFICATION_EVENT_TYPES = [
   'KEY_UPLOAD_REMINDER',
   'KEY_UPLOAD_SLA_REMINDER',
   'KEY_UPLOAD_SLA_ESCALATION',
+  'CUSTOMER_SERVICE_MEMO_REMINDER',
 ] as const
 
 export type NotificationManagedEventType = (typeof ALL_NOTIFICATION_EVENT_TYPES)[number]
@@ -109,6 +110,7 @@ export const DEFAULT_NOTIFICATION_RULE_TEMPLATES: Record<NotificationManagedEven
     note: '默认通知经理组',
     selectors: [{ recipient_type: 'audience', recipient_value: 'manager_users' }],
   },
+  CUSTOMER_SERVICE_MEMO_REMINDER: { enabled: true, note: '默认无固定收件人，依赖调用方追加', selectors: [] },
 }
 
 export type NotificationRuleRecord = {
