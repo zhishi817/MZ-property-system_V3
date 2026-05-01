@@ -26,7 +26,7 @@ type RepairOrder = {
   submitter_id?: string
   submitted_at?: string
   urgency?: 'urgent'|'normal'|'not_urgent'|'high'|'medium'|'low'
-  status?: 'pending'|'assigned'|'in_progress'|'completed'|'canceled'
+  status?: 'pending'|'assigned'|'in_progress'|'review_pending'|'completed'|'canceled'
   assignee_id?: string
   eta?: string
   completed_at?: string
@@ -347,7 +347,7 @@ export default function MaintenanceRecordsUnified() {
         payload.invoice_description_en = invoiceDescriptionEn || null
       }
       const st = String(v.status || '')
-      if (st === 'in_progress' || st === 'completed') {
+      if (st === 'in_progress' || st === 'review_pending' || st === 'completed') {
         if (repairPhotos.length) payload.repair_photo_urls = repairPhotos
         if (Object.prototype.hasOwnProperty.call(v, 'repair_notes')) {
           const repairNotes = String(v.repair_notes || '').trim()
@@ -355,7 +355,7 @@ export default function MaintenanceRecordsUnified() {
         }
       }
       if (prePhotos.length) payload.photo_urls = prePhotos
-      if (st === 'completed') {
+      if (st === 'review_pending' || st === 'completed') {
         const existing = (editing as any)?.completed_at
         payload.completed_at = v.completed_at ? dayjs(v.completed_at).toDate().toISOString() : (existing ? String(existing) : new Date().toISOString())
         if (v.maintenance_amount !== undefined) payload.maintenance_amount = Number(v.maintenance_amount || 0)
@@ -419,14 +419,17 @@ export default function MaintenanceRecordsUnified() {
     { value: 'pending', label: '待维修' },
     { value: 'assigned', label: '已分配' },
     { value: 'in_progress', label: '维修中' },
-    { value: 'completed', label: '待审核' },
+    { value: 'review_pending', label: '待审核' },
+    { value: 'completed', label: '已完成' },
+    { value: 'canceled', label: '已取消' },
   ]
   function statusLabel(s?: string) {
     const v = String(s || '')
     if (v === 'pending') return '待维修'
     if (v === 'assigned') return '已分配'
     if (v === 'in_progress') return '维修中'
-    if (v === 'completed') return '待审核'
+    if (v === 'review_pending') return '待审核'
+    if (v === 'completed') return '已完成'
     if (v === 'canceled') return '已取消'
     return v || '-'
   }
@@ -436,6 +439,7 @@ export default function MaintenanceRecordsUnified() {
     if (v === 'pending') return <Tag color="default">{label}</Tag>
     if (v === 'assigned') return <Tag color="blue">{label}</Tag>
     if (v === 'in_progress') return <Tag color="orange">{label}</Tag>
+    if (v === 'review_pending') return <Tag color="gold">{label}</Tag>
     if (v === 'completed') return <Tag color="purple">{label}</Tag>
     if (v === 'canceled') return <Tag color="red">{label}</Tag>
     return <Tag>{label}</Tag>
@@ -1240,7 +1244,7 @@ function issueAreaLabel(r?: any): string {
             </Col>
           </Row>
 
-          {(String(statusWatch || '') === 'in_progress' || String(statusWatch || '') === 'completed') ? (
+          {(String(statusWatch || '') === 'in_progress' || String(statusWatch || '') === 'review_pending' || String(statusWatch || '') === 'completed') ? (
             <>
               <Divider orientation="left">维修反馈</Divider>
               <Row gutter={16}>
@@ -1296,7 +1300,7 @@ function issueAreaLabel(r?: any): string {
             </>
           ) : null}
 
-          {String(statusWatch || '') === 'completed' ? (
+          {(String(statusWatch || '') === 'review_pending' || String(statusWatch || '') === 'completed') ? (
             <>
               <Divider orientation="left">费用结算</Divider>
               <div className={styles.feeGrid}>

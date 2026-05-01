@@ -21,7 +21,7 @@ export default function LoginInner() {
       const remembered = typeof window !== 'undefined' ? (localStorage.getItem('remember_username') || '') : ''
       if (remembered) form.setFieldsValue({ username: remembered, remember: true })
     } catch {}
-  }, [])
+  }, [form])
   function buildAuthUrlCandidates(endpoint: 'login' | 'forgot') {
     const base = String(API_BASE || '').trim().replace(/\/+$/g, '')
     if (!base) return []
@@ -108,12 +108,41 @@ export default function LoginInner() {
             <Image src="/mz-logo.png" alt="MZ Property" fill sizes="240px" style={{ objectFit: 'contain', objectPosition: 'center' }} priority />
           </div>
         </div>
-        <Form form={form} layout="vertical" initialValues={{ remember: true }} requiredMark={false} onFinish={submit}>
+        <Form
+          form={form}
+          layout="vertical"
+          initialValues={{ remember: true }}
+          requiredMark={false}
+          onFinish={submit}
+          autoComplete="on"
+          name="login"
+        >
           <Form.Item name="username" label="邮箱地址/用户名" rules={[{ required: true }]}> 
-            <Input size="large" placeholder="admin / cs / cleaner" prefix={<MailOutlined />} />
+            <Input
+              id="login-username"
+              name="username"
+              size="large"
+              placeholder="admin / cs / cleaner"
+              prefix={<MailOutlined />}
+              autoComplete="username"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
           </Form.Item>
           <Form.Item name="password" label="密码" rules={[{ required: true }]}> 
-            <Input.Password size="large" placeholder="请输入密码" visibilityToggle prefix={<LockOutlined />} />
+            <Input.Password
+              id="login-password"
+              name="password"
+              size="large"
+              placeholder="请输入密码"
+              visibilityToggle
+              prefix={<LockOutlined />}
+              autoComplete="current-password"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
           </Form.Item>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <Form.Item name="remember" valuePropName="checked" style={{ marginBottom: 0 }}>

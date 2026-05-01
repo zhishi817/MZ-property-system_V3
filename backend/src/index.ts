@@ -30,7 +30,7 @@ import maintenanceRouter from './modules/maintenance'
 import deepCleaningRouter from './modules/deep_cleaning'
 import { router as workTasksRouter } from './modules/work_tasks'
 import { router as taskCenterRouter } from './modules/task_center'
-import { router as mzappRouter } from './modules/mzapp'
+import { router as mzappRouter, warmupMzappModule } from './modules/mzapp'
 import { router as workTaskEventsRouter } from './modules/work_task_events'
 import { router as propertyOnboardingRouter } from './modules/propertyOnboarding'
 import { router as propertyGuidesRouter } from './modules/property_guides'
@@ -52,6 +52,7 @@ import publicAdminRouter from './modules/public_admin'
 import { r2Status } from './r2'
 import { getPlaywrightDiagnostics } from './lib/playwright'
 import { runNotificationQueueCleanup, startNotificationQueueWorker } from './services/notificationQueueWorker'
+import { bootstrapCleaningSyncSchemaV2 } from './services/cleaningSync'
  
  
 // 环境保险锁（Render 上用 RENDER_ENV=dev/prod 显式区分，避免误判）
@@ -443,7 +444,7 @@ function onServerListening() {
   }
   try {
     const enabled = String(process.env.NOTIFICATION_WORKER_ENABLED || 'true').toLowerCase() === 'true'
-    const intervalMs = Math.max(800, Math.min(30000, Number(process.env.NOTIFICATION_WORKER_INTERVAL_MS || 2500)))
+    const intervalMs = Math.max(1000, Math.min(60000, Number(process.env.NOTIFICATION_WORKER_INTERVAL_MS || 10000)))
     const batchSize = Math.max(1, Math.min(200, Number(process.env.NOTIFICATION_WORKER_BATCH_SIZE || 50)))
     if (enabled && hasPg) {
       console.log(`[notifications][worker] enabled interval_ms=${intervalMs} batch_size=${batchSize}`)
@@ -572,14 +573,17 @@ function onServerListening() {
           const startedAt = Date.now()
           try {
             inFlight = true
+            const { hasPendingCleaningSyncJobWork, processCleaningSyncJobsOnce } = require('./services/cleaningSyncJobsWorker')
+            const reclaimTimeoutMinutes = Math.min(120, Math.max(1, Number(process.env.CLEANING_SYNC_JOBS_RECLAIM_MINUTES || 10)))
+            const hasWork = await hasPendingCleaningSyncJobWork(reclaimTimeoutMinutes).catch(() => true)
+            if (!hasWork) return
             try {
               const { createJobRun } = require('./services/jobRuns')
               jr = await createJobRun({ job_name: 'cleaning_sync_jobs', schedule_name: 'cron', trigger_source: 'schedule', run_id: uuid() })
             } catch {}
-            const { processCleaningSyncJobsOnce } = require('./services/cleaningSyncJobsWorker')
             const r = await processCleaningSyncJobsOnce({
               limit: Math.min(20, Number(process.env.CLEANING_SYNC_JOBS_BATCH || 10)),
-              reclaim_timeout_minutes: Math.min(120, Math.max(1, Number(process.env.CLEANING_SYNC_JOBS_RECLAIM_MINUTES || 10))),
+              reclaim_timeout_minutes: reclaimTimeoutMinutes,
             })
             try {
               if (jr?.id) {
@@ -880,6 +884,19 @@ function onServerListening() {
   })
 
 async function startServer() {
+  try {
+    if (hasPg) {
+      const warmupStartedAt = Date.now()
+      await bootstrapCleaningSyncSchemaV2()
+      await warmupMzappModule()
+      await warmupInventoryModule()
+      console.log(`[bootstrap] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`)
+    }
+  } catch (err: any) {
+    console.error(`[bootstrap] warmup_failed message=${String(err?.message || '')}`)
+    process.exit(1)
+  }
+
   const server = app.listen(port, onServerListening)
   server.on('error', (err: any) => {
     const code = String(err?.code || '')
@@ -891,17 +908,6 @@ async function startServer() {
     process.exit(1)
   })
 
-  void (async () => {
-    try {
-      if (hasPg) {
-        const warmupStartedAt = Date.now()
-        await warmupInventoryModule()
-        console.log(`[inventory] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`)
-      }
-    } catch (err: any) {
-      console.error(`[inventory] warmup_failed message=${String(err?.message || '')}`)
-    }
-  })()
 }
 
 void startServer()

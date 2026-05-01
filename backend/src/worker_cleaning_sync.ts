@@ -18,15 +18,18 @@ function boolEnv(name: string, def: boolean): boolean {
 async function runOnce() {
   let jr: any = null
   const startedAt = Date.now()
+  const reclaimTimeoutMinutes = Math.min(120, Math.max(1, Number(process.env.CLEANING_SYNC_JOBS_RECLAIM_MINUTES || 10)))
+  const { hasPendingCleaningSyncJobWork, processCleaningSyncJobsOnce } = require('./services/cleaningSyncJobsWorker')
+  const hasWork = await hasPendingCleaningSyncJobWork(reclaimTimeoutMinutes).catch(() => true)
+  if (!hasWork) return
   try {
     const { createJobRun } = require('./services/jobRuns')
     jr = await createJobRun({ job_name: 'cleaning_sync_jobs', schedule_name: 'cron', trigger_source: 'schedule', run_id: uuid() })
   } catch {}
-  const { processCleaningSyncJobsOnce } = require('./services/cleaningSyncJobsWorker')
   try {
     const r = await processCleaningSyncJobsOnce({
       limit: Math.min(20, Number(process.env.CLEANING_SYNC_JOBS_BATCH || 10)),
-      reclaim_timeout_minutes: Math.min(120, Math.max(1, Number(process.env.CLEANING_SYNC_JOBS_RECLAIM_MINUTES || 10))),
+      reclaim_timeout_minutes: reclaimTimeoutMinutes,
     })
     try {
       if (jr?.id) {
@@ -65,6 +68,13 @@ async function main() {
     return
   }
   console.log('[cleaning-sync-jobs][worker] starting')
+  try {
+    const { bootstrapCleaningSyncSchemaV2 } = require('./services/cleaningSync')
+    await bootstrapCleaningSyncSchemaV2()
+  } catch (e: any) {
+    console.error(`[cleaning-sync-jobs][worker] bootstrap_failed message=${String(e?.message || '')}`)
+    return
+  }
   try {
     const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '*/1 * * * *')
     console.log(`[cleaning-sync-jobs][worker] cron=${expr}`)

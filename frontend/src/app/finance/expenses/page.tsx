@@ -6,7 +6,7 @@ import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders, apiList, apiCreate, apiUpdate, apiDelete } from '../../../lib/api'
 import { sortProperties } from '../../../lib/properties'
 import { hasPerm } from '../../../lib/auth'
-import { isVoidedTx } from '../../../lib/financeTx'
+import { isVoidedTx, normalizeReportCategory } from '../../../lib/financeTx'
 import AuditTrail from '../../../components/AuditTrail'
 
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; fixed_expense_id?: string; month_key?: string; occurred_at: string; due_date?: string; paid_date?: string; created_at?: string; note?: string; ref_type?: string; ref_id?: string; generated_from?: string; is_auto?: boolean; source_title?: string; source_summary?: string; status?: string }
@@ -254,14 +254,14 @@ export default function ExpensesPage() {
     { value: 'council_rate', label: '市政费' },
     { value: 'other', label: '其他' }
   ]
-  const catLabel = (v?: string) => (CATS.find(c => c.value === v)?.label || v || '-')
+  const catLabel = (v?: string) => {
+    const key = normalizeReportCategory(v)
+    return CATS.find(c => c.value === key)?.label || v || '-'
+  }
   function catKey(v?: string): string | undefined {
     const s = String(v || '').trim()
     if (!s) return undefined
-    const low = s.toLowerCase()
-    if (s.includes('车位') || low.includes('carpark') || low.includes('parking')) return 'parking_fee'
-    if (s === 'carpark') return 'parking_fee'
-    return s
+    return normalizeReportCategory(s)
   }
   function catFilterLabel(k?: string): string {
     if (!k) return '-'

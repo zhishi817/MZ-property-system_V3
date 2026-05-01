@@ -61,6 +61,25 @@ async function reclaimStuckRunning(timeoutMinutes: number): Promise<number> {
   return Number(r?.rowCount || 0)
 }
 
+export async function hasPendingCleaningSyncJobWork(timeoutMinutes: number): Promise<boolean> {
+  if (!hasPg || !pgPool) return false
+  const m = Math.max(1, Number(timeoutMinutes || 10))
+  const r = await pgPool.query(
+    `SELECT EXISTS (
+        SELECT 1
+        FROM cleaning_sync_jobs
+        WHERE (status='pending' AND next_retry_at <= now())
+           OR (
+             status='running'
+             AND running_started_at IS NOT NULL
+             AND running_started_at < now() - ($1 || ':minutes')::interval
+           )
+      ) AS has_work`,
+    [String(m)]
+  )
+  return !!(r?.rows?.[0]?.has_work)
+}
+
 async function claimJobs(limit: number): Promise<any[]> {
   if (!hasPg || !pgPool) return []
   const n = Math.max(1, Math.min(50, Number(limit || 10)))

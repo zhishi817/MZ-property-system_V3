@@ -126,7 +126,7 @@ export default function DeepCleaningUploadPage() {
         worker_name: String(v.worker_name || '').trim(),
         submitter_name: String(v.worker_name || '').trim(),
         notes: String(v.notes || '').trim(),
-        status: 'completed',
+        status: 'review_pending',
         submitted_at: new Date().toISOString(),
         review_status: 'pending',
       }

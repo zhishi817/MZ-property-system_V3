@@ -1084,13 +1084,16 @@ router.post('/cleaning-sync-jobs/run-once', allowCronTokenOrPerm('order.manage')
   try {
     const limit = Math.min(50, Math.max(1, Number((req.body || {}).limit || 10)))
     const reclaim = Math.min(120, Math.max(1, Number((req.body || {}).reclaim_timeout_minutes || 10)))
+    const { hasPendingCleaningSyncJobWork, processCleaningSyncJobsOnce } = require('../services/cleaningSyncJobsWorker')
+    const hasWork = await hasPendingCleaningSyncJobWork(reclaim).catch(() => true)
     let jr: any = null
     const startedAt = Date.now()
-    try {
-      const { createJobRun } = require('../services/jobRuns')
-      jr = await createJobRun({ job_name: 'cleaning_sync_jobs', schedule_name: 'manual', trigger_source: 'api_manual' })
-    } catch {}
-    const { processCleaningSyncJobsOnce } = require('../services/cleaningSyncJobsWorker')
+    if (hasWork) {
+      try {
+        const { createJobRun } = require('../services/jobRuns')
+        jr = await createJobRun({ job_name: 'cleaning_sync_jobs', schedule_name: 'manual', trigger_source: 'api_manual' })
+      } catch {}
+    }
     const r = await processCleaningSyncJobsOnce({ limit, reclaim_timeout_minutes: reclaim })
     try {
       if (jr?.id) {

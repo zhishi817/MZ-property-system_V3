@@ -203,6 +203,7 @@ function autoNormStatus(v: any): string {
   const s = String(v || '').trim()
   const low = s.toLowerCase()
   if (!low) return ''
+  if (low === 'review_pending' || low === 'pending_review' || s.includes('待审核') || s.includes('审核中')) return 'review_pending'
   if (low === 'completed' || s.includes('已完成') || s === '完成') return 'completed'
   if (low === 'canceled' || s.includes('取消')) return 'canceled'
   return low

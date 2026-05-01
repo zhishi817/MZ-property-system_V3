@@ -50,12 +50,14 @@ const cms_company_secrets_1 = require("./modules/cms_company_secrets");
 const keyUploadReminderJob_1 = require("./lib/keyUploadReminderJob");
 const keyUploadSlaJob_1 = require("./lib/keyUploadSlaJob");
 const dayEndHandoverReminderJob_1 = require("./lib/dayEndHandoverReminderJob");
+const customerServiceMemoReminderJob_1 = require("./lib/customerServiceMemoReminderJob");
 const auth_2 = require("./auth");
 const public_1 = __importDefault(require("./modules/public"));
 const public_admin_1 = __importDefault(require("./modules/public_admin"));
 const r2_1 = require("./r2");
 const playwright_1 = require("./lib/playwright");
 const notificationQueueWorker_1 = require("./services/notificationQueueWorker");
+const cleaningSync_1 = require("./services/cleaningSync");
 // 环境保险锁（Render 上用 RENDER_ENV=dev/prod 显式区分，避免误判）
 let appEnv = process.env.APP_ENV;
 let dbRole = process.env.DATABASE_ROLE;
@@ -520,7 +522,7 @@ function onServerListening() {
     }
     try {
         const enabled = String(process.env.NOTIFICATION_WORKER_ENABLED || 'true').toLowerCase() === 'true';
-        const intervalMs = Math.max(800, Math.min(30000, Number(process.env.NOTIFICATION_WORKER_INTERVAL_MS || 2500)));
+        const intervalMs = Math.max(1000, Math.min(60000, Number(process.env.NOTIFICATION_WORKER_INTERVAL_MS || 10000)));
         const batchSize = Math.max(1, Math.min(200, Number(process.env.NOTIFICATION_WORKER_BATCH_SIZE || 50)));
         if (enabled && dbAdapter_1.hasPg) {
             console.log(`[notifications][worker] enabled interval_ms=${intervalMs} batch_size=${batchSize}`);
@@ -671,15 +673,19 @@ function onServerListening() {
                     const startedAt = Date.now();
                     try {
                         inFlight = true;
+                        const { hasPendingCleaningSyncJobWork, processCleaningSyncJobsOnce } = require('./services/cleaningSyncJobsWorker');
+                        const reclaimTimeoutMinutes = Math.min(120, Math.max(1, Number(process.env.CLEANING_SYNC_JOBS_RECLAIM_MINUTES || 10)));
+                        const hasWork = await hasPendingCleaningSyncJobWork(reclaimTimeoutMinutes).catch(() => true);
+                        if (!hasWork)
+                            return;
                         try {
                             const { createJobRun } = require('./services/jobRuns');
                             jr = await createJobRun({ job_name: 'cleaning_sync_jobs', schedule_name: 'cron', trigger_source: 'schedule', run_id: (0, uuid_1.v4)() });
                         }
                         catch (_b) { }
-                        const { processCleaningSyncJobsOnce } = require('./services/cleaningSyncJobsWorker');
                         const r = await processCleaningSyncJobsOnce({
                             limit: Math.min(20, Number(process.env.CLEANING_SYNC_JOBS_BATCH || 10)),
-                            reclaim_timeout_minutes: Math.min(120, Math.max(1, Number(process.env.CLEANING_SYNC_JOBS_RECLAIM_MINUTES || 10))),
+                            reclaim_timeout_minutes: reclaimTimeoutMinutes,
                         });
                         try {
                             if (jr === null || jr === void 0 ? void 0 : jr.id) {
@@ -767,6 +773,47 @@ function onServerListening() {
         }
         catch (e) {
             console.error(`[pdf-jobs][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+        }
+    })();
+    (async () => {
+        try {
+            const defaultEnabled = process.env.NODE_ENV === 'production';
+            const enabled = String(process.env.CUSTOMER_SERVICE_MEMO_REMINDER_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true';
+            if (!enabled) {
+                console.log('[customer-service-memo-reminder][schedule] disabled');
+                return;
+            }
+            if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool) {
+                console.log('[customer-service-memo-reminder][schedule] skipped_reason=pg=false');
+                return;
+            }
+            const expr = String(process.env.CUSTOMER_SERVICE_MEMO_REMINDER_CRON || '*/1 * * * *').trim();
+            console.log(`[customer-service-memo-reminder][schedule] enabled cron=${expr} tz=Australia/Melbourne`);
+            const task = node_cron_1.default.schedule(expr, async () => {
+                var _a, _b;
+                const started = Date.now();
+                const lockKey = 975319751;
+                try {
+                    const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey]);
+                    const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
+                    if (!ok)
+                        return;
+                    const r = await (0, customerServiceMemoReminderJob_1.runCustomerServiceMemoReminderJob)();
+                    const dur = Date.now() - started;
+                    console.log(`[customer-service-memo-reminder][schedule] ok duration_ms=${dur} processed=${Number((r === null || r === void 0 ? void 0 : r.processed) || 0)} sent=${Number((r === null || r === void 0 ? void 0 : r.sent) || 0)}`);
+                    try {
+                        await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [lockKey]);
+                    }
+                    catch (_c) { }
+                }
+                catch (e) {
+                    console.error(`[customer-service-memo-reminder][schedule] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                }
+            }, { scheduled: true, timezone: 'Australia/Melbourne' });
+            task.start();
+        }
+        catch (e) {
+            console.error(`[customer-service-memo-reminder][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
         }
     })();
     (async () => {
@@ -965,6 +1012,19 @@ app.get('/health/email-sync', async (_req, res) => {
     }
 });
 async function startServer() {
+    try {
+        if (dbAdapter_1.hasPg) {
+            const warmupStartedAt = Date.now();
+            await (0, cleaningSync_1.bootstrapCleaningSyncSchemaV2)();
+            await (0, mzapp_1.warmupMzappModule)();
+            await (0, inventory_1.warmupInventoryModule)();
+            console.log(`[bootstrap] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`);
+        }
+    }
+    catch (err) {
+        console.error(`[bootstrap] warmup_failed message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
+        process.exit(1);
+    }
     const server = app.listen(port, onServerListening);
     server.on('error', (err) => {
         const code = String((err === null || err === void 0 ? void 0 : err.code) || '');
@@ -975,17 +1035,5 @@ async function startServer() {
         console.error(`❌ Server failed to start. code=${code} message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
         process.exit(1);
     });
-    void (async () => {
-        try {
-            if (dbAdapter_1.hasPg) {
-                const warmupStartedAt = Date.now();
-                await (0, inventory_1.warmupInventoryModule)();
-                console.log(`[inventory] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`);
-            }
-        }
-        catch (err) {
-            console.error(`[inventory] warmup_failed message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
-        }
-    })();
 }
 void startServer();

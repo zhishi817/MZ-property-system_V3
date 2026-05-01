@@ -21,6 +21,8 @@ function delayMsForAttempt(attempt: number) {
   return a * 60 * 1000
 }
 
+const NOTIFICATION_WORKER_LOCK_KEY = 246813581
+
 async function takePendingBatch(limit: number): Promise<QueueRow[]> {
   if (!hasPg || !pgPool) return []
   await ensureNotificationStorage()
@@ -141,26 +143,59 @@ export async function runNotificationQueueCleanup() {
 }
 
 export function startNotificationQueueWorker(params?: { intervalMs?: number; batchSize?: number }) {
-  const intervalMs = Math.max(800, Math.min(30000, Number(params?.intervalMs || 2500)))
+  const baseIntervalMs = Math.max(1000, Math.min(60000, Number(params?.intervalMs || 10000)))
   const batchSize = Math.max(1, Math.min(200, Number(params?.batchSize || 50)))
   let stopped = false
   let running = false
+  let emptyRounds = 0
 
-  const timer = setInterval(() => {
+  const scheduleNext = (delayMs: number) => {
+    const timer = setTimeout(runLoop, delayMs)
+    if (typeof (timer as any)?.unref === 'function') {
+      try { (timer as any).unref() } catch {}
+    }
+    return timer
+  }
+
+  const nextDelayMs = (hadWork: boolean) => {
+    if (hadWork) {
+      emptyRounds = 0
+      return baseIntervalMs
+    }
+    emptyRounds = Math.min(emptyRounds + 1, 6)
+    return Math.min(60000, baseIntervalMs * Math.max(1, 2 ** Math.max(0, emptyRounds - 1)))
+  }
+
+  const runLoop = async () => {
     if (stopped) return
     if (running) return
     running = true
-    processOnce(batchSize)
-      .catch(() => null)
-      .finally(() => {
-        running = false
-      })
-  }, intervalMs)
+    try {
+      let locked = true
+      if (hasPg && pgPool) {
+        const lock = await pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [NOTIFICATION_WORKER_LOCK_KEY])
+        locked = !!(lock?.rows?.[0]?.ok)
+      }
+      if (!locked) {
+        scheduleNext(baseIntervalMs)
+        return
+      }
+      try {
+        const result = await processOnce(batchSize).catch(() => ({ taken: 0, sent: 0, failed: 0 }))
+        scheduleNext(nextDelayMs(Number(result?.taken || 0) > 0))
+      } finally {
+        if (hasPg && pgPool) {
+          try { await pgPool.query('SELECT pg_advisory_unlock($1)', [NOTIFICATION_WORKER_LOCK_KEY]) } catch {}
+        }
+      }
+    } finally {
+      running = false
+    }
+  }
+
+  void runLoop()
 
   return () => {
     stopped = true
-    try {
-      clearInterval(timer)
-    } catch {}
   }
 }
