@@ -14,6 +14,9 @@ type PhotoPackJobStatus = {
 function normalizePhotoPackError(message: string, payload?: any) {
   const raw = String(message || '').trim()
   const code = String(payload?.last_error_code || payload?.error_code || '').trim()
+  if (code === 'PHOTO_PACK_TOO_LARGE' || /photo pack exceeds image hard limit/i.test(raw)) {
+    return '照片总量超过当前系统硬上限，系统已停止导出以避免生成不完整文件；请联系管理员提升导出上限后重试'
+  }
   if (code === 'PHOTO_ASSETS_UNREACHABLE' || code === 'PHOTO_PACK_RENDER_EMPTY') {
     return '照片资源未成功加载，已停止导出，请重试；若持续出现，请检查该房源照片链接是否失效'
   }
@@ -66,6 +69,18 @@ async function fetchBlobWithTimeout(url: string, init: RequestInit, timeoutMs: n
   } finally {
     ctl.clear()
   }
+}
+
+function filenameFromContentDisposition(value: string | null | undefined): string {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const utf8 = raw.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8?.[1]) {
+    try { return decodeURIComponent(utf8[1]).replace(/^["']|["']$/g, '') } catch {}
+  }
+  const plain = raw.match(/filename=([^;]+)/i)
+  if (plain?.[1]) return plain[1].trim().replace(/^["']|["']$/g, '')
+  return ''
 }
 
 export async function runStatementPhotoPackJob(opts: {
@@ -121,9 +136,17 @@ export async function runStatementPhotoPackJob(opts: {
         throw new Error(normalizePhotoPackError(String(s.last_error_message || s.detail || '照片 PDF 生成失败'), s))
       }
       if (String(s.status || '') === 'success' && stage === 'done') {
-        const warnDetail = /未能加载|缺图/i.test(detail) ? `${detail}，正在下载...` : 'PDF 已生成，正在下载...'
+        const files = Array.isArray(s.result_files) ? s.result_files : []
+        const zipFile = files.find((x: any) => String(x?.kind || '') === 'statement_photo_pack_zip')
+        const partFiles = files.filter((x: any) => String(x?.kind || '') === 'statement_photo_pack_part_pdf')
+        const volumeCount = partFiles.length || (files.find((x: any) => String(x?.kind || '') === 'statement_photo_pack_pdf') ? 1 : 0)
+        const warnDetail = /未能加载|缺图/i.test(detail)
+          ? `${detail}，正在下载...`
+          : zipFile
+            ? `已生成照片分卷（${volumeCount} 卷），正在下载 ZIP...`
+            : `已生成照片 PDF（${volumeCount || 1} 卷），正在下载...`
         onUpdate({ stage: '准备下载', detail: warnDetail, progress: 96, timeout: false })
-        const dl = await fetchBlobWithTimeout(`${API_BASE}/finance/statement-photo-pack/${encodeURIComponent(jobId)}/download`, { headers: authHeaders() }, 30000)
+        const dl = await fetchBlobWithTimeout(`${API_BASE}/finance/statement-photo-pack/${encodeURIComponent(jobId)}/download`, { headers: authHeaders() }, 120000)
         if (!dl.resp.ok) {
           let msg = `HTTP ${dl.resp.status}`
           let payload: any = null
@@ -134,8 +157,19 @@ export async function runStatementPhotoPackJob(opts: {
           } catch {}
           throw new Error(normalizePhotoPackError(msg, payload))
         }
-        onUpdate({ stage: '完成', detail: /未能加载|缺图/i.test(detail) ? detail : '下载完成', progress: 100, timeout: false })
-        return { blob: dl.blob, jobId, status: s }
+        const doneDetail = /未能加载|缺图/i.test(detail)
+          ? detail
+          : zipFile
+            ? `已生成照片分卷（${volumeCount} 卷），ZIP 下载完成`
+            : `已生成照片 PDF（${volumeCount || 1} 卷），下载完成`
+        onUpdate({ stage: '完成', detail: doneDetail, progress: 100, timeout: false })
+        return {
+          blob: dl.blob,
+          jobId,
+          status: s,
+          filename: filenameFromContentDisposition(dl.resp.headers.get('content-disposition')),
+          contentType: String(dl.resp.headers.get('content-type') || ''),
+        }
       }
     } catch (e: any) {
       const timeout = String(e?.name || '') === 'AbortError'

@@ -108,10 +108,11 @@ export default function PropertyRevenuePage() {
       const codeLabel = (prop?.code || prop?.address || String(previewPid || '')).toString().trim()
       const prefix = `Monthly Statement - ${month.format('YYYY-MM')}`
       const label = kind === 'maintenance' ? 'Maintenance Photos' : 'Deep Cleaning Photos'
-      const filename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''} - ${label}.pdf`
+      const pdfFilename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''} - ${label}.pdf`
+      const zipFilename = `${prefix}${codeLabel ? ' - ' + codeLabel : ''} - ${label}.zip`
       const primaryMode = pickSplitPhotosMode(partCount, exportQuality)
       setPhotoPackUi({ open: true, percent: 5, status: 'active', stage: '创建任务', detail: '正在准备照片下载任务...' })
-      const { blob } = await runStatementPhotoPackJob({
+      const out = await runStatementPhotoPackJob({
         month: month.format('YYYY-MM'),
         propertyId: String(previewPid),
         sections: kind,
@@ -128,8 +129,9 @@ export default function PropertyRevenuePage() {
           }))
         },
       })
-      downloadNamedBlob(blob, filename)
-      setPhotoPackUi({ open: true, percent: 100, status: 'success', stage: '完成', detail: '照片 PDF 下载完成' })
+      const finalName = out.filename || (/zip/i.test(String(out.contentType || '')) ? zipFilename : pdfFilename)
+      downloadNamedBlob(out.blob, finalName)
+      setPhotoPackUi({ open: true, percent: 100, status: 'success', stage: '完成', detail: /zip$/i.test(finalName) ? '照片分卷 ZIP 下载完成' : '照片 PDF 下载完成' })
     } catch (e: any) {
       setPhotoPackUi({ open: true, percent: 100, status: 'exception', stage: '下载失败', detail: e?.message || '下载失败' })
       message.error(e?.message || '下载失败')

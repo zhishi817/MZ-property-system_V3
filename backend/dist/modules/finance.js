@@ -1523,9 +1523,10 @@ exports.router.get('/statement-photo-pack/:id', (0, auth_1.requireAnyPerm)(['fin
     }
 });
 exports.router.get('/statement-photo-pack/:id/download', (0, auth_1.requireAnyPerm)(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     try {
         const id = String(((_a = req.params) === null || _a === void 0 ? void 0 : _a.id) || '').trim();
+        const kind = String(((_b = req.query) === null || _b === void 0 ? void 0 : _b.kind) || '').trim();
         if (!id)
             return res.status(400).json({ message: 'missing id' });
         if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
@@ -1534,7 +1535,7 @@ exports.router.get('/statement-photo-pack/:id/download', (0, auth_1.requireAnyPe
             return res.status(500).json({ message: 'R2 not configured' });
         await (0, pdfJobsSchema_1.ensurePdfJobsSchema)();
         const r = await dbAdapter_2.pgPool.query(`SELECT id, status, stage, result_files FROM pdf_jobs WHERE id=$1 AND kind='statement_photo_pack' LIMIT 1`, [id]);
-        const row = ((_b = r.rows) === null || _b === void 0 ? void 0 : _b[0]) || null;
+        const row = ((_c = r.rows) === null || _c === void 0 ? void 0 : _c[0]) || null;
         if (!row)
             return res.status(404).json({ message: 'not_found' });
         const st = String((row === null || row === void 0 ? void 0 : row.status) || '');
@@ -1543,12 +1544,16 @@ exports.router.get('/statement-photo-pack/:id/download', (0, auth_1.requireAnyPe
             return res.status(409).json({ message: 'job_not_done', status: st || null, stage: stage || null });
         }
         const files = Array.isArray(row === null || row === void 0 ? void 0 : row.result_files) ? row.result_files : [];
-        const target = files.find((x) => String((x === null || x === void 0 ? void 0 : x.kind) || '') === 'statement_photo_pack_pdf') || files[0];
+        const target = ((kind ? files.find((x) => String((x === null || x === void 0 ? void 0 : x.kind) || '') === kind) : null) ||
+            files.find((x) => String((x === null || x === void 0 ? void 0 : x.kind) || '') === 'statement_photo_pack_zip') ||
+            files.find((x) => String((x === null || x === void 0 ? void 0 : x.kind) || '') === 'statement_photo_pack_pdf') ||
+            files.find((x) => String((x === null || x === void 0 ? void 0 : x.kind) || '') === 'statement_photo_pack_part_pdf') ||
+            files[0]);
         const key = String((target === null || target === void 0 ? void 0 : target.path) || '').trim();
         if (!key)
             return res.status(404).json({ message: 'file_not_found' });
         const obj = await (0, r2_2.r2GetObjectByKey)(key);
-        if (!obj || !((_c = obj.body) === null || _c === void 0 ? void 0 : _c.length))
+        if (!obj || !((_d = obj.body) === null || _d === void 0 ? void 0 : _d.length))
             return res.status(404).json({ message: 'file_not_found' });
         const filename = String((target === null || target === void 0 ? void 0 : target.name) || `${String(row.id)}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_');
         res.setHeader('Content-Type', obj.contentType || 'application/octet-stream');
