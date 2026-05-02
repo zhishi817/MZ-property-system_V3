@@ -1110,11 +1110,6 @@ export default function TaskCenterPage() {
                     }}
                     onDragEnd={() => clearDragTarget()}
                     title={title}
-                    onDoubleClick={() => {
-                      if (pending) return
-                      const next = t.status === 'done' ? 'todo' : 'done'
-                      updateWorkTask(t.id, { status: next }).catch((err: any) => message.error(err?.message || '更新失败'))
-                    }}
                   >
                     <span className={styles.taskGrip}><HolderOutlined /></span>
                     <div className={styles.taskStripe} style={{ backgroundColor: stripe }} />
@@ -1309,11 +1304,6 @@ export default function TaskCenterPage() {
                           }}
                           onDragEnd={() => clearDragTarget()}
                           title={title}
-                          onDoubleClick={() => {
-                            if (pending) return
-                            const next = t.status === 'done' ? 'todo' : 'done'
-                            updateWorkTask(t.id, { status: next }).catch((err: any) => message.error(err?.message || '更新失败'))
-                          }}
                         >
                           <span className={styles.taskGrip}><HolderOutlined /></span>
                           <div className={styles.taskStripe} style={{ backgroundColor: stripe }} />
@@ -2015,7 +2005,7 @@ export default function TaskCenterPage() {
                 options={staffOptionsAll}
               />
             </div>
-            <Alert type="info" showIcon message="提示：任务可在任务中心拖拽分配；线下任务可双击切换完成状态。" />
+            <Alert type="info" showIcon message="提示：任务可在任务中心拖拽分配；线下任务状态请在每日清洁中显式修改。" />
           </Space>
         ) : null}
       </Modal>

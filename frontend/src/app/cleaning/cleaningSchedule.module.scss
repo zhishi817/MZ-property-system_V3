@@ -130,14 +130,120 @@
   padding: 16px 16px 18px 16px;
 }
 
+.weekLayout {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 52px;
+  grid-template-rows: auto 1fr;
+  column-gap: 12px;
+  row-gap: 0;
+}
+
+.weekSpacer {
+  width: 52px;
+}
+
+.calendarMain {
+  min-width: 0;
+  display: grid;
+  gap: 0;
+  transition: transform 180ms ease, opacity 180ms ease;
+  will-change: transform, opacity;
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.weekSlidePrev {
+  animation: weekSlidePrev 180ms ease;
+}
+
+.weekSlideNext {
+  animation: weekSlideNext 180ms ease;
+}
+
+@keyframes weekSlidePrev {
+  from {
+    opacity: 0.7;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes weekSlideNext {
+  from {
+    opacity: 0.7;
+    transform: translateX(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.weekEdgeNav {
+  width: 52px;
+  align-self: stretch;
+  border: 1px solid var(--clean-schedule-border);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #fbfdff 0%, #f3f7fc 100%);
+  color: #334155;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.weekEdgeNav:hover,
+.weekEdgeNav:focus-visible {
+  background: #ffffff;
+  border-color: rgba(59, 130, 246, 0.42);
+  color: #1d4ed8;
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92), 0 8px 18px rgba(59, 130, 246, 0.08);
+  outline: none;
+}
+
+.weekEdgeNav:active {
+  transform: translateY(0);
+}
+
+.weekEdgeNavLeft {
+  grid-column: 1;
+  grid-row: 2;
+  border-top-right-radius: 20px;
+  border-bottom-right-radius: 20px;
+}
+
+.weekEdgeNavRight {
+  grid-column: 3;
+  grid-row: 2;
+  border-top-left-radius: 20px;
+  border-bottom-left-radius: 20px;
+}
+
+.weekEdgeNav :global(.anticon) {
+  font-size: 18px;
+  font-weight: 900;
+}
+
 .weekHeader {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 0;
-  padding: 8px 10px 12px 10px;
+  padding: 0 10px 12px 10px;
   color: var(--clean-schedule-subtle);
   font-size: 12px;
   font-weight: 800;
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.weekHeader > div {
+  text-align: left;
 }
 
 .grid {
@@ -218,7 +324,14 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.detailsIntro {
+  display: grid;
+  gap: 10px;
+  min-width: 220px;
 }
 
 .detailsTitle {
@@ -235,6 +348,28 @@
   color: var(--clean-schedule-subtle);
   font-weight: 700;
 }
+
+.taskListTabs {
+  width: fit-content;
+  background: linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
+  border: 1px solid #dbe7f5;
+  border-radius: 14px;
+  padding: 4px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.taskListTabs :global(.ant-segmented-item) {
+  min-width: 108px;
+  border-radius: 10px;
+  font-weight: 900;
+  color: #64748b;
+}
+
+.taskListTabs :global(.ant-segmented-item-selected) {
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+ }
 
 .taskCenterCard {
   display: flex;
@@ -265,12 +400,33 @@
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: 1 1 760px;
+  min-width: 0;
+}
+
+.filterSlot {
+  width: 180px;
+  height: 32px;
+  flex: 0 0 auto;
+  visibility: hidden;
 }
 
 .missionList {
   padding: 0 16px 18px 16px;
   display: grid;
   gap: 14px;
+}
+
+@media (max-width: 1100px) {
+  .detailsHead {
+    align-items: stretch;
+  }
+
+  .filters {
+    justify-content: flex-start;
+    flex: 1 1 100%;
+  }
 }
 
 .missionCard {

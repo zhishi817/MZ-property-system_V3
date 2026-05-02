@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { API_BASE, authHeaders } from '../../lib/api'
 import { preloadRolePerms } from '../../lib/auth'
 import { hasPerm } from '../../lib/auth'
-import { MENU_PERMISSION_MAP, buildMenuKeySet, buildPermToMenuIndex, findMenuNode, findMenuPathLabels } from './rbacMenuMap'
+import { MENU_PERMISSION_INDEX, MENU_PERMISSION_TREE, buildMenuKeySet, buildPermToMenuIndex, findMenuNode, findMenuPathLabels } from './rbacMenuMap'
 
 type Role = { id: string; name: string; description?: string }
 type RiskLevel = 'low' | 'medium' | 'high'
@@ -21,6 +21,7 @@ type Permission = { code: string; name?: string; meta?: PermissionMeta }
 type User = { id: string; username: string; email?: string; phone_au?: string; role: string; roles?: string[]; color_hex?: string | null }
 
 export default function RBACPage() {
+  const [mounted, setMounted] = useState(false)
   const [roles, setRoles] = useState<Role[]>([])
   const [perms, setPerms] = useState<Permission[]>([])
   const [open, setOpen] = useState(false)
@@ -46,6 +47,10 @@ export default function RBACPage() {
   const [menuSearch, setMenuSearch] = useState<string>('')
   const [activeMenuKey, setActiveMenuKey] = useState<string>('')
   const [advancedSearch, setAdvancedSearch] = useState<string>('')
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   function normalizeRoles(primaryRole: any, extraRoles: any) {
     const role = String(primaryRole || '').trim()
@@ -206,9 +211,10 @@ export default function RBACPage() {
     const initial = restored || list
     setSelectedPerms(initial)
     setSavedSnapshot(list)
-    const menuKeySet = buildMenuKeySet(MENU_PERMISSION_MAP)
+    const menuKeySet = buildMenuKeySet(MENU_PERMISSION_TREE)
+    const allTreeKeys = Object.keys(MENU_PERMISSION_INDEX)
     setMenuCheckedKeys(initial.filter((c) => menuKeySet.has(String(c || ''))))
-    setMenuExpandedKeys(Array.from(menuKeySet))
+    setMenuExpandedKeys(allTreeKeys)
   }
 
   async function doSave() {
@@ -364,9 +370,9 @@ export default function RBACPage() {
       title: '操作',
       render: (_: any, r: Role) => (
         <Space>
-          {hasPerm('rbac.manage') && <Button onClick={() => edit(r)}>配置权限</Button>}
-          {hasPerm('rbac.manage') && <Button onClick={() => openEditRole(r)}>编辑</Button>}
-          {hasPerm('rbac.manage') && <Button danger disabled={r.name === 'admin'} onClick={() => removeRole(r)}>删除</Button>}
+          {canManage && <Button onClick={() => edit(r)}>配置权限</Button>}
+          {canManage && <Button onClick={() => openEditRole(r)}>编辑</Button>}
+          {canManage && <Button danger disabled={r.name === 'admin'} onClick={() => removeRole(r)}>删除</Button>}
         </Space>
       ),
     },
@@ -396,15 +402,18 @@ export default function RBACPage() {
     },
     { title: '操作', render: (_: any, r: User) => (
       <Space>
-        {hasPerm('rbac.manage') && <Button onClick={() => openEditUser(r)}>编辑</Button>}
-        {hasPerm('rbac.manage') && <Button onClick={() => openResetPassword(r)}>设置新密码</Button>}
-        {hasPerm('rbac.manage') && <Button danger onClick={() => removeUser(r.id)}>删除</Button>}
+        {canManage && <Button onClick={() => openEditUser(r)}>编辑</Button>}
+        {canManage && <Button onClick={() => openResetPassword(r)}>设置新密码</Button>}
+        {canManage && <Button danger onClick={() => removeUser(r.id)}>删除</Button>}
       </Space>
     ) },
   ]
 
-  const menuKeySet = useMemo(() => buildMenuKeySet(MENU_PERMISSION_MAP), [])
-  const permToMenuIndex = useMemo(() => buildPermToMenuIndex(MENU_PERMISSION_MAP), [])
+  const canManage = mounted && hasPerm('rbac.manage')
+
+  const menuKeySet = useMemo(() => buildMenuKeySet(MENU_PERMISSION_TREE), [])
+  const allMenuTreeKeys = useMemo(() => Object.keys(MENU_PERMISSION_INDEX), [])
+  const permToMenuIndex = useMemo(() => buildPermToMenuIndex(MENU_PERMISSION_TREE), [])
   const mappedPermSet = useMemo(() => new Set(Object.keys(permToMenuIndex)), [permToMenuIndex])
 
   const permByCode: Record<string, Permission> = (() => {
@@ -512,14 +521,17 @@ export default function RBACPage() {
   }
 
   const menuTreeData: any[] = useMemo(() => {
-    function build(nodes: Record<string, any>): any[] {
-      return Object.entries(nodes).map(([k, n]) => ({
-        key: k,
-        title: n.label,
-        children: n.children ? build(n.children) : undefined,
+    function build(nodes: any[]): any[] {
+      return nodes.map((node) => ({
+        key: node.key,
+        title: node.label,
+        selectable: true,
+        disabled: false,
+        disableCheckbox: !node.checkable,
+        children: node.children ? build(node.children) : undefined,
       }))
     }
-    return build(MENU_PERMISSION_MAP as any)
+    return build(MENU_PERMISSION_TREE as any)
   }, [])
 
   const filteredMenuTreeData: any[] = useMemo(() => {
@@ -574,21 +586,7 @@ export default function RBACPage() {
     } catch {}
   }, [open, current?.id, selectedPerms, savedSnapshot])
 
-  const menuIndex = useMemo(() => {
-    const idx: Record<string, { key: string; label: string; perms: string[]; children: string[]; parent?: string }> = {}
-    function walk(nodes: Record<string, any>, parent?: string) {
-      Object.entries(nodes).forEach(([k, n]) => {
-        const key = String(k)
-        const label = String((n as any)?.label || key)
-        const perms = Array.isArray((n as any)?.perms) ? (n as any).perms.map((x: any) => String(x || '')).filter(Boolean) : []
-        const children = (n as any)?.children ? Object.keys((n as any).children) : []
-        idx[key] = { key, label, perms, children, parent }
-        if ((n as any)?.children) walk((n as any).children, key)
-      })
-    }
-    walk(MENU_PERMISSION_MAP as any, undefined)
-    return idx
-  }, [])
+  const menuIndex = useMemo(() => MENU_PERMISSION_INDEX, [])
 
   function getAncestors(key: string) {
     const out: string[] = []
@@ -717,8 +715,8 @@ export default function RBACPage() {
     if (a !== b) setMenuCheckedKeys(fromSelected)
   }, [open, selectedPerms, menuCheckedKeys])
 
-  const activeNode = activeMenuKey ? findMenuNode(MENU_PERMISSION_MAP, activeMenuKey) : null
-  const activePath = activeMenuKey ? findMenuPathLabels(MENU_PERMISSION_MAP, activeMenuKey) : []
+  const activeNode = activeMenuKey ? findMenuNode(MENU_PERMISSION_TREE, activeMenuKey) : null
+  const activePath = activeMenuKey ? findMenuPathLabels(MENU_PERMISSION_TREE, activeMenuKey) : []
   const activePerms = (activeNode?.perms || []).map((x) => String(x || '')).filter(Boolean)
   const permsByAction = useMemo(() => {
     const map: Record<string, string[]> = {}
@@ -769,7 +767,7 @@ export default function RBACPage() {
   return (
     <Card
       title="角色权限"
-      extra={hasPerm('rbac.manage')
+      extra={canManage
         ? (
           <Space>
             <Button onClick={() => setRoleOpen(true)}>新建角色</Button>
@@ -799,11 +797,11 @@ export default function RBACPage() {
                 onChange={(e) => {
                   const v = e.target.value
                   setMenuSearch(v)
-                  if (v) setMenuExpandedKeys(Array.from(menuKeySet))
+                  if (v) setMenuExpandedKeys(allMenuTreeKeys)
                 }}
               />
               <Space wrap>
-                <Button size="small" onClick={() => setMenuExpandedKeys(Array.from(menuKeySet))}>展开</Button>
+                <Button size="small" onClick={() => setMenuExpandedKeys(allMenuTreeKeys)}>展开</Button>
                 <Button size="small" onClick={() => setMenuExpandedKeys([])}>折叠</Button>
                 <Button size="small" onClick={() => { setAllMenusVisible(true).catch(() => {}) }}>全选</Button>
                 <Button size="small" onClick={() => { setAllMenusVisible(false).catch(() => {}) }}>反选</Button>
@@ -958,7 +956,7 @@ export default function RBACPage() {
               return undefined
             }}
           >
-            <ColorPicker format="hex" showText getPopupContainer={(n) => (n?.parentElement as any) || document.body} />
+            <ColorPicker format="hex" showText getPopupContainer={(n) => (n?.parentElement as any) || (typeof document !== 'undefined' ? document.body : undefined as any)} />
           </Form.Item>
           <Form.Item name="password" label="密码" rules={[{ required: true, min: 6 }]}><Input.Password /></Form.Item>
         </Form>
@@ -998,7 +996,7 @@ export default function RBACPage() {
               return undefined
             }}
           >
-            <ColorPicker format="hex" showText getPopupContainer={(n) => (n?.parentElement as any) || document.body} />
+            <ColorPicker format="hex" showText getPopupContainer={(n) => (n?.parentElement as any) || (typeof document !== 'undefined' ? document.body : undefined as any)} />
           </Form.Item>
         </Form>
       </Modal>
