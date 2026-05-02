@@ -479,6 +479,9 @@ if (db.roles.length === 0) {
     { code: 'menu.finance.invoices.visible' },
     { code: 'menu.finance.company_overview.visible' },
     { code: 'menu.finance.company_revenue.visible' },
+    { code: 'menu.cleaning.overview.visible' },
+    { code: 'menu.cleaning.task_center.visible' },
+    { code: 'menu.cleaning.daily.visible' },
     { code: 'cleaning_app.tasks.view.self' },
     { code: 'cleaning_app.tasks.start' },
     { code: 'cleaning_app.tasks.finish' },
@@ -506,17 +509,17 @@ if (db.roles.length === 0) {
   // 管理员：所有权限
   grant(adminId, db.permissions.map(p => p.code))
   // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
-  grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','order.cancel','cleaning.view','finance.tx.write','invoice.view','invoice.draft.create','onboarding.manage','onboarding.read','menu.dashboard','menu.properties','menu.finance','menu.finance.invoices.visible','menu.cleaning','menu.cms','menu.onboarding','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload'])
+  grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','order.cancel','cleaning.view','finance.tx.write','invoice.view','invoice.draft.create','onboarding.manage','onboarding.read','menu.dashboard','menu.properties','menu.finance','menu.finance.invoices.visible','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.cms','menu.onboarding','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 线下运营：可在 App 管理页进入任务详情、提交房源问题反馈并上传证据
-  grant(offlineMgrId, ['menu.dashboard','menu.cleaning','cleaning.view','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload'])
+  grant(offlineMgrId, ['menu.dashboard','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','cleaning.view','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
-  grant(cleanMgrId, ['cleaning.schedule.manage','cleaning.task.assign','menu.cleaning','menu.dashboard','cleaning_app.calendar.view.all','cleaning_app.assign','cleaning_app.sse.subscribe'])
+  grant(cleanMgrId, ['cleaning.schedule.manage','cleaning.task.assign','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.dashboard','cleaning_app.calendar.view.all','cleaning_app.assign','cleaning_app.sse.subscribe'])
   // 清洁人员：与清洁/检查人员一致（兼容数据库中 role=cleaner 的账号）
-  grant(cleanerOnlyId, ['menu.cleaning','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
+  grant(cleanerOnlyId, ['menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 检查人员：允许查看与处理检查相关任务（与清洁人员保持一致，避免前端 403）
-  grant(inspectorId, ['menu.cleaning','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
+  grant(inspectorId, ['menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 兼容旧角色名：cleaner_inspector
-  grant(legacyCleanerInspectorId, ['menu.cleaning','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
+  grant(legacyCleanerInspectorId, ['menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.dashboard','cleaning_app.tasks.view.self','cleaning_app.tasks.start','cleaning_app.tasks.finish','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 财务人员：财务结算与交易录入、房东/房源管理
   grant(financeId, ['finance.payout','finance.tx.write','invoice.view','invoice.draft.create','invoice.issue','invoice.send','invoice.void','invoice.payment.record','invoice.company.manage','invoice.type.switch','order.deduction.manage','order.cancel','landlord.manage','property.write','property_maintenance.view','property_deep_cleaning.view','onboarding.manage','onboarding.read','menu.finance','menu.finance.invoices.visible','menu.landlords','menu.properties','menu.onboarding','menu.dashboard'])
   // 仓库管理员：仓库与钥匙管理
@@ -535,7 +538,7 @@ const defaultPerms = [
   'inventory.view','inventory.move','inventory.item.manage','inventory.po.manage','landlord.manage',
   'rbac.manage',
   'users.password.reset',
-  'menu.dashboard','menu.landlords','menu.properties','menu.keys','menu.inventory','menu.finance','menu.cleaning','menu.rbac','menu.cms'
+  'menu.dashboard','menu.landlords','menu.properties','menu.keys','menu.inventory','menu.finance','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.rbac','menu.cms'
 ]
 defaultPerms.forEach((code) => { if (!db.permissions.find(p => p.code === code)) db.permissions.push({ code }) })
 

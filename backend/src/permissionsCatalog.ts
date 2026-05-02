@@ -402,12 +402,13 @@ const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
   'cleaning.schedule.manage': {
     displayName: '清洁：排班管理（中）',
     riskLevel: 'medium',
-    purpose: '允许创建与调整清洁排班，影响现场执行计划。',
+    purpose: '允许创建线下任务、创建任务安排中的自定义任务，并调整排班时间与执行计划。',
     scenarios: [
+      '在“任务安排/每日清洁”中新增线下任务或自定义任务',
       '安排清洁人员、调整时间、处理临时变更',
     ],
     denyImpact: [
-      '无法排班与调整，现场执行可能延误',
+      '无法新建线下任务，也无法调整排班，现场执行可能延误',
     ],
     privacyRisk: [
       '涉及人员安排与房源地址等信息，需控制范围',
@@ -416,7 +417,7 @@ const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
   'cleaning.task.assign': {
     displayName: '清洁：任务分配（中）',
     riskLevel: 'medium',
-    purpose: '允许将清洁任务分配给人员/团队，影响执行责任。',
+    purpose: '允许给现有清洁任务分配/改派执行人、批量派单和调整负责人。',
     scenarios: [
       '任务派单、调整负责人、补位与转派',
     ],
@@ -425,6 +426,48 @@ const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
     ],
     privacyRisk: [
       '包含人员信息与任务细节，需控制范围',
+    ],
+  },
+  'menu.cleaning.overview.visible': {
+    displayName: '菜单：线下总览可见（低）',
+    riskLevel: 'low',
+    purpose: '允许在后台侧边栏看到并进入“线下总览”页面。',
+    scenarios: [
+      '客服、线下运营或主管进入线下总览查看任务总览与统计',
+    ],
+    denyImpact: [
+      '无法在后台看到或进入线下总览页面',
+    ],
+    privacyRisk: [
+      '页面可能包含房源地址、任务进度等运营信息，建议按岗位开放',
+    ],
+  },
+  'menu.cleaning.task_center.visible': {
+    displayName: '菜单：任务安排可见（低）',
+    riskLevel: 'low',
+    purpose: '允许在后台侧边栏看到并进入“任务安排”页面。',
+    scenarios: [
+      '客服或清洁主管进入任务安排，查看并处理线下任务排班',
+    ],
+    denyImpact: [
+      '无法在后台看到或进入任务安排页面',
+    ],
+    privacyRisk: [
+      '页面可能包含执行人、时间和房源信息，建议按岗位开放',
+    ],
+  },
+  'menu.cleaning.daily.visible': {
+    displayName: '菜单：每日清洁可见（低）',
+    riskLevel: 'low',
+    purpose: '允许在后台侧边栏看到并进入“每日清洁”页面。',
+    scenarios: [
+      '运营或主管进入每日清洁页面查看当天安排与处理进度',
+    ],
+    denyImpact: [
+      '无法在后台看到或进入每日清洁页面',
+    ],
+    privacyRisk: [
+      '页面可能包含房源、排班与执行状态信息，建议按岗位开放',
     ],
   },
   'order.create': {

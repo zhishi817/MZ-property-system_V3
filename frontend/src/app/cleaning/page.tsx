@@ -4,7 +4,7 @@ import { Alert, Button, Checkbox, Col, DatePicker, Divider, Drawer, Empty, Form,
 import { DeleteOutlined, EditOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
-import { API_BASE, getJSON, patchJSON, postJSON } from '../../lib/api'
+import { API_BASE, deleteJSON, getJSON, patchJSON, postJSON } from '../../lib/api'
 import { cleaningColorKind } from '../../lib/cleaningColor'
 import styles from './cleaningSchedule.module.scss'
 
@@ -21,9 +21,11 @@ type CalendarItem = {
   property_region?: string | null
   task_type?: string | null
   label: string
+  content?: string | null
   task_date: string
   status: string
   assignee_id: string | null
+  urgency?: 'low' | 'medium' | 'high' | 'urgent' | string | null
   cleaner_id?: string | null
   inspector_id?: string | null
   scheduled_at: string | null
@@ -116,6 +118,18 @@ type ManualCreateForm = {
   note: string
 }
 
+type OfflineTaskForm = {
+  id: string
+  date: Dayjs
+  task_type: 'property' | 'company' | 'other'
+  title: string
+  content: string
+  status: 'todo' | 'done'
+  urgency: 'low' | 'medium' | 'high' | 'urgent'
+  property_id: string | null
+  assignee_id: string | null
+}
+
 export default function CleaningPage() {
   const [view, setView] = useState<'day' | 'week' | 'month'>('month')
   const [month, setMonth] = useState<Dayjs>(() => dayjs())
@@ -128,6 +142,7 @@ export default function CleaningPage() {
   const [filterStatus, setFilterStatus] = useState<string | undefined>(undefined)
   const [filterCleaner, setFilterCleaner] = useState<string | undefined>(undefined)
   const [filterInspector, setFilterInspector] = useState<string | undefined>(undefined)
+  const [taskListTab, setTaskListTab] = useState<'cleaning' | 'offline'>('cleaning')
   const [bulkMode, setBulkMode] = useState(false)
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([])
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string; region?: string | null }[]>([])
@@ -140,6 +155,8 @@ export default function CleaningPage() {
   const [bulkEditForm, setBulkEditForm] = useState<BulkEditForm | null>(null)
   const [manualCreateOpen, setManualCreateOpen] = useState(false)
   const [manualCreateForm, setManualCreateForm] = useState<ManualCreateForm | null>(null)
+  const [offlineEditOpen, setOfflineEditOpen] = useState(false)
+  const [offlineEditForm, setOfflineEditForm] = useState<OfflineTaskForm | null>(null)
   const [backfillOpen, setBackfillOpen] = useState(false)
   const [backfillFrom, setBackfillFrom] = useState<Dayjs>(() => dayjs().subtract(90, 'day'))
   const [backfillTo, setBackfillTo] = useState<Dayjs>(() => dayjs().add(365, 'day'))
@@ -148,6 +165,7 @@ export default function CleaningPage() {
   const [debugLoading, setDebugLoading] = useState(false)
   const [debugState, setDebugState] = useState<any>(null)
   const [showDevDebugInfo, setShowDevDebugInfo] = useState(false)
+  const [weekSlideDir, setWeekSlideDir] = useState<'prev' | 'next' | null>(null)
 
   useEffect(() => {
     try {
@@ -534,12 +552,17 @@ export default function CleaningPage() {
     const base = itemsByDate.get(selectedDateStr) || []
     const q = filterRoom.trim().toLowerCase()
     return base.filter((it) => {
+      if (taskListTab === 'cleaning' && it.source !== 'cleaning_tasks') return false
+      if (taskListTab === 'offline' && it.source !== 'offline_tasks') return false
       if (filterStatus && String(it.status || '') !== filterStatus) return false
       if (filterCleaner) {
-        const v = String(it.cleaner_id || it.assignee_id || '').trim()
+        const v = it.source === 'offline_tasks'
+          ? String(it.assignee_id || '').trim()
+          : String(it.cleaner_id || it.assignee_id || '').trim()
         if (!v || v !== String(filterCleaner)) return false
       }
       if (filterInspector) {
+        if (it.source === 'offline_tasks') return false
         const v = String(it.inspector_id || '').trim()
         if (!v || v !== String(filterInspector)) return false
       }
@@ -547,7 +570,33 @@ export default function CleaningPage() {
       const label = propertyLabelForItem(it).toLowerCase()
       return label.includes(q)
     })
-  }, [filterCleaner, filterInspector, filterRoom, filterStatus, itemsByDate, propertyLabelForItem, selectedDateStr])
+  }, [filterCleaner, filterInspector, filterRoom, filterStatus, itemsByDate, propertyLabelForItem, selectedDateStr, taskListTab])
+
+  const taskTabOptions = useMemo(() => {
+    const dayItems = itemsByDate.get(selectedDateStr) || []
+    const cleaningCount = dayItems.filter((it) => it.source === 'cleaning_tasks').length
+    const offlineCount = dayItems.filter((it) => it.source === 'offline_tasks').length
+    return [
+      { label: `清洁任务 ${cleaningCount}`, value: 'cleaning' },
+      { label: `线下任务 ${offlineCount}`, value: 'offline' },
+    ]
+  }, [itemsByDate, selectedDateStr])
+
+  const taskStatusOptions = useMemo(() => {
+    if (taskListTab === 'offline') {
+      return [
+        { label: '待处理', value: 'todo' },
+        { label: '已完成', value: 'done' },
+      ]
+    }
+    return [
+      { label: '待处理', value: 'pending' },
+      { label: '已分配', value: 'assigned' },
+      { label: '进行中', value: 'in_progress' },
+      { label: '已完成', value: 'completed' },
+      { label: '已取消', value: 'cancelled' },
+    ]
+  }, [taskListTab])
 
   const loadStaff = useCallback(async () => {
     const s = await getJSON<Staff[]>('/cleaning/staff').catch(() => [])
@@ -839,6 +888,14 @@ export default function CleaningPage() {
 
   const itemKind = useCallback((it: CalendarItem) => cleaningColorKind(it as any), [])
 
+  const stripeColorForUrgency = useCallback((urgency: string) => {
+    const u = String(urgency || '').toLowerCase()
+    if (u === 'urgent') return 'rgba(239, 68, 68, 0.85)'
+    if (u === 'high') return 'rgba(249, 115, 22, 0.85)'
+    if (u === 'medium') return 'rgba(59, 130, 246, 0.85)'
+    return 'rgba(148, 163, 184, 0.85)'
+  }, [])
+
   const staffNameById = useCallback((id: string | null) => {
     if (!id) return '-'
     return staff.find((s) => String(s.id) === String(id))?.name || String(id)
@@ -899,6 +956,45 @@ export default function CleaningPage() {
     { label: '已取消', value: 'cancelled' },
   ]), [])
 
+  const allStaffOptions = useMemo(() => (
+    staff
+      .filter((s) => s.is_active !== false)
+      .reduce((acc, s) => {
+        const k = String(s.id)
+        if (!acc.some((x) => String(x.value) === k)) acc.push({ value: s.id, label: s.name })
+        return acc
+      }, [] as { value: string; label: string }[])
+  ), [staff])
+
+  const propertyOptions = useMemo(() => (
+    (properties || [])
+      .filter((p) => String(p.id || '').trim())
+      .map((p) => {
+        const code = String(p.code || '').trim()
+        const addr = String(p.address || '').trim()
+        const label = code ? (addr ? `${code} ${addr}` : code) : (addr || String(p.id))
+        return { value: String(p.id), label }
+      })
+  ), [properties])
+
+  const offlineTaskTypeOptions = useMemo(() => ([
+    { label: '房源任务', value: 'property' },
+    { label: '公司任务', value: 'company' },
+    { label: '其他任务', value: 'other' },
+  ]), [])
+
+  const offlineStatusOptions = useMemo(() => ([
+    { label: '待处理', value: 'todo' },
+    { label: '已完成', value: 'done' },
+  ]), [])
+
+  const urgencyOptions = useMemo(() => ([
+    { label: '低', value: 'low' },
+    { label: '中', value: 'medium' },
+    { label: '高', value: 'high' },
+    { label: '紧急', value: 'urgent' },
+  ]), [])
+
   const statusText = useCallback((s: string | null | undefined) => {
     const v = String(s || '').trim()
     if (v === 'pending') return '待处理'
@@ -908,6 +1004,23 @@ export default function CleaningPage() {
     if (v === 'cancelled') return '已取消'
     if (v === 'todo') return '待处理'
     if (v === 'done') return '已完成'
+    return v || '-'
+  }, [])
+
+  const offlineTaskTypeText = useCallback((taskType: string | null | undefined) => {
+    const v = String(taskType || '').trim().toLowerCase()
+    if (v === 'property') return '房源任务'
+    if (v === 'company') return '公司任务'
+    if (v === 'other') return '其他任务'
+    return v || '线下任务'
+  }, [])
+
+  const urgencyText = useCallback((urgency: string | null | undefined) => {
+    const v = String(urgency || '').trim().toLowerCase()
+    if (v === 'low') return '低'
+    if (v === 'medium') return '中'
+    if (v === 'high') return '高'
+    if (v === 'urgent') return '紧急'
     return v || '-'
   }, [])
 
@@ -1026,6 +1139,15 @@ export default function CleaningPage() {
     setBulkEditForm(null)
   }, [selectedDateStr])
 
+  useEffect(() => {
+    setFilterStatus(undefined)
+    setFilterInspector(undefined)
+    setSelectedTaskIds([])
+    setBulkMode(false)
+    setBulkEditOpen(false)
+    setBulkEditForm(null)
+  }, [taskListTab])
+
   const toggleSelectItem = useCallback((it: CalendarItem, checked: boolean) => {
     const ids = entityIds(it)
     setSelectedTaskIds((prev) => {
@@ -1044,6 +1166,59 @@ export default function CleaningPage() {
     await postJSON('/cleaning/tasks/bulk-delete', { ids: uniq })
     message.success('已删除')
     setSelectedTaskIds([])
+    loadRangeItems().catch(() => {})
+  }, [loadRangeItems])
+
+  const openOfflineEdit = useCallback((it: CalendarItem) => {
+    if (it.source !== 'offline_tasks') return
+    setOfflineEditForm({
+      id: String(it.entity_id || ''),
+      date: dayjs(String(it.task_date || selectedDateStr).slice(0, 10)),
+      task_type: (['property', 'company', 'other'].includes(String(it.task_type || '').trim()) ? String(it.task_type) : 'other') as 'property' | 'company' | 'other',
+      title: String(it.label || ''),
+      content: String(it.content || ''),
+      status: String(it.status || 'todo').trim().toLowerCase() === 'done' ? 'done' : 'todo',
+      urgency: (['low', 'medium', 'high', 'urgent'].includes(String(it.urgency || '').trim().toLowerCase()) ? String(it.urgency).trim().toLowerCase() : 'medium') as 'low' | 'medium' | 'high' | 'urgent',
+      property_id: it.property_id ? String(it.property_id) : null,
+      assignee_id: it.assignee_id ? String(it.assignee_id) : null,
+    })
+    setOfflineEditOpen(true)
+  }, [selectedDateStr])
+
+  const submitOfflineEdit = useCallback(async () => {
+    if (!offlineEditForm) return
+    if (!String(offlineEditForm.title || '').trim()) {
+      message.warning('请输入任务标题')
+      return
+    }
+    if (offlineEditForm.task_type === 'property' && !String(offlineEditForm.property_id || '').trim()) {
+      message.warning('房源任务需要选择房号')
+      return
+    }
+    const payload = {
+      date: offlineEditForm.date.format('YYYY-MM-DD'),
+      task_type: offlineEditForm.task_type,
+      title: String(offlineEditForm.title || '').trim(),
+      content: String(offlineEditForm.content || '').trim(),
+      status: offlineEditForm.status,
+      urgency: offlineEditForm.urgency,
+      property_id: offlineEditForm.task_type === 'property' ? (offlineEditForm.property_id || null) : null,
+      assignee_id: offlineEditForm.assignee_id || null,
+    }
+    await patchJSON(`/cleaning/offline-tasks/${encodeURIComponent(offlineEditForm.id)}`, payload)
+    message.success('已更新线下任务')
+    setOfflineEditOpen(false)
+    setOfflineEditForm(null)
+    loadRangeItems().catch(() => {})
+  }, [loadRangeItems, offlineEditForm])
+
+  const deleteOfflineTask = useCallback(async (id: string) => {
+    const taskId = String(id || '').trim()
+    if (!taskId) return
+    await deleteJSON(`/cleaning/offline-tasks/${encodeURIComponent(taskId)}`)
+    message.success('已删除线下任务')
+    setOfflineEditOpen(false)
+    setOfflineEditForm(null)
     loadRangeItems().catch(() => {})
   }, [loadRangeItems])
 
@@ -1078,15 +1253,25 @@ export default function CleaningPage() {
 
   const goPrev = useCallback(() => {
     if (view === 'month') setMonth((m) => m.subtract(1, 'month'))
-    else if (view === 'week') setSelectedDate((d) => d.subtract(1, 'week'))
-    else setSelectedDate((d) => d.subtract(1, 'day'))
+    else if (view === 'week') {
+      setWeekSlideDir('prev')
+      setSelectedDate((d) => d.subtract(1, 'week'))
+    } else setSelectedDate((d) => d.subtract(1, 'day'))
   }, [view])
 
   const goNext = useCallback(() => {
     if (view === 'month') setMonth((m) => m.add(1, 'month'))
-    else if (view === 'week') setSelectedDate((d) => d.add(1, 'week'))
-    else setSelectedDate((d) => d.add(1, 'day'))
+    else if (view === 'week') {
+      setWeekSlideDir('next')
+      setSelectedDate((d) => d.add(1, 'week'))
+    } else setSelectedDate((d) => d.add(1, 'day'))
   }, [view])
+
+  useEffect(() => {
+    if (view !== 'week' || !weekSlideDir) return
+    const timer = window.setTimeout(() => setWeekSlideDir(null), 220)
+    return () => window.clearTimeout(timer)
+  }, [view, weekSlideDir])
 
   return (
     <div className={styles.page}>
@@ -1099,8 +1284,12 @@ export default function CleaningPage() {
             <Button className={styles.navBtn} icon={<LeftOutlined />} onClick={goPrev} />
             <div className={styles.monthTitle}>{monthLabel}</div>
             <Button className={styles.navBtn} icon={<RightOutlined />} onClick={goNext} />
-            <Button className={styles.todayBtn} onClick={() => { setSelectedDate(dayjs()); setMonth(dayjs()); }}>
-              今天
+            <Button
+              className={styles.todayBtn}
+              title={`回到今天（${dayjs().format('YYYY-MM-DD')}）`}
+              onClick={() => { setSelectedDate(dayjs()); setMonth(dayjs()); }}
+            >
+              回到今天
             </Button>
           </div>
           <div className={styles.rightGroup}>
@@ -1138,11 +1327,26 @@ export default function CleaningPage() {
         ) : null}
 
         <div className={`${styles.card} ${styles.calendarCard}`}>
-          <div className={styles.weekHeader}>
-            {['日', '一', '二', '三', '四', '五', '六'].map((w) => <div key={w}>{w}</div>)}
-          </div>
-          <div className={styles.grid} aria-label="清洁日历">
-            {days.map((d) => {
+          <div className={view === 'week' ? styles.weekLayout : undefined}>
+            {view === 'week' ? <div className={styles.weekSpacer} aria-hidden="true" /> : null}
+            <div className={styles.weekHeader}>
+              {['日', '一', '二', '三', '四', '五', '六'].map((w) => <div key={w}>{w}</div>)}
+            </div>
+            {view === 'week' ? <div className={styles.weekSpacer} aria-hidden="true" /> : null}
+            {view === 'week' ? (
+              <button
+                type="button"
+                className={`${styles.weekEdgeNav} ${styles.weekEdgeNavLeft}`}
+                title="查看上周"
+                aria-label="查看上周"
+                onClick={goPrev}
+              >
+                <LeftOutlined />
+              </button>
+            ) : null}
+            <div className={`${styles.calendarMain} ${view === 'week' && weekSlideDir ? (weekSlideDir === 'prev' ? styles.weekSlidePrev : styles.weekSlideNext) : ''}`}>
+              <div className={styles.grid} aria-label="清洁日历">
+                {days.map((d) => {
               const dateStr = d.format('YYYY-MM-DD')
               const inMonth = view !== 'month' ? true : d.month() === month.month()
               const isSelected = dateStr === selectedDateStr
@@ -1191,15 +1395,34 @@ export default function CleaningPage() {
                   </div>
                 </div>
               )
-            })}
+                })}
+              </div>
+            </div>
+            {view === 'week' ? (
+              <button
+                type="button"
+                className={`${styles.weekEdgeNav} ${styles.weekEdgeNavRight}`}
+                title="查看下周"
+                aria-label="查看下周"
+                onClick={goNext}
+              >
+                <RightOutlined />
+              </button>
+            ) : null}
           </div>
         </div>
 
         <div className={styles.card}>
           <div className={styles.detailsHead}>
-            <div>
+            <div className={styles.detailsIntro}>
               <div className={styles.detailsTitle}>当日任务</div>
               <div className={styles.detailsDate}>{selectedDateStr}</div>
+              <Segmented
+                className={styles.taskListTabs}
+                value={taskListTab}
+                onChange={(v) => setTaskListTab(v as 'cleaning' | 'offline')}
+                options={taskTabOptions}
+              />
             </div>
             <div className={styles.filters}>
               <Input
@@ -1212,49 +1435,45 @@ export default function CleaningPage() {
               <Select
                 value={filterCleaner}
                 onChange={(v) => setFilterCleaner(v)}
-                placeholder="筛选清洁"
+                placeholder={taskListTab === 'offline' ? '筛选指派人' : '筛选清洁'}
                 allowClear
                 showSearch
                 optionFilterProp="label"
                 style={{ width: 180 }}
-                options={cleanerOptions}
+                options={taskListTab === 'offline' ? allStaffOptions : cleanerOptions}
               />
-              <Select
-                value={filterInspector}
-                onChange={(v) => setFilterInspector(v)}
-                placeholder="筛选检查"
-                allowClear
-                showSearch
-                optionFilterProp="label"
-                style={{ width: 180 }}
-                options={inspectorOptions}
-              />
+              {taskListTab === 'cleaning' ? (
+                <Select
+                  value={filterInspector}
+                  onChange={(v) => setFilterInspector(v)}
+                  placeholder="筛选检查"
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  style={{ width: 180 }}
+                  options={inspectorOptions}
+                />
+              ) : <div className={styles.filterSlot} />}
               <Select
                 value={filterStatus}
                 onChange={(v) => setFilterStatus(v)}
                 placeholder="筛选状态"
                 allowClear
                 style={{ width: 180 }}
-                options={[
-                  { label: '待处理', value: 'pending' },
-                  { label: '已分配', value: 'assigned' },
-                  { label: '进行中', value: 'in_progress' },
-                  { label: '已完成', value: 'completed' },
-                  { label: '已取消', value: 'cancelled' },
-                  { label: '待处理（线下）', value: 'todo' },
-                  { label: '已完成（线下）', value: 'done' },
-                ]}
+                options={taskStatusOptions}
               />
-              <Button
-                className={styles.secondaryBtn}
-                onClick={() => {
-                  setBulkMode((v) => !v)
-                  setSelectedTaskIds([])
-                }}
-              >
-                {bulkMode ? '退出批量' : '批量操作'}
-              </Button>
-              {bulkMode ? (
+              {taskListTab === 'cleaning' ? (
+                <Button
+                  className={styles.secondaryBtn}
+                  onClick={() => {
+                    setBulkMode((v) => !v)
+                    setSelectedTaskIds([])
+                  }}
+                >
+                  {bulkMode ? '退出批量' : '批量操作'}
+                </Button>
+              ) : null}
+              {taskListTab === 'cleaning' && bulkMode ? (
                 <>
                   <Button className={styles.secondaryBtn} onClick={openBulkEdit} disabled={!selectedTaskIds.length}>
                     批量编辑（{selectedTaskIds.length}）
@@ -1286,7 +1505,105 @@ export default function CleaningPage() {
                   <div className={styles.missionCard}><Skeleton active paragraph={{ rows: 2 }} /></div>
                   <div className={styles.missionCard}><Skeleton active paragraph={{ rows: 2 }} /></div>
                 </>
-              ) : selectedList.length ? selectedList.map((it) => {
+            ) : selectedList.length ? selectedList.map((it) => {
+              if (it.source === 'offline_tasks') {
+                const room = propertyLabelForItem(it) || '-'
+                const region = String(it.property_region || '').trim()
+                const detail = String(it.content || '').trim()
+                const typeLabel = offlineTaskTypeText(it.task_type)
+                const urgencyLabel = urgencyText(it.urgency)
+                return (
+                  <div key={`${it.source}:${it.entity_id}`} className={styles.missionCard}>
+                    <div className={`${styles.accent} ${styles.accentUnassigned}`} style={{ backgroundColor: stripeColorForUrgency(String(it.urgency || 'medium')) }} />
+                    <div className={styles.missionTop}>
+                      <div className={styles.headerLeft}>
+                        <span className={`${styles.statusChip} ${statusChipCls(it.status)}`}>{statusText(it.status)}</span>
+                        <div className={styles.headerTitle}>
+                          {region ? <span className={styles.headerRegion}>{region}</span> : null}
+                          {it.property_id ? <span className={styles.headerCode}>{room}</span> : null}
+                          <span className={styles.headerDetail}>{String(it.label || '线下任务')}</span>
+                        </div>
+                      </div>
+                      <div className={styles.taskActions}>
+                        <Button className={`${styles.taskBtn} ${styles.taskBtnGhost}`} size="small" icon={<EditOutlined />} title="编辑" aria-label="编辑" onClick={() => openOfflineEdit(it)} />
+                        <Button
+                          className={`${styles.taskBtn} ${styles.taskBtnDanger}`}
+                          size="small"
+                          danger
+                          icon={<DeleteOutlined />}
+                          title="删除"
+                          aria-label="删除"
+                          onClick={() => {
+                            Modal.confirm({
+                              title: '确认删除线下任务？',
+                              content: '删除后会同步从任务安排中移除。',
+                              okText: '删除',
+                              okButtonProps: { danger: true },
+                              onOk: () => deleteOfflineTask(String(it.entity_id || '')).catch((e) => message.error(e?.message || '删除失败')),
+                            })
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className={styles.metaRow}>
+                      <span className={styles.metaText}><span className={styles.metaKey}>类型</span>{typeLabel}</span>
+                      <span className={styles.metaText}><span className={styles.metaKey}>紧急度</span>{urgencyLabel}</span>
+                      <span className={styles.metaText}><span className={styles.metaKey}>指派</span>{staffNameById(it.assignee_id || null)}</span>
+                    </div>
+                    <div className={styles.metaRow}>
+                      <span className={styles.metaText}>{detail || '暂无任务详情'}</span>
+                    </div>
+                    <div className={styles.controlsRow}>
+                      <div className={styles.assigneeGroup}>
+                        <div className={styles.assigneeLabel}>指派人</div>
+                        <Select
+                          className={styles.assigneeSelect}
+                          allowClear
+                          showSearch
+                          optionFilterProp="label"
+                          value={it.assignee_id || undefined}
+                          options={allStaffOptions}
+                          onChange={(v) => patchJSON(`/cleaning/offline-tasks/${encodeURIComponent(String(it.entity_id || ''))}`, { assignee_id: v ? String(v) : null })
+                            .then(() => {
+                              message.success('已更新指派人')
+                              loadRangeItems().catch(() => {})
+                            })
+                            .catch((e) => message.error(e?.message || '更新失败'))}
+                          placeholder={staffNameById(it.assignee_id || null)}
+                        />
+                      </div>
+                      <div className={styles.assigneeGroup}>
+                        <div className={styles.assigneeLabel}>状态</div>
+                        <Select
+                          className={styles.assigneeSelect}
+                          value={String(it.status || 'todo')}
+                          options={offlineStatusOptions}
+                          onChange={(v) => patchJSON(`/cleaning/offline-tasks/${encodeURIComponent(String(it.entity_id || ''))}`, { status: v })
+                            .then(() => {
+                              message.success('已更新状态')
+                              loadRangeItems().catch(() => {})
+                            })
+                            .catch((e) => message.error(e?.message || '更新失败'))}
+                        />
+                      </div>
+                      <div className={styles.assigneeGroup}>
+                        <div className={styles.assigneeLabel}>紧急度</div>
+                        <Select
+                          className={styles.assigneeSelect}
+                          value={String(it.urgency || 'medium')}
+                          options={urgencyOptions}
+                          onChange={(v) => patchJSON(`/cleaning/offline-tasks/${encodeURIComponent(String(it.entity_id || ''))}`, { urgency: v })
+                            .then(() => {
+                              message.success('已更新紧急度')
+                              loadRangeItems().catch(() => {})
+                            })
+                            .catch((e) => message.error(e?.message || '更新失败'))}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )
+              }
               const kind = itemKind(it)
               const room = propertyLabelForItem(it) || '-'
               const sum = summaryText(it)
@@ -1330,14 +1647,14 @@ export default function CleaningPage() {
                     </div>
                     {it.source === 'cleaning_tasks' ? (
                       <div className={styles.taskActions}>
-                        <Button className={`${styles.taskBtn} ${styles.taskBtnGhost}`} size="small" icon={<EditOutlined />} onClick={() => openEdit(it).catch((e) => message.error(e?.message || '打开失败'))}>
-                          编辑
-                        </Button>
+                        <Button className={`${styles.taskBtn} ${styles.taskBtnGhost}`} size="small" icon={<EditOutlined />} title="编辑" aria-label="编辑" onClick={() => openEdit(it).catch((e) => message.error(e?.message || '打开失败'))} />
                         <Button
                           className={`${styles.taskBtn} ${styles.taskBtnDanger}`}
                           size="small"
                           danger
                           icon={<DeleteOutlined />}
+                          title="删除"
+                          aria-label="删除"
                           onClick={() => {
                             Modal.confirm({
                               title: '确认删除任务？',
@@ -1347,9 +1664,7 @@ export default function CleaningPage() {
                               onOk: () => deleteTasks(ids).catch((e) => message.error(e?.message || '删除失败')),
                             })
                           }}
-                        >
-                          删除
-                        </Button>
+                        />
                       </div>
                     ) : null}
                   </div>
@@ -1690,6 +2005,96 @@ export default function CleaningPage() {
           </Form>
         ) : null}
       </Drawer>
+
+      <Modal
+        open={offlineEditOpen}
+        title="编辑线下任务"
+        okText="保存"
+        onOk={() => submitOfflineEdit().catch((e) => message.error(e?.message || '保存失败'))}
+        onCancel={() => { setOfflineEditOpen(false); setOfflineEditForm(null) }}
+      >
+        {offlineEditForm ? (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <div>
+              <div className={styles.fieldLabel}>日期</div>
+              <DatePicker
+                value={offlineEditForm.date}
+                onChange={(v) => v && setOfflineEditForm((p) => (p ? { ...p, date: v } : p))}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>类型</div>
+              <Select
+                value={offlineEditForm.task_type}
+                onChange={(v) => setOfflineEditForm((p) => (p ? { ...p, task_type: v as 'property' | 'company' | 'other', property_id: v === 'property' ? p.property_id : null } : p))}
+                style={{ width: '100%' }}
+                options={offlineTaskTypeOptions}
+              />
+            </div>
+            {offlineEditForm.task_type === 'property' ? (
+              <div>
+                <div className={styles.fieldLabel}>房号</div>
+                <Select
+                  showSearch
+                  optionFilterProp="label"
+                  value={offlineEditForm.property_id || undefined}
+                  onChange={(v) => setOfflineEditForm((p) => (p ? { ...p, property_id: v ? String(v) : null } : p))}
+                  style={{ width: '100%' }}
+                  options={propertyOptions}
+                />
+              </div>
+            ) : null}
+            <div>
+              <div className={styles.fieldLabel}>任务标题</div>
+              <Input
+                value={offlineEditForm.title}
+                onChange={(e) => setOfflineEditForm((p) => (p ? { ...p, title: e.target.value } : p))}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>任务详情</div>
+              <Input.TextArea
+                value={offlineEditForm.content}
+                onChange={(e) => setOfflineEditForm((p) => (p ? { ...p, content: e.target.value } : p))}
+                style={{ width: '100%' }}
+                autoSize={{ minRows: 3, maxRows: 8 }}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>状态</div>
+              <Select
+                value={offlineEditForm.status}
+                onChange={(v) => setOfflineEditForm((p) => (p ? { ...p, status: v as 'todo' | 'done' } : p))}
+                style={{ width: '100%' }}
+                options={offlineStatusOptions}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>紧急度</div>
+              <Select
+                value={offlineEditForm.urgency}
+                onChange={(v) => setOfflineEditForm((p) => (p ? { ...p, urgency: v as 'low' | 'medium' | 'high' | 'urgent' } : p))}
+                style={{ width: '100%' }}
+                options={urgencyOptions}
+              />
+            </div>
+            <div>
+              <div className={styles.fieldLabel}>指派人</div>
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                value={offlineEditForm.assignee_id || undefined}
+                onChange={(v) => setOfflineEditForm((p) => (p ? { ...p, assignee_id: v ? String(v) : null } : p))}
+                style={{ width: '100%' }}
+                options={allStaffOptions}
+              />
+            </div>
+          </Space>
+        ) : null}
+      </Modal>
 
       <Modal
         open={manualCreateOpen}
