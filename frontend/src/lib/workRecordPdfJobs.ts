@@ -1,5 +1,7 @@
 import { API_BASE, authHeaders } from './api'
 
+export const WORK_RECORD_PDF_TEMPLATE_VERSION = 'workRecordPdfTemplate.v5.flexRows.headerKeep'
+
 type PdfJobStatus = {
   id: string
   status?: string
@@ -54,7 +56,12 @@ export async function runWorkRecordPdfJob(opts: {
   const create = await fetchJsonWithTimeout(`${API_BASE}${opts.createPath}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ showChinese: !!opts.showChinese, quality_mode: opts.qualityMode || undefined, forceNew: false }),
+    body: JSON.stringify({
+      showChinese: !!opts.showChinese,
+      quality_mode: opts.qualityMode || undefined,
+      template_version: WORK_RECORD_PDF_TEMPLATE_VERSION,
+      forceNew: false,
+    }),
   }, 30000)
   if (!create.resp.ok) {
     throw new Error(String((create.json as any)?.message || `HTTP ${create.resp.status}`))

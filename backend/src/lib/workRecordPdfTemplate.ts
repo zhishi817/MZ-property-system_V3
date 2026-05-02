@@ -1,6 +1,7 @@
 import { deriveThumbUrl } from './pdfThumbUrl'
 
 type Kind = 'deep_cleaning' | 'maintenance'
+export const WORK_RECORD_PDF_TEMPLATE_VERSION = 'workRecordPdfTemplate.v5.flexRows.headerKeep'
 
 export type WorkRecordPdfTemplateInput = {
   kind: Kind
@@ -49,6 +50,12 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;')
 }
 
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+  return out
+}
+
 function areaToEnglish(s: string): string {
   const raw = String(s || '').trim()
   if (!raw) return ''
@@ -91,7 +98,7 @@ export function workRecordPdfCssText(): string {
   return `
     @page { size: A4; margin: 12mm; }
     html, body { margin: 0; padding: 0; background: #fff; color: #000; font-family: "Times New Roman", Times, serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .keep-pack { break-inside: auto; page-break-inside: auto; }
+    .keep-pack { break-inside: avoid; page-break-inside: avoid; }
     .titlebar { background: #eef3fb; padding: 6px 8px; margin-bottom: 10px; }
     .title { font-size: 16px; font-weight: 700; }
     .top-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 22px; padding: 2px 0 10px; }
@@ -106,8 +113,11 @@ export function workRecordPdfCssText(): string {
     .phase-head { width: 100%; break-after: avoid; page-break-after: avoid; }
     .phase-text { font-size: 16px; font-weight: 700; color: #111; }
     .phase-line { height: 2px; background: #c4cddd; margin-top: 10px; margin-bottom: 12px; }
-    .phase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; break-inside: auto; page-break-inside: auto; }
-    .img-cell { min-width: 0; padding: 0; margin: 0; border: none; border-radius: 0; background: transparent; box-shadow: none; break-inside: avoid; page-break-inside: avoid; }
+    .phase-rows { width: 100%; }
+    .phase-row { display: flex; gap: 16px; align-items: flex-start; margin-top: 16px; break-inside: avoid; page-break-inside: avoid; }
+    .phase-row:first-child { margin-top: 0; }
+    .img-cell { flex: 1 1 0; width: calc((100% - 32px) / 3); min-width: 0; padding: 0; margin: 0; border: none; border-radius: 0; background: transparent; box-shadow: none; break-inside: avoid; page-break-inside: avoid; }
+    .img-cell.is-empty { visibility: hidden; }
     .img-cell img { width: 100%; height: 76mm; object-fit: contain; display: block; background: #fff; border: none; border-radius: 0; box-shadow: none; outline: none; }
   `
 }
@@ -116,7 +126,7 @@ export function workRecordPdfCssTextScoped(scope: string): string {
   const s = String(scope || '').trim()
   if (!s) return ''
   return `
-    ${s} .keep-pack { break-inside: auto; page-break-inside: auto; }
+    ${s} .keep-pack { break-inside: avoid; page-break-inside: avoid; }
     ${s} .titlebar { background: #eef3fb; padding: 6px 8px; margin-bottom: 10px; }
     ${s} .title { font-size: 16px; font-weight: 700; }
     ${s} .top-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 22px; padding: 2px 0 10px; }
@@ -131,8 +141,11 @@ export function workRecordPdfCssTextScoped(scope: string): string {
     ${s} .phase-head { width: 100%; break-after: avoid; page-break-after: avoid; }
     ${s} .phase-text { font-size: 16px; font-weight: 700; color: #111; }
     ${s} .phase-line { height: 2px; background: #c4cddd; margin-top: 10px; margin-bottom: 12px; }
-    ${s} .phase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; break-inside: auto; page-break-inside: auto; }
-    ${s} .img-cell { min-width: 0; padding: 0; margin: 0; border: none; border-radius: 0; background: transparent; box-shadow: none; break-inside: avoid; page-break-inside: avoid; }
+    ${s} .phase-rows { width: 100%; }
+    ${s} .phase-row { display: flex; gap: 16px; align-items: flex-start; margin-top: 16px; break-inside: avoid; page-break-inside: avoid; }
+    ${s} .phase-row:first-child { margin-top: 0; }
+    ${s} .img-cell { flex: 1 1 0; width: calc((100% - 32px) / 3); min-width: 0; padding: 0; margin: 0; border: none; border-radius: 0; background: transparent; box-shadow: none; break-inside: avoid; page-break-inside: avoid; }
+    ${s} .img-cell.is-empty { visibility: hidden; }
     ${s} .img-cell img { width: 100%; height: 76mm; object-fit: contain; display: block; background: #fff; border: none; border-radius: 0; box-shadow: none; outline: none; }
   `
 }
@@ -186,16 +199,22 @@ function buildWorkRecordParts(input: WorkRecordPdfTemplateInput): { title: strin
 
   const renderGrid = (items: Array<{ src: string; fallback: string }>) => {
     if (!items.length) return ''
+    const rows = chunk(items, 3)
     return `
-      <div class="phase-grid">
-        ${items.map((it) => {
-          const onerr = `try{var fb=this.getAttribute('data-fallback')||'';if(fb&&this.src!==fb){this.onerror=null;this.src=fb}}catch(e){}`
-          return `
-            <div class="img-cell">
-              <img crossorigin="anonymous" referrerpolicy="no-referrer" src="${escapeHtml(it.src)}" data-fallback="${escapeHtml(it.fallback)}" alt="" onerror="${escapeHtml(onerr)}" />
-            </div>
-          `
-        }).join('')}
+      <div class="phase-rows">
+        ${rows.map((row) => `
+          <div class="phase-row">
+            ${row.map((it) => {
+              const onerr = `try{var fb=this.getAttribute('data-fallback')||'';if(fb&&this.src!==fb){this.onerror=null;this.src=fb}}catch(e){}`
+              return `
+                <div class="img-cell">
+                  <img crossorigin="anonymous" referrerpolicy="no-referrer" src="${escapeHtml(it.src)}" data-fallback="${escapeHtml(it.fallback)}" alt="" onerror="${escapeHtml(onerr)}" />
+                </div>
+              `
+            }).join('')}
+            ${Array.from({ length: Math.max(0, 3 - row.length) }).map(() => `<div class="img-cell is-empty" aria-hidden="true"></div>`).join('')}
+          </div>
+        `).join('')}
       </div>
     `
   }

@@ -27,6 +27,46 @@ export type MonthlyStatementPhotoPackTemplateInput = {
   records: PhotoPackTemplateRecord[]
 }
 
+export function estimatePhotoPackRecordPageCount(record: PhotoPackTemplateRecord): number {
+  const pageCapacity = 6
+  const phases = [
+    { images: Array.isArray(record.beforeImages) ? record.beforeImages : [], rawCount: Number(record.beforeRawCount || 0) || 0 },
+    { images: Array.isArray(record.afterImages) ? record.afterImages : [], rawCount: Number(record.afterRawCount || 0) || 0 },
+  ]
+  let pages = 0
+  let renderedAny = false
+  let usedSlots = 0
+  const flushPage = () => {
+    if (usedSlots <= 0) return
+    pages += 1
+    usedSlots = 0
+  }
+  for (const phase of phases) {
+    if (phase.images.length > 0) {
+      renderedAny = true
+      let idx = 0
+      while (idx < phase.images.length) {
+        const remaining = pageCapacity - usedSlots
+        if (remaining <= 0) {
+          flushPage()
+          continue
+        }
+        const take = Math.min(remaining, phase.images.length - idx)
+        usedSlots += take
+        idx += take
+        if (usedSlots >= pageCapacity) flushPage()
+      }
+    } else if (phase.rawCount > 0) {
+      flushPage()
+      pages += 1
+      renderedAny = true
+    }
+  }
+  if (!renderedAny) return 1
+  flushPage()
+  return Math.max(1, pages)
+}
+
 function escapeHtml(s: string): string {
   return String(s || '')
     .replace(/&/g, '&amp;')

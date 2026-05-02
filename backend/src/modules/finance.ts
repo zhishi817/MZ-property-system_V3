@@ -1443,6 +1443,7 @@ router.get('/statement-photo-pack/:id', requireAnyPerm(['finance.payout', 'finan
 router.get('/statement-photo-pack/:id/download', requireAnyPerm(['finance.payout', 'finance.tx.write', 'property_expenses.view']), async (req, res) => {
   try {
     const id = String(req.params?.id || '').trim()
+    const kind = String(req.query?.kind || '').trim()
     if (!id) return res.status(400).json({ message: 'missing id' })
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
     if (!hasR2) return res.status(500).json({ message: 'R2 not configured' })
@@ -1456,7 +1457,13 @@ router.get('/statement-photo-pack/:id/download', requireAnyPerm(['finance.payout
       return res.status(409).json({ message: 'job_not_done', status: st || null, stage: stage || null })
     }
     const files = Array.isArray(row?.result_files) ? row.result_files : []
-    const target = files.find((x: any) => String(x?.kind || '') === 'statement_photo_pack_pdf') || files[0]
+    const target = (
+      (kind ? files.find((x: any) => String(x?.kind || '') === kind) : null) ||
+      files.find((x: any) => String(x?.kind || '') === 'statement_photo_pack_zip') ||
+      files.find((x: any) => String(x?.kind || '') === 'statement_photo_pack_pdf') ||
+      files.find((x: any) => String(x?.kind || '') === 'statement_photo_pack_part_pdf') ||
+      files[0]
+    )
     const key = String(target?.path || '').trim()
     if (!key) return res.status(404).json({ message: 'file_not_found' })
     const obj = await r2GetObjectByKey(key)

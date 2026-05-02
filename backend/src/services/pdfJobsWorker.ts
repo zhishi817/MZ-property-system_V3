@@ -6,7 +6,7 @@ import { ensurePdfJobsSchema } from './pdfJobsSchema'
 import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
 import { waitForImages } from '../lib/waitForImages'
 import { generateWorkRecordPdf, type WorkRecordPdfKind, type WorkRecordPdfPhotosMode } from '../lib/workRecordPdf'
-import { generateStatementPhotoPackPdf, type StatementPhotoPackSection } from '../lib/monthlyStatementPhotoPack'
+import { generateStatementPhotoPackBundle, type StatementPhotoPackSection } from '../lib/monthlyStatementPhotoPack'
 import { collectMonthlyInvoiceAttachments } from '../lib/monthlyStatementInvoiceAttachments'
 import { reconcileMonthlyAutoExpenses } from '../lib/monthlyStatementExpenseReconcile'
 
@@ -552,7 +552,7 @@ async function runStatementPhotoPack(job: any, workerId: string) {
   await updateJob(id, { progress: 5, stage: 'load_rows', detail: '正在读取照片记录...', locked_by: workerId })
   const preferredMode = statementPhotoPackQualityMode(job)
   const jobStartedAt = Date.now()
-  let built = await generateStatementPhotoPackPdf({
+  let built = await generateStatementPhotoPackBundle({
     month: monthKey,
     propertyId: pid,
     sections,
@@ -575,9 +575,9 @@ async function runStatementPhotoPack(job: any, workerId: string) {
       } catch {}
     },
   })
-  if (built.imageCount > 6 && built.effectivePhotosMode !== 'thumbnail') {
+  if (built.totalImages > 6 && built.effectivePhotosMode !== 'thumbnail') {
     await updateJob(id, { progress: 22, stage: 'compress_images', detail: '照片较多，正在切换为缩略图模式...', locked_by: workerId })
-    built = await generateStatementPhotoPackPdf({
+    built = await generateStatementPhotoPackBundle({
       month: monthKey,
       propertyId: pid,
       sections,
@@ -589,31 +589,44 @@ async function runStatementPhotoPack(job: any, workerId: string) {
   try {
     const samples = (Array.isArray(built.failedUrls) ? built.failedUrls : []).slice(0, 3).join(' | ')
     console.log(
-      `[statement-photo-pack][worker] job_id=${id} property_id=${pid} month=${monthKey} sections=${sections} mode=${built.effectivePhotosMode} rawUrls=${built.rawUrls} cleanedUrls=${built.cleanedUrls} imageCount=${built.imageCount} notLoaded=${built.notLoaded} failedCount=${Array.isArray(built.failedUrls) ? built.failedUrls.length : 0}${samples ? ` sampleFailedUrls=${samples}` : ''} metrics=${JSON.stringify(built.metrics || {})}`
+      `[statement-photo-pack][worker] job_id=${id} property_id=${pid} month=${monthKey} sections=${sections} mode=${built.effectivePhotosMode} rawUrls=${built.rawUrls} cleanedUrls=${built.cleanedUrls} imageCount=${built.totalImages} volumeCount=${built.volumeCount} totalPages=${built.totalPages} notLoaded=${built.notLoaded} failedCount=${Array.isArray(built.failedUrls) ? built.failedUrls.length : 0}${samples ? ` sampleFailedUrls=${samples}` : ''} metrics=${JSON.stringify(built.metrics || {})}`
     )
   } catch {}
   await updateJob(id, { progress: 76, stage: 'uploading', detail: 'PDF 已生成，正在上传文件...', locked_by: workerId })
   const suffix = sections === 'maintenance' ? 'maintenance' : sections === 'deep_cleaning' ? 'deep-cleaning' : 'all'
-  const key = `pdf-jobs/statement-photo-pack/${monthKey}/${pid}/${suffix}/${id}.pdf`
+  const files: PdfJobFile[] = []
   const uploadStartedAt = Date.now()
-  const url = await r2Upload(key, 'application/pdf', built.pdf)
-  const uploadMs = Date.now() - uploadStartedAt
-  const pageCount = await pdfPageCount(built.pdf)
-  const file: PdfJobFile = {
-    kind: 'statement_photo_pack_pdf',
-    name: built.filename,
-    path: key,
-    url,
-    size_bytes: built.pdf.byteLength,
-    page_count: pageCount,
-    source_count: built.imageCount,
+  for (const generated of built.files) {
+    const filename = String(generated.filename || '').replace(/[^a-zA-Z0-9._-]/g, '_')
+    const ext = generated.contentType === 'application/zip' ? 'zip' : 'pdf'
+    const baseName = filename.replace(/\.(pdf|zip)$/i, '')
+    const key = `pdf-jobs/statement-photo-pack/${monthKey}/${pid}/${suffix}/${id}/${baseName}.${ext}`
+    const url = await r2Upload(key, generated.contentType, generated.body)
+    files.push({
+      kind: generated.kind,
+      name: filename,
+      path: key,
+      url,
+      size_bytes: generated.body.byteLength,
+      page_count: Number(generated.pageCount || 0),
+      part_no: generated.partNo,
+      source_count: generated.imageCount,
+    })
+    await updateJob(id, {
+      progress: Math.min(96, 76 + Math.round((files.length / built.files.length) * 18)),
+      stage: 'uploading',
+      detail: `正在上传导出文件（${files.length}/${built.files.length}）...`,
+      result_files: files,
+      locked_by: workerId,
+    })
   }
+  const uploadMs = Date.now() - uploadStartedAt
   await updateJob(id, {
     status: 'success',
     progress: 100,
     stage: 'done',
-    detail: `已生成照片 PDF（模式：${built.effectivePhotosMode}，${built.detail}，页数 ${pageCount}，上传 ${uploadMs}ms，总耗时 ${Date.now() - jobStartedAt}ms）`,
-    result_files: [file],
+    detail: `已生成照片${built.volumeCount > 1 ? '分卷' : 'PDF'}（模式：${built.effectivePhotosMode}，${built.detail}，上传 ${uploadMs}ms，总耗时 ${Date.now() - jobStartedAt}ms）`,
+    result_files: files,
     locked_by: null,
     lease_expires_at: null,
     last_error_code: null,

@@ -10,6 +10,7 @@ import { pdfTaskLimiter } from '../lib/pdfTaskLimiter'
 import { resizeUploadImage } from '../lib/uploadImageResize'
 import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
 import { generateWorkRecordPdf } from '../lib/workRecordPdf'
+import { WORK_RECORD_PDF_TEMPLATE_VERSION } from '../lib/workRecordPdfTemplate'
 
 export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
@@ -134,7 +135,7 @@ router.post('/pdf/:id', requireAnyPerm(['property_maintenance.view','property_ma
     res.setHeader('Content-Disposition', `attachment; filename="${built.filename}"`)
     res.setHeader('Cache-Control', 'no-store, max-age=0')
     res.setHeader('Pragma', 'no-cache')
-    res.setHeader('X-WorkRecordPdfTemplate', 'workRecordPdfTemplate.v4.headerOnce.noFrame')
+    res.setHeader('X-WorkRecordPdfTemplate', WORK_RECORD_PDF_TEMPLATE_VERSION)
     res.setHeader('X-WorkRecordPdfChinese', showChinese ? '1' : '0')
     if (built.notLoaded > 0) res.setHeader('X-WorkRecordPdfWarnings', `images_not_loaded=${built.notLoaded}`)
     return res.status(200).send(built.pdf)
@@ -153,6 +154,7 @@ router.post('/pdf-jobs/:id', requireAnyPerm(['property_maintenance.view','proper
     const body = req.body || {}
     const showChinese = !(body.showChinese === false || body.showChinese === '0' || body.showChinese === 0)
     const qualityMode = String(body.quality_mode || '').trim()
+    const templateVersion = String(body.template_version || '').trim() || WORK_RECORD_PDF_TEMPLATE_VERSION
     const forceNew = body.forceNew === true || body.forceNew === 1 || body.forceNew === '1'
     if (!rid) return res.status(400).json({ message: 'missing id' })
     if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
@@ -171,9 +173,10 @@ router.post('/pdf-jobs/:id', requireAnyPerm(['property_maintenance.view','proper
            AND (status <> 'running' OR lease_expires_at IS NULL OR lease_expires_at > now())
            AND COALESCE(params->>'record_id', params->>'id') = $1
            AND COALESCE(params->>'showChinese', 'false') = $2
+           AND COALESCE(params->>'template_version', '') = $3
          ORDER BY created_at DESC
          LIMIT 1`,
-        [rid, showChinese ? 'true' : 'false']
+        [rid, showChinese ? 'true' : 'false', templateVersion]
       )
       const existing = r0.rows?.[0] || null
       if (existing?.id) {
@@ -185,6 +188,7 @@ router.post('/pdf-jobs/:id', requireAnyPerm(['property_maintenance.view','proper
       record_id: rid,
       showChinese,
       quality_mode: qualityMode || null,
+      template_version: templateVersion,
     }
     await pgPool.query(
       `INSERT INTO pdf_jobs(id, kind, status, progress, stage, detail, params, result_files, attempts, max_attempts, next_retry_at, created_at, updated_at)
