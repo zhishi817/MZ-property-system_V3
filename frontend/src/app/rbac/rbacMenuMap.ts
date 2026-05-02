@@ -1,16 +1,27 @@
 "use client"
 
-import { ADMIN_NAVIGATION, buildMenuPermissionTree, type MenuPermTreeNode } from '../../lib/adminNavigation'
+import { ADMIN_NAVIGATION, buildMenuPermissionTree, type AdminNavNode, type MenuPermTreeNode } from '../../lib/adminNavigation'
 
 export const MENU_PERMISSION_TREE = buildMenuPermissionTree(ADMIN_NAVIGATION)
 
-type MenuIndexNode = {
+export type MenuIndexNode = {
   key: string
   label: string
   perms: string[]
   children: string[]
   parent?: string
   checkable: boolean
+}
+
+export type MenuMatrixRow = {
+  key: string
+  label: string
+  pathLabels: string[]
+  pathText: string
+  parentLabel?: string
+  depth: number
+  perms: string[]
+  children: string[]
 }
 
 function buildMenuIndex(tree: MenuPermTreeNode[]) {
@@ -32,7 +43,32 @@ function buildMenuIndex(tree: MenuPermTreeNode[]) {
   return index
 }
 
+function buildMatrixRows(nodes: AdminNavNode[]) {
+  const rows: MenuMatrixRow[] = []
+
+  function walk(node: AdminNavNode, stack: string[], depth: number) {
+    const nextPath = [...stack, node.label]
+    if (node.rbacKey) {
+      rows.push({
+        key: node.rbacKey,
+        label: node.label,
+        pathLabels: nextPath,
+        pathText: nextPath.join(' / '),
+        parentLabel: stack[stack.length - 1],
+        depth,
+        perms: (node.actionPerms || []).map((code) => String(code || '')).filter(Boolean),
+        children: (node.children || []).map((child) => child.rbacKey).filter(Boolean) as string[],
+      })
+    }
+    ;(node.children || []).forEach((child) => walk(child, nextPath, depth + 1))
+  }
+
+  nodes.forEach((node) => walk(node, [], 0))
+  return rows
+}
+
 export const MENU_PERMISSION_INDEX = buildMenuIndex(MENU_PERMISSION_TREE)
+export const MENU_PERMISSION_ROWS = buildMatrixRows(ADMIN_NAVIGATION)
 
 export function buildMenuKeySet(tree: MenuPermTreeNode[]) {
   const keys: string[] = []
@@ -63,20 +99,6 @@ export function buildPermToMenuIndex(tree: MenuPermTreeNode[]) {
   }
   walk(tree)
   return out
-}
-
-export function findMenuNode(tree: MenuPermTreeNode[], key: string): MenuPermTreeNode | null {
-  const target = String(key || '').trim()
-  if (!target) return null
-  let found: MenuPermTreeNode | null = null
-  function walk(nodes: MenuPermTreeNode[]) {
-    nodes.forEach((node) => {
-      if (node.key === target) found = node
-      if (!found && node.children?.length) walk(node.children)
-    })
-  }
-  walk(tree)
-  return found
 }
 
 export function findMenuPathLabels(tree: MenuPermTreeNode[], key: string) {
