@@ -1117,7 +1117,7 @@ export default function CleaningPage() {
       if (patch.status === undefined && (String(it.status || 'pending') === 'pending' || String(it.status || 'pending') === 'assigned')) {
         const cleaner = String(next.cleaner_id || next.assignee_id || '').trim()
         const inspector = String(next.inspector_id || '').trim()
-        next.status = cleaner && inspector ? 'assigned' : 'pending'
+        next.status = cleaner || inspector ? 'assigned' : 'pending'
       }
       return next
     }))

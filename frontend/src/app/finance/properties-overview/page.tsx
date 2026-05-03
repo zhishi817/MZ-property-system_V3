@@ -50,6 +50,8 @@ export default function PropertyRevenuePage() {
   const [landlords, setLandlords] = useState<Landlord[]>([])
   const [selectedPid, setSelectedPid] = useState<string | undefined>(undefined)
   const [selectedRegion, setSelectedRegion] = useState<string | undefined>(undefined)
+  const [tablePage, setTablePage] = useState<number>(1)
+  const [tablePageSize, setTablePageSize] = useState<number>(20)
   const [previewPid, setPreviewPid] = useState<string | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewReady, setPreviewReady] = useState(false)
@@ -947,6 +949,10 @@ export default function PropertyRevenuePage() {
     } },
   ]
 
+  useEffect(() => {
+    setTablePage(1)
+  }, [month, period, startMonth, selectedPid, selectedRegion])
+
   return (
     <Card title="房源营收" loading={pageLoading}>
       <div style={{ marginBottom: 12, display:'flex', gap:8, alignItems:'center' }}>
@@ -1018,7 +1024,20 @@ export default function PropertyRevenuePage() {
         dataSource={rows}
         loading={pageLoading || rangeLoading}
         scroll={{ x: 'max-content' }}
-        pagination={{ pageSize: 20 }}
+        pagination={{
+          current: tablePage,
+          pageSize: tablePageSize,
+          showSizeChanger: true,
+          pageSizeOptions: [10, 20, 50, 100],
+          onChange: (page, pageSize) => {
+            setTablePage(page)
+            setTablePageSize(pageSize)
+          },
+          onShowSizeChange: (page, pageSize) => {
+            setTablePage(page)
+            setTablePageSize(pageSize)
+          },
+        }}
         size="small"
         style={{ fontSize: 12 }}
         expandable={{
