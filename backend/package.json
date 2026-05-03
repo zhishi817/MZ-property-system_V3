@@ -15,7 +15,9 @@
     "test:guide-link-sync": "ts-node-dev --transpile-only scripts/test_guide_link_sync_utils.ts",
     "db:fix-email-year-v2": "ts-node-dev --transpile-only scripts/fix_email_orders_year_v2.ts",
     "db:alter-email-meta": "ts-node-dev --transpile-only scripts/run_alter_orders_email_meta.ts",
+    "backfill:auto-expenses": "ts-node-dev --transpile-only scripts/run_auto_expenses_backfill.ts",
     "test:cleaning-rules": "ts-node-dev --transpile-only scripts/tests/test_cleaning_rules.ts",
+    "test:cleaning-inspection-merge": "ts-node-dev --transpile-only scripts/tests/test_cleaning_inspection_merge.ts",
     "test:orders-overlap": "ts-node-dev --transpile-only scripts/tests/test_orders_overlap.ts",
     "test:auto-expense-source-summary": "ts-node-dev --transpile-only scripts/tests/test_auto_expense_source_summary.ts"
   },

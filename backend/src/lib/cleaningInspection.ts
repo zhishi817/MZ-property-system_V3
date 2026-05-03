@@ -80,3 +80,46 @@ export function deferredProjectionDate(params: {
   return due < from ? from : due
 }
 
+export function mergeInspectionPlan(
+  rows: Array<{
+    task_type?: any
+    inspection_mode?: any
+    inspection_due_date?: any
+    inspector_id?: any
+    status?: any
+  }>,
+): { inspectionMode: InspectionMode; inspectionDueDate: string | null } {
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : []
+  if (!list.length) return { inspectionMode: 'pending_decision', inspectionDueDate: null }
+
+  const kindOf = (row: any) => cleaningInspectionTaskKind(row?.task_type)
+  const checkoutRows = list.filter((row) => kindOf(row) === 'checkout')
+  const actionableRows = checkoutRows.length
+    ? checkoutRows
+    : list.filter((row) => kindOf(row) !== 'stayover')
+  const relevantRows = actionableRows.length ? actionableRows : list
+
+  const dueDateFor = (row: any) => {
+    const s = String(row?.inspection_due_date || '').slice(0, 10)
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null
+  }
+
+  for (const row of relevantRows) {
+    if (effectiveInspectionMode(row) === 'deferred') {
+      return {
+        inspectionMode: 'deferred',
+        inspectionDueDate: dueDateFor(row),
+      }
+    }
+  }
+
+  if (relevantRows.some((row) => effectiveInspectionMode(row) === 'same_day')) {
+    return { inspectionMode: 'same_day', inspectionDueDate: null }
+  }
+
+  if (relevantRows.every((row) => effectiveInspectionMode(row) === 'self_complete')) {
+    return { inspectionMode: 'self_complete', inspectionDueDate: null }
+  }
+
+  return { inspectionMode: 'pending_decision', inspectionDueDate: null }
+}

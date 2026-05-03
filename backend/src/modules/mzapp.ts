@@ -9,7 +9,8 @@ import sharp from 'sharp'
 import fs from 'fs'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { emitNotificationEvent } from '../services/notificationEvents'
-import { deferredProjectionDate, effectiveInspectionMode, isInspectionFinishedStatus } from '../lib/cleaningInspection'
+import { deferredProjectionDate, effectiveInspectionMode, isInspectionFinishedStatus, mergeInspectionPlan } from '../lib/cleaningInspection'
+import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
 
 export const router = Router()
 
@@ -108,6 +109,35 @@ function isInspectorRole(user: any) {
 
 function isCleanerInspectorRole(user: any) {
   return hasRole(user, 'cleaner_inspector')
+}
+
+async function refreshAutoExpenseSourceSummary(refType: 'maintenance' | 'deep_cleaning', row: any) {
+  if (!hasPg || !pgPool) return
+  const refId = String(row?.id || '').trim()
+  if (!refId) return
+  const sourceSummary = refType === 'maintenance' ? maintenanceSourceSummary(row) : deepCleaningSourceSummary(row)
+  try {
+    await pgPool.query(
+      `UPDATE property_expenses
+          SET source_summary = $3
+        WHERE ref_type = $1
+          AND ref_id = $2
+          AND is_auto = true
+          AND COALESCE(manual_override, false) = false`,
+      [refType, refId, sourceSummary || null],
+    )
+  } catch {}
+  try {
+    await pgPool.query(
+      `UPDATE company_expenses
+          SET source_summary = $3
+        WHERE ref_type = $1
+          AND ref_id = $2
+          AND is_auto = true
+          AND COALESCE(manual_override, false) = false`,
+      [refType, refId, sourceSummary || null],
+    )
+  } catch {}
 }
 
 async function listInspectionNotificationUserIds(taskId: string, actorId?: string) {
@@ -2873,8 +2903,17 @@ router.get('/work-tasks', async (req, res) => {
           const cleanerName = firstNonEmpty(p.a.cleaner_name, p.b?.cleaner_name, ...rows.map((x) => x.cleaner_name))
           const inspectorName = p.kind === 'stayover' ? null : firstNonEmpty(p.a.inspector_name, p.b?.inspector_name, ...rows.map((x) => x.inspector_name))
           const inspectorAssigned = p.kind === 'stayover' ? null : firstNonEmpty(p.a.__assignee_inspector, p.b?.__assignee_inspector, ...rows.map((x) => x.__assignee_inspector))
-          const inspectionMode = String(p.a.__inspection_mode || p.b?.__inspection_mode || '').trim() || 'pending_decision'
-          const inspectionDueDate = firstNonEmpty(p.a.__inspection_due_date, p.b?.__inspection_due_date, ...rows.map((x) => x.__inspection_due_date))
+          const inspectionPlan = mergeInspectionPlan(
+            rows.map((x) => ({
+              task_type: x.task_type,
+              inspection_mode: x.__inspection_mode,
+              inspection_due_date: x.__inspection_due_date,
+              inspector_id: x.__assignee_inspector,
+              status: x.raw_status,
+            })),
+          )
+          const inspectionMode = inspectionPlan.inspectionMode
+          const inspectionDueDate = inspectionPlan.inspectionDueDate
           const requireSelfComplete = roleKind === 'cleaner' && inspectionMode === 'self_complete'
           const requireLockboxBeforeDone = requireSelfComplete && p.kind !== 'stayover'
           const completionAreas = new Set<string>()
@@ -3112,8 +3151,17 @@ router.get('/work-tasks', async (req, res) => {
         const checkedOutAtMerged = firstNonEmpty(...arr.map((x) => x.checked_out_at))
         const cleanerName = firstNonEmpty(...arr.map((x) => x.cleaner_name))
         const inspectorName = firstNonEmpty(...arr.map((x) => x.inspector_name))
-        const inspectionMode = firstNonEmpty(...arr.map((x) => x.inspection_mode)) || null
-        const inspectionDueDate = firstNonEmpty(...arr.map((x) => x.inspection_due_date)) || null
+        const inspectionPlan = mergeInspectionPlan(
+          arr.map((x) => ({
+            task_type: x.task_type,
+            inspection_mode: x.inspection_mode,
+            inspection_due_date: x.inspection_due_date,
+            inspector_id: x.inspector_id,
+            status: x.status,
+          })),
+        )
+        const inspectionMode = inspectionPlan.inspectionMode
+        const inspectionDueDate = inspectionPlan.inspectionDueDate
         const restockItems: any[] = []
         const seenRestock = new Set<string>()
         for (const it of arr.flatMap((x) => (Array.isArray(x?.restock_items) ? x.restock_items : []))) {
@@ -4247,6 +4295,12 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
           nextCompletedAt,
         ],
       )
+      await refreshAutoExpenseSourceSummary('maintenance', {
+        id,
+        details: nextDetail,
+        repair_notes: nextNote || null,
+        invoice_description_en: nextInvoiceDescriptionEn || null,
+      })
       return res.json({
         ok: true,
         row: {
@@ -4321,6 +4375,14 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
           nextCompletedAt,
         ],
       )
+      await refreshAutoExpenseSourceSummary('deep_cleaning', {
+        id,
+        project_desc: nextAreas.join('、'),
+        details: nextDetail,
+        notes: nextDetail,
+        repair_notes: nextNote || null,
+        invoice_description_en: nextInvoiceDescriptionEn || null,
+      })
       return res.json({
         ok: true,
         row: {
