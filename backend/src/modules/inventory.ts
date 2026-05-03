@@ -11,6 +11,14 @@ import { hasR2, r2Upload } from '../r2'
 
 export const router = Router()
 
+const inventoryPurchaseOrderViewPerms = ['inventory_linen_purchase_orders.view', 'inventory_daily_purchase_orders.view', 'inventory_consumable_purchase_orders.view', 'inventory_other_purchase_orders.view', 'inventory.po.manage'] as const
+const inventoryPurchaseOrderCreatePerms = ['inventory_linen_purchase_orders.create', 'inventory_daily_purchase_orders.create', 'inventory_consumable_purchase_orders.create', 'inventory_other_purchase_orders.create', 'inventory.po.manage'] as const
+const inventoryPurchaseOrderWritePerms = ['inventory_linen_purchase_orders.write', 'inventory_daily_purchase_orders.write', 'inventory_consumable_purchase_orders.write', 'inventory_other_purchase_orders.write', 'inventory.po.manage'] as const
+const inventoryTransferViewPerms = ['inventory_linen_deliveries.view', 'inventory_daily_deliveries.view', 'inventory_consumable_deliveries.view', 'inventory_other_deliveries.view', 'inventory.view'] as const
+const inventoryTransferCreatePerms = ['inventory_linen_deliveries.create', 'inventory_daily_deliveries.create', 'inventory_consumable_deliveries.create', 'inventory_other_deliveries.create', 'inventory.move'] as const
+const inventoryTransferWritePerms = ['inventory_linen_deliveries.write', 'inventory_daily_deliveries.write', 'inventory_consumable_deliveries.write', 'inventory_other_deliveries.write', 'inventory.move'] as const
+const inventoryTransferArchivePerms = ['inventory_linen_deliveries.archive', 'inventory_daily_deliveries.archive', 'inventory_consumable_deliveries.archive', 'inventory_other_deliveries.archive', 'inventory.move'] as const
+
 const upload = multer({ storage: multer.memoryStorage() })
 
 function actorId(req: any) {
@@ -2634,7 +2642,7 @@ const consumableUsageQuerySchema = z.object({
   to: z.string().optional(),
 })
 
-router.get('/daily-items-prices', requireAnyPerm(['inventory.view', 'inventory.po.manage']), async (req, res) => {
+router.get('/daily-items-prices', requireAnyPerm(['inventory_daily_prices.view', 'inventory.po.manage', 'inventory.view']), async (req, res) => {
   const category = String((req.query as any)?.category || '').trim()
   try {
     if (!(hasPg && pgPool)) return res.json([])
@@ -2655,7 +2663,7 @@ router.get('/daily-items-prices', requireAnyPerm(['inventory.view', 'inventory.p
   }
 })
 
-router.post('/daily-items-prices', requirePerm('inventory.po.manage'), async (req, res) => {
+router.post('/daily-items-prices', requireAnyPerm(['inventory_daily_prices.create', 'inventory.po.manage']), async (req, res) => {
   const parsed = dailyPriceUpsertSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
@@ -2692,7 +2700,7 @@ router.post('/daily-items-prices', requirePerm('inventory.po.manage'), async (re
   }
 })
 
-router.patch('/daily-items-prices/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.patch('/daily-items-prices/:id', requireAnyPerm(['inventory_daily_prices.write', 'inventory.po.manage']), async (req, res) => {
   const parsed = dailyPriceUpsertSchema.partial().safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const id = String(req.params.id || '').trim()
@@ -2731,7 +2739,7 @@ router.patch('/daily-items-prices/:id', requirePerm('inventory.po.manage'), asyn
   }
 })
 
-router.delete('/daily-items-prices/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.delete('/daily-items-prices/:id', requireAnyPerm(['inventory_daily_prices.delete', 'inventory.po.manage']), async (req, res) => {
   const id = String(req.params.id || '').trim()
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
@@ -2802,7 +2810,7 @@ router.get('/daily-stock-overview', requirePerm('inventory.view'), async (_req, 
   }
 })
 
-router.get('/consumable-items-prices', requireAnyPerm(['inventory.view', 'inventory.po.manage']), async (_req, res) => {
+router.get('/consumable-items-prices', requireAnyPerm(['inventory_consumable_prices.view', 'inventory.po.manage', 'inventory.view']), async (_req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.json([])
     await ensureConsumablePriceListSeeded()
@@ -2814,7 +2822,7 @@ router.get('/consumable-items-prices', requireAnyPerm(['inventory.view', 'invent
   }
 })
 
-router.post('/consumable-items-prices', requirePerm('inventory.po.manage'), async (req, res) => {
+router.post('/consumable-items-prices', requireAnyPerm(['inventory_consumable_prices.create', 'inventory.po.manage']), async (req, res) => {
   const parsed = consumablePriceUpdateSchema.extend({
     item_name: z.string().min(1),
   }).safeParse(req.body)
@@ -2853,7 +2861,7 @@ router.post('/consumable-items-prices', requirePerm('inventory.po.manage'), asyn
   }
 })
 
-router.patch('/consumable-items-prices/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.patch('/consumable-items-prices/:id', requireAnyPerm(['inventory_consumable_prices.write', 'inventory.po.manage']), async (req, res) => {
   const parsed = consumablePriceUpdateSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const id = String(req.params.id || '').trim()
@@ -2891,7 +2899,7 @@ router.patch('/consumable-items-prices/:id', requirePerm('inventory.po.manage'),
   }
 })
 
-router.delete('/consumable-items-prices/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.delete('/consumable-items-prices/:id', requireAnyPerm(['inventory_consumable_prices.delete', 'inventory.po.manage']), async (req, res) => {
   const id = String(req.params.id || '').trim()
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
@@ -2961,7 +2969,7 @@ router.get('/consumable-stock-overview', requirePerm('inventory.view'), async (_
   }
 })
 
-router.get('/other-items-prices', requireAnyPerm(['inventory.view', 'inventory.po.manage']), async (_req, res) => {
+router.get('/other-items-prices', requireAnyPerm(['inventory_other_prices.view', 'inventory.po.manage', 'inventory.view']), async (_req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.json([])
     await ensureOtherPriceListSchema()
@@ -2974,7 +2982,7 @@ router.get('/other-items-prices', requireAnyPerm(['inventory.view', 'inventory.p
   }
 })
 
-router.post('/other-items-prices', requirePerm('inventory.po.manage'), async (req, res) => {
+router.post('/other-items-prices', requireAnyPerm(['inventory_other_prices.create', 'inventory.po.manage']), async (req, res) => {
   const parsed = consumablePriceUpdateSchema.extend({
     item_name: z.string().min(1),
   }).safeParse(req.body)
@@ -3013,7 +3021,7 @@ router.post('/other-items-prices', requirePerm('inventory.po.manage'), async (re
   }
 })
 
-router.patch('/other-items-prices/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.patch('/other-items-prices/:id', requireAnyPerm(['inventory_other_prices.write', 'inventory.po.manage']), async (req, res) => {
   const parsed = consumablePriceUpdateSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const id = String(req.params.id || '').trim()
@@ -3051,7 +3059,7 @@ router.patch('/other-items-prices/:id', requirePerm('inventory.po.manage'), asyn
   }
 })
 
-router.delete('/other-items-prices/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.delete('/other-items-prices/:id', requireAnyPerm(['inventory_other_prices.delete', 'inventory.po.manage']), async (req, res) => {
   const id = String(req.params.id || '').trim()
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
@@ -3121,7 +3129,7 @@ router.get('/other-stock-overview', requirePerm('inventory.view'), async (_req, 
   }
 })
 
-router.get('/consumable-usage-records', requirePerm('inventory.view'), async (req, res) => {
+router.get('/consumable-usage-records', requireAnyPerm(['inventory_consumable_usage.view', 'inventory.view', 'inventory.move']), async (req, res) => {
   const parsed = consumableUsageQuerySchema.safeParse(req.query || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
@@ -3220,7 +3228,7 @@ const linenTypeSchema = z.object({
   active: z.boolean().optional(),
 })
 
-router.get('/linen-types', requirePerm('inventory.view'), async (req, res) => {
+router.get('/linen-types', requireAnyPerm(['inventory_suppliers.view', 'inventory.view']), async (req, res) => {
   try {
     if (hasPg && pgPool) {
       await ensureInventorySchema()
@@ -4293,7 +4301,7 @@ router.post('/transfers', requirePerm('inventory.move'), async (req, res) => {
   }
 })
 
-router.get('/transfer-records', requirePerm('inventory.view'), async (req, res) => {
+router.get('/transfer-records', requireAnyPerm([...inventoryTransferViewPerms]), async (req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.json([])
     await ensureInventorySchema()
@@ -4459,7 +4467,7 @@ router.get('/transfer-records', requirePerm('inventory.view'), async (req, res) 
   }
 })
 
-router.get('/transfer-records/:id', requirePerm('inventory.view'), async (req, res) => {
+router.get('/transfer-records/:id', requireAnyPerm([...inventoryTransferViewPerms]), async (req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'transfer records not available without PG' })
     await ensureInventorySchema()
@@ -4473,7 +4481,7 @@ router.get('/transfer-records/:id', requirePerm('inventory.view'), async (req, r
   }
 })
 
-router.post('/transfer-records', requirePerm('inventory.move'), async (req, res) => {
+router.post('/transfer-records', requireAnyPerm([...inventoryTransferCreatePerms]), async (req, res) => {
   const parsed = transferRecordCreateSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (parsed.data.from_warehouse_id === parsed.data.to_warehouse_id) return res.status(400).json({ message: 'same warehouse' })
@@ -4519,7 +4527,7 @@ router.post('/transfer-records', requirePerm('inventory.move'), async (req, res)
   }
 })
 
-router.patch('/transfer-records/:id', requirePerm('inventory.move'), async (req, res) => {
+router.patch('/transfer-records/:id', requireAnyPerm([...inventoryTransferWritePerms]), async (req, res) => {
   const parsed = transferRecordUpdateSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (parsed.data.from_warehouse_id === parsed.data.to_warehouse_id) return res.status(400).json({ message: 'same warehouse' })
@@ -4583,7 +4591,7 @@ router.patch('/transfer-records/:id', requirePerm('inventory.move'), async (req,
   }
 })
 
-router.post('/transfer-records/:id/cancel', requirePerm('inventory.move'), async (req, res) => {
+router.post('/transfer-records/:id/cancel', requireAnyPerm([...inventoryTransferArchivePerms]), async (req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'transfer not available without PG' })
     await ensureInventorySchema()
@@ -5239,7 +5247,7 @@ router.post('/stocktakes', requirePerm('inventory.move'), async (req, res) => {
   }
 })
 
-router.get('/movements', requirePerm('inventory.view'), async (req, res) => {
+router.get('/movements', requireAnyPerm(['inventory_other_usage.view', 'inventory_consumable_usage.view', 'inventory.view']), async (req, res) => {
   try {
     if (hasPg && pgPool) {
       await ensureInventorySchema()
@@ -5292,7 +5300,7 @@ router.get('/movements', requirePerm('inventory.view'), async (req, res) => {
   }
 })
 
-router.get('/linen-usage-records', requirePerm('inventory.view'), async (req, res) => {
+router.get('/linen-usage-records', requireAnyPerm(['inventory_linen_usage.view', 'inventory.view']), async (req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.json([])
     await ensureInventorySchema()
@@ -5434,7 +5442,7 @@ const dailyReplacementPatchSchema = z.object({
   status: z.enum(['need_replace', 'replaced', 'no_action']).optional(),
 })
 
-router.get('/daily-replacements', requirePerm('inventory.view'), async (req, res) => {
+router.get('/daily-replacements', requireAnyPerm(['inventory_daily_replacements.view', 'inventory.view', 'inventory.move']), async (req, res) => {
   try {
     if (hasPg && pgPool) {
       await ensureInventorySchema()
@@ -5501,7 +5509,7 @@ router.get('/daily-replacements', requirePerm('inventory.view'), async (req, res
   }
 })
 
-router.post('/daily-replacements', requirePerm('inventory.move'), async (req, res) => {
+router.post('/daily-replacements', requireAnyPerm(['inventory_daily_replacements.create', 'inventory.move']), async (req, res) => {
   const parsed = dailyReplacementCreateSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
@@ -5557,7 +5565,7 @@ router.post('/daily-replacements', requirePerm('inventory.move'), async (req, re
   }
 })
 
-router.patch('/daily-replacements/:id', requirePerm('inventory.move'), async (req, res) => {
+router.patch('/daily-replacements/:id', requireAnyPerm(['inventory_daily_replacements.write', 'inventory.move']), async (req, res) => {
   const id = String(req.params.id || '').trim()
   const parsed = dailyReplacementPatchSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -5605,7 +5613,7 @@ router.patch('/daily-replacements/:id', requirePerm('inventory.move'), async (re
   }
 })
 
-router.get('/suppliers', requirePerm('inventory.po.manage'), async (req, res) => {
+router.get('/suppliers', requireAnyPerm(['inventory_suppliers.view', 'inventory.po.manage']), async (req, res) => {
   try {
     if (hasPg && pgPool) {
       await ensureInventorySchema()
@@ -5629,7 +5637,7 @@ const supplierSchema = z.object({
   active: z.boolean().optional(),
 })
 
-router.post('/suppliers', requirePerm('inventory.po.manage'), async (req, res) => {
+router.post('/suppliers', requireAnyPerm(['inventory_suppliers.create', 'inventory.po.manage']), async (req, res) => {
   const parsed = supplierSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
@@ -5649,7 +5657,7 @@ router.post('/suppliers', requirePerm('inventory.po.manage'), async (req, res) =
   }
 })
 
-router.patch('/suppliers/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.patch('/suppliers/:id', requireAnyPerm(['inventory_suppliers.write', 'inventory.po.manage']), async (req, res) => {
   const parsed = supplierSchema.partial().safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const id = String(req.params.id || '')
@@ -5675,7 +5683,7 @@ router.patch('/suppliers/:id', requirePerm('inventory.po.manage'), async (req, r
   }
 })
 
-router.delete('/suppliers/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.delete('/suppliers/:id', requireAnyPerm(['inventory_suppliers.delete', 'inventory.po.manage']), async (req, res) => {
   const id = String(req.params.id || '')
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
@@ -5703,7 +5711,7 @@ router.delete('/suppliers/:id', requirePerm('inventory.po.manage'), async (req, 
   }
 })
 
-router.post('/suppliers/:id/delete', requirePerm('inventory.po.manage'), async (req, res) => {
+router.post('/suppliers/:id/delete', requireAnyPerm(['inventory_suppliers.delete', 'inventory.po.manage']), async (req, res) => {
   const id = String(req.params.id || '')
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
@@ -5731,7 +5739,7 @@ router.post('/suppliers/:id/delete', requirePerm('inventory.po.manage'), async (
   }
 })
 
-router.get('/region-supplier-rules', requirePerm('inventory.po.manage'), async (req, res) => {
+router.get('/region-supplier-rules', requireAnyPerm(['inventory_region_rules.view', 'inventory.po.manage']), async (req, res) => {
   try {
     if (hasPg && pgPool) {
       await ensureInventorySchema()
@@ -5756,7 +5764,7 @@ const regionRuleSchema = z.object({
   active: z.boolean().optional(),
 })
 
-router.post('/region-supplier-rules', requirePerm('inventory.po.manage'), async (req, res) => {
+router.post('/region-supplier-rules', requireAnyPerm(['inventory_region_rules.create', 'inventory.po.manage']), async (req, res) => {
   const parsed = regionRuleSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
@@ -5778,7 +5786,7 @@ router.post('/region-supplier-rules', requirePerm('inventory.po.manage'), async 
   }
 })
 
-router.patch('/region-supplier-rules/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.patch('/region-supplier-rules/:id', requireAnyPerm(['inventory_region_rules.write', 'inventory.po.manage']), async (req, res) => {
   const parsed = regionRuleSchema.partial().safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const id = String(req.params.id || '')
@@ -5827,7 +5835,7 @@ const poCreateSchema = z.object({
   ])).min(1),
 })
 
-router.get('/purchase-orders', requirePerm('inventory.po.manage'), async (req, res) => {
+router.get('/purchase-orders', requireAnyPerm([...inventoryPurchaseOrderViewPerms]), async (req, res) => {
   try {
     if (hasPg && pgPool) {
       await ensureInventorySchema()
@@ -6026,7 +6034,7 @@ router.get('/purchase-order-lines', requirePerm('inventory.po.manage'), async (r
   }
 })
 
-router.post('/purchase-orders', requirePerm('inventory.po.manage'), async (req, res) => {
+router.post('/purchase-orders', requireAnyPerm([...inventoryPurchaseOrderCreatePerms]), async (req, res) => {
   const parsed = poCreateSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
@@ -6151,7 +6159,7 @@ router.post('/purchase-orders', requirePerm('inventory.po.manage'), async (req, 
   }
 })
 
-router.get('/purchase-orders/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.get('/purchase-orders/:id', requireAnyPerm([...inventoryPurchaseOrderViewPerms]), async (req, res) => {
   const id = String(req.params.id || '')
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
@@ -6268,7 +6276,7 @@ async function syncDraftPurchaseOrderPricesForSupplierItem(
   }
 }
 
-router.patch('/purchase-orders/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.patch('/purchase-orders/:id', requireAnyPerm([...inventoryPurchaseOrderWritePerms]), async (req, res) => {
   const parsed = poPatchSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const id = String(req.params.id || '')
@@ -6342,7 +6350,7 @@ router.patch('/purchase-orders/:id', requirePerm('inventory.po.manage'), async (
   }
 })
 
-router.post('/purchase-orders/:id/export', requirePerm('inventory.po.manage'), async (req, res) => {
+router.post('/purchase-orders/:id/export', requireAnyPerm([...inventoryPurchaseOrderViewPerms]), async (req, res) => {
   const id = String(req.params.id || '')
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
@@ -6391,7 +6399,7 @@ const deliverySchema = z.object({
   lines: z.array(z.object({ item_id: z.string().min(1), quantity_received: z.number().int().min(1), note: z.string().optional() })).min(1),
 })
 
-router.post('/purchase-orders/:id/deliveries', requirePerm('inventory.po.manage'), async (req, res) => {
+router.post('/purchase-orders/:id/deliveries', requireAnyPerm([...inventoryPurchaseOrderWritePerms]), async (req, res) => {
   const parsed = deliverySchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   const po_id = String(req.params.id || '')
@@ -6516,7 +6524,7 @@ const supplierItemPriceSchema = z.object({
   active: z.boolean().optional(),
 })
 
-router.get('/supplier-item-prices', requirePerm('inventory.po.manage'), async (req, res) => {
+router.get('/supplier-item-prices', requireAnyPerm(['inventory_suppliers.view', 'inventory.po.manage']), async (req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.json([])
     await ensureInventorySchema()
@@ -6543,7 +6551,7 @@ router.get('/supplier-item-prices', requirePerm('inventory.po.manage'), async (r
   }
 })
 
-router.post('/supplier-item-prices', requirePerm('inventory.po.manage'), async (req, res) => {
+router.post('/supplier-item-prices', requireAnyPerm(['inventory_suppliers.write', 'inventory.po.manage']), async (req, res) => {
   const parsed = supplierItemPriceSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
@@ -6594,7 +6602,7 @@ router.post('/supplier-item-prices', requirePerm('inventory.po.manage'), async (
   }
 })
 
-router.patch('/supplier-item-prices/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.patch('/supplier-item-prices/:id', requireAnyPerm(['inventory_suppliers.write', 'inventory.po.manage']), async (req, res) => {
   const parsed = supplierItemPriceSchema.partial().safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
@@ -6638,7 +6646,7 @@ router.patch('/supplier-item-prices/:id', requirePerm('inventory.po.manage'), as
   }
 })
 
-router.delete('/supplier-item-prices/:id', requirePerm('inventory.po.manage'), async (req, res) => {
+router.delete('/supplier-item-prices/:id', requireAnyPerm(['inventory_suppliers.delete', 'inventory.po.manage']), async (req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
     await ensureInventorySchema()
@@ -7092,7 +7100,7 @@ const linenStocktakeCreateSchema = z.object({
   lines: z.array(linenStocktakeLineSchema).min(1),
 })
 
-router.get('/linen/delivery-records', requirePerm('inventory.view'), async (req, res) => {
+router.get('/linen/delivery-records', requireAnyPerm(['inventory_linen_deliveries.view', 'inventory.view']), async (req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
     await ensureInventorySchema()
@@ -7146,7 +7154,7 @@ router.get('/linen/delivery-records', requirePerm('inventory.view'), async (req,
   }
 })
 
-router.get('/linen/delivery-records/:id', requirePerm('inventory.view'), async (req, res) => {
+router.get('/linen/delivery-records/:id', requireAnyPerm(['inventory_linen_deliveries.view', 'inventory.view']), async (req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
     await ensureInventorySchema()
@@ -7241,7 +7249,7 @@ router.post('/linen/stocktakes', requirePerm('inventory.move'), async (req, res)
   }
 })
 
-router.post('/linen/delivery-records', requirePerm('inventory.move'), async (req, res) => {
+router.post('/linen/delivery-records', requireAnyPerm(['inventory_linen_deliveries.create', 'inventory.move']), async (req, res) => {
   const parsed = linenDeliveryRecordCreateSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(withTracePayload(req, parsed.error.format() as any))
   if (parsed.data.from_warehouse_id === parsed.data.to_warehouse_id) return res.status(400).json(withTracePayload(req, { message: 'same warehouse' }))
@@ -7447,7 +7455,7 @@ router.post('/linen/delivery-records', requirePerm('inventory.move'), async (req
   }
 })
 
-router.patch('/linen/delivery-records/:id', requirePerm('inventory.move'), async (req, res) => {
+router.patch('/linen/delivery-records/:id', requireAnyPerm(['inventory_linen_deliveries.write', 'inventory.move']), async (req, res) => {
   const parsed = linenDeliveryRecordUpdateSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(withTracePayload(req, parsed.error.format() as any))
   if (parsed.data.from_warehouse_id === parsed.data.to_warehouse_id) return res.status(400).json(withTracePayload(req, { message: 'same warehouse' }))
@@ -7539,7 +7547,7 @@ router.patch('/linen/delivery-records/:id', requirePerm('inventory.move'), async
   }
 })
 
-router.post('/linen/delivery-records/:id/cancel', requirePerm('inventory.move'), async (req, res) => {
+router.post('/linen/delivery-records/:id/cancel', requireAnyPerm(['inventory_linen_deliveries.archive', 'inventory.move']), async (req, res) => {
   const id = String(req.params.id || '')
   const requestStartedAt = Date.now()
   try {
@@ -7745,7 +7753,7 @@ function supplierReturnBatchError(info: { code: number; message: string }) {
   return err
 }
 
-router.get('/linen/supplier-return-batches', requirePerm('inventory.view'), async (req, res) => {
+router.get('/linen/supplier-return-batches', requireAnyPerm(['inventory_linen_returns.view', 'inventory.view']), async (req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.json([])
     await ensureInventorySchema()
@@ -7793,7 +7801,7 @@ router.get('/linen/supplier-return-batches', requirePerm('inventory.view'), asyn
   }
 })
 
-router.post('/linen/supplier-return-batches', requirePerm('inventory.move'), async (req, res) => {
+router.post('/linen/supplier-return-batches', requireAnyPerm(['inventory_linen_returns.create', 'inventory.move']), async (req, res) => {
   const parsed = supplierReturnBatchSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
@@ -7864,7 +7872,7 @@ router.post('/linen/supplier-return-batches', requirePerm('inventory.move'), asy
   }
 })
 
-router.get('/linen/supplier-return-batches/:id', requirePerm('inventory.view'), async (req, res) => {
+router.get('/linen/supplier-return-batches/:id', requireAnyPerm(['inventory_linen_returns.view', 'inventory.view']), async (req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
     await ensureInventorySchema()
@@ -7915,7 +7923,7 @@ router.get('/linen/supplier-return-batches/:id', requirePerm('inventory.view'), 
   }
 })
 
-router.patch('/linen/supplier-return-batches/:id', requirePerm('inventory.move'), async (req, res) => {
+router.patch('/linen/supplier-return-batches/:id', requireAnyPerm(['inventory_linen_returns.write', 'inventory.move']), async (req, res) => {
   const parsed = supplierReturnBatchSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
@@ -8047,7 +8055,7 @@ router.patch('/linen/supplier-return-batches/:id', requirePerm('inventory.move')
   }
 })
 
-router.delete('/linen/supplier-return-batches/:id', requirePerm('inventory.move'), async (req, res) => {
+router.delete('/linen/supplier-return-batches/:id', requireAnyPerm(['inventory_linen_returns.delete', 'inventory.move']), async (req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
     await ensureInventorySchema()

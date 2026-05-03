@@ -1,5 +1,6 @@
 import { pgRunInTransaction } from '../dbAdapter'
 import { v4 as uuidv4 } from 'uuid'
+import { deepCleaningSourceSummary, maintenanceSourceSummary } from './autoExpenseSourceSummary'
 
 function autoToISODateOnly(v: any): string | null {
   if (!v) return null
@@ -84,52 +85,6 @@ function autoComputeDeepCleaningTotalCost(laborCostRaw: any, consumablesRaw: any
   return Math.round(((labor + sum) + Number.EPSILON) * 100) / 100
 }
 
-function autoToSummaryText(v: any, maxLen = 260): string {
-  try {
-    if (v === null || v === undefined) return ''
-    const s = typeof v === 'string' ? v.trim() : JSON.stringify(v)
-    return String(s || '').trim().slice(0, maxLen)
-  } catch {
-    return String(v || '').trim().slice(0, maxLen)
-  }
-}
-
-function autoPickSummaryFromDetails(raw: any): string {
-  if (!raw) return ''
-  let v: any = raw
-  if (typeof v === 'string') {
-    const s = v.trim()
-    if (!s) return ''
-    try { v = JSON.parse(s) } catch { return autoToSummaryText(s) }
-  }
-  if (Array.isArray(v)) {
-    for (const item of v) {
-      const txt = autoToSummaryText((item as any)?.content || (item as any)?.title || (item as any)?.item || (item as any)?.desc)
-      if (txt) return txt
-    }
-  }
-  if (typeof v === 'object') {
-    return autoToSummaryText((v as any)?.content || (v as any)?.title || (v as any)?.item || (v as any)?.desc)
-  }
-  return autoToSummaryText(v)
-}
-
-function autoMaintenanceIssueSummary(row: any): string {
-  const a = autoPickSummaryFromDetails(row?.details)
-  if (a) return a
-  const b = autoToSummaryText(row?.repair_notes)
-  if (b) return b
-  return ''
-}
-
-function autoDeepCleaningProjectSummary(row: any): string {
-  const a = autoToSummaryText(row?.project_desc)
-  if (a) return a
-  const b = autoPickSummaryFromDetails(row?.details)
-  if (b) return b
-  return autoToSummaryText(row?.notes)
-}
-
 async function autoHasManualOverrideForRef(executor: any, refType: string, refId: string): Promise<boolean> {
   const r = await executor.query(
     `SELECT (
@@ -181,7 +136,7 @@ export async function reconcileMonthlyAutoExpenses(input: { monthKey: string; pr
   })()
   return await pgRunInTransaction(async (client) => {
     const maintenanceRs = await client.query(
-      `SELECT id, property_id, status, pay_method, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes
+      `SELECT id, property_id, status, pay_method, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, invoice_description_en
        FROM property_maintenance
        WHERE property_id=$1
          AND coalesce(completed_at::date, occurred_at) >= $2::date
@@ -189,7 +144,7 @@ export async function reconcileMonthlyAutoExpenses(input: { monthKey: string; pr
       [propertyId, start, next]
     )
     const deepRs = await client.query(
-      `SELECT id, property_id, status, pay_method, total_cost, labor_cost, consumables, completed_at, occurred_at, created_at, project_desc, details, notes, work_no
+      `SELECT id, property_id, status, pay_method, total_cost, labor_cost, consumables, completed_at, occurred_at, created_at, project_desc, details, notes, work_no, invoice_description_en
        FROM property_deep_cleaning
        WHERE property_id=$1
          AND coalesce(completed_at::date, occurred_at, created_at::date) >= $2::date
@@ -223,7 +178,7 @@ export async function reconcileMonthlyAutoExpenses(input: { monthKey: string; pr
         : autoToNum(row?.total_cost ?? autoComputeDeepCleaningTotalCost(row?.labor_cost, row?.consumables))
       const categoryDetail = it.kind === 'maintenance' ? '维修' : '深度清洁'
       const sourceTitle = it.kind === 'deep_cleaning' ? (String(row?.work_no || refId).trim() ? `深度清洁 ${String(row?.work_no || refId).trim()}` : categoryDetail) : categoryDetail
-      const sourceSummary = it.kind === 'maintenance' ? autoMaintenanceIssueSummary(row) : autoDeepCleaningProjectSummary(row)
+      const sourceSummary = it.kind === 'maintenance' ? maintenanceSourceSummary(row) : deepCleaningSourceSummary(row)
       const voidBoth = async () => {
         const v1 = await client.query(`UPDATE property_expenses SET status='void' WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND coalesce(manual_override,false)=false`, [refType, refId])
         const v2 = await client.query(`UPDATE company_expenses SET status='void' WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND coalesce(manual_override,false)=false`, [refType, refId])

@@ -31,6 +31,27 @@ const resourceNames: Record<string, string> = {
   property_deep_cleaning: '深度清洁',
   property_guides: '入住指南',
   company_secret_items: '内部机密项',
+  guest_site_settings: '客人网站设置',
+  guest_site_properties: '客人网站房源展示',
+  guest_site_inquiries: '客人网站询单',
+  inventory_linen_purchase_orders: '床品采购记录',
+  inventory_linen_deliveries: '床品配送记录',
+  inventory_linen_usage: '床品使用记录',
+  inventory_linen_returns: '床品退货记录',
+  inventory_daily_prices: '日用品价格表',
+  inventory_daily_purchase_orders: '日用品采购记录',
+  inventory_daily_deliveries: '日用品配送记录',
+  inventory_daily_replacements: '日用品更换记录',
+  inventory_consumable_prices: '消耗品价格表',
+  inventory_consumable_purchase_orders: '消耗品采购记录',
+  inventory_consumable_deliveries: '消耗品配送记录',
+  inventory_consumable_usage: '消耗品使用记录',
+  inventory_other_prices: '其他物品价格表',
+  inventory_other_purchase_orders: '其他物品采购记录',
+  inventory_other_deliveries: '其他物品配送记录',
+  inventory_other_usage: '其他物品使用记录',
+  inventory_suppliers: '供应商列表',
+  inventory_region_rules: '供应区域规则',
 }
 
 const moduleNames: Record<string, string> = {
@@ -43,6 +64,7 @@ const moduleNames: Record<string, string> = {
   cleaning: '清洁管理',
   rbac: '角色权限',
   cms: 'CMS',
+  guest_site: 'Guest Website',
   onboarding: 'Onboarding',
 }
 
@@ -67,19 +89,21 @@ function makeMeta(base: Omit<PermissionMeta, 'code'> & { code: string }): Permis
 }
 
 function resourceActionMeta(code: string): PermissionMeta | null {
-  const m = code.match(/^([a-z0-9_]+)\.(view|write|delete|archive)$/i)
+  const m = code.match(/^([a-z0-9_]+)\.(view|create|write|delete|archive)$/i)
   if (!m) return null
   const resource = String(m[1])
   const action = String(m[2]).toLowerCase()
   const resName = resourceNames[resource] || capFirst(resource.replace(/_/g, ' '))
-  const actionName: Record<string, string> = { view: '查看', write: '编辑', delete: '删除', archive: '归档/反归档' }
+  const actionName: Record<string, string> = { view: '查看', create: '新增', write: '编辑', delete: '删除', archive: '归档/反归档' }
   const displayName = `${resName}：${actionName[action] || action}`
   const riskLevel: RiskLevel =
     action === 'view' ? 'low' :
+      action === 'create' ? 'medium' :
       action === 'write' ? 'medium' :
         action === 'archive' ? 'medium' : 'high'
   const purposeMap: Record<string, string> = {
     view: `允许读取${resName}数据（列表/详情/导出等读取型操作）。`,
+    create: `允许新增${resName}数据（创建记录、发起单据、录入新条目等）。`,
     write: `允许创建或修改${resName}数据（新增、编辑、状态变更等写入型操作）。`,
     archive: `允许将${resName}标记为归档或恢复（通常影响业务可见性与后续流程）。`,
     delete: `允许永久删除${resName}数据（不可逆或难以恢复）。`,
@@ -91,11 +115,13 @@ function resourceActionMeta(code: string): PermissionMeta | null {
     purpose: purposeMap[action] || `允许对${resName}执行 ${action} 操作。`,
     scenarios: [
       `需要查看${resName}列表、详情、报表或对账信息`,
+      action === 'create' ? `需要新增${resName}并推动后续业务流程` : '',
       action !== 'view' ? `需要维护${resName}的资料与业务状态` : '',
       action === 'delete' ? `仅在数据确认为错误录入且允许清理时使用` : '',
     ].filter(Boolean),
     denyImpact: [
       action === 'view' ? `无法查看${resName}数据，相关页面可能空白或报错` : '',
+      action === 'create' ? `无法新增${resName}，新业务记录无法发起` : '',
       action === 'write' ? `无法新增/编辑${resName}，相关操作按钮会失败或被隐藏` : '',
       action === 'archive' ? `无法归档/恢复${resName}，影响数据治理与流程收口` : '',
       action === 'delete' ? `无法删除${resName}，错误数据可能需要管理员处理` : '',
@@ -151,6 +177,21 @@ const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
     privacyRisk: [
       '可间接获得/授予对所有业务数据的访问与修改能力',
       '错误授权可能造成大范围数据泄露或误操作',
+    ],
+  },
+  'cms_public_access.manage': {
+    displayName: 'CMS：外链访问密码管理（高危）',
+    riskLevel: 'high',
+    purpose: '允许查看、重置和清除各类公开页面或外链入口的访问密码，直接影响外部访问控制。',
+    scenarios: [
+      '维护清洁公开指南、维修分享、深清分享、费用登记等外链密码',
+      '外链泄露后立即重置密码并使旧访问方式失效',
+    ],
+    denyImpact: [
+      '无法维护公开入口密码，外链权限收口依赖其他管理员处理',
+    ],
+    privacyRisk: [
+      '错误授权可能导致外部访问入口被接管或敏感页面暴露，需严格控制并审计',
     ],
   },
   'users.password.reset': {

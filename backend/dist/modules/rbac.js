@@ -15,7 +15,7 @@ const permissionsCatalog_1 = require("../permissionsCatalog");
 const notificationRules_1 = require("../services/notificationRules");
 exports.router = (0, express_1.Router)();
 function expandPermissionSynonyms(codes) {
-    const acts = ['view', 'write', 'delete', 'archive'];
+    const acts = ['view', 'create', 'write', 'delete', 'archive'];
     const s = new Set((codes || []).map((c) => String(c || '')).filter(Boolean));
     acts.forEach((a) => {
         if (s.has(`orders.${a}`) && !s.has(`order.${a}`))
@@ -27,6 +27,58 @@ function expandPermissionSynonyms(codes) {
         if (s.has(`property.${a}`) && !s.has(`properties.${a}`))
             s.add(`properties.${a}`);
     });
+    if (s.has('rbac.manage'))
+        s.add('cms_public_access.manage');
+    if (s.has('inventory.view')) {
+        ;
+        [
+            'inventory_linen_purchase_orders.view',
+            'inventory_linen_deliveries.view',
+            'inventory_linen_usage.view',
+            'inventory_linen_returns.view',
+            'inventory_daily_prices.view',
+            'inventory_daily_purchase_orders.view',
+            'inventory_daily_deliveries.view',
+            'inventory_daily_replacements.view',
+            'inventory_consumable_prices.view',
+            'inventory_consumable_purchase_orders.view',
+            'inventory_consumable_deliveries.view',
+            'inventory_consumable_usage.view',
+            'inventory_other_prices.view',
+            'inventory_other_purchase_orders.view',
+            'inventory_other_deliveries.view',
+            'inventory_other_usage.view',
+            'inventory_suppliers.view',
+            'inventory_region_rules.view',
+        ].forEach((code) => s.add(code));
+    }
+    if (s.has('inventory.po.manage')) {
+        ;
+        [
+            'inventory_linen_purchase_orders.view', 'inventory_linen_purchase_orders.create', 'inventory_linen_purchase_orders.write',
+            'inventory_daily_prices.view', 'inventory_daily_prices.create', 'inventory_daily_prices.write', 'inventory_daily_prices.delete',
+            'inventory_daily_purchase_orders.view', 'inventory_daily_purchase_orders.create', 'inventory_daily_purchase_orders.write',
+            'inventory_consumable_prices.view', 'inventory_consumable_prices.create', 'inventory_consumable_prices.write', 'inventory_consumable_prices.delete',
+            'inventory_consumable_purchase_orders.view', 'inventory_consumable_purchase_orders.create', 'inventory_consumable_purchase_orders.write',
+            'inventory_other_prices.view', 'inventory_other_prices.create', 'inventory_other_prices.write', 'inventory_other_prices.delete',
+            'inventory_other_purchase_orders.view', 'inventory_other_purchase_orders.create', 'inventory_other_purchase_orders.write',
+            'inventory_suppliers.view', 'inventory_suppliers.create', 'inventory_suppliers.write', 'inventory_suppliers.delete',
+            'inventory_region_rules.view', 'inventory_region_rules.create', 'inventory_region_rules.write',
+        ].forEach((code) => s.add(code));
+    }
+    if (s.has('inventory.move')) {
+        ;
+        [
+            'inventory_linen_deliveries.view', 'inventory_linen_deliveries.create', 'inventory_linen_deliveries.write', 'inventory_linen_deliveries.archive',
+            'inventory_linen_returns.view', 'inventory_linen_returns.create', 'inventory_linen_returns.write', 'inventory_linen_returns.delete',
+            'inventory_daily_deliveries.view', 'inventory_daily_deliveries.create', 'inventory_daily_deliveries.write', 'inventory_daily_deliveries.archive',
+            'inventory_daily_replacements.view', 'inventory_daily_replacements.create', 'inventory_daily_replacements.write',
+            'inventory_consumable_deliveries.view', 'inventory_consumable_deliveries.create', 'inventory_consumable_deliveries.write', 'inventory_consumable_deliveries.archive',
+            'inventory_consumable_usage.view',
+            'inventory_other_deliveries.view', 'inventory_other_deliveries.create', 'inventory_other_deliveries.write', 'inventory_other_deliveries.archive',
+            'inventory_other_usage.view',
+        ].forEach((code) => s.add(code));
+    }
     return Array.from(s);
 }
 async function resolveRolePermissionBinding(rawRoleId) {

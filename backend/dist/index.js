@@ -47,6 +47,7 @@ const recurring_1 = __importDefault(require("./modules/recurring"));
 const invoices_1 = require("./modules/invoices");
 const cms_company_1 = require("./modules/cms_company");
 const cms_company_secrets_1 = require("./modules/cms_company_secrets");
+const guest_site_1 = require("./modules/guest_site");
 const keyUploadReminderJob_1 = require("./lib/keyUploadReminderJob");
 const keyUploadSlaJob_1 = require("./lib/keyUploadSlaJob");
 const dayEndHandoverReminderJob_1 = require("./lib/dayEndHandoverReminderJob");
@@ -327,6 +328,7 @@ app.get('/__routes', (_req, res) => {
     }
 });
 app.use('/public', auth_2.auth, public_admin_1.default);
+app.use('/public', guest_site_1.publicRouter);
 app.use('/public', public_1.default);
 app.use(auth_2.auth);
 const uploadDir = path_1.default.join(process.cwd(), 'uploads');
@@ -370,6 +372,7 @@ app.use('/onboarding', propertyOnboarding_1.router);
 app.use('/invoices', invoices_1.router);
 app.use('/cms', cms_company_1.router);
 app.use('/cms', cms_company_secrets_1.router);
+app.use('/cms', guest_site_1.adminRouter);
 process.on('unhandledRejection', (reason) => {
     try {
         const msg = String((reason === null || reason === void 0 ? void 0 : reason.message) || reason || '');

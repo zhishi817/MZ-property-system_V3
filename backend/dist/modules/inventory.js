@@ -18,6 +18,13 @@ const path_1 = __importDefault(require("path"));
 const uploadImageResize_1 = require("../lib/uploadImageResize");
 const r2_1 = require("../r2");
 exports.router = (0, express_1.Router)();
+const inventoryPurchaseOrderViewPerms = ['inventory_linen_purchase_orders.view', 'inventory_daily_purchase_orders.view', 'inventory_consumable_purchase_orders.view', 'inventory_other_purchase_orders.view', 'inventory.po.manage'];
+const inventoryPurchaseOrderCreatePerms = ['inventory_linen_purchase_orders.create', 'inventory_daily_purchase_orders.create', 'inventory_consumable_purchase_orders.create', 'inventory_other_purchase_orders.create', 'inventory.po.manage'];
+const inventoryPurchaseOrderWritePerms = ['inventory_linen_purchase_orders.write', 'inventory_daily_purchase_orders.write', 'inventory_consumable_purchase_orders.write', 'inventory_other_purchase_orders.write', 'inventory.po.manage'];
+const inventoryTransferViewPerms = ['inventory_linen_deliveries.view', 'inventory_daily_deliveries.view', 'inventory_consumable_deliveries.view', 'inventory_other_deliveries.view', 'inventory.view'];
+const inventoryTransferCreatePerms = ['inventory_linen_deliveries.create', 'inventory_daily_deliveries.create', 'inventory_consumable_deliveries.create', 'inventory_other_deliveries.create', 'inventory.move'];
+const inventoryTransferWritePerms = ['inventory_linen_deliveries.write', 'inventory_daily_deliveries.write', 'inventory_consumable_deliveries.write', 'inventory_other_deliveries.write', 'inventory.move'];
+const inventoryTransferArchivePerms = ['inventory_linen_deliveries.archive', 'inventory_daily_deliveries.archive', 'inventory_consumable_deliveries.archive', 'inventory_other_deliveries.archive', 'inventory.move'];
 const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
 function actorId(req) {
     const u = (req === null || req === void 0 ? void 0 : req.user) || {};
@@ -2378,7 +2385,7 @@ const consumableUsageQuerySchema = zod_1.z.object({
     from: zod_1.z.string().optional(),
     to: zod_1.z.string().optional(),
 });
-exports.router.get('/daily-items-prices', (0, auth_1.requireAnyPerm)(['inventory.view', 'inventory.po.manage']), async (req, res) => {
+exports.router.get('/daily-items-prices', (0, auth_1.requireAnyPerm)(['inventory_daily_prices.view', 'inventory.po.manage', 'inventory.view']), async (req, res) => {
     var _a;
     const category = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.category) || '').trim();
     try {
@@ -2401,7 +2408,7 @@ exports.router.get('/daily-items-prices', (0, auth_1.requireAnyPerm)(['inventory
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.post('/daily-items-prices', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.post('/daily-items-prices', (0, auth_1.requireAnyPerm)(['inventory_daily_prices.create', 'inventory.po.manage']), async (req, res) => {
     const parsed = dailyPriceUpsertSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -2438,7 +2445,7 @@ exports.router.post('/daily-items-prices', (0, auth_1.requirePerm)('inventory.po
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.patch('/daily-items-prices/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.patch('/daily-items-prices/:id', (0, auth_1.requireAnyPerm)(['inventory_daily_prices.write', 'inventory.po.manage']), async (req, res) => {
     const parsed = dailyPriceUpsertSchema.partial().safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -2481,7 +2488,7 @@ exports.router.patch('/daily-items-prices/:id', (0, auth_1.requirePerm)('invento
         return res.status(status).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.delete('/daily-items-prices/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.delete('/daily-items-prices/:id', (0, auth_1.requireAnyPerm)(['inventory_daily_prices.delete', 'inventory.po.manage']), async (req, res) => {
     const id = String(req.params.id || '').trim();
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
@@ -2551,7 +2558,7 @@ exports.router.get('/daily-stock-overview', (0, auth_1.requirePerm)('inventory.v
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/consumable-items-prices', (0, auth_1.requireAnyPerm)(['inventory.view', 'inventory.po.manage']), async (_req, res) => {
+exports.router.get('/consumable-items-prices', (0, auth_1.requireAnyPerm)(['inventory_consumable_prices.view', 'inventory.po.manage', 'inventory.view']), async (_req, res) => {
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
             return res.json([]);
@@ -2564,7 +2571,7 @@ exports.router.get('/consumable-items-prices', (0, auth_1.requireAnyPerm)(['inve
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.post('/consumable-items-prices', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.post('/consumable-items-prices', (0, auth_1.requireAnyPerm)(['inventory_consumable_prices.create', 'inventory.po.manage']), async (req, res) => {
     const parsed = consumablePriceUpdateSchema.extend({
         item_name: zod_1.z.string().min(1),
     }).safeParse(req.body);
@@ -2603,7 +2610,7 @@ exports.router.post('/consumable-items-prices', (0, auth_1.requirePerm)('invento
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.patch('/consumable-items-prices/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.patch('/consumable-items-prices/:id', (0, auth_1.requireAnyPerm)(['inventory_consumable_prices.write', 'inventory.po.manage']), async (req, res) => {
     const parsed = consumablePriceUpdateSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -2646,7 +2653,7 @@ exports.router.patch('/consumable-items-prices/:id', (0, auth_1.requirePerm)('in
         return res.status(status).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.delete('/consumable-items-prices/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.delete('/consumable-items-prices/:id', (0, auth_1.requireAnyPerm)(['inventory_consumable_prices.delete', 'inventory.po.manage']), async (req, res) => {
     const id = String(req.params.id || '').trim();
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
@@ -2715,7 +2722,7 @@ exports.router.get('/consumable-stock-overview', (0, auth_1.requirePerm)('invent
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/other-items-prices', (0, auth_1.requireAnyPerm)(['inventory.view', 'inventory.po.manage']), async (_req, res) => {
+exports.router.get('/other-items-prices', (0, auth_1.requireAnyPerm)(['inventory_other_prices.view', 'inventory.po.manage', 'inventory.view']), async (_req, res) => {
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
             return res.json([]);
@@ -2729,7 +2736,7 @@ exports.router.get('/other-items-prices', (0, auth_1.requireAnyPerm)(['inventory
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.post('/other-items-prices', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.post('/other-items-prices', (0, auth_1.requireAnyPerm)(['inventory_other_prices.create', 'inventory.po.manage']), async (req, res) => {
     const parsed = consumablePriceUpdateSchema.extend({
         item_name: zod_1.z.string().min(1),
     }).safeParse(req.body);
@@ -2768,7 +2775,7 @@ exports.router.post('/other-items-prices', (0, auth_1.requirePerm)('inventory.po
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.patch('/other-items-prices/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.patch('/other-items-prices/:id', (0, auth_1.requireAnyPerm)(['inventory_other_prices.write', 'inventory.po.manage']), async (req, res) => {
     const parsed = consumablePriceUpdateSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -2811,7 +2818,7 @@ exports.router.patch('/other-items-prices/:id', (0, auth_1.requirePerm)('invento
         return res.status(status).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.delete('/other-items-prices/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.delete('/other-items-prices/:id', (0, auth_1.requireAnyPerm)(['inventory_other_prices.delete', 'inventory.po.manage']), async (req, res) => {
     const id = String(req.params.id || '').trim();
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
@@ -2880,7 +2887,7 @@ exports.router.get('/other-stock-overview', (0, auth_1.requirePerm)('inventory.v
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/consumable-usage-records', (0, auth_1.requirePerm)('inventory.view'), async (req, res) => {
+exports.router.get('/consumable-usage-records', (0, auth_1.requireAnyPerm)(['inventory_consumable_usage.view', 'inventory.view', 'inventory.move']), async (req, res) => {
     const parsed = consumableUsageQuerySchema.safeParse(req.query || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -2976,7 +2983,7 @@ const linenTypeSchema = zod_1.z.object({
     sort_order: zod_1.z.number().int().optional(),
     active: zod_1.z.boolean().optional(),
 });
-exports.router.get('/linen-types', (0, auth_1.requirePerm)('inventory.view'), async (req, res) => {
+exports.router.get('/linen-types', (0, auth_1.requireAnyPerm)(['inventory_suppliers.view', 'inventory.view']), async (req, res) => {
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureInventorySchema();
@@ -4079,7 +4086,7 @@ exports.router.post('/transfers', (0, auth_1.requirePerm)('inventory.move'), asy
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/transfer-records', (0, auth_1.requirePerm)('inventory.view'), async (req, res) => {
+exports.router.get('/transfer-records', (0, auth_1.requireAnyPerm)([...inventoryTransferViewPerms]), async (req, res) => {
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
             return res.json([]);
@@ -4265,7 +4272,7 @@ exports.router.get('/transfer-records', (0, auth_1.requirePerm)('inventory.view'
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/transfer-records/:id', (0, auth_1.requirePerm)('inventory.view'), async (req, res) => {
+exports.router.get('/transfer-records/:id', (0, auth_1.requireAnyPerm)([...inventoryTransferViewPerms]), async (req, res) => {
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
             return res.status(501).json({ message: 'transfer records not available without PG' });
@@ -4282,7 +4289,7 @@ exports.router.get('/transfer-records/:id', (0, auth_1.requirePerm)('inventory.v
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.post('/transfer-records', (0, auth_1.requirePerm)('inventory.move'), async (req, res) => {
+exports.router.post('/transfer-records', (0, auth_1.requireAnyPerm)([...inventoryTransferCreatePerms]), async (req, res) => {
     const parsed = transferRecordCreateSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -4328,7 +4335,7 @@ exports.router.post('/transfer-records', (0, auth_1.requirePerm)('inventory.move
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.patch('/transfer-records/:id', (0, auth_1.requirePerm)('inventory.move'), async (req, res) => {
+exports.router.patch('/transfer-records/:id', (0, auth_1.requireAnyPerm)([...inventoryTransferWritePerms]), async (req, res) => {
     const parsed = transferRecordUpdateSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -4395,7 +4402,7 @@ exports.router.patch('/transfer-records/:id', (0, auth_1.requirePerm)('inventory
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.post('/transfer-records/:id/cancel', (0, auth_1.requirePerm)('inventory.move'), async (req, res) => {
+exports.router.post('/transfer-records/:id/cancel', (0, auth_1.requireAnyPerm)([...inventoryTransferArchivePerms]), async (req, res) => {
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
             return res.status(501).json({ message: 'transfer not available without PG' });
@@ -5029,7 +5036,7 @@ exports.router.post('/stocktakes', (0, auth_1.requirePerm)('inventory.move'), as
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/movements', (0, auth_1.requirePerm)('inventory.view'), async (req, res) => {
+exports.router.get('/movements', (0, auth_1.requireAnyPerm)(['inventory_other_usage.view', 'inventory_consumable_usage.view', 'inventory.view']), async (req, res) => {
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureInventorySchema();
@@ -5104,7 +5111,7 @@ exports.router.get('/movements', (0, auth_1.requirePerm)('inventory.view'), asyn
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/linen-usage-records', (0, auth_1.requirePerm)('inventory.view'), async (req, res) => {
+exports.router.get('/linen-usage-records', (0, auth_1.requireAnyPerm)(['inventory_linen_usage.view', 'inventory.view']), async (req, res) => {
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
             return res.json([]);
@@ -5263,7 +5270,7 @@ const dailyReplacementPatchSchema = zod_1.z.object({
     pay_method: zod_1.z.enum(['rent_deduction', 'tenant_pay', 'company_pay', 'landlord_pay', 'other_pay']).optional().nullable(),
     status: zod_1.z.enum(['need_replace', 'replaced', 'no_action']).optional(),
 });
-exports.router.get('/daily-replacements', (0, auth_1.requirePerm)('inventory.view'), async (req, res) => {
+exports.router.get('/daily-replacements', (0, auth_1.requireAnyPerm)(['inventory_daily_replacements.view', 'inventory.view', 'inventory.move']), async (req, res) => {
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureInventorySchema();
@@ -5346,7 +5353,7 @@ exports.router.get('/daily-replacements', (0, auth_1.requirePerm)('inventory.vie
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.post('/daily-replacements', (0, auth_1.requirePerm)('inventory.move'), async (req, res) => {
+exports.router.post('/daily-replacements', (0, auth_1.requireAnyPerm)(['inventory_daily_replacements.create', 'inventory.move']), async (req, res) => {
     const parsed = dailyReplacementCreateSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -5405,7 +5412,7 @@ exports.router.post('/daily-replacements', (0, auth_1.requirePerm)('inventory.mo
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.patch('/daily-replacements/:id', (0, auth_1.requirePerm)('inventory.move'), async (req, res) => {
+exports.router.patch('/daily-replacements/:id', (0, auth_1.requireAnyPerm)(['inventory_daily_replacements.write', 'inventory.move']), async (req, res) => {
     var _a, _b, _c;
     const id = String(req.params.id || '').trim();
     const parsed = dailyReplacementPatchSchema.safeParse(req.body || {});
@@ -5464,7 +5471,7 @@ exports.router.patch('/daily-replacements/:id', (0, auth_1.requirePerm)('invento
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/suppliers', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.get('/suppliers', (0, auth_1.requireAnyPerm)(['inventory_suppliers.view', 'inventory.po.manage']), async (req, res) => {
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureInventorySchema();
@@ -5487,7 +5494,7 @@ const supplierSchema = zod_1.z.object({
     login_note: zod_1.z.string().optional().nullable(),
     active: zod_1.z.boolean().optional(),
 });
-exports.router.post('/suppliers', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.post('/suppliers', (0, auth_1.requireAnyPerm)(['inventory_suppliers.create', 'inventory.po.manage']), async (req, res) => {
     var _a, _b, _c;
     const parsed = supplierSchema.safeParse(req.body);
     if (!parsed.success)
@@ -5506,7 +5513,7 @@ exports.router.post('/suppliers', (0, auth_1.requirePerm)('inventory.po.manage')
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.patch('/suppliers/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.patch('/suppliers/:id', (0, auth_1.requireAnyPerm)(['inventory_suppliers.write', 'inventory.po.manage']), async (req, res) => {
     var _a, _b, _c;
     const parsed = supplierSchema.partial().safeParse(req.body);
     if (!parsed.success)
@@ -5536,7 +5543,7 @@ exports.router.patch('/suppliers/:id', (0, auth_1.requirePerm)('inventory.po.man
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.delete('/suppliers/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.delete('/suppliers/:id', (0, auth_1.requireAnyPerm)(['inventory_suppliers.delete', 'inventory.po.manage']), async (req, res) => {
     var _a;
     const id = String(req.params.id || '');
     try {
@@ -5565,7 +5572,7 @@ exports.router.delete('/suppliers/:id', (0, auth_1.requirePerm)('inventory.po.ma
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.post('/suppliers/:id/delete', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.post('/suppliers/:id/delete', (0, auth_1.requireAnyPerm)(['inventory_suppliers.delete', 'inventory.po.manage']), async (req, res) => {
     var _a;
     const id = String(req.params.id || '');
     try {
@@ -5594,7 +5601,7 @@ exports.router.post('/suppliers/:id/delete', (0, auth_1.requirePerm)('inventory.
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/region-supplier-rules', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.get('/region-supplier-rules', (0, auth_1.requireAnyPerm)(['inventory_region_rules.view', 'inventory.po.manage']), async (req, res) => {
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureInventorySchema();
@@ -5616,7 +5623,7 @@ const regionRuleSchema = zod_1.z.object({
     priority: zod_1.z.number().int().optional(),
     active: zod_1.z.boolean().optional(),
 });
-exports.router.post('/region-supplier-rules', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.post('/region-supplier-rules', (0, auth_1.requireAnyPerm)(['inventory_region_rules.create', 'inventory.po.manage']), async (req, res) => {
     var _a, _b, _c, _d;
     const parsed = regionRuleSchema.safeParse(req.body);
     if (!parsed.success)
@@ -5637,7 +5644,7 @@ exports.router.post('/region-supplier-rules', (0, auth_1.requirePerm)('inventory
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.patch('/region-supplier-rules/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.patch('/region-supplier-rules/:id', (0, auth_1.requireAnyPerm)(['inventory_region_rules.write', 'inventory.po.manage']), async (req, res) => {
     var _a, _b, _c;
     const parsed = regionRuleSchema.partial().safeParse(req.body);
     if (!parsed.success)
@@ -5689,7 +5696,7 @@ const poCreateSchema = zod_1.z.object({
         }),
     ])).min(1),
 });
-exports.router.get('/purchase-orders', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.get('/purchase-orders', (0, auth_1.requireAnyPerm)([...inventoryPurchaseOrderViewPerms]), async (req, res) => {
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureInventorySchema();
@@ -5907,7 +5914,7 @@ exports.router.get('/purchase-order-lines', (0, auth_1.requirePerm)('inventory.p
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.post('/purchase-orders', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.post('/purchase-orders', (0, auth_1.requireAnyPerm)([...inventoryPurchaseOrderCreatePerms]), async (req, res) => {
     var _a;
     const parsed = poCreateSchema.safeParse(req.body);
     if (!parsed.success)
@@ -6025,7 +6032,7 @@ exports.router.post('/purchase-orders', (0, auth_1.requirePerm)('inventory.po.ma
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/purchase-orders/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.get('/purchase-orders/:id', (0, auth_1.requireAnyPerm)([...inventoryPurchaseOrderViewPerms]), async (req, res) => {
     var _a, _b, _c;
     const id = String(req.params.id || '');
     try {
@@ -6109,7 +6116,7 @@ async function syncDraftPurchaseOrderPricesForSupplierItem(client, { supplierId,
         await refreshPurchaseOrderTotals(client, poId);
     }
 }
-exports.router.patch('/purchase-orders/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.patch('/purchase-orders/:id', (0, auth_1.requireAnyPerm)([...inventoryPurchaseOrderWritePerms]), async (req, res) => {
     var _a, _b, _c, _d;
     const parsed = poPatchSchema.safeParse(req.body);
     if (!parsed.success)
@@ -6184,7 +6191,7 @@ exports.router.patch('/purchase-orders/:id', (0, auth_1.requirePerm)('inventory.
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.post('/purchase-orders/:id/export', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.post('/purchase-orders/:id/export', (0, auth_1.requireAnyPerm)([...inventoryPurchaseOrderViewPerms]), async (req, res) => {
     var _a, _b, _c;
     const id = String(req.params.id || '');
     try {
@@ -6230,7 +6237,7 @@ const deliverySchema = zod_1.z.object({
     note: zod_1.z.string().optional(),
     lines: zod_1.z.array(zod_1.z.object({ item_id: zod_1.z.string().min(1), quantity_received: zod_1.z.number().int().min(1), note: zod_1.z.string().optional() })).min(1),
 });
-exports.router.post('/purchase-orders/:id/deliveries', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.post('/purchase-orders/:id/deliveries', (0, auth_1.requireAnyPerm)([...inventoryPurchaseOrderWritePerms]), async (req, res) => {
     var _a;
     const parsed = deliverySchema.safeParse(req.body);
     if (!parsed.success)
@@ -6359,7 +6366,7 @@ const supplierItemPriceSchema = zod_1.z.object({
     effective_from: zod_1.z.string().optional(),
     active: zod_1.z.boolean().optional(),
 });
-exports.router.get('/supplier-item-prices', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.get('/supplier-item-prices', (0, auth_1.requireAnyPerm)(['inventory_suppliers.view', 'inventory.po.manage']), async (req, res) => {
     var _a, _b, _c;
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
@@ -6394,7 +6401,7 @@ exports.router.get('/supplier-item-prices', (0, auth_1.requirePerm)('inventory.p
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.post('/supplier-item-prices', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.post('/supplier-item-prices', (0, auth_1.requireAnyPerm)(['inventory_suppliers.write', 'inventory.po.manage']), async (req, res) => {
     var _a, _b, _c;
     const parsed = supplierItemPriceSchema.safeParse(req.body);
     if (!parsed.success)
@@ -6451,7 +6458,7 @@ exports.router.post('/supplier-item-prices', (0, auth_1.requirePerm)('inventory.
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.patch('/supplier-item-prices/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.patch('/supplier-item-prices/:id', (0, auth_1.requireAnyPerm)(['inventory_suppliers.write', 'inventory.po.manage']), async (req, res) => {
     var _a;
     const parsed = supplierItemPriceSchema.partial().safeParse(req.body);
     if (!parsed.success)
@@ -6501,7 +6508,7 @@ exports.router.patch('/supplier-item-prices/:id', (0, auth_1.requirePerm)('inven
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.delete('/supplier-item-prices/:id', (0, auth_1.requirePerm)('inventory.po.manage'), async (req, res) => {
+exports.router.delete('/supplier-item-prices/:id', (0, auth_1.requireAnyPerm)(['inventory_suppliers.delete', 'inventory.po.manage']), async (req, res) => {
     var _a;
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
@@ -6955,7 +6962,7 @@ const linenStocktakeCreateSchema = zod_1.z.object({
     note: zod_1.z.string().optional(),
     lines: zod_1.z.array(linenStocktakeLineSchema).min(1),
 });
-exports.router.get('/linen/delivery-records', (0, auth_1.requirePerm)('inventory.view'), async (req, res) => {
+exports.router.get('/linen/delivery-records', (0, auth_1.requireAnyPerm)(['inventory_linen_deliveries.view', 'inventory.view']), async (req, res) => {
     var _a, _b, _c, _d, _e;
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
@@ -7013,7 +7020,7 @@ exports.router.get('/linen/delivery-records', (0, auth_1.requirePerm)('inventory
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/linen/delivery-records/:id', (0, auth_1.requirePerm)('inventory.view'), async (req, res) => {
+exports.router.get('/linen/delivery-records/:id', (0, auth_1.requireAnyPerm)(['inventory_linen_deliveries.view', 'inventory.view']), async (req, res) => {
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
             return res.status(501).json({ message: 'not available without PG' });
@@ -7117,7 +7124,7 @@ exports.router.post('/linen/stocktakes', (0, auth_1.requirePerm)('inventory.move
         return res.status(Number((e === null || e === void 0 ? void 0 : e.statusCode) || 500)).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.post('/linen/delivery-records', (0, auth_1.requirePerm)('inventory.move'), async (req, res) => {
+exports.router.post('/linen/delivery-records', (0, auth_1.requireAnyPerm)(['inventory_linen_deliveries.create', 'inventory.move']), async (req, res) => {
     var _a;
     const parsed = linenDeliveryRecordCreateSchema.safeParse(req.body);
     if (!parsed.success)
@@ -7317,7 +7324,7 @@ exports.router.post('/linen/delivery-records', (0, auth_1.requirePerm)('inventor
         return sendInventoryError(req, res, e);
     }
 });
-exports.router.patch('/linen/delivery-records/:id', (0, auth_1.requirePerm)('inventory.move'), async (req, res) => {
+exports.router.patch('/linen/delivery-records/:id', (0, auth_1.requireAnyPerm)(['inventory_linen_deliveries.write', 'inventory.move']), async (req, res) => {
     const parsed = linenDeliveryRecordUpdateSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(withTracePayload(req, parsed.error.format()));
@@ -7407,7 +7414,7 @@ exports.router.patch('/linen/delivery-records/:id', (0, auth_1.requirePerm)('inv
         return sendInventoryError(req, res, e);
     }
 });
-exports.router.post('/linen/delivery-records/:id/cancel', (0, auth_1.requirePerm)('inventory.move'), async (req, res) => {
+exports.router.post('/linen/delivery-records/:id/cancel', (0, auth_1.requireAnyPerm)(['inventory_linen_deliveries.archive', 'inventory.move']), async (req, res) => {
     const id = String(req.params.id || '');
     const requestStartedAt = Date.now();
     try {
@@ -7610,7 +7617,7 @@ function supplierReturnBatchError(info) {
     err.statusCode = info.code;
     return err;
 }
-exports.router.get('/linen/supplier-return-batches', (0, auth_1.requirePerm)('inventory.view'), async (req, res) => {
+exports.router.get('/linen/supplier-return-batches', (0, auth_1.requireAnyPerm)(['inventory_linen_returns.view', 'inventory.view']), async (req, res) => {
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
             return res.json([]);
@@ -7658,7 +7665,7 @@ exports.router.get('/linen/supplier-return-batches', (0, auth_1.requirePerm)('in
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.post('/linen/supplier-return-batches', (0, auth_1.requirePerm)('inventory.move'), async (req, res) => {
+exports.router.post('/linen/supplier-return-batches', (0, auth_1.requireAnyPerm)(['inventory_linen_returns.create', 'inventory.move']), async (req, res) => {
     const parsed = supplierReturnBatchSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -7726,7 +7733,7 @@ exports.router.post('/linen/supplier-return-batches', (0, auth_1.requirePerm)('i
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/linen/supplier-return-batches/:id', (0, auth_1.requirePerm)('inventory.view'), async (req, res) => {
+exports.router.get('/linen/supplier-return-batches/:id', (0, auth_1.requireAnyPerm)(['inventory_linen_returns.view', 'inventory.view']), async (req, res) => {
     var _a;
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
@@ -7779,7 +7786,7 @@ exports.router.get('/linen/supplier-return-batches/:id', (0, auth_1.requirePerm)
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.patch('/linen/supplier-return-batches/:id', (0, auth_1.requirePerm)('inventory.move'), async (req, res) => {
+exports.router.patch('/linen/supplier-return-batches/:id', (0, auth_1.requireAnyPerm)(['inventory_linen_returns.write', 'inventory.move']), async (req, res) => {
     const parsed = supplierReturnBatchSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -7901,7 +7908,7 @@ exports.router.patch('/linen/supplier-return-batches/:id', (0, auth_1.requirePer
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.delete('/linen/supplier-return-batches/:id', (0, auth_1.requirePerm)('inventory.move'), async (req, res) => {
+exports.router.delete('/linen/supplier-return-batches/:id', (0, auth_1.requireAnyPerm)(['inventory_linen_returns.delete', 'inventory.move']), async (req, res) => {
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
             return res.status(501).json({ message: 'not available without PG' });

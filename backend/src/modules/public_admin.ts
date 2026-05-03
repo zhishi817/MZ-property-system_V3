@@ -1,10 +1,11 @@
 import { Router } from 'express'
 import bcrypt from 'bcryptjs'
-import { requirePerm } from '../auth'
+import { requireAnyPerm } from '../auth'
 import { hasPg, pgPool, pgSelect, pgUpdate, pgInsert } from '../dbAdapter'
 import { decryptPublicAccessPassword, encryptPublicAccessPassword, hasPublicAccessPasswordKey } from '../lib/publicPasswordCrypto'
 
 export const router = Router()
+const requirePublicAccessManage = requireAnyPerm(['cms_public_access.manage', 'rbac.manage'])
 
 async function ensurePublicAccessTable() {
   if (!pgPool) return
@@ -32,7 +33,7 @@ function forbidMaintenanceStaff(req: any) {
   return false
 }
 
-router.get('/cleaning-guide/password-info', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/cleaning-guide/password-info', requirePublicAccessManage, async (_req, res) => {
   try {
     if (hasPg) {
       await ensurePublicAccessTable()
@@ -46,7 +47,7 @@ router.get('/cleaning-guide/password-info', requirePerm('rbac.manage'), async (_
   }
 })
 
-router.get('/cleaning-guide/current-password', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/cleaning-guide/current-password', requirePublicAccessManage, async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store')
   try {
     if (hasPg) {
@@ -66,7 +67,7 @@ router.get('/cleaning-guide/current-password', requirePerm('rbac.manage'), async
   }
 })
 
-router.get('/maintenance-share/password-info', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/maintenance-share/password-info', requirePublicAccessManage, async (_req, res) => {
   try {
     if (hasPg) {
       await ensurePublicAccessTable()
@@ -80,7 +81,7 @@ router.get('/maintenance-share/password-info', requirePerm('rbac.manage'), async
   }
 })
 
-router.get('/maintenance-share/current-password', requirePerm('rbac.manage'), async (req, res) => {
+router.get('/maintenance-share/current-password', requirePublicAccessManage, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store')
   if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' })
   try {
@@ -101,7 +102,7 @@ router.get('/maintenance-share/current-password', requirePerm('rbac.manage'), as
   }
 })
 
-router.get('/deep-cleaning-share/password-info', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/deep-cleaning-share/password-info', requirePublicAccessManage, async (_req, res) => {
   try {
     if (hasPg) {
       await ensurePublicAccessTable()
@@ -115,7 +116,7 @@ router.get('/deep-cleaning-share/password-info', requirePerm('rbac.manage'), asy
   }
 })
 
-router.get('/deep-cleaning-share/current-password', requirePerm('rbac.manage'), async (req, res) => {
+router.get('/deep-cleaning-share/current-password', requirePublicAccessManage, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store')
   if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' })
   try {
@@ -136,7 +137,7 @@ router.get('/deep-cleaning-share/current-password', requirePerm('rbac.manage'), 
   }
 })
 
-router.get('/deep-cleaning-upload/password-info', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/deep-cleaning-upload/password-info', requirePublicAccessManage, async (_req, res) => {
   try {
     if (hasPg) {
       await ensurePublicAccessTable()
@@ -150,7 +151,7 @@ router.get('/deep-cleaning-upload/password-info', requirePerm('rbac.manage'), as
   }
 })
 
-router.get('/deep-cleaning-upload/current-password', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/deep-cleaning-upload/current-password', requirePublicAccessManage, async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store')
   try {
     if (hasPg) {
@@ -170,7 +171,7 @@ router.get('/deep-cleaning-upload/current-password', requirePerm('rbac.manage'),
   }
 })
 
-router.get('/maintenance-progress/password-info', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/maintenance-progress/password-info', requirePublicAccessManage, async (_req, res) => {
   try {
     if (hasPg) {
       await ensurePublicAccessTable()
@@ -184,7 +185,7 @@ router.get('/maintenance-progress/password-info', requirePerm('rbac.manage'), as
   }
 })
 
-router.get('/maintenance-progress/current-password', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/maintenance-progress/current-password', requirePublicAccessManage, async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store')
   try {
     if (hasPg) {
@@ -204,7 +205,7 @@ router.get('/maintenance-progress/current-password', requirePerm('rbac.manage'),
   }
 })
 
-router.get('/company-expense/password-info', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/company-expense/password-info', requirePublicAccessManage, async (_req, res) => {
   try {
     if (hasPg) {
       await ensurePublicAccessTable()
@@ -218,7 +219,7 @@ router.get('/company-expense/password-info', requirePerm('rbac.manage'), async (
   }
 })
 
-router.get('/company-expense/current-password', requirePerm('rbac.manage'), async (req, res) => {
+router.get('/company-expense/current-password', requirePublicAccessManage, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store')
   if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' })
   try {
@@ -239,7 +240,7 @@ router.get('/company-expense/current-password', requirePerm('rbac.manage'), asyn
   }
 })
 
-router.get('/property-expense/password-info', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/property-expense/password-info', requirePublicAccessManage, async (_req, res) => {
   try {
     if (hasPg) {
       await ensurePublicAccessTable()
@@ -253,7 +254,7 @@ router.get('/property-expense/password-info', requirePerm('rbac.manage'), async 
   }
 })
 
-router.get('/property-expense/current-password', requirePerm('rbac.manage'), async (req, res) => {
+router.get('/property-expense/current-password', requirePublicAccessManage, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store')
   if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' })
   try {
@@ -274,7 +275,7 @@ router.get('/property-expense/current-password', requirePerm('rbac.manage'), asy
   }
 })
 
-router.get('/property-guide/password-info', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/property-guide/password-info', requirePublicAccessManage, async (_req, res) => {
   try {
     if (hasPg) {
       await ensurePublicAccessTable()
@@ -288,7 +289,7 @@ router.get('/property-guide/password-info', requirePerm('rbac.manage'), async (_
   }
 })
 
-router.get('/property-guide/current-password', requirePerm('rbac.manage'), async (_req, res) => {
+router.get('/property-guide/current-password', requirePublicAccessManage, async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store')
   try {
     if (hasPg) {
@@ -308,7 +309,7 @@ router.get('/property-guide/current-password', requirePerm('rbac.manage'), async
   }
 })
 
-router.post('/cleaning-guide/reset-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/cleaning-guide/reset-password', requirePublicAccessManage, async (req, res) => {
   const { new_password } = req.body || {}
   if (!new_password) return res.status(400).json({ message: 'missing new_password' })
   try {
@@ -333,7 +334,7 @@ router.post('/cleaning-guide/reset-password', requirePerm('rbac.manage'), async 
   }
 })
 
-router.post('/maintenance-share/reset-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/maintenance-share/reset-password', requirePublicAccessManage, async (req, res) => {
   const { new_password } = req.body || {}
   if (!new_password) return res.status(400).json({ message: 'missing new_password' })
   try {
@@ -362,7 +363,7 @@ router.post('/maintenance-share/reset-password', requirePerm('rbac.manage'), asy
   }
 })
 
-router.post('/deep-cleaning-share/reset-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/deep-cleaning-share/reset-password', requirePublicAccessManage, async (req, res) => {
   const { new_password } = req.body || {}
   if (!new_password) return res.status(400).json({ message: 'missing new_password' })
   try {
@@ -391,7 +392,7 @@ router.post('/deep-cleaning-share/reset-password', requirePerm('rbac.manage'), a
   }
 })
 
-router.post('/deep-cleaning-upload/reset-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/deep-cleaning-upload/reset-password', requirePublicAccessManage, async (req, res) => {
   const { new_password } = req.body || {}
   if (!new_password) return res.status(400).json({ message: 'missing new_password' })
   try {
@@ -420,7 +421,7 @@ router.post('/deep-cleaning-upload/reset-password', requirePerm('rbac.manage'), 
   }
 })
 
-router.post('/maintenance-progress/reset-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/maintenance-progress/reset-password', requirePublicAccessManage, async (req, res) => {
   const { new_password } = req.body || {}
   if (!new_password) return res.status(400).json({ message: 'missing new_password' })
   if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' })
@@ -446,7 +447,7 @@ router.post('/maintenance-progress/reset-password', requirePerm('rbac.manage'), 
   }
 })
 
-router.post('/company-expense/reset-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/company-expense/reset-password', requirePublicAccessManage, async (req, res) => {
   const { new_password } = req.body || {}
   if (!new_password) return res.status(400).json({ message: 'missing new_password' })
   if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' })
@@ -472,7 +473,7 @@ router.post('/company-expense/reset-password', requirePerm('rbac.manage'), async
   }
 })
 
-router.post('/property-expense/reset-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/property-expense/reset-password', requirePublicAccessManage, async (req, res) => {
   const { new_password } = req.body || {}
   if (!new_password) return res.status(400).json({ message: 'missing new_password' })
   if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' })
@@ -498,7 +499,7 @@ router.post('/property-expense/reset-password', requirePerm('rbac.manage'), asyn
   }
 })
 
-router.post('/property-guide/reset-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/property-guide/reset-password', requirePublicAccessManage, async (req, res) => {
   const { new_password } = req.body || {}
   const pwd = String(new_password || '')
   if (!pwd) return res.status(400).json({ message: 'missing new_password' })
@@ -526,14 +527,14 @@ router.post('/property-guide/reset-password', requirePerm('rbac.manage'), async 
   }
 })
 
-router.post('/cleaning-guide/clear-password', requirePerm('rbac.manage'), async (_req, res) => {
+router.post('/cleaning-guide/clear-password', requirePublicAccessManage, async (_req, res) => {
   try {
     if (hasPg) { await clearPublicAccess('cleaning'); return res.json({ ok: true }) }
     return res.status(500).json({ message: 'no database configured' })
   } catch (e: any) { return res.status(500).json({ message: e?.message || 'clear failed' }) }
 })
 
-router.post('/maintenance-share/clear-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/maintenance-share/clear-password', requirePublicAccessManage, async (req, res) => {
   try { if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' }) } catch {}
   try {
     if (hasPg) { await clearPublicAccess('maintenance_share'); return res.json({ ok: true }) }
@@ -541,7 +542,7 @@ router.post('/maintenance-share/clear-password', requirePerm('rbac.manage'), asy
   } catch (e: any) { return res.status(500).json({ message: e?.message || 'clear failed' }) }
 })
 
-router.post('/maintenance-progress/clear-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/maintenance-progress/clear-password', requirePublicAccessManage, async (req, res) => {
   try { if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' }) } catch {}
   try {
     if (hasPg) { await clearPublicAccess('maintenance_share'); return res.json({ ok: true }) }
@@ -549,7 +550,7 @@ router.post('/maintenance-progress/clear-password', requirePerm('rbac.manage'), 
   } catch (e: any) { return res.status(500).json({ message: e?.message || 'clear failed' }) }
 })
 
-router.post('/deep-cleaning-share/clear-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/deep-cleaning-share/clear-password', requirePublicAccessManage, async (req, res) => {
   try { if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' }) } catch {}
   try {
     if (hasPg) { await clearPublicAccess('deep_cleaning_share'); return res.json({ ok: true }) }
@@ -557,7 +558,7 @@ router.post('/deep-cleaning-share/clear-password', requirePerm('rbac.manage'), a
   } catch (e: any) { return res.status(500).json({ message: e?.message || 'clear failed' }) }
 })
 
-router.post('/deep-cleaning-upload/clear-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/deep-cleaning-upload/clear-password', requirePublicAccessManage, async (req, res) => {
   try { if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' }) } catch {}
   try {
     if (hasPg) { await clearPublicAccess('deep_cleaning_upload'); return res.json({ ok: true }) }
@@ -565,7 +566,7 @@ router.post('/deep-cleaning-upload/clear-password', requirePerm('rbac.manage'), 
   } catch (e: any) { return res.status(500).json({ message: e?.message || 'clear failed' }) }
 })
 
-router.post('/company-expense/clear-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/company-expense/clear-password', requirePublicAccessManage, async (req, res) => {
   try { if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' }) } catch {}
   try {
     if (hasPg) { await clearPublicAccess('company_expense'); return res.json({ ok: true }) }
@@ -573,7 +574,7 @@ router.post('/company-expense/clear-password', requirePerm('rbac.manage'), async
   } catch (e: any) { return res.status(500).json({ message: e?.message || 'clear failed' }) }
 })
 
-router.post('/property-expense/clear-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/property-expense/clear-password', requirePublicAccessManage, async (req, res) => {
   try { if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' }) } catch {}
   try {
     if (hasPg) { await clearPublicAccess('property_expense'); return res.json({ ok: true }) }
@@ -581,7 +582,7 @@ router.post('/property-expense/clear-password', requirePerm('rbac.manage'), asyn
   } catch (e: any) { return res.status(500).json({ message: e?.message || 'clear failed' }) }
 })
 
-router.post('/property-guide/clear-password', requirePerm('rbac.manage'), async (req, res) => {
+router.post('/property-guide/clear-password', requirePublicAccessManage, async (req, res) => {
   try { if (forbidMaintenanceStaff(req as any)) return res.status(403).json({ message: 'forbidden' }) } catch {}
   try {
     if (hasPg) { await clearPublicAccess('property_guide'); return res.json({ ok: true }) }

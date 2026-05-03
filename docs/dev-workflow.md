@@ -9,6 +9,7 @@
 ## Default Ports
 
 - Frontend: `3000`
+- Booking frontend: `3004`
 - Backend: `4002`
 
 ## Auto Reload

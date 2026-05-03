@@ -459,6 +459,8 @@ exports.router.delete('/offline-tasks/:id', (0, auth_1.requirePerm)('cleaning.sc
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureOfflineTasksTable();
             await dbAdapter_1.pgPool.query('DELETE FROM cleaning_offline_tasks WHERE id=$1', [String(id)]);
+            await ensureWorkTasksTable();
+            await dbAdapter_1.pgPool.query('DELETE FROM work_tasks WHERE source_type=$1 AND source_id=$2', ['cleaning_offline_tasks', String(id)]);
             return res.json({ ok: true });
         }
         const rows = (store_1.db.cleaningOfflineTasks || []);
@@ -1542,10 +1544,23 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                 }
             }
             await ensureOfflineTasksTable();
-            const r2 = await dbAdapter_1.pgPool.query(`SELECT id, date::text AS date, title, status, urgency, property_id, assignee_id
-         FROM cleaning_offline_tasks
-         WHERE (date::date) >= ($1::date) AND (date::date) <= ($2::date)
-         ORDER BY date ASC, property_id NULLS LAST, id`, [from, to]);
+            const r2 = await dbAdapter_1.pgPool.query(`SELECT
+           t.id,
+           t.date::text AS date,
+           t.task_type,
+           t.title,
+           t.content,
+           t.status,
+           t.urgency,
+           t.property_id,
+           t.assignee_id,
+           COALESCE(p_id.code::text, p_code.code::text) AS property_code,
+           COALESCE(p_id.region::text, p_code.region::text) AS property_region
+         FROM cleaning_offline_tasks t
+         LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+         LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+         WHERE (t.date::date) >= ($1::date) AND (t.date::date) <= ($2::date)
+         ORDER BY t.date ASC, t.property_id NULLS LAST, t.id`, [from, to]);
             for (const row of ((r2 === null || r2 === void 0 ? void 0 : r2.rows) || [])) {
                 items.push({
                     source: 'offline_tasks',
@@ -1553,14 +1568,16 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                     order_id: null,
                     order_code: null,
                     property_id: row.property_id ? String(row.property_id) : null,
-                    property_code: null,
-                    property_region: null,
-                    task_type: null,
+                    property_code: row.property_code ? String(row.property_code) : null,
+                    property_region: row.property_region ? String(row.property_region) : null,
+                    task_type: row.task_type ? String(row.task_type) : null,
                     label: String(row.title || 'offline_task'),
+                    content: row.content != null ? String(row.content || '') : null,
                     task_date: String(row.date || '').slice(0, 10),
                     status: String(row.status || 'pending'),
                     assignee_id: row.assignee_id ? String(row.assignee_id) : null,
                     scheduled_at: null,
+                    urgency: row.urgency ? String(row.urgency) : 'medium',
                     old_code: null,
                     new_code: null,
                     nights: null,
@@ -1654,20 +1671,23 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
             const d = String(t.date || '').slice(0, 10);
             if (d < from || d > to)
                 continue;
+            const prop = store_1.db.properties.find((p) => String(p.id) === String(t.property_id || '')) || null;
             items.push({
                 source: 'offline_tasks',
                 entity_id: String(t.id),
                 order_id: null,
                 order_code: null,
                 property_id: t.property_id ? String(t.property_id) : null,
-                property_code: null,
-                property_region: null,
-                task_type: null,
+                property_code: (prop === null || prop === void 0 ? void 0 : prop.code) ? String(prop.code) : null,
+                property_region: (prop === null || prop === void 0 ? void 0 : prop.region) ? String(prop.region) : null,
+                task_type: t.task_type ? String(t.task_type) : null,
                 label: String(t.title || 'offline_task'),
+                content: t.content != null ? String(t.content || '') : null,
                 task_date: d,
                 status: String(t.status || 'pending'),
                 assignee_id: t.assignee_id ? String(t.assignee_id) : null,
                 scheduled_at: null,
+                urgency: t.urgency ? String(t.urgency) : 'medium',
                 old_code: null,
                 new_code: null,
                 nights: null,

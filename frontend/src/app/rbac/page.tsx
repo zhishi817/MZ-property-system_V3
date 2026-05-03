@@ -1,10 +1,10 @@
 "use client"
-import { Alert, Card, Table, Drawer, Space, Button, Select, message, Modal, Form, Input, Checkbox, Typography, Tag, Collapse, Tree, Empty, Divider, Radio, ColorPicker } from 'antd'
+import { Alert, Card, Table, Drawer, Space, Button, Select, message, Modal, Form, Input, Checkbox, Typography, Tag, Collapse, Radio, ColorPicker } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import { API_BASE, authHeaders } from '../../lib/api'
 import { preloadRolePerms } from '../../lib/auth'
 import { hasPerm } from '../../lib/auth'
-import { MENU_PERMISSION_INDEX, MENU_PERMISSION_TREE, buildMenuKeySet, buildPermToMenuIndex, findMenuNode, findMenuPathLabels } from './rbacMenuMap'
+import { MENU_PERMISSION_INDEX, MENU_PERMISSION_ROWS, MENU_PERMISSION_TREE, buildMenuKeySet, buildPermToMenuIndex } from './rbacMenuMap'
 
 type Role = { id: string; name: string; description?: string }
 type RiskLevel = 'low' | 'medium' | 'high'
@@ -43,9 +43,7 @@ export default function RBACPage() {
   const [pwForm] = Form.useForm()
   const [savedSnapshot, setSavedSnapshot] = useState<string[]>([])
   const [menuCheckedKeys, setMenuCheckedKeys] = useState<string[]>([])
-  const [menuExpandedKeys, setMenuExpandedKeys] = useState<string[]>([])
   const [menuSearch, setMenuSearch] = useState<string>('')
-  const [activeMenuKey, setActiveMenuKey] = useState<string>('')
   const [advancedSearch, setAdvancedSearch] = useState<string>('')
 
   useEffect(() => {
@@ -98,32 +96,6 @@ export default function RBACPage() {
     return <Tag style={{ border: '1px solid', ...styleBy[lv] }}>{v.text}</Tag>
   }
 
-  function renderPermDetail(p: Permission) {
-    const m = p.meta
-    if (!m) return null
-    const list = (items?: string[]) => (
-      <ul style={{ margin: 0, paddingInlineStart: 18 }}>
-        {(items || []).map((x, i) => <li key={i}>{x}</li>)}
-      </ul>
-    )
-    return (
-      <div style={{ padding: 12 }}>
-        <Typography.Title level={5} style={{ margin: 0 }}>权限信息</Typography.Title>
-        <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-          <div><Typography.Text strong>权限代码：</Typography.Text><Typography.Text>{m.code}</Typography.Text></div>
-          <div><Typography.Text strong>风险等级：</Typography.Text>{riskTag(m.riskLevel)}</div>
-          <div>
-            <Typography.Text strong>功能说明：</Typography.Text>
-            <Typography.Paragraph style={{ marginBottom: 0 }}>{m.purpose}</Typography.Paragraph>
-          </div>
-          <div><Typography.Text strong>使用场景：</Typography.Text>{list(m.scenarios)}</div>
-          <div><Typography.Text strong>拒绝影响：</Typography.Text>{list(m.denyImpact)}</div>
-          <div><Typography.Text strong>隐私/安全风险：</Typography.Text>{list(m.privacyRisk)}</div>
-        </div>
-      </div>
-    )
-  }
-
   const [drawerWidth, setDrawerWidth] = useState<number>(980)
   useEffect(() => {
     function update() {
@@ -145,23 +117,6 @@ export default function RBACPage() {
         <Typography.Text type="secondary" style={{ fontSize: 12, wordBreak: 'break-all' }}>{code}</Typography.Text>
       </div>
     )
-  }
-
-  const permColumns: any[] = [
-    { title: '权限名称', width: 360, render: (_: any, r: any) => permTitleCell(r) },
-    { title: '风险', dataIndex: ['meta', 'riskLevel'], width: 100, render: (v: any) => riskTag(v) },
-    {
-      title: '说明',
-      dataIndex: ['meta', 'purpose'],
-      width: 520,
-      render: (v: any) => <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }} ellipsis={{ rows: 2 }}>{String(v || '')}</Typography.Paragraph>,
-    },
-  ]
-
-  function groupUpdate(groupCodes: string[], nextSelectedCodes: string[]) {
-    const groupSet = new Set(groupCodes)
-    const unique = Array.from(new Set(nextSelectedCodes))
-    setSelectedPerms((prev) => [...prev.filter((c) => !groupSet.has(c)), ...unique])
   }
 
   function dedupeBySynonyms(list: Permission[]) {
@@ -194,7 +149,6 @@ export default function RBACPage() {
   async function edit(role: Role) {
     setCurrent(role)
     setOpen(true)
-    setActiveMenuKey('')
     setMenuSearch('')
     setAdvancedSearch('')
     const rp = await fetch(`${API_BASE}/rbac/role-permissions?role_id=${role.id}`).then(r => r.json())
@@ -212,9 +166,7 @@ export default function RBACPage() {
     setSelectedPerms(initial)
     setSavedSnapshot(list)
     const menuKeySet = buildMenuKeySet(MENU_PERMISSION_TREE)
-    const allTreeKeys = Object.keys(MENU_PERMISSION_INDEX)
     setMenuCheckedKeys(initial.filter((c) => menuKeySet.has(String(c || ''))))
-    setMenuExpandedKeys(allTreeKeys)
   }
 
   async function doSave() {
@@ -412,15 +364,14 @@ export default function RBACPage() {
   const canManage = mounted && hasPerm('rbac.manage')
 
   const menuKeySet = useMemo(() => buildMenuKeySet(MENU_PERMISSION_TREE), [])
-  const allMenuTreeKeys = useMemo(() => Object.keys(MENU_PERMISSION_INDEX), [])
   const permToMenuIndex = useMemo(() => buildPermToMenuIndex(MENU_PERMISSION_TREE), [])
-  const mappedPermSet = useMemo(() => new Set(Object.keys(permToMenuIndex)), [permToMenuIndex])
+  const menuIndex = useMemo(() => MENU_PERMISSION_INDEX, [])
 
-  const permByCode: Record<string, Permission> = (() => {
+  const permByCode: Record<string, Permission> = useMemo(() => {
     const m: Record<string, Permission> = {}
     perms.forEach((p) => { if (p?.code) m[String(p.code)] = p })
     return m
-  })()
+  }, [perms])
 
   function humanizeCode(code: string) {
     const raw = String(code || '').trim()
@@ -451,6 +402,67 @@ export default function RBACPage() {
 
   function isHighRiskCode(code: string) {
     return getRiskLevel(code) === 'high'
+  }
+
+  function stripRiskSuffix(name: string) {
+    return String(name || '').replace(/（[^）]*高危[^）]*）/g, '').replace(/\([^)]*high[^)]*\)/gi, '').trim()
+  }
+
+  function formatActionLabel(code: string) {
+    const fixed: Record<string, string> = {
+      'order.confirm_payment': '确认收款',
+      'order.deduction.manage': '扣款管理',
+      'order.cancel': '取消订单',
+      'invoice.draft.create': '创建草稿',
+      'invoice.issue': '开票',
+      'invoice.send': '发送',
+      'invoice.void': '作废',
+      'invoice.payment.record': '付款记录',
+      'invoice.company.manage': '公司管理',
+      'invoice.type.switch': '发票类型',
+      'users.password.reset': '重置密码',
+      'cleaning_app.assign': '指派',
+      'cleaning_app.ready.set': 'Ready 状态',
+      'cleaning_app.restock.manage': '补货管理',
+      'cleaning_app.sse.subscribe': '实时订阅',
+      'cleaning_app.push.subscribe': '推送订阅',
+      'cleaning_app.media.upload': '上传媒体',
+      'cleaning_app.issues.report': '上报问题',
+      'cleaning_app.tasks.start': '开始任务',
+      'cleaning_app.tasks.finish': '完成任务',
+      'cleaning_app.inspect.finish': '完成检查',
+      'cleaning_app.calendar.view.all': '查看全部',
+      'cleaning_app.tasks.view.self': '查看本人',
+      'inventory.po.manage': '采购管理',
+      'inventory.move': '库存操作',
+      'inventory_linen_deliveries.archive': '作废',
+      'inventory_daily_deliveries.archive': '作废',
+      'inventory_consumable_deliveries.archive': '作废',
+      'inventory_other_deliveries.archive': '作废',
+      'company_secret_items.view': '查看机密项',
+      'company_secret_items.write': '编辑机密项',
+      'company_secret_items.delete': '删除机密项',
+      'cms_public_access.manage': '外链密码',
+      'keyset.manage': '钥匙管理',
+      'key.flow': '钥匙流转',
+      'finance.tx.write': '编辑',
+      'finance.payout': '结算/打款',
+      'rbac.manage': '权限管理',
+      'landlord.manage': '管理',
+      'onboarding.read': '查看',
+      'onboarding.manage': '管理',
+    }
+    if (fixed[code]) return fixed[code]
+    if (/\.(view|read)$/i.test(code) || /\.view\./i.test(code) || /\.read\./i.test(code)) return '查看'
+    if (/\.create$/i.test(code) || /\.create\./i.test(code)) return '新增'
+    if (/\.write$/i.test(code) || /\.write\./i.test(code)) return '编辑'
+    if (/\.delete$/i.test(code)) return '删除'
+    if (/\.archive$/i.test(code)) return '归档'
+    if (/\.manage$/i.test(code) || /\.manage\./i.test(code)) return '管理'
+    const display = stripRiskSuffix(getDisplayName(code))
+    const suffix = display.split(/[：:]/).slice(1).join('：').trim()
+    if (suffix && suffix.length <= 12) return suffix
+    return '允许'
   }
 
   function isMenuCode(code: string) {
@@ -509,53 +521,13 @@ export default function RBACPage() {
     return false
   }
 
-  function classifyAction(code: string) {
-    const c = String(code || '')
-    if (!c) return '流程动作'
-    if (/\.(view|read)$/i.test(c) || /\.view\./i.test(c) || /\.read\./i.test(c)) return '查看'
-    if (/\.create$/i.test(c) || /\.create\./i.test(c)) return '新增'
-    if (/\.write$/i.test(c) || /\.write\./i.test(c) || /\.manage$/i.test(c) || /\.manage\./i.test(c)) return '编辑'
-    if (/\.delete$/i.test(c)) return '删除'
-    if (/\.archive$/i.test(c)) return '归档'
-    return '流程动作'
-  }
-
-  const menuTreeData: any[] = useMemo(() => {
-    function build(nodes: any[]): any[] {
-      return nodes.map((node) => ({
-        key: node.key,
-        title: node.label,
-        selectable: true,
-        disabled: false,
-        disableCheckbox: !node.checkable,
-        children: node.children ? build(node.children) : undefined,
-      }))
-    }
-    return build(MENU_PERMISSION_TREE as any)
-  }, [])
-
-  const filteredMenuTreeData: any[] = useMemo(() => {
-    const q = String(menuSearch || '').trim().toLowerCase()
-    if (!q) return menuTreeData
-    function filter(nodes: any[]): any[] {
-      const out: any[] = []
-      nodes.forEach((n) => {
-        const title = String(n.title || '').toLowerCase()
-        const children = Array.isArray(n.children) ? filter(n.children) : []
-        if (title.includes(q) || children.length) out.push({ ...n, children: children.length ? children : undefined })
-      })
-      return out
-    }
-    return filter(menuTreeData)
-  }, [menuTreeData, menuSearch])
-
-  const mappedPermsAll = useMemo(() => {
+  const mappedPermsAll = (() => {
     const s = new Set<string>()
     Object.keys(permToMenuIndex).forEach((k) => s.add(k))
     return s
-  }, [permToMenuIndex])
+  })()
 
-  const unmappedRows = useMemo(() => {
+  const unmappedRows = (() => {
     const q = String(advancedSearch || '').trim().toLowerCase()
     const list = dedupeBySynonyms(perms
       .filter((p) => {
@@ -573,9 +545,7 @@ export default function RBACPage() {
       const cc = String(r.code || '').toLowerCase()
       return dn.includes(q) || cc.includes(q)
     })
-  }, [advancedSearch, perms, mappedPermsAll])
-
-  const unmappedCodes = useMemo(() => unmappedRows.map((r: any) => String(r.code)), [unmappedRows])
+  })()
 
   useEffect(() => {
     if (!open || !current?.id) return
@@ -585,8 +555,6 @@ export default function RBACPage() {
       window.localStorage.setItem(key, JSON.stringify({ roleId: current.id, perms: selectedPerms, dirty, updatedAt: Date.now() }))
     } catch {}
   }, [open, current?.id, selectedPerms, savedSnapshot])
-
-  const menuIndex = useMemo(() => MENU_PERMISSION_INDEX, [])
 
   function getAncestors(key: string) {
     const out: string[] = []
@@ -614,7 +582,7 @@ export default function RBACPage() {
     return kids.some((k) => checkedSet.has(k) || hasAnyCheckedChild(k, checkedSet))
   }
 
-  const halfCheckedKeys = useMemo(() => {
+  const halfCheckedKeys = (() => {
     const checkedSet = new Set(menuCheckedKeys)
     const half: string[] = []
     Object.values(menuIndex).forEach((n) => {
@@ -624,7 +592,7 @@ export default function RBACPage() {
       if (anyChild && !allChild && !checkedSet.has(n.key)) half.push(n.key)
     })
     return half
-  }, [menuCheckedKeys, menuIndex])
+  })()
 
   function confirmMenuHideOrRemove(keys: string[]) {
     const labels = keys.map((k) => menuIndex[k]?.label || k)
@@ -709,28 +677,11 @@ export default function RBACPage() {
 
   useEffect(() => {
     if (!open) return
-    const fromSelected = selectedPerms.filter((c) => isMenuCode(c))
+    const fromSelected = selectedPerms.filter((c) => menuKeySet.has(String(c || '')))
     const a = JSON.stringify(fromSelected.slice().sort())
     const b = JSON.stringify(menuCheckedKeys.slice().sort())
     if (a !== b) setMenuCheckedKeys(fromSelected)
-  }, [open, selectedPerms, menuCheckedKeys])
-
-  const activeNode = activeMenuKey ? findMenuNode(MENU_PERMISSION_TREE, activeMenuKey) : null
-  const activePath = activeMenuKey ? findMenuPathLabels(MENU_PERMISSION_TREE, activeMenuKey) : []
-  const activePerms = (activeNode?.perms || []).map((x) => String(x || '')).filter(Boolean)
-  const permsByAction = useMemo(() => {
-    const map: Record<string, string[]> = {}
-    activePerms.forEach((p) => {
-      const act = classifyAction(p)
-      map[act] = map[act] || []
-      map[act].push(p)
-    })
-    const order = ['查看', '新增', '编辑', '删除', '归档', '流程动作']
-    const out: Record<string, string[]> = {}
-    order.forEach((k) => { if (map[k]?.length) out[k] = map[k] })
-    Object.keys(map).forEach((k) => { if (!out[k]) out[k] = map[k] })
-    return out
-  }, [activePerms.join('|')])
+  }, [open, selectedPerms, menuCheckedKeys, menuKeySet])
 
   async function setAllMenusVisible(checked: boolean) {
     if (checked) {
@@ -742,7 +693,6 @@ export default function RBACPage() {
         perms.forEach((p) => { if (isViewLike(p) && !isHighRiskCode(p)) selectedSet.add(p) })
       })
       setMenuCheckedKeys(allKeys)
-      setMenuExpandedKeys(allKeys)
       setSelectedPerms(canonicalizePerms(Array.from(selectedSet)))
       return
     }
@@ -763,6 +713,36 @@ export default function RBACPage() {
     setMenuCheckedKeys([])
     setSelectedPerms(canonicalizePerms(Array.from(selectedSet)))
   }
+
+  const matrixRows = (() => {
+    const q = String(menuSearch || '').trim().toLowerCase()
+    const filtered = MENU_PERMISSION_ROWS.filter((row) => {
+      if (!q) return true
+      const label = String(row.label || '').toLowerCase()
+      const path = String(row.pathText || '').toLowerCase()
+      return label.includes(q) || path.includes(q)
+    })
+    return filtered.map((row) => {
+      const actionCodes = canonicalizePerms(row.perms)
+      return {
+        ...row,
+        actionCodes,
+        actionItems: actionCodes.map((code) => ({
+          code,
+          label: formatActionLabel(code),
+          riskLevel: getRiskLevel(code),
+          purpose: getPurpose(code),
+          displayName: getDisplayName(code),
+        })),
+      }
+    })
+  })()
+
+  const menuSelectionSummary = (() => {
+    const visibleCount = menuCheckedKeys.length
+    const actionCount = selectedPerms.filter((code) => !isMenuCode(code)).length
+    return { visibleCount, actionCount }
+  })()
 
   return (
     <Card
@@ -788,142 +768,195 @@ export default function RBACPage() {
         style={{ maxWidth: '98vw' }}
         styles={{ body: { padding: 12 } }}
       >
-        <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 12, alignItems: 'start' }}>
-          <Card size="small" title="菜单（入口权限）" styles={{ body: { padding: 10 } }}>
-            <div style={{ display: 'grid', gap: 10 }}>
-              <Input
-                placeholder="搜索菜单"
-                value={menuSearch}
-                onChange={(e) => {
-                  const v = e.target.value
-                  setMenuSearch(v)
-                  if (v) setMenuExpandedKeys(allMenuTreeKeys)
+        <div style={{ display: 'grid', gap: 12 }}>
+          <Card size="small" title="菜单权限矩阵" styles={{ body: { padding: 12 } }}>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <Alert
+                type="info"
+                showIcon
+                message="按菜单逐行配置"
+                description="勾选任一操作权限时，会自动勾选该行菜单可见。取消“可见”时，你可以选择仅隐藏入口，或同时移除该菜单下的操作权限。"
+              />
+              <div style={{ display: 'flex', gap: 12, justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                <Input
+                  placeholder="搜索菜单或路径"
+                  value={menuSearch}
+                  onChange={(e) => setMenuSearch(e.target.value)}
+                  style={{ maxWidth: 360 }}
+                />
+                <Space wrap>
+                  <Tag bordered={false} color="blue">已显示 {menuSelectionSummary.visibleCount}</Tag>
+                  <Tag bordered={false} color="geekblue">已授权 {menuSelectionSummary.actionCount}</Tag>
+                  <Button size="small" onClick={() => { setAllMenusVisible(true).catch(() => {}) }}>全部显示</Button>
+                  <Button size="small" onClick={() => { setAllMenusVisible(false).catch(() => {}) }}>全部隐藏</Button>
+                </Space>
+              </div>
+              <Table
+                size="small"
+                rowKey={(r) => String((r as any).key)}
+                dataSource={matrixRows as any}
+                pagination={{ pageSize: 18, showSizeChanger: true }}
+                scroll={{ x: 960 }}
+                columns={[
+                  {
+                    title: '菜单 / 页面',
+                    width: 360,
+                    render: (_: any, row: any) => (
+                      <div style={{ display: 'grid', gap: 4, paddingLeft: row.depth ? row.depth * 14 : 0 }}>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <Typography.Text strong>{row.label}</Typography.Text>
+                          {row.depth > 0 ? <Tag>{`L${row.depth + 1}`}</Tag> : null}
+                          {row.actionItems?.length ? null : <Tag color="default">仅入口</Tag>}
+                        </div>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          {row.pathText}
+                        </Typography.Text>
+                      </div>
+                    ),
+                  },
+                  {
+                    title: '可见',
+                    width: 100,
+                    align: 'center',
+                    render: (_: any, row: any) => (
+                      <Checkbox
+                        checked={menuCheckedKeys.includes(String(row.key))}
+                        indeterminate={halfCheckedKeys.includes(String(row.key))}
+                        onChange={(e) => { toggleMenuVisibility(String(row.key), e.target.checked).catch(() => {}) }}
+                      />
+                    ),
+                  },
+                  {
+                    title: '可执行操作',
+                    render: (_: any, row: any) => (
+                      row.actionItems?.length ? (
+                        <div
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                            gap: 10,
+                            alignItems: 'stretch',
+                          }}
+                        >
+                          {row.actionItems.map((item: any) => {
+                            const checked = has(String(item.code))
+                            const high = item.riskLevel === 'high'
+                            return (
+                              <label
+                                key={item.code}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                  gap: 8,
+                                  width: '100%',
+                                  minHeight: 40,
+                                  padding: '7px 12px',
+                                  boxSizing: 'border-box',
+                                  border: `1px solid ${checked ? '#91caff' : '#f0f0f0'}`,
+                                  borderRadius: 12,
+                                  background: checked ? '#f0f7ff' : '#fff',
+                                  cursor: 'pointer',
+                                }}
+                                title={item.purpose}
+                              >
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                                  <Checkbox
+                                    checked={checked}
+                                    onChange={async (e) => {
+                                      const next = e.target.checked
+                                      if (next && !menuCheckedKeys.includes(String(row.key))) {
+                                        await toggleMenuVisibility(String(row.key), true, { skipPrompt: true })
+                                      }
+                                      await setChecked(String(item.code), next)
+                                    }}
+                                  />
+                                  <Typography.Text ellipsis style={{ minWidth: 0 }}>{item.label}</Typography.Text>
+                                </span>
+                                {high ? <span style={{ flexShrink: 0 }}>{riskTag(item.riskLevel)}</span> : null}
+                              </label>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <Typography.Text type="secondary">该项仅控制菜单入口显示</Typography.Text>
+                      )
+                    ),
+                  },
+                ]}
+                expandable={{
+                  expandedRowRender: (row: any) => (
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      <Typography.Text type="secondary">权限路径：{row.pathText}</Typography.Text>
+                      {row.actionItems?.length ? (
+                        <div style={{ display: 'grid', gap: 6 }}>
+                          {row.actionItems.map((item: any) => (
+                            <div key={item.code} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                              <div style={{ display: 'grid', gap: 2 }}>
+                                <Typography.Text strong>{item.label}</Typography.Text>
+                                <Typography.Text type="secondary" style={{ fontSize: 12 }}>{item.displayName}</Typography.Text>
+                                <Typography.Text type="secondary" style={{ fontSize: 12 }}>{item.purpose}</Typography.Text>
+                              </div>
+                              {riskTag(item.riskLevel)}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <Typography.Text type="secondary">没有绑定额外动作权限。</Typography.Text>
+                      )}
+                    </div>
+                  ),
+                  rowExpandable: (row: any) => !!row.actionItems?.length,
                 }}
               />
-              <Space wrap>
-                <Button size="small" onClick={() => setMenuExpandedKeys(allMenuTreeKeys)}>展开</Button>
-                <Button size="small" onClick={() => setMenuExpandedKeys([])}>折叠</Button>
-                <Button size="small" onClick={() => { setAllMenusVisible(true).catch(() => {}) }}>全选</Button>
-                <Button size="small" onClick={() => { setAllMenusVisible(false).catch(() => {}) }}>反选</Button>
-              </Space>
-              <Tree
-                checkable
-                selectable
-                checkStrictly
-                expandedKeys={menuExpandedKeys}
-                onExpand={(keys) => setMenuExpandedKeys((keys as any[]).map((k) => String(k)))}
-                checkedKeys={{ checked: menuCheckedKeys, halfChecked: halfCheckedKeys }}
-                onCheck={(_, info: any) => {
-                  const k = String(info?.node?.key || '')
-                  const c = !!info?.checked
-                  toggleMenuVisibility(k, c).catch(() => {})
-                }}
-                selectedKeys={activeMenuKey ? [activeMenuKey] : []}
-                onSelect={(keys) => setActiveMenuKey(String((keys as any[])[0] || ''))}
-                treeData={filteredMenuTreeData as any}
+              <Collapse
+                defaultActiveKey={[]}
+                items={[
+                  {
+                    key: 'advanced',
+                    label: '未映射权限（高级）',
+                    children: (
+                      <div style={{ display: 'grid', gap: 10 }}>
+                        <Typography.Text type="secondary">仅展示低/中风险且未进入菜单矩阵的权限；高风险权限仍通过对应菜单项授予。</Typography.Text>
+                        <Input
+                          placeholder="搜索未映射权限"
+                          value={advancedSearch}
+                          onChange={(e) => setAdvancedSearch(e.target.value)}
+                        />
+                        <Table
+                          size="small"
+                          rowKey={(r) => String((r as any).code)}
+                          dataSource={unmappedRows as any}
+                          pagination={{ pageSize: 10, showSizeChanger: true }}
+                          tableLayout="fixed"
+                          columns={[
+                            { title: '权限', width: 360, render: (_: any, r: any) => permTitleCell(r) },
+                            { title: '风险', width: 110, render: (_: any, r: any) => riskTag(getRiskLevel(String(r.code))) },
+                            {
+                              title: '启用',
+                              width: 90,
+                              align: 'center',
+                              render: (_: any, r: any) => (
+                                <Checkbox
+                                  checked={has(String(r.code))}
+                                  onChange={(e) => { setChecked(String(r.code), e.target.checked).catch(() => {}) }}
+                                />
+                              ),
+                            },
+                          ]}
+                        />
+                      </div>
+                    ),
+                  },
+                ]}
               />
-              <Typography.Text type="secondary">菜单层仅控制是否可见/是否能进入，不包含任何操作权限。</Typography.Text>
             </div>
           </Card>
 
-          <Card
-            size="small"
-            title={activePath.length ? `${activePath[activePath.length - 1]} · 可执行操作` : '可执行操作'}
-            extra={activePath.length ? <Typography.Text type="secondary">{activePath.join(' > ')}</Typography.Text> : null}
-            styles={{ body: { padding: 12 } }}
-          >
-            {!activeMenuKey ? (
-              <Empty description="请选择左侧子菜单查看可执行操作" />
-            ) : !activePerms.length ? (
-              <Empty description="该菜单未配置可执行操作（未在 MENU_PERMISSION_MAP 中声明 perms）" />
-            ) : (
-              <div style={{ display: 'grid', gap: 12 }}>
-                <Alert type="info" showIcon message="提示" description="这里展示的是“行为/操作权限”。菜单本身只控制入口可见性。" />
-                {Object.entries(permsByAction).map(([action, list]) => (
-                  <div key={action}>
-                    <Typography.Text strong>{action}</Typography.Text>
-                    <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-                      {list.map((code) => {
-                        const high = isHighRiskCode(code)
-                        const label = getDisplayName(code)
-                        const purpose = getPurpose(code)
-                        return (
-                          <div key={code} style={{ display: 'grid', gap: 4, padding: 10, border: '1px solid #f0f0f0', borderRadius: 8 }}>
-                            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', justifyContent: 'space-between' }}>
-                              <Checkbox
-                                checked={has(code)}
-                                onChange={async (e) => {
-                                  const next = e.target.checked
-                                  if (next && activeMenuKey && !menuCheckedKeys.includes(activeMenuKey)) {
-                                    await toggleMenuVisibility(activeMenuKey, true, { skipPrompt: true })
-                                  }
-                                  await setChecked(code, next)
-                                }}
-                              >
-                                <Typography.Text strong>{high ? `🔒 ${label}` : label}</Typography.Text>
-                              </Checkbox>
-                              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                                {riskTag(getRiskLevel(code))}
-                              </div>
-                            </div>
-                            <Typography.Text type="secondary">{purpose}</Typography.Text>
-                          </div>
-                        )
-                      })}
-                    </div>
-                    <Divider style={{ margin: '12px 0' }} />
-                  </div>
-                ))}
-
-                <Collapse
-                  defaultActiveKey={[]}
-                  items={[
-                    {
-                      key: 'advanced',
-                      label: '未映射权限（高级）',
-                      children: (
-                        <div style={{ display: 'grid', gap: 10 }}>
-                          <Typography.Text type="secondary">仅展示低/中风险权限；高风险权限不进入该区域。</Typography.Text>
-                          <Input
-                            placeholder="搜索未映射权限"
-                            value={advancedSearch}
-                            onChange={(e) => setAdvancedSearch(e.target.value)}
-                          />
-                          <Table
-                            size="small"
-                            rowKey={(r) => String((r as any).code)}
-                            dataSource={unmappedRows as any}
-                            pagination={{ pageSize: 10, showSizeChanger: true }}
-                            tableLayout="fixed"
-                            columns={[
-                              { title: '权限', width: 360, render: (_: any, r: any) => permTitleCell(r) },
-                              { title: '风险', width: 110, render: (_: any, r: any) => riskTag(getRiskLevel(String(r.code))) },
-                              {
-                                title: '启用',
-                                width: 90,
-                                align: 'center',
-                                render: (_: any, r: any) => (
-                                  <Checkbox
-                                    checked={has(String(r.code))}
-                                    onChange={(e) => { setChecked(String(r.code), e.target.checked).catch(() => {}) }}
-                                  />
-                                ),
-                              },
-                            ]}
-                          />
-                        </div>
-                      ),
-                    },
-                  ]}
-                />
-              </div>
-            )}
-
-            <Space style={{ marginTop: 12 }}>
-              <Button type="primary" onClick={() => { doSave().catch(() => {}) }}>保存</Button>
-              <Button onClick={() => setOpen(false)}>取消</Button>
-            </Space>
-          </Card>
+          <Space>
+            <Button type="primary" onClick={() => { doSave().catch(() => {}) }}>保存</Button>
+            <Button onClick={() => setOpen(false)}>取消</Button>
+          </Space>
         </div>
       </Drawer>
       <Modal open={userOpen} onCancel={() => setUserOpen(false)} onOk={submitUser} title="新建用户">
