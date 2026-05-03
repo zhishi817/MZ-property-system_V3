@@ -51,21 +51,30 @@ function validateAndApplyInspectionPatch(params: {
     throw err
   }
   const nextMode = requestedMode || currentMode || defaultInspectionModeForTaskType(taskType)
+  const nextInspectorId = patch.inspector_id !== undefined ? patch.inspector_id : current?.inspector_id
+  if (
+    patch.inspection_mode === undefined &&
+    String(nextInspectorId || '').trim() &&
+    nextMode === 'pending_decision'
+  ) {
+    patch.inspection_mode = 'same_day'
+  }
   const nextDue = patch.inspection_due_date !== undefined ? dayOnly(patch.inspection_due_date) : dayOnly(current?.inspection_due_date)
-  if (nextMode === 'deferred' && !nextDue) {
+  const finalMode = patch.inspection_mode !== undefined ? patch.inspection_mode : nextMode
+  if (finalMode === 'deferred' && !nextDue) {
     const err: any = new Error('inspection_due_date_required')
     err.statusCode = 400
     err.exposeMessage = '延后检查必须选择检查日期'
     throw err
   }
-  if (patch.inspection_mode !== undefined) patch.inspection_mode = nextMode
-  if (patch.inspection_due_date !== undefined || nextMode !== 'deferred') {
-    patch.inspection_due_date = nextMode === 'deferred' ? nextDue : null
+  if (patch.inspection_mode !== undefined && patch.inspection_mode !== finalMode) patch.inspection_mode = finalMode
+  if (patch.inspection_due_date !== undefined || finalMode !== 'deferred') {
+    patch.inspection_due_date = finalMode === 'deferred' ? nextDue : null
   }
-  if ((patch.inspection_mode !== undefined || patch.inspection_due_date !== undefined) && (nextMode === 'pending_decision' || nextMode === 'self_complete') && patch.inspector_id === undefined) {
+  if ((patch.inspection_mode !== undefined || patch.inspection_due_date !== undefined) && (finalMode === 'pending_decision' || finalMode === 'self_complete') && patch.inspector_id === undefined) {
     patch.inspector_id = null
   }
-  return { inspection_mode: nextMode, inspection_due_date: nextMode === 'deferred' ? nextDue : null }
+  return { inspection_mode: finalMode, inspection_due_date: finalMode === 'deferred' ? nextDue : null }
 }
 
 function offlineWorkTaskId(taskId: string) {
