@@ -16,7 +16,8 @@
     "db:fix-email-year-v2": "ts-node-dev --transpile-only scripts/fix_email_orders_year_v2.ts",
     "db:alter-email-meta": "ts-node-dev --transpile-only scripts/run_alter_orders_email_meta.ts",
     "test:cleaning-rules": "ts-node-dev --transpile-only scripts/tests/test_cleaning_rules.ts",
-    "test:orders-overlap": "ts-node-dev --transpile-only scripts/tests/test_orders_overlap.ts"
+    "test:orders-overlap": "ts-node-dev --transpile-only scripts/tests/test_orders_overlap.ts",
+    "test:auto-expense-source-summary": "ts-node-dev --transpile-only scripts/tests/test_auto_expense_source_summary.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.670.0",

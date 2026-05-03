@@ -25,6 +25,7 @@ import { countPhotoUrls, loadMonthlyStatementPhotoRows, recordHasPhotoUrls } fro
 import { ensureManagementFeeRulesTable, resolveManagementFeeRateForMonth } from '../lib/managementFeeRules'
 import { generateStatementPhotoPackPdf, type StatementPhotoPackSection } from '../lib/monthlyStatementPhotoPack'
 import { collectMonthlyInvoiceAttachments } from '../lib/monthlyStatementInvoiceAttachments'
+import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -252,68 +253,6 @@ function autoComputeDeepCleaningTotalCost(laborCostRaw: any, consumablesRaw: any
   return Math.round((total + Number.EPSILON) * 100) / 100
 }
 
-function autoToSummaryText(v: any, maxLen = 260): string {
-  try {
-    if (v === null || v === undefined) return ''
-    const s = typeof v === 'string' ? v.trim() : JSON.stringify(v)
-    return String(s || '').trim().slice(0, maxLen)
-  } catch {
-    return String(v || '').trim().slice(0, maxLen)
-  }
-}
-
-function autoParseMaybeJson(v: any): any {
-  if (typeof v !== 'string') return v
-  const s = v.trim()
-  if (!s) return ''
-  const head = s[0]
-  if (head !== '{' && head !== '[') return s
-  try { return JSON.parse(s) } catch { return s }
-}
-
-function autoPickSummaryFromDetails(detailsRaw: any): string {
-  const v = autoParseMaybeJson(detailsRaw)
-  if (!v) return ''
-  if (Array.isArray(v)) {
-    for (const it of v) {
-      const c = autoToSummaryText((it as any)?.content)
-      if (c) return c
-      const i = autoToSummaryText((it as any)?.item)
-      if (i) return i
-      const s = autoToSummaryText(it)
-      if (s) return s
-    }
-    return ''
-  }
-  if (typeof v === 'object') {
-    const c = autoToSummaryText((v as any)?.content)
-    if (c) return c
-    const i = autoToSummaryText((v as any)?.item)
-    if (i) return i
-  }
-  return autoToSummaryText(v)
-}
-
-function autoMaintenanceIssueSummary(row: any): string {
-  const invoiceDesc = autoToSummaryText(row?.invoice_description_en)
-  if (invoiceDesc) return invoiceDesc
-  const a = autoPickSummaryFromDetails(row?.details)
-  if (a) return a
-  const b = autoToSummaryText(row?.repair_notes)
-  if (b) return b
-  return ''
-}
-
-function autoDeepCleaningProjectSummary(row: any): string {
-  const invoiceDesc = autoToSummaryText(row?.invoice_description_en)
-  if (invoiceDesc) return invoiceDesc
-  const a = autoToSummaryText(row?.project_desc)
-  if (a) return a
-  const b = autoPickSummaryFromDetails(row?.details)
-  if (b) return b
-  return autoToSummaryText(row?.notes)
-}
-
 async function autoHasManualOverrideForRef(executor: any, refType: string, refId: string): Promise<boolean> {
   try {
     const r = await executor.query(
@@ -529,7 +468,7 @@ async function collectAutoExpenseSourceItems(executor: any, input: { from: strin
   const propertyIdFilter = String(input.propertyIdFilter || '').trim()
   if (input.type === 'all' || input.type === 'maintenance') {
     const mt = await executor.query(
-      `SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes
+      `SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, invoice_description_en
          FROM property_maintenance
         WHERE coalesce(completed_at::date, occurred_at) BETWEEN $1::date AND $2::date
           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
@@ -541,7 +480,7 @@ async function collectAutoExpenseSourceItems(executor: any, input: { from: strin
   }
   if (input.type === 'all' || input.type === 'deep_cleaning') {
     const dc = await executor.query(
-      `SELECT id, property_id, status, pay_method, work_no, total_cost, labor_cost, consumables, completed_at, occurred_at, created_at, project_desc, details, notes
+      `SELECT id, property_id, status, pay_method, work_no, total_cost, labor_cost, consumables, completed_at, occurred_at, created_at, project_desc, details, notes, invoice_description_en
          FROM property_deep_cleaning
         WHERE coalesce(completed_at::date, occurred_at, created_at::date) BETWEEN $1::date AND $2::date
           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
@@ -621,7 +560,7 @@ router.post('/auto-expenses/backfill', requireAnyPerm(['finance.tx.write','prope
           const workNo = String(r?.work_no || refId)
           return workNo ? `深度清洁 ${workNo}` : categoryDetail
         })()
-        const sourceSummary = it.kind === 'maintenance' ? autoMaintenanceIssueSummary(r) : autoDeepCleaningProjectSummary(r)
+        const sourceSummary = it.kind === 'maintenance' ? maintenanceSourceSummary(r) : deepCleaningSourceSummary(r)
 
         const voidBothAuto = async () => {
           const v1 = await client.query(

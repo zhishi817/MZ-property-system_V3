@@ -4,6 +4,7 @@ import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransacti
 import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } from '../fingerprint'
 import { db, addAudit } from '../store'
 import { normalizeUrlList } from '../lib/normalizeUrlList'
+import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
 
 const router = Router()
 // Supabase removed
@@ -74,58 +75,6 @@ function monthKeyFromDateOnly(d: string | null): string | null {
   return `${d.slice(0, 4)}-${d.slice(5, 7)}`
 }
 
-function toSummaryText(v: any, maxLen = 260): string {
-  try {
-    if (v === null || v === undefined) return ''
-    const s = typeof v === 'string' ? v.trim() : JSON.stringify(v)
-    return String(s || '').trim().slice(0, maxLen)
-  } catch {
-    return String(v || '').trim().slice(0, maxLen)
-  }
-}
-
-function parseMaybeJson(v: any): any {
-  if (typeof v !== 'string') return v
-  const s = v.trim()
-  if (!s) return ''
-  const head = s[0]
-  if (head !== '{' && head !== '[') return s
-  try { return JSON.parse(s) } catch { return s }
-}
-
-function pickSummaryFromDetails(detailsRaw: any): string {
-  const v = parseMaybeJson(detailsRaw)
-  if (!v) return ''
-  if (Array.isArray(v)) {
-    for (const it of v) {
-      const c = toSummaryText((it as any)?.content)
-      if (c) return c
-      const i = toSummaryText((it as any)?.item)
-      if (i) return i
-      const s = toSummaryText(it)
-      if (s) return s
-    }
-    return ''
-  }
-  if (typeof v === 'object') {
-    const c = toSummaryText((v as any)?.content)
-    if (c) return c
-    const i = toSummaryText((v as any)?.item)
-    if (i) return i
-  }
-  return toSummaryText(v)
-}
-
-function maintenanceIssueSummary(row: any): string {
-  const invoiceDesc = toSummaryText(row?.invoice_description_en)
-  if (invoiceDesc) return invoiceDesc
-  const a = pickSummaryFromDetails(row?.details)
-  if (a) return a
-  const b = toSummaryText(row?.repair_notes)
-  if (b) return b
-  return ''
-}
-
 function normalizeMaintenanceArea(...values: any[]): string {
   for (const value of values) {
     const s = String(value || '').trim()
@@ -139,16 +88,6 @@ function normalizeMaintenanceDetailsValue(raw: any): string {
   if (typeof raw === 'string') return raw
   try { return JSON.stringify(raw) } catch {}
   return String(raw)
-}
-
-function deepCleaningProjectSummary(row: any): string {
-  const invoiceDesc = toSummaryText(row?.invoice_description_en)
-  if (invoiceDesc) return invoiceDesc
-  const a = toSummaryText(row?.project_desc)
-  if (a) return a
-  const b = pickSummaryFromDetails(row?.details)
-  if (b) return b
-  return toSummaryText(row?.notes)
 }
 
 function toNum(v: any): number {
@@ -703,7 +642,7 @@ async function syncAutoExpensesForSourceRowWithClient(client: any, kind: 'mainte
         const workNo = String(row?.work_no || refId)
         return workNo ? `深度清洁 ${workNo}` : '深度清洁'
       })()
-  const sourceSummary = kind === 'maintenance' ? maintenanceIssueSummary(row) : deepCleaningProjectSummary(row)
+  const sourceSummary = kind === 'maintenance' ? maintenanceSourceSummary(row) : deepCleaningSourceSummary(row)
   const generatedFrom = refId
 
   await ensureAutoExpenseSchema(client)
