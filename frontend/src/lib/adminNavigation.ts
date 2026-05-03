@@ -592,6 +592,38 @@ export const ADMIN_NAVIGATION: AdminNavNode[] = [
     ],
   },
   {
+    id: 'guest-site',
+    label: '预定网站',
+    visibleWhenAny: ['menu.guest_site'],
+    rbacKey: 'menu.guest_site',
+    children: [
+      {
+        id: 'guest-site-settings',
+        label: '站点设置',
+        href: '/guest-site/settings',
+        visibleWhenAny: ['menu.guest_site.settings.visible'],
+        rbacKey: 'menu.guest_site.settings.visible',
+        actionPerms: ['guest_site_settings.view', 'guest_site_settings.write'],
+      },
+      {
+        id: 'guest-site-properties',
+        label: '房源展示',
+        href: '/guest-site/properties',
+        visibleWhenAny: ['menu.guest_site.properties.visible'],
+        rbacKey: 'menu.guest_site.properties.visible',
+        actionPerms: ['guest_site_properties.view', 'guest_site_properties.write'],
+      },
+      {
+        id: 'guest-site-inquiries',
+        label: '询单管理',
+        href: '/guest-site/inquiries',
+        visibleWhenAny: ['menu.guest_site.inquiries.visible'],
+        rbacKey: 'menu.guest_site.inquiries.visible',
+        actionPerms: ['guest_site_inquiries.view', 'guest_site_inquiries.write'],
+      },
+    ],
+  },
+  {
     id: 'inventory-audits',
     label: '操作日志',
     href: '/inventory/audits',

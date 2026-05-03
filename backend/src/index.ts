@@ -42,6 +42,7 @@ import recurringRouter from './modules/recurring'
 import { router as invoicesRouter } from './modules/invoices'
 import { router as cmsCompanyRouter } from './modules/cms_company'
 import { router as cmsCompanySecretsRouter } from './modules/cms_company_secrets'
+import { publicRouter as guestSitePublicRouter, adminRouter as guestSiteAdminRouter } from './modules/guest_site'
 import { runKeyUploadReminder } from './lib/keyUploadReminderJob'
 import { runKeyUploadSlaCheck } from './lib/keyUploadSlaJob'
 import { runDayEndHandoverReminder } from './lib/dayEndHandoverReminderJob'
@@ -281,6 +282,7 @@ app.get('/__routes', (_req, res) => {
   }
 })
 app.use('/public', auth, publicAdminRouter)
+app.use('/public', guestSitePublicRouter)
 app.use('/public', publicRouter)
 app.use(auth)
 const uploadDir = path.join(process.cwd(), 'uploads')
@@ -325,6 +327,7 @@ app.use('/onboarding', propertyOnboardingRouter)
 app.use('/invoices', invoicesRouter)
 app.use('/cms', cmsCompanyRouter)
 app.use('/cms', cmsCompanySecretsRouter)
+app.use('/cms', guestSiteAdminRouter)
 
 process.on('unhandledRejection', (reason: any) => {
   try {

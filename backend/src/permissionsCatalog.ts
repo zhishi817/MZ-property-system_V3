@@ -31,6 +31,9 @@ const resourceNames: Record<string, string> = {
   property_deep_cleaning: '深度清洁',
   property_guides: '入住指南',
   company_secret_items: '内部机密项',
+  guest_site_settings: '客人网站设置',
+  guest_site_properties: '客人网站房源展示',
+  guest_site_inquiries: '客人网站询单',
   inventory_linen_purchase_orders: '床品采购记录',
   inventory_linen_deliveries: '床品配送记录',
   inventory_linen_usage: '床品使用记录',
@@ -61,6 +64,7 @@ const moduleNames: Record<string, string> = {
   cleaning: '清洁管理',
   rbac: '角色权限',
   cms: 'CMS',
+  guest_site: 'Guest Website',
   onboarding: 'Onboarding',
 }
 

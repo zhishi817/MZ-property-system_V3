@@ -35,7 +35,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   }
   const [collapsed, setCollapsed] = useState(false)
   const isLogin = pathname.startsWith('/login')
-  const isPublic = pathname.startsWith('/public')
+  const isPublic = /^\/public(\/|$)/.test(pathname)
   const [role, setRole] = useState<string | null>(null)
   const [username, setUsername] = useState<string | null>(null)
   const [mounted, setMounted] = useState(false)
@@ -136,7 +136,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     if (id === 'keys') return <KeyOutlined />
     if (id === 'finance') return <DollarOutlined />
     if (id === 'cleaning') return <CalendarOutlined />
-    if (id === 'cms') return <ShopOutlined />
+    if (id === 'cms' || id === 'guest-site') return <ShopOutlined />
     return <ProfileOutlined />
   }
 

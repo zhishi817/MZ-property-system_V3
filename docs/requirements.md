@@ -122,7 +122,8 @@
 
 ## 部署与运行（开发）
 - 后端：`npm run dev`（`backend` 目录），健康检查 `GET /health`
-- 前端：`npm run dev`（`frontend` 目录），访问 `http://localhost:3000`
+- 后台前端：`npm run dev`（`frontend` 目录），访问 `http://localhost:3000`
+- 预定网站前端：`npm run dev`（`booking-frontend` 目录），访问 `http://localhost:3004`
 
 ## 迭代计划与开放事项
 - 将库存与财务模块完全切换为 Supabase/PG 数据源（当前部分为内存）。

@@ -464,6 +464,7 @@ if (db.roles.length === 0) {
     { code: 'menu.rbac' },
     { code: 'menu.cms' },
     { code: 'menu.onboarding' },
+    { code: 'menu.guest_site' },
     // submenu visibles
     { code: 'menu.properties.list.visible' },
     { code: 'menu.properties.keys.visible' },
@@ -482,6 +483,15 @@ if (db.roles.length === 0) {
     { code: 'menu.cleaning.overview.visible' },
     { code: 'menu.cleaning.task_center.visible' },
     { code: 'menu.cleaning.daily.visible' },
+    { code: 'menu.guest_site.settings.visible' },
+    { code: 'menu.guest_site.properties.visible' },
+    { code: 'menu.guest_site.inquiries.visible' },
+    { code: 'guest_site_settings.view' },
+    { code: 'guest_site_settings.write' },
+    { code: 'guest_site_properties.view' },
+    { code: 'guest_site_properties.write' },
+    { code: 'guest_site_inquiries.view' },
+    { code: 'guest_site_inquiries.write' },
     { code: 'cleaning_app.tasks.view.self' },
     { code: 'cleaning_app.tasks.start' },
     { code: 'cleaning_app.tasks.finish' },
@@ -509,7 +519,7 @@ if (db.roles.length === 0) {
   // 管理员：所有权限
   grant(adminId, db.permissions.map(p => p.code))
   // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
-  grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','order.cancel','cleaning.view','finance.tx.write','invoice.view','invoice.draft.create','onboarding.manage','onboarding.read','menu.dashboard','menu.properties','menu.finance','menu.finance.invoices.visible','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.cms','menu.onboarding','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload'])
+  grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','order.cancel','cleaning.view','finance.tx.write','invoice.view','invoice.draft.create','onboarding.manage','onboarding.read','menu.dashboard','menu.properties','menu.finance','menu.finance.invoices.visible','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.cms','menu.onboarding','menu.guest_site','menu.guest_site.settings.visible','menu.guest_site.properties.visible','menu.guest_site.inquiries.visible','guest_site_settings.view','guest_site_settings.write','guest_site_properties.view','guest_site_properties.write','guest_site_inquiries.view','guest_site_inquiries.write','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 线下运营：可在 App 管理页进入任务详情、提交房源问题反馈并上传证据
   grant(offlineMgrId, ['menu.dashboard','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','cleaning.view','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）
@@ -578,7 +588,7 @@ const defaultPerms = [
   'cms_public_access.manage',
   'rbac.manage',
   'users.password.reset',
-  'menu.dashboard','menu.landlords','menu.properties','menu.keys','menu.inventory','menu.finance','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.rbac','menu.cms'
+  'menu.dashboard','menu.landlords','menu.properties','menu.keys','menu.inventory','menu.finance','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.rbac','menu.cms','menu.guest_site','menu.guest_site.settings.visible','menu.guest_site.properties.visible','menu.guest_site.inquiries.visible','guest_site_settings.view','guest_site_settings.write','guest_site_properties.view','guest_site_properties.write','guest_site_inquiries.view','guest_site_inquiries.write'
 ]
 defaultPerms.forEach((code) => { if (!db.permissions.find(p => p.code === code)) db.permissions.push({ code }) })
 
@@ -611,7 +621,7 @@ if (adminRole) {
 
 // granular CRUD resource permissions
 const resources = [
-  'properties','landlords','orders','cleaning_tasks','finance_transactions','company_expenses','property_expenses','fixed_expenses','company_incomes','property_incomes','recurring_payments','cms_pages','payouts','company_payouts','users','property_maintenance','property_deep_cleaning','order_import_staging','property_guides','company_secret_items'
+  'properties','landlords','orders','cleaning_tasks','finance_transactions','company_expenses','property_expenses','fixed_expenses','company_incomes','property_incomes','recurring_payments','cms_pages','payouts','company_payouts','users','property_maintenance','property_deep_cleaning','order_import_staging','property_guides','company_secret_items','guest_site_properties','guest_site_settings','guest_site_inquiries'
 ]
 resources.forEach(r => {
   const viewCode = `${r}.view`
