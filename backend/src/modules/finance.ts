@@ -85,13 +85,26 @@ function monthRangeISO(monthKey: string): { start: string; end: string } | null 
 
 function dateOnlyForOrderSegment(raw: any): any {
   if (raw == null || raw === '') return raw
-  if (raw instanceof Date && !Number.isNaN(raw.getTime())) return raw.toISOString().slice(0, 10)
   const s = String(raw || '').trim()
-  const m = s.match(/^(\d{4}-\d{2}-\d{2})/)
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})$/)
   if (m) return m[1]
-  const d = new Date(s)
-  if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10)
+  const d = raw instanceof Date && !Number.isNaN(raw.getTime()) ? raw : new Date(s)
+  if (!Number.isNaN(d.getTime())) return formatMelbourneDate(d)
   return raw
+}
+
+function formatMelbourneDate(d: Date): string {
+  const parts = new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Australia/Melbourne',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d)
+  const get = (type: string) => parts.find((p) => p.type === type)?.value || ''
+  const y = get('year')
+  const m = get('month')
+  const day = get('day')
+  return y && m && day ? `${y}-${m}-${day}` : d.toISOString().slice(0, 10)
 }
 
 function normalizeOrdersForMonthSegments(rows: any[]) {

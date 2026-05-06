@@ -99,6 +99,38 @@ function monthRangeISO(monthKey) {
     const end = new Date(Date.UTC(y, mo, 1));
     return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
 }
+function dateOnlyForOrderSegment(raw) {
+    if (raw == null || raw === '')
+        return raw;
+    const s = String(raw || '').trim();
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})$/);
+    if (m)
+        return m[1];
+    const d = raw instanceof Date && !Number.isNaN(raw.getTime()) ? raw : new Date(s);
+    if (!Number.isNaN(d.getTime()))
+        return formatMelbourneDate(d);
+    return raw;
+}
+function formatMelbourneDate(d) {
+    const parts = new Intl.DateTimeFormat('en-AU', {
+        timeZone: 'Australia/Melbourne',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).formatToParts(d);
+    const get = (type) => { var _a; return ((_a = parts.find((p) => p.type === type)) === null || _a === void 0 ? void 0 : _a.value) || ''; };
+    const y = get('year');
+    const m = get('month');
+    const day = get('day');
+    return y && m && day ? `${y}-${m}-${day}` : d.toISOString().slice(0, 10);
+}
+function normalizeOrdersForMonthSegments(rows) {
+    return (Array.isArray(rows) ? rows : []).map((o) => ({
+        ...o,
+        checkin: dateOnlyForOrderSegment(o === null || o === void 0 ? void 0 : o.checkin),
+        checkout: dateOnlyForOrderSegment(o === null || o === void 0 ? void 0 : o.checkout),
+    }));
+}
 exports.router.get('/', async (req, res) => {
     try {
         if (dbAdapter_1.hasPg) {
@@ -407,7 +439,7 @@ async function ensureAutoExpenseSchema(client) {
     await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_title text;');
     await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_summary text;');
     await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;");
-    await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_month ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';");
+    await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_expense_month_key ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';");
     await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;');
     await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;');
     await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;');
@@ -2505,8 +2537,9 @@ exports.router.get('/rent-segments', (0, auth_1.requireAnyPerm)(['finance.payout
             return res.status(400).json({ message: 'missing property_id' });
         if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
             return res.status(400).json({ message: 'pg required' });
-        const ordersRs = await dbAdapter_2.pgPool.query('SELECT * FROM orders WHERE property_id = $1 AND checkin < $3::date AND checkout > $2::date', [property_id, m.start, m.nextStart]);
-        const orders = ordersRs.rows || [];
+        const orderSegmentCols = 'id, property_id, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income, confirmation_code, guest_name, source, channel, created_at, updated_at';
+        const ordersRs = await dbAdapter_2.pgPool.query(`SELECT ${orderSegmentCols} FROM orders WHERE property_id = $1 AND checkin < $3::date AND checkout > $2::date`, [property_id, m.start, m.nextStart]);
+        const orders = normalizeOrdersForMonthSegments(ordersRs.rows || []);
         const ids = orders.map((o) => String(o.id || '')).filter(Boolean);
         const totals = {};
         if (ids.length) {
@@ -2534,8 +2567,9 @@ exports.router.get('/rent-income-by-property', (0, auth_1.requireAnyPerm)(['fina
             return res.status(400).json({ message: 'invalid month' });
         if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
             return res.status(400).json({ message: 'pg required' });
-        const ordersRs = await dbAdapter_2.pgPool.query('SELECT * FROM orders WHERE property_id IS NOT NULL AND checkin < $2::date AND checkout > $1::date', [m.start, m.nextStart]);
-        const orders = ordersRs.rows || [];
+        const orderSegmentCols = 'id, property_id, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income';
+        const ordersRs = await dbAdapter_2.pgPool.query(`SELECT ${orderSegmentCols} FROM orders WHERE property_id IS NOT NULL AND checkin < $2::date AND checkout > $1::date`, [m.start, m.nextStart]);
+        const orders = normalizeOrdersForMonthSegments(ordersRs.rows || []);
         const ids = orders.map((o) => String(o.id || '')).filter(Boolean);
         const totals = {};
         if (ids.length) {
