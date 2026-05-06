@@ -83,6 +83,25 @@ function monthRangeISO(monthKey: string): { start: string; end: string } | null 
   return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) }
 }
 
+function dateOnlyForOrderSegment(raw: any): any {
+  if (raw == null || raw === '') return raw
+  if (raw instanceof Date && !Number.isNaN(raw.getTime())) return raw.toISOString().slice(0, 10)
+  const s = String(raw || '').trim()
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/)
+  if (m) return m[1]
+  const d = new Date(s)
+  if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10)
+  return raw
+}
+
+function normalizeOrdersForMonthSegments(rows: any[]) {
+  return (Array.isArray(rows) ? rows : []).map((o: any) => ({
+    ...o,
+    checkin: dateOnlyForOrderSegment(o?.checkin),
+    checkout: dateOnlyForOrderSegment(o?.checkout),
+  }))
+}
+
 router.get('/', async (req, res) => {
   try {
     if (hasPg) {
@@ -2300,7 +2319,7 @@ router.get('/rent-segments', requireAnyPerm(['finance.payout', 'finance.tx.write
       `SELECT ${orderSegmentCols} FROM orders WHERE property_id = $1 AND checkin < $3::date AND checkout > $2::date`,
       [property_id, m.start, m.nextStart]
     )
-    const orders: any[] = ordersRs.rows || []
+    const orders: any[] = normalizeOrdersForMonthSegments(ordersRs.rows || [])
     const ids = orders.map((o) => String(o.id || '')).filter(Boolean)
     const totals: Record<string, number> = {}
     if (ids.length) {
@@ -2332,7 +2351,7 @@ router.get('/rent-income-by-property', requireAnyPerm(['finance.payout', 'financ
       `SELECT ${orderSegmentCols} FROM orders WHERE property_id IS NOT NULL AND checkin < $2::date AND checkout > $1::date`,
       [m.start, m.nextStart]
     )
-    const orders: any[] = ordersRs.rows || []
+    const orders: any[] = normalizeOrdersForMonthSegments(ordersRs.rows || [])
     const ids = orders.map((o) => String(o.id || '')).filter(Boolean)
     const totals: Record<string, number> = {}
     if (ids.length) {
