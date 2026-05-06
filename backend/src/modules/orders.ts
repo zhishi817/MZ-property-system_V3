@@ -11,11 +11,28 @@ export const router = Router()
 
 function dayOnly(s?: any): string | undefined {
   if (!s) return undefined
-  if (s instanceof Date && isFinite(s.getTime())) return s.toISOString().slice(0, 10)
   const raw = String(s).trim()
   if (!raw) return undefined
+  const exact = /^\d{4}-\d{2}-\d{2}$/.exec(raw)
+  if (exact) return exact[0]
+  const d = s instanceof Date && isFinite(s.getTime()) ? s : new Date(raw)
+  if (!Number.isNaN(d.getTime())) return formatMelbourneDate(d)
   const m = /^\d{4}-\d{2}-\d{2}/.exec(raw)
   return m ? m[0] : undefined
+}
+
+function formatMelbourneDate(d: Date): string {
+  const parts = new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Australia/Melbourne',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d)
+  const get = (type: string) => parts.find((p) => p.type === type)?.value || ''
+  const y = get('year')
+  const m = get('month')
+  const day = get('day')
+  return y && m && day ? `${y}-${m}-${day}` : d.toISOString().slice(0, 10)
 }
 
 function isInactiveOrderStatus(v: any): boolean {

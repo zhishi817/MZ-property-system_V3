@@ -660,7 +660,7 @@ function onServerListening() {
         try {
             const enabled = String(process.env.CLEANING_SYNC_JOBS_ENABLED || 'true').toLowerCase() === 'true';
             if (enabled && dbAdapter_1.hasPg) {
-                const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '*/1 * * * *');
+                const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '*/5 * * * *');
                 console.log(`[cleaning-sync-jobs][schedule] enabled cron=${expr}`);
                 let inFlight = false;
                 const task = node_cron_1.default.schedule(expr, async () => {
@@ -690,8 +690,9 @@ function onServerListening() {
                             limit: Math.min(20, Number(process.env.CLEANING_SYNC_JOBS_BATCH || 10)),
                             reclaim_timeout_minutes: reclaimTimeoutMinutes,
                         });
+                        const hadActivity = (Number((r === null || r === void 0 ? void 0 : r.processed) || 0) > 0) || (Number((r === null || r === void 0 ? void 0 : r.failed) || 0) > 0) || (Number((r === null || r === void 0 ? void 0 : r.reclaimed) || 0) > 0);
                         try {
-                            if (jr === null || jr === void 0 ? void 0 : jr.id) {
+                            if ((jr === null || jr === void 0 ? void 0 : jr.id) && hadActivity) {
                                 const { finishJobRun } = require('./services/jobRuns');
                                 await finishJobRun({
                                     id: String(jr.id),
@@ -702,9 +703,13 @@ function onServerListening() {
                                     result: r,
                                 });
                             }
+                            else if (jr === null || jr === void 0 ? void 0 : jr.id) {
+                                const { deleteJobRun } = require('./services/jobRuns');
+                                await deleteJobRun(String(jr.id));
+                            }
                         }
                         catch (_c) { }
-                        if (((r === null || r === void 0 ? void 0 : r.processed) || 0) > 0 || ((r === null || r === void 0 ? void 0 : r.failed) || 0) > 0 || ((r === null || r === void 0 ? void 0 : r.reclaimed) || 0) > 0) {
+                        if (hadActivity) {
                             console.log(`[cleaning-sync-jobs][schedule] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0} reclaimed=${r.reclaimed || 0}`);
                         }
                     }
@@ -730,6 +735,32 @@ function onServerListening() {
         }
         catch (e) {
             console.error(`[cleaning-sync-jobs][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+        }
+    })();
+    (async () => {
+        try {
+            const enabled = String(process.env.JOB_RUNS_PRUNE_ENABLED || 'true').toLowerCase() === 'true';
+            if (!enabled || !dbAdapter_1.hasPg) {
+                console.log('[job-runs][prune] disabled');
+                return;
+            }
+            const expr = String(process.env.JOB_RUNS_PRUNE_CRON || '35 3 * * *');
+            const task = node_cron_1.default.schedule(expr, async () => {
+                try {
+                    const { pruneJobRuns } = require('./services/jobRuns');
+                    const r = await pruneJobRuns();
+                    if (Number((r === null || r === void 0 ? void 0 : r.deleted) || 0) > 0)
+                        console.log(`[job-runs][prune] deleted=${Number(r.deleted || 0)} keep_days=${Number(r.keep_days || 0)}`);
+                }
+                catch (e) {
+                    console.error(`[job-runs][prune] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                }
+            }, { scheduled: true });
+            task.start();
+            console.log(`[job-runs][prune] enabled cron=${expr}`);
+        }
+        catch (e) {
+            console.error(`[job-runs][prune] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
         }
     })();
     (async () => {

@@ -29,6 +29,7 @@ const monthlyStatementPhotoRecords_1 = require("../lib/monthlyStatementPhotoReco
 const managementFeeRules_1 = require("../lib/managementFeeRules");
 const monthlyStatementPhotoPack_1 = require("../lib/monthlyStatementPhotoPack");
 const monthlyStatementInvoiceAttachments_1 = require("../lib/monthlyStatementInvoiceAttachments");
+const autoExpenseSourceSummary_1 = require("../lib/autoExpenseSourceSummary");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -97,6 +98,38 @@ function monthRangeISO(monthKey) {
     const start = new Date(Date.UTC(y, mo - 1, 1));
     const end = new Date(Date.UTC(y, mo, 1));
     return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+}
+function dateOnlyForOrderSegment(raw) {
+    if (raw == null || raw === '')
+        return raw;
+    const s = String(raw || '').trim();
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})$/);
+    if (m)
+        return m[1];
+    const d = raw instanceof Date && !Number.isNaN(raw.getTime()) ? raw : new Date(s);
+    if (!Number.isNaN(d.getTime()))
+        return formatMelbourneDate(d);
+    return raw;
+}
+function formatMelbourneDate(d) {
+    const parts = new Intl.DateTimeFormat('en-AU', {
+        timeZone: 'Australia/Melbourne',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).formatToParts(d);
+    const get = (type) => { var _a; return ((_a = parts.find((p) => p.type === type)) === null || _a === void 0 ? void 0 : _a.value) || ''; };
+    const y = get('year');
+    const m = get('month');
+    const day = get('day');
+    return y && m && day ? `${y}-${m}-${day}` : d.toISOString().slice(0, 10);
+}
+function normalizeOrdersForMonthSegments(rows) {
+    return (Array.isArray(rows) ? rows : []).map((o) => ({
+        ...o,
+        checkin: dateOnlyForOrderSegment(o === null || o === void 0 ? void 0 : o.checkin),
+        checkout: dateOnlyForOrderSegment(o === null || o === void 0 ? void 0 : o.checkout),
+    }));
 }
 exports.router.get('/', async (req, res) => {
     try {
@@ -300,85 +333,6 @@ function autoComputeDeepCleaningTotalCost(laborCostRaw, consumablesRaw) {
     const total = labor + sum;
     return Math.round((total + Number.EPSILON) * 100) / 100;
 }
-function autoToSummaryText(v, maxLen = 260) {
-    try {
-        if (v === null || v === undefined)
-            return '';
-        const s = typeof v === 'string' ? v.trim() : JSON.stringify(v);
-        return String(s || '').trim().slice(0, maxLen);
-    }
-    catch (_a) {
-        return String(v || '').trim().slice(0, maxLen);
-    }
-}
-function autoParseMaybeJson(v) {
-    if (typeof v !== 'string')
-        return v;
-    const s = v.trim();
-    if (!s)
-        return '';
-    const head = s[0];
-    if (head !== '{' && head !== '[')
-        return s;
-    try {
-        return JSON.parse(s);
-    }
-    catch (_a) {
-        return s;
-    }
-}
-function autoPickSummaryFromDetails(detailsRaw) {
-    const v = autoParseMaybeJson(detailsRaw);
-    if (!v)
-        return '';
-    if (Array.isArray(v)) {
-        for (const it of v) {
-            const c = autoToSummaryText(it === null || it === void 0 ? void 0 : it.content);
-            if (c)
-                return c;
-            const i = autoToSummaryText(it === null || it === void 0 ? void 0 : it.item);
-            if (i)
-                return i;
-            const s = autoToSummaryText(it);
-            if (s)
-                return s;
-        }
-        return '';
-    }
-    if (typeof v === 'object') {
-        const c = autoToSummaryText(v === null || v === void 0 ? void 0 : v.content);
-        if (c)
-            return c;
-        const i = autoToSummaryText(v === null || v === void 0 ? void 0 : v.item);
-        if (i)
-            return i;
-    }
-    return autoToSummaryText(v);
-}
-function autoMaintenanceIssueSummary(row) {
-    const invoiceDesc = autoToSummaryText(row === null || row === void 0 ? void 0 : row.invoice_description_en);
-    if (invoiceDesc)
-        return invoiceDesc;
-    const a = autoPickSummaryFromDetails(row === null || row === void 0 ? void 0 : row.details);
-    if (a)
-        return a;
-    const b = autoToSummaryText(row === null || row === void 0 ? void 0 : row.repair_notes);
-    if (b)
-        return b;
-    return '';
-}
-function autoDeepCleaningProjectSummary(row) {
-    const invoiceDesc = autoToSummaryText(row === null || row === void 0 ? void 0 : row.invoice_description_en);
-    if (invoiceDesc)
-        return invoiceDesc;
-    const a = autoToSummaryText(row === null || row === void 0 ? void 0 : row.project_desc);
-    if (a)
-        return a;
-    const b = autoPickSummaryFromDetails(row === null || row === void 0 ? void 0 : row.details);
-    if (b)
-        return b;
-    return autoToSummaryText(row === null || row === void 0 ? void 0 : row.notes);
-}
 async function autoHasManualOverrideForRef(executor, refType, refId) {
     var _a, _b;
     try {
@@ -485,7 +439,7 @@ async function ensureAutoExpenseSchema(client) {
     await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_title text;');
     await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_summary text;');
     await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;");
-    await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_month ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';");
+    await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_expense_month_key ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';");
     await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;');
     await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;');
     await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;');
@@ -580,7 +534,7 @@ async function collectAutoExpenseSourceItems(executor, input) {
     const items = [];
     const propertyIdFilter = String(input.propertyIdFilter || '').trim();
     if (input.type === 'all' || input.type === 'maintenance') {
-        const mt = await executor.query(`SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes
+        const mt = await executor.query(`SELECT id, property_id, status, pay_method, work_no, maintenance_amount, has_parts, parts_amount, maintenance_amount_includes_parts, has_gst, maintenance_amount_includes_gst, total_amount, completed_at, occurred_at, created_at, details, repair_notes, invoice_description_en
          FROM property_maintenance
         WHERE coalesce(completed_at::date, occurred_at) BETWEEN $1::date AND $2::date
           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
@@ -590,7 +544,7 @@ async function collectAutoExpenseSourceItems(executor, input) {
             items.push({ kind: 'maintenance', row: r });
     }
     if (input.type === 'all' || input.type === 'deep_cleaning') {
-        const dc = await executor.query(`SELECT id, property_id, status, pay_method, work_no, total_cost, labor_cost, consumables, completed_at, occurred_at, created_at, project_desc, details, notes
+        const dc = await executor.query(`SELECT id, property_id, status, pay_method, work_no, total_cost, labor_cost, consumables, completed_at, occurred_at, created_at, project_desc, details, notes, invoice_description_en
          FROM property_deep_cleaning
         WHERE coalesce(completed_at::date, occurred_at, created_at::date) BETWEEN $1::date AND $2::date
           AND ($4::text IS NULL OR $4::text = '' OR property_id = $4::text)
@@ -686,7 +640,7 @@ exports.router.post('/auto-expenses/backfill', (0, auth_1.requireAnyPerm)(['fina
                     const workNo = String((r === null || r === void 0 ? void 0 : r.work_no) || refId);
                     return workNo ? `深度清洁 ${workNo}` : categoryDetail;
                 })();
-                const sourceSummary = it.kind === 'maintenance' ? autoMaintenanceIssueSummary(r) : autoDeepCleaningProjectSummary(r);
+                const sourceSummary = it.kind === 'maintenance' ? (0, autoExpenseSourceSummary_1.maintenanceSourceSummary)(r) : (0, autoExpenseSourceSummary_1.deepCleaningSourceSummary)(r);
                 const voidBothAuto = async () => {
                     const v1 = await client.query(`UPDATE property_expenses SET status='void'
              WHERE ref_type=$1 AND ref_id=$2 AND is_auto=true AND (manual_override IS NULL OR manual_override=false)`, [refType, refId]);
@@ -2583,8 +2537,9 @@ exports.router.get('/rent-segments', (0, auth_1.requireAnyPerm)(['finance.payout
             return res.status(400).json({ message: 'missing property_id' });
         if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
             return res.status(400).json({ message: 'pg required' });
-        const ordersRs = await dbAdapter_2.pgPool.query('SELECT * FROM orders WHERE property_id = $1 AND checkin < $3::date AND checkout > $2::date', [property_id, m.start, m.nextStart]);
-        const orders = ordersRs.rows || [];
+        const orderSegmentCols = 'id, property_id, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income, confirmation_code, guest_name, source, channel, created_at, updated_at';
+        const ordersRs = await dbAdapter_2.pgPool.query(`SELECT ${orderSegmentCols} FROM orders WHERE property_id = $1 AND checkin < $3::date AND checkout > $2::date`, [property_id, m.start, m.nextStart]);
+        const orders = normalizeOrdersForMonthSegments(ordersRs.rows || []);
         const ids = orders.map((o) => String(o.id || '')).filter(Boolean);
         const totals = {};
         if (ids.length) {
@@ -2612,8 +2567,9 @@ exports.router.get('/rent-income-by-property', (0, auth_1.requireAnyPerm)(['fina
             return res.status(400).json({ message: 'invalid month' });
         if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
             return res.status(400).json({ message: 'pg required' });
-        const ordersRs = await dbAdapter_2.pgPool.query('SELECT * FROM orders WHERE property_id IS NOT NULL AND checkin < $2::date AND checkout > $1::date', [m.start, m.nextStart]);
-        const orders = ordersRs.rows || [];
+        const orderSegmentCols = 'id, property_id, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income';
+        const ordersRs = await dbAdapter_2.pgPool.query(`SELECT ${orderSegmentCols} FROM orders WHERE property_id IS NOT NULL AND checkin < $2::date AND checkout > $1::date`, [m.start, m.nextStart]);
+        const orders = normalizeOrdersForMonthSegments(ordersRs.rows || []);
         const ids = orders.map((o) => String(o.id || '')).filter(Boolean);
         const totals = {};
         if (ids.length) {

@@ -235,23 +235,10 @@ export default function PropertyRevenuePage() {
       keys.push(cur.format('YYYY-MM'))
       cur = cur.add(1, 'month')
     }
-    if (!keys.length) return
-    const keySet = new Set(keys)
     for (const k of keys) {
       delete rentIncomeFetchedAtRef.current[k]
       delete rentIncomeRequestsRef.current[k]
     }
-    setRentIncomeByMonth((prev) => {
-      let changed = false
-      const next = { ...prev }
-      for (const k of keySet) {
-        if (next[k]) {
-          delete next[k]
-          changed = true
-        }
-      }
-      return changed ? next : prev
-    })
   }
 
   const fetchRentSegments = async (pidRaw: string, monthKeyRaw: string, force = false) => {
@@ -278,9 +265,6 @@ export default function PropertyRevenuePage() {
     const nextPid = String(pid || '').trim()
     if (!nextPid) return
     setPreviewReady(false)
-    try {
-      await reloadAllRef.current?.()
-    } catch {}
     try {
       const mk = month?.format?.('YYYY-MM') || ''
       if (mk) await fetchRentSegments(nextPid, mk, true)
@@ -854,7 +838,7 @@ export default function PropertyRevenuePage() {
       }
     }
     return out
-  }, [properties, filteredProperties, orders, txBucketIndex, landlords, start, end, selectedPid, selectedRegion])
+  }, [properties, filteredProperties, orders, rentIncomeByMonth, txBucketIndex, landlords, start, end, selectedPid, selectedRegion])
 
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const formatMoney = (n?: number) => `$${fmt(Number(n || 0))}`
