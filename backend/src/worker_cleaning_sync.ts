@@ -31,8 +31,9 @@ async function runOnce() {
       limit: Math.min(20, Number(process.env.CLEANING_SYNC_JOBS_BATCH || 10)),
       reclaim_timeout_minutes: reclaimTimeoutMinutes,
     })
+    const hadActivity = (Number(r?.processed || 0) > 0) || (Number(r?.failed || 0) > 0) || (Number(r?.reclaimed || 0) > 0)
     try {
-      if (jr?.id) {
+      if (jr?.id && hadActivity) {
         const { finishJobRun } = require('./services/jobRuns')
         await finishJobRun({
           id: String(jr.id),
@@ -42,9 +43,12 @@ async function runOnce() {
           duration_ms: Date.now() - startedAt,
           result: r,
         })
+      } else if (jr?.id) {
+        const { deleteJobRun } = require('./services/jobRuns')
+        await deleteJobRun(String(jr.id))
       }
     } catch {}
-    console.log(`[cleaning-sync-jobs][run-once] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0} reclaimed=${r.reclaimed || 0}`)
+    if (hadActivity) console.log(`[cleaning-sync-jobs][run-once] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0} reclaimed=${r.reclaimed || 0}`)
     return
   } catch (e: any) {
     try {
@@ -76,7 +80,7 @@ async function main() {
     return
   }
   try {
-    const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '*/1 * * * *')
+    const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '*/5 * * * *')
     console.log(`[cleaning-sync-jobs][worker] cron=${expr}`)
     let inFlight = false
     const task = cron.schedule(expr, async () => {

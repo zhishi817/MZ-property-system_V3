@@ -174,7 +174,7 @@ export default function PublicMonthlyStatementPrintPage() {
 
   const balanceDebug = useMemo(() => {
     if (!propertyId || !/^\d{4}-\d{2}$/.test(String(month?.format?.('YYYY-MM') || ''))) return null
-    if (!ordersLoaded || !txsLoaded || !propertiesLoaded || !landlordsLoaded) return null
+    if (!ordersLoaded || !orderSegmentsLoaded || !txsLoaded || !propertiesLoaded || !landlordsLoaded) return null
     const property = properties.find(p => String(p.id) === String(propertyId))
     const landlord = findLandlordForProperty(landlords, propertyId || '', (property as any)?.landlord_id)
     const rule = resolveManagementFeeRuleForMonth(landlord, month.format('YYYY-MM'))
@@ -183,11 +183,12 @@ export default function PublicMonthlyStatementPrintPage() {
       propertyId,
       propertyCode: property?.code,
       orders,
+      orderSegments,
       txs,
       managementFeeRate: rule.rate ?? undefined,
       carryStartMonth,
     })
-  }, [propertyId, month, ordersLoaded, txsLoaded, propertiesLoaded, landlordsLoaded, properties, landlords, orders, txs, carryStartMonth])
+  }, [propertyId, month, ordersLoaded, orderSegmentsLoaded, txsLoaded, propertiesLoaded, landlordsLoaded, properties, landlords, orders, orderSegments, txs, carryStartMonth])
 
   useEffect(() => {
     if (!balanceDebug || !propertyId) return

@@ -2,6 +2,43 @@ import { describe, expect, it } from 'vitest'
 import { computeMonthlyStatementBalance, computeMonthlyStatementBalanceDebug } from './statementBalances'
 
 describe('computeMonthlyStatementBalance', () => {
+  it('uses provided backend rent segments for statement net income', () => {
+    const pid = 'p-segments'
+    const orders: any[] = [
+      {
+        id: 'o-cross',
+        property_id: pid,
+        checkin: '2026-03-30T13:00:00.000Z',
+        checkout: '2026-04-29T14:00:00.000Z',
+        nights: 30,
+        net_income: 3000,
+        internal_deduction_total: 300,
+        status: 'confirmed',
+        count_in_income: true,
+      },
+    ]
+    const orderSegments: any[] = [
+      {
+        ...orders[0],
+        __rid: 'o-cross|202604',
+        __src_checkin: orders[0].checkin,
+        __src_checkout: orders[0].checkout,
+        checkin: '2026-04-01T12:00:00',
+        checkout: '2026-04-29T11:59:59',
+        nights: 28,
+        net_income: 2800,
+        internal_deduction: 280,
+        visible_net_income: 2520,
+      },
+    ]
+
+    const rawOnly = computeMonthlyStatementBalance({ month: '2026-04', propertyId: pid, orders, txs: [], managementFeeRate: 0, carryStartMonth: '2026-04' })
+    const withSegments = computeMonthlyStatementBalance({ month: '2026-04', propertyId: pid, orders, orderSegments, txs: [], managementFeeRate: 0, carryStartMonth: '2026-04' })
+
+    expect(rawOnly.operating_net_income).toBe(2500)
+    expect(withSegments.operating_net_income).toBe(2520)
+  })
+
   it('offsets furniture outstanding across months and carries forward negative net', () => {
     const pid = 'p1'
     const orders: any[] = [

@@ -36,6 +36,8 @@ export default function PropertyRevenuePage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [rentIncomeByMonth, setRentIncomeByMonth] = useState<Record<string, Record<string, number>>>({})
   const rentIncomeByMonthRef = useRef<Record<string, Record<string, number>>>({})
+  const rentIncomeRequestsRef = useRef<Record<string, Promise<void> | undefined>>({})
+  const rentIncomeFetchedAtRef = useRef<Record<string, number | undefined>>({})
   const rangeRef = useRef<{ start: any; end: any } | null>(null)
   const [rentSegByKey, setRentSegByKey] = useState<Record<string, { loading: boolean; segments: any[]; rent_income: number; error?: string }>>({})
   const rentKey = (pid: string, monthKey: string) => `${String(pid)}__${String(monthKey)}`
@@ -187,17 +189,27 @@ export default function PropertyRevenuePage() {
   const fetchRentIncomeByProperty = async (monthKey: string, force = false) => {
     const mk = String(monthKey || '').trim()
     if (!/^\d{4}-\d{2}$/.test(mk)) return
-    if (!force && rentIncomeByMonthRef.current[mk]) return
+    const maxAgeMs = 30 * 1000
+    const fetchedAt = Number(rentIncomeFetchedAtRef.current[mk] || 0)
+    if (!force && rentIncomeByMonthRef.current[mk] && fetchedAt && Date.now() - fetchedAt < maxAgeMs) return
+    if (!force && rentIncomeRequestsRef.current[mk]) return rentIncomeRequestsRef.current[mk]
     const qs = new URLSearchParams({ month: mk }).toString()
-    const resp = await getJSON<any>(`/finance/rent-income-by-property?${qs}`).catch(() => null as any)
-    const map: Record<string, number> = {}
-    const rows = Array.isArray(resp?.rows) ? resp.rows : []
-    for (const r of rows) {
-      const pid = String(r?.property_id || '').trim()
-      if (!pid) continue
-      map[pid] = Number(r?.rent_income || 0) || 0
-    }
-    setRentIncomeByMonth((prev) => ({ ...prev, [mk]: map }))
+    const req = (async () => {
+      const resp = await getJSON<any>(`/finance/rent-income-by-property?${qs}`).catch(() => null as any)
+      const map: Record<string, number> = {}
+      const rows = Array.isArray(resp?.rows) ? resp.rows : []
+      for (const r of rows) {
+        const pid = String(r?.property_id || '').trim()
+        if (!pid) continue
+        map[pid] = Number(r?.rent_income || 0) || 0
+      }
+      setRentIncomeByMonth((prev) => ({ ...prev, [mk]: map }))
+      rentIncomeFetchedAtRef.current[mk] = Date.now()
+    })().finally(() => {
+      if (rentIncomeRequestsRef.current[mk] === req) delete rentIncomeRequestsRef.current[mk]
+    })
+    rentIncomeRequestsRef.current[mk] = req
+    return req
   }
 
   const refreshRentIncomeForRange = async (force = false) => {
@@ -211,6 +223,35 @@ export default function PropertyRevenuePage() {
       cur = cur.add(1, 'month')
     }
     await Promise.all(monthKeys.map((mk) => fetchRentIncomeByProperty(mk, force)))
+  }
+
+  const invalidateRentIncomeForRange = () => {
+    const rr = rangeRef.current
+    if (!rr?.start || !rr?.end) return
+    const keys: string[] = []
+    let cur = rr.start.startOf('month')
+    const last = rr.end.startOf('month')
+    while (cur.isSame(last, 'month') || cur.isBefore(last, 'month')) {
+      keys.push(cur.format('YYYY-MM'))
+      cur = cur.add(1, 'month')
+    }
+    if (!keys.length) return
+    const keySet = new Set(keys)
+    for (const k of keys) {
+      delete rentIncomeFetchedAtRef.current[k]
+      delete rentIncomeRequestsRef.current[k]
+    }
+    setRentIncomeByMonth((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const k of keySet) {
+        if (next[k]) {
+          delete next[k]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
   }
 
   const fetchRentSegments = async (pidRaw: string, monthKeyRaw: string, force = false) => {
@@ -262,6 +303,7 @@ export default function PropertyRevenuePage() {
           const ordersRes = await getJSON<Order[]>(ordersPath).catch(() => [] as any[])
           if (!mountedRef.current) return
           setOrders(Array.isArray(ordersRes) ? ordersRes : [])
+          invalidateRentIncomeForRange()
           await refreshRentIncomeForRange(true).catch(() => {})
           return
         }
@@ -274,7 +316,12 @@ export default function PropertyRevenuePage() {
           getJSON<any>('/properties').catch(() => [] as any[]),
           getJSON<Landlord[]>('/landlords').catch(() => [] as any[]),
           getJSON<Tx[]>(financePath).catch(() => [] as any[]),
-          apiList<any[]>('property_expenses', rq ? ({ month_key_from: rq.monthFrom, month_key_to: rq.monthTo, limit: 10000 } as any) : undefined).catch(() => [] as any[]),
+          apiList<any[]>('property_expenses', rq ? ({
+            month_key_from: rq.monthFrom,
+            month_key_to: rq.monthTo,
+            limit: 5000,
+            fields: 'id,property_id,occurred_at,paid_date,due_date,month_key,amount,currency,category,category_detail,note,pay_method,generated_from,ref_type,ref_id,is_auto,manual_override,fixed_expense_id,status,source_title,source_summary,created_at,updated_at',
+          } as any) : undefined).catch(() => [] as any[]),
           apiList<any[]>('recurring_payments').catch(() => [] as any[]),
         ])
         if (!mountedRef.current) return
@@ -301,6 +348,7 @@ export default function PropertyRevenuePage() {
           message.destroy('orphanFixedExpenseSnapshots')
         }
         setTxs(built.txs)
+        invalidateRentIncomeForRange()
         await refreshRentIncomeForRange(true).catch(() => {})
       } finally {
         if (mountedRef.current) {
@@ -557,14 +605,16 @@ export default function PropertyRevenuePage() {
       propertyId: String(previewPid),
       propertyCode: property?.code,
       orders,
+      orderSegments: previewOrderSegments as any,
       txs: txsAll,
       managementFeeRate: rule.rate ?? undefined,
       carryStartMonth: DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH,
     })
-  }, [previewPid, period, month, properties, landlords, orders, txsAll])
+  }, [previewPid, period, month, properties, landlords, orders, previewOrderSegments, txsAll])
 
   useEffect(() => {
     if (!previewOpen || !previewPid || period !== 'month') { setPreviewReady(true); return }
+    if (!Array.isArray(previewOrderSegments)) { setPreviewReady(false); return }
     let cancelled = false
     setPreviewReady(false)
     ;(async () => {
@@ -598,7 +648,7 @@ export default function PropertyRevenuePage() {
       if (!cancelled) setPreviewReady(true)
     })()
     return () => { cancelled = true }
-  }, [previewOpen, previewPid, period, month?.format?.('YYYY-MM'), showChinese])
+  }, [previewOpen, previewPid, period, month?.format?.('YYYY-MM'), showChinese, previewOrderSegments])
 
   const orderById = useMemo(() => new Map((orders || []).map(o => [String(o.id), o])), [orders])
   const txBucketIndex = useMemo(() => {

@@ -127,6 +127,7 @@ function calcMonthOperatingNet(input: {
   monthStart: any
   property: { id: string; code?: string }
   orders: Order[]
+  orderSegments?: Order[]
   txs: Tx[]
   managementFeeRate?: number
 }): {
@@ -139,16 +140,33 @@ function calcMonthOperatingNet(input: {
   const { monthStart, property, orders, txs } = input
   const start = dayjs(monthStart).startOf('month')
 
-  const relatedOrders = monthSegments(
-    orders.filter(o => {
+  const segmentOverlapsMonth = (o: Order): boolean => {
+    const ci = dayjs(toDayStr(o.checkin))
+    const co = dayjs(toDayStr(o.checkout))
+    if (!ci.isValid() || !co.isValid()) return false
+    const end = start.add(1, 'month').startOf('month')
+    const a = ci.isAfter(start) ? ci : start
+    const b = co.isBefore(end) ? co : end
+    return b.diff(a, 'day') > 0
+  }
+
+  const providedSegments = (input.orderSegments || []).filter(o => {
+    if (property?.id && o.property_id !== property.id) return false
+    const st = String((o as any).status || '').toLowerCase()
+    const isCanceled = st.includes('cancel')
+    const include = (!isCanceled) || !!(o as any).count_in_income
+    return include && segmentOverlapsMonth(o)
+  })
+
+  const relatedOrders = providedSegments.length
+    ? providedSegments
+    : monthSegments(orders.filter(o => {
       if (property?.id && o.property_id !== property.id) return false
       const st = String((o as any).status || '').toLowerCase()
       const isCanceled = st.includes('cancel')
       const include = (!isCanceled) || !!(o as any).count_in_income
       return include
-    }),
-    start
-  )
+    }), start)
 
   const rentIncome = relatedOrders.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
   const orderById = new Map((orders || []).map(o => [String(o.id), o]))
@@ -240,6 +258,7 @@ export function computeMonthlyStatementBalance(input: {
   propertyId: string
   propertyCode?: string
   orders: Order[]
+  orderSegments?: Order[]
   txs: Tx[]
   managementFeeRate?: number
   carryStartMonth?: string
@@ -252,6 +271,7 @@ export function computeMonthlyStatementBalanceDebug(input: {
   propertyId: string
   propertyCode?: string
   orders: Order[]
+  orderSegments?: Order[]
   txs: Tx[]
   managementFeeRate?: number
   carryStartMonth?: string
@@ -262,6 +282,13 @@ export function computeMonthlyStatementBalanceDebug(input: {
 
   const monthsWithData: string[] = []
   for (const o of input.orders || []) {
+    if (String(o.property_id || '') !== property.id) continue
+    const ci = toDayStr((o as any).__src_checkin || o.checkin)
+    const co = toDayStr((o as any).__src_checkout || o.checkout)
+    if (ci) monthsWithData.push(dayjs(ci).format('YYYY-MM'))
+    if (co) monthsWithData.push(dayjs(co).format('YYYY-MM'))
+  }
+  for (const o of input.orderSegments || []) {
     if (String(o.property_id || '') !== property.id) continue
     const ci = toDayStr((o as any).__src_checkin || o.checkin)
     const co = toDayStr((o as any).__src_checkout || o.checkout)
@@ -303,6 +330,7 @@ export function computeMonthlyStatementBalanceDebug(input: {
       monthStart: cur,
       property,
       orders: input.orders || [],
+      orderSegments: input.orderSegments || [],
       txs: input.txs || [],
       managementFeeRate: input.managementFeeRate,
     })

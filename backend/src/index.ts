@@ -567,7 +567,7 @@ function onServerListening() {
     try {
       const enabled = String(process.env.CLEANING_SYNC_JOBS_ENABLED || 'true').toLowerCase() === 'true'
       if (enabled && hasPg) {
-        const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '*/1 * * * *')
+        const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '*/5 * * * *')
         console.log(`[cleaning-sync-jobs][schedule] enabled cron=${expr}`)
         let inFlight = false
         const task = cron.schedule(expr, async () => {
@@ -588,8 +588,9 @@ function onServerListening() {
               limit: Math.min(20, Number(process.env.CLEANING_SYNC_JOBS_BATCH || 10)),
               reclaim_timeout_minutes: reclaimTimeoutMinutes,
             })
+            const hadActivity = (Number(r?.processed || 0) > 0) || (Number(r?.failed || 0) > 0) || (Number(r?.reclaimed || 0) > 0)
             try {
-              if (jr?.id) {
+              if (jr?.id && hadActivity) {
                 const { finishJobRun } = require('./services/jobRuns')
                 await finishJobRun({
                   id: String(jr.id),
@@ -599,9 +600,12 @@ function onServerListening() {
                   duration_ms: Date.now() - startedAt,
                   result: r,
                 })
+              } else if (jr?.id) {
+                const { deleteJobRun } = require('./services/jobRuns')
+                await deleteJobRun(String(jr.id))
               }
             } catch {}
-            if ((r?.processed || 0) > 0 || (r?.failed || 0) > 0 || (r?.reclaimed || 0) > 0) {
+            if (hadActivity) {
               console.log(`[cleaning-sync-jobs][schedule] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0} reclaimed=${r.reclaimed || 0}`)
             }
           } catch (e: any) {
@@ -622,6 +626,29 @@ function onServerListening() {
       }
     } catch (e: any) {
       console.error(`[cleaning-sync-jobs][schedule] init error message=${String(e?.message || '')}`)
+    }
+  })()
+  ;(async () => {
+    try {
+      const enabled = String(process.env.JOB_RUNS_PRUNE_ENABLED || 'true').toLowerCase() === 'true'
+      if (!enabled || !hasPg) {
+        console.log('[job-runs][prune] disabled')
+        return
+      }
+      const expr = String(process.env.JOB_RUNS_PRUNE_CRON || '35 3 * * *')
+      const task = cron.schedule(expr, async () => {
+        try {
+          const { pruneJobRuns } = require('./services/jobRuns')
+          const r = await pruneJobRuns()
+          if (Number(r?.deleted || 0) > 0) console.log(`[job-runs][prune] deleted=${Number(r.deleted || 0)} keep_days=${Number(r.keep_days || 0)}`)
+        } catch (e: any) {
+          console.error(`[job-runs][prune] error message=${String(e?.message || '')}`)
+        }
+      }, { scheduled: true })
+      task.start()
+      console.log(`[job-runs][prune] enabled cron=${expr}`)
+    } catch (e: any) {
+      console.error(`[job-runs][prune] init error message=${String(e?.message || '')}`)
     }
   })()
   ;(async () => {

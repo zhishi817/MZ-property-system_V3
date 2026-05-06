@@ -133,7 +133,7 @@ async function cleanupTable(client, table) {
 
 async function ensureIndexes(client) {
   await client.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_month
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_expense_month_key
     ON property_expenses(fixed_expense_id, month_key)
     WHERE fixed_expense_id IS NOT NULL
       AND fixed_expense_id <> ''
