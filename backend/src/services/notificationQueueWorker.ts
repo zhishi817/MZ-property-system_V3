@@ -144,6 +144,7 @@ export async function runNotificationQueueCleanup() {
 
 export function startNotificationQueueWorker(params?: { intervalMs?: number; batchSize?: number }) {
   const baseIntervalMs = Math.max(1000, Math.min(60000, Number(params?.intervalMs || 10000)))
+  const maxIdleIntervalMs = Math.max(baseIntervalMs, Math.min(10 * 60 * 1000, Number(process.env.NOTIFICATION_WORKER_MAX_IDLE_INTERVAL_MS || 5 * 60 * 1000)))
   const batchSize = Math.max(1, Math.min(200, Number(params?.batchSize || 50)))
   let stopped = false
   let running = false
@@ -163,7 +164,7 @@ export function startNotificationQueueWorker(params?: { intervalMs?: number; bat
       return baseIntervalMs
     }
     emptyRounds = Math.min(emptyRounds + 1, 6)
-    return Math.min(60000, baseIntervalMs * Math.max(1, 2 ** Math.max(0, emptyRounds - 1)))
+    return Math.min(maxIdleIntervalMs, baseIntervalMs * Math.max(1, 2 ** Math.max(0, emptyRounds - 1)))
   }
 
   const runLoop = async () => {

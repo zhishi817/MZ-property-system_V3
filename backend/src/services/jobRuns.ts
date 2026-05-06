@@ -110,6 +110,36 @@ export async function finishJobRun(params: {
   return r?.rows?.[0] || null
 }
 
+export async function deleteJobRun(idRaw: string) {
+  if (!hasPg || !pgPool) return 0
+  await ensureJobRunsSchema()
+  const id = String(idRaw || '').trim()
+  if (!id) return 0
+  const r = await pgPool.query('DELETE FROM job_runs WHERE id = $1', [id])
+  return Number(r?.rowCount || 0)
+}
+
+export async function pruneJobRuns(params: { keep_days?: number | null; limit?: number | null } = {}) {
+  if (!hasPg || !pgPool) return { deleted: 0 }
+  await ensureJobRunsSchema()
+  const keepDays = Math.max(7, Math.min(365, Number(params.keep_days || process.env.JOB_RUNS_RETENTION_DAYS || 60)))
+  const limit = Math.max(100, Math.min(10000, Number(params.limit || process.env.JOB_RUNS_PRUNE_LIMIT || 2000)))
+  const r = await pgPool.query(
+    `WITH doomed AS (
+       SELECT id
+       FROM job_runs
+       WHERE COALESCE(finished_at, started_at, created_at) < now() - ($1::int * interval '1 day')
+       ORDER BY COALESCE(finished_at, started_at, created_at) ASC
+       LIMIT $2
+     )
+     DELETE FROM job_runs j
+     USING doomed
+     WHERE j.id = doomed.id`,
+    [keepDays, limit],
+  )
+  return { deleted: Number(r?.rowCount || 0), keep_days: keepDays, limit }
+}
+
 export async function listJobRuns(params: { job_name: string; limit?: number; schedule_name?: string | null; ok?: boolean | null }) {
   if (!hasPg || !pgPool) return []
   await ensureJobRunsSchema()
@@ -125,4 +155,3 @@ export async function listJobRuns(params: { job_name: string; limit?: number; sc
   const r = await pgPool.query(sql, values)
   return r?.rows || []
 }
-

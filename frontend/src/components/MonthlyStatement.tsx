@@ -527,6 +527,7 @@ export default forwardRef<HTMLDivElement, {
     propertyId,
     propertyCode: property?.code,
     orders,
+    orderSegments: relatedOrders,
     txs: (txs as any).concat(deepCleanOwnerTxs as any),
     managementFeeRate: managementFeeRule.rate ?? undefined,
     carryStartMonth: DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH,

@@ -154,6 +154,7 @@ async function claimJobs(limit: number, workerId: string): Promise<any[]> {
 let kickScheduled = false
 let kickInFlight = false
 let kickRequestedLimit = 1
+let lastEmptyDiagAt = 0
 
 export function schedulePdfJobsKick(limit = 1) {
   kickRequestedLimit = Math.max(kickRequestedLimit, Math.max(1, Math.min(10, Number(limit || 1))))
@@ -925,6 +926,13 @@ export async function processPdfJobsOnce(opts: { limit?: number } = {}): Promise
   const workerId = String(process.env.PDF_JOBS_WORKER_ID || '') || `pdf_worker_${process.pid}`
   const jobs = await claimJobs(Number(opts.limit || 2), workerId)
   if (!jobs.length) {
+    const emptyDiagEnabled = String(process.env.PDF_JOBS_EMPTY_DIAG_ENABLED || 'false').toLowerCase() === 'true'
+    const emptyDiagIntervalMs = Math.max(60000, Math.min(60 * 60 * 1000, Number(process.env.PDF_JOBS_EMPTY_DIAG_INTERVAL_MS || 10 * 60 * 1000)))
+    const now = Date.now()
+    if (!emptyDiagEnabled || (now - lastEmptyDiagAt) < emptyDiagIntervalMs) {
+      return { processed: 0, ok: 0, failed: 0, reclaimed }
+    }
+    lastEmptyDiagAt = now
     try {
       const r = await pgPool.query(
         `SELECT

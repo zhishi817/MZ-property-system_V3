@@ -190,7 +190,7 @@ async function ensureSchemasOnce() {
     try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS paid_date date;') } catch {}
     try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
     try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
-    try { await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_month ON property_expenses(fixed_expense_id, month_key) WHERE ${RECURRING_SNAPSHOT_CONFLICT_WHERE};`) } catch {}
+    try { await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_expense_month_key ON property_expenses(fixed_expense_id, month_key) WHERE ${RECURRING_SNAPSHOT_CONFLICT_WHERE};`) } catch {}
     try { await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_fixed_month ON company_expenses(fixed_expense_id, month_key) WHERE ${RECURRING_SNAPSHOT_CONFLICT_WHERE};`) } catch {}
   })().catch((e) => {
     schemaEnsured = null

@@ -353,7 +353,7 @@ async function ensureAutoExpenseSchema(client: any) {
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_title text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_summary text;')
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
-  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_month ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
+  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_expense_month_key ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;')
@@ -2295,8 +2295,9 @@ router.get('/rent-segments', requireAnyPerm(['finance.payout', 'finance.tx.write
     if (!m) return res.status(400).json({ message: 'invalid month' })
     if (!property_id) return res.status(400).json({ message: 'missing property_id' })
     if (!hasPg || !pgPool) return res.status(400).json({ message: 'pg required' })
+    const orderSegmentCols = 'id, property_id, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income, confirmation_code, guest_name, source, channel, created_at, updated_at'
     const ordersRs = await pgPool.query(
-      'SELECT * FROM orders WHERE property_id = $1 AND checkin < $3::date AND checkout > $2::date',
+      `SELECT ${orderSegmentCols} FROM orders WHERE property_id = $1 AND checkin < $3::date AND checkout > $2::date`,
       [property_id, m.start, m.nextStart]
     )
     const orders: any[] = ordersRs.rows || []
@@ -2326,8 +2327,9 @@ router.get('/rent-income-by-property', requireAnyPerm(['finance.payout', 'financ
     const m = parseMonthKeyOrNull((req.query as any)?.month)
     if (!m) return res.status(400).json({ message: 'invalid month' })
     if (!hasPg || !pgPool) return res.status(400).json({ message: 'pg required' })
+    const orderSegmentCols = 'id, property_id, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income'
     const ordersRs = await pgPool.query(
-      'SELECT * FROM orders WHERE property_id IS NOT NULL AND checkin < $2::date AND checkout > $1::date',
+      `SELECT ${orderSegmentCols} FROM orders WHERE property_id IS NOT NULL AND checkin < $2::date AND checkout > $1::date`,
       [m.start, m.nextStart]
     )
     const orders: any[] = ordersRs.rows || []

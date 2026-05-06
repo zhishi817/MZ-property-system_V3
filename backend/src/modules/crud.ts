@@ -375,7 +375,7 @@ async function ensureAutoExpenseSchema(client: any) {
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_title text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS source_summary text;')
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
-  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_month ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
+  await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_expense_month_key ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS invoice_url text;')
@@ -712,6 +712,13 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
   const q = typeof (req.query as any)?.q === 'string' ? String((req.query as any).q || '').trim() : ''
   const withTotal = String((req.query as any)?.withTotal || '') === '1'
   const aggregate = String((req.query as any)?.aggregate || '') === '1'
+  const fieldsRaw = typeof (req.query as any)?.fields === 'string' ? String((req.query as any).fields || '') : ''
+  const selectCols = (() => {
+    const cols = fieldsRaw.split(',').map((x) => x.trim()).filter((x) => /^[a-zA-Z0-9_]+$/.test(x))
+    if (!cols.length) return '*'
+    const uniq = Array.from(new Set(cols)).slice(0, 80)
+    return uniq.map((x) => `"${x}"`).join(', ')
+  })()
   const limit = (() => {
     const v = (req.query as any)?.limit
     const n = Number(Array.isArray(v) ? v[0] : v)
@@ -726,7 +733,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
   if (user?.role === 'customer_service' && resource === 'property_expenses') {
     filter.created_by = user.sub
   }
-  delete filter.limit; delete filter.offset; delete filter.order; delete filter.q; delete filter.withTotal; delete filter.aggregate
+  delete filter.limit; delete filter.offset; delete filter.order; delete filter.q; delete filter.withTotal; delete filter.aggregate; delete filter.fields
   try {
     if (hasPg) {
       try {
@@ -892,7 +899,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
               })
             }
             const lo = getLimitOffset()
-            const sql = `SELECT * FROM ${resource}${w2.clause}${orderBy}${lo.clause}`
+            const sql = `SELECT ${selectCols} FROM ${resource}${w2.clause}${orderBy}${lo.clause}`
             const resq = await pgPool.query(sql, lo.values)
             rows.push(...(resq?.rows || []))
             if (withTotal || typeof limit === 'number' || typeof offset === 'number') {
