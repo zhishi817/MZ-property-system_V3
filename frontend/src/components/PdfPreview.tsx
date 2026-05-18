@@ -15,10 +15,6 @@ type RenderedPage = {
   height: number
 }
 
-type PdfjsDocumentInit = Parameters<typeof import('pdfjs-dist/legacy/build/pdf.mjs').getDocument>[0] & {
-  disableWorker?: boolean
-}
-
 const DISPLAY_SCALE = 1.55
 const MAX_OUTPUT_SCALE = 3
 
@@ -37,7 +33,8 @@ export default function PdfPreview({ url }: PdfPreviewProps) {
       setPages([])
       try {
         const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-        const doc = await pdfjs.getDocument({ url, disableWorker: true } as PdfjsDocumentInit).promise
+        pdfjs.GlobalWorkerOptions.workerSrc ||= `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs.version}/legacy/build/pdf.worker.min.mjs`
+        const doc = await pdfjs.getDocument(url).promise
         const rendered: RenderedPage[] = []
 
         for (let i = 1; i <= doc.numPages; i += 1) {

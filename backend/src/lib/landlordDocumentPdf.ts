@@ -133,6 +133,7 @@ function baseCss() {
   const logo = logoDataUri()
   return `
     @page { size: A4; margin: 14mm; }
+    @page authority { size: A4; margin: 10mm 12mm; }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; background: #fff; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 11px; line-height: 1.42; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .page { position: relative; padding-bottom: 10mm; }
@@ -167,23 +168,23 @@ function baseCss() {
     .summary-note { border-top: 2px solid #111; border-bottom: 1px solid #cfcfcf; padding: 3mm 0; margin: 4mm 0; }
     .compact-table th, .compact-table td { padding: 1.7mm 2mm; }
     .footer { position: absolute; bottom: 0; left: 0; right: 0; display: flex; justify-content: space-between; border-top: 1px solid #ddd; padding-top: 2mm; color: #666; font-size: 9px; }
-    .authority-page { min-height: calc(297mm - 28mm); padding-bottom: 0; display: flex; flex-direction: column; justify-content: space-between; }
-    .authority-page h1 { margin-bottom: 4.6mm; font-size: 20.5px; }
-    .authority-page h2 { margin: 5.2mm 0 1.8mm; font-size: 12.6px; padding-bottom: 1mm; }
-    .authority-page p { margin-bottom: 2.5mm; font-size: 11.1px; line-height: 1.42; }
-    .authority-page ul { margin: 1.4mm 0 0 4.8mm; }
-    .authority-page li { margin-bottom: 1.8mm; font-size: 10.9px; line-height: 1.36; }
+    .authority-page { page: authority; min-height: calc(297mm - 20mm); padding-bottom: 0; display: flex; flex-direction: column; justify-content: space-between; }
+    .authority-page h1 { margin-bottom: 3mm; font-size: 19px; }
+    .authority-page h2 { margin: 3.3mm 0 1mm; font-size: 11.7px; padding-bottom: .7mm; }
+    .authority-page p { margin-bottom: 1.3mm; font-size: 9.8px; line-height: 1.26; }
+    .authority-page ul { margin: .8mm 0 0 4.4mm; }
+    .authority-page li { margin-bottom: .75mm; font-size: 9.2px; line-height: 1.22; }
     .authority-page th { width: 31%; }
-    .authority-page th, .authority-page td { padding: 2.2mm 2.4mm; font-size: 10.6px; }
-    .authority-page .muted { font-size: 10px; line-height: 1.38; margin-bottom: 2mm; }
+    .authority-page th, .authority-page td { padding: 1.3mm 1.7mm; font-size: 9.3px; }
+    .authority-page .muted { font-size: 8.7px; line-height: 1.22; margin-bottom: 1.2mm; }
     .authority-page .authority-main { flex: 1 1 auto; }
-    .authority-page .authority-bottom { margin-top: 11mm; }
+    .authority-page .authority-bottom { margin-top: 5mm; }
     .authority-page .signatures { gap: 10mm; margin-top: 0; }
-    .authority-page .sig-line { padding-top: 1.8mm; min-height: 18mm; font-size: 10px; line-height: 1.28; }
-    .authority-page .sig-label { display: block; font-weight: 700; margin-bottom: .8mm; }
+    .authority-page .sig-line { padding-top: 1.2mm; min-height: 13.5mm; font-size: 8.8px; line-height: 1.16; }
+    .authority-page .sig-label { display: block; font-weight: 700; margin-bottom: .5mm; }
     .authority-page .sig-meta { display: flex; justify-content: space-between; gap: 2mm; white-space: nowrap; }
-    .authority-page .sig-image { max-width: 44mm; max-height: 11mm; margin: 1.4mm 0 .8mm; }
-    .authority-page .footer { position: static; font-size: 8.4px; padding-top: 2.2mm; margin-top: 3.4mm; }
+    .authority-page .sig-image { max-width: 38mm; max-height: 8mm; margin: .8mm 0 .5mm; }
+    .authority-page .footer { position: static; font-size: 7.8px; padding-top: 1.2mm; margin-top: 1.8mm; }
   `
 }
 
