@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from 'react'
-import { App, Button, Card, DatePicker, Dropdown, Grid, Input, Modal, Select, Space, Table, Tag } from 'antd'
+import { App, Button, Card, DatePicker, Grid, Input, Modal, Select, Space, Table, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import Link from 'next/link'
@@ -349,155 +349,66 @@ export default function InvoicesCenterClient() {
     { title: '收件人', dataIndex: 'bill_to_name', width: 180, render: (v, r) => v || r.bill_to_email || '-' },
     { title: '总计', dataIndex: 'total', width: 120, align: 'right', render: (v) => fmtMoney(v) },
     { title: '未收', dataIndex: 'amount_due', width: 120, align: 'right', render: (v) => fmtMoney(v) },
-    { title: '操作', key: 'act', width: isMobile ? 120 : 320, render: (_: any, r) => {
+    { title: '操作', key: 'act', width: 320, render: (_: any, r) => {
       const st = String(r.status || 'draft')
       const canVoid = hasPerm('invoice.void') && st !== 'refunded'
       const canDiscard = hasPerm('invoice.draft.create') && st === 'draft'
-      if (isMobile) {
-        return (
-          <Dropdown
-            trigger={['click']}
-            placement="bottomRight"
-            menu={{
-              items: [
-                { key: 'view', label: '查看' },
-                { key: 'print', label: '打印' },
-                { key: 'edit', label: '编辑' },
-                ...(st === 'draft'
-                  ? [{ key: 'discard', label: '丢弃', danger: true, disabled: !canDiscard } as any]
-                  : [{ key: 'delete', label: '删除', danger: true, disabled: !canVoid } as any]),
-              ],
-              onClick: async ({ key }) => {
-                if (key === 'view') {
-                  setPreviewId(String(r.id))
-                  setPreviewInvoice(null)
-                  setPreviewOpen(true)
-                  return
-                }
-                if (key === 'print') {
-                  await printGeneratedInvoice(String(r.id))
-                  return
-                }
-                if (key === 'edit') {
-                  router.push(`/finance/invoices/${r.id}`)
-                  return
-                }
-                if (key === 'discard') {
-                  Modal.confirm({
-                    title: '确认丢弃该草稿？',
-                    okText: '确认',
-                    okType: 'danger',
-                    cancelText: '取消',
-                    async onOk() {
-                      try {
-                        await deleteJSON<any>(`/invoices/${r.id}`)
-                        await loadInvoices()
-                      } catch (e: any) {
-                        message.error(String(e?.message || '丢弃失败'))
-                      }
-                    }
-                  })
-                  return
-                }
-                if (key === 'delete') {
-                  let reason = '用户删除'
-                  Modal.confirm({
-                    title: '确认删除',
-                    okText: '删除',
-                    okType: 'danger',
-                    cancelText: '取消',
-                    content: (
-                      <div style={{ display:'grid', gap: 10 }}>
-                        <div style={{ color:'rgba(17,24,39,0.65)' }}>将把该记录标记为 void（作废），不可撤销。</div>
-                        <Input defaultValue={reason} placeholder="请输入删除原因" onChange={(e) => { reason = String(e.target.value || '') }} />
-                      </div>
-                    ),
-                    async onOk() {
-                      try {
-                        await postJSON<any>(`/invoices/${r.id}/void`, { reason: String(reason || '').trim() || '用户删除' })
-                        message.success('已删除')
-                        await loadInvoices()
-                      } catch (e: any) {
-                        message.error(String(e?.message || '删除失败'))
-                      }
-                    }
-                  })
-                }
-              }
-            }}
-          >
-            <Button size="small">操作</Button>
-          </Dropdown>
-        )
+      const openDetail = () => {
+        setPreviewId(String(r.id))
+        setPreviewInvoice(null)
+        setPreviewOpen(true)
+      }
+      const confirmDiscard = () => {
+        Modal.confirm({
+          title: '确认丢弃该草稿？',
+          okText: '确认',
+          okType: 'danger',
+          cancelText: '取消',
+          async onOk() {
+            try {
+              await deleteJSON<any>(`/invoices/${r.id}`)
+              await loadInvoices()
+            } catch (e: any) {
+              message.error(String(e?.message || '丢弃失败'))
+            }
+          }
+        })
+      }
+      const confirmDelete = () => {
+        let reason = '用户删除'
+        Modal.confirm({
+          title: '确认删除',
+          okText: '删除',
+          okType: 'danger',
+          cancelText: '取消',
+          content: (
+            <div style={{ display:'grid', gap: 10 }}>
+              <div style={{ color:'rgba(17,24,39,0.65)' }}>将把该记录标记为 void（作废），不可撤销。</div>
+              <Input defaultValue={reason} placeholder="请输入删除原因" onChange={(e) => { reason = String(e.target.value || '') }} />
+            </div>
+          ),
+          async onOk() {
+            try {
+              await postJSON<any>(`/invoices/${r.id}/void`, { reason: String(reason || '').trim() || '用户删除' })
+              message.success('已删除')
+              await loadInvoices()
+            } catch (e: any) {
+              message.error(String(e?.message || '删除失败'))
+            }
+          }
+        })
       }
       return (
-        <Space size={8} wrap>
-          <Button
-            size="small"
-            onClick={() => {
-              setPreviewId(String(r.id))
-              setPreviewInvoice(null)
-              setPreviewOpen(true)
-            }}
-          >
-            查看
-          </Button>
-          <Button size="small" onClick={() => printGeneratedInvoice(String(r.id))}>打印</Button>
-          <Button size="small" onClick={() => router.push(`/finance/invoices/${r.id}`)}>编辑</Button>
+        <Space wrap>
+          <Button onClick={openDetail}>详情</Button>
+          <Button onClick={() => printGeneratedInvoice(String(r.id))}>打印</Button>
+          <Button onClick={() => router.push(`/finance/invoices/${r.id}`)}>编辑</Button>
           {st === 'draft' ? (
-            <Button
-              size="small"
-              danger
-              disabled={!canDiscard}
-              onClick={() => {
-                Modal.confirm({
-                  title: '确认丢弃该草稿？',
-                  okText: '确认',
-                  okType: 'danger',
-                  cancelText: '取消',
-                  async onOk() {
-                    try {
-                      await deleteJSON<any>(`/invoices/${r.id}`)
-                      await loadInvoices()
-                    } catch (e: any) {
-                      message.error(String(e?.message || '丢弃失败'))
-                    }
-                  }
-                })
-              }}
-            >
+            <Button danger disabled={!canDiscard} onClick={confirmDiscard}>
               丢弃
             </Button>
           ) : (
-            <Button
-              size="small"
-              danger
-              disabled={!canVoid}
-              onClick={() => {
-                let reason = '用户删除'
-                Modal.confirm({
-                  title: '确认删除',
-                  okText: '删除',
-                  okType: 'danger',
-                  cancelText: '取消',
-                  content: (
-                    <div style={{ display:'grid', gap: 10 }}>
-                      <div style={{ color:'rgba(17,24,39,0.65)' }}>将把该记录标记为 void（作废），不可撤销。</div>
-                      <Input defaultValue={reason} placeholder="请输入删除原因" onChange={(e) => { reason = String(e.target.value || '') }} />
-                    </div>
-                  ),
-                  async onOk() {
-                    try {
-                      await postJSON<any>(`/invoices/${r.id}/void`, { reason: String(reason || '').trim() || '用户删除' })
-                      message.success('已删除')
-                      await loadInvoices()
-                    } catch (e: any) {
-                      message.error(String(e?.message || '删除失败'))
-                    }
-                  }
-                })
-              }}
-            >
+            <Button danger disabled={!canVoid} onClick={confirmDelete}>
               删除
             </Button>
           )}
