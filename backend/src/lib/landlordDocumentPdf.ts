@@ -70,6 +70,10 @@ function optionalRow(label: string, value: any) {
   return row(label, text)
 }
 
+function pairRow(labelA: string, valueA: any, labelB: string, valueB: any) {
+  return `<tr><th>${escapeHtml(labelA)}</th><td>${escapeHtml(valueA || '')}</td><th>${escapeHtml(labelB)}</th><td>${escapeHtml(valueB || '')}</td></tr>`
+}
+
 function feeRow(label: string, value: any) {
   return `<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(value || '')}</td></tr>`
 }
@@ -133,7 +137,7 @@ function baseCss() {
   const logo = logoDataUri()
   return `
     @page { size: A4; margin: 14mm; }
-    @page authority { size: A4; margin: 10mm 12mm; }
+    @page authority { size: A4; margin: 8mm 10mm; }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; background: #fff; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 11px; line-height: 1.42; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .page { position: relative; padding-bottom: 10mm; }
@@ -168,23 +172,24 @@ function baseCss() {
     .summary-note { border-top: 2px solid #111; border-bottom: 1px solid #cfcfcf; padding: 3mm 0; margin: 4mm 0; }
     .compact-table th, .compact-table td { padding: 1.7mm 2mm; }
     .footer { position: absolute; bottom: 0; left: 0; right: 0; display: flex; justify-content: space-between; border-top: 1px solid #ddd; padding-top: 2mm; color: #666; font-size: 9px; }
-    .authority-page { page: authority; min-height: calc(297mm - 20mm); padding-bottom: 0; display: flex; flex-direction: column; justify-content: space-between; }
-    .authority-page h1 { margin-bottom: 3mm; font-size: 19px; }
-    .authority-page h2 { margin: 3.3mm 0 1mm; font-size: 11.7px; padding-bottom: .7mm; }
-    .authority-page p { margin-bottom: 1.3mm; font-size: 9.8px; line-height: 1.26; }
-    .authority-page ul { margin: .8mm 0 0 4.4mm; }
-    .authority-page li { margin-bottom: .75mm; font-size: 9.2px; line-height: 1.22; }
+    .authority-page { page: authority; height: calc(297mm - 16mm); padding-bottom: 0; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; }
+    .authority-page h1 { margin-bottom: 3.6mm; font-size: 24px; }
+    .authority-page h2 { margin: 4.2mm 0 1.2mm; font-size: 14px; padding-bottom: .75mm; }
+    .authority-page p { margin-bottom: 2.4mm; font-size: 12.5px; line-height: 1.62; }
+    .authority-page ul { margin: 2mm 0 0 5.2mm; }
+    .authority-page li { margin-bottom: 2.6mm; font-size: 11.8px; line-height: 1.62; }
     .authority-page th { width: 31%; }
-    .authority-page th, .authority-page td { padding: 1.3mm 1.7mm; font-size: 9.3px; }
-    .authority-page .muted { font-size: 8.7px; line-height: 1.22; margin-bottom: 1.2mm; }
-    .authority-page .authority-main { flex: 1 1 auto; }
+    .authority-page th, .authority-page td { padding: 1.7mm 1.9mm; font-size: 11.5px; }
+    .authority-page .pair-table th { width: 18%; }
+    .authority-page .pair-table td { width: 32%; }
+    .authority-page .muted { font-size: 10.6px; line-height: 1.32; margin-bottom: 1.4mm; }
     .authority-page .authority-bottom { margin-top: 5mm; }
-    .authority-page .signatures { gap: 10mm; margin-top: 0; }
-    .authority-page .sig-line { padding-top: 1.2mm; min-height: 13.5mm; font-size: 8.8px; line-height: 1.16; }
-    .authority-page .sig-label { display: block; font-weight: 700; margin-bottom: .5mm; }
-    .authority-page .sig-meta { display: flex; justify-content: space-between; gap: 2mm; white-space: nowrap; }
-    .authority-page .sig-image { max-width: 38mm; max-height: 8mm; margin: .8mm 0 .5mm; }
-    .authority-page .footer { position: static; font-size: 7.8px; padding-top: 1.2mm; margin-top: 1.8mm; }
+    .authority-page .signatures { display: flex; gap: 10mm; margin-top: 0; }
+    .authority-page .sig-line { position: relative; flex: 1 1 0; height: 25mm; padding-top: 1.4mm; font-size: 10.8px; line-height: 1.16; break-inside: avoid; page-break-inside: avoid; overflow: hidden; }
+    .authority-page .sig-label { position: absolute; top: 1.4mm; left: 0; right: 0; display: block; font-weight: 700; }
+    .authority-page .sig-meta { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; gap: 2mm; white-space: nowrap; }
+    .authority-page .sig-image { position: absolute; left: 0; top: 5mm; width: 42mm; height: 10mm; object-fit: contain; margin: 0; }
+    .authority-page .footer { position: static; font-size: 9px; padding-top: 1mm; margin-top: 2mm; }
   `
 }
 
@@ -218,20 +223,16 @@ function renderAgencyAuthority(input: LandlordDocumentPdfInput) {
             <p class="muted">(This Authority should be signed, and a copy retained by the Landlord prior to signing a Residential Tenancy Agreement in respect of the Property)</p>
 
             <h2>1. Landlord Details</h2>
-            <table>
-              ${row('Name/s', landlordName)}
-              ${optionalRow('Email Address', landlordEmail)}
-              ${optionalRow('Contact Number', landlordPhone)}
+            <table class="pair-table">
+              ${pairRow('Name/s', landlordName, 'Email Address', landlordEmail)}
+              ${pairRow('Contact Number', landlordPhone, '', '')}
             </table>
 
             <h2>2. Agent Details</h2>
-            <table>
-              ${row('Name/s', 'MZ Property Pty Ltd')}
-              ${row('Agent Name', agentName)}
-              ${row('Address', 'G03 /87 Gladstone St, South Melbourne, VIC 3205')}
-              ${row('ABN', '42 657 925 365')}
-              ${row('Contact Number', mzPhone)}
-              ${row('Email', mzEmail)}
+            <table class="pair-table">
+              ${pairRow('Name/s', 'MZ Property Pty Ltd', 'Agent Name', agentName)}
+              ${pairRow('Address', 'G03 /87 Gladstone St, South Melbourne, VIC 3205', 'ABN', '42 657 925 365')}
+              ${pairRow('Contact Number', mzPhone, 'Email', mzEmail)}
             </table>
 
             <h2>3. Property To Be Managed</h2>
@@ -241,13 +242,12 @@ function renderAgencyAuthority(input: LandlordDocumentPdfInput) {
             <p>Either party may terminate this Authority on the giving of not less than <strong>${escapeHtml(noticeDays)}</strong> days written notice to the other.</p>
 
             <h2>5. Authorisation</h2>
-            <p>The Landlord hereby appoints and authorises the Agent to manage, operate and administer the above property for short-term rental and related accommodation purposes. This authority includes, but is not limited to:</p>
+            <p>The Landlord appoints and authorises the Agent to manage, operate and administer the above property for short-term rental and related accommodation purposes, including but not limited to:</p>
             <ul>
               <li>Preparing, listing, advertising and managing the Property on booking platforms, direct booking channels and other marketing channels selected by the Agent.</li>
-              <li>Setting and adjusting nightly rates, availability, booking conditions, guest communication, check-in and check-out arrangements, and collecting rental income or booking proceeds on behalf of the Landlord.</li>
-              <li>Coordinating cleaning, linen, consumables, guest supplies, inspections, routine maintenance and property presentation required for short-term rental operation.</li>
-              <li>Arranging repairs, maintenance and urgent works, with authority to approve any individual expense up to AUD $${escapeHtml(repairLimit)} without further approval, and to seek Landlord approval for non-urgent expenses above that amount.</li>
-              <li>Managing keys, access devices and property access, and liaising with building management, owners corporations, utility providers, councils, contractors, guests and other relevant parties for property-related matters.</li>
+              <li>Setting nightly rates, availability and booking conditions, communicating with guests, coordinating check-in/check-out, and collecting booking proceeds on behalf of the Landlord.</li>
+              <li>Coordinating cleaning, linen, consumables, guest supplies, inspections, routine maintenance, key/access arrangements and property presentation required for short-term rental operation.</li>
+              <li>Arranging repairs, maintenance and urgent works, with authority to approve any individual expense up to AUD $${escapeHtml(repairLimit)} without further approval, and liaising with building management, owners corporations, utility providers, councils, contractors and other relevant parties for property-related matters.</li>
             </ul>
           </div>
 

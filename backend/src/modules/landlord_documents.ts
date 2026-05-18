@@ -21,7 +21,7 @@ const VIEW_PERMS = ['landlord.manage', 'landlords.view', 'landlords.write']
 const WRITE_PERMS = ['landlord.manage']
 const TYPES = ['agency_authority', 'property_service_agreement'] as const
 const STATUSES = ['draft', 'sent_for_signature', 'signed', 'archived'] as const
-const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v3-onepage-2026-05-18'
+const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v7-page-filled-2026-05-18'
 
 const createSchema = z.object({
   type: z.enum(TYPES),
