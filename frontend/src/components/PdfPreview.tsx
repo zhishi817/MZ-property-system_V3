@@ -2,10 +2,20 @@
 
 import Image from 'next/image'
 import { Spin, Typography } from 'antd'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 type PdfPreviewProps = {
   url: string
+  messages?: Partial<PdfPreviewMessages>
+}
+
+type PdfPreviewMessages = {
+  loading: string
+  genericError: string
+  notFoundError: string
+  canvasInitError: string
+  pageConvertError: string
+  pageAlt: (pageNumber: number) => string
 }
 
 type RenderedPage = {
@@ -18,7 +28,23 @@ type RenderedPage = {
 const DISPLAY_SCALE = 1.55
 const MAX_OUTPUT_SCALE = 3
 
-export default function PdfPreview({ url }: PdfPreviewProps) {
+const DEFAULT_MESSAGES: PdfPreviewMessages = {
+  loading: '正在加载文档预览...',
+  genericError: '文档预览加载失败',
+  notFoundError: '文档预览暂时无法打开，草稿 PDF 可能尚未生成或链接已失效。',
+  canvasInitError: '无法初始化 PDF 画布',
+  pageConvertError: 'PDF 页面转换失败',
+  pageAlt: (pageNumber) => `PDF 第 ${pageNumber} 页`,
+}
+
+function normalizePdfError(raw: any, messages: PdfPreviewMessages) {
+  const text = String(raw?.message || raw || '').trim()
+  if (/Unexpected server response/i.test(text)) return messages.notFoundError
+  return text || messages.genericError
+}
+
+export default function PdfPreview({ url, messages }: PdfPreviewProps) {
+  const copy = useMemo<PdfPreviewMessages>(() => ({ ...DEFAULT_MESSAGES, ...(messages || {}) }), [messages])
   const [pages, setPages] = useState<RenderedPage[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -44,12 +70,12 @@ export default function PdfPreview({ url }: PdfPreviewProps) {
           const renderViewport = page.getViewport({ scale: DISPLAY_SCALE * outputScale })
           const canvas = document.createElement('canvas')
           const context = canvas.getContext('2d')
-          if (!context) throw new Error('无法初始化 PDF 画布')
+          if (!context) throw new Error(copy.canvasInitError)
           canvas.width = Math.ceil(renderViewport.width)
           canvas.height = Math.ceil(renderViewport.height)
           await page.render({ canvasContext: context, canvas, viewport: renderViewport }).promise
           const blob = await new Promise<Blob>((resolve, reject) => {
-            canvas.toBlob((value) => value ? resolve(value) : reject(new Error('PDF 页面转换失败')), 'image/png')
+            canvas.toBlob((value) => value ? resolve(value) : reject(new Error(copy.pageConvertError)), 'image/png')
           })
           const objectUrl = URL.createObjectURL(blob)
           objectUrls.push(objectUrl)
@@ -58,7 +84,7 @@ export default function PdfPreview({ url }: PdfPreviewProps) {
 
         if (!cancelled) setPages(rendered)
       } catch (e: any) {
-        if (!cancelled) setError(e?.message || '文档预览加载失败')
+        if (!cancelled) setError(normalizePdfError(e, copy))
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -69,12 +95,12 @@ export default function PdfPreview({ url }: PdfPreviewProps) {
       cancelled = true
       objectUrls.forEach((value) => URL.revokeObjectURL(value))
     }
-  }, [url])
+  }, [url, copy])
 
   if (loading) {
     return (
       <div style={{ minHeight: '50vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fafafa', borderRadius: 12 }}>
-        <Spin tip="正在加载文档预览..." />
+        <Spin tip={copy.loading} />
       </div>
     )
   }
@@ -94,7 +120,7 @@ export default function PdfPreview({ url }: PdfPreviewProps) {
           <Image
             key={page.pageNumber}
             src={page.src}
-            alt={`PDF 第 ${page.pageNumber} 页`}
+            alt={copy.pageAlt(page.pageNumber)}
             width={page.width}
             height={page.height}
             unoptimized

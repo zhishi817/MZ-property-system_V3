@@ -323,14 +323,21 @@ async function loadPublicSigningDocumentByToken(token: string) {
             p.address AS property_address,
             dv.file_url AS current_draft_url,
             dv.file_key AS current_draft_file_key,
-            dv.file_name AS current_draft_file_name
+            dv.file_name AS current_draft_file_name,
+            sv.file_url AS current_signed_url,
+            sv.file_key AS current_signed_file_key,
+            sv.file_name AS current_signed_file_name
      FROM landlord_documents d
      LEFT JOIN landlords l ON l.id = d.landlord_id
      LEFT JOIN properties p ON p.id = d.property_id
      LEFT JOIN landlord_document_versions dv ON dv.id = d.current_draft_version_id
+     LEFT JOIN landlord_document_versions sv ON sv.id = d.current_signed_version_id
      WHERE d.status <> 'archived'
        AND d.fields->>'landlord_sign_token_hash' = $1
-       AND COALESCE(NULLIF(d.fields->>'landlord_sign_expires_at', '')::timestamptz, now() - interval '1 day') > now()
+       AND (
+         COALESCE(NULLIF(d.fields->>'landlord_sign_expires_at', '')::timestamptz, now() - interval '1 day') > now()
+         OR NULLIF(d.fields->>'landlord_signed_at', '') IS NOT NULL
+       )
      LIMIT 1`,
     [tokenHash]
   )
@@ -666,17 +673,22 @@ publicRouter.get('/landlord-documents/sign/:token', async (req, res) => {
     const row = await loadPublicSigningDocumentByToken(token)
     if (!row) return res.status(404).json({ message: 'not found' })
     const fields = parseFields(row.fields)
+    const landlordSignedAt = fields.landlord_signed_at || ''
     return res.json({
       id: row.id,
       type: row.type,
+      status: row.status,
       document_no: row.document_no,
       property_code: row.property_code,
       property_address: row.property_address || fields.property_address || '',
       landlord_name: row.landlord_name || fields.landlord_name || fields.owner_name || '',
       mz_signed_name: fields.mz_signed_name || fields.mz_agent_name || '',
       mz_signed_at: fields.mz_signed_at || '',
-      landlord_signed_at: fields.landlord_signed_at || '',
+      landlord_signed_name: fields.landlord_signed_name || '',
+      landlord_signed_at: landlordSignedAt,
       current_draft_url: row.current_draft_url || '',
+      current_signed_url: row.current_signed_url || '',
+      signed: Boolean(String(landlordSignedAt || '').trim()),
     })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'get public sign document failed' })
@@ -690,10 +702,14 @@ publicRouter.get('/landlord-documents/sign/:token/draft.pdf', async (req, res) =
     const token = String(req.params.token || '').trim()
     if (!token) return res.status(400).json({ message: 'missing token' })
     const row = await loadPublicSigningDocumentByToken(token)
-    if (!row?.current_draft_file_key) return res.status(404).json({ message: 'draft not found' })
-    const obj = await r2GetObjectByKey(String(row.current_draft_file_key))
+    const fields = parseFields(row?.fields)
+    const completed = Boolean(String(fields.landlord_signed_at || '').trim())
+    const fileKey = completed ? row?.current_signed_file_key : row?.current_draft_file_key
+    const fileName = completed ? row?.current_signed_file_name : row?.current_draft_file_name
+    if (!fileKey) return res.status(404).json({ message: completed ? 'signed version not found' : 'draft not found' })
+    const obj = await r2GetObjectByKey(String(fileKey))
     if (!obj?.body?.length) return res.status(404).json({ message: 'file not found' })
-    const filename = String(row.current_draft_file_name || `${row.id}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_')
+    const filename = String(fileName || `${row.id}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_')
     res.setHeader('Content-Type', obj.contentType || 'application/pdf')
     res.setHeader('Content-Disposition', `inline; filename="${filename}"`)
     return res.status(200).send(obj.body)
@@ -716,16 +732,13 @@ publicRouter.post('/landlord-documents/sign/:token/submit', async (req, res) => 
     if (!row) return res.status(404).json({ message: 'not found' })
     const fields = parseFields(row.fields)
     if (!String(fields.mz_signature_data_url || '').trim()) return res.status(409).json({ message: 'missing_mz_signature' })
-    if (String(fields.landlord_signed_at || '').trim()) return res.status(409).json({ message: 'already_signed' })
+    if (String(fields.landlord_signed_at || '').trim()) return res.json({ ok: true, already_signed: true, document: await loadDocument(String(row.id)), signed_url: row.current_signed_url || '' })
     const merged = {
       ...fields,
       landlord_signed_name: parsed.data.signed_name,
       landlord_signature_data_url: signature,
       landlord_signed_at: new Date().toISOString(),
     }
-    delete (merged as any).landlord_sign_token_hash
-    delete (merged as any).landlord_sign_expires_at
-    delete (merged as any).landlord_sign_requested_at
     const out = await createSignedVersion(String(row.id), merged, 'public_landlord_sign', 'Landlord e-sign completed')
     addAudit('LandlordDocument', String(row.id), 'landlord_sign_complete', row, out.document, 'public_landlord_sign')
     return res.json({ ok: true, document: out.document, signed_url: out.document?.current_signed_url || '' })
