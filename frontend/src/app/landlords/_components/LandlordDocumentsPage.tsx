@@ -72,7 +72,7 @@ type SavedMzSignature = {
 }
 
 const MZ_SIGNATURE_STORAGE_KEY = 'landlord_documents_mz_signature_v1'
-const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v3-onepage-2026-05-18'
+const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v7-page-filled-2026-05-18'
 
 const statusText: Record<string, string> = {
   draft: '草稿',
