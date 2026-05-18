@@ -88,9 +88,9 @@ export function InvoiceCompaniesManager(props: { bordered?: boolean; onChanged?:
     { title: '状态', dataIndex: 'status', width: 120, render: (v) => String(v || 'active') === 'active' ? <Tag color="green">active</Tag> : <Tag>archived</Tag> },
     { title: '操作', key: 'act', width: 220, fixed: 'right', render: (_: any, r: any) => (
       <Space>
-        <Button size="small" onClick={() => openModal(r)}>编辑</Button>
+        <Button onClick={() => openModal(r)}>编辑</Button>
         <Popconfirm title="确认删除该开票主体？" okText="删除" cancelText="取消" onConfirm={() => deleteCompany(String(r.id))}>
-          <Button size="small" danger>删除</Button>
+          <Button danger>删除</Button>
         </Popconfirm>
       </Space>
     )},

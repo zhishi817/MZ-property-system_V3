@@ -28,6 +28,7 @@ import { router as eventsRouter } from './modules/events'
 import notificationsRouter from './modules/notifications'
 import maintenanceRouter from './modules/maintenance'
 import deepCleaningRouter from './modules/deep_cleaning'
+import { router as landlordDocumentsRouter, publicRouter as landlordDocumentsPublicRouter } from './modules/landlord_documents'
 import { router as workTasksRouter } from './modules/work_tasks'
 import { router as taskCenterRouter } from './modules/task_center'
 import { router as mzappRouter, warmupMzappModule } from './modules/mzapp'
@@ -283,6 +284,7 @@ app.get('/__routes', (_req, res) => {
 })
 app.use('/public', auth, publicAdminRouter)
 app.use('/public', guestSitePublicRouter)
+app.use('/public', landlordDocumentsPublicRouter)
 app.use('/public', publicRouter)
 app.use(auth)
 const uploadDir = path.join(process.cwd(), 'uploads')
@@ -316,6 +318,7 @@ app.use('/events', eventsRouter)
 app.use('/notifications', notificationsRouter)
 app.use('/maintenance', maintenanceRouter)
 app.use('/deep-cleaning', deepCleaningRouter)
+app.use('/landlord-documents', landlordDocumentsRouter)
 app.use('/work-tasks', workTasksRouter)
 app.use('/task-center', taskCenterRouter)
 app.use('/mzapp', mzappRouter)
@@ -371,7 +374,7 @@ function onServerListening() {
     }
   } catch {}
   try {
-    const defaultEnabled = (process.env.NODE_ENV === 'production')
+    const defaultEnabled = false
     const enabled = String(process.env.EMAIL_SYNC_SCHEDULE_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true'
     const expr = String(process.env.EMAIL_SYNC_CRON || '0 */3 * * *')
     if (enabled && hasPg) {
@@ -440,7 +443,8 @@ function onServerListening() {
         console.log('[email-sync][watchdog] disabled')
       }
     } else {
-      console.log('[email-sync][schedule] disabled')
+      const sourceHint = process.env.NODE_ENV === 'production' ? 'external_cron_expected' : 'manual_or_external_cron_expected'
+      console.log(`[email-sync][schedule] disabled source_hint=${sourceHint}`)
     }
   } catch (e: any) {
     console.error(`[email-sync][schedule] init error message=${String(e?.message || '')}`)
@@ -913,20 +917,20 @@ function onServerListening() {
     }
   })
 
-async function startServer() {
+async function runStartupWarmups() {
+  if (!hasPg) return
+  const warmupStartedAt = Date.now()
   try {
-    if (hasPg) {
-      const warmupStartedAt = Date.now()
-      await bootstrapCleaningSyncSchemaV2()
-      await warmupMzappModule()
-      await warmupInventoryModule()
-      console.log(`[bootstrap] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`)
-    }
+    await bootstrapCleaningSyncSchemaV2()
+    await warmupMzappModule()
+    await warmupInventoryModule()
+    console.log(`[bootstrap] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`)
   } catch (err: any) {
     console.error(`[bootstrap] warmup_failed message=${String(err?.message || '')}`)
-    process.exit(1)
   }
+}
 
+async function startServer() {
   const server = app.listen(port, onServerListening)
   server.on('error', (err: any) => {
     const code = String(err?.code || '')
@@ -937,6 +941,7 @@ async function startServer() {
     console.error(`❌ Server failed to start. code=${code} message=${String(err?.message || '')}`)
     process.exit(1)
   })
+  void runStartupWarmups()
 
 }
 

@@ -92,6 +92,43 @@ CREATE TABLE IF NOT EXISTS landlord_management_fee_rules (
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_landlord_management_fee_rules_landlord_month ON landlord_management_fee_rules(landlord_id, effective_from_month);
 CREATE INDEX IF NOT EXISTS idx_landlord_management_fee_rules_lookup ON landlord_management_fee_rules(landlord_id, effective_from_month DESC);
 
+CREATE TABLE IF NOT EXISTS landlord_documents (
+  id text PRIMARY KEY,
+  type text NOT NULL,
+  document_no text,
+  landlord_id text REFERENCES landlords(id) ON DELETE SET NULL,
+  property_id text REFERENCES properties(id) ON DELETE SET NULL,
+  status text NOT NULL DEFAULT 'draft',
+  fields jsonb NOT NULL DEFAULT '{}'::jsonb,
+  notes text,
+  current_draft_version_id text,
+  current_signed_version_id text,
+  created_by text,
+  updated_by text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_landlord_documents_type_status ON landlord_documents(type, status);
+CREATE INDEX IF NOT EXISTS idx_landlord_documents_landlord ON landlord_documents(landlord_id);
+CREATE INDEX IF NOT EXISTS idx_landlord_documents_property ON landlord_documents(property_id);
+
+CREATE TABLE IF NOT EXISTS landlord_document_versions (
+  id text PRIMARY KEY,
+  document_id text NOT NULL REFERENCES landlord_documents(id) ON DELETE CASCADE,
+  kind text NOT NULL,
+  version_no integer NOT NULL,
+  file_url text NOT NULL,
+  file_key text,
+  file_name text,
+  file_size integer,
+  content_type text,
+  is_current boolean DEFAULT false,
+  notes text,
+  created_by text,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_landlord_document_versions_doc ON landlord_document_versions(document_id, kind, version_no DESC);
+
 CREATE TABLE IF NOT EXISTS orders (
   id text PRIMARY KEY,
   source text,

@@ -33,6 +33,7 @@ const events_1 = require("./modules/events");
 const notifications_1 = __importDefault(require("./modules/notifications"));
 const maintenance_1 = __importDefault(require("./modules/maintenance"));
 const deep_cleaning_1 = __importDefault(require("./modules/deep_cleaning"));
+const landlord_documents_1 = require("./modules/landlord_documents");
 const work_tasks_1 = require("./modules/work_tasks");
 const task_center_1 = require("./modules/task_center");
 const mzapp_1 = require("./modules/mzapp");
@@ -329,6 +330,7 @@ app.get('/__routes', (_req, res) => {
 });
 app.use('/public', auth_2.auth, public_admin_1.default);
 app.use('/public', guest_site_1.publicRouter);
+app.use('/public', landlord_documents_1.publicRouter);
 app.use('/public', public_1.default);
 app.use(auth_2.auth);
 const uploadDir = path_1.default.join(process.cwd(), 'uploads');
@@ -361,6 +363,7 @@ app.use('/events', events_1.router);
 app.use('/notifications', notifications_1.default);
 app.use('/maintenance', maintenance_1.default);
 app.use('/deep-cleaning', deep_cleaning_1.default);
+app.use('/landlord-documents', landlord_documents_1.router);
 app.use('/work-tasks', work_tasks_1.router);
 app.use('/task-center', task_center_1.router);
 app.use('/mzapp', mzapp_1.router);
@@ -422,7 +425,7 @@ function onServerListening() {
     }
     catch (_a) { }
     try {
-        const defaultEnabled = (process.env.NODE_ENV === 'production');
+        const defaultEnabled = false;
         const enabled = String(process.env.EMAIL_SYNC_SCHEDULE_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true';
         const expr = String(process.env.EMAIL_SYNC_CRON || '0 */3 * * *');
         if (enabled && dbAdapter_1.hasPg) {
@@ -517,7 +520,8 @@ function onServerListening() {
             }
         }
         else {
-            console.log('[email-sync][schedule] disabled');
+            const sourceHint = process.env.NODE_ENV === 'production' ? 'external_cron_expected' : 'manual_or_external_cron_expected';
+            console.log(`[email-sync][schedule] disabled source_hint=${sourceHint}`);
         }
     }
     catch (e) {
@@ -1045,20 +1049,21 @@ app.get('/health/email-sync', async (_req, res) => {
         return res.status(500).json({ message: String((e === null || e === void 0 ? void 0 : e.message) || '') });
     }
 });
-async function startServer() {
+async function runStartupWarmups() {
+    if (!dbAdapter_1.hasPg)
+        return;
+    const warmupStartedAt = Date.now();
     try {
-        if (dbAdapter_1.hasPg) {
-            const warmupStartedAt = Date.now();
-            await (0, cleaningSync_1.bootstrapCleaningSyncSchemaV2)();
-            await (0, mzapp_1.warmupMzappModule)();
-            await (0, inventory_1.warmupInventoryModule)();
-            console.log(`[bootstrap] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`);
-        }
+        await (0, cleaningSync_1.bootstrapCleaningSyncSchemaV2)();
+        await (0, mzapp_1.warmupMzappModule)();
+        await (0, inventory_1.warmupInventoryModule)();
+        console.log(`[bootstrap] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`);
     }
     catch (err) {
         console.error(`[bootstrap] warmup_failed message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
-        process.exit(1);
     }
+}
+async function startServer() {
     const server = app.listen(port, onServerListening);
     server.on('error', (err) => {
         const code = String((err === null || err === void 0 ? void 0 : err.code) || '');
@@ -1069,5 +1074,6 @@ async function startServer() {
         console.error(`❌ Server failed to start. code=${code} message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
         process.exit(1);
     });
+    void runStartupWarmups();
 }
 void startServer();

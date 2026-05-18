@@ -1,11 +1,31 @@
+import fs from 'node:fs'
 import { spawn } from 'node:child_process'
 import { execSync } from 'node:child_process'
 
-const BACKEND_PORT = process.env.PORT_OVERRIDE || process.env.PORT || '4001'
-const BACKEND_HEALTH_URL = `http://localhost:${BACKEND_PORT}/health`
 const BACKEND_CWD = new URL('../backend/', import.meta.url)
 const FRONTEND_CWD = new URL('../frontend/', import.meta.url)
 const FRONTEND_PORT = process.env.FRONTEND_PORT || '3000'
+
+function readBackendPortFromEnvLocal() {
+  try {
+    const p = new URL('.env.local', BACKEND_CWD)
+    if (!fs.existsSync(p)) return ''
+    const txt = fs.readFileSync(p, 'utf8')
+    for (const line of txt.split(/\r?\n/g)) {
+      const s = String(line || '').trim()
+      if (!s || s.startsWith('#')) continue
+      const i = s.indexOf('=')
+      if (i <= 0) continue
+      const key = s.slice(0, i).trim()
+      const value = s.slice(i + 1).trim()
+      if (key === 'PORT_OVERRIDE' || key === 'PORT') return value
+    }
+  } catch {}
+  return ''
+}
+
+const BACKEND_PORT = process.env.PORT_OVERRIDE || process.env.PORT || readBackendPortFromEnvLocal() || '4002'
+const BACKEND_HEALTH_URL = `http://localhost:${BACKEND_PORT}/health`
 
 function npmCmd() {
   return process.platform === 'win32' ? 'npm.cmd' : 'npm'

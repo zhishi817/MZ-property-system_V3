@@ -1,5 +1,13 @@
 # Changelog
 
+## Dev (2026-05-18)
+
+### build.1
+
+- Ops: Default the in-process email sync scheduler to disabled unless `EMAIL_SYNC_SCHEDULE_ENABLED=true`, so production can rely on external cron as the primary source and avoid duplicate email-sync runs by default.
+- Ops: Add `/jobs/email-sync-backlog-summary`, `/jobs/email-sync-observability`, `/jobs/cleaning-sync-observability`, and `/jobs/db-query-observability` for 24h/72h/7d cost baseline, backlog drain, cleaning activity, and `pg_stat_statements` query visibility.
+- Ops: Expose `trigger_source` in email sync status/run observability payloads and propagate it into email sync job state changes for easier production-source attribution.
+
 ## Dev (2026-04-03)
 
 ### build.13
