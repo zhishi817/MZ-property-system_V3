@@ -19,6 +19,7 @@ frontend/.next/
 frontend/trace/
 frontend/out/
 frontend/coverage/
+output/
 
 # TypeScript build caches
 frontend/*.tsbuildinfo
