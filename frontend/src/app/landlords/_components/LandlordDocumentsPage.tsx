@@ -1,7 +1,7 @@
 "use client"
 
-import { AutoComplete, Button, Card, Col, DatePicker, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tag, Upload, message } from 'antd'
-import type { UploadProps } from 'antd'
+import { AutoComplete, Button, Card, Col, DatePicker, Descriptions, Divider, Drawer, Dropdown, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tag, Upload, message } from 'antd'
+import type { MenuProps, UploadProps } from 'antd'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../../lib/api'
@@ -10,6 +10,8 @@ import SignaturePad, { type SignaturePadHandle } from '../../../components/Signa
 
 type DocumentType = 'agency_authority' | 'property_service_agreement'
 type VersionKind = 'draft' | 'signed'
+type ServiceAgreementVariant = 'management_standard' | 'management_sale' | 'leased_to_mz'
+type AttachmentCategory = 'agency_contract' | 'condition_report'
 
 type DocumentVersion = {
   id: string
@@ -20,6 +22,17 @@ type DocumentVersion = {
   file_size?: number
   is_current?: boolean
   notes?: string
+  created_at?: string
+}
+
+type DocumentAttachment = {
+  id: string
+  document_id: string
+  category: AttachmentCategory
+  file_url: string
+  file_name?: string
+  file_size?: number
+  content_type?: string
   created_at?: string
 }
 
@@ -40,6 +53,7 @@ type LandlordDocument = {
   current_draft_version_id?: string
   current_signed_version_id?: string
   versions?: DocumentVersion[]
+  attachments?: DocumentAttachment[]
   created_at?: string
   updated_at?: string
 }
@@ -73,6 +87,21 @@ type SavedMzSignature = {
 
 const MZ_SIGNATURE_STORAGE_KEY = 'landlord_documents_mz_signature_v1'
 const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v7-page-filled-2026-05-18'
+const SERVICE_AGREEMENT_TEMPLATE_VERSION = 'service-agreement-v4-2026-05-21'
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const ATTACHMENT_ACCEPT = '.pdf,.doc,.docx,.jpg,.jpeg,.png'
+
+const serviceAgreementVariantText: Record<ServiceAgreementVariant, string> = {
+  management_standard: '正常管理费短租',
+  management_sale: '边卖边做短租',
+  leased_to_mz: '中介包租给我们',
+}
+
+const serviceAgreementVariantOptions = [
+  { value: 'management_standard', label: serviceAgreementVariantText.management_standard },
+  { value: 'management_sale', label: serviceAgreementVariantText.management_sale },
+  { value: 'leased_to_mz', label: serviceAgreementVariantText.leased_to_mz },
+]
 
 const statusText: Record<string, string> = {
   draft: '草稿',
@@ -92,6 +121,77 @@ function fmtDate(v?: string) {
   if (!v) return '-'
   const d = dayjs(v)
   return d.isValid() ? d.format('YYYY-MM-DD HH:mm') : v
+}
+
+function normalizeEmailList(value: any): string[] {
+  const items = Array.isArray(value) ? value : [value]
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const item of items) {
+    const parts = String(item ?? '')
+      .split(/[\n,;，；]+/g)
+      .map((x) => x.trim())
+      .filter(Boolean)
+    for (const part of parts) {
+      const key = part.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(part)
+    }
+  }
+  return out
+}
+
+function formatEmailList(value: any, fallback = '-') {
+  const emails = normalizeEmailList(value)
+  return emails.length ? emails.join(', ') : fallback
+}
+
+function normalizeServiceAgreementVariant(value: any): ServiceAgreementVariant {
+  const raw = String(value || '').trim()
+  if (raw === 'management_sale' || raw === 'leased_to_mz') return raw
+  return 'management_standard'
+}
+
+function defaultManagementFeePercent(variant: ServiceAgreementVariant) {
+  if (variant === 'management_sale') return 50
+  if (variant === 'leased_to_mz') return null
+  return 18.5
+}
+
+function normalizePercentInput(value: any) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function percentToRate(value: any) {
+  const n = normalizePercentInput(value)
+  if (n == null) return null
+  if (n <= 1) return n
+  return n / 100
+}
+
+function rateToPercent(value: any) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return n <= 1 ? Number((n * 100).toFixed(3)) : n
+}
+
+function formatManagementFeeText(rate: number | null) {
+  if (!(typeof rate === 'number' && Number.isFinite(rate) && rate > 0)) return ''
+  const pct = Number((rate * 100).toFixed(3))
+  return `${String(pct).replace(/\.0+$/,'').replace(/(\.\d*?)0+$/,'$1')}% of Net Rental Income`
+}
+
+function parseManagementFeeTextToPercent(value: any) {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  const m = raw.match(/(\d+(?:\.\d+)?)/)
+  return m ? Number(m[1]) : null
+}
+
+function isLeasedVariant(value: any) {
+  return normalizeServiceAgreementVariant(value) === 'leased_to_mz'
 }
 
 function fileSize(n?: number) {
@@ -182,8 +282,10 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
   const [linkOpen, setLinkOpen] = useState(false)
   const [signLink, setSignLink] = useState('')
   const [signLinkExpiresAt, setSignLinkExpiresAt] = useState('')
+  const [templateDownloading, setTemplateDownloading] = useState('')
   const [mzSignForm] = Form.useForm()
   const mzSignPadRef = useRef<SignaturePadHandle | null>(null)
+  const submitLockRef = useRef(false)
   const [canWrite, setCanWrite] = useState(false)
 
   function loadStoredMzSignature() {
@@ -251,11 +353,11 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
   async function loadSourceContracts() {
     if (type !== 'agency_authority') return
     const list = await getJSON<LandlordDocument[]>('/landlord-documents?type=property_service_agreement').catch(() => [])
-    setSourceContracts(Array.isArray(list) ? list : [])
+    setSourceContracts((Array.isArray(list) ? list : []).filter((x) => !isLeasedVariant(x.fields?.contract_variant)))
   }
 
-  async function loadAuthorityReferences() {
-    if (type !== 'agency_authority') return
+  async function loadDocumentReferences() {
+    if (type !== 'agency_authority' && type !== 'property_service_agreement') return
     const [propertyList, landlordList] = await Promise.all([
       getJSON<PropertyLite[]>('/properties').catch(() => []),
       getJSON<LandlordLite[]>('/landlords').catch(() => []),
@@ -265,18 +367,20 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
   }
 
   useEffect(() => { loadSourceContracts() }, [type])
-  useEffect(() => { loadAuthorityReferences() }, [type])
+  useEffect(() => { loadDocumentReferences() }, [type])
   useEffect(() => { load() }, [type, status])
   useEffect(() => { setDefaultMzSignature(loadStoredMzSignature()) }, [])
   useEffect(() => { setCanWrite(hasPerm('landlord.manage')) }, [])
 
   function defaultFields() {
+    const baseRate = defaultManagementFeePercent('management_standard')
     const fields: Record<string, any> = {
+      contract_variant: 'management_standard',
       landlord_name: '',
-      landlord_email: '',
+      landlord_email: [],
       landlord_phone: '',
       owner_name: '',
-      owner_email: '',
+      owner_email: [],
       owner_phone: '',
       bsb: '',
       account_number: '',
@@ -299,10 +403,11 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
       repair_approval_limit: '300',
       utilities_paid_by: 'paid by Owner',
       investment_or_holiday: 'Investment',
-      term: 'Ongoing with 3-months termination notice',
+      term: 'Ongoing with 60 days termination notice',
       initial_property_visit: 'Included',
       setup_fee: '0.00',
-      management_fee: '50%/Month',
+      management_fee_rate: baseRate,
+      management_fee: formatManagementFeeText(percentToRate(baseRate)),
       consumable_fee: '0.00 /Month',
       linen_fee: 'Included',
       initial_housekeeping_fee: 'TBC',
@@ -392,14 +497,18 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     setEditorOpen(true)
   }
 
-  function openEdit(row: LandlordDocument) {
-    setEditing(row)
+  async function openEdit(row: LandlordDocument) {
+    const full = await getJSON<LandlordDocument>(`/landlord-documents/${row.id}`).catch(() => row)
+    setEditing(full)
     form.resetFields()
+    const hydratedFields = hydrateDateFields(full.fields || {})
     form.setFieldsValue({
-      landlord_id: row.landlord_id || null,
-      property_id: row.property_id || null,
-      notes: row.notes || undefined,
-      fields: hydrateDateFields(row.fields || {}),
+      landlord_id: full.landlord_id || null,
+      property_id: full.property_id || null,
+      notes: full.notes || undefined,
+      fields: type === 'agency_authority'
+        ? { ...hydratedFields, landlord_email: normalizeEmailList(hydratedFields.landlord_email) }
+        : hydratedFields,
     })
     setEditorOpen(true)
   }
@@ -411,16 +520,18 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
   }
 
   async function submit() {
-    const v = await form.validateFields()
-    const payload = {
-      type,
-      landlord_id: v.landlord_id || null,
-      property_id: v.property_id || null,
-      notes: v.notes || null,
-      fields: normalizeFormFields(v.fields || {}),
-    }
+    if (submitLockRef.current) return
+    submitLockRef.current = true
     setSaving(true)
     try {
+      const v = await form.validateFields()
+      const payload = {
+        type,
+        landlord_id: v.landlord_id || null,
+        property_id: v.property_id || null,
+        notes: v.notes || null,
+        fields: applyAutoMzSignature(normalizeFormFields(v.fields || {})),
+      }
       if (editing?.id) {
         await patchJSON(`/landlord-documents/${editing.id}`, payload)
         message.success('已保存')
@@ -433,6 +544,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     } catch (e: any) {
       message.error(e?.message || '保存失败')
     } finally {
+      submitLockRef.current = false
       setSaving(false)
     }
   }
@@ -442,8 +554,30 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     for (const k of ['sign_date', 'commencement_date']) {
       if (out[k] && dayjs.isDayjs(out[k])) out[k] = out[k].format('YYYY-MM-DD')
     }
+    if ('landlord_email' in out) out.landlord_email = normalizeEmailList(out.landlord_email)
+    if ('owner_email' in out) out.owner_email = normalizeEmailList(out.owner_email)
+    if (type === 'property_service_agreement') {
+      const variant = normalizeServiceAgreementVariant(out.contract_variant)
+      out.contract_variant = variant
+      const rate = variant === 'leased_to_mz' ? null : percentToRate(out.management_fee_rate ?? defaultManagementFeePercent(variant))
+      out.management_fee_rate = rate
+      out.management_fee = variant === 'leased_to_mz' ? '' : formatManagementFeeText(rate)
+    }
     out.parking_details = buildParkingDetails(out)
     out.number_of_keys = normalizeKeySets(out.number_of_keys)
+    return out
+  }
+
+  function applyAutoMzSignature(fields: Record<string, any>) {
+    const out: Record<string, any> = { ...fields }
+    const signedName = String(out.mz_signed_name || defaultMzSignature?.signed_name || out.mz_agent_name || 'MZ Property').trim()
+    if (!String(out.mz_signed_name || '').trim()) out.mz_signed_name = signedName
+    if (!String(out.mz_signed_at || '').trim()) {
+      out.mz_signed_at = String(out.sign_date || out.commencement_date || new Date().toISOString()).trim()
+    }
+    if (!String(out.mz_signature_data_url || '').trim() && defaultMzSignature?.signature_data_url) {
+      out.mz_signature_data_url = defaultMzSignature.signature_data_url
+    }
     return out
   }
 
@@ -461,6 +595,12 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     if (!out.parking_count && out.parking_available !== 'no') {
       const m = String(out.parking_details || '').match(/(\d+)/)
       out.parking_count = m ? Number(m[1]) : 1
+    }
+    if (type === 'property_service_agreement') {
+      const variant = normalizeServiceAgreementVariant(out.contract_variant)
+      out.contract_variant = variant
+      out.owner_email = normalizeEmailList(out.owner_email)
+      out.management_fee_rate = rateToPercent(out.management_fee_rate) ?? parseManagementFeeTextToPercent(out.management_fee) ?? defaultManagementFeePercent(variant)
     }
     return out
   }
@@ -496,9 +636,21 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     return String(row.fields?.agency_authority_template_version || '') !== AGENCY_AUTHORITY_TEMPLATE_VERSION
   }
 
+  function needsServiceAgreementDraftRefresh(row: LandlordDocument) {
+    if (row.type !== 'property_service_agreement') return false
+    if (row.status === 'signed' || row.status === 'archived') return false
+    if (isLeasedVariant(row.fields?.contract_variant)) return false
+    if (!row.current_draft_url) return false
+    return String(row.fields?.property_service_agreement_template_version || '') !== SERVICE_AGREEMENT_TEMPLATE_VERSION
+  }
+
   async function openPreview(row: LandlordDocument) {
     try {
-      const target = await ensureDraft(row, needsAuthorityDraftRefresh(row))
+      if (row.type === 'property_service_agreement' && isLeasedVariant(row.fields?.contract_variant)) {
+        message.warning('该类型合同仅支持上传附件，不生成 PDF')
+        return
+      }
+      const target = await ensureDraft(row, needsAuthorityDraftRefresh(row) || needsServiceAgreementDraftRefresh(row))
       if (!target.current_draft_url) {
         message.warning('当前还没有可预览的草稿 PDF')
         return
@@ -532,7 +684,11 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
 
   async function downloadDraft(row: LandlordDocument) {
     try {
-      const target = await ensureDraft(row, needsAuthorityDraftRefresh(row))
+      if (row.type === 'property_service_agreement' && isLeasedVariant(row.fields?.contract_variant)) {
+        message.warning('该类型合同没有草稿 PDF')
+        return
+      }
+      const target = await ensureDraft(row, needsAuthorityDraftRefresh(row) || needsServiceAgreementDraftRefresh(row))
       if (!target.current_draft_url) {
         message.warning('当前还没有可下载的草稿 PDF')
         return
@@ -608,26 +764,6 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     await patchJSON(`/landlord-documents/${row.id}`, { fields: nextFields, status: 'draft' })
   }
 
-  async function applyDefaultMzSign(row: LandlordDocument, saved?: SavedMzSignature | null) {
-    const signature = saved || defaultMzSignature
-    if (!signature?.signed_name || !signature?.signature_data_url) {
-      openMzSign(row)
-      return
-    }
-    setSaving(true)
-    try {
-      await saveMzSignatureForDocument(row, signature)
-      message.success('已套用默认签名')
-      await load()
-      if (detail?.id === row.id) await openDetail(row)
-      if (previewDoc?.id === row.id) await reloadPreview(row)
-    } catch (e: any) {
-      message.error(e?.message || '签署失败')
-    } finally {
-      setSaving(false)
-    }
-  }
-
   function openMzSign(row?: LandlordDocument | null) {
     setMzSignTarget(row || null)
     mzSignForm.resetFields()
@@ -689,9 +825,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
       if (detail?.id === row.id) await openDetail(row)
       if (previewDoc?.id === row.id) await reloadPreview(row)
     } catch (e: any) {
-      const msg = String(e?.message || '')
-      if (msg === 'missing_mz_signature') message.error('请先完成 MZ 签署')
-      else message.error(msg || '生成签署链接失败')
+      message.error(String(e?.message || '生成签署链接失败'))
     } finally {
       setSaving(false)
     }
@@ -730,6 +864,58 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     }
   }
 
+  async function uploadLeasedAttachment(row: LandlordDocument, category: AttachmentCategory, file: File) {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('category', category)
+    setSaving(true)
+    try {
+      const res = await fetch(`${API_BASE}/landlord-documents/${row.id}/attachments/upload`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: fd,
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => null)
+        throw new Error(j?.message || '上传失败')
+      }
+      const j = await res.json().catch(() => null)
+      const next = (j?.document || await getJSON<LandlordDocument>(`/landlord-documents/${row.id}`).catch(() => row)) as LandlordDocument
+      setEditing((prev) => prev?.id === row.id ? next : prev)
+      setDetail((prev) => prev?.id === row.id ? next : prev)
+      await load()
+      message.success('附件已上传')
+    } catch (e: any) {
+      message.error(e?.message || '上传失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function deleteLeasedAttachment(row: LandlordDocument, attachment: DocumentAttachment) {
+    setSaving(true)
+    try {
+      const res = await fetch(`${API_BASE}/landlord-documents/${row.id}/attachments/${attachment.id}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => null)
+        throw new Error(j?.message || '删除失败')
+      }
+      const j = await res.json().catch(() => null)
+      const next = (j?.document || await getJSON<LandlordDocument>(`/landlord-documents/${row.id}`).catch(() => row)) as LandlordDocument
+      setEditing((prev) => prev?.id === row.id ? next : prev)
+      setDetail((prev) => prev?.id === row.id ? next : prev)
+      await load()
+      message.success('附件已删除')
+    } catch (e: any) {
+      message.error(e?.message || '删除失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   async function setCurrentSigned(version: DocumentVersion) {
     if (!detail?.id) return
     try {
@@ -761,10 +947,50 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     })
   }
 
+  async function downloadBlankTemplate(variant?: ServiceAgreementVariant) {
+    const typeLabel = type === 'agency_authority'
+      ? '授权协议'
+      : (variant === 'management_sale' ? '边卖边做短租合同' : '正常管理费短租合同')
+    setTemplateDownloading(variant || type)
+    try {
+      const qs = new URLSearchParams({ type })
+      if (type === 'property_service_agreement' && variant) qs.set('variant', variant)
+      const res = await fetch(`${API_BASE}/landlord-documents/templates/blank?${qs.toString()}`, { headers: authHeaders() })
+      if (!res.ok) {
+        const j = await res.json().catch(() => null)
+        throw new Error(j?.message || '下载失败')
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = type === 'agency_authority'
+        ? 'agency-authority-blank-template.pdf'
+        : `service-agreement-blank-template-${variant === 'management_sale' ? 'sale' : 'standard'}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      message.success(`${typeLabel}空白模版已下载`)
+    } catch (e: any) {
+      message.error(e?.message || '下载空白模版失败')
+    } finally {
+      setTemplateDownloading('')
+    }
+  }
+
   const columns = [
     { title: '编号', dataIndex: 'document_no', width: 150, render: (v: string) => v || '-' },
+    {
+      title: '合同类型',
+      key: 'contract_variant',
+      width: 150,
+      render: (_: any, r: LandlordDocument) => r.type === 'property_service_agreement'
+        ? <Tag>{serviceAgreementVariantText[normalizeServiceAgreementVariant(r.fields?.contract_variant)]}</Tag>
+        : '-'
+    },
     { title: '房东', dataIndex: 'landlord_name', width: 150, render: (_: any, r: LandlordDocument) => r.landlord_name || r.fields?.landlord_name || r.fields?.owner_name || '-' },
-    { title: '房源', dataIndex: 'property_code', render: (_: any, r: LandlordDocument) => [r.property_code, r.property_address || r.fields?.property_address].filter(Boolean).join(' - ') || '-' },
+    { title: '房源', dataIndex: 'property_code', render: (_: any, r: LandlordDocument) => [r.property_code || r.fields?.property_code, r.property_address || r.fields?.property_address].filter(Boolean).join(' - ') || '-' },
     { title: '状态', dataIndex: 'status', width: 110, render: (v: string) => <Tag color={statusColor[v] || 'default'}>{statusText[v] || v}</Tag> },
     { title: '草稿', dataIndex: 'current_draft_url', width: 90, render: (v: string) => v ? <Tag color="blue">有</Tag> : <Tag>无</Tag> },
     { title: '签署版', dataIndex: 'current_signed_url', width: 90, render: (v: string) => v ? <Tag color="green">有</Tag> : <Tag>无</Tag> },
@@ -777,8 +1003,8 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
         <Space>
           <Button onClick={() => openDetail(r)}>详情</Button>
           {canWrite ? <Button onClick={() => openEdit(r)}>编辑</Button> : null}
-          <Button disabled={!r.current_draft_url && !canWrite} onClick={() => openPreview(r)}>预览</Button>
-          {canWrite ? <Button onClick={() => downloadSigned(r)}>{r.current_signed_url ? '下载签署版' : '上传签署版'}</Button> : null}
+          {!(r.type === 'property_service_agreement' && isLeasedVariant(r.fields?.contract_variant)) ? <Button disabled={!r.current_draft_url && !canWrite} onClick={() => openPreview(r)}>预览</Button> : null}
+          {canWrite && !(r.type === 'property_service_agreement' && isLeasedVariant(r.fields?.contract_variant)) ? <Button onClick={() => downloadSigned(r)}>{r.current_signed_url ? '下载签署版' : '上传签署版'}</Button> : null}
           {canWrite ? <Button danger disabled={r.status === 'archived'} onClick={() => archive(r)}>归档</Button> : null}
         </Space>
       ),
@@ -791,15 +1017,30 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     beforeUpload: () => false,
   }
 
+  const blankTemplateMenu: MenuProps = {
+    items: [
+      { key: 'management_standard', label: '正常管理费短租' },
+      { key: 'management_sale', label: '边卖边做短租' },
+    ],
+    onClick: ({ key }) => downloadBlankTemplate(key as ServiceAgreementVariant),
+  }
+
   return (
-    <Card
+      <Card
       title={title}
-      extra={canWrite ? (
+      extra={(
         <Space>
-          <Button onClick={() => openMzSign(null)}>设置我方默认签名</Button>
-          <Button type="primary" onClick={openCreate}>新增{title}</Button>
+          {type === 'agency_authority' ? (
+            <Button loading={templateDownloading === type} onClick={() => downloadBlankTemplate()}>下载空白模版</Button>
+          ) : (
+            <Dropdown menu={blankTemplateMenu} trigger={['click']}>
+              <Button loading={templateDownloading === 'management_standard' || templateDownloading === 'management_sale'}>下载空白模版</Button>
+            </Dropdown>
+          )}
+          {canWrite ? <Button onClick={() => openMzSign(null)}>设置我方默认签名</Button> : null}
+          {canWrite ? <Button type="primary" onClick={openCreate}>新增{title}</Button> : null}
         </Space>
-      ) : null}
+      )}
     >
       <Space style={{ marginBottom: 16 }} wrap>
         <Input.Search allowClear placeholder="搜索房东/地址/编号" style={{ width: 280 }} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
@@ -813,7 +1054,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
         open={editorOpen}
         onClose={() => setEditorOpen(false)}
         width={860}
-        extra={<Space><Button onClick={() => setEditorOpen(false)}>取消</Button><Button type="primary" loading={saving} onClick={submit}>保存</Button></Space>}
+        extra={<Space><Button disabled={saving} onClick={() => setEditorOpen(false)}>取消</Button><Button type="primary" loading={saving} disabled={saving} onClick={submit}>保存</Button></Space>}
       >
         <Form form={form} layout="vertical">
           {type === 'agency_authority' ? (
@@ -829,7 +1070,20 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
               onAddrSearch={handleAddrSearch}
             />
           ) : (
-            <ServiceAgreementFields form={form} hydrateDateFields={hydrateDateFields} addrOptions={addrOptions} onAddrSearch={handleAddrSearch} />
+            <ServiceAgreementFields
+              form={form}
+              hydrateDateFields={hydrateDateFields}
+              addrOptions={addrOptions}
+              onAddrSearch={handleAddrSearch}
+              properties={properties}
+              landlords={landlords}
+              propertyOptions={propertyOptions}
+              currentDocument={editing}
+              canWrite={canWrite}
+              saving={saving}
+              onUploadAttachment={uploadLeasedAttachment}
+              onDeleteAttachment={deleteLeasedAttachment}
+            />
           )}
           <Form.Item name="notes" label="备注"><Input.TextArea rows={2} /></Form.Item>
         </Form>
@@ -841,30 +1095,43 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
             <Descriptions column={2} bordered size="small">
               <Descriptions.Item label="编号">{detail.document_no || '-'}</Descriptions.Item>
               <Descriptions.Item label="状态"><Tag color={statusColor[detail.status]}>{statusText[detail.status] || detail.status}</Tag></Descriptions.Item>
+              {detail.type === 'property_service_agreement' ? <Descriptions.Item label="合同类型">{serviceAgreementVariantText[normalizeServiceAgreementVariant(detail.fields?.contract_variant)]}</Descriptions.Item> : null}
               <Descriptions.Item label="房东">{detail.landlord_name || detail.fields?.landlord_name || detail.fields?.owner_name || '-'}</Descriptions.Item>
-              <Descriptions.Item label="房源">{[detail.property_code, detail.property_address || detail.fields?.property_address].filter(Boolean).join(' - ') || '-'}</Descriptions.Item>
+              <Descriptions.Item label="房源">{[detail.property_code || detail.fields?.property_code, detail.property_address || detail.fields?.property_address].filter(Boolean).join(' - ') || '-'}</Descriptions.Item>
               <Descriptions.Item label="MZ 签署">{detail.fields?.mz_signed_at ? `${detail.fields?.mz_signed_name || '-'} / ${String(detail.fields?.mz_signed_at || '').slice(0, 10)}` : '-'}</Descriptions.Item>
               <Descriptions.Item label="房东签署">{detail.fields?.landlord_signed_at ? `${detail.fields?.landlord_signed_name || '-'} / ${String(detail.fields?.landlord_signed_at || '').slice(0, 10)}` : '-'}</Descriptions.Item>
-              <Descriptions.Item label="当前草稿">{detail.current_draft_url ? <Button size="small" onClick={() => downloadDraft(detail)}>下载草稿</Button> : '-'}</Descriptions.Item>
-              <Descriptions.Item label="当前签署版">{detail.current_signed_url ? <Button size="small" onClick={() => downloadSigned(detail)}>下载签署版</Button> : '-'}</Descriptions.Item>
+              <Descriptions.Item label="当前草稿">{detail.type === 'property_service_agreement' && isLeasedVariant(detail.fields?.contract_variant) ? '不适用' : (detail.current_draft_url ? <Button size="small" onClick={() => downloadDraft(detail)}>下载草稿</Button> : '-')}</Descriptions.Item>
+              <Descriptions.Item label="当前签署版">{detail.type === 'property_service_agreement' && isLeasedVariant(detail.fields?.contract_variant) ? '不适用' : (detail.current_signed_url ? <Button size="small" onClick={() => downloadSigned(detail)}>下载签署版</Button> : '-')}</Descriptions.Item>
               <Descriptions.Item label="备注" span={2}>{detail.notes || '-'}</Descriptions.Item>
             </Descriptions>
-            <h3 style={{ marginTop: 20 }}>版本历史</h3>
-            <Table
-              rowKey="id"
-              size="small"
-              dataSource={detail.versions || []}
-              pagination={false}
-              columns={[
-                { title: '类型', dataIndex: 'kind', width: 90, render: (v: VersionKind) => v === 'draft' ? '草稿' : '签署版' },
-                { title: '版本', dataIndex: 'version_no', width: 80, render: (v: number, r: DocumentVersion) => <Space>{`v${v}`}{r.is_current ? <Tag color="green">当前</Tag> : null}</Space> },
-                { title: '文件', dataIndex: 'file_name', render: (v: string, r: DocumentVersion) => <a href={r.file_url} target="_blank">{v || r.file_url}</a> },
-                { title: '大小', dataIndex: 'file_size', width: 90, render: fileSize },
-                { title: '备注', dataIndex: 'notes', render: (v: string) => v || '-' },
-                { title: '创建时间', dataIndex: 'created_at', width: 145, render: fmtDate },
-                { title: '操作', width: 120, render: (_: any, r: DocumentVersion) => r.kind === 'signed' && !r.is_current && canWrite ? <Button size="small" onClick={() => setCurrentSigned(r)}>设为当前</Button> : null },
-              ] as any}
-            />
+            {detail.type === 'property_service_agreement' && isLeasedVariant(detail.fields?.contract_variant) ? (
+              <LeaseAttachmentSection
+                document={detail}
+                canWrite={canWrite}
+                saving={saving}
+                onUpload={uploadLeasedAttachment}
+                onDelete={deleteLeasedAttachment}
+              />
+            ) : (
+              <>
+                <h3 style={{ marginTop: 20 }}>版本历史</h3>
+                <Table
+                  rowKey="id"
+                  size="small"
+                  dataSource={detail.versions || []}
+                  pagination={false}
+                  columns={[
+                    { title: '类型', dataIndex: 'kind', width: 90, render: (v: VersionKind) => v === 'draft' ? '草稿' : '签署版' },
+                    { title: '版本', dataIndex: 'version_no', width: 80, render: (v: number, r: DocumentVersion) => <Space>{`v${v}`}{r.is_current ? <Tag color="green">当前</Tag> : null}</Space> },
+                    { title: '文件', dataIndex: 'file_name', render: (v: string, r: DocumentVersion) => <a href={r.file_url} target="_blank">{v || r.file_url}</a> },
+                    { title: '大小', dataIndex: 'file_size', width: 90, render: fileSize },
+                    { title: '备注', dataIndex: 'notes', render: (v: string) => v || '-' },
+                    { title: '创建时间', dataIndex: 'created_at', width: 145, render: fmtDate },
+                    { title: '操作', width: 120, render: (_: any, r: DocumentVersion) => r.kind === 'signed' && !r.is_current && canWrite ? <Button size="small" onClick={() => setCurrentSigned(r)}>设为当前</Button> : null },
+                  ] as any}
+                />
+              </>
+            )}
           </>
         ) : null}
       </Drawer>
@@ -892,7 +1159,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
           <Form.Item name="signed_name" label="签署人姓名" rules={[{ required: true, message: '请填写签署人姓名' }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="手写签名" required extra={mzSignTarget ? '请在下方完成 MZ 签名，系统会刷新草稿 PDF。' : '默认签名保存后，后续“我方签署”会自动复用。'}>
+          <Form.Item label="手写签名" required extra={mzSignTarget ? '请在下方完成 MZ 签名，系统会刷新草稿 PDF。' : '默认签名保存后，新建的合同和授权协议会自动带上我方签名。'}>
             <SignaturePad ref={mzSignPadRef} />
             <Space style={{ marginTop: 8 }}>
               <Button onClick={() => mzSignPadRef.current?.clear()}>清空签名</Button>
@@ -926,7 +1193,6 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
         width={980}
         extra={(
           <Space>
-            {canWrite ? <Button disabled={!previewDoc || previewDoc.status === 'signed'} loading={saving} onClick={() => previewDoc ? applyDefaultMzSign(previewDoc) : undefined}>我方签署</Button> : null}
             {canWrite ? <Button disabled={!previewDoc || previewDoc.status === 'signed'} loading={saving} onClick={() => previewDoc ? requestLandlordSign(previewDoc) : undefined}>发给房东</Button> : null}
             <Button disabled={!previewDoc} onClick={() => previewDoc ? downloadDraft(previewDoc) : undefined}>下载 PDF</Button>
           </Space>
@@ -960,6 +1226,7 @@ function AuthorityFields({
   onAddrSearch: (input: string) => void
 }) {
   const selectedPropertyId = Form.useWatch('property_id', form)
+  const currentLandlordEmailValue = Form.useWatch(['fields', 'landlord_email'], form)
   function resolveLandlordForProperty(property?: PropertyLite | null) {
     if (!property) return null
     const linked = landlords.find((x) => Array.isArray(x.property_ids) && x.property_ids.some((pid) => String(pid) === String(property.id)))
@@ -978,7 +1245,7 @@ function AuthorityFields({
     const property = properties.find((x) => x.id === id)
     if (!property) return
     const landlord = resolveLandlordForProperty(property)
-    const landlordEmail = String(landlord?.emails?.[0] || landlord?.email || '').trim()
+    const landlordEmail = normalizeEmailList(Array.isArray(landlord?.emails) && landlord.emails.length ? landlord.emails : landlord?.email)
     form.setFieldsValue({
       property_id: property.id,
       landlord_id: landlord?.id || property.landlord_id || null,
@@ -1012,7 +1279,7 @@ function AuthorityFields({
         ...(form.getFieldValue('fields') || {}),
         source_contract_id: id,
         landlord_name: f.owner_name || f.landlord_name || '',
-        landlord_email: f.owner_email || f.landlord_email || '',
+        landlord_email: normalizeEmailList(f.owner_email || f.landlord_email),
         landlord_phone: f.owner_phone || f.landlord_phone || '',
         property_address: f.property_address || '',
       },
@@ -1020,7 +1287,10 @@ function AuthorityFields({
   }
   const selectedProperty = properties.find((x) => x.id === selectedPropertyId)
   const selectedLandlord = resolveLandlordForProperty(selectedProperty) || landlords.find((x) => x.id === form.getFieldValue('landlord_id'))
-  const landlordEmail = String(selectedLandlord?.emails?.[0] || selectedLandlord?.email || form.getFieldValue(['fields', 'landlord_email']) || '').trim() || '-'
+  const landlordEmail = formatEmailList(
+    (Array.isArray(selectedLandlord?.emails) && selectedLandlord.emails.length ? selectedLandlord.emails : selectedLandlord?.email)
+      || currentLandlordEmailValue
+  )
   const landlordName = String(selectedLandlord?.name || form.getFieldValue(['fields', 'landlord_name']) || '').trim() || '-'
   const landlordPhone = String(selectedLandlord?.phone || form.getFieldValue(['fields', 'landlord_phone']) || '').trim() || '-'
   const landlordAbn = String(selectedLandlord?.abn || form.getFieldValue(['fields', 'landlord_abn']) || '').trim() || '-'
@@ -1074,7 +1344,17 @@ function AuthorityFields({
       <Divider orientation="left">房东信息</Divider>
       <Row gutter={12}>
         <Col span={12}><Form.Item name={['fields', 'landlord_name']} label="房东姓名" rules={[{ required: true, message: '请填写房东姓名' }]}><Input /></Form.Item></Col>
-        <Col span={12}><Form.Item name={['fields', 'landlord_email']} label="房东邮箱"><Input /></Form.Item></Col>
+        <Col span={12}><Form.Item
+          name={['fields', 'landlord_email']}
+          label="房东邮箱"
+          rules={[{
+            validator: (_, v) => normalizeEmailList(v).every((x) => EMAIL_RE.test(x))
+              ? Promise.resolve()
+              : Promise.reject('邮箱格式不正确')
+          }]}
+        >
+          <Select mode="tags" tokenSeparators={[',', ';', '，', '；', ' ']} open={false} placeholder="输入后按回车，可添加多个邮箱" />
+        </Form.Item></Col>
         <Col span={12}><Form.Item name={['fields', 'landlord_phone']} label="房东电话"><Input /></Form.Item></Col>
         <Col span={12}><Form.Item name={['fields', 'landlord_abn']} label="房东 ABN"><Input /></Form.Item></Col>
       </Row>
@@ -1109,26 +1389,176 @@ function ServiceAgreementFields({
   hydrateDateFields,
   addrOptions,
   onAddrSearch,
+  properties,
+  landlords,
+  propertyOptions,
+  currentDocument,
+  canWrite,
+  saving,
+  onUploadAttachment,
+  onDeleteAttachment,
 }: {
   form: any
   hydrateDateFields: (f: Record<string, any>) => Record<string, any>
   addrOptions: { value: string; label: string }[]
   onAddrSearch: (input: string) => void
+  properties: PropertyLite[]
+  landlords: LandlordLite[]
+  propertyOptions: { value: string; label: string }[]
+  currentDocument: LandlordDocument | null
+  canWrite: boolean
+  saving: boolean
+  onUploadAttachment: (row: LandlordDocument, category: AttachmentCategory, file: File) => Promise<void>
+  onDeleteAttachment: (row: LandlordDocument, attachment: DocumentAttachment) => Promise<void>
 }) {
+  const selectedPropertyId = Form.useWatch('property_id', form)
+  const watchedVariant = normalizeServiceAgreementVariant(Form.useWatch(['fields', 'contract_variant'], form))
+  const variantRef = useRef<ServiceAgreementVariant | null>(null)
+  const currentOwnerEmail = Form.useWatch(['fields', 'owner_email'], form)
+  function resolveLandlordForProperty(property?: PropertyLite | null) {
+    if (!property) return null
+    const linked = landlords.find((x) => Array.isArray(x.property_ids) && x.property_ids.some((pid) => String(pid) === String(property.id)))
+    if (linked) return linked
+    if (property.landlord_id) {
+      const direct = landlords.find((x) => x.id === property.landlord_id)
+      if (direct) return direct
+    }
+    return null
+  }
   useEffect(() => {
     const f = form.getFieldValue('fields') || {}
     form.setFieldsValue({ fields: hydrateDateFields(f) })
   }, [])
+  useEffect(() => {
+    const previous = variantRef.current
+    const currentRate = form.getFieldValue(['fields', 'management_fee_rate'])
+    const currentText = form.getFieldValue(['fields', 'management_fee'])
+    if (watchedVariant === 'leased_to_mz') {
+      form.setFieldsValue({ fields: { ...(form.getFieldValue('fields') || {}), contract_variant: watchedVariant, management_fee_rate: null, management_fee: '' } })
+    } else {
+      const pct = defaultManagementFeePercent(watchedVariant)
+      const shouldReset = previous != null && previous !== watchedVariant
+      if (shouldReset || (currentRate == null && !String(currentText || '').trim())) {
+        form.setFieldsValue({
+          fields: {
+            ...(form.getFieldValue('fields') || {}),
+            contract_variant: watchedVariant,
+            management_fee_rate: pct,
+            management_fee: formatManagementFeeText(percentToRate(pct)),
+          },
+        })
+      }
+    }
+    variantRef.current = watchedVariant
+  }, [watchedVariant, form])
+  function fillFromProperty(id: string) {
+    const property = properties.find((x) => x.id === id)
+    if (!property) return
+    const landlord = resolveLandlordForProperty(property)
+    const ownerEmail = normalizeEmailList(Array.isArray(landlord?.emails) && landlord.emails.length ? landlord.emails : landlord?.email)
+    form.setFieldsValue({
+      property_id: property.id,
+      landlord_id: landlord?.id || property.landlord_id || null,
+      fields: {
+        ...(form.getFieldValue('fields') || {}),
+        owner_name: landlord?.name || '',
+        owner_email: ownerEmail,
+        owner_phone: landlord?.phone || '',
+        account_name: landlord?.name || '',
+        bsb: (landlord as any)?.payout_bsb || '',
+        account_number: (landlord as any)?.payout_account || '',
+        property_address: property.address || '',
+        property_code: property.code || '',
+      },
+    })
+  }
+  useEffect(() => {
+    if (!selectedPropertyId) return
+    const property = properties.find((x) => x.id === selectedPropertyId)
+    if (!property) return
+    const landlordReady = !!resolveLandlordForProperty(property)
+    if (!landlordReady) return
+    fillFromProperty(String(selectedPropertyId))
+  }, [selectedPropertyId, properties, landlords, form])
+  const selectedProperty = properties.find((x) => x.id === selectedPropertyId)
+  const selectedLandlord = resolveLandlordForProperty(selectedProperty) || landlords.find((x) => x.id === form.getFieldValue('landlord_id'))
+  const ownerEmail = formatEmailList(
+    (Array.isArray(selectedLandlord?.emails) && selectedLandlord.emails.length ? selectedLandlord.emails : selectedLandlord?.email)
+      || currentOwnerEmail
+  )
+  const ownerName = String(selectedLandlord?.name || form.getFieldValue(['fields', 'owner_name']) || '').trim() || '-'
+  const ownerPhone = String(selectedLandlord?.phone || form.getFieldValue(['fields', 'owner_phone']) || '').trim() || '-'
+  const isLeased = watchedVariant === 'leased_to_mz'
   return (
     <>
+      <Form.Item name="landlord_id" hidden><Input /></Form.Item>
+      <Divider orientation="left">合同类型</Divider>
+      <Row gutter={12}>
+        <Col span={24}>
+          <Form.Item name={['fields', 'contract_variant']} label="房源合同类型" rules={[{ required: true, message: '请选择合同类型' }]}>
+            <Select options={serviceAgreementVariantOptions} />
+          </Form.Item>
+        </Col>
+      </Row>
+      <Divider orientation="left">从已有房源带入</Divider>
+      <Row gutter={12}>
+        <Col span={24}>
+          <Form.Item
+            name="property_id"
+            label="已有房源"
+            extra="如已有房源可直接选择自动带入；新房源可留空，下面手动填写房源编码、地址和房东信息。"
+          >
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="选择已有房源；如果是新房源，这里可以留空"
+              options={propertyOptions}
+              onChange={(v) => v ? fillFromProperty(String(v)) : form.setFieldsValue({ property_id: null, landlord_id: null })}
+            />
+          </Form.Item>
+        </Col>
+      </Row>
+      {selectedPropertyId ? (
+        <Descriptions
+          size="small"
+          bordered
+          column={2}
+          style={{ marginBottom: 16 }}
+          items={[
+            { key: 'owner_name', label: '房东姓名', children: ownerName },
+            { key: 'owner_email', label: '房东邮箱', children: ownerEmail },
+            { key: 'owner_phone', label: '房东电话', children: ownerPhone },
+            { key: 'property_code', label: '房源编码', children: String(selectedProperty?.code || form.getFieldValue(['fields', 'property_code']) || '-').trim() || '-' },
+          ]}
+        />
+      ) : null}
       <Divider orientation="left">Owner 信息</Divider>
       <Row gutter={12}>
         <Col span={8}><Form.Item name={['fields', 'owner_name']} label="Owner 姓名" rules={[{ required: true, message: '请填写 Owner 姓名' }]}><Input /></Form.Item></Col>
         <Col span={8}><Form.Item name={['fields', 'owner_phone']} label="Owner 电话"><Input /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'owner_email']} label="Owner 邮箱"><Input /></Form.Item></Col>
+        <Col span={8}><Form.Item
+          name={['fields', 'owner_email']}
+          label="Owner 邮箱"
+          rules={[{
+            validator: (_, v) => normalizeEmailList(v).every((x) => EMAIL_RE.test(x))
+              ? Promise.resolve()
+              : Promise.reject('邮箱格式不正确')
+          }]}
+        ><Select mode="tags" tokenSeparators={[',', ';', '，', '；', ' ']} open={false} placeholder="输入后按回车，可添加多个邮箱" /></Form.Item></Col>
       </Row>
       <Divider orientation="left">房源信息</Divider>
       <Row gutter={12}>
+        <Col span={12}>
+          <Form.Item
+            name={['fields', 'property_code']}
+            label="房源编码"
+            rules={selectedPropertyId ? [] : [{ required: true, message: '新房源请填写房源编码' }]}
+            extra={selectedPropertyId ? '已从已有房源带入。' : '新房源请填写一个临时或正式房源编码，例如 MV1708。'}
+          >
+            <Input placeholder="例如：MV1708" readOnly={!!selectedPropertyId} />
+          </Form.Item>
+        </Col>
         <Col span={24}>
           <Form.Item name={['fields', 'property_address']} label="房源地址（墨尔本）" rules={[{ required: true, message: '请填写房源地址' }]} extra="输入门牌号和街道，会优先提示 Melbourne / VIC / Australia 地址。">
             <AutoComplete options={addrOptions} onSearch={onAddrSearch}>
@@ -1147,42 +1577,124 @@ function ServiceAgreementFields({
             </>
           ) : null}
         </Form.Item>
-        <Col span={8}><Form.Item name={['fields', 'number_of_keys']} label="Keys / Fobs"><Input addonAfter="Set(s)" placeholder="e.g. 2" /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'maximum_guests']} label="Maximum Guests"><Input /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'minimum_nights']} label="Minimum Nights"><Input /></Form.Item></Col>
-        <Col span={24}><Form.Item name={['fields', 'special_instructions']} label="Special Instructions"><Input /></Form.Item></Col>
+        {!isLeased ? (
+          <>
+            <Col span={8}><Form.Item name={['fields', 'number_of_keys']} label="Keys / Fobs"><Input addonAfter="Set(s)" placeholder="e.g. 2" /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'maximum_guests']} label="Maximum Guests"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'minimum_nights']} label="Minimum Nights"><Input /></Form.Item></Col>
+            <Col span={24}><Form.Item name={['fields', 'special_instructions']} label="Special Instructions"><Input /></Form.Item></Col>
+          </>
+        ) : null}
       </Row>
-      <Divider orientation="left">收款信息</Divider>
-      <Row gutter={12}>
-        <Col span={8}><Form.Item name={['fields', 'account_name']} label="Account Name"><Input /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'bsb']} label="BSB"><Input /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'account_number']} label="Account Number"><Input /></Form.Item></Col>
-      </Row>
-      <Divider orientation="left">合同信息</Divider>
-      <Row gutter={12}>
-        <Col span={8}><Form.Item name={['fields', 'commencement_date']} label="服务开始日期"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
-        <Col span={16}><Form.Item name={['fields', 'term']} label="合同期限"><Input /></Form.Item></Col>
-      </Row>
-      <Divider orientation="left">费用设置</Divider>
-      <Row gutter={12}>
-        <Col span={8}><Form.Item name={['fields', 'setup_fee']} label="Setup Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'management_fee']} label="Management Fee"><Input /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'consumable_fee']} label="Consumable Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'linen_fee']} label="Linen / Amenities"><Input /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'initial_housekeeping_fee']} label="Initial Housekeeping"><Input addonBefore="AUD $" /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'installation_fee']} label="Installation Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'purchase_fee']} label="Purchase Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'photography_fee']} label="Photography"><Input addonBefore="AUD $" /></Form.Item></Col>
-      </Row>
-      <Divider orientation="left">MZ 联系信息</Divider>
-      <Row gutter={12}>
-        <Col span={8}><Form.Item name={['fields', 'mz_company_name']} label="公司名称"><Input /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'mz_company_abn']} label="ABN"><Input /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'mz_agent_name']} label="MZ 经办人"><Input /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'mz_contact_phone']} label="联系电话"><Input /></Form.Item></Col>
-        <Col span={8}><Form.Item name={['fields', 'mz_contact_email']} label="邮箱"><Input /></Form.Item></Col>
-        <Col span={24}><Form.Item name={['fields', 'mz_company_address']} label="公司地址"><Input /></Form.Item></Col>
-      </Row>
+      {isLeased ? (
+        <LeaseAttachmentSection
+          document={currentDocument}
+          canWrite={canWrite}
+          saving={saving}
+          onUpload={onUploadAttachment}
+          onDelete={onDeleteAttachment}
+          emptyHint="先保存该记录，然后上传中介给我们的合同和 Condition Report。"
+        />
+      ) : (
+        <>
+          <Divider orientation="left">收款信息</Divider>
+          <Row gutter={12}>
+            <Col span={8}><Form.Item name={['fields', 'account_name']} label="Account Name"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'bsb']} label="BSB"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'account_number']} label="Account Number"><Input /></Form.Item></Col>
+          </Row>
+          <Divider orientation="left">合同信息</Divider>
+          <Row gutter={12}>
+            <Col span={8}><Form.Item name={['fields', 'commencement_date']} label="服务开始日期"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
+            <Col span={16}><Form.Item name={['fields', 'term']} label="合同期限"><Input /></Form.Item></Col>
+          </Row>
+          <Divider orientation="left">费用设置</Divider>
+          <Row gutter={12}>
+            <Col span={8}><Form.Item name={['fields', 'setup_fee']} label="Setup Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'management_fee_rate']} label="Management Fee (%)"><InputNumber min={0} max={100} precision={3} style={{ width: '100%' }} /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'management_fee']} label="Management Fee 文本"><Input readOnly /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'consumable_fee']} label="Consumable Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'linen_fee']} label="Linen / Amenities"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'initial_housekeeping_fee']} label="Initial Housekeeping"><Input addonBefore="AUD $" /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'installation_fee']} label="Installation Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'purchase_fee']} label="Purchase Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'photography_fee']} label="Photography"><Input addonBefore="AUD $" /></Form.Item></Col>
+          </Row>
+          <Divider orientation="left">MZ 联系信息</Divider>
+          <Row gutter={12}>
+            <Col span={8}><Form.Item name={['fields', 'mz_company_name']} label="公司名称"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'mz_company_abn']} label="ABN"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'mz_agent_name']} label="MZ 经办人"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'mz_contact_phone']} label="联系电话"><Input /></Form.Item></Col>
+            <Col span={8}><Form.Item name={['fields', 'mz_contact_email']} label="邮箱"><Input /></Form.Item></Col>
+            <Col span={24}><Form.Item name={['fields', 'mz_company_address']} label="公司地址"><Input /></Form.Item></Col>
+          </Row>
+        </>
+      )}
+    </>
+  )
+}
+
+function LeaseAttachmentSection({
+  document,
+  canWrite,
+  saving,
+  onUpload,
+  onDelete,
+  emptyHint,
+}: {
+  document: LandlordDocument | null
+  canWrite: boolean
+  saving: boolean
+  onUpload: (row: LandlordDocument, category: AttachmentCategory, file: File) => Promise<void>
+  onDelete: (row: LandlordDocument, attachment: DocumentAttachment) => Promise<void>
+  emptyHint?: string
+}) {
+  const groups: Record<AttachmentCategory, DocumentAttachment[]> = {
+    agency_contract: (document?.attachments || []).filter((x) => x.category === 'agency_contract'),
+    condition_report: (document?.attachments || []).filter((x) => x.category === 'condition_report'),
+  }
+  const items: Array<{ category: AttachmentCategory; title: string }> = [
+    { category: 'agency_contract', title: '中介给我们的合同' },
+    { category: 'condition_report', title: 'Condition Report' },
+  ]
+  return (
+    <>
+      <Divider orientation="left">附件归档</Divider>
+      {!document?.id ? <div style={{ marginBottom: 12, color: '#667085' }}>{emptyHint || '请先保存记录，再上传附件。'}</div> : null}
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        {items.map((item) => (
+          <Card key={item.category} size="small" title={item.title}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              {document?.id && canWrite ? (
+                <Upload
+                  accept={ATTACHMENT_ACCEPT}
+                  showUploadList={false}
+                  customRequest={async ({ file, onSuccess, onError }) => {
+                    try {
+                      await onUpload(document, item.category, file as File)
+                      onSuccess?.({}, file as any)
+                    } catch (e) {
+                      onError?.(e as any)
+                    }
+                  }}
+                >
+                  <Button loading={saving}>上传{item.title}</Button>
+                </Upload>
+              ) : <Button disabled>上传{item.title}</Button>}
+              {groups[item.category].length ? groups[item.category].map((attachment) => (
+                <Space key={attachment.id} style={{ justifyContent: 'space-between', width: '100%' }}>
+                  <a href={attachment.file_url} target="_blank">{attachment.file_name || attachment.file_url}</a>
+                  <Space>
+                    <span style={{ color: '#667085' }}>{fmtDate(attachment.created_at)}</span>
+                    {document?.id && canWrite ? <Button size="small" danger loading={saving} onClick={() => onDelete(document, attachment)}>删除</Button> : null}
+                  </Space>
+                </Space>
+              )) : <div style={{ color: '#667085' }}>暂未上传</div>}
+            </Space>
+          </Card>
+        ))}
+      </Space>
     </>
   )
 }

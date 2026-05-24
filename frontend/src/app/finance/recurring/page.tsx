@@ -14,6 +14,23 @@ import AuditTrail from '../../../components/AuditTrail'
 type Recurring = { id: string; property_id?: string; property_ids?: string[]; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; is_paid?: boolean; is_due_month?: boolean; created_at?: string }
 type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
 type Property = { id: string; code?: string; address?: string; region?: string }
+type RecurringPageState = { monthKey?: string; searchText?: string; tablePage?: number; tablePageSize?: number }
+
+const RECURRING_PAGE_STATE_KEY = 'mz.finance.recurring.pageState.v1'
+const DEFAULT_TABLE_PAGE_SIZE = 10
+const FOCUS_RELOAD_STALE_MS = 5 * 60 * 1000
+
+function readRecurringPageState(): RecurringPageState {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.sessionStorage.getItem(RECURRING_PAGE_STATE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
 
 dayjs.extend(customParseFormat)
 dayjs.extend(utc)
@@ -22,6 +39,7 @@ dayjs.tz.setDefault('Australia/Melbourne')
 
 export default function RecurringPage() {
   const { message, modal } = App.useApp()
+  const [initialPageState] = useState(readRecurringPageState)
   const [list, setList] = useState<Recurring[]>([])
   const [expenses, setExpenses] = useState<ExpenseRow[]>([])
   const [properties, setProperties] = useState<Property[]>([])
@@ -29,10 +47,25 @@ export default function RecurringPage() {
   const [form] = Form.useForm()
   const [editing, setEditing] = useState<Recurring | null>(null)
   const [saving, setSaving] = useState(false)
-  const [month, setMonth] = useState(dayjs())
+  const [month, setMonth] = useState(() => {
+    const mk = String(initialPageState.monthKey || '')
+    if (/^\d{4}-\d{2}$/.test(mk)) {
+      const cached = dayjs.tz(`${mk}-01`, 'YYYY-MM-DD', 'Australia/Melbourne')
+      if (cached.isValid()) return cached
+    }
+    return dayjs()
+  })
   const [viewOpen, setViewOpen] = useState(false)
   const [viewing, setViewing] = useState<Recurring | null>(null)
-  const [searchText, setSearchText] = useState('')
+  const [searchText, setSearchText] = useState(() => String(initialPageState.searchText || ''))
+  const [tablePage, setTablePage] = useState(() => {
+    const n = Number(initialPageState.tablePage || 1)
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1
+  })
+  const [tablePageSize, setTablePageSize] = useState(() => {
+    const n = Number(initialPageState.tablePageSize || DEFAULT_TABLE_PAGE_SIZE)
+    return Number.isFinite(n) && n > 0 ? n : DEFAULT_TABLE_PAGE_SIZE
+  })
   const [rowMutating, setRowMutating] = useState<Record<string, 'pay' | 'unpay' | 'pause' | 'resume' | undefined>>({})
   const [pageLoading, setPageLoading] = useState(true)
   const [snapLoading, setSnapLoading] = useState(false)
@@ -441,9 +474,11 @@ export default function RecurringPage() {
     const rows = await fetchMonthExpenses(monthKey)
     setExpenses(rows)
   }
-  async function reloadAll() {
+  async function reloadAll(options: { silent?: boolean } = {}) {
     const seq = ++reloadSeq.current
-    setPageLoading(true)
+    const silent = !!options.silent
+    const shouldControlLoading = !silent || pageLoading
+    if (!silent) setPageLoading(true)
     try {
       const [rows, monthRows] = await Promise.all([
         fetchRecurringPayments(),
@@ -454,7 +489,7 @@ export default function RecurringPage() {
       setExpenses(monthRows)
       lastLoadedAt.current = Date.now()
     } finally {
-      if (seq === reloadSeq.current) setPageLoading(false)
+      if (seq === reloadSeq.current && shouldControlLoading) setPageLoading(false)
     }
     void (async () => {
       const props = await fetchProperties()
@@ -462,12 +497,19 @@ export default function RecurringPage() {
       setProperties(props)
     })()
   }
+  useEffect(()=>{
+    if (typeof window === 'undefined') return
+    const payload: RecurringPageState = { monthKey, searchText, tablePage, tablePageSize }
+    try {
+      window.sessionStorage.setItem(RECURRING_PAGE_STATE_KEY, JSON.stringify(payload))
+    } catch {}
+  },[monthKey, searchText, tablePage, tablePageSize])
   useEffect(()=>{ void reloadAll() },[monthKey])
   useEffect(()=>{
     const onVisible = () => {
       if (document.hidden) return
-      if (Date.now() - (lastLoadedAt.current || 0) < 1500) return
-      void reloadAll()
+      if (Date.now() - (lastLoadedAt.current || 0) < FOCUS_RELOAD_STALE_MS) return
+      void reloadAll({ silent: true })
     }
     window.addEventListener('focus', onVisible)
     document.addEventListener('visibilitychange', onVisible)
@@ -530,6 +572,11 @@ export default function RecurringPage() {
     const label = getLabel(r.property_id)
     return String(label||'').toLowerCase().includes(q)
   })
+  useEffect(()=>{
+    if (pageLoading) return
+    const maxPage = Math.max(1, Math.ceil(allRows.length / tablePageSize))
+    if (tablePage > maxPage) setTablePage(maxPage)
+  },[allRows.length, pageLoading, tablePage, tablePageSize])
   const activeRows = allRows.filter(r => String((r as any).status || '') !== 'paused' && (r as any).is_due_month !== false)
   const paidAmount = activeRows.filter(r=>r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
   const unpaidAmount = activeRows.filter(r=>!r.is_paid).reduce((s,r)=> s + Number(r.amount || 0), 0)
@@ -654,7 +701,7 @@ export default function RecurringPage() {
   // removed normalization side-effect; display uses selected-month computation
 
   return (
-    <Card title="固定支出" extra={<Space><DatePicker picker="month" value={month} onChange={(v)=> setMonth(v || dayjs())} /><Input allowClear placeholder="按房号搜索" value={searchText} onChange={(e)=> setSearchText(e.target.value)} style={{ width: 220 }} /><Button type="primary" onClick={()=>{ setEditing(null); form.resetFields(); form.setFieldsValue({ start_month: nowAU().startOf('month'), initial_mark: 'unpaid', frequency_months: 1, status: 'active', payment_type: 'bank_account', amount_mode: 'fixed' }); setOpen(true) }}>新增固定支出</Button></Space>}>
+    <Card title="固定支出" extra={<Space><DatePicker picker="month" value={month} onChange={(v)=>{ setMonth(v || dayjs()); setTablePage(1) }} /><Input allowClear placeholder="按房号搜索" value={searchText} onChange={(e)=>{ setSearchText(e.target.value); setTablePage(1) }} style={{ width: 220 }} /><Button type="primary" onClick={()=>{ setEditing(null); form.resetFields(); form.setFieldsValue({ start_month: nowAU().startOf('month'), initial_mark: 'unpaid', frequency_months: 1, status: 'active', payment_type: 'bank_account', amount_mode: 'fixed' }); setOpen(true) }}>新增固定支出</Button></Space>}>
       <div className="stats-grid">
         <Card loading={pageLoading}><Statistic title="本月未付总额" value={unpaidAmount} prefix="$" precision={2} /></Card>
         <Card loading={pageLoading}><Statistic title="本月已付总额" value={paidAmount} prefix="$" precision={2} /></Card>
@@ -664,7 +711,7 @@ export default function RecurringPage() {
       </div>
       <Card title="固定支出" size="small" style={{ marginTop: 8 }} loading={pageLoading}>
         <div style={{ margin:'8px 0', color:'#888' }}>修改将从本月起生效，历史或已支付记录不会变化。</div>
-        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={(pageLoading ? [] : allRows)} loading={pageLoading || (snapLoading && monthKey === currentMonthKey)} pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }}
+        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={allRows} loading={pageLoading || (snapLoading && monthKey === currentMonthKey)} pagination={{ current: tablePage, pageSize: tablePageSize, showSizeChanger: true, pageSizeOptions: [10,20,50,100], onChange: (page, size) => { setTablePage(page); setTablePageSize(size || DEFAULT_TABLE_PAGE_SIZE) }, onShowSizeChange: (page, size) => { setTablePage(page); setTablePageSize(size || DEFAULT_TABLE_PAGE_SIZE) } }} scroll={{ x: 'max-content' }}
           rowClassName={(r)=>{
             const today = nowAU()
             const nd = parseAU(r.next_due_date)

@@ -1,5 +1,5 @@
 "use client"
-import { Card, Table, Space, Button, Tag, Select, message, Modal, Form, Input, InputNumber } from 'antd'
+import { Card, Table, Space, Button, Tag, Select, message, Modal, Form, Input, InputNumber, DatePicker } from 'antd'
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import dayjs from 'dayjs'
@@ -89,6 +89,7 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
     setDeliveryPo(po)
     setDeliveryLines(lines)
     deliveryForm.setFieldsValue({
+      received_at: dayjs(),
       lines: lines.map((line: DeliveryLine) => ({
         item_id: line.item_id,
         quantity_received: line.quantity,
@@ -103,7 +104,9 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
     setDeliverySaving(true)
     try {
       const values = await deliveryForm.validateFields()
+      const receivedAt = values.received_at ? dayjs(values.received_at).format('YYYY-MM-DD') : undefined
       await postJSON(`/inventory/purchase-orders/${deliveryPo.id}/deliveries`, {
+        received_at: receivedAt,
         note: values.note || undefined,
         lines: (values.lines || []).map((line: any) => ({
           item_id: line.item_id,
@@ -200,31 +203,35 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
         confirmLoading={deliverySaving}
         okText="确认入库"
         cancelText="取消"
-        width={880}
+        width={1120}
       >
-        <Form form={deliveryForm} layout="vertical" initialValues={{ lines: [] }}>
+        <Form form={deliveryForm} layout="vertical" initialValues={{ received_at: dayjs(), lines: [] }}>
+          <Form.Item name="received_at" label="到货时间">
+            <DatePicker format="YYYY-MM-DD" allowClear={false} style={{ width: 160 }} />
+          </Form.Item>
           <Form.List name="lines">
             {(fields) => (
               <div style={{ display: 'grid', gap: 12 }}>
                 {fields.map((f, idx) => {
                   const line = deliveryLines[idx]
                   return (
-                    <Space key={f.key} align="baseline" style={{ display: 'flex' }} wrap>
-                      <div style={{ minWidth: 280 }}>
+                    <div key={f.key} style={{ display: 'grid', gridTemplateColumns: '320px 120px 140px minmax(260px, 1fr)', gap: 16, alignItems: 'start' }}>
+                      <div style={{ paddingTop: 2 }}>
+                        <div style={{ fontSize: 14, color: 'rgba(0,0,0,0.88)', marginBottom: 8 }}>床品类型</div>
                         <div style={{ fontWeight: 600 }}>{line?.item_name || '-'}</div>
                         <div style={{ color: '#666', fontSize: 12 }}>{line?.item_sku || ''}</div>
                       </div>
                       <Form.Item {...f} name={[f.name, 'item_id']} hidden><Input /></Form.Item>
-                      <Form.Item label="采购数量">
+                      <Form.Item label="采购数量" style={{ marginBottom: 0 }}>
                         <InputNumber value={line?.quantity || 0} disabled style={{ width: 120 }} />
                       </Form.Item>
-                      <Form.Item {...f} name={[f.name, 'quantity_received']} label="到货数量" rules={[{ required: true, message: '请输入到货数量' }]}>
-                        <InputNumber min={1} style={{ width: 140 }} />
+                      <Form.Item {...f} name={[f.name, 'quantity_received']} label="到货数量" rules={[{ required: true, message: '请输入到货数量' }]} style={{ marginBottom: 0 }}>
+                        <InputNumber min={0} precision={0} style={{ width: 140 }} />
                       </Form.Item>
-                      <Form.Item {...f} name={[f.name, 'note']} label="备注" style={{ minWidth: 220 }}>
+                      <Form.Item {...f} name={[f.name, 'note']} label="备注" style={{ marginBottom: 0 }}>
                         <Input />
                       </Form.Item>
-                    </Space>
+                    </div>
                   )
                 })}
               </div>

@@ -27,7 +27,8 @@ type Po = {
   warehouse_code: string
 }
 type Line = { id: string; item_id: string; item_name: string; item_sku: string; quantity: number; unit: string; unit_price?: number | null; amount_total?: number | null; note?: string | null }
-type Delivery = { id: string; received_at: string; received_by?: string | null; note?: string | null }
+type DeliveryLine = { id?: string; delivery_id?: string; item_id: string; item_name?: string | null; item_sku?: string | null; quantity_received: number; note?: string | null }
+type Delivery = { id: string; received_at: string; received_by?: string | null; note?: string | null; updated_at?: string | null; updated_by?: string | null; lines?: DeliveryLine[] }
 type Supplier = { id: string; name: string; kind: string; active: boolean }
 type Warehouse = { id: string; code: string; name: string; active: boolean }
 type LinenTypeMeta = { code: string; name: string; psl_code?: string | null; sort_order?: number | null; active: boolean; item_id?: string | null }
@@ -138,6 +139,7 @@ export default function PurchaseOrderDetailPage({ params }: any) {
   const [supplierPrices, setSupplierPrices] = useState<SupplierPrice[]>([])
   const [editing, setEditing] = useState(false)
   const [open, setOpen] = useState(false)
+  const [editingDelivery, setEditingDelivery] = useState<Delivery | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [exportingPdf, setExportingPdf] = useState(false)
   const [ordering, setOrdering] = useState(false)
@@ -371,15 +373,51 @@ export default function PurchaseOrderDetailPage({ params }: any) {
 
   async function submitDelivery() {
     const v = await deliveryForm.validateFields()
+    const receivedAt = v.received_at ? dayjs(v.received_at).format('YYYY-MM-DD') : undefined
     const payload = {
+      received_at: receivedAt,
       note: v.note || undefined,
       lines: (v.lines || []).map((x: any) => ({ item_id: x.item_id, quantity_received: x.quantity_received, note: x.note || undefined })),
     }
-    await postJSON(`/inventory/purchase-orders/${id}/deliveries`, payload)
-    message.success('到货已登记并入库')
+    if (editingDelivery) {
+      await patchJSON(`/inventory/purchase-orders/${id}/deliveries/${editingDelivery.id}`, payload)
+      message.success('到货记录已更新')
+    } else {
+      await postJSON(`/inventory/purchase-orders/${id}/deliveries`, payload)
+      message.success('到货已登记并入库')
+    }
     setOpen(false)
+    setEditingDelivery(null)
     deliveryForm.resetFields()
     await load()
+  }
+
+  function openDeliveryEditor(row: Delivery) {
+    const deliveryLines = Array.isArray(row.lines) ? row.lines : []
+    const deliveryByItem = new Map<string, DeliveryLine>(deliveryLines.map((line) => [String(line.item_id), line] as const))
+    const editableLines = (lines.length ? sortLinesByLinenTypeOrder(lines, linenTypes) : []).map((line) => {
+      const existing = deliveryByItem.get(String(line.item_id))
+      return {
+        item_id: line.item_id,
+        item_name: line.item_name || '',
+        item_sku: line.item_sku || '',
+        quantity_received: Number(existing?.quantity_received || 0),
+        note: existing?.note || '',
+      }
+    })
+    setEditingDelivery(row)
+    deliveryForm.setFieldsValue({
+      received_at: row.received_at ? dayjs(row.received_at) : dayjs(),
+      note: row.note || '',
+      lines: (editableLines.length ? editableLines : deliveryLines.map((line) => ({
+        item_id: line.item_id,
+        item_name: line.item_name || '',
+        item_sku: line.item_sku || '',
+        quantity_received: Number(line.quantity_received || 0),
+        note: line.note || '',
+      }))),
+    })
+    setOpen(true)
   }
 
   async function submitEdit(markAsOrdered = false) {
@@ -615,9 +653,12 @@ export default function PurchaseOrderDetailPage({ params }: any) {
             <Table
               rowKey={(r) => r.id}
               columns={[
-                { title: '到货时间', dataIndex: 'received_at' },
+                { title: '到货时间', dataIndex: 'received_at', render: (v: string) => v ? dayjs(v).format('YYYY-MM-DD') : '-' },
                 { title: '收货人', dataIndex: 'received_by' },
+                { title: '修改时间', dataIndex: 'updated_at', render: (v: string | null) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-' },
+                { title: '修改人', dataIndex: 'updated_by', render: (v: string | null) => v || '-' },
                 { title: '备注', dataIndex: 'note' },
+                { title: '操作', key: 'op', width: 100, render: (_: any, r: Delivery) => <Button onClick={() => openDeliveryEditor(r)}>编辑</Button> },
               ]}
               dataSource={deliveries}
               pagination={false}
@@ -627,26 +668,36 @@ export default function PurchaseOrderDetailPage({ params }: any) {
         ) : null}
       </Card>
 
-      <Modal open={open} title="登记到货并入库" onCancel={() => setOpen(false)} onOk={() => submitDelivery().catch((e) => message.error(e?.message || '登记失败'))}>
-        <Form form={deliveryForm} layout="vertical" initialValues={{ lines: [] }}>
+      <Modal open={open} title={editingDelivery ? '编辑到货记录' : '登记到货并入库'} width={1120} onCancel={() => { setOpen(false); setEditingDelivery(null); deliveryForm.resetFields() }} onOk={() => submitDelivery().catch((e) => message.error(e?.message || '保存失败'))}>
+        <Form form={deliveryForm} layout="vertical" initialValues={{ received_at: dayjs(), lines: [] }}>
+          <Form.Item name="received_at" label="到货时间">
+            <DatePicker format="YYYY-MM-DD" allowClear={false} style={{ width: 160 }} />
+          </Form.Item>
           <Form.List name="lines" rules={[{ validator: async (_: any, v: any[]) => { if (!v || v.length < 1) throw new Error('至少一条明细') } }]}>
             {(fields, { add, remove }) => (
               <>
                 {fields.map((f) => (
-                  <Space key={f.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }} wrap>
-                    <Form.Item {...f} name={[f.name, 'item_id']} label="床品类型" rules={[{ required: true }]} style={{ minWidth: 320 }}>
+                  <div key={f.key} style={{ display: 'grid', gridTemplateColumns: editingDelivery ? '320px 140px minmax(260px, 1fr)' : '320px 140px minmax(260px, 1fr) 80px', gap: 16, alignItems: 'start', marginBottom: 8 }}>
+                    <Form.Item noStyle shouldUpdate>
+                      {() => (
+                        <Form.Item label="床品类型" style={{ marginBottom: 0 }}>
+                          <Input value={deliveryForm.getFieldValue(['lines', f.name, 'item_name']) || deliveryForm.getFieldValue(['lines', f.name, 'item_id'])} disabled />
+                        </Form.Item>
+                      )}
+                    </Form.Item>
+                    <Form.Item {...f} name={[f.name, 'item_id']} hidden rules={[{ required: true }]}><Input /></Form.Item>
+                    <Form.Item {...f} name={[f.name, 'item_name']} hidden><Input /></Form.Item>
+                    <Form.Item {...f} name={[f.name, 'item_sku']} hidden><Input /></Form.Item>
+                    <Form.Item {...f} name={[f.name, 'quantity_received']} label="到货数量" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+                      <InputNumber min={0} precision={0} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item {...f} name={[f.name, 'note']} label="备注" style={{ marginBottom: 0 }}>
                       <Input />
                     </Form.Item>
-                    <Form.Item {...f} name={[f.name, 'quantity_received']} label="到货数量" rules={[{ required: true }]} style={{ width: 140 }}>
-                      <InputNumber min={1} style={{ width: '100%' }} />
-                    </Form.Item>
-                    <Form.Item {...f} name={[f.name, 'note']} label="备注" style={{ minWidth: 200 }}>
-                      <Input />
-                    </Form.Item>
-                    <Button onClick={() => remove(f.name)} danger>删除</Button>
-                  </Space>
+                    {!editingDelivery ? <Button onClick={() => remove(f.name)} danger style={{ marginTop: 30 }}>删除</Button> : null}
+                  </div>
                 ))}
-                <Button onClick={() => add({})}>新增到货行</Button>
+                {!editingDelivery ? <Button onClick={() => add({})}>新增到货行</Button> : null}
               </>
             )}
           </Form.List>
