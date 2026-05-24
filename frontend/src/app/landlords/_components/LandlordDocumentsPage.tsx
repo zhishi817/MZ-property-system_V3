@@ -124,27 +124,49 @@ function fmtDate(v?: string) {
 }
 
 function normalizeEmailList(value: any): string[] {
-  const items = Array.isArray(value) ? value : [value]
   const seen = new Set<string>()
   const out: string[] = []
-  for (const item of items) {
-    const parts = String(item ?? '')
+  const push = (item: any) => {
+    if (item == null) return
+    if (Array.isArray(item)) {
+      item.forEach(push)
+      return
+    }
+    const raw = String(item ?? '').trim()
+    if (!raw) return
+    if ((raw.startsWith('[') && raw.endsWith(']')) || (raw.startsWith('"') && raw.endsWith('"'))) {
+      try {
+        push(JSON.parse(raw))
+        return
+      } catch {}
+    }
+    const parts = raw
       .split(/[\n,;，；]+/g)
       .map((x) => x.trim())
       .filter(Boolean)
     for (const part of parts) {
-      const key = part.toLowerCase()
+      const cleaned = part.replace(/^[\s["']+|[\s"'\]]+$/g, '').trim()
+      if (!cleaned) continue
+      const key = cleaned.toLowerCase()
       if (seen.has(key)) continue
       seen.add(key)
-      out.push(part)
+      out.push(cleaned)
     }
   }
+  push(value)
   return out
 }
 
 function formatEmailList(value: any, fallback = '-') {
   const emails = normalizeEmailList(value)
   return emails.length ? emails.join(', ') : fallback
+}
+
+function formatPropertyDisplay(code: any, address: any, fallback = '-') {
+  const propertyCode = String(code || '').trim()
+  const propertyAddress = String(address || '').trim()
+  const text = [propertyCode, propertyAddress].filter(Boolean).join(' / ')
+  return text || fallback
 }
 
 function normalizeServiceAgreementVariant(value: any): ServiceAgreementVariant {
@@ -324,12 +346,16 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
 
   const sourceContractOptions = useMemo(() => sourceContracts.map((r) => {
     const f = r.fields || {}
-    const label = [r.document_no, f.owner_name || f.landlord_name, f.property_address].filter(Boolean).join(' / ')
+    const label = [
+      r.document_no,
+      f.owner_name || f.landlord_name,
+      formatPropertyDisplay(r.property_code || f.property_code, r.property_address || f.property_address, ''),
+    ].filter(Boolean).join(' / ')
     return { value: r.id, label: label || r.id }
   }), [sourceContracts])
 
   const propertyOptions = useMemo(() => properties.map((p) => {
-    const label = [p.code, p.address].filter(Boolean).join(' / ')
+    const label = formatPropertyDisplay(p.code, p.address, p.id)
     return { value: p.id, label: label || p.id }
   }), [properties])
 
@@ -506,9 +532,11 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
       landlord_id: full.landlord_id || null,
       property_id: full.property_id || null,
       notes: full.notes || undefined,
-      fields: type === 'agency_authority'
-        ? { ...hydratedFields, landlord_email: normalizeEmailList(hydratedFields.landlord_email) }
-        : hydratedFields,
+      fields: {
+        ...hydratedFields,
+        ...(type === 'agency_authority' ? { landlord_email: normalizeEmailList(hydratedFields.landlord_email) } : {}),
+        ...(type === 'property_service_agreement' ? { owner_email: normalizeEmailList(hydratedFields.owner_email) } : {}),
+      },
     })
     setEditorOpen(true)
   }
@@ -990,7 +1018,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
         : '-'
     },
     { title: '房东', dataIndex: 'landlord_name', width: 150, render: (_: any, r: LandlordDocument) => r.landlord_name || r.fields?.landlord_name || r.fields?.owner_name || '-' },
-    { title: '房源', dataIndex: 'property_code', render: (_: any, r: LandlordDocument) => [r.property_code || r.fields?.property_code, r.property_address || r.fields?.property_address].filter(Boolean).join(' - ') || '-' },
+    { title: '房源', dataIndex: 'property_code', render: (_: any, r: LandlordDocument) => formatPropertyDisplay(r.property_code || r.fields?.property_code, r.property_address || r.fields?.property_address) },
     { title: '状态', dataIndex: 'status', width: 110, render: (v: string) => <Tag color={statusColor[v] || 'default'}>{statusText[v] || v}</Tag> },
     { title: '草稿', dataIndex: 'current_draft_url', width: 90, render: (v: string) => v ? <Tag color="blue">有</Tag> : <Tag>无</Tag> },
     { title: '签署版', dataIndex: 'current_signed_url', width: 90, render: (v: string) => v ? <Tag color="green">有</Tag> : <Tag>无</Tag> },
@@ -1097,7 +1125,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
               <Descriptions.Item label="状态"><Tag color={statusColor[detail.status]}>{statusText[detail.status] || detail.status}</Tag></Descriptions.Item>
               {detail.type === 'property_service_agreement' ? <Descriptions.Item label="合同类型">{serviceAgreementVariantText[normalizeServiceAgreementVariant(detail.fields?.contract_variant)]}</Descriptions.Item> : null}
               <Descriptions.Item label="房东">{detail.landlord_name || detail.fields?.landlord_name || detail.fields?.owner_name || '-'}</Descriptions.Item>
-              <Descriptions.Item label="房源">{[detail.property_code || detail.fields?.property_code, detail.property_address || detail.fields?.property_address].filter(Boolean).join(' - ') || '-'}</Descriptions.Item>
+              <Descriptions.Item label="房源">{formatPropertyDisplay(detail.property_code || detail.fields?.property_code, detail.property_address || detail.fields?.property_address)}</Descriptions.Item>
               <Descriptions.Item label="MZ 签署">{detail.fields?.mz_signed_at ? `${detail.fields?.mz_signed_name || '-'} / ${String(detail.fields?.mz_signed_at || '').slice(0, 10)}` : '-'}</Descriptions.Item>
               <Descriptions.Item label="房东签署">{detail.fields?.landlord_signed_at ? `${detail.fields?.landlord_signed_name || '-'} / ${String(detail.fields?.landlord_signed_at || '').slice(0, 10)}` : '-'}</Descriptions.Item>
               <Descriptions.Item label="当前草稿">{detail.type === 'property_service_agreement' && isLeasedVariant(detail.fields?.contract_variant) ? '不适用' : (detail.current_draft_url ? <Button size="small" onClick={() => downloadDraft(detail)}>下载草稿</Button> : '-')}</Descriptions.Item>
@@ -1227,6 +1255,7 @@ function AuthorityFields({
 }) {
   const selectedPropertyId = Form.useWatch('property_id', form)
   const currentLandlordEmailValue = Form.useWatch(['fields', 'landlord_email'], form)
+  const currentPropertyCodeValue = Form.useWatch(['fields', 'property_code'], form)
   function resolveLandlordForProperty(property?: PropertyLite | null) {
     if (!property) return null
     const linked = landlords.find((x) => Array.isArray(x.property_ids) && x.property_ids.some((pid) => String(pid) === String(property.id)))
@@ -1281,6 +1310,7 @@ function AuthorityFields({
         landlord_name: f.owner_name || f.landlord_name || '',
         landlord_email: normalizeEmailList(f.owner_email || f.landlord_email),
         landlord_phone: f.owner_phone || f.landlord_phone || '',
+        property_code: doc.property_code || f.property_code || '',
         property_address: f.property_address || '',
       },
     })
@@ -1294,6 +1324,8 @@ function AuthorityFields({
   const landlordName = String(selectedLandlord?.name || form.getFieldValue(['fields', 'landlord_name']) || '').trim() || '-'
   const landlordPhone = String(selectedLandlord?.phone || form.getFieldValue(['fields', 'landlord_phone']) || '').trim() || '-'
   const landlordAbn = String(selectedLandlord?.abn || form.getFieldValue(['fields', 'landlord_abn']) || '').trim() || '-'
+  const propertyDisplay = formatPropertyDisplay(selectedProperty?.code || currentPropertyCodeValue, selectedProperty?.address || form.getFieldValue(['fields', 'property_address']))
+  const hasPropertySummary = propertyDisplay !== '-'
   return (
     <>
       <Form.Item name="landlord_id" hidden><Input /></Form.Item>
@@ -1312,7 +1344,7 @@ function AuthorityFields({
           </Form.Item>
         </Col>
       </Row>
-      {selectedPropertyId ? (
+      {selectedPropertyId || hasPropertySummary ? (
         <Descriptions
           size="small"
           bordered
@@ -1323,6 +1355,7 @@ function AuthorityFields({
             { key: 'landlord_email', label: '房东邮箱', children: landlordEmail },
             { key: 'landlord_phone', label: '房东电话', children: landlordPhone },
             { key: 'landlord_abn', label: '房东 ABN', children: landlordAbn },
+            { key: 'property', label: '房源', children: propertyDisplay },
           ]}
         />
       ) : null}
@@ -1363,7 +1396,7 @@ function AuthorityFields({
         <Col span={24}>
           <Form.Item name={['fields', 'property_address']} label="房源地址（墨尔本）" rules={[{ required: true, message: '请填写房源地址' }]} extra="输入门牌号和街道，会优先提示 Melbourne / VIC / Australia 地址。">
             <AutoComplete options={addrOptions} onSearch={onAddrSearch}>
-              <Input placeholder="例如：18 Hoff Boulevard, Southbank VIC 3006, Australia" />
+              <Input addonBefore={String(selectedProperty?.code || currentPropertyCodeValue || '').trim() || '房号'} placeholder="例如：18 Hoff Boulevard, Southbank VIC 3006, Australia" />
             </AutoComplete>
           </Form.Item>
         </Col>
@@ -1415,6 +1448,7 @@ function ServiceAgreementFields({
   const watchedVariant = normalizeServiceAgreementVariant(Form.useWatch(['fields', 'contract_variant'], form))
   const variantRef = useRef<ServiceAgreementVariant | null>(null)
   const currentOwnerEmail = Form.useWatch(['fields', 'owner_email'], form)
+  const currentPropertyCode = Form.useWatch(['fields', 'property_code'], form)
   function resolveLandlordForProperty(property?: PropertyLite | null) {
     if (!property) return null
     const linked = landlords.find((x) => Array.isArray(x.property_ids) && x.property_ids.some((pid) => String(pid) === String(property.id)))
@@ -1488,6 +1522,8 @@ function ServiceAgreementFields({
   )
   const ownerName = String(selectedLandlord?.name || form.getFieldValue(['fields', 'owner_name']) || '').trim() || '-'
   const ownerPhone = String(selectedLandlord?.phone || form.getFieldValue(['fields', 'owner_phone']) || '').trim() || '-'
+  const propertyDisplay = formatPropertyDisplay(selectedProperty?.code || currentPropertyCode, selectedProperty?.address || form.getFieldValue(['fields', 'property_address']))
+  const hasPropertySummary = propertyDisplay !== '-'
   const isLeased = watchedVariant === 'leased_to_mz'
   return (
     <>
@@ -1519,7 +1555,7 @@ function ServiceAgreementFields({
           </Form.Item>
         </Col>
       </Row>
-      {selectedPropertyId ? (
+      {selectedPropertyId || hasPropertySummary ? (
         <Descriptions
           size="small"
           bordered
@@ -1529,7 +1565,7 @@ function ServiceAgreementFields({
             { key: 'owner_name', label: '房东姓名', children: ownerName },
             { key: 'owner_email', label: '房东邮箱', children: ownerEmail },
             { key: 'owner_phone', label: '房东电话', children: ownerPhone },
-            { key: 'property_code', label: '房源编码', children: String(selectedProperty?.code || form.getFieldValue(['fields', 'property_code']) || '-').trim() || '-' },
+            { key: 'property', label: '房源', children: propertyDisplay },
           ]}
         />
       ) : null}
@@ -1562,7 +1598,7 @@ function ServiceAgreementFields({
         <Col span={24}>
           <Form.Item name={['fields', 'property_address']} label="房源地址（墨尔本）" rules={[{ required: true, message: '请填写房源地址' }]} extra="输入门牌号和街道，会优先提示 Melbourne / VIC / Australia 地址。">
             <AutoComplete options={addrOptions} onSearch={onAddrSearch}>
-              <Input placeholder="例如：18 Hoff Boulevard, Southbank VIC 3006, Australia" />
+              <Input addonBefore={String(selectedProperty?.code || currentPropertyCode || '').trim() || '房号'} placeholder="例如：18 Hoff Boulevard, Southbank VIC 3006, Australia" />
             </AutoComplete>
           </Form.Item>
         </Col>

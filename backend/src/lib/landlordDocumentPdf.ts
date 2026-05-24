@@ -34,12 +34,57 @@ function text(fields: Record<string, any>, key: string, fallback = '') {
   return s || fallback
 }
 
+function normalizeEmailList(value: any): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  const push = (raw: any) => {
+    if (raw == null) return
+    if (Array.isArray(raw)) {
+      for (const item of raw) push(item)
+      return
+    }
+    const s = String(raw).trim()
+    if (!s) return
+    if ((s.startsWith('[') && s.endsWith(']')) || (s.startsWith('"') && s.endsWith('"'))) {
+      try {
+        push(JSON.parse(s))
+        return
+      } catch {}
+    }
+    for (const part of s.split(/[\n,;，；]+/g)) {
+      const cleaned = part
+        .trim()
+        .replace(/^[\s["']+|[\s"'\]]+$/g, '')
+        .trim()
+      if (!cleaned) continue
+      const key = cleaned.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(cleaned)
+    }
+  }
+  push(value)
+  return out
+}
+
+function emailText(fields: Record<string, any>, key: string, fallback = '') {
+  const joined = normalizeEmailList(fields?.[key]).join(', ')
+  return joined || fallback
+}
+
 function phoneText(fields: Record<string, any>, key: string, fallback = '') {
   const s = text(fields, key, fallback)
   if (!s) return ''
   // Guard against accidentally rendering an email address in phone fields.
   if (s.includes('@')) return ''
   return s
+}
+
+function propertyText(fields: Record<string, any>, fallback = '') {
+  const propertyCode = text(fields, 'property_code')
+  const propertyAddress = text(fields, 'property_address')
+  const joined = [propertyCode, propertyAddress].filter(Boolean).join(' / ')
+  return joined || fallback
 }
 
 function formatDateText(value: any) {
@@ -201,14 +246,14 @@ function renderAgencyAuthority(input: LandlordDocumentPdfInput) {
   const f = input.fields || {}
   const isBlankTemplate = Boolean(f.blank_template)
   const landlordName = text(f, 'landlord_name')
-  const landlordEmail = text(f, 'landlord_email')
+  const landlordEmail = emailText(f, 'landlord_email')
   const landlordPhone = phoneText(f, 'landlord_phone')
-  const propertyAddress = text(f, 'property_address')
+  const propertyAddress = propertyText(f)
   const noticeDays = text(f, 'termination_notice_days', '60')
   const repairLimit = text(f, 'repair_approval_limit', '300')
   const agentName = text(f, 'mz_agent_name', 'Ming Xue')
   const mzPhone = phoneText(f, 'mz_contact_phone', '0434 782 499')
-  const mzEmail = text(f, 'mz_contact_email', 'info@mzproperty.com.au')
+  const mzEmail = emailText(f, 'mz_contact_email', 'info@mzproperty.com.au')
   const signDate = text(f, 'sign_date')
   const mzSignedName = isBlankTemplate ? '' : text(f, 'mz_signed_name', agentName)
   const mzSignedAt = isBlankTemplate ? '' : formatDateText(text(f, 'mz_signed_at', signDate))
@@ -282,13 +327,13 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
   const isBlankTemplate = Boolean(f.blank_template)
   const variant = String(f.contract_variant || 'management_standard').trim() || 'management_standard'
   const ownerName = text(f, 'owner_name')
-  const propertyAddress = text(f, 'property_address')
+  const propertyAddress = propertyText(f)
   const companyName = text(f, 'mz_company_name', 'MZ Property Pty Ltd')
   const companyAddress = text(f, 'mz_company_address', 'G03/87 Gladstone St, South Melbourne, VIC 3205')
   const companyAbn = text(f, 'mz_company_abn', '42 657 925 365')
   const contactName = text(f, 'mz_agent_name', 'Ming Xue')
   const contactPhone = text(f, 'mz_contact_phone', '+61 430907988')
-  const contactEmail = text(f, 'mz_contact_email', 'info@mzproperty.com.au')
+  const contactEmail = emailText(f, 'mz_contact_email', 'info@mzproperty.com.au')
   const commencement = text(f, 'commencement_date')
   const term = text(f, 'term', 'Ongoing with 60 days termination notice')
   const defaultManagementFee = variant === 'management_sale' ? '50% of Net Rental Income' : '18.5% of Net Rental Income'
@@ -401,12 +446,13 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
             : 'This version applies where the Owner appoints MZ Property to manage short-stay operations on a management-fee basis while the Owner funds the property setup and ongoing property costs.'}</p>
           <h2>Parties</h2>
           <table class="compact-table">
-            ${row('Owner Contact', [text(f, 'owner_phone'), text(f, 'owner_email')].filter(Boolean).join(' / '))}
+            ${row('Owner Contact', [text(f, 'owner_phone'), emailText(f, 'owner_email')].filter(Boolean).join(' / '))}
             ${row('MZ Property', `${companyName}, ABN ${companyAbn}`)}
             ${row('MZ Address', companyAddress)}
           </table>
           <h2>Property Details</h2>
           <table class="compact-table">
+            ${row('Property', propertyAddress)}
             ${row('Utilities', text(f, 'utilities_paid_by', 'paid by Owner'))}
             ${row('Type of Property', propertyType)}
             ${row('Investment or Holiday', text(f, 'investment_or_holiday', 'Investment'))}
