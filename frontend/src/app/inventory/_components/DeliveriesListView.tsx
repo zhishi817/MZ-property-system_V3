@@ -11,6 +11,8 @@ type DeliveryRow = {
   po_id: string
   received_at: string
   received_by?: string | null
+  updated_at?: string | null
+  updated_by?: string | null
   note?: string | null
   supplier_id: string
   warehouse_id: string
@@ -61,12 +63,14 @@ export default function DeliveriesListView(props: DeliveriesListViewProps) {
   const supplierOptions = useMemo(() => [{ value: '', label: '全部供应商' }, ...(suppliers || []).filter(s => s.active).map(s => ({ value: s.id, label: s.name }))], [suppliers])
 
   const columns: any[] = [
-    { title: '到货时间', dataIndex: 'received_at', render: (v: string) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '' },
+    { title: '到货时间', dataIndex: 'received_at', render: (v: string) => v ? dayjs(v).format('YYYY-MM-DD') : '' },
     { title: '供应商', dataIndex: 'supplier_name' },
     { title: '送货仓库', render: (_: any, r: DeliveryRow) => `${r.warehouse_code} - ${r.warehouse_name}` },
     { title: '行数', dataIndex: 'line_count' },
     { title: '到货总量', dataIndex: 'quantity_total' },
     { title: '收货人', dataIndex: 'received_by' },
+    { title: '修改时间', dataIndex: 'updated_at', render: (v: string | null) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-' },
+    { title: '修改人', dataIndex: 'updated_by', render: (v: string | null) => v || '-' },
     { title: '备注', dataIndex: 'note' },
   ]
 
@@ -82,4 +86,3 @@ export default function DeliveriesListView(props: DeliveriesListViewProps) {
     </Card>
   )
 }
-

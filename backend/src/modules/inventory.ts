@@ -810,10 +810,14 @@ async function bootstrapInventorySchema() {
       received_at timestamptz NOT NULL DEFAULT now(),
       received_by text,
       note text,
-      created_at timestamptz NOT NULL DEFAULT now()
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz,
+      updated_by text
     );`)
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_deliveries_po ON purchase_deliveries(po_id);')
     await pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_deliveries_received_at ON purchase_deliveries(received_at);')
+    await pgPool.query('ALTER TABLE purchase_deliveries ADD COLUMN IF NOT EXISTS updated_at timestamptz;')
+    await pgPool.query('ALTER TABLE purchase_deliveries ADD COLUMN IF NOT EXISTS updated_by text;')
 
     await pgPool.query(`CREATE TABLE IF NOT EXISTS purchase_delivery_lines (
       id text PRIMARY KEY,
@@ -6189,7 +6193,28 @@ router.get('/purchase-orders/:id', requireAnyPerm([...inventoryPurchaseOrderView
       `SELECT d.* FROM purchase_deliveries d WHERE d.po_id = $1 ORDER BY d.received_at DESC`,
       [id],
     )
-    return res.json({ po: po.rows[0], lines: lines.rows || [], deliveries: deliveries.rows || [] })
+    const deliveryRows = deliveries.rows || []
+    if (deliveryRows.length) {
+      const ids = deliveryRows.map((row: any) => String(row.id))
+      const deliveryLines = await pgPool.query(
+        `SELECT dl.*, i.name AS item_name, i.sku AS item_sku, lt.sort_order
+         FROM purchase_delivery_lines dl
+         JOIN inventory_items i ON i.id = dl.item_id
+         LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
+         WHERE dl.delivery_id = ANY($1::text[])
+         ORDER BY dl.delivery_id, COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`,
+        [ids],
+      )
+      const byDelivery = new Map<string, any[]>()
+      for (const line of deliveryLines.rows || []) {
+        const deliveryId = String(line.delivery_id || '')
+        byDelivery.set(deliveryId, [...(byDelivery.get(deliveryId) || []), line])
+      }
+      for (const delivery of deliveryRows) {
+        delivery.lines = byDelivery.get(String(delivery.id)) || []
+      }
+    }
+    return res.json({ po: po.rows[0], lines: lines.rows || [], deliveries: deliveryRows })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
   }
@@ -6396,7 +6421,7 @@ router.post('/purchase-orders/:id/export', requireAnyPerm([...inventoryPurchaseO
 const deliverySchema = z.object({
   received_at: z.string().optional(),
   note: z.string().optional(),
-  lines: z.array(z.object({ item_id: z.string().min(1), quantity_received: z.number().int().min(1), note: z.string().optional() })).min(1),
+  lines: z.array(z.object({ item_id: z.string().min(1), quantity_received: z.number().int().min(0), note: z.string().optional() })).min(1),
 })
 
 router.post('/purchase-orders/:id/deliveries', requireAnyPerm([...inventoryPurchaseOrderWritePerms]), async (req, res) => {
@@ -6431,18 +6456,20 @@ router.post('/purchase-orders/:id/deliveries', requireAnyPerm([...inventoryPurch
         )
         lineRows.push(row.rows?.[0] || null)
 
-        const applied = await applyStockDeltaInTx(client, {
-          warehouse_id: p.warehouse_id,
-          item_id: ln.item_id,
-          type: 'in',
-          quantity: ln.quantity_received,
-          reason: 'purchase_delivery',
-          ref_type: 'po',
-          ref_id: po_id,
-          actor_id: actorId(req),
-          note: parsed.data.note || null,
-        })
-        if (!applied.ok) return applied
+        if (ln.quantity_received > 0) {
+          const applied = await applyStockDeltaInTx(client, {
+            warehouse_id: p.warehouse_id,
+            item_id: ln.item_id,
+            type: 'in',
+            quantity: ln.quantity_received,
+            reason: 'purchase_delivery',
+            ref_type: 'po',
+            ref_id: po_id,
+            actor_id: actorId(req),
+            note: parsed.data.note || null,
+          })
+          if (!applied.ok) return applied
+        }
       }
 
       const poAfter = await client.query(`UPDATE purchase_orders SET status = $1, updated_at = now() WHERE id = $2 RETURNING *`, ['received', po_id])
@@ -6452,6 +6479,96 @@ router.post('/purchase-orders/:id/deliveries', requireAnyPerm([...inventoryPurch
     if (!(result as any)?.ok) return res.status((result as any).code).json({ message: (result as any).message })
     addAudit('PurchaseDelivery', (result as any)?.delivery?.id || po_id, 'create', null, result, actorId(req))
     return res.status(201).json(result)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.patch('/purchase-orders/:id/deliveries/:deliveryId', requireAnyPerm([...inventoryPurchaseOrderWritePerms]), async (req, res) => {
+  const parsed = deliverySchema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const po_id = String(req.params.id || '')
+  const deliveryId = String(req.params.deliveryId || '')
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const result = await pgRunInTransaction(async (client) => {
+      const po = await client.query(`SELECT * FROM purchase_orders WHERE id = $1`, [po_id])
+      const p = po.rows?.[0]
+      if (!p) return { ok: false as const, code: 404 as const, message: 'po not found' }
+
+      const existing = await client.query(
+        `SELECT * FROM purchase_deliveries WHERE id = $1 AND po_id = $2 FOR UPDATE`,
+        [deliveryId, po_id],
+      )
+      const prevDelivery = existing.rows?.[0]
+      if (!prevDelivery) return { ok: false as const, code: 404 as const, message: 'delivery not found' }
+
+      const prevLines = await client.query(
+        `SELECT * FROM purchase_delivery_lines WHERE delivery_id = $1 FOR UPDATE`,
+        [deliveryId],
+      )
+      const oldByItem = new Map<string, number>()
+      for (const line of prevLines.rows || []) {
+        const itemId = String(line.item_id || '')
+        oldByItem.set(itemId, Number(oldByItem.get(itemId) || 0) + Number(line.quantity_received || 0))
+      }
+
+      const newByItem = new Map<string, number>()
+      for (const line of parsed.data.lines) {
+        newByItem.set(line.item_id, Number(newByItem.get(line.item_id) || 0) + Number(line.quantity_received || 0))
+      }
+
+      const changedItemIds = new Set<string>([...oldByItem.keys(), ...newByItem.keys()])
+      for (const itemId of changedItemIds) {
+        const delta = Number(newByItem.get(itemId) || 0) - Number(oldByItem.get(itemId) || 0)
+        if (delta === 0) continue
+        const applied = await applyStockDeltaInTx(client, {
+          warehouse_id: p.warehouse_id,
+          item_id: itemId,
+          type: delta > 0 ? 'in' : 'out',
+          quantity: Math.abs(delta),
+          reason: 'purchase_delivery_edit',
+          ref_type: 'po',
+          ref_id: po_id,
+          actor_id: actorId(req),
+          note: parsed.data.note || null,
+        })
+        if (!applied.ok) return applied
+      }
+
+      const receivedAt = String(parsed.data.received_at || '').trim()
+      const delivery = await client.query(
+        `UPDATE purchase_deliveries
+         SET received_at = COALESCE(NULLIF($1,'')::timestamptz, received_at),
+             note = $2,
+             updated_at = now(),
+             updated_by = $3
+         WHERE id = $4 AND po_id = $5
+         RETURNING *`,
+        [receivedAt || null, parsed.data.note || null, actorId(req), deliveryId, po_id],
+      )
+
+      await client.query(`DELETE FROM purchase_delivery_lines WHERE delivery_id = $1`, [deliveryId])
+      const lineRows: any[] = []
+      for (const line of parsed.data.lines) {
+        const dlId = uuidv4()
+        const inserted = await client.query(
+          `INSERT INTO purchase_delivery_lines (id, delivery_id, item_id, quantity_received, note)
+           VALUES ($1,$2,$3,$4,$5)
+           RETURNING *`,
+          [dlId, deliveryId, line.item_id, line.quantity_received, line.note || null],
+        )
+        lineRows.push(inserted.rows?.[0] || null)
+      }
+
+      await client.query(`UPDATE purchase_orders SET updated_at = now() WHERE id = $1`, [po_id])
+      return { ok: true as const, delivery: delivery.rows?.[0] || null, lines: lineRows }
+    })
+
+    if (!(result as any)?.ok) return res.status((result as any).code).json({ message: (result as any).message })
+    addAudit('PurchaseDelivery', deliveryId, 'update', null, result, actorId(req))
+    return res.json(result)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
   }
@@ -6485,7 +6602,7 @@ router.get('/deliveries', requirePerm('inventory.view'), async (req, res) => {
       )`)
     }
     const rows = await pgPool.query(
-      `SELECT d.id, d.po_id, d.received_at, d.received_by, d.note,
+      `SELECT d.id, d.po_id, d.received_at, d.received_by, d.updated_at, d.updated_by, d.note,
               po.supplier_id, po.warehouse_id,
               s.name AS supplier_name,
               w.code AS warehouse_code, w.name AS warehouse_name,
@@ -6497,7 +6614,7 @@ router.get('/deliveries', requirePerm('inventory.view'), async (req, res) => {
        JOIN warehouses w ON w.id = po.warehouse_id
        LEFT JOIN purchase_delivery_lines dl ON dl.delivery_id = d.id
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       GROUP BY d.id, d.po_id, d.received_at, d.received_by, d.note, po.supplier_id, po.warehouse_id, s.name, w.code, w.name
+       GROUP BY d.id, d.po_id, d.received_at, d.received_by, d.updated_at, d.updated_by, d.note, po.supplier_id, po.warehouse_id, s.name, w.code, w.name
        ORDER BY d.received_at DESC
        LIMIT 200`,
       values,
