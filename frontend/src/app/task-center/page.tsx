@@ -807,7 +807,7 @@ export default function TaskCenterPage() {
     const workSet = new Set(params.workIds.map((item) => String(item)))
     setDayData((prev) => {
       if (!prev) return prev
-      const rows = prev.rows.map((row) => {
+      const rows: TaskCenterRow[] = prev.rows.map((row) => {
         const nextAssignments = params.rowKey && row.row_key === params.rowKey
           ? { ...(row.assignments || {}), [params.field]: params.value || null }
           : { ...(row.assignments || {}) }
@@ -816,14 +816,15 @@ export default function TaskCenterPage() {
           assignments: nextAssignments,
           subrows: row.subrows.map((subrow) => ({
             ...subrow,
-            tasks: subrow.tasks.map((task) => {
+            tasks: subrow.tasks.map((task): TaskCenterTask => {
               if (params.field === 'inspector_id') {
                 const matched = task.task_source === 'cleaning' && task.task_ids.some((id) => inspectionSet.has(String(id)))
                 if (!matched) return task
+                const nextInspectionMode: TaskCenterTask['inspection_mode'] = params.value ? 'same_day' : 'pending_decision'
                 return {
                   ...task,
                   inspector_id: params.value,
-                  inspection_mode: params.value ? 'same_day' : 'pending_decision',
+                  inspection_mode: nextInspectionMode,
                   status: autoCleaningStatus(task.status, task.cleaner_id || task.assignee_id || null, params.value),
                 }
               }
