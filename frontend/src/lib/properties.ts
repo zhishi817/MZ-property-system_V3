@@ -1,4 +1,10 @@
-export type PropertyLike = { id: string; code?: string; address?: string }
+export type PropertyLike = {
+  id: string
+  code?: string
+  address?: string
+  region?: string | null
+  archived?: boolean | null
+}
 
 export function cmpPropertyCode(a?: string, b?: string) {
   const A = String(a || '').trim().toUpperCase()
@@ -32,7 +38,7 @@ export function cmpPropertyCode(a?: string, b?: string) {
 }
 
 export function sortProperties<T extends PropertyLike>(arr: T[]): T[] {
-  return (Array.isArray(arr) ? arr : []).slice().sort((a, b) => cmpPropertyCode(a.code, b.code))
+  return sortPropertiesByRegionThenCode(arr)
 }
 
 const REGION_ORDER = ['Melbourne','Southbank','South Melbourne','West Melbourne','St Kilda','Docklands']
@@ -42,11 +48,19 @@ function regionRank(r?: string) {
   return idx >= 0 ? idx : REGION_ORDER.length + 1
 }
 
-export function sortPropertiesByRegionThenCode<T extends PropertyLike & { region?: string }>(arr: T[]): T[] {
+export function sortPropertiesByRegionThenCode<T extends PropertyLike>(arr: T[]): T[] {
   return (Array.isArray(arr) ? arr : []).slice().sort((a, b) => {
     const ra = regionRank((a as any).region)
     const rb = regionRank((b as any).region)
     if (ra !== rb) return ra - rb
     return cmpPropertyCode(a.code, b.code)
   })
+}
+
+export function filterActiveProperties<T extends PropertyLike>(arr: T[]): T[] {
+  return (Array.isArray(arr) ? arr : []).filter((item) => item?.archived !== true)
+}
+
+export function sortActivePropertiesByRegionThenCode<T extends PropertyLike>(arr: T[]): T[] {
+  return sortPropertiesByRegionThenCode(filterActiveProperties(arr))
 }

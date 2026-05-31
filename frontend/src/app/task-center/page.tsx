@@ -1,92 +1,274 @@
 "use client"
 
-import { Alert, Button, DatePicker, Empty, Modal, Popconfirm, Segmented, Select, Skeleton, Space, Tag, Tooltip, message, Input } from 'antd'
-import { CalendarOutlined, CaretDownOutlined, CaretRightOutlined, HolderOutlined, KeyOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
+import { Alert, Button, DatePicker, Empty, Input, Modal, Select, Skeleton, Space, Switch, Tag, message } from 'antd'
+import { DeleteOutlined, HolderOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { getJSON, patchJSON, postJSON } from '../../lib/api'
-import { cleaningColorKind } from '../../lib/cleaningColor'
 import styles from '../cleaning/cleaningSchedule.module.scss'
 
-type Staff = { id: string; name: string; kind?: 'cleaner' | 'inspector' | 'maintenance'; is_active?: boolean; color_hex?: string | null }
+type Staff = {
+  id: string
+  name: string
+  kind?: 'cleaner' | 'inspector' | 'maintenance'
+  is_active?: boolean
+  color_hex?: string | null
+}
 
-type CalendarItem = {
-  source: 'cleaning_tasks' | 'offline_tasks' | 'calendar_events'
-  entity_id: string
-  entity_ids?: string[]
-  order_id: string | null
-  order_code?: string | null
+type TaskCenterTask = {
+  item_key: string
+  task_source: 'cleaning' | 'work'
+  task_id: string
+  task_ids: string[]
+  task_kind: string
+  source_type?: string | null
+  source_id?: string | null
   property_id: string | null
-  property_code?: string | null
-  property_region?: string | null
-  task_type?: string | null
-  label: string
-  task_date: string
+  property_code: string | null
+  property_region: string | null
   status: string
+  urgency?: string | null
+  title: string
+  detail: string
+  summary?: string | null
+  task_date: string
   assignee_id: string | null
-  cleaner_id?: string | null
-  inspector_id?: string | null
-  scheduled_at: string | null
-  key_photo_uploaded_at?: string | null
-  has_key_photo?: boolean
+  cleaner_id: string | null
+  inspector_id: string | null
+  order_id?: string | null
+  order_code?: string | null
+  scheduled_at?: string | null
   auto_sync_enabled?: boolean
+  has_key_photo?: boolean
+  key_photo_uploaded_at?: string | null
   inspection_mode?: 'pending_decision' | 'same_day' | 'self_complete' | 'deferred' | null
   inspection_due_date?: string | null
-  cleaning_board_enabled?: boolean
-  inspection_board_enabled?: boolean
   deferred_inspection_view?: boolean
+  can_configure_inspection?: boolean
   old_code?: string | null
   new_code?: string | null
   nights?: number | null
   summary_checkout_time?: string | null
   summary_checkin_time?: string | null
+  temporarily_skipped?: boolean
+  skip_reason?: string | null
+  skip_bucket?: string | null
+  current_row_key?: string
+  current_subrow_key?: string
 }
 
-type WorkTask = {
-  id: string
-  task_kind: string
-  source_type: string
-  source_id: string
-  property_id: string | null
-  title: string
-  summary: string | null
-  scheduled_date: string | null
-  start_time: string | null
-  end_time: string | null
+type TaskCenterSubrow = {
+  subrow_key: string
+  tasks: TaskCenterTask[]
+}
+
+type TaskCenterLine = {
+  line_key: string
+  row_key: string
+  row_type: 'region' | 'final_group' | 'deferred'
+  assignments: Record<string, any>
+  tasks: TaskCenterTask[]
+  start_index: number
+  line_index: number
+  inspectionIds: string[]
+  workIds: string[]
+}
+
+type TaskCenterDisplayRow = {
+  row_key: string
+  row_order: number
+  row_type: 'region' | 'final_group' | 'deferred'
+  assignments: Record<string, any>
+  inspectionIds: string[]
+  workIds: string[]
+  lines: TaskCenterLine[]
+}
+
+type TaskCenterRow = {
+  row_key: string
+  row_title: string
+  row_type: 'region' | 'final_group' | 'deferred'
+  row_order: number
+  assignments: Record<string, any>
+  subrow_order: string[]
+  subrows: TaskCenterSubrow[]
+}
+
+type TaskCenterDay = {
+  date: string
+  rows: TaskCenterRow[]
+  region_rows?: TaskCenterRow[]
+  final_group_rows?: TaskCenterRow[]
+  deferred_rows?: TaskCenterRow[]
+  entry_readiness: {
+    ready_for_final_grouping: boolean
+    unresolved_primary_count: number
+    pending_inspection_count: number
+    skipped_count: number
+  }
+}
+
+type TaskDetailDraft = {
+  cleaner_id: string | null
+  inspector_id: string | null
   assignee_id: string | null
-  status: 'todo' | 'assigned' | 'in_progress' | 'done' | 'cancelled'
+  inspection_mode: 'pending_decision' | 'same_day' | 'self_complete' | 'deferred'
+  inspection_due_date: Dayjs | null
+  title: string
+  summary: string
   urgency: 'low' | 'medium' | 'high' | 'urgent'
+  temporarily_skipped: boolean
+  skip_reason: string
+  deferred_to_date: Dayjs | null
 }
 
-type TaskCenterDay = { date: string; pool: WorkTask[]; groups: Record<string, WorkTask[]>; tasks: WorkTask[] }
+const DEFERRED_ROW_KEY = 'deferred:holding'
+const DEFAULT_SUBROW_KEY = 'subrow:default'
+const TASKS_PER_LINE = 4
+const DEFAULT_SUMMARY_CHECKOUT_TIME = '10am'
+const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm'
+
+function displayRowOrder(rowKey: string) {
+  if (rowKey === 'region:Melbourne') return 10
+  if (rowKey === 'region:West Melbourne') return 11
+  if (rowKey === 'region:Docklands') return 20
+  if (rowKey === 'region:Southbank') return 30
+  if (rowKey === 'region:St Kilda') return 40
+  if (rowKey === 'work:bottom') return 90
+  if (rowKey === DEFERRED_ROW_KEY) return 100
+  return 70
+}
+
+function isCustomBoardRow(rowKey: string, rowType: TaskCenterRow['row_type']) {
+  return rowType === 'final_group' && rowKey.startsWith('group:')
+}
+
+function cleaningTimingVisibility(task: Pick<TaskCenterTask, 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view'>) {
+  if (task.deferred_inspection_view) return { showCheckout: false, showCheckin: false }
+  const kind = String(task.task_kind || '').trim().toLowerCase()
+  if (kind === 'turnover') return { showCheckout: true, showCheckin: true }
+  if (kind === 'checkout_clean') return { showCheckout: true, showCheckin: false }
+  if (kind === 'checkin_clean') return { showCheckout: false, showCheckin: true }
+  if (kind === 'stayover_clean') return { showCheckout: false, showCheckin: false }
+  const text = `${String(task.title || '')} ${String(task.detail || '')}`.toLowerCase()
+  const hasCheckout = text.includes('退房')
+  const hasCheckin = text.includes('入住')
+  if ((task.task_ids || []).length > 1) return { showCheckout: hasCheckout || true, showCheckin: hasCheckin || true }
+  return { showCheckout: hasCheckout, showCheckin: hasCheckin }
+}
+
+function parseSummaryTime(raw: string | null | undefined) {
+  const text = String(raw || '').trim().toLowerCase()
+  if (!text) return null
+  const hit = text.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i)
+  if (!hit) return null
+  let hour = Number(hit[1] || 0)
+  const minute = Number(hit[2] || 0)
+  const meridiem = String(hit[3] || '').trim().toLowerCase()
+  if (meridiem === 'am') {
+    if (hour === 12) hour = 0
+  } else if (meridiem === 'pm') {
+    if (hour < 12) hour += 12
+  }
+  return hour * 60 + minute
+}
+
+function normalizedSummaryTime(raw: string | null | undefined) {
+  return String(raw || '').trim()
+}
+
+function isDefaultSummaryTime(raw: string | null | undefined, defaultValue: string) {
+  const actual = parseSummaryTime(raw)
+  const expected = parseSummaryTime(defaultValue)
+  if (actual != null && expected != null) return actual === expected
+  return normalizedSummaryTime(raw).toLowerCase() === defaultValue.toLowerCase()
+}
+
+function specialTimingTags(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'summary_checkout_time' | 'summary_checkin_time'>) {
+  if (task.task_source !== 'cleaning') return [] as Array<{ key: string; label: string; time: string; tone: 'danger' | 'success' | 'purple' }>
+  const timing = cleaningTimingVisibility(task)
+  const tags: Array<{ key: string; label: string; time: string; tone: 'danger' | 'success' | 'purple' }> = []
+  const checkoutTime = normalizedSummaryTime(task.summary_checkout_time)
+  const checkinTime = normalizedSummaryTime(task.summary_checkin_time)
+  if (timing.showCheckout && checkoutTime && !isDefaultSummaryTime(checkoutTime, DEFAULT_SUMMARY_CHECKOUT_TIME)) {
+    const checkoutMin = parseSummaryTime(checkoutTime)
+    const defaultMin = parseSummaryTime(DEFAULT_SUMMARY_CHECKOUT_TIME)
+    let label = '退房'
+    if (checkoutMin != null && defaultMin != null) label = checkoutMin > defaultMin ? '晚退房' : (checkoutMin < defaultMin ? '早退房' : '退房')
+    tags.push({ key: 'checkout', label, time: checkoutTime, tone: 'danger' })
+  }
+  if (timing.showCheckin && checkinTime && !isDefaultSummaryTime(checkinTime, DEFAULT_SUMMARY_CHECKIN_TIME)) {
+    const checkinMin = parseSummaryTime(checkinTime)
+    const defaultMin = parseSummaryTime(DEFAULT_SUMMARY_CHECKIN_TIME)
+    let label = '入住'
+    if (checkinMin != null && defaultMin != null) label = checkinMin < defaultMin ? '早入住' : (checkinMin > defaultMin ? '晚入住' : '入住')
+    const tone = label === '早入住' ? 'purple' : (label === '晚入住' ? 'success' : 'danger')
+    tags.push({ key: 'checkin', label, time: checkinTime, tone })
+  }
+  return tags
+}
+
+function shouldShowNights(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view'>) {
+  if (task.task_source !== 'cleaning' || task.deferred_inspection_view) return false
+  const timing = cleaningTimingVisibility(task)
+  return timing.showCheckin
+}
+
+function cleaningSummaryParts(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'summary_checkout_time' | 'summary_checkin_time' | 'nights'>) {
+  if (task.task_source !== 'cleaning') return [String(task.detail || '').trim()].filter(Boolean)
+  const parts: string[] = []
+  const timing = cleaningTimingVisibility(task)
+  const checkoutTime = normalizedSummaryTime(task.summary_checkout_time)
+  const checkinTime = normalizedSummaryTime(task.summary_checkin_time)
+  if (timing.showCheckout) {
+    parts.push(isDefaultSummaryTime(checkoutTime, DEFAULT_SUMMARY_CHECKOUT_TIME) || !checkoutTime ? '退房' : `${checkoutTime}退房`)
+  }
+  if (timing.showCheckin) {
+    parts.push(isDefaultSummaryTime(checkinTime, DEFAULT_SUMMARY_CHECKIN_TIME) || !checkinTime ? '入住' : `${checkinTime}入住`)
+  }
+  if (!parts.length) parts.push(cleaningTaskFlowLabel(task))
+  if (shouldShowNights(task) && task.nights != null && Number(task.nights) > 0) parts.push(`住${Number(task.nights)}晚`)
+  return parts
+}
+
+function cleaningSecondarySummary(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'summary_checkout_time' | 'summary_checkin_time' | 'nights'>) {
+  if (task.task_source !== 'cleaning') return String(task.detail || '').trim()
+  const parts = cleaningSummaryParts(task)
+  return parts.join('，') || String(task.detail || '').trim()
+}
+
+function cleaningTaskFlowLabel(task: Pick<TaskCenterTask, 'task_kind' | 'title' | 'detail' | 'deferred_inspection_view'>) {
+  if (task.deferred_inspection_view) return '待检查'
+  const kind = String(task.task_kind || '').trim().toLowerCase()
+  if (kind === 'turnover') return '退房入住'
+  if (kind === 'checkout_clean') return '退房'
+  if (kind === 'checkin_clean') return '入住'
+  if (kind === 'stayover_clean') return '入住中清洁'
+  return String(task.detail || task.title || '任务安排').trim()
+}
+
+function detailHeroSummary(task: TaskCenterTask) {
+  if (task.task_source === 'work') return String(task.summary || task.detail || '线下任务').trim()
+  const parts = cleaningSummaryParts(task)
+  return parts.join(' · ')
+}
 
 export default function TaskCenterPage() {
   const [date, setDate] = useState<Dayjs>(() => dayjs())
-  const dateStr = useMemo(() => date.format('YYYY-MM-DD'), [date])
-
-  const [tab, setTab] = useState<'cleaning' | 'inspection' | 'maintenance' | 'deep_cleaning'>('cleaning')
-
   const [staff, setStaff] = useState<Staff[]>([])
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string; region?: string | null }[]>([])
-
+  const [dayData, setDayData] = useState<TaskCenterDay | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-
-  const [cleaningItems, setCleaningItems] = useState<CalendarItem[]>([])
-  const [taskCenterDay, setTaskCenterDay] = useState<TaskCenterDay | null>(null)
-
+  const [filterText, setFilterText] = useState('')
   const [dragOverKey, setDragOverKey] = useState<string | null>(null)
   const [pendingTaskKeys, setPendingTaskKeys] = useState<string[]>([])
-
+  const [detailTask, setDetailTask] = useState<TaskCenterTask | null>(null)
+  const [detailDraft, setDetailDraft] = useState<TaskDetailDraft | null>(null)
+  const [detailSaving, setDetailSaving] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [createLoading, setCreateLoading] = useState(false)
-  const [inspectionPlanOpen, setInspectionPlanOpen] = useState(false)
-  const [inspectionPlanLoading, setInspectionPlanLoading] = useState(false)
-  const [inspectionPlanItem, setInspectionPlanItem] = useState<CalendarItem | null>(null)
-  const [inspectionPlanMode, setInspectionPlanMode] = useState<'pending_decision' | 'same_day' | 'self_complete' | 'deferred'>('pending_decision')
-  const [inspectionPlanDate, setInspectionPlanDate] = useState<Dayjs | null>(null)
-  const [inspectionPlanInspectorId, setInspectionPlanInspectorId] = useState<string | null>(null)
-
+  const [creatingRow, setCreatingRow] = useState(false)
   const [offlineCreate, setOfflineCreate] = useState<{
     date: Dayjs
     task_type: 'property' | 'company' | 'other'
@@ -97,128 +279,7 @@ export default function TaskCenterPage() {
     assignee_id: string | null
   } | null>(null)
 
-  const [filterText, setFilterText] = useState('')
-  const [poolView, setPoolView] = useState<'all' | 'cleaning' | 'inspection' | 'self_complete' | 'maintenance' | 'deep_cleaning' | 'other'>('all')
-  const [staffFilter, setStaffFilter] = useState<'all' | 'busy' | 'idle'>('all')
-  const [staffSearch, setStaffSearch] = useState('')
-  const [staffFocusId, setStaffFocusId] = useState<string | null>(null)
-  const [expandedStaff, setExpandedStaff] = useState<Record<string, 'preview' | 'expanded' | 'collapsed'>>({})
-
-  const staffFilterOptions = useMemo(() => ([
-    { label: '全部人员', value: 'all' },
-    { label: '有任务', value: 'busy' },
-    { label: '空闲', value: 'idle' },
-  ]), [])
-
-  const cleaningPoolFilterOptions = useMemo(() => ([
-    { label: '全部', value: 'all' },
-    { label: '清洁', value: 'cleaning' },
-    { label: '检查', value: 'inspection' },
-    { label: '自完成', value: 'self_complete' },
-    { label: '维修', value: 'maintenance' },
-    { label: '深清', value: 'deep_cleaning' },
-    { label: '其他', value: 'other' },
-  ]), [])
-
-  const workPoolFilterOptions = useMemo(() => ([
-    { label: '全部', value: 'all' },
-    { label: '清洁', value: 'cleaning' },
-    { label: '检查', value: 'inspection' },
-    { label: '维修', value: 'maintenance' },
-    { label: '深清', value: 'deep_cleaning' },
-    { label: '其他', value: 'other' },
-  ]), [])
-
-  const entityIds = useCallback((it: CalendarItem) => {
-    const ids = Array.isArray(it.entity_ids) && it.entity_ids.length ? it.entity_ids : [it.entity_id]
-    return Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
-  }, [])
-
-  const parseDragPayload = useCallback((payloadText: string): { ids: string[]; task_type?: string | null; source?: 'cleaning' | 'work' } => {
-    try {
-      const j = JSON.parse(payloadText)
-      const ids = Array.isArray(j?.ids) ? j.ids.map((x: any) => String(x)).filter(Boolean) : []
-      const sourceRaw = String(j?.source || '').trim().toLowerCase()
-      const source = sourceRaw === 'work' ? 'work' : (sourceRaw === 'cleaning' ? 'cleaning' : undefined)
-      return { ids, task_type: j?.task_type != null ? String(j.task_type) : undefined, source }
-    } catch {
-      return { ids: [] }
-    }
-  }, [])
-
-  const activateDragTarget = useCallback((key: string) => {
-    setDragOverKey((prev) => (prev === key ? prev : key))
-  }, [])
-
-  const clearDragTarget = useCallback((key?: string | null) => {
-    setDragOverKey((prev) => {
-      if (!key) return prev == null ? prev : null
-      return prev === key ? null : prev
-    })
-  }, [])
-
-  const handlePoolViewChange = useCallback((value: string | number) => {
-    const val = value as typeof poolView
-    if (val === 'maintenance') { setPoolView('maintenance'); setTab('maintenance'); return }
-    if (val === 'deep_cleaning') { setPoolView('deep_cleaning'); setTab('deep_cleaning'); return }
-    if (val === 'inspection') { setPoolView('inspection'); setTab('inspection'); return }
-    if (val === 'cleaning') { setPoolView('cleaning'); setTab('cleaning'); return }
-    if (val === 'self_complete') { setPoolView('self_complete'); setTab('cleaning'); return }
-    if (val === 'other') { setPoolView('other'); return }
-    setPoolView('all')
-  }, [])
-
-  const renderPoolTools = useCallback((options: { label: string; value: string }[]) => (
-    <div className={`${styles.poolTools} ${styles.taskCenterPoolTools}`}>
-      <div className={styles.taskCenterToolBlock}>
-        <div className={styles.taskCenterToolLabel}>任务范围</div>
-        <Segmented
-          size="small"
-          className={styles.taskCenterPoolSegment}
-          options={options}
-          value={poolView}
-          onChange={handlePoolViewChange}
-        />
-      </div>
-      <div className={styles.taskCenterToolBlock}>
-        <div className={styles.taskCenterToolLabel}>快速搜索</div>
-        <Input
-          className={styles.taskCenterPoolSearch}
-          value={filterText}
-          onChange={(e) => setFilterText(e.target.value)}
-          placeholder="搜索房源、区域或任务..."
-          allowClear
-        />
-      </div>
-    </div>
-  ), [filterText, handlePoolViewChange, poolView])
-
-  const renderStaffTools = useCallback(() => (
-    <div className={`${styles.staffTools} ${styles.taskCenterStaffTools}`}>
-      <div className={styles.taskCenterStaffToolsBar}>
-        <div className={styles.taskCenterToolBlock}>
-          <div className={styles.taskCenterToolLabel}>人员状态</div>
-          <Segmented
-            size="small"
-            className={styles.taskCenterStaffSegment}
-            options={staffFilterOptions}
-            value={staffFilter}
-            onChange={(v) => setStaffFilter(v as any)}
-          />
-        </div>
-        <div className={`${styles.taskCenterToolBlock} ${styles.taskCenterStaffSearchBlock}`}>
-          <div className={styles.taskCenterToolLabel}>搜索定位</div>
-          <Input
-            className={`${styles.staffJump} ${styles.taskCenterStaffSearch}`}
-            value={staffSearch}
-            onChange={(e) => setStaffSearch(e.target.value)}
-            placeholder="搜索人员并定位..."
-            allowClear
-          />
-        </div>
-      </div>
-    </div>
-  ), [staffFilter, staffFilterOptions, staffSearch])
+  const dateStr = useMemo(() => date.format('YYYY-MM-DD'), [date])
 
   const loadStaff = useCallback(async () => {
     const rows = await getJSON<Staff[]>('/cleaning/staff').catch(() => [])
@@ -226,117 +287,22 @@ export default function TaskCenterPage() {
   }, [])
 
   const loadProps = useCallback(async () => {
-    const p = await getJSON<any>('/properties?include_archived=true').catch(() => [])
-    setProperties(Array.isArray(p) ? p : [])
+    const rows = await getJSON<any[]>('/properties?include_archived=true').catch(() => [])
+    setProperties(Array.isArray(rows) ? rows : [])
   }, [])
 
   const loadDay = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const day = dateStr
-      const [itemsRes, dayRes] = await Promise.allSettled([
-        getJSON<CalendarItem[]>(`/cleaning/calendar-range?from=${encodeURIComponent(day)}&to=${encodeURIComponent(day)}&include_deferred_inspection=1`),
-        getJSON<TaskCenterDay>(`/task-center/day?date=${encodeURIComponent(day)}&include_overdue=1&include_unscheduled=1&include_future=1`, { timeoutMs: 20000 }),
-      ])
-
-      if (itemsRes.status === 'fulfilled') {
-        const items = itemsRes.value
-        setCleaningItems(Array.isArray(items) ? items.filter((x) => x.source === 'cleaning_tasks') : [])
-      }
-      if (dayRes.status === 'fulfilled') setTaskCenterDay(dayRes.value || null)
-
-      const hadError = [itemsRes, dayRes].some((r) => r.status === 'rejected')
-      if (hadError) setError('部分数据加载失败')
+      const payload = await getJSON<TaskCenterDay>(`/task-center/day?date=${encodeURIComponent(dateStr)}&include_overdue=1&include_unscheduled=1&include_future=1`, { timeoutMs: 20000 })
+      setDayData(payload || null)
     } catch (e: any) {
       setError(String(e?.message || '加载失败'))
     } finally {
       setLoading(false)
     }
   }, [dateStr])
-
-  const daySyncTaskIds = useMemo(() => {
-    const out: string[] = []
-    for (const it of cleaningItems) {
-      if (it.source !== 'cleaning_tasks') continue
-      if (!String(it.order_id || '').trim()) continue
-      out.push(String(it.entity_id))
-    }
-    return Array.from(new Set(out.map((x) => String(x)).filter(Boolean)))
-  }, [cleaningItems])
-
-  const lockTaskIds = useMemo(() => {
-    const idSet = new Set<string>()
-    for (const it of cleaningItems) {
-      if (it.source !== 'cleaning_tasks') continue
-      if (!String(it.order_id || '').trim()) continue
-      if (it.auto_sync_enabled === false) continue
-      idSet.add(String(it.entity_id))
-    }
-    return Array.from(idSet)
-  }, [cleaningItems])
-
-  const unlockTaskIds = useMemo(() => {
-    const idSet = new Set<string>()
-    for (const it of cleaningItems) {
-      if (it.source !== 'cleaning_tasks') continue
-      if (!String(it.order_id || '').trim()) continue
-      if (it.auto_sync_enabled !== false) continue
-      idSet.add(String(it.entity_id))
-    }
-    return Array.from(idSet)
-  }, [cleaningItems])
-
-  const lockDay = useCallback(async () => {
-    if (!daySyncTaskIds.length) { message.warning('当日无可锁定任务'); return }
-    if (!lockTaskIds.length) { message.info('当日已处于锁定状态'); return }
-    Modal.confirm({
-      title: '确认锁定当日安排？',
-      content: '锁定后将禁用拖拽分配与快速指派，需手动解锁才能继续修改。',
-      okText: '锁定',
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        try {
-          await postJSON('/cleaning/tasks/bulk-lock-auto-sync', { ids: lockTaskIds }, { timeoutMs: 20000 })
-        } catch (e: any) {
-          const name = String(e?.name || '')
-          const msg = name === 'AbortError' ? '锁定超时，请稍后重试' : String(e?.message || '锁定失败')
-          message.error(msg)
-          throw e
-        }
-        setCleaningItems((prev) => {
-          const idSet = new Set(lockTaskIds.map((x) => String(x)))
-          return prev.map((it) => (it.source === 'cleaning_tasks' && idSet.has(String(it.entity_id)) ? { ...it, auto_sync_enabled: false } : it))
-        })
-        message.success('已锁定当日安排')
-      },
-    })
-  }, [daySyncTaskIds, lockTaskIds])
-
-  const unlockDay = useCallback(async () => {
-    if (!daySyncTaskIds.length) { message.warning('当日无可解锁任务'); return }
-    if (!unlockTaskIds.length) { message.info('当日已处于解锁状态'); return }
-    Modal.confirm({
-      title: '确认解锁当日安排？',
-      content: '解锁后允许拖拽与快速指派，并恢复自动同步。',
-      okText: '解锁',
-      onOk: async () => {
-        try {
-          await postJSON('/cleaning/tasks/bulk-restore-auto-sync', { ids: unlockTaskIds }, { timeoutMs: 20000 })
-        } catch (e: any) {
-          const name = String(e?.name || '')
-          const msg = name === 'AbortError' ? '解锁超时，请稍后重试' : String(e?.message || '解锁失败')
-          message.error(msg)
-          throw e
-        }
-        setCleaningItems((prev) => {
-          const idSet = new Set(unlockTaskIds.map((x) => String(x)))
-          return prev.map((it) => (it.source === 'cleaning_tasks' && idSet.has(String(it.entity_id)) ? { ...it, auto_sync_enabled: true } : it))
-        })
-        message.success('已解锁当日安排')
-      },
-    })
-  }, [daySyncTaskIds, unlockTaskIds])
 
   useEffect(() => {
     loadStaff().catch(() => {})
@@ -347,557 +313,733 @@ export default function TaskCenterPage() {
     loadDay().catch(() => {})
   }, [loadDay])
 
-  const goPrev = useCallback(() => setDate((d) => d.subtract(1, 'day')), [])
-  const goNext = useCallback(() => setDate((d) => d.add(1, 'day')), [])
+  const activeStaff = useMemo(() => staff.filter((item) => item.is_active !== false), [staff])
+  const activeCleaners = useMemo(() => activeStaff.filter((item) => (item.kind || 'cleaner') === 'cleaner'), [activeStaff])
+  const activeInspectors = useMemo(() => activeStaff.filter((item) => (item.kind || 'cleaner') === 'inspector'), [activeStaff])
 
-  const activeCleaners = useMemo(() => staff.filter((s) => (s.kind || 'cleaner') === 'cleaner' && s.is_active !== false), [staff])
-  const activeInspectors = useMemo(() => staff.filter((s) => (s.kind || 'cleaner') === 'inspector' && s.is_active !== false), [staff])
-  const activeMaintenanceStaff = useMemo(() => {
-    const ms = staff.filter((s) => (s as any).kind === 'maintenance' && s.is_active !== false)
-    return ms.length ? ms : staff.filter((s) => s.is_active !== false)
-  }, [staff])
-  const activeAllStaff = useMemo(() => staff.filter((s) => s.is_active !== false), [staff])
+  const staffById = useMemo(() => {
+    const map = new Map<string, Staff>()
+    for (const item of activeStaff) map.set(String(item.id), item)
+    return map
+  }, [activeStaff])
+
+  const allRows = useMemo(() => dayData?.rows || [], [dayData?.rows])
 
   const filterQuery = useMemo(() => filterText.trim().toLowerCase(), [filterText])
+  const filteringActive = filterQuery.length > 0
 
-  const propertyCodeById = useCallback((propertyId?: string | null) => {
-    const pid = String(propertyId || '').trim()
-    if (!pid) return '-'
-    const p = properties.find((x) => String(x.id) === pid)
-    return String(p?.code || pid).trim() || '-'
-  }, [properties])
+  const filteredRows = useMemo(() => {
+    if (!filterQuery) return allRows
+    return allRows
+      .map((row) => ({
+        ...row,
+        subrows: row.subrows
+          .map((subrow) => ({
+            ...subrow,
+            tasks: subrow.tasks.filter((task) => {
+              const text = `${task.title} ${task.detail} ${task.property_region || ''} ${task.property_code || ''} ${task.summary || ''}`.toLowerCase()
+              return text.includes(filterQuery)
+            }),
+          }))
+          .filter((subrow) => subrow.tasks.length > 0 || row.row_type === 'deferred' || (!filterQuery && row.row_type === 'final_group')),
+      }))
+      .filter((row) => row.subrows.some((subrow) => subrow.tasks.length > 0) || row.row_type === 'deferred' || (!filterQuery && row.row_type === 'final_group'))
+  }, [allRows, filterQuery])
 
-  useEffect(() => {
-    const q = staffSearch.trim().toLowerCase()
-    if (!q) { setStaffFocusId(null); return }
-    const list = tab === 'maintenance' ? activeMaintenanceStaff : (tab === 'inspection' ? activeInspectors : activeCleaners)
-    const m = list.find((s) => String(s.name || '').toLowerCase().includes(q))
-    if (m) setStaffFocusId(String(m.id))
-  }, [activeCleaners, activeInspectors, activeMaintenanceStaff, staffSearch, tab])
+  const allBoardTasks = useMemo(() => allRows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks)), [allRows])
 
-  useEffect(() => {
-    if (!staffFocusId) return
-    const mode = tab === 'maintenance'
-      ? 'maintenance'
-      : (tab === 'inspection' ? 'inspection' : (tab === 'deep_cleaning' ? 'deep-cleaning' : 'cleaning'))
-    const el = document.getElementById(`staffcol-${mode}-${staffFocusId}`)
-    if (el) el.scrollIntoView({ block: 'start' })
-  }, [staffFocusId, tab])
+  const allCleaningTaskRefs = useMemo(() => {
+    const ids: string[] = []
+    for (const task of allBoardTasks) {
+      if (task.task_source !== 'cleaning') continue
+      ids.push(...task.task_ids.map((id) => String(id)))
+    }
+    return Array.from(new Set(ids.filter(Boolean)))
+  }, [allBoardTasks])
+
+  const lockTaskIds = useMemo(() => {
+    const ids: string[] = []
+    for (const task of allBoardTasks) {
+      if (task.task_source !== 'cleaning') continue
+      if (!String(task.order_id || '').trim()) continue
+      if (task.auto_sync_enabled === false) continue
+      ids.push(...task.task_ids.map((id) => String(id)))
+    }
+    return Array.from(new Set(ids.filter(Boolean)))
+  }, [allBoardTasks])
+
+  const unlockTaskIds = useMemo(() => {
+    const ids: string[] = []
+    for (const task of allBoardTasks) {
+      if (task.task_source !== 'cleaning') continue
+      if (!String(task.order_id || '').trim()) continue
+      if (task.auto_sync_enabled !== false) continue
+      ids.push(...task.task_ids.map((id) => String(id)))
+    }
+    return Array.from(new Set(ids.filter(Boolean)))
+  }, [allBoardTasks])
 
   const dayLocked = useMemo(() => {
-    return cleaningItems.some((it) => !!String(it.order_id || '').trim() && it.auto_sync_enabled === false)
-  }, [cleaningItems])
+    return allBoardTasks.some((task) => task.task_source === 'cleaning' && task.auto_sync_enabled === false && String(task.order_id || '').trim())
+  }, [allBoardTasks])
 
-  const mergedStatus = useCallback((statuses: string[]) => {
-    const ss = statuses.map((s) => String(s || 'pending'))
-    if (ss.length && ss.every((x) => x === 'cancelled')) return 'cancelled'
-    if (ss.includes('pending')) return 'pending'
-    if (ss.includes('assigned')) return 'assigned'
-    if (ss.includes('in_progress')) return 'in_progress'
-    if (ss.includes('completed')) return 'completed'
-    if (ss.length) return ss[0]
-    return 'pending'
+  const propertyOptions = useMemo(() => (
+    properties
+      .filter((item) => String(item.id || '').trim())
+      .map((item) => {
+        const code = String(item.code || '').trim()
+        const address = String(item.address || '').trim()
+        const label = code ? (address ? `${code} ${address}` : code) : (address || String(item.id))
+        return { value: String(item.id), label }
+      })
+  ), [properties])
+
+  const cleanerOptions = useMemo(() => activeCleaners.map((item) => ({ value: item.id, label: item.name })), [activeCleaners])
+  const inspectorOptions = useMemo(() => activeInspectors.map((item) => ({ value: item.id, label: item.name })), [activeInspectors])
+  const allStaffOptions = useMemo(() => activeStaff.map((item) => ({ value: item.id, label: item.name })), [activeStaff])
+
+  const normalizeHex = useCallback((hex: any): string | null => {
+    const value = String(hex || '').trim()
+    if (!/^#[0-9a-fA-F]{6}$/.test(value)) return null
+    return value.toUpperCase()
   }, [])
 
-  const inspectionModeOf = useCallback((it: CalendarItem) => {
-    const raw = String(it.inspection_mode || '').trim().toLowerCase()
-    if (raw === 'pending_decision' || raw === 'same_day' || raw === 'self_complete' || raw === 'deferred') return raw
-    const tt = String(it.task_type || '').trim().toLowerCase()
-    if (tt === 'stayover_clean') return 'self_complete'
-    if (tt === 'checkin_clean') return 'same_day'
-    if (String(it.inspector_id || '').trim()) return 'same_day'
-    return 'pending_decision'
+  const hexToRgba = useCallback((hex: string, alpha: number) => {
+    const raw = hex.replace('#', '')
+    const r = parseInt(raw.slice(0, 2), 16)
+    const g = parseInt(raw.slice(2, 4), 16)
+    const b = parseInt(raw.slice(4, 6), 16)
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
   }, [])
 
-  const inspectionModeLabel = useCallback((it: CalendarItem) => {
-    const mode = inspectionModeOf(it)
-    if (mode === 'pending_decision') return '待确认检查安排'
-    if (mode === 'self_complete') return '自完成'
-    if (mode === 'deferred') {
-      const due = String(it.inspection_due_date || '').trim()
-      return due ? `延后检查 ${due}` : '延后检查'
+  const assignedColorForTask = useCallback((task: TaskCenterTask) => {
+    const staffId = String(task.cleaner_id || task.assignee_id || '').trim()
+    const hex = staffId ? normalizeHex(staffById.get(staffId)?.color_hex) : null
+    return hex
+  }, [normalizeHex, staffById])
+
+  const cardStyleForTask = useCallback((task: TaskCenterTask) => {
+    const assignedColor = assignedColorForTask(task)
+    if (task.temporarily_skipped) {
+      return {
+        background: 'rgba(254, 242, 242, 0.92)',
+        borderColor: 'rgba(239, 68, 68, 0.28)',
+      }
     }
-    return '同日检查'
-  }, [inspectionModeOf])
-
-  const canConfigureInspection = useCallback((it: CalendarItem) => {
-    if (String(it.source || '') !== 'cleaning_tasks') return false
-    if (it.deferred_inspection_view) return false
-    const tt = String(it.task_type || '').trim().toLowerCase()
-    return tt === 'checkout_clean' || tt === 'turnover'
-  }, [])
-
-  const shouldShowInspectionPlanAction = useCallback((it: CalendarItem) => {
-    if (!canConfigureInspection(it)) return false
-    if (String(it.inspector_id || '').trim()) return false
-    return true
-  }, [canConfigureInspection])
-
-  const inspectionActionLabel = useCallback((it: CalendarItem) => {
-    const mode = inspectionModeOf(it)
-    return mode === 'pending_decision' ? '安排检查' : '修改检查安排'
-  }, [inspectionModeOf])
-
-  const isStayoverTask = useCallback((it: CalendarItem) => {
-    const taskType = String(it.task_type || '').trim().toLowerCase()
-    const label = String(it.label || '').trim().toLowerCase()
-    return taskType === 'stayover_clean' || label.includes('入住中清洁') || label.includes('stayover')
-  }, [])
-
-  const isCheckinOnlyTask = useCallback((it: CalendarItem) => {
-    if (String(it.source || '') !== 'cleaning_tasks') return false
-    if (Array.isArray(it.entity_ids) && it.entity_ids.length > 1) return false
-    if (isStayoverTask(it)) return false
-    const taskType = String(it.task_type || '').trim().toLowerCase()
-    const label = String(it.label || '').trim()
-    return taskType === 'checkin_clean' || (label.includes('入住') && !label.includes('退房'))
-  }, [isStayoverTask])
-
-  const canDirectMarkHungKeys = useCallback((it: CalendarItem) => {
-    if (!isCheckinOnlyTask(it)) return false
-    const raw = String(it.status || '').trim().toLowerCase()
-    if (raw === 'cancelled' || raw === 'canceled') return false
-    if (raw === 'ready' || raw === 'keys_hung' || raw === 'done' || raw === 'completed') return false
-    return true
-  }, [isCheckinOnlyTask])
-
-  const shouldKeepHungKeyTaskVisible = useCallback((it: CalendarItem) => {
-    if (!isCheckinOnlyTask(it)) return false
-    const raw = String(it.status || '').trim().toLowerCase()
-    return raw === 'ready' || raw === 'keys_hung'
-  }, [isCheckinOnlyTask])
-
-  const canUndoHungKeys = useCallback((it: CalendarItem) => {
-    if (!isCheckinOnlyTask(it)) return false
-    const raw = String(it.status || '').trim().toLowerCase()
-    if (raw === 'cancelled' || raw === 'canceled') return false
-    return raw === 'ready' || raw === 'keys_hung'
-  }, [isCheckinOnlyTask])
-
-  const effectiveCleaningStatus = useCallback((it: CalendarItem, board: 'cleaning' | 'inspection') => {
-    const raw = String(it.status || 'pending')
-    const lowered = raw.trim().toLowerCase()
-    const cleaner = String(it.cleaner_id || it.assignee_id || '').trim()
-    const inspector = String(it.inspector_id || '').trim()
-    const doneLike = lowered === 'completed' || lowered === 'done' || lowered === 'ready' || lowered === 'inspected' || lowered === 'keys_hung'
-    const cleanedLike = lowered === 'cleaned' || lowered === 'restock_pending' || lowered === 'restocked'
-    if (lowered === 'cancelled') return 'cancelled'
-    if (board === 'inspection') {
-      if (doneLike) return 'completed'
-      if (lowered === 'in_progress') return 'in_progress'
-      if (cleanedLike) return inspector ? 'assigned' : 'pending'
-      if (lowered === 'assigned') return inspector ? 'assigned' : 'pending'
-      return inspector ? 'assigned' : 'pending'
+    if (!assignedColor) return {}
+    return {
+      background: hexToRgba(assignedColor, 0.16),
+      borderColor: hexToRgba(assignedColor, 0.42),
     }
-    if (doneLike || cleanedLike) return 'completed'
-    if (lowered === 'in_progress') return 'in_progress'
-    if (lowered === 'assigned') return 'assigned'
-    return cleaner || inspector ? 'assigned' : 'pending'
+  }, [assignedColorForTask, hexToRgba])
+
+  const textColorForTask = useCallback((task: TaskCenterTask) => {
+    if (task.temporarily_skipped) return '#7f1d1d'
+    return null
   }, [])
 
-  const statusText = useCallback((s: string | null | undefined) => {
-    const v = String(s || '').trim()
-    if (v === 'pending') return '待处理'
-    if (v === 'assigned') return '已分配'
-    if (v === 'in_progress') return '进行中'
-    if (v === 'completed') return '已完成'
-    if (v === 'cancelled') return '已取消'
-    if (v === 'todo') return '待处理'
-    if (v === 'done') return '已完成'
-    return v || '-'
+  const stripeColorForTask = useCallback((task: TaskCenterTask) => {
+    if (task.temporarily_skipped) return '#ef4444'
+    const assignedColor = assignedColorForTask(task)
+    if (assignedColor) return assignedColor
+    if (task.task_source === 'cleaning') return '#cbd5e1'
+    if (task.urgency === 'urgent') return '#ef4444'
+    if (task.urgency === 'high') return '#f97316'
+    return '#94a3b8'
+  }, [assignedColorForTask])
+
+  const statusText = useCallback((status: string | null | undefined) => {
+    const value = String(status || '').trim().toLowerCase()
+    if (value === 'pending' || value === 'todo') return '待处理'
+    if (value === 'assigned') return '已分配'
+    if (value === 'in_progress') return '进行中'
+    if (value === 'completed' || value === 'done') return '已完成'
+    if (value === 'cancelled') return '已取消'
+    return value || '-'
   }, [])
 
-  const boardStatusText = useCallback((it: CalendarItem, status: string | null | undefined) => {
-    const raw = String(it.status || '').trim().toLowerCase()
-    if (isCheckinOnlyTask(it) && (raw === 'ready' || raw === 'keys_hung')) return '已挂钥匙'
-    return statusText(status)
-  }, [isCheckinOnlyTask, statusText])
-
-  const statusChipCls = useCallback((s: string | null | undefined) => {
-    const v = String(s || '').trim()
-    if (v === 'completed' || v === 'done') return styles.statusDone
-    if (v === 'in_progress') return styles.statusInProgress
-    if (v === 'assigned') return styles.statusAssigned
-    if (v === 'cancelled') return styles.statusCancelled
+  const statusChipCls = useCallback((status: string | null | undefined) => {
+    const value = String(status || '').trim().toLowerCase()
+    if (value === 'completed' || value === 'done') return styles.statusDone
+    if (value === 'in_progress') return styles.statusInProgress
+    if (value === 'assigned') return styles.statusAssigned
+    if (value === 'cancelled') return styles.statusCancelled
     return styles.statusPending
   }, [])
 
-  const mergedCleaningItems = useMemo(() => {
-    const list = Array.isArray(cleaningItems) ? cleaningItems.filter((x) => x.source === 'cleaning_tasks') : []
-    const byProp = new Map<string, CalendarItem[]>()
-    for (const it of list) {
-      const pid = String(it.property_id || '').trim()
-      const groupKey = `${pid}|${it.deferred_inspection_view ? `deferred:${String(it.inspection_due_date || '').trim() || String(it.task_date || '').trim()}` : 'normal'}`
-      const arr = byProp.get(groupKey) || []
-      arr.push(it)
-      byProp.set(groupKey, arr)
-    }
-
-    const isStayover = (x: CalendarItem) => String(x.task_type || '').toLowerCase() === 'stayover_clean' || String(x.label || '').includes('入住中清洁') || `${x.label}`.toLowerCase().includes('stayover')
-    const isCheckin = (x: CalendarItem) => !isStayover(x) && (String(x.task_type || '').toLowerCase() === 'checkin_clean' || (String(x.label || '').includes('入住') && !String(x.label || '').includes('入住中清洁')) || `${x.label}`.toLowerCase().includes('checkin'))
-    const isCheckout = (x: CalendarItem) => String(x.task_type || '').toLowerCase() === 'checkout_clean' || String(x.label || '').includes('退房') || `${x.label}`.toLowerCase().includes('checkout')
-    const keyUploaded = (x: CalendarItem) => !!(x?.has_key_photo || x?.key_photo_uploaded_at)
-    const anyKeyUploaded = (xs: CalendarItem[]) => xs.some((x) => keyUploaded(x))
-    const firstKeyUploadedAt = (xs: CalendarItem[]) => {
-      const hit = xs.find((x) => !!x?.key_photo_uploaded_at)
-      return hit?.key_photo_uploaded_at || null
-    }
-    const preferOrderLinked = (xs: CalendarItem[]) => {
-      const withOrder = xs.filter((x) => !!(x.order_id || x.order_code))
-      return withOrder.length ? withOrder : xs
-    }
-
-    const out: CalendarItem[] = []
-    for (const items of byProp.values()) {
-      const stayovers0 = items.filter(isStayover)
-      const checkins0 = preferOrderLinked(items.filter(isCheckin))
-      const checkouts0 = preferOrderLinked(items.filter(isCheckout))
-
-      if (checkins0.length && checkouts0.length) {
-        const all = [...checkins0, ...checkouts0]
-        const ids = all.map((x) => String(x.entity_id))
-        const assignee = all.every((x) => String(x.assignee_id || '') === String(all[0].assignee_id || '')) ? all[0].assignee_id : null
-        const cleanerKey = (x: CalendarItem) => String(x.cleaner_id || x.assignee_id || '').trim()
-        const inspectorKey = (x: CalendarItem) => String(x.inspector_id || '').trim()
-        const cleanerId = all.every((x) => cleanerKey(x) === cleanerKey(all[0])) ? (cleanerKey(all[0]) || null) : null
-        const inspectorId = all.every((x) => inspectorKey(x) === inspectorKey(all[0])) ? (inspectorKey(all[0]) || null) : null
-        const sched = all.every((x) => String(x.scheduled_at || '') === String(all[0].scheduled_at || '')) ? all[0].scheduled_at : null
-        const status = mergedStatus(all.map((x) => String(x.status || 'pending')))
-        const autoSync = all.every((x) => x.auto_sync_enabled !== false)
-        const checkout = checkouts0[0]
-        const checkin = checkins0[0]
-        const inspectionBase = checkout || checkin || all[0]
-        out.push({
-          source: 'cleaning_tasks',
-          entity_id: ids.join(','),
-          entity_ids: ids,
-          order_id: null,
-          order_code: null,
-          property_id: all[0].property_id,
-          property_code: all[0].property_code || null,
-          property_region: all[0].property_region || null,
-          task_type: 'turnover',
-          label: '退房 入住',
-          task_date: String(all[0].task_date || '').slice(0, 10),
-          status,
-          assignee_id: assignee,
-          cleaner_id: cleanerId,
-          inspector_id: inspectorId,
-          scheduled_at: sched,
-          key_photo_uploaded_at: firstKeyUploadedAt(all),
-          has_key_photo: anyKeyUploaded(all),
-          auto_sync_enabled: autoSync,
-          inspection_mode: inspectionBase?.inspection_mode || null,
-          inspection_due_date: inspectionBase?.inspection_due_date || null,
-          cleaning_board_enabled: all.some((x) => x.cleaning_board_enabled !== false),
-          inspection_board_enabled: all.some((x) => x.inspection_board_enabled === true),
-          deferred_inspection_view: all.every((x) => x.deferred_inspection_view === true),
-          nights: all.find((x) => x.nights != null)?.nights ?? null,
-          summary_checkout_time: checkout?.summary_checkout_time || null,
-          summary_checkin_time: checkin?.summary_checkin_time || null,
-          old_code: null,
-          new_code: null,
-        })
-        const rest = items.filter((x) => !isCheckin(x) && !isCheckout(x))
-        out.push(...rest)
-      } else {
-        if (stayovers0.length) out.push(...stayovers0)
-        const rest = items.filter((x) => !isStayover(x))
-        out.push(...rest)
-      }
-    }
-    const regionKey = (x: any) => {
-      const r = String(x?.property_region || '').trim()
-      return r ? r.toLowerCase() : '\uffff'
-    }
-    const codeKey = (x: any) => {
-      const c = String(x?.property_code || '').trim()
-      return c ? c.toLowerCase() : String(x?.property_id || '').trim().toLowerCase()
-    }
-    out.sort((a, b) =>
-      regionKey(a).localeCompare(regionKey(b)) ||
-      codeKey(a).localeCompare(codeKey(b)) ||
-      String(a.label || '').localeCompare(String(b.label || '')) ||
-      String(a.entity_id || '').localeCompare(String(b.entity_id || ''))
-    )
-    return out
-  }, [cleaningItems, mergedStatus])
-
-  const isLateCheckoutTime = useCallback((raw: string | null | undefined) => {
-    const s = String(raw || '').trim().toLowerCase()
-    if (!s) return false
-    const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/)
-    if (!m) return false
-    let hour = Number(m[1] || 0)
-    const minute = Number(m[2] || 0)
-    const meridiem = String(m[3] || '').trim()
-    if (meridiem === 'am') {
-      if (hour === 12) hour = 0
-    } else if (meridiem === 'pm') {
-      if (hour < 12) hour += 12
-    }
-    return hour * 60 + minute > 10 * 60
+  const inspectionModeText = useCallback((mode: string | null | undefined) => {
+    if (mode === 'same_day') return '同日检查'
+    if (mode === 'self_complete') return '自完成'
+    if (mode === 'deferred') return '延后检查'
+    return '待确认'
   }, [])
 
-  const hasLateCheckout = useCallback((it: CalendarItem) => {
-    const type = String(it.task_type || '').toLowerCase()
-    const label = String(it.label || '')
-    const isTurnover = type === 'turnover' || (label.includes('退房') && label.includes('入住'))
-    const isCheckout = type === 'checkout_clean' || label.includes('退房')
-    if (!isTurnover && !isCheckout) return false
-    return isLateCheckoutTime(it.summary_checkout_time)
-  }, [isLateCheckoutTime])
-
-  const summaryText = useCallback((it: CalendarItem) => {
-    const region = String(it.property_region || '').trim()
-    const code = String(it.property_code || '').trim() || String(it.property_id || '').trim()
-    const checkoutT = String(it.summary_checkout_time || '').trim() || '10am'
-    const type = String(it.task_type || '').toLowerCase()
-    const label = String(it.label || '')
-    const isTurnover = type === 'turnover' || (label.includes('退房') && label.includes('入住'))
-    const isStayover = type === 'stayover_clean' || label.includes('入住中清洁')
-    const isCheckout = type === 'checkout_clean' || label.includes('退房')
-    const isCheckin = (type === 'checkin_clean' || label.includes('入住')) && !isStayover
-    const parts: string[] = []
-    if (isTurnover) {
-      const checkinT = String(it.summary_checkin_time || '').trim() || '3pm'
-      parts.push(`${checkoutT}退房`, `${checkinT}入住`)
-    } else if (isCheckout) parts.push(`${checkoutT}退房`)
-    else if (isStayover) parts.push('清洁')
-    else if (isCheckin) {
-      const checkinT = String(it.summary_checkin_time || '').trim() || '3pm'
-      parts.push(`${checkinT}入住`)
-    }
-    if (hasLateCheckout(it)) parts.push('晚退房')
-    return { region, code, detail: parts.join(' ') }
-  }, [hasLateCheckout])
-
-  const isSelfCompleteCleaningItem = useCallback((it: CalendarItem) => {
-    if (String(it.source || '') !== 'cleaning_tasks') return false
-    if (it.deferred_inspection_view) return false
-    return inspectionModeOf(it) === 'self_complete'
-  }, [inspectionModeOf])
-
-  const taskTextForCleaningItem = useCallback((it: CalendarItem) => {
-    const region = String(it.property_region || '').trim()
-    const code = String(it.property_code || '').trim() || String(it.property_id || '').trim()
-    const t = `${region ? `${region} ` : ''}${code ? `${code} ` : ''}${String(it.label || '')}`.trim()
-    return t || String(it.entity_id)
+  const addPending = useCallback((keys: string[]) => {
+    setPendingTaskKeys((prev) => Array.from(new Set([...prev, ...keys])))
   }, [])
 
-  const filterCleanItems = useCallback((items: CalendarItem[]) => {
-    if (!filterQuery) return items
-    return items.filter((it) => taskTextForCleaningItem(it).toLowerCase().includes(filterQuery))
-  }, [filterQuery, taskTextForCleaningItem])
-
-  const filterOfflineItems = useCallback((items: WorkTask[]) => {
-    if (!filterQuery) return items
-    return items.filter((t) => {
-      const p = String(t.property_id || '').trim()
-      const title = String(t.title || '').trim()
-      const content = String(t.summary || '').trim()
-      return `${p} ${title} ${content}`.toLowerCase().includes(filterQuery)
-    })
-  }, [filterQuery])
-
-  const filterRepairs = useCallback((items: WorkTask[]) => {
-    const base = items.filter((t) => {
-      if (String(t.task_kind || '') !== 'maintenance') return false
-      const status = String(t.status || '').trim()
-      if (status === 'done' || status === 'cancelled') return false
-      return true
-    })
-    if (!filterQuery) return base
-    return base.filter((t) => {
-      const code = String(t.property_id || '').trim()
-      const workNo = String(t.title || t.id || '').trim()
-      const sum = String(t.summary || '').trim()
-      return `${code} ${workNo} ${sum}`.toLowerCase().includes(filterQuery)
-    })
-  }, [filterQuery])
-
-  const filterDeepCleaning = useCallback((items: WorkTask[]) => {
-    const base = items.filter((t) => {
-      if (String(t.task_kind || '') !== 'deep_cleaning') return false
-      const status = String(t.status || '').trim()
-      if (status === 'done' || status === 'cancelled') return false
-      return true
-    })
-    if (!filterQuery) return base
-    return base.filter((t) => {
-      const code = String(t.property_id || '').trim()
-      const workNo = String(t.title || t.id || '').trim()
-      const sum = String(t.summary || '').trim()
-      return `${code} ${workNo} ${sum}`.toLowerCase().includes(filterQuery)
-    })
-  }, [filterQuery])
-
-  const kindOfCleaningItem = useCallback((it: CalendarItem) => cleaningColorKind(it as any), [])
-  const stripeColorForKind = useCallback((kind: string) => {
-    if (kind === 'checkout') return 'rgba(239, 68, 68, 0.85)'
-    if (kind === 'checkin') return 'rgba(29, 78, 216, 0.85)'
-    if (kind === 'combined') return 'rgba(249, 115, 22, 0.85)'
-    if (kind === 'unassigned') return 'rgba(24, 144, 255, 0.85)'
-    return 'rgba(24, 144, 255, 0.85)'
+  const removePending = useCallback((keys: string[]) => {
+    setPendingTaskKeys((prev) => prev.filter((item) => !keys.includes(item)))
   }, [])
-
-  const stripeColorForUrgency = useCallback((urgency: string) => {
-    const u = String(urgency || '').toLowerCase()
-    if (u === 'urgent') return 'rgba(239, 68, 68, 0.85)'
-    if (u === 'high') return 'rgba(249, 115, 22, 0.85)'
-    if (u === 'medium') return 'rgba(59, 130, 246, 0.85)'
-    return 'rgba(148, 163, 184, 0.85)'
-  }, [])
-
-  const workSummaryText = useCallback((raw: string | null | undefined) => {
-    const s = String(raw || '').trim()
-    if (!s) return ''
-    try {
-      const j: any = JSON.parse(s)
-      if (Array.isArray(j)) {
-        const parts = j
-          .map((x) => (x && typeof x === 'object' ? String((x as any).content || '').trim() : ''))
-          .filter(Boolean)
-        if (parts.length) return parts.join(' ')
-      }
-      if (j && typeof j === 'object') {
-        const c = String((j as any).content || '').trim()
-        if (c) return c
-      }
-    } catch {}
-    return s
-  }, [])
-
-  const cleaningPendingKeys = useCallback((ids: string[]) => (
-    Array.from(new Set(ids.map((id) => `cleaning:${String(id)}`).filter(Boolean)))
-  ), [])
-
-  const workPendingKey = useCallback((id: string) => `work:${String(id)}`, [])
 
   const hasPendingKey = useCallback((key: string) => pendingTaskKeys.includes(key), [pendingTaskKeys])
 
-  const hasAnyPendingKey = useCallback((keys: string[]) => keys.some((key) => pendingTaskKeys.includes(key)), [pendingTaskKeys])
+  const taskPendingKeys = useCallback((task: TaskCenterTask) => {
+    if (task.task_source === 'cleaning') return task.task_ids.map((id) => `cleaning:${String(id)}`)
+    return [`work:${String(task.task_id)}`]
+  }, [])
 
-  const updateCleaningTasks = useCallback(async (ids: string[], patch: any) => {
-    const normIds = Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
-    if (!normIds.length) return
-    const nextPendingKeys = cleaningPendingKeys(normIds)
-    if (hasAnyPendingKey(nextPendingKeys)) return
-    setPendingTaskKeys((prev) => Array.from(new Set([...prev, ...nextPendingKeys])))
-    setCleaningItems((prev) => {
-      const idSet = new Set(normIds)
-      return prev.map((it) => {
-        if (it.source !== 'cleaning_tasks') return it
-        const itemIds = Array.isArray(it.entity_ids) && it.entity_ids.length ? it.entity_ids.map((x) => String(x)) : [String(it.entity_id)]
-        if (!itemIds.some((x) => idSet.has(x))) return it
-        const next: any = { ...it }
-        const touchesCleaner = Object.prototype.hasOwnProperty.call(patch, 'cleaner_id')
-        const touchesAssignee = Object.prototype.hasOwnProperty.call(patch, 'assignee_id')
-        const touchesInspector = Object.prototype.hasOwnProperty.call(patch, 'inspector_id')
-        const touchesInspectionPlan = Object.prototype.hasOwnProperty.call(patch, 'inspection_mode') || Object.prototype.hasOwnProperty.call(patch, 'inspection_due_date')
-        const touchesStatus = Object.prototype.hasOwnProperty.call(patch, 'status')
-        if (Object.prototype.hasOwnProperty.call(patch, 'cleaner_id')) {
-          const v = patch.cleaner_id == null ? null : String(patch.cleaner_id)
-          next.cleaner_id = v
-          if (!touchesAssignee) next.assignee_id = v
-        }
-        if (Object.prototype.hasOwnProperty.call(patch, 'assignee_id')) {
-          const v = patch.assignee_id == null ? null : String(patch.assignee_id)
-          next.assignee_id = v
-          if (!touchesCleaner) next.cleaner_id = v
-        }
-        if (Object.prototype.hasOwnProperty.call(patch, 'inspector_id')) {
-          next.inspector_id = patch.inspector_id == null ? null : String(patch.inspector_id)
-        }
-        if (Object.prototype.hasOwnProperty.call(patch, 'inspection_mode')) {
-          next.inspection_mode = patch.inspection_mode == null ? null : String(patch.inspection_mode)
-          if (next.inspection_mode === 'pending_decision' || next.inspection_mode === 'self_complete') {
-            next.inspector_id = null
+  const cloneRows = useCallback((rows: TaskCenterRow[]) => {
+    return rows.map((row) => ({
+      ...row,
+      assignments: { ...(row.assignments || {}) },
+      subrow_order: [...(row.subrow_order || [])],
+      subrows: row.subrows.map((subrow) => ({
+        ...subrow,
+        tasks: [...subrow.tasks],
+      })),
+    }))
+  }, [])
+
+  const buildReadinessFromRows = useCallback((rows: TaskCenterRow[]) => {
+    const cleaningTasks = rows
+      .flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks))
+      .filter((task) => task.task_source === 'cleaning')
+    const unresolvedPrimaryCount = cleaningTasks.filter((task) => {
+      if (task.temporarily_skipped || task.deferred_inspection_view) return false
+      return !String(task.cleaner_id || task.assignee_id || '').trim()
+    }).length
+    const pendingInspectionCount = cleaningTasks.filter((task) => {
+      if (task.temporarily_skipped || task.deferred_inspection_view) return false
+      const mode = String(task.inspection_mode || '').trim()
+      if (!mode || mode === 'pending_decision') return true
+      if ((mode === 'same_day' || mode === 'deferred') && !String(task.inspector_id || '').trim()) return true
+      return false
+    }).length
+    const skippedCount = cleaningTasks.filter((task) => task.temporarily_skipped).length
+    return {
+      ready_for_final_grouping: unresolvedPrimaryCount === 0,
+      unresolved_primary_count: unresolvedPrimaryCount,
+      pending_inspection_count: pendingInspectionCount,
+      skipped_count: skippedCount,
+    }
+  }, [])
+
+  const replaceRowsLocally = useCallback((rows: TaskCenterRow[]) => {
+    setDayData((prev) => {
+      if (!prev) return prev
+      const readiness = buildReadinessFromRows(rows)
+      return {
+        ...prev,
+        rows,
+        region_rows: rows.filter((row) => row.row_type !== 'deferred'),
+        final_group_rows: rows.filter((row) => row.row_type === 'final_group'),
+        deferred_rows: rows.filter((row) => row.row_type === 'deferred'),
+        entry_readiness: readiness,
+      }
+    })
+  }, [buildReadinessFromRows])
+
+  const normalizeRowsForBoard = useCallback((rows: TaskCenterRow[]) => {
+    return rows.map((row) => ({
+      ...row,
+      assignments: { ...(row.assignments || {}) },
+      subrow_order: [DEFAULT_SUBROW_KEY],
+      subrows: [{
+        subrow_key: DEFAULT_SUBROW_KEY,
+        tasks: row.subrows.flatMap((subrow) => [...subrow.tasks]),
+      }],
+    }))
+  }, [])
+
+  const buildEmptyBoardRow = useCallback((rowKey: string, rowOrder: number): TaskCenterRow => ({
+    row_key: rowKey,
+    row_title: '',
+    row_type: 'final_group',
+    row_order: rowOrder,
+    assignments: {},
+    subrow_order: [DEFAULT_SUBROW_KEY],
+    subrows: [{
+      subrow_key: DEFAULT_SUBROW_KEY,
+      tasks: [],
+    }],
+  }), [])
+
+  const defaultBoardRowKeyForTask = useCallback((task: TaskCenterTask) => {
+    if (task.temporarily_skipped || task.deferred_inspection_view) return DEFERRED_ROW_KEY
+    const region = String(task.property_region || '').trim()
+    return region ? `region:${region}` : DEFERRED_ROW_KEY
+  }, [])
+
+  const ensureBoardRow = useCallback((rows: TaskCenterRow[], rowKey: string) => {
+    const existing = rows.find((item) => item.row_key === rowKey)
+    if (existing) return existing
+    const rowType: TaskCenterRow['row_type'] = rowKey === DEFERRED_ROW_KEY
+      ? 'deferred'
+      : (rowKey.startsWith('group:') ? 'final_group' : 'region')
+    const rowTitle = rowKey === DEFERRED_ROW_KEY
+      ? ''
+      : (rowKey.startsWith('region:') ? rowKey.slice('region:'.length) : '')
+    const row: TaskCenterRow = {
+      row_key: rowKey,
+      row_title: rowTitle,
+      row_type: rowType,
+      row_order: displayRowOrder(rowKey),
+      assignments: {},
+      subrow_order: [DEFAULT_SUBROW_KEY],
+      subrows: [{
+        subrow_key: DEFAULT_SUBROW_KEY,
+        tasks: [],
+      }],
+    }
+    rows.push(row)
+    return row
+  }, [])
+
+  const layoutPayloadFromRows = useCallback((rows: TaskCenterRow[]) => ({
+    rows: rows.map((row, rowIndex) => ({
+      row_key: row.row_key,
+      row_type: row.row_type,
+      row_title: row.row_title,
+      row_order: rowIndex + 1,
+      subrow_order: [DEFAULT_SUBROW_KEY],
+    })),
+    subrows: rows.map((row) => ({
+      row_key: row.row_key,
+      subrow_key: DEFAULT_SUBROW_KEY,
+      subrow_order: 1,
+    })),
+    items: rows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks.map((task, taskIndex) => ({
+      task_source: task.task_source,
+      task_id: task.task_id,
+      row_key: row.row_key,
+      subrow_key: DEFAULT_SUBROW_KEY,
+      item_order: taskIndex + 1,
+    })))),
+  }), [])
+
+  const persistBoardLayout = useCallback(async (rows: TaskCenterRow[]) => {
+    await postJSON('/task-center/layout', {
+      date: dateStr,
+      mode: 'board',
+      ...layoutPayloadFromRows(normalizeRowsForBoard(rows)),
+    }, { timeoutMs: 20000 })
+  }, [dateStr, layoutPayloadFromRows, normalizeRowsForBoard])
+
+  const saveTaskFlags = useCallback(async (task: TaskCenterTask, temporarilySkipped: boolean, skipReason: string) => {
+    const refs = task.task_source === 'cleaning' ? task.task_ids.map((id) => ({ task_source: 'cleaning' as const, task_id: String(id) })) : [{ task_source: 'work' as const, task_id: String(task.task_id) }]
+    await postJSON('/task-center/task-flags', {
+      date: dateStr,
+      tasks: refs.map((ref) => ({
+        task_source: ref.task_source,
+        task_id: ref.task_id,
+        temporarily_skipped: temporarilySkipped,
+        skip_reason: temporarilySkipped ? (skipReason || '暂不安排') : null,
+        bucket: temporarilySkipped ? 'deferred' : null,
+      })),
+    }, { timeoutMs: 20000 })
+  }, [dateStr])
+
+  const patchCleaningTasks = useCallback(async (ids: string[], patch: Record<string, any>) => {
+    const uniq = Array.from(new Set(ids.map((item) => String(item)).filter(Boolean)))
+    if (!uniq.length) return
+    await postJSON('/cleaning/tasks/bulk-patch', { ids: uniq, patch }, { timeoutMs: 20000 })
+  }, [])
+
+  const patchWorkTask = useCallback(async (taskId: string, patch: Record<string, any>) => {
+    await patchJSON(`/work-tasks/${encodeURIComponent(taskId)}`, patch, { timeoutMs: 20000 })
+  }, [])
+
+  const openTaskDetail = useCallback((task: TaskCenterTask, row: TaskCenterRow, subrow: TaskCenterSubrow) => {
+    setDetailTask({ ...task, current_row_key: row.row_key, current_subrow_key: subrow.subrow_key })
+    setDetailDraft({
+      cleaner_id: task.cleaner_id || null,
+      inspector_id: task.inspector_id || null,
+      assignee_id: task.assignee_id || null,
+      inspection_mode: (task.inspection_mode || 'pending_decision') as TaskDetailDraft['inspection_mode'],
+      inspection_due_date: task.inspection_due_date ? dayjs(task.inspection_due_date) : null,
+      title: String(task.title || ''),
+      summary: String(task.summary || task.detail || ''),
+      urgency: (['low', 'medium', 'high', 'urgent'].includes(String(task.urgency || '').trim().toLowerCase()) ? String(task.urgency).trim().toLowerCase() : 'medium') as TaskDetailDraft['urgency'],
+      temporarily_skipped: task.temporarily_skipped === true,
+      skip_reason: String(task.skip_reason || ''),
+      deferred_to_date: null,
+    })
+  }, [])
+
+  const closeTaskDetail = useCallback(() => {
+    if (detailSaving) return
+    setDetailTask(null)
+    setDetailDraft(null)
+  }, [detailSaving])
+
+  const applyTaskDetailLocally = useCallback((task: TaskCenterTask, draft: TaskDetailDraft) => {
+    const applyRows = (rows: TaskCenterRow[]) => rows.map((row) => ({
+      ...row,
+      subrows: row.subrows.map((subrow) => ({
+        ...subrow,
+        tasks: subrow.tasks.map((item) => {
+          const sameTask =
+            item.item_key === task.item_key ||
+            (item.task_source === task.task_source && item.task_id === task.task_id)
+          if (!sameTask) return item
+          return {
+            ...item,
+            cleaner_id: task.task_source === 'cleaning' ? (draft.cleaner_id || null) : item.cleaner_id,
+            inspector_id: task.task_source === 'cleaning' ? (draft.inspector_id || null) : item.inspector_id,
+            assignee_id: task.task_source === 'work' ? (draft.assignee_id || null) : item.assignee_id,
+            inspection_mode: task.task_source === 'cleaning' ? draft.inspection_mode : item.inspection_mode,
+            inspection_due_date: task.task_source === 'cleaning'
+              ? (draft.inspection_mode === 'deferred' ? (draft.inspection_due_date ? draft.inspection_due_date.format('YYYY-MM-DD') : null) : null)
+              : item.inspection_due_date,
+            title: task.task_source === 'work' ? String(draft.title || '').trim() : item.title,
+            summary: task.task_source === 'work' ? String(draft.summary || '').trim() : item.summary,
+            detail: task.task_source === 'work'
+              ? (String(draft.summary || '').trim() || item.detail)
+              : item.detail,
+            urgency: task.task_source === 'work' ? draft.urgency : item.urgency,
+            temporarily_skipped: draft.temporarily_skipped,
+            skip_reason: draft.temporarily_skipped ? (draft.skip_reason || '暂不安排') : null,
+            skip_bucket: draft.temporarily_skipped ? 'deferred' : null,
           }
+        }),
+      })),
+    }))
+    setDayData((prev) => {
+      if (!prev) return prev
+      const rows = applyRows(prev.rows)
+      const readiness = buildReadinessFromRows(rows)
+      return {
+        ...prev,
+        rows,
+        region_rows: rows.filter((row) => row.row_type !== 'deferred'),
+        final_group_rows: rows.filter((row) => row.row_type === 'final_group'),
+        deferred_rows: rows.filter((row) => row.row_type === 'deferred'),
+        entry_readiness: readiness,
+      }
+    })
+  }, [buildReadinessFromRows])
+
+  const saveTaskDetail = useCallback(async () => {
+    if (!detailTask || !detailDraft) return
+    const rescheduleDate = detailTask.task_source === 'work' && detailDraft.temporarily_skipped && detailDraft.deferred_to_date
+      ? detailDraft.deferred_to_date.format('YYYY-MM-DD')
+      : null
+    const shouldRescheduleWork = detailTask.task_source === 'work' && !!rescheduleDate
+    const pendingKeys = taskPendingKeys(detailTask)
+    const previousRows = cloneRows(allRows)
+    const skipChanged =
+      detailTask.temporarily_skipped !== detailDraft.temporarily_skipped ||
+      String(detailTask.skip_reason || '') !== String(detailDraft.skip_reason || '') ||
+      shouldRescheduleWork
+    addPending(pendingKeys)
+    setDetailSaving(true)
+    applyTaskDetailLocally(detailTask, detailDraft)
+    setDetailTask(null)
+    setDetailDraft(null)
+    try {
+      if (detailTask.task_source === 'cleaning') {
+        await patchCleaningTasks(detailTask.task_ids, {
+          cleaner_id: detailDraft.cleaner_id || null,
+          inspector_id: detailDraft.inspector_id || null,
+          inspection_mode: detailDraft.inspection_mode,
+          inspection_due_date: detailDraft.inspection_mode === 'deferred' ? (detailDraft.inspection_due_date ? detailDraft.inspection_due_date.format('YYYY-MM-DD') : null) : null,
+        })
+      } else {
+        await patchWorkTask(detailTask.task_id, {
+          title: String(detailDraft.title || '').trim(),
+          summary: String(detailDraft.summary || '').trim(),
+          urgency: detailDraft.urgency,
+          assignee_id: shouldRescheduleWork ? null : (detailDraft.assignee_id || null),
+          scheduled_date: shouldRescheduleWork ? rescheduleDate : undefined,
+          status: shouldRescheduleWork ? 'todo' : undefined,
+        })
+      }
+      if (skipChanged) {
+        await saveTaskFlags(
+          detailTask,
+          shouldRescheduleWork ? false : detailDraft.temporarily_skipped,
+          shouldRescheduleWork ? '' : detailDraft.skip_reason,
+        )
+        await loadDay()
+      }
+      message.success(shouldRescheduleWork ? `任务已移到 ${rescheduleDate}` : '任务已更新')
+    } catch (e: any) {
+      replaceRowsLocally(previousRows)
+      message.error(String(e?.message || '保存失败'))
+    } finally {
+      removePending(pendingKeys)
+      setDetailSaving(false)
+    }
+  }, [addPending, allRows, applyTaskDetailLocally, cloneRows, detailDraft, detailTask, loadDay, patchCleaningTasks, patchWorkTask, removePending, replaceRowsLocally, saveTaskFlags, taskPendingKeys])
+
+  const rowTaskCollections = useCallback((row: TaskCenterRow) => {
+    const tasks = row.subrows.flatMap((subrow) => subrow.tasks)
+    const inspectionIds = Array.from(new Set(
+      tasks
+        .filter((task) => task.task_source === 'cleaning' && (task.can_configure_inspection || task.deferred_inspection_view))
+        .flatMap((task) => task.task_ids),
+    ))
+    const workIds = tasks.filter((task) => task.task_source === 'work').map((task) => task.task_id)
+    return { inspectionIds, workIds }
+  }, [])
+
+  const autoWorkStatus = useCallback((currentStatus: string | null | undefined, assigneeId: string | null) => {
+    const current = String(currentStatus || '').trim().toLowerCase()
+    if (current === 'in_progress' || current === 'done' || current === 'completed' || current === 'cancelled') return currentStatus || current
+    return assigneeId ? 'assigned' : 'todo'
+  }, [])
+
+  const autoCleaningStatus = useCallback((currentStatus: string | null | undefined, cleanerId: string | null, inspectorId: string | null) => {
+    const current = String(currentStatus || '').trim().toLowerCase()
+    if (current === 'in_progress' || current === 'done' || current === 'completed' || current === 'cancelled') return currentStatus || current
+    return String(cleanerId || inspectorId || '').trim() ? 'assigned' : 'pending'
+  }, [])
+
+  const applyRowAssignmentLocally = useCallback((params: {
+    rowKey?: string
+    field: 'inspector_id' | 'executor_id'
+    value: string | null
+    inspectionIds: string[]
+    workIds: string[]
+  }) => {
+    const inspectionSet = new Set(params.inspectionIds.map((item) => String(item)))
+    const workSet = new Set(params.workIds.map((item) => String(item)))
+    setDayData((prev) => {
+      if (!prev) return prev
+      const rows: TaskCenterRow[] = prev.rows.map((row) => {
+        const nextAssignments = params.rowKey && row.row_key === params.rowKey
+          ? { ...(row.assignments || {}), [params.field]: params.value || null }
+          : { ...(row.assignments || {}) }
+        return {
+          ...row,
+          assignments: nextAssignments,
+          subrows: row.subrows.map((subrow) => ({
+            ...subrow,
+            tasks: subrow.tasks.map((task): TaskCenterTask => {
+              if (params.field === 'inspector_id') {
+                const matched = task.task_source === 'cleaning' && task.task_ids.some((id) => inspectionSet.has(String(id)))
+                if (!matched) return task
+                const nextInspectionMode: TaskCenterTask['inspection_mode'] = params.value ? 'same_day' : 'pending_decision'
+                return {
+                  ...task,
+                  inspector_id: params.value,
+                  inspection_mode: nextInspectionMode,
+                  status: autoCleaningStatus(task.status, task.cleaner_id || task.assignee_id || null, params.value),
+                }
+              }
+              const matched = task.task_source === 'work' && workSet.has(String(task.task_id))
+              if (!matched) return task
+              return {
+                ...task,
+                assignee_id: params.value,
+                status: autoWorkStatus(task.status, params.value),
+              }
+            }),
+          })),
         }
-        if (Object.prototype.hasOwnProperty.call(patch, 'inspection_due_date')) {
-          next.inspection_due_date = patch.inspection_due_date == null ? null : String(patch.inspection_due_date)
-        }
-        if (touchesStatus) {
-          next.status = String(patch.status)
-        } else {
-          const beforeStatus = String(it.status || 'pending')
-          const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned'
-          if ((touchesCleaner || touchesAssignee || touchesInspector || touchesInspectionPlan) && statusAutoEligible) {
-            const cleaner = String(next.cleaner_id || next.assignee_id || '').trim()
-            const inspector = String(next.inspector_id || '').trim()
-            next.status = cleaner || inspector ? 'assigned' : 'pending'
-          }
-        }
-        return next
       })
+      return {
+        ...prev,
+        rows,
+        region_rows: rows.filter((row) => row.row_type !== 'deferred'),
+        final_group_rows: rows.filter((row) => row.row_type === 'final_group'),
+        deferred_rows: rows.filter((row) => row.row_type === 'deferred'),
+        entry_readiness: buildReadinessFromRows(rows),
+      }
+    })
+  }, [autoCleaningStatus, autoWorkStatus, buildReadinessFromRows])
+
+  const updateRowAssignment = useCallback(async (row: TaskCenterRow, field: 'inspector_id' | 'executor_id', value: string | null) => {
+    const fullRow = allRows.find((item) => item.row_key === row.row_key) || row
+    const nextAssignments = { ...(fullRow.assignments || {}), [field]: value || null }
+    const previousRows = cloneRows(allRows)
+    const collections = rowTaskCollections(fullRow)
+    applyRowAssignmentLocally({
+      rowKey: fullRow.row_key,
+      field,
+      value,
+      inspectionIds: collections.inspectionIds,
+      workIds: collections.workIds,
     })
     try {
-      await postJSON('/cleaning/tasks/bulk-patch', { ids: normIds, patch })
-    } catch (e) {
-      await loadDay().catch(() => {})
-      throw e
-    } finally {
-      setPendingTaskKeys((prev) => prev.filter((key) => !nextPendingKeys.includes(key)))
+      await postJSON('/task-center/row-assignments', {
+        date: dateStr,
+        mode: 'board',
+        row_key: fullRow.row_key,
+        row_type: fullRow.row_type,
+        row_title: fullRow.row_title,
+        row_order: fullRow.row_order,
+        subrow_order: fullRow.subrows.map((item) => item.subrow_key),
+        assignments: nextAssignments,
+      }, { timeoutMs: 20000 })
+      if (field === 'inspector_id' && collections.inspectionIds.length) {
+        await patchCleaningTasks(collections.inspectionIds, {
+          inspector_id: value || null,
+          inspection_mode: value ? 'same_day' : 'pending_decision',
+        })
+      }
+      if (field === 'executor_id' && collections.workIds.length) {
+        await Promise.all(collections.workIds.map((taskId) => patchWorkTask(taskId, { assignee_id: value || null })))
+      }
+      await loadDay()
+      message.success('整行指派已更新')
+    } catch (e: any) {
+      replaceRowsLocally(previousRows)
+      message.error(String(e?.message || '更新失败'))
     }
-  }, [cleaningPendingKeys, hasAnyPendingKey, loadDay])
+  }, [allRows, applyRowAssignmentLocally, cloneRows, dateStr, loadDay, patchCleaningTasks, patchWorkTask, replaceRowsLocally, rowTaskCollections])
 
-  const markTaskHungKeys = useCallback(async (it: CalendarItem) => {
-    if (!canDirectMarkHungKeys(it)) return
-    const id = String(it.entity_id || '').trim()
-    if (!id) return
-    const pendingKey = `cleaning:${id}`
-    if (hasPendingKey(pendingKey)) return
-    setPendingTaskKeys((prev) => Array.from(new Set([...prev, pendingKey])))
-    setCleaningItems((prev) => prev.map((row) => (String(row.entity_id) === id ? { ...row, status: 'ready' } : row)))
+  const createRow = useCallback(async () => {
+    const previousRows = cloneRows(allRows)
+    const nextRowOrder = previousRows.reduce((max, row) => Math.max(max, Number(row.row_order || 0)), 0) + 100
+    const tempRowKey = `group:pending:${Date.now()}`
+    replaceRowsLocally([...previousRows, buildEmptyBoardRow(tempRowKey, nextRowOrder)])
+    setCreatingRow(true)
     try {
-      await patchJSON(`/cleaning-app/tasks/${encodeURIComponent(id)}/ready`, {}, { timeoutMs: 20000 })
-      message.success('已标记为已挂钥匙')
-    } catch (e) {
-      await loadDay().catch(() => {})
-      throw e
+      const payload = await postJSON<{ row_key?: string }>('/task-center/create-row', { date: dateStr }, { timeoutMs: 20000 })
+      const persistedRowKey = String(payload?.row_key || '').trim()
+      if (persistedRowKey) {
+        setDayData((prev) => {
+          if (!prev) return prev
+          const rows = prev.rows.map((row) => (row.row_key === tempRowKey ? { ...row, row_key: persistedRowKey } : row))
+          return {
+            ...prev,
+            rows,
+            region_rows: rows.filter((row) => row.row_type !== 'deferred'),
+            final_group_rows: rows.filter((row) => row.row_type === 'final_group'),
+            deferred_rows: rows.filter((row) => row.row_type === 'deferred'),
+            entry_readiness: buildReadinessFromRows(rows),
+          }
+        })
+      }
+      message.success('已新增一行')
+    } catch (e: any) {
+      replaceRowsLocally(previousRows)
+      message.error(String(e?.message || '新增一行失败'))
     } finally {
-      setPendingTaskKeys((prev) => prev.filter((key) => key !== pendingKey))
+      setCreatingRow(false)
     }
-  }, [canDirectMarkHungKeys, hasPendingKey, loadDay])
+  }, [allRows, buildEmptyBoardRow, buildReadinessFromRows, cloneRows, dateStr, replaceRowsLocally])
 
-  const undoTaskHungKeys = useCallback(async (it: CalendarItem) => {
-    if (!canUndoHungKeys(it)) return
-    const cleaner = String(it.cleaner_id || it.assignee_id || '').trim()
-    const inspector = String(it.inspector_id || '').trim()
-    const fallbackStatus = cleaner || inspector ? 'assigned' : 'pending'
-    await updateCleaningTasks([String(it.entity_id || '').trim()], { status: fallbackStatus })
-    message.success('已取消已挂钥匙标记')
-  }, [canUndoHungKeys, updateCleaningTasks])
+  const deleteRow = useCallback(async (rowKey: string) => {
+    const previousRows = cloneRows(allRows)
+    const targetRow = previousRows.find((row) => row.row_key === rowKey)
+    if (!targetRow) return
+    const rowTaskCount = targetRow.subrows.reduce((sum, subrow) => sum + subrow.tasks.length, 0)
+    if (rowTaskCount > 0) {
+      message.warning('请先把这一行里的任务拖走，再删除该行')
+      return
+    }
+    const nextRows = previousRows.filter((row) => row.row_key !== rowKey)
+    replaceRowsLocally(nextRows)
+    if (rowKey.startsWith('group:pending:')) {
+      message.success('已删除空白行')
+      return
+    }
+    try {
+      await postJSON('/task-center/delete-row', { date: dateStr, row_key: rowKey }, { timeoutMs: 20000 })
+      message.success('已删除空白行')
+    } catch (e: any) {
+      replaceRowsLocally(previousRows)
+      message.error(String(e?.message || '删除行失败'))
+    }
+  }, [allRows, cloneRows, dateStr, replaceRowsLocally])
 
-  const updateWorkTask = useCallback(async (id: string, patch: Partial<Pick<WorkTask, 'status' | 'urgency' | 'title' | 'summary' | 'property_id' | 'assignee_id' | 'scheduled_date'>>) => {
-    const pendingKey = workPendingKey(id)
-    if (hasPendingKey(pendingKey)) return
-    setPendingTaskKeys((prev) => Array.from(new Set([...prev, pendingKey])))
-    setTaskCenterDay((prev) => {
-      if (!prev) return prev
-      const nextTasks = prev.tasks.map((t) => (String(t.id) === String(id) ? { ...t, ...patch } as any : t))
-      const pool: WorkTask[] = []
-      const groups: Record<string, WorkTask[]> = {}
-      for (const t of nextTasks) {
-        const aid = String(t.assignee_id || '').trim()
-        if (!aid || String(t.scheduled_date || '') !== String(prev.date || '')) pool.push(t)
-        else {
-          groups[aid] = groups[aid] || []
-          groups[aid].push(t)
+  const dragPayloadForTask = useCallback((task: TaskCenterTask) => ({
+    task_source: task.task_source,
+    task_id: task.task_id,
+  }), [])
+
+  const handleTaskDrop = useCallback(async (payload: any, targetLine: TaskCenterLine) => {
+    const task = allBoardTasks.find((item) => item.task_source === payload.task_source && item.task_id === payload.task_id)
+    if (!task) return
+    const pendingKeys = taskPendingKeys(task)
+    if (pendingKeys.some((key) => hasPendingKey(key))) return
+    const previousRows = cloneRows(allRows)
+    const nextRows = normalizeRowsForBoard(cloneRows(allRows))
+    let movedTask: TaskCenterTask | null = null
+    for (const row of nextRows) {
+      for (const subrow of row.subrows) {
+        const idx = subrow.tasks.findIndex((item) => item.task_source === payload.task_source && item.task_id === payload.task_id)
+        if (idx >= 0) {
+          movedTask = subrow.tasks[idx]
+          subrow.tasks.splice(idx, 1)
+          break
         }
       }
-      return { ...prev, tasks: nextTasks, pool, groups }
-    })
-    try {
-      await patchJSON(`/work-tasks/${encodeURIComponent(id)}`, patch, { timeoutMs: 20000 })
-    } catch (e) {
-      await loadDay().catch(() => {})
-      throw e
-    } finally {
-      setPendingTaskKeys((prev) => prev.filter((key) => key !== pendingKey))
+      if (movedTask) break
     }
-  }, [hasPendingKey, loadDay, workPendingKey])
+    if (!movedTask) return
+    const resolvedTargetRowKey = targetLine.row_key === 'work:bottom'
+      ? (task.task_source === 'work' ? defaultBoardRowKeyForTask(task) : '')
+      : targetLine.row_key
+    if (!resolvedTargetRowKey) {
+      setDragOverKey(null)
+      return
+    }
+    const row = ensureBoardRow(nextRows, resolvedTargetRowKey)
+    const subrow = row?.subrows[0]
+    if (!row || !subrow) return
+    const insertIndex = targetLine.row_key === 'work:bottom'
+      ? subrow.tasks.length
+      : (() => {
+          const currentLength = targetLine.tasks.length
+          const currentStart = targetLine.start_index
+          return currentLength >= TASKS_PER_LINE
+            ? Math.max(currentStart, Math.min(currentStart + TASKS_PER_LINE - 1, subrow.tasks.length))
+            : Math.min(currentStart + currentLength, subrow.tasks.length)
+        })()
+    subrow.tasks.splice(insertIndex, 0, movedTask)
+    addPending(pendingKeys)
+    replaceRowsLocally(nextRows)
+    setDragOverKey(null)
+    try {
+      if (row.row_key === DEFERRED_ROW_KEY) {
+        await saveTaskFlags(task, true, task.skip_reason || '暂不安排')
+      } else if (task.temporarily_skipped) {
+        await saveTaskFlags(task, false, '')
+      }
+      await persistBoardLayout(nextRows)
+    } catch (e: any) {
+      replaceRowsLocally(previousRows)
+      message.error(String(e?.message || '拖拽更新失败'))
+    } finally {
+      removePending(pendingKeys)
+      setDragOverKey(null)
+    }
+  }, [addPending, allBoardTasks, allRows, cloneRows, defaultBoardRowKeyForTask, ensureBoardRow, hasPendingKey, normalizeRowsForBoard, persistBoardLayout, removePending, replaceRowsLocally, saveTaskFlags, taskPendingKeys])
+
+  const lockDay = useCallback(async () => {
+    if (!allCleaningTaskRefs.length) { message.warning('当日无可锁定任务'); return }
+    if (!lockTaskIds.length) { message.info('当日已处于锁定状态'); return }
+    Modal.confirm({
+      title: '确认锁定当日安排？',
+      content: '锁定后将禁用拖拽分配与快速指派，需手动解锁才能继续修改。',
+      okText: '锁定',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await postJSON('/cleaning/tasks/bulk-lock-auto-sync', { ids: lockTaskIds }, { timeoutMs: 20000 })
+        await loadDay()
+        message.success('已锁定当日安排')
+      },
+    })
+  }, [allCleaningTaskRefs.length, loadDay, lockTaskIds])
+
+  const unlockDay = useCallback(async () => {
+    if (!allCleaningTaskRefs.length) { message.warning('当日无可解锁任务'); return }
+    if (!unlockTaskIds.length) { message.info('当日已处于解锁状态'); return }
+    Modal.confirm({
+      title: '确认解锁当日安排？',
+      content: '解锁后允许拖拽与快速指派，并恢复自动同步。',
+      okText: '解锁',
+      onOk: async () => {
+        await postJSON('/cleaning/tasks/bulk-restore-auto-sync', { ids: unlockTaskIds }, { timeoutMs: 20000 })
+        await loadDay()
+        message.success('已解锁当日安排')
+      },
+    })
+  }, [allCleaningTaskRefs.length, loadDay, unlockTaskIds])
 
   const openCreateModal = useCallback(() => {
     setOfflineCreate({
@@ -913,18 +1055,16 @@ export default function TaskCenterPage() {
   }, [date])
 
   const submitCreate = useCallback(async () => {
+    if (!offlineCreate) return
+    const title = String(offlineCreate.title || '').trim()
+    if (!title) { message.warning('请输入任务标题'); return }
     setCreateLoading(true)
     try {
-      if (!offlineCreate) return
-      const day = dayjs(offlineCreate.date || dateStr).format('YYYY-MM-DD')
-      const title = String(offlineCreate.title || '').trim()
-      const content = String(offlineCreate.content || '').trim()
-      if (!title) { message.warning('请输入任务标题'); return }
       const payload: any = {
-        date: day,
+        date: offlineCreate.date.format('YYYY-MM-DD'),
         task_type: offlineCreate.task_type,
         title,
-        content,
+        content: String(offlineCreate.content || '').trim(),
         kind: 'other',
         status: 'todo',
         urgency: offlineCreate.urgency,
@@ -932,901 +1072,342 @@ export default function TaskCenterPage() {
         assignee_id: offlineCreate.assignee_id || undefined,
       }
       await postJSON('/cleaning/offline-tasks', payload, { timeoutMs: 20000 })
-      if (day === dateStr) await loadDay()
-      else setDate(dayjs(day))
-      message.success('任务已创建')
       setCreateOpen(false)
+      await loadDay()
+      message.success('任务已创建')
     } catch (e: any) {
-      message.error(e?.message || '创建失败')
+      message.error(String(e?.message || '创建失败'))
     } finally {
       setCreateLoading(false)
     }
-  }, [dateStr, loadDay, offlineCreate])
+  }, [loadDay, offlineCreate])
 
-  const openInspectionPlanModal = useCallback((it: CalendarItem) => {
-    setInspectionPlanItem(it)
-    setInspectionPlanMode((inspectionModeOf(it) as any) || 'pending_decision')
-    setInspectionPlanDate(it.inspection_due_date ? dayjs(it.inspection_due_date) : null)
-    setInspectionPlanInspectorId(it.inspector_id ? String(it.inspector_id) : null)
-    setInspectionPlanOpen(true)
-  }, [inspectionModeOf])
-
-  const submitInspectionPlan = useCallback(async () => {
-    if (!inspectionPlanItem) return
-    const ids = entityIds(inspectionPlanItem)
-    if (!ids.length) return
-    if (inspectionPlanMode === 'deferred' && !inspectionPlanDate) {
-      message.warning('请选择延后检查日期')
-      return
-    }
-    const patch: any = {
-      inspection_mode: inspectionPlanMode,
-      inspection_due_date: inspectionPlanMode === 'deferred' ? inspectionPlanDate?.format('YYYY-MM-DD') : null,
-      inspector_id: inspectionPlanMode === 'pending_decision' || inspectionPlanMode === 'self_complete'
-        ? null
-        : (inspectionPlanInspectorId || null),
-    }
-    setInspectionPlanLoading(true)
-    try {
-      await updateCleaningTasks(ids, patch)
-      message.success('检查安排已更新')
-      setInspectionPlanOpen(false)
-      setInspectionPlanItem(null)
-    } catch (e: any) {
-      message.error(String(e?.message || '更新失败'))
-    } finally {
-      setInspectionPlanLoading(false)
-    }
-  }, [entityIds, inspectionPlanDate, inspectionPlanInspectorId, inspectionPlanItem, inspectionPlanMode, updateCleaningTasks])
-
-  const TaskBoardCleaning = useMemo(() => {
-    if (tab !== 'cleaning' && tab !== 'inspection') return null
-    const mode = tab
-    const base = filterCleanItems(
-      mergedCleaningItems.filter((it) => (mode === 'cleaning' ? it.cleaning_board_enabled !== false : it.inspection_board_enabled === true)),
-    )
-    const allWork = Array.isArray(taskCenterDay?.tasks) ? taskCenterDay!.tasks : []
-    const offlineBase = filterOfflineItems(
-      allWork
-        .filter((t) => String(t.task_kind || '') === 'offline')
-        .filter((t) => !t.scheduled_date || String(t.scheduled_date) <= dateStr)
-        .filter((t) => t.status !== 'done' && t.status !== 'cancelled')
-    )
-    const poolCleaning = base.filter((it) => {
-      if (mode === 'inspection') {
-        const st = effectiveCleaningStatus(it, 'inspection')
-        if (st === 'assigned' || st === 'completed' || st === 'cancelled') return false
-        return !String(it.inspector_id || '').trim()
-      }
-      {
-        const st = effectiveCleaningStatus(it, 'cleaning')
-        const keepVisible = shouldKeepHungKeyTaskVisible(it)
-        if (st === 'assigned' || st === 'cancelled') return false
-        if (st === 'completed' && !keepVisible) return false
-        if (keepVisible) return true
-        return !String(it.cleaner_id || it.assignee_id || '').trim()
-      }
-    })
-    const poolSelfComplete = poolCleaning.filter(isSelfCompleteCleaningItem)
-    const poolOffline = offlineBase.filter((t) => !String(t.assignee_id || '').trim())
-
-    type BoardItem = { source: 'cleaning'; it: CalendarItem } | { source: 'work'; it: WorkTask }
-
-    const pool: BoardItem[] = (() => {
-      if (poolView === 'other') return poolOffline.map((it) => ({ source: 'work' as const, it }))
-      if (poolView === 'self_complete') return poolSelfComplete.map((it) => ({ source: 'cleaning' as const, it }))
-      if (poolView === 'cleaning' || poolView === 'inspection') return poolCleaning.map((it) => ({ source: 'cleaning' as const, it }))
-      return [
-        ...poolCleaning.map((it) => ({ source: 'cleaning' as const, it })),
-        ...poolOffline.map((it) => ({ source: 'work' as const, it })),
-      ]
-    })()
-
-    const groups = new Map<string, BoardItem[]>()
-    for (const it of base) {
-      const key = mode === 'cleaning'
-        ? String(it.cleaner_id || it.assignee_id || '').trim()
-        : String(it.inspector_id || '').trim()
-      if (!key) continue
-      const arr = groups.get(key) || []
-      arr.push({ source: 'cleaning', it })
-      groups.set(key, arr)
-    }
-    for (const t of offlineBase) {
-      const key = String(t.assignee_id || '').trim()
-      if (!key) continue
-      const arr = groups.get(key) || []
-      arr.push({ source: 'work', it: t })
-      groups.set(key, arr)
-    }
-    const staffListRaw = mode === 'cleaning' ? activeCleaners : activeInspectors
-    const staffList = staffListRaw.filter((s) => {
-      const sid = String(s.id)
-      const c = (groups.get(sid) || []).length
-      if (staffFilter === 'busy') return c > 0
-      if (staffFilter === 'idle') return c === 0
-      return true
-    })
-    const poolKey = mode === 'cleaning' ? 'pool:cleaning' : 'pool:inspection'
-    const poolTitle = '未安排任务'
+  const renderTaskCard = useCallback((
+    task: TaskCenterTask,
+    row: TaskCenterRow,
+    subrow: TaskCenterSubrow,
+    line?: TaskCenterLine,
+    onLineDragOver?: (e: any) => void,
+    onLineDrop?: (e: any) => void,
+  ) => {
+    const pending = taskPendingKeys(task).some((key) => hasPendingKey(key))
+    const dragKey = line?.line_key || `${row.row_key}:${subrow.subrow_key}`
+    const textColor = textColorForTask(task)
+    const lockedByDay = dayLocked && task.task_source === 'cleaning' && String(task.order_id || '').trim().length > 0
+    const dragDisabled = pending || lockedByDay || filteringActive
+    const timingTags = specialTimingTags(task)
+    const detailText = task.skip_reason || (task.task_source === 'cleaning' ? cleaningSecondarySummary(task) : (task.detail || task.summary || ''))
     return (
-      <div className={`${styles.boardWrap} ${styles.taskCenterBoardWrap}`}>
-        <div
-          className={`${styles.poolPane} ${styles.taskCenterPoolPane} ${dragOverKey === poolKey ? styles.dropActive : ''}`}
-          onDragOver={(e) => { e.preventDefault(); activateDragTarget(poolKey) }}
-          onDragLeave={() => clearDragTarget(poolKey)}
-          onDrop={(e) => {
-            e.preventDefault()
-            const { ids, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
-            if (!ids.length) { clearDragTarget(); return }
-            if (source === 'work') {
-              const id = ids[0]
-              if (!id || hasPendingKey(workPendingKey(id))) { clearDragTarget(); return }
-              updateWorkTask(id, { assignee_id: null, scheduled_date: dateStr }).catch((err: any) => message.error(err?.message || '更新失败'))
-                .finally(() => clearDragTarget())
-              return
-            }
-            if (hasAnyPendingKey(cleaningPendingKeys(ids))) { clearDragTarget(); return }
-            const patch: any = mode === 'cleaning' ? { cleaner_id: null } : {}
-            if (mode === 'inspection') {
-              const targetItems = mergedCleaningItems.filter((it) => ids.some((id) => entityIds(it).includes(id)))
-              const hasDeferredProjection = targetItems.some((it) => it.deferred_inspection_view)
-              patch.inspector_id = null
-              if (!hasDeferredProjection) patch.inspection_mode = 'pending_decision'
-            }
-            updateCleaningTasks(ids, patch).catch((err: any) => message.error(err?.message || '更新失败'))
-              .finally(() => clearDragTarget())
-          }}
-        >
-          <div className={`${styles.poolHead} ${styles.taskCenterPoolHead}`}>
-            <div className={styles.poolTitle}>{poolTitle}</div>
-            <div className={styles.poolCount}>{pool.length}</div>
+      <div
+        key={task.item_key}
+        className={`${styles.taskChip} ${styles.taskCenterCompactTask} ${dragDisabled ? styles.taskChipDisabled : styles.taskChipDraggable}`}
+        style={cardStyleForTask(task)}
+        draggable={!dragDisabled}
+        onDragStart={(e) => {
+          if (dragDisabled) return
+          e.dataTransfer.setData('text/plain', JSON.stringify(dragPayloadForTask(task)))
+          e.dataTransfer.effectAllowed = 'move'
+        }}
+        onDragOver={onLineDragOver}
+        onDragEnter={onLineDragOver}
+        onDrop={onLineDrop}
+        onDragEnd={() => setDragOverKey(null)}
+        onClick={() => openTaskDetail(task, row, subrow)}
+        title={`${task.title}\n${detailText || ''}${task.skip_reason ? `\n${task.skip_reason}` : ''}`}
+      >
+        <span className={`${styles.taskGrip} ${styles.taskCenterCompactGrip}`}><HolderOutlined /></span>
+        <div className={styles.taskStripe} style={{ backgroundColor: stripeColorForTask(task) }} />
+        <div className={styles.taskMain}>
+          <div className={styles.taskCenterCompactMetaBar}>
+            <span className={`${styles.statusChip} ${statusChipCls(task.status)} ${styles.taskCenterCompactStatus}`}>{statusText(task.status)}</span>
+            {task.task_source === 'cleaning' && (task.can_configure_inspection || task.deferred_inspection_view) ? (
+              <span className={styles.taskCenterCompactTag}>{inspectionModeText(task.inspection_mode)}</span>
+            ) : null}
+            {task.task_source === 'work' ? (
+              <span className={styles.taskCenterCompactTag}>{task.task_kind || '线下任务'}</span>
+            ) : null}
+            {timingTags.map((item) => (
+              <span
+                key={`${task.item_key}:${item.key}`}
+                className={`${styles.taskCenterCompactTag} ${
+                  item.tone === 'success'
+                    ? styles.taskCenterCompactTagSuccess
+                    : (item.tone === 'purple' ? styles.taskCenterCompactTagPurple : styles.taskCenterCompactTagAlert)
+                }`}
+              >
+                {item.label}
+              </span>
+            ))}
+            {task.temporarily_skipped ? (
+              <span className={`${styles.taskCenterCompactTag} ${styles.taskCenterCompactTagDanger}`}>暂不安排</span>
+            ) : null}
           </div>
-          {renderPoolTools(cleaningPoolFilterOptions)}
-          <div className={styles.poolList}>
-            {loading && !pool.length ? (
-              <>
-                <div className={styles.taskChip}><Skeleton active paragraph={{ rows: 1 }} /></div>
-                <div className={styles.taskChip}><Skeleton active paragraph={{ rows: 1 }} /></div>
-              </>
-            ) : pool.length ? pool.map((x) => {
-              if (x.source === 'work') {
-                const t = x.it
-                const pending = hasPendingKey(workPendingKey(t.id))
-                const stripe = stripeColorForUrgency(t.urgency)
-                const code = propertyCodeById(t.property_id || null)
-                const title = String(t.title || '').trim()
-                const detail = workSummaryText(t.summary)
-                const st = t.status === 'done' ? 'done' : (String(t.assignee_id || '').trim() ? 'assigned' : 'todo')
-                return (
-                  <div
-                    key={`work:${t.id}`}
-                    className={`${styles.taskChip} ${pending ? styles.taskChipDisabled : styles.taskChipDraggable}`}
-                    draggable={!pending}
-                    onDragStart={(e) => {
-                      if (pending) return
-                      e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'work', ids: [t.id] }))
-                      e.dataTransfer.effectAllowed = 'move'
-                    }}
-                    onDragEnd={() => clearDragTarget()}
-                    title={title}
-                  >
-                    <span className={styles.taskGrip}><HolderOutlined /></span>
-                    <div className={styles.taskStripe} style={{ backgroundColor: stripe }} />
-                    <div className={styles.taskMain}>
-                      <div className={styles.taskTopRow}>
-                        <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
-                      </div>
-                      <div className={styles.taskTitleRow}>
-                        <span className={styles.taskCode}>{code}</span>
-                        {title ? <span className={styles.taskDetail}>{title}</span> : null}
-                      </div>
-                      <div className={styles.taskSubRow}>{detail || '\u00A0'}</div>
-                    </div>
-                  </div>
-                )
-              }
-              const it = x.it
-              const ids = entityIds(it)
-              const kind = kindOfCleaningItem(it)
-              const stripe = stripeColorForKind(kind)
-              const sum = summaryText(it)
-              const title = taskTextForCleaningItem(it)
-              const st = effectiveCleaningStatus(it, mode)
-              const pending = hasAnyPendingKey(cleaningPendingKeys(ids))
-              const draggable = !pending && !dayLocked && (it.auto_sync_enabled !== false || !String(it.order_id || '').trim())
-              const isMerged = Array.isArray(it.entity_ids) && it.entity_ids.length > 1
-              const hasAssignee = !!String(it.cleaner_id || it.assignee_id || '').trim()
-              const isKeyUploaded = !!(it.has_key_photo || it.key_photo_uploaded_at)
-              const showKeyMissing = mode === 'cleaning' && hasAssignee && !isKeyUploaded && String(st || '').toLowerCase() !== 'cancelled' && String(st || '').toLowerCase() !== 'done' && String(st || '').toLowerCase() !== 'completed'
-              const planLabel = inspectionModeLabel(it)
-              const showInspectionAction = shouldShowInspectionPlanAction(it)
-              return (
-                <div
-                  key={`cleaning:${it.entity_id}`}
-                  className={`${styles.taskChip} ${draggable ? styles.taskChipDraggable : styles.taskChipDisabled}`}
-                  draggable={draggable}
-                  onDragStart={(e) => {
-                    if (!draggable) return
-                    e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'cleaning', ids, task_type: it.task_type || null }))
-                    e.dataTransfer.effectAllowed = 'move'
-                  }}
-                  onDragEnd={() => clearDragTarget()}
-                  title={title}
-                >
-                  <span className={styles.taskGrip}><HolderOutlined /></span>
-                  <div className={styles.taskStripe} style={{ backgroundColor: stripe }} />
-                  <div className={styles.taskMain}>
-                    <div className={styles.taskTopMetaRow}>
-                      <div className={styles.taskTopRow}>
-                        <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{boardStatusText(it, st)}</span>
-                        {isMerged ? <Tag>合并 {ids.length}</Tag> : null}
-                        {canConfigureInspection(it) ? <Tag color="geekblue">{planLabel}</Tag> : null}
-                        {!canConfigureInspection(it) && mode === 'inspection' && it.deferred_inspection_view ? <Tag color="geekblue">{planLabel}</Tag> : null}
-                        {hasLateCheckout(it) ? <Tag color="orange">晚退房</Tag> : null}
-                        {showKeyMissing ? <Tag color="red">钥匙未上传</Tag> : null}
-                      </div>
-                      {showInspectionAction ? (
-                        <Tooltip title={inspectionActionLabel(it)}>
-                          <Button
-                            size="small"
-                            shape="circle"
-                            icon={<CalendarOutlined />}
-                            aria-label={inspectionActionLabel(it)}
-                            className={styles.taskInlineActionBtn}
-                            onClick={(e) => {
-                              e.preventDefault()
-                              e.stopPropagation()
-                              openInspectionPlanModal(it)
-                            }}
-                          />
-                        </Tooltip>
-                      ) : null}
-                      {mode === 'cleaning' && (canDirectMarkHungKeys(it) || canUndoHungKeys(it)) ? (
-                        <Popconfirm
-                          title={canUndoHungKeys(it) ? '取消已挂钥匙标记？' : '确认标记为已挂钥匙？'}
-                          description={canUndoHungKeys(it) ? '取消后任务会恢复为未完成状态，仍可继续处理。' : '确认后客服可据此通知客人可以直接入住。'}
-                          okText={canUndoHungKeys(it) ? '确认取消' : '确认标记'}
-                          cancelText="取消"
-                          onConfirm={(e) => {
-                            e?.stopPropagation?.()
-                            const action = canUndoHungKeys(it) ? undoTaskHungKeys(it) : markTaskHungKeys(it)
-                            return action.catch((err: any) => {
-                              message.error(err?.message || '更新失败')
-                            })
-                          }}
-                        >
-                          <Tooltip title={canUndoHungKeys(it) ? '取消已挂钥匙标记' : '直接标记为已挂钥匙'}>
-                            <Button
-                              size="small"
-                              shape="circle"
-                              icon={<KeyOutlined />}
-                              aria-label={canUndoHungKeys(it) ? '取消已挂钥匙标记' : '直接标记为已挂钥匙'}
-                              className={`${styles.taskInlineActionBtn} ${canUndoHungKeys(it) ? styles.taskInlineActionBtnActive : ''}`}
-                              onClick={(e) => {
-                                e.preventDefault()
-                                e.stopPropagation()
-                              }}
-                            />
-                          </Tooltip>
-                        </Popconfirm>
-                      ) : null}
-                    </div>
-                    <div className={styles.taskTitleRow}>
-                      {sum.region ? <span className={styles.taskRegion}>{sum.region}</span> : null}
-                      <span className={styles.taskCode}>{sum.code || '-'}</span>
-                    </div>
-                    <div className={styles.taskSubRow}>{sum.detail || '\u00A0'}</div>
-                  </div>
-                </div>
-              )
-            }) : (
-              <div className={styles.taskChip}><Empty description="无未安排任务" /></div>
-            )}
+          <div className={styles.taskCenterCompactTitle} style={textColor ? { color: textColor } : undefined}>{task.title}</div>
+          <div className={styles.taskCenterCompactDetail} style={textColor ? { color: textColor } : undefined}>
+            {detailText || '\u00A0'}
           </div>
         </div>
+        {dragOverKey === dragKey ? <div className={styles.taskCenterDropMarker} /> : null}
+      </div>
+    )
+  }, [cardStyleForTask, dayLocked, dragOverKey, dragPayloadForTask, filteringActive, hasPendingKey, inspectionModeText, openTaskDetail, statusChipCls, statusText, stripeColorForTask, taskPendingKeys, textColorForTask])
 
-        <div className={`${styles.staffPane} ${styles.taskCenterStaffPane}`}>
-          {renderStaffTools()}
-          <div className={`${styles.staffBoard} ${styles.taskCenterStaffBoard}`}>
-          {staffList.map((s) => {
-            const sid = String(s.id)
-            const key = `staff:${mode}:${sid}`
-            const arr = groups.get(sid) || []
-            const expKey = `${mode}:${sid}`
-            const viewMode = expandedStaff[expKey] || 'preview'
-            const expanded = viewMode === 'expanded'
-            const collapsed = viewMode === 'collapsed'
-            return (
-              <div
-                key={sid}
-                id={`staffcol-${mode}-${sid}`}
-                className={`${styles.staffCol} ${styles.taskCenterStaffRow} ${dragOverKey === key ? styles.dropActive : ''} ${staffFocusId === sid ? styles.staffHighlight : ''}`}
-                onDragOver={(e) => { e.preventDefault(); activateDragTarget(key) }}
-                onDragLeave={() => clearDragTarget(key)}
-                onDrop={(e) => {
-                  e.preventDefault()
-                  const { ids, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
-                  if (!ids.length) { clearDragTarget(); return }
-                  if (source === 'work') {
-                    const id = ids[0]
-                    if (!id || hasPendingKey(workPendingKey(id))) { clearDragTarget(); return }
-                    updateWorkTask(id, { assignee_id: sid, scheduled_date: dateStr }).catch((err: any) => message.error(err?.message || '更新失败'))
-                      .finally(() => clearDragTarget())
+  const displayRows = useMemo(() => {
+    const output: TaskCenterDisplayRow[] = []
+    const bottomWorkTasks: TaskCenterTask[] = []
+    let globalLineIndex = 0
+    for (const row of filteredRows) {
+      const fullRow = allRows.find((item) => item.row_key === row.row_key) || row
+      const tasks = row.subrows.flatMap((subrow) => subrow.tasks)
+      const collections = rowTaskCollections(fullRow)
+      const rowLines: TaskCenterLine[] = []
+      const pushBucket = (bucketTasks: TaskCenterTask[], target: TaskCenterLine[], kind: 'cleaning' | 'work' | 'deferred') => {
+        if (!bucketTasks.length && kind !== 'deferred') return
+        const lineCount = Math.max(1, Math.ceil(bucketTasks.length / TASKS_PER_LINE))
+        for (let index = 0; index < lineCount; index += 1) {
+          globalLineIndex += 1
+          const lineTasks = bucketTasks.slice(index * TASKS_PER_LINE, (index + 1) * TASKS_PER_LINE)
+          target.push({
+            line_key: `${row.row_key}:line:${kind}:${index + 1}`,
+            row_key: row.row_key,
+            row_type: row.row_type,
+            assignments: row.assignments || {},
+            tasks: lineTasks,
+            start_index: Math.max(0, tasks.findIndex((task) => task.item_key === lineTasks[0]?.item_key)),
+            line_index: globalLineIndex,
+            inspectionIds: kind === 'cleaning' ? collections.inspectionIds : [],
+            workIds: kind === 'work' ? collections.workIds : [],
+          })
+        }
+      }
+      if (row.row_type === 'deferred') {
+        pushBucket(tasks, rowLines, 'deferred')
+      } else {
+        const cleaningTasks = tasks.filter((task) => task.task_source === 'cleaning')
+        const workTasks = tasks.filter((task) => task.task_source !== 'cleaning')
+        pushBucket(cleaningTasks, rowLines, 'cleaning')
+        if (row.row_type === 'final_group') {
+          pushBucket(workTasks, rowLines, 'work')
+        } else if (workTasks.length) {
+          bottomWorkTasks.push(...workTasks)
+        }
+      }
+      if (!rowLines.length && row.row_type === 'final_group' && !filteringActive) {
+        globalLineIndex += 1
+        rowLines.push({
+          line_key: `${row.row_key}:line:empty:1`,
+          row_key: row.row_key,
+          row_type: row.row_type,
+          assignments: row.assignments || {},
+          tasks: [],
+          start_index: 0,
+          line_index: globalLineIndex,
+          inspectionIds: [],
+          workIds: [],
+        })
+      }
+      if (rowLines.length) {
+        output.push({
+          row_key: row.row_key,
+          row_order: Number(fullRow.row_order || 0),
+          row_type: row.row_type,
+          assignments: row.assignments || {},
+          inspectionIds: collections.inspectionIds,
+          workIds: row.row_type === 'final_group' ? collections.workIds : [],
+          lines: rowLines,
+        })
+      }
+    }
+    if (bottomWorkTasks.length) {
+      const bottomLines: TaskCenterLine[] = []
+      const lineCount = Math.max(1, Math.ceil(bottomWorkTasks.length / TASKS_PER_LINE))
+      const sameAssignee = bottomWorkTasks.every((task) => String(task.assignee_id || '') === String(bottomWorkTasks[0]?.assignee_id || ''))
+      for (let index = 0; index < lineCount; index += 1) {
+        globalLineIndex += 1
+        const lineTasks = bottomWorkTasks.slice(index * TASKS_PER_LINE, (index + 1) * TASKS_PER_LINE)
+        bottomLines.push({
+          line_key: `work:bottom:${index + 1}`,
+          row_key: 'work:bottom',
+          row_type: 'final_group',
+          assignments: { executor_id: sameAssignee ? (bottomWorkTasks[0]?.assignee_id || null) : null },
+          tasks: lineTasks,
+          start_index: index * TASKS_PER_LINE,
+          line_index: globalLineIndex,
+          inspectionIds: [],
+          workIds: lineTasks.map((task) => task.task_id),
+        })
+      }
+      output.push({
+        row_key: 'work:bottom',
+        row_order: Number.MAX_SAFE_INTEGER,
+        row_type: 'final_group',
+        assignments: { executor_id: sameAssignee ? (bottomWorkTasks[0]?.assignee_id || null) : null },
+        inspectionIds: [],
+        workIds: bottomWorkTasks.map((task) => task.task_id),
+        lines: bottomLines,
+      })
+    }
+    output.sort((a, b) => {
+      return displayRowOrder(a.row_key) - displayRowOrder(b.row_key)
+        || a.row_order - b.row_order
+        || a.row_key.localeCompare(b.row_key)
+    })
+    return output
+  }, [allRows, filteredRows, filteringActive, rowTaskCollections])
+
+  const renderLine = useCallback((line: TaskCenterLine) => {
+    const dragKey = line.line_key
+    const row: TaskCenterRow = {
+      row_key: line.row_key,
+      row_title: '',
+      row_type: line.row_type,
+      row_order: 0,
+      assignments: line.assignments,
+      subrow_order: [DEFAULT_SUBROW_KEY],
+      subrows: [{ subrow_key: DEFAULT_SUBROW_KEY, tasks: line.tasks }],
+    }
+    const subrow = row.subrows[0]
+    const activateDropTarget = (e: any) => {
+      if (filteringActive) return
+      e.preventDefault()
+      setDragOverKey(dragKey)
+    }
+    const completeDrop = (e: any) => {
+      if (filteringActive) return
+      e.preventDefault()
+      e.stopPropagation()
+      try {
+        const payload = JSON.parse(e.dataTransfer.getData('text/plain') || '{}')
+        handleTaskDrop(payload, line).catch(() => {})
+      } catch {}
+    }
+    return (
+      <div
+        key={line.line_key}
+        className={`${styles.taskCenterSubrow} ${styles.taskCenterFlatLine} ${styles.taskCenterLineOnly} ${dragOverKey === dragKey ? styles.dropActive : ''}`}
+        onDragOver={activateDropTarget}
+        onDragLeave={() => setDragOverKey((prev) => (prev === dragKey ? null : prev))}
+        onDrop={completeDrop}
+      >
+        <div
+          className={styles.taskCenterSubrowGrid}
+          onDragOver={activateDropTarget}
+          onDrop={completeDrop}
+        >
+          {subrow.tasks.length ? subrow.tasks.map((task) => renderTaskCard(task, row, subrow, line, activateDropTarget, completeDrop)) : (
+            <div
+              className={`${styles.dropZone} ${styles.taskCenterSubrowEmpty}`}
+              onDragOver={activateDropTarget}
+              onDrop={completeDrop}
+            >
+              拖到这里
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }, [dragOverKey, filteringActive, handleTaskDrop, renderTaskCard])
+
+  const renderDisplayRow = (displayRow: TaskCenterDisplayRow) => {
+    const realRow = allRows.find((item) => item.row_key === displayRow.row_key)
+    const rowTaskCount = realRow?.subrows.reduce((sum, subrow) => sum + subrow.tasks.length, 0) || 0
+    const canDeleteRow = isCustomBoardRow(displayRow.row_key, displayRow.row_type) && rowTaskCount === 0
+    return (
+      <div key={displayRow.row_key} className={styles.taskCenterBoardRow}>
+        <div className={styles.taskCenterBoardRowHead}>
+          <div className={styles.taskCenterBoardRowActions}>
+            {displayRow.row_type === 'deferred' ? <Tag color="red">后续处理</Tag> : null}
+            {canDeleteRow ? (
+              <Button
+                type="text"
+                danger
+                size="small"
+                icon={<DeleteOutlined />}
+                onClick={() => deleteRow(displayRow.row_key).catch(() => {})}
+              >
+                删除行
+              </Button>
+            ) : null}
+            {displayRow.inspectionIds.length ? (
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                value={displayRow.assignments?.inspector_id || undefined}
+                onChange={(value) => updateRowAssignment(realRow || {
+                  row_key: displayRow.row_key,
+                  row_title: '',
+                  row_type: displayRow.row_type,
+                  row_order: 0,
+                  assignments: displayRow.assignments,
+                  subrow_order: [DEFAULT_SUBROW_KEY],
+                  subrows: [],
+                }, 'inspector_id', value ? String(value) : null)}
+                className={styles.taskCenterRowSelect}
+                placeholder="检查人员"
+                options={inspectorOptions}
+              />
+            ) : null}
+            {displayRow.workIds.length ? (
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                value={displayRow.assignments?.executor_id || undefined}
+                onChange={(value) => {
+                  if (realRow) {
+                    updateRowAssignment(realRow, 'executor_id', value ? String(value) : null)
                     return
                   }
-                  if (hasAnyPendingKey(cleaningPendingKeys(ids))) { clearDragTarget(); return }
-                  const patch: any =
-                    mode === 'cleaning'
-                      ? { cleaner_id: sid }
-                      : { inspector_id: sid, inspection_mode: 'same_day' }
-                  updateCleaningTasks(ids, patch).catch((err: any) => message.error(err?.message || '更新失败'))
-                    .finally(() => clearDragTarget())
+                  const nextValue = value ? String(value) : null
+                  const previousRows = cloneRows(allRows)
+                  applyRowAssignmentLocally({
+                    field: 'executor_id',
+                    value: nextValue,
+                    inspectionIds: [],
+                    workIds: displayRow.workIds,
+                  })
+                  Promise.all(displayRow.workIds.map((taskId) => patchWorkTask(taskId, { assignee_id: nextValue })))
+                    .then(() => loadDay())
+                    .catch((e: any) => {
+                      replaceRowsLocally(previousRows)
+                      message.error(String(e?.message || '更新失败'))
+                    })
                 }}
-              >
-                <div
-                  className={`${styles.staffColHead} ${styles.taskCenterStaffRowHead}`}
-                  onClick={() => setExpandedStaff((p) => {
-                    const cur = p[expKey] || 'preview'
-                    const next = cur === 'expanded' ? 'collapsed' : 'expanded'
-                    return { ...p, [expKey]: next }
-                  })}
-                  style={{ cursor: 'pointer' }}
-                >
-                  <div className={styles.staffName}>{s.name}</div>
-                  <div className={styles.staffHeadRight}>
-                    <div className={styles.staffCount}>{arr.length}</div>
-                    {expanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
-                  </div>
-                </div>
-                <div className={`${styles.staffColBody} ${styles.taskCenterStaffRowBody}`}>
-                  {dragOverKey === key ? <div className={`${styles.dropHint} ${styles.taskCenterDropHint}`}>放至此处分配</div> : null}
-                  {!collapsed ? (
-                    <div className={`${expanded ? styles.staffExpandedList : styles.staffPreviewList} ${styles.taskCenterTaskRail} ${expanded ? styles.taskCenterTaskRailExpanded : styles.taskCenterTaskRailPreview}`}>
-                      {arr.map((x) => {
-                    if (x.source === 'work') {
-                      const t = x.it
-                      const pending = hasPendingKey(workPendingKey(t.id))
-                      const stripe = stripeColorForUrgency(t.urgency)
-                      const code = propertyCodeById(t.property_id || null)
-                      const title = String(t.title || '').trim()
-                const detail = workSummaryText(t.summary)
-                      const st = t.status === 'done' ? 'done' : (String(t.assignee_id || '').trim() ? 'assigned' : 'todo')
-                      return (
-                        <div
-                          key={`work:assigned:${t.id}`}
-                          className={`${styles.taskChip} ${pending ? styles.taskChipDisabled : styles.taskChipDraggable} ${styles.taskCenterAssignedChip}`}
-                          draggable={!pending}
-                          onDragStart={(e) => {
-                            if (pending) return
-                            e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'work', ids: [t.id] }))
-                            e.dataTransfer.effectAllowed = 'move'
-                          }}
-                          onDragEnd={() => clearDragTarget()}
-                          title={title}
-                        >
-                          <span className={styles.taskGrip}><HolderOutlined /></span>
-                          <div className={styles.taskStripe} style={{ backgroundColor: stripe }} />
-                          <div className={styles.taskMain}>
-                            <div className={styles.taskTopRow}>
-                              <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
-                            </div>
-                            <div className={styles.taskTitleRow}>
-                              <span className={styles.taskCode}>{code}</span>
-                              {title ? <span className={styles.taskDetail}>{title}</span> : null}
-                            </div>
-                            <div className={styles.taskSubRow}>{detail || '\u00A0'}</div>
-                          </div>
-                        </div>
-                      )
-                    }
-                    const it = x.it
-                    const ids = entityIds(it)
-                    const kind = kindOfCleaningItem(it)
-                    const stripe = stripeColorForKind(kind)
-                    const sum = summaryText(it)
-                    const title = taskTextForCleaningItem(it)
-                    const st = effectiveCleaningStatus(it, mode)
-                    const pending = hasAnyPendingKey(cleaningPendingKeys(ids))
-                    const draggable = !pending && !dayLocked && (it.auto_sync_enabled !== false || !String(it.order_id || '').trim())
-                    const isMerged = Array.isArray(it.entity_ids) && it.entity_ids.length > 1
-                    const isSelfComplete = isSelfCompleteCleaningItem(it)
-                    const planLabel = inspectionModeLabel(it)
-                    const showInspectionAction = shouldShowInspectionPlanAction(it)
-                    return (
-                      <div
-                        key={`assigned:${it.entity_id}`}
-                        className={`${styles.taskChip} ${draggable ? styles.taskChipDraggable : styles.taskChipDisabled} ${styles.taskCenterAssignedChip}`}
-                        draggable={draggable}
-                        onDragStart={(e) => {
-                          if (!draggable) return
-                          e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'cleaning', ids, task_type: it.task_type || null }))
-                          e.dataTransfer.effectAllowed = 'move'
-                        }}
-                        onDragEnd={() => clearDragTarget()}
-                        title={title}
-                      >
-                        <span className={styles.taskGrip}><HolderOutlined /></span>
-                        <div className={styles.taskStripe} style={{ backgroundColor: stripe }} />
-                        <div className={styles.taskMain}>
-                          <div className={styles.taskTopMetaRow}>
-                            <div className={styles.taskTopRow}>
-                              <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{boardStatusText(it, st)}</span>
-                              {isMerged ? <Tag>合并 {ids.length}</Tag> : null}
-                              {isSelfComplete ? <Tag color="blue">自完成</Tag> : null}
-                              {canConfigureInspection(it) ? <Tag color="geekblue">{planLabel}</Tag> : null}
-                              {!canConfigureInspection(it) && mode === 'inspection' && it.deferred_inspection_view ? <Tag color="geekblue">{planLabel}</Tag> : null}
-                            </div>
-                            {showInspectionAction ? (
-                              <Tooltip title={inspectionActionLabel(it)}>
-                                <Button
-                                  size="small"
-                                  shape="circle"
-                                  icon={<CalendarOutlined />}
-                                  aria-label={inspectionActionLabel(it)}
-                                  className={styles.taskInlineActionBtn}
-                                  onClick={(e) => {
-                                    e.preventDefault()
-                                    e.stopPropagation()
-                                    openInspectionPlanModal(it)
-                                  }}
-                                />
-                              </Tooltip>
-                            ) : null}
-                            {mode === 'cleaning' && (canDirectMarkHungKeys(it) || canUndoHungKeys(it)) ? (
-                              <Popconfirm
-                                title={canUndoHungKeys(it) ? '取消已挂钥匙标记？' : '确认标记为已挂钥匙？'}
-                                description={canUndoHungKeys(it) ? '取消后任务会恢复为未完成状态，仍可继续处理。' : '确认后客服可据此通知客人可以直接入住。'}
-                                okText={canUndoHungKeys(it) ? '确认取消' : '确认标记'}
-                                cancelText="取消"
-                                onConfirm={(e) => {
-                                  e?.stopPropagation?.()
-                                  const action = canUndoHungKeys(it) ? undoTaskHungKeys(it) : markTaskHungKeys(it)
-                                  return action.catch((err: any) => {
-                                    message.error(err?.message || '更新失败')
-                                  })
-                                }}
-                              >
-                                <Tooltip title={canUndoHungKeys(it) ? '取消已挂钥匙标记' : '直接标记为已挂钥匙'}>
-                                  <Button
-                                    size="small"
-                                    shape="circle"
-                                    icon={<KeyOutlined />}
-                                    aria-label={canUndoHungKeys(it) ? '取消已挂钥匙标记' : '直接标记为已挂钥匙'}
-                                    className={`${styles.taskInlineActionBtn} ${canUndoHungKeys(it) ? styles.taskInlineActionBtnActive : ''}`}
-                                    onClick={(e) => {
-                                      e.preventDefault()
-                                      e.stopPropagation()
-                                    }}
-                                  />
-                                </Tooltip>
-                              </Popconfirm>
-                            ) : null}
-                          </div>
-                          <div className={styles.taskTitleRow}>
-                            {sum.region ? <span className={styles.taskRegion}>{sum.region}</span> : null}
-                            <span className={styles.taskCode}>{sum.code || '-'}</span>
-                          </div>
-                          <div className={styles.taskSubRow}>{sum.detail || '\u00A0'}</div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                    </div>
-                  ) : null}
-                  {!expanded ? <div className={`${styles.dropZone} ${styles.taskCenterDropZone} ${collapsed ? styles.dropZoneCollapsed : (arr.length ? styles.dropZoneCompact : '')}`}>放入分配</div> : null}
-                </div>
-              </div>
-            )
-          })}
+                className={styles.taskCenterRowSelect}
+                placeholder="执行人"
+                options={allStaffOptions}
+              />
+            ) : null}
           </div>
         </div>
+      <div className={styles.taskCenterBoardRowBodyCompact}>
+        {displayRow.lines.map((line) => renderLine(line))}
+      </div>
       </div>
     )
-  }, [activateDragTarget, activeCleaners, activeInspectors, boardStatusText, canConfigureInspection, canDirectMarkHungKeys, canUndoHungKeys, cleaningPendingKeys, cleaningPoolFilterOptions, clearDragTarget, dateStr, dayLocked, dragOverKey, effectiveCleaningStatus, entityIds, expandedStaff, filterCleanItems, filterOfflineItems, hasAnyPendingKey, hasLateCheckout, hasPendingKey, inspectionActionLabel, inspectionModeLabel, isSelfCompleteCleaningItem, kindOfCleaningItem, loading, markTaskHungKeys, mergedCleaningItems, openInspectionPlanModal, parseDragPayload, poolView, propertyCodeById, renderPoolTools, renderStaffTools, shouldKeepHungKeyTaskVisible, shouldShowInspectionPlanAction, staffFilter, staffFocusId, statusChipCls, stripeColorForKind, stripeColorForUrgency, summaryText, tab, taskCenterDay, taskTextForCleaningItem, undoTaskHungKeys, updateCleaningTasks, updateWorkTask, workPendingKey, workSummaryText])
+  }
 
-  const TaskBoardMaintenance = useMemo(() => {
-    if (tab !== 'maintenance') return null
-    const allWork = Array.isArray(taskCenterDay?.tasks) ? taskCenterDay!.tasks : []
-    const base = filterRepairs(allWork)
-    const pool = base.filter((r) => {
-      const assignee = String(r.assignee_id || '').trim()
-      const eta = String(r.scheduled_date || '').slice(0, 10)
-      return !assignee || eta !== dateStr
-    })
-    const groups = new Map<string, WorkTask[]>()
-    for (const r of base) {
-      const eta = String(r.scheduled_date || '').slice(0, 10)
-      if (eta !== dateStr) continue
-      const key = String(r.assignee_id || '').trim()
-      if (!key) continue
-      const arr = groups.get(key) || []
-      arr.push(r)
-      groups.set(key, arr)
-    }
-    const poolKey = 'pool:maintenance'
-    const staffList = activeMaintenanceStaff.filter((s) => {
-      const sid = String(s.id)
-      const c = (groups.get(sid) || []).length
-      if (staffFilter === 'busy') return c > 0
-      if (staffFilter === 'idle') return c === 0
-      return true
-    })
-    return (
-      <div className={`${styles.boardWrap} ${styles.taskCenterBoardWrap}`}>
-        <div
-          className={`${styles.poolPane} ${styles.taskCenterPoolPane} ${dragOverKey === poolKey ? styles.dropActive : ''}`}
-          onDragOver={(e) => { e.preventDefault(); activateDragTarget(poolKey) }}
-          onDragLeave={() => clearDragTarget(poolKey)}
-          onDrop={(e) => {
-            e.preventDefault()
-            const { ids, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
-            if (source !== 'work') { clearDragTarget(); return }
-            const id = ids[0]
-            if (!id || hasPendingKey(workPendingKey(id))) { clearDragTarget(); return }
-            updateWorkTask(id, { assignee_id: null, scheduled_date: null }).catch((err: any) => message.error(err?.message || '更新失败'))
-              .finally(() => clearDragTarget())
-          }}
-        >
-          <div className={`${styles.poolHead} ${styles.taskCenterPoolHead}`}>
-            <div className={styles.poolTitle}>未安排维修</div>
-            <div className={styles.poolCount}>{pool.length}</div>
-          </div>
-          {renderPoolTools(workPoolFilterOptions)}
-          <div className={styles.poolList}>
-            {loading && !pool.length ? (
-              <>
-                <div className={styles.taskChip}><Skeleton active paragraph={{ rows: 1 }} /></div>
-                <div className={styles.taskChip}><Skeleton active paragraph={{ rows: 1 }} /></div>
-              </>
-            ) : pool.length ? pool.map((r) => {
-              const pending = hasPendingKey(workPendingKey(r.id))
-              const stripe = stripeColorForUrgency(String(r.urgency || ''))
-              const workNo = String(r.title || '').trim()
-              const code = propertyCodeById(r.property_id || null)
-              const summary = workSummaryText(r.summary)
-              const title = `${code} ${workNo} ${summary}`.trim()
-              const st = String(r.status || '').trim()
-              return (
-                <div
-                  key={`work:maintenance:${r.id}`}
-                  className={`${styles.taskChip} ${pending ? styles.taskChipDisabled : styles.taskChipDraggable}`}
-                  draggable={!pending}
-                  onDragStart={(e) => {
-                    if (pending) return
-                    e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'work', ids: [r.id] }))
-                    e.dataTransfer.effectAllowed = 'move'
-                  }}
-                  onDragEnd={() => clearDragTarget()}
-                  title={title}
-                >
-                  <span className={styles.taskGrip}><HolderOutlined /></span>
-                  <div className={styles.taskStripe} style={{ backgroundColor: stripe }} />
-                  <div className={styles.taskMain}>
-                    <div className={styles.taskTopRow}>
-                      <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
-                    </div>
-                    <div className={styles.taskTitleRow}>
-                      <span className={styles.taskCode}>{code}</span>
-                      {workNo ? <span className={styles.taskDetailPlain}>{workNo}</span> : null}
-                    </div>
-                    <div className={styles.taskSubRow}>{summary || '\u00A0'}</div>
-                  </div>
-                </div>
-              )
-            }) : (
-              <div className={styles.taskChip}><Empty description="无未安排维修" /></div>
-            )}
-          </div>
-        </div>
-
-        <div className={`${styles.staffPane} ${styles.taskCenterStaffPane}`}>
-          {renderStaffTools()}
-          <div className={`${styles.staffBoard} ${styles.taskCenterStaffBoard}`}>
-          {staffList.map((s) => {
-            const sid = String(s.id)
-            const key = `staff:maintenance:${sid}`
-            const arr = groups.get(sid) || []
-            const expKey = `maintenance:${sid}`
-            const viewMode = expandedStaff[expKey] || 'preview'
-            const expanded = viewMode === 'expanded'
-            const collapsed = viewMode === 'collapsed'
-            return (
-              <div
-                key={sid}
-                id={`staffcol-maintenance-${sid}`}
-                className={`${styles.staffCol} ${styles.taskCenterStaffRow} ${dragOverKey === key ? styles.dropActive : ''} ${staffFocusId === sid ? styles.staffHighlight : ''}`}
-                onDragOver={(e) => { e.preventDefault(); activateDragTarget(key) }}
-                onDragLeave={() => clearDragTarget(key)}
-                onDrop={(e) => {
-                  e.preventDefault()
-                  const { ids, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
-                  if (source !== 'work') { clearDragTarget(); return }
-                  const id = ids[0]
-                  if (!id || hasPendingKey(workPendingKey(id))) { clearDragTarget(); return }
-                  updateWorkTask(id, { assignee_id: sid, scheduled_date: dateStr }).catch((err: any) => message.error(err?.message || '更新失败'))
-                    .finally(() => clearDragTarget())
-                }}
-              >
-                <div
-                  className={`${styles.staffColHead} ${styles.taskCenterStaffRowHead}`}
-                  onClick={() => setExpandedStaff((p) => {
-                    const cur = p[expKey] || 'preview'
-                    const next = cur === 'expanded' ? 'collapsed' : 'expanded'
-                    return { ...p, [expKey]: next }
-                  })}
-                  style={{ cursor: 'pointer' }}
-                >
-                  <div className={styles.staffName}>{s.name}</div>
-                  <div className={styles.staffHeadRight}>
-                    <div className={styles.staffCount}>{arr.length}</div>
-                    {expanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
-                  </div>
-                </div>
-                <div className={`${styles.staffColBody} ${styles.taskCenterStaffRowBody}`}>
-                  {dragOverKey === key ? <div className={`${styles.dropHint} ${styles.taskCenterDropHint}`}>放至此处分配</div> : null}
-                  {!collapsed ? (
-                    <div className={`${expanded ? styles.staffExpandedList : styles.staffPreviewList} ${styles.taskCenterTaskRail} ${expanded ? styles.taskCenterTaskRailExpanded : styles.taskCenterTaskRailPreview}`}>
-                      {arr.map((r) => {
-                    const pending = hasPendingKey(workPendingKey(r.id))
-                    const stripe = stripeColorForUrgency(String(r.urgency || ''))
-                    const workNo = String(r.title || '').trim()
-                    const code = propertyCodeById(r.property_id || null)
-                    const summary = workSummaryText(r.summary)
-                    const title = `${code} ${workNo} ${summary}`.trim()
-                    const st = String(r.status || '').trim()
-                    return (
-                      <div
-                        key={`work:maintenance:assigned:${r.id}`}
-                        className={`${styles.taskChip} ${pending ? styles.taskChipDisabled : styles.taskChipDraggable} ${styles.taskCenterAssignedChip}`}
-                        draggable={!pending}
-                        onDragStart={(e) => {
-                          if (pending) return
-                          e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'work', ids: [r.id] }))
-                          e.dataTransfer.effectAllowed = 'move'
-                        }}
-                        onDragEnd={() => clearDragTarget()}
-                        title={title}
-                      >
-                        <span className={styles.taskGrip}><HolderOutlined /></span>
-                        <div className={styles.taskStripe} style={{ backgroundColor: stripe }} />
-                        <div className={styles.taskMain}>
-                          <div className={styles.taskTopRow}>
-                            <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
-                          </div>
-                          <div className={styles.taskTitleRow}>
-                            <span className={styles.taskCode}>{code}</span>
-                            {workNo ? <span className={styles.taskDetailPlain}>{workNo}</span> : null}
-                          </div>
-                          <div className={styles.taskSubRow}>{summary || '\u00A0'}</div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                    </div>
-                  ) : null}
-                  {!expanded ? <div className={`${styles.dropZone} ${styles.taskCenterDropZone} ${collapsed ? styles.dropZoneCollapsed : (arr.length ? styles.dropZoneCompact : '')}`}>放入分配</div> : null}
-                </div>
-              </div>
-            )
-          })}
-          </div>
-        </div>
-      </div>
-    )
-  }, [activateDragTarget, activeMaintenanceStaff, clearDragTarget, dateStr, dragOverKey, expandedStaff, filterRepairs, hasPendingKey, loading, parseDragPayload, propertyCodeById, renderPoolTools, renderStaffTools, staffFilter, staffFocusId, statusChipCls, statusText, stripeColorForUrgency, tab, taskCenterDay, updateWorkTask, workPendingKey, workPoolFilterOptions, workSummaryText])
-
-  const TaskBoardDeepCleaning = useMemo(() => {
-    if (tab !== 'deep_cleaning') return null
-    const allWork = Array.isArray(taskCenterDay?.tasks) ? taskCenterDay!.tasks : []
-    const base = filterDeepCleaning(allWork)
-    const pool = base.filter((r) => {
-      const assignee = String(r.assignee_id || '').trim()
-      const eta = String(r.scheduled_date || '').slice(0, 10)
-      return !assignee || eta !== dateStr
-    })
-    const groups = new Map<string, WorkTask[]>()
-    for (const r of base) {
-      const eta = String(r.scheduled_date || '').slice(0, 10)
-      if (eta !== dateStr) continue
-      const key = String(r.assignee_id || '').trim()
-      if (!key) continue
-      const arr = groups.get(key) || []
-      arr.push(r)
-      groups.set(key, arr)
-    }
-    const poolKey = 'pool:deep_cleaning'
-    const staffList = activeCleaners.filter((s) => {
-      const sid = String(s.id)
-      const c = (groups.get(sid) || []).length
-      if (staffFilter === 'busy') return c > 0
-      if (staffFilter === 'idle') return c === 0
-      return true
-    })
-    return (
-      <div className={`${styles.boardWrap} ${styles.taskCenterBoardWrap}`}>
-        <div
-          className={`${styles.poolPane} ${styles.taskCenterPoolPane} ${dragOverKey === poolKey ? styles.dropActive : ''}`}
-          onDragOver={(e) => { e.preventDefault(); activateDragTarget(poolKey) }}
-          onDragLeave={() => clearDragTarget(poolKey)}
-          onDrop={(e) => {
-            e.preventDefault()
-            const { ids, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
-            if (source !== 'work') { clearDragTarget(); return }
-            const id = ids[0]
-            if (!id || hasPendingKey(workPendingKey(id))) { clearDragTarget(); return }
-            updateWorkTask(id, { assignee_id: null, scheduled_date: null }).catch((err: any) => message.error(err?.message || '更新失败'))
-              .finally(() => clearDragTarget())
-          }}
-        >
-          <div className={`${styles.poolHead} ${styles.taskCenterPoolHead}`}>
-            <div className={styles.poolTitle}>未安排深清</div>
-            <div className={styles.poolCount}>{pool.length}</div>
-          </div>
-          {renderPoolTools(workPoolFilterOptions)}
-          <div className={styles.poolList}>
-            {loading && !pool.length ? (
-              <>
-                <div className={styles.taskChip}><Skeleton active paragraph={{ rows: 1 }} /></div>
-                <div className={styles.taskChip}><Skeleton active paragraph={{ rows: 1 }} /></div>
-              </>
-            ) : pool.length ? pool.map((r) => {
-              const pending = hasPendingKey(workPendingKey(r.id))
-              const stripe = stripeColorForUrgency(String(r.urgency || ''))
-              const workNo = String(r.title || '').trim()
-              const code = propertyCodeById(r.property_id || null)
-              const summary = workSummaryText(r.summary)
-              const title = `${code} ${workNo} ${summary}`.trim()
-              const st = String(r.status || '').trim()
-              return (
-                <div
-                  key={`work:deep:${r.id}`}
-                  className={`${styles.taskChip} ${pending ? styles.taskChipDisabled : styles.taskChipDraggable}`}
-                  draggable={!pending}
-                  onDragStart={(e) => {
-                    if (pending) return
-                    e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'work', ids: [r.id] }))
-                    e.dataTransfer.effectAllowed = 'move'
-                  }}
-                  onDragEnd={() => clearDragTarget()}
-                  title={title}
-                >
-                  <span className={styles.taskGrip}><HolderOutlined /></span>
-                  <div className={styles.taskStripe} style={{ backgroundColor: stripe }} />
-                  <div className={styles.taskMain}>
-                    <div className={styles.taskTopRow}>
-                      <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
-                    </div>
-                    <div className={styles.taskTitleRow}>
-                      <span className={styles.taskCode}>{code}</span>
-                      {workNo ? <span className={styles.taskDetailPlain}>{workNo}</span> : null}
-                    </div>
-                    <div className={styles.taskSubRow}>{summary || '\u00A0'}</div>
-                  </div>
-                </div>
-              )
-            }) : (
-              <div className={styles.taskChip}><Empty description="无未安排深清" /></div>
-            )}
-          </div>
-        </div>
-
-        <div className={`${styles.staffPane} ${styles.taskCenterStaffPane}`}>
-          {renderStaffTools()}
-          <div className={`${styles.staffBoard} ${styles.taskCenterStaffBoard}`}>
-          {staffList.map((s) => {
-            const sid = String(s.id)
-            const key = `staff:deep_cleaning:${sid}`
-            const arr = groups.get(sid) || []
-            const expKey = `deep_cleaning:${sid}`
-            const viewMode = expandedStaff[expKey] || 'preview'
-            const expanded = viewMode === 'expanded'
-            const collapsed = viewMode === 'collapsed'
-            return (
-              <div
-                key={sid}
-                id={`staffcol-deep-cleaning-${sid}`}
-                className={`${styles.staffCol} ${styles.taskCenterStaffRow} ${dragOverKey === key ? styles.dropActive : ''} ${staffFocusId === sid ? styles.staffHighlight : ''}`}
-                onDragOver={(e) => { e.preventDefault(); activateDragTarget(key) }}
-                onDragLeave={() => clearDragTarget(key)}
-                onDrop={(e) => {
-                  e.preventDefault()
-                  const { ids, source } = parseDragPayload(e.dataTransfer.getData('text/plain'))
-                  if (source !== 'work') { clearDragTarget(); return }
-                  const id = ids[0]
-                  if (!id || hasPendingKey(workPendingKey(id))) { clearDragTarget(); return }
-                  updateWorkTask(id, { assignee_id: sid, scheduled_date: dateStr }).catch((err: any) => message.error(err?.message || '更新失败'))
-                    .finally(() => clearDragTarget())
-                }}
-              >
-                <div
-                  className={`${styles.staffColHead} ${styles.taskCenterStaffRowHead}`}
-                  onClick={() => setExpandedStaff((p) => {
-                    const cur = p[expKey] || 'preview'
-                    const next = cur === 'expanded' ? 'collapsed' : 'expanded'
-                    return { ...p, [expKey]: next }
-                  })}
-                  style={{ cursor: 'pointer' }}
-                >
-                  <div className={styles.staffName}>{s.name}</div>
-                  <div className={styles.staffHeadRight}>
-                    <div className={styles.staffCount}>{arr.length}</div>
-                    {expanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
-                  </div>
-                </div>
-                <div className={`${styles.staffColBody} ${styles.taskCenterStaffRowBody}`}>
-                  {dragOverKey === key ? <div className={`${styles.dropHint} ${styles.taskCenterDropHint}`}>放至此处分配</div> : null}
-                  {!collapsed ? (
-                    <div className={`${expanded ? styles.staffExpandedList : styles.staffPreviewList} ${styles.taskCenterTaskRail} ${expanded ? styles.taskCenterTaskRailExpanded : styles.taskCenterTaskRailPreview}`}>
-                      {arr.map((r) => {
-                    const pending = hasPendingKey(workPendingKey(r.id))
-                    const stripe = stripeColorForUrgency(String(r.urgency || ''))
-                    const workNo = String(r.title || '').trim()
-                    const code = propertyCodeById(r.property_id || null)
-                    const summary = workSummaryText(r.summary)
-                    const title = `${code} ${workNo} ${summary}`.trim()
-                    const st = String(r.status || '').trim()
-                    return (
-                      <div
-                        key={`work:deep:assigned:${r.id}`}
-                        className={`${styles.taskChip} ${pending ? styles.taskChipDisabled : styles.taskChipDraggable} ${styles.taskCenterAssignedChip}`}
-                        draggable={!pending}
-                        onDragStart={(e) => {
-                          if (pending) return
-                          e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'work', ids: [r.id] }))
-                          e.dataTransfer.effectAllowed = 'move'
-                        }}
-                        onDragEnd={() => clearDragTarget()}
-                        title={title}
-                      >
-                        <span className={styles.taskGrip}><HolderOutlined /></span>
-                        <div className={styles.taskStripe} style={{ backgroundColor: stripe }} />
-                        <div className={styles.taskMain}>
-                          <div className={styles.taskTopRow}>
-                            <span className={`${styles.statusChip} ${statusChipCls(st)}`}>{statusText(st)}</span>
-                          </div>
-                          <div className={styles.taskTitleRow}>
-                            <span className={styles.taskCode}>{code}</span>
-                            {workNo ? <span className={styles.taskDetailPlain}>{workNo}</span> : null}
-                          </div>
-                          <div className={styles.taskSubRow}>{summary || '\u00A0'}</div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                    </div>
-                  ) : null}
-                  {!expanded ? <div className={`${styles.dropZone} ${styles.taskCenterDropZone} ${collapsed ? styles.dropZoneCollapsed : (arr.length ? styles.dropZoneCompact : '')}`}>放入分配</div> : null}
-                </div>
-              </div>
-            )
-          })}
-          </div>
-        </div>
-      </div>
-    )
-  }, [activateDragTarget, activeCleaners, clearDragTarget, dateStr, dragOverKey, expandedStaff, filterDeepCleaning, hasPendingKey, loading, parseDragPayload, propertyCodeById, renderPoolTools, renderStaffTools, staffFilter, staffFocusId, statusChipCls, statusText, stripeColorForUrgency, tab, taskCenterDay, updateWorkTask, workPendingKey, workPoolFilterOptions, workSummaryText])
-
-  const staffOptionsAll = useMemo(() => (
-    activeAllStaff.map((s) => ({ value: s.id, label: s.name }))
-  ), [activeAllStaff])
-
-  const createTitle = '新增线下任务'
+  const readiness = dayData?.entry_readiness || {
+    ready_for_final_grouping: true,
+    unresolved_primary_count: 0,
+    pending_inspection_count: 0,
+    skipped_count: 0,
+  }
 
   return (
     <div className={styles.page}>
       <div className={styles.container}>
-        {error ? <Alert type="error" showIcon message="任务中心数据加载失败" description={error} /> : null}
+        {error ? <Alert type="error" showIcon message="任务中心加载失败" description={error} /> : null}
 
         <div className={`${styles.card} ${styles.headerCard}`}>
           <div className={styles.navGroup}>
-            <Button className={styles.navBtn} icon={<LeftOutlined />} onClick={goPrev} />
-            <div className={styles.monthTitle}>任务中心（{dateStr}）</div>
-            <Button className={styles.navBtn} icon={<RightOutlined />} onClick={goNext} />
-            <Button className={styles.todayBtn} onClick={() => setDate(dayjs())}>今天</Button>
+            <Button className={styles.navBtn} icon={<LeftOutlined />} onClick={() => setDate((value) => value.subtract(1, 'day'))} />
+            <div className={styles.monthTitle}>{date.format('YYYY-MM-DD')}</div>
+            <Button className={styles.navBtn} icon={<RightOutlined />} onClick={() => setDate((value) => value.add(1, 'day'))} />
           </div>
           <div className={styles.rightGroup}>
-            <DatePicker value={date} onChange={(v) => v && setDate(v)} />
+            <DatePicker value={date} onChange={(value) => value && setDate(value)} />
             <Button className={styles.secondaryBtn} icon={<ReloadOutlined />} onClick={() => loadDay().catch(() => {})} loading={loading}>
               刷新
             </Button>
@@ -1845,83 +1426,242 @@ export default function TaskCenterPage() {
         <div className={`${styles.card} ${styles.taskCenterCard}`}>
           <div className={styles.detailsHead}>
             <div>
-              <div className={styles.detailsTitle}>任务分配</div>
-              <div className={styles.detailsDate}>拖拽任务到人员列完成分配</div>
+              <div className={styles.detailsTitle}>任务中心</div>
+              <div className={styles.detailsDate}>单界面紧凑排班板，每个小行最多 4 个任务，超出自动换到下一小行。</div>
             </div>
           </div>
 
-          {tab === 'cleaning' || tab === 'inspection' ? TaskBoardCleaning : null}
-          {tab === 'maintenance' ? TaskBoardMaintenance : null}
-          {tab === 'deep_cleaning' ? TaskBoardDeepCleaning : null}
+          <div className={styles.taskCenterToolbar}>
+            <Input
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              allowClear
+              placeholder="搜索房号或任务..."
+              className={styles.taskCenterFilterInput}
+            />
+          </div>
+
+          <div className={styles.taskCenterCompactHint}>
+            <div className={styles.taskCenterSummaryStats}>
+              <span className={styles.taskCenterSummaryPill}>
+                <strong>未安排</strong>
+                <em>{readiness.unresolved_primary_count} 个</em>
+              </span>
+              <span className={styles.taskCenterSummaryPill}>
+                <strong>待确认</strong>
+                <em>{readiness.pending_inspection_count} 个</em>
+              </span>
+              <span className={styles.taskCenterSummaryPill}>
+                <strong>暂不安排</strong>
+                <em>{readiness.skipped_count} 个</em>
+              </span>
+            </div>
+            <Button className={styles.secondaryBtn} icon={<PlusOutlined />} onClick={() => createRow().catch(() => {})} loading={creatingRow}>
+              新增一行
+            </Button>
+          </div>
+
+          <div className={styles.taskCenterBoardWrapNew}>
+            {loading ? (
+              <div className={styles.taskCenterBoardSkeleton}>
+                <Skeleton active paragraph={{ rows: 6 }} />
+              </div>
+            ) : displayRows.length ? (
+              <div className={styles.taskCenterBoardRowsCompact}>
+                {displayRows.map((displayRow) => renderDisplayRow(displayRow))}
+              </div>
+            ) : (
+              <div className={styles.taskChip}><Empty description="暂无任务" /></div>
+            )}
+          </div>
         </div>
       </div>
 
       <Modal
-        open={inspectionPlanOpen}
-        title="检查安排"
+        open={!!detailTask}
+        title={detailTask ? '任务详情' : '任务详情'}
+        width={640}
+        onCancel={closeTaskDetail}
         okText="保存"
-        confirmLoading={inspectionPlanLoading}
-        onOk={() => submitInspectionPlan().catch(() => {})}
-        onCancel={() => {
-          if (inspectionPlanLoading) return
-          setInspectionPlanOpen(false)
-          setInspectionPlanItem(null)
-        }}
+        cancelText="取消"
+        confirmLoading={detailSaving}
+        onOk={() => saveTaskDetail().catch(() => {})}
+        destroyOnClose
       >
-        {inspectionPlanItem ? (
-          <Space direction="vertical" style={{ width: '100%' }}>
-            <Alert
-              type="info"
-              showIcon
-              message={taskTextForCleaningItem(inspectionPlanItem)}
-              description="退房任务由线下经理确认检查安排；未确认前不会进入检查池。"
-            />
-            <div>
-              <div className={styles.fieldLabel}>检查安排</div>
-              <Select
-                value={inspectionPlanMode}
-                onChange={(v) => {
-                  const mode = String(v) as 'pending_decision' | 'same_day' | 'self_complete' | 'deferred'
-                  setInspectionPlanMode(mode)
-                  if (mode !== 'deferred') setInspectionPlanDate(null)
-                  if (mode === 'pending_decision' || mode === 'self_complete') setInspectionPlanInspectorId(null)
-                }}
-                style={{ width: '100%' }}
-                options={[
-                  { label: '待确认', value: 'pending_decision' },
-                  { label: '同日检查', value: 'same_day' },
-                  { label: '自完成', value: 'self_complete' },
-                  { label: '延后检查', value: 'deferred' },
-                ]}
+        {detailTask && detailDraft ? (
+          <Space direction="vertical" style={{ width: '100%' }} size={16}>
+            <div className={styles.taskDetailHero}>
+                <div className={styles.taskDetailHeroTop}>
+                  <div className={styles.taskDetailHeroTitle}>{detailTask.title}</div>
+                  <div className={styles.taskDetailHeroChips}>
+                    <span className={styles.taskDetailChip}>{statusText(detailTask.status)}</span>
+                    {detailTask.task_source === 'cleaning' ? (
+                      <span className={styles.taskDetailChip}>{inspectionModeText(detailTask.inspection_mode)}</span>
+                    ) : (
+                      <span className={styles.taskDetailChip}>{detailTask.task_kind || '线下任务'}</span>
+                    )}
+                    {specialTimingTags(detailTask).map((item) => (
+                      <span
+                        key={`detail:${detailTask.item_key}:${item.key}`}
+                        className={`${styles.taskDetailChip} ${
+                          item.tone === 'success'
+                            ? styles.taskDetailChipSuccess
+                            : (item.tone === 'purple' ? styles.taskDetailChipPurple : styles.taskDetailChipDanger)
+                        }`}
+                      >
+                        {item.label}
+                      </span>
+                    ))}
+                    {detailTask.temporarily_skipped ? <span className={`${styles.taskDetailChip} ${styles.taskDetailChipDanger}`}>暂不安排</span> : null}
+                  </div>
+                </div>
+              <div className={styles.taskDetailHeroSummary}>{detailHeroSummary(detailTask) || '暂无详情'}</div>
+            </div>
+            {detailTask.task_source === 'cleaning' ? (
+              <>
+                <div className={styles.taskDetailGrid}>
+                  <div>
+                    <div className={styles.fieldLabel}>清洁人员</div>
+                    <Select
+                      allowClear
+                      showSearch
+                      optionFilterProp="label"
+                      value={detailDraft.cleaner_id || undefined}
+                      onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, cleaner_id: value ? String(value) : null } : prev))}
+                      style={{ width: '100%' }}
+                      options={cleanerOptions}
+                    />
+                  </div>
+                  <div>
+                    <div className={styles.fieldLabel}>检查安排</div>
+                    <Select
+                      value={detailDraft.inspection_mode}
+                      onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, inspection_mode: value as TaskDetailDraft['inspection_mode'], inspection_due_date: value === 'deferred' ? prev.inspection_due_date : null, inspector_id: value === 'pending_decision' || value === 'self_complete' ? null : prev.inspector_id } : prev))}
+                      style={{ width: '100%' }}
+                      options={[
+                        { label: '待确认', value: 'pending_decision' },
+                        { label: '同日检查', value: 'same_day' },
+                        { label: '自完成', value: 'self_complete' },
+                        { label: '延后检查', value: 'deferred' },
+                      ]}
+                    />
+                  </div>
+                </div>
+                {(detailDraft.inspection_mode === 'same_day' || detailDraft.inspection_mode === 'deferred') ? (
+                  <div className={styles.taskDetailGrid}>
+                    <div>
+                      <div className={styles.fieldLabel}>检查人员</div>
+                      <Select
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        value={detailDraft.inspector_id || undefined}
+                        onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, inspector_id: value ? String(value) : null } : prev))}
+                        style={{ width: '100%' }}
+                        options={inspectorOptions}
+                      />
+                    </div>
+                    {detailDraft.inspection_mode === 'deferred' ? (
+                      <div>
+                        <div className={styles.fieldLabel}>检查日期</div>
+                        <DatePicker value={detailDraft.inspection_due_date} onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, inspection_due_date: value } : prev))} style={{ width: '100%' }} />
+                      </div>
+                    ) : <div />}
+                  </div>
+                ) : null}
+                {(() => {
+                  const timing = cleaningTimingVisibility(detailTask)
+                  const parts = cleaningSummaryParts(detailTask)
+                  if (!timing.showCheckout && !timing.showCheckin) return null
+                  return (
+                    <div className={styles.taskDetailMetaStrip}>
+                      {parts.map((part, index) => (
+                        <span key={`meta:${detailTask.item_key}:${index}`} className={styles.taskDetailMetaPill}>{part}</span>
+                      ))}
+                    </div>
+                  )
+                })()}
+              </>
+            ) : (
+              <>
+                <div className={styles.taskDetailGrid}>
+                  <div>
+                    <div className={styles.fieldLabel}>任务标题</div>
+                    <Input value={detailDraft.title} onChange={(e) => setDetailDraft((prev) => (prev ? { ...prev, title: e.target.value } : prev))} />
+                  </div>
+                  <div>
+                    <div className={styles.fieldLabel}>执行人</div>
+                    <Select
+                      allowClear
+                      showSearch
+                      optionFilterProp="label"
+                      value={detailDraft.assignee_id || undefined}
+                      onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, assignee_id: value ? String(value) : null } : prev))}
+                      style={{ width: '100%' }}
+                      options={allStaffOptions}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <div className={styles.fieldLabel}>任务详情</div>
+                  <Input.TextArea rows={4} value={detailDraft.summary} onChange={(e) => setDetailDraft((prev) => (prev ? { ...prev, summary: e.target.value } : prev))} />
+                </div>
+                <div className={styles.taskDetailGrid}>
+                  <div>
+                    <div className={styles.fieldLabel}>紧急程度</div>
+                    <Select
+                      value={detailDraft.urgency}
+                      onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, urgency: value as TaskDetailDraft['urgency'] } : prev))}
+                      style={{ width: '100%' }}
+                      options={[
+                        { label: '低', value: 'low' },
+                        { label: '中', value: 'medium' },
+                        { label: '高', value: 'high' },
+                        { label: '紧急', value: 'urgent' },
+                      ]}
+                    />
+                  </div>
+                  <div />
+                </div>
+              </>
+            )}
+            <div className={styles.taskCenterSkipCard}>
+              <div className={styles.taskCenterSkipHead}>
+                <div className={styles.taskDetailSkipTitle}>
+                  <div className={styles.fieldLabel} style={{ marginBottom: 0 }}>暂不安排</div>
+                  <span className={styles.taskDetailSkipHint}>
+                    {detailTask.task_source === 'work'
+                      ? '可留在当天后续处理，或选一个日期挪到那天变成未安排任务'
+                      : '打开后可把任务移出当日安排'}
+                  </span>
+                </div>
+                <Switch checked={detailDraft.temporarily_skipped} onChange={(checked) => setDetailDraft((prev) => (prev ? { ...prev, temporarily_skipped: checked } : prev))} />
+              </div>
+              {detailTask.task_source === 'work' && detailDraft.temporarily_skipped ? (
+                <div>
+                  <div className={styles.fieldLabel}>挪到日期</div>
+                  <DatePicker
+                    value={detailDraft.deferred_to_date}
+                    onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, deferred_to_date: value } : prev))}
+                    style={{ width: '100%' }}
+                    placeholder="不选则留在当天后续处理"
+                  />
+                </div>
+              ) : null}
+              <Input.TextArea
+                rows={3}
+                value={detailDraft.skip_reason}
+                onChange={(e) => setDetailDraft((prev) => (prev ? { ...prev, skip_reason: e.target.value } : prev))}
+                placeholder="例如：今天不检查 / 下次退房再修 / 暂不跟清洁走"
               />
             </div>
-            {inspectionPlanMode === 'deferred' ? (
-              <div>
-                <div className={styles.fieldLabel}>检查日期</div>
-                <DatePicker value={inspectionPlanDate} onChange={(v) => setInspectionPlanDate(v)} style={{ width: '100%' }} />
-              </div>
-            ) : null}
-            {(inspectionPlanMode === 'same_day' || inspectionPlanMode === 'deferred') ? (
-              <div>
-                <div className={styles.fieldLabel}>检查人员（可选）</div>
-                <Select
-                  allowClear
-                  showSearch
-                  optionFilterProp="label"
-                  value={inspectionPlanInspectorId || undefined}
-                  onChange={(v) => setInspectionPlanInspectorId(v ? String(v) : null)}
-                  style={{ width: '100%' }}
-                  options={activeInspectors.map((s) => ({ value: s.id, label: s.name }))}
-                />
-              </div>
-            ) : null}
           </Space>
         ) : null}
       </Modal>
 
       <Modal
         open={createOpen}
-        title={createTitle}
+        title="新增线下任务"
         okText="创建"
         confirmLoading={createLoading}
         onOk={() => submitCreate().catch(() => {})}
@@ -1931,17 +1671,13 @@ export default function TaskCenterPage() {
           <Space direction="vertical" style={{ width: '100%' }}>
             <div>
               <div className={styles.fieldLabel}>日期</div>
-              <DatePicker
-                value={offlineCreate.date}
-                onChange={(v) => v && setOfflineCreate((p) => (p ? { ...p, date: v } : p))}
-                style={{ width: '100%' }}
-              />
+              <DatePicker value={offlineCreate.date} onChange={(value) => value && setOfflineCreate((prev) => (prev ? { ...prev, date: value } : prev))} style={{ width: '100%' }} />
             </div>
             <div>
               <div className={styles.fieldLabel}>任务类型</div>
               <Select
                 value={offlineCreate.task_type}
-                onChange={(v) => setOfflineCreate((p) => (p ? { ...p, task_type: v } : p))}
+                onChange={(value) => setOfflineCreate((prev) => (prev ? { ...prev, task_type: value } : prev))}
                 style={{ width: '100%' }}
                 options={[
                   { label: '房源任务', value: 'property' },
@@ -1957,33 +1693,25 @@ export default function TaskCenterPage() {
                   showSearch
                   optionFilterProp="label"
                   value={offlineCreate.property_id || undefined}
-                  onChange={(v) => setOfflineCreate((p) => (p ? { ...p, property_id: v ? String(v) : null } : p))}
+                  onChange={(value) => setOfflineCreate((prev) => (prev ? { ...prev, property_id: value ? String(value) : null } : prev))}
                   style={{ width: '100%' }}
-                  options={properties.map((p) => ({ value: p.id, label: p.code || p.address || p.id }))}
+                  options={propertyOptions}
                 />
               </div>
             ) : null}
             <div>
-              <div className={styles.fieldLabel}>标题</div>
-              <Input
-                value={offlineCreate.title}
-                onChange={(e) => setOfflineCreate((p) => (p ? { ...p, title: e.target.value } : p))}
-                placeholder="例如：采购清洁剂 / 更换床单 / 跟进维修"
-              />
+              <div className={styles.fieldLabel}>任务标题</div>
+              <Input value={offlineCreate.title} onChange={(e) => setOfflineCreate((prev) => (prev ? { ...prev, title: e.target.value } : prev))} />
             </div>
             <div>
-              <div className={styles.fieldLabel}>内容</div>
-              <Input.TextArea
-                rows={4}
-                value={offlineCreate.content}
-                onChange={(e) => setOfflineCreate((p) => (p ? { ...p, content: e.target.value } : p))}
-              />
+              <div className={styles.fieldLabel}>任务详情</div>
+              <Input.TextArea rows={4} value={offlineCreate.content} onChange={(e) => setOfflineCreate((prev) => (prev ? { ...prev, content: e.target.value } : prev))} />
             </div>
             <div>
               <div className={styles.fieldLabel}>紧急程度</div>
               <Select
                 value={offlineCreate.urgency}
-                onChange={(v) => setOfflineCreate((p) => (p ? { ...p, urgency: v } : p))}
+                onChange={(value) => setOfflineCreate((prev) => (prev ? { ...prev, urgency: value } : prev))}
                 style={{ width: '100%' }}
                 options={[
                   { label: '低', value: 'low' },
@@ -1994,18 +1722,17 @@ export default function TaskCenterPage() {
               />
             </div>
             <div>
-              <div className={styles.fieldLabel}>分配给</div>
+              <div className={styles.fieldLabel}>执行人</div>
               <Select
                 allowClear
                 showSearch
                 optionFilterProp="label"
                 value={offlineCreate.assignee_id || undefined}
-                onChange={(v) => setOfflineCreate((p) => (p ? { ...p, assignee_id: v ? String(v) : null } : p))}
+                onChange={(value) => setOfflineCreate((prev) => (prev ? { ...prev, assignee_id: value ? String(value) : null } : prev))}
                 style={{ width: '100%' }}
-                options={staffOptionsAll}
+                options={allStaffOptions}
               />
             </div>
-            <Alert type="info" showIcon message="提示：任务可在任务中心拖拽分配；线下任务状态请在每日清洁中显式修改。" />
           </Space>
         ) : null}
       </Modal>
