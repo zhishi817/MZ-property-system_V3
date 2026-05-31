@@ -388,9 +388,9 @@ export default function TaskCenterPage() {
               return text.includes(filterQuery)
             }),
           }))
-          .filter((subrow) => subrow.tasks.length > 0 || (!filterQuery && row.row_type === 'final_group')),
+          .filter((subrow) => subrow.tasks.length > 0),
       }))
-      .filter((row) => row.subrows.some((subrow) => subrow.tasks.length > 0) || (!filterQuery && row.row_type === 'final_group'))
+      .filter((row) => row.subrows.some((subrow) => subrow.tasks.length > 0))
   }, [allRows, filterQuery])
 
   const allBoardTasks = useMemo(() => allRows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks)), [allRows])
@@ -909,7 +909,7 @@ export default function TaskCenterPage() {
     const tasks = row.subrows.flatMap((subrow) => subrow.tasks)
     const inspectionIds = Array.from(new Set(
       tasks
-        .filter((task) => task.task_source === 'cleaning' && (task.can_configure_inspection || task.deferred_inspection_view))
+        .filter((task) => task.task_source === 'cleaning' && (task.can_configure_inspection || task.deferred_inspection_view || isCheckinOnlyCleaningTask(task)))
         .flatMap((task) => task.task_ids),
     ))
     const workIds = tasks.filter((task) => task.task_source === 'work').map((task) => task.task_id)
@@ -1317,20 +1317,6 @@ export default function TaskCenterPage() {
           bottomWorkTasks.push(...workTasks)
         }
       }
-      if (!rowLines.length && row.row_type === 'final_group' && !filteringActive) {
-        globalLineIndex += 1
-        rowLines.push({
-          line_key: `${row.row_key}:line:empty:1`,
-          row_key: row.row_key,
-          row_type: row.row_type,
-          assignments: row.assignments || {},
-          tasks: [],
-          start_index: 0,
-          line_index: globalLineIndex,
-          inspectionIds: [],
-          workIds: [],
-        })
-      }
       if (rowLines.length) {
         output.push({
           row_key: row.row_key,
@@ -1380,7 +1366,7 @@ export default function TaskCenterPage() {
         || a.row_key.localeCompare(b.row_key)
     })
     return output
-  }, [allRows, filteredRows, filteringActive, rowTaskCollections])
+  }, [allRows, filteredRows, rowTaskCollections])
 
   const renderLine = useCallback((line: TaskCenterLine) => {
     const dragKey = line.line_key
