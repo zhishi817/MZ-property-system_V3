@@ -569,7 +569,7 @@ router.get('/history', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manag
 const patchTaskSchema = z.object({
   property_id: z.string().nullable().optional(),
   task_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  status: z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled']).optional(),
+  status: z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled', 'keys_hung']).optional(),
   assignee_id: z.union([z.string().min(1), z.null()]).optional(),
   cleaner_id: z.union([z.string().min(1), z.null()]).optional(),
   inspector_id: z.union([z.string().min(1), z.null()]).optional(),
@@ -815,7 +815,7 @@ const createTaskSchema = z.object({
   create_mode: z.enum(['checkout', 'checkin', 'turnover', 'stayover']).optional(),
   task_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   property_id: z.string().min(1),
-  status: z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled']).optional(),
+  status: z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled', 'keys_hung']).optional(),
   cleaner_id: z.union([z.string().min(1), z.null()]).optional(),
   inspector_id: z.union([z.string().min(1), z.null()]).optional(),
   inspection_mode: z.enum(['pending_decision', 'same_day', 'self_complete', 'deferred']).optional().nullable(),

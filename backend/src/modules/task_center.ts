@@ -16,6 +16,11 @@ const DEFAULT_SUMMARY_CHECKOUT_TIME = '10am'
 const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm'
 const DEFERRED_ROW_KEY = 'deferred:holding'
 const DEFERRED_ROW_TITLE = '未安排区域 / 后续处理'
+const DEFERRED_INSPECTION_ROW_KEY = 'deferred:inspection'
+const DEFERRED_INSPECTION_ROW_TITLE = '延后检查'
+const COMPLETED_ROW_KEY = 'group:completed'
+const COMPLETED_ROW_TITLE = '已完成'
+const WORK_TASK_VISIBILITY_START = '2026-06-01'
 
 type BoardTask = {
   item_key: string
@@ -114,7 +119,7 @@ function normId(v: any): string | null {
 
 function normStatus(v: any): string {
   const s = String(v ?? '').trim().toLowerCase()
-  if (s === 'done' || s === 'completed') return 'done'
+  if (s === 'done' || s === 'completed' || s === 'keys_hung' || s === 'ready') return 'done'
   if (s === 'cancelled' || s === 'canceled') return 'cancelled'
   if (s === 'in_progress') return 'in_progress'
   if (s === 'assigned') return 'assigned'
@@ -182,6 +187,26 @@ function workSummaryText(raw: string | null | undefined): string {
     }
   } catch {}
   return s
+}
+
+function workTaskDisplayText(row: any): { title: string; detail: string } {
+  const region = text(row?.property_region)
+  const propertyCode = text(row?.property_code) || text(row?.property_id)
+  const rawTitle = text(row?.title)
+  const rawDetail = workSummaryText(row?.summary)
+  const workRef = text(row?.id)
+  const title = propertyCode
+    ? (region ? `${region} ${propertyCode}` : propertyCode)
+    : (rawTitle || workRef || '线下任务')
+  const detailParts = [
+    propertyCode && rawTitle && rawTitle !== title ? rawTitle : '',
+    rawDetail && rawDetail !== rawTitle ? rawDetail : '',
+    propertyCode && workRef && workRef !== title && workRef !== rawTitle ? workRef : '',
+  ].filter(Boolean)
+  return {
+    title,
+    detail: detailParts.join('，') || rawDetail || rawTitle || workRef || '线下任务',
+  }
 }
 
 async function ensureWorkTasksTable() {
@@ -649,7 +674,7 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
     await ensureWorkTasksTable()
     const doneSet = ['done', 'completed', 'cancelled', 'canceled']
     const where: string[] = []
-    const vals: any[] = [date, doneSet]
+    const vals: any[] = [date, doneSet, WORK_TASK_VISIBILITY_START]
     where.push(`w.scheduled_date = $1::date`)
     if (includeOverdue) where.push(`(w.scheduled_date IS NOT NULL AND w.scheduled_date < $1::date)`)
     if (includeUnscheduled) where.push(`(w.scheduled_date IS NULL)`)
@@ -662,11 +687,15 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
       FROM work_tasks w
       LEFT JOIN properties p_id ON (p_id.id::text) = (w.property_id::text)
       LEFT JOIN properties p_code ON upper(p_code.code) = upper(w.property_id::text)
-      WHERE w.status <> ALL($2::text[]) AND (${where.join(' OR ')})
+      WHERE w.status <> ALL($2::text[])
+        AND COALESCE(w.created_at::date, w.scheduled_date, $1::date) >= $3::date
+        AND (${where.join(' OR ')})
       ORDER BY COALESCE(w.scheduled_date, $1::date) ASC, w.urgency DESC, w.updated_at DESC, w.id DESC
     `
     const r = await pgPool.query(sql, vals)
-    return (r?.rows || []).map((row: any) => ({
+    return (r?.rows || []).map((row: any) => {
+      const display = workTaskDisplayText(row)
+      return {
       item_key: `work:${String(row.id)}`,
       task_source: 'work' as const,
       task_id: String(row.id),
@@ -679,18 +708,20 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
       property_region: row.property_region ? String(row.property_region) : null,
       status: normStatus(row.status),
       urgency: normUrgency(row.urgency),
-      title: text(row.title) || '线下任务',
-      detail: workSummaryText(row.summary),
+      title: display.title,
+      detail: display.detail,
       summary: row.summary != null ? String(row.summary || '') : null,
       task_date: row.scheduled_date ? String(row.scheduled_date).slice(0, 10) : date,
       assignee_id: row.assignee_id ? String(row.assignee_id) : null,
       cleaner_id: null,
       inspector_id: null,
-    }))
+    }})
   }
   const rows = (((db as any).workTasks || []) as any[]).slice()
   return rows
     .filter((row: any) => {
+      const created = dayOnly(row.created_at || row.updated_at || row.scheduled_date)
+      if (created && created < WORK_TASK_VISIBILITY_START) return false
       const status = normStatus(row.status)
       if (status === 'done' || status === 'cancelled') return false
       const scheduled = dayOnly(row.scheduled_date)
@@ -700,7 +731,9 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
       if (includeFuture && scheduled && scheduled > date) return true
       return false
     })
-    .map((row: any) => ({
+    .map((row: any) => {
+      const display = workTaskDisplayText(row)
+      return {
       item_key: `work:${String(row.id)}`,
       task_source: 'work' as const,
       task_id: String(row.id),
@@ -713,14 +746,14 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
       property_region: null,
       status: normStatus(row.status),
       urgency: normUrgency(row.urgency),
-      title: text(row.title) || '线下任务',
-      detail: workSummaryText(row.summary),
+      title: display.title,
+      detail: display.detail,
       summary: row.summary != null ? String(row.summary || '') : null,
       task_date: dayOnly(row.scheduled_date) || date,
       assignee_id: row.assignee_id ? String(row.assignee_id) : null,
       cleaner_id: null,
       inspector_id: null,
-    }))
+    }})
 }
 
 async function loadTaskFlags(date: string) {
@@ -820,6 +853,8 @@ async function loadBoardItems(date: string, mode: BoardMode) {
 }
 
 function defaultRegionRowKey(task: BoardTask) {
+  if (task.deferred_inspection_view) return DEFERRED_INSPECTION_ROW_KEY
+  if (task.task_source === 'cleaning' && isCompletedBoardStatus(task.status)) return COMPLETED_ROW_KEY
   const region = text(task.property_region)
   return region ? `region:${region}` : DEFERRED_ROW_KEY
 }
@@ -834,6 +869,8 @@ function boardTaskKey(taskSource: TaskSource, taskId: string) {
 
 function rowTitleFromKey(rowKey: string) {
   if (rowKey === DEFERRED_ROW_KEY) return DEFERRED_ROW_TITLE
+  if (rowKey === DEFERRED_INSPECTION_ROW_KEY) return DEFERRED_INSPECTION_ROW_TITLE
+  if (rowKey === COMPLETED_ROW_KEY) return COMPLETED_ROW_TITLE
   if (rowKey.startsWith('region:')) return rowKey.slice('region:'.length) || '未分区'
   if (rowKey.startsWith('group:')) return '新增分组'
   return rowKey
@@ -844,11 +881,20 @@ function sortRows(rows: BoardRow[]) {
   let finalIndex = 1
   for (const row of rows) {
     if (row.row_type !== 'final_group') continue
+    if (row.row_key === COMPLETED_ROW_KEY) {
+      row.row_title = COMPLETED_ROW_TITLE
+      continue
+    }
     if (!text(row.row_title) || row.row_title === '新增分组') {
       row.row_title = `第${finalIndex}组`
     }
     finalIndex += 1
   }
+}
+
+function isCompletedBoardStatus(status: any) {
+  const s = text(status).toLowerCase()
+  return s === 'done' || s === 'completed' || s === 'ready' || s === 'keys_hung'
 }
 
 function buildRows(params: {
@@ -860,6 +906,7 @@ function buildRows(params: {
 }) {
   const rows = new Map<string, BoardRow>()
   const deferredTasks: BoardTask[] = []
+  const deferredInspectionTasks: BoardTask[] = []
   for (const task of params.tasks) {
     const rawIds = task.task_source === 'cleaning' && task.deferred_inspection_view ? task.task_ids : [task.task_id]
     const matchFlags = rawIds
@@ -869,11 +916,11 @@ function buildRows(params: {
     task.temporarily_skipped = flag?.temporarily_skipped === true
     task.skip_reason = flag?.skip_reason || null
     task.skip_bucket = flag?.bucket || null
-    const shouldDefer =
-      task.temporarily_skipped ||
-      task.deferred_inspection_view === true ||
-      !text(task.property_region) ||
-      text(task.skip_bucket) === 'deferred'
+    if (task.deferred_inspection_view === true) {
+      deferredInspectionTasks.push(task)
+      continue
+    }
+    const shouldDefer = task.temporarily_skipped || !text(task.property_region) || text(task.skip_bucket) === 'deferred'
     if (shouldDefer) {
       deferredTasks.push(task)
       continue
@@ -921,8 +968,21 @@ function buildRows(params: {
       tasks: deferredTasks,
     }],
   }
+  const deferredInspectionMeta = params.rowMetas.get(DEFERRED_INSPECTION_ROW_KEY)
+  const deferredInspectionRow: BoardRow = {
+    row_key: DEFERRED_INSPECTION_ROW_KEY,
+    row_title: deferredInspectionMeta?.row_title || DEFERRED_INSPECTION_ROW_TITLE,
+    row_type: 'deferred',
+    row_order: deferredInspectionMeta?.row_order ?? 9998,
+    assignments: deferredInspectionMeta?.assignments || {},
+    subrow_order: deferredInspectionMeta?.subrow_order || [defaultSubrowKey()],
+    subrows: [{
+      subrow_key: defaultSubrowKey(),
+      tasks: deferredInspectionTasks,
+    }],
+  }
   for (const rowMeta of params.rowMetas.values()) {
-    if (rowMeta.row_key === DEFERRED_ROW_KEY) continue
+    if (rowMeta.row_key === DEFERRED_ROW_KEY || rowMeta.row_key === DEFERRED_INSPECTION_ROW_KEY) continue
     if (rows.has(rowMeta.row_key)) continue
     const subrowKeys = rowMeta.subrow_order.length ? rowMeta.subrow_order : [defaultSubrowKey()]
     rows.set(rowMeta.row_key, {
@@ -961,7 +1021,7 @@ function buildRows(params: {
     }
   }
   sortRows(boardRows)
-  return { rows: [...boardRows, deferredRow] }
+  return { rows: [...boardRows, deferredInspectionRow, deferredRow] }
 }
 
 function buildEntryReadiness(tasks: BoardTask[]) {
@@ -1135,7 +1195,7 @@ router.post('/layout', requirePerm('cleaning.task.assign'), async (req, res) => 
   for (const subrow of subrows) {
     const hit = rowMap.get(subrow.row_key) || {
       row_key: subrow.row_key,
-      row_type: subrow.row_key === DEFERRED_ROW_KEY ? 'deferred' : (subrow.row_key.startsWith('group:') ? 'final_group' : 'region'),
+      row_type: (subrow.row_key === DEFERRED_ROW_KEY || subrow.row_key === DEFERRED_INSPECTION_ROW_KEY) ? 'deferred' : (subrow.row_key.startsWith('group:') ? 'final_group' : 'region'),
       row_title: rowTitleFromKey(subrow.row_key),
       row_order: undefined,
       subrow_order: [],
@@ -1223,7 +1283,7 @@ router.post('/row-assignments', requirePerm('cleaning.task.assign'), async (req,
           payload.date,
           mode,
           payload.row_key,
-          payload.row_type || (payload.row_key === DEFERRED_ROW_KEY ? 'deferred' : (payload.row_key.startsWith('group:') ? 'final_group' : 'region')),
+          payload.row_type || ((payload.row_key === DEFERRED_ROW_KEY || payload.row_key === DEFERRED_INSPECTION_ROW_KEY) ? 'deferred' : (payload.row_key.startsWith('group:') ? 'final_group' : 'region')),
           payload.row_title || rowTitleFromKey(payload.row_key),
           Number(payload.row_order || 0),
           JSON.stringify(payload.assignments || {}),
@@ -1236,7 +1296,7 @@ router.post('/row-assignments', requirePerm('cleaning.task.assign'), async (req,
     memoryBoardRows.set(`${payload.date}|${mode}|${payload.row_key}`, {
       row_key: payload.row_key,
       board_mode: mode,
-      row_type: payload.row_type || (payload.row_key === DEFERRED_ROW_KEY ? 'deferred' : (payload.row_key.startsWith('group:') ? 'final_group' : 'region')),
+      row_type: payload.row_type || ((payload.row_key === DEFERRED_ROW_KEY || payload.row_key === DEFERRED_INSPECTION_ROW_KEY) ? 'deferred' : (payload.row_key.startsWith('group:') ? 'final_group' : 'region')),
       row_title: payload.row_title || rowTitleFromKey(payload.row_key),
       row_order: Number(payload.row_order || 0),
       assignments: payload.assignments || {},
