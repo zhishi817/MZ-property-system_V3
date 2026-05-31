@@ -526,7 +526,7 @@ async function loadCleaningTasks(date: string): Promise<BoardTask[]> {
       })
       const suppressBaseTaskToday =
         inspectionMode === 'deferred' &&
-        projectionDate === date &&
+        d === date &&
         rawType === 'checkout_clean'
       if (d === date && !suppressBaseTaskToday) {
         const sum = summaryText({

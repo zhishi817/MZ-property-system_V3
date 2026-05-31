@@ -388,9 +388,9 @@ export default function TaskCenterPage() {
               return text.includes(filterQuery)
             }),
           }))
-          .filter((subrow) => subrow.tasks.length > 0 || row.row_type === 'deferred' || (!filterQuery && row.row_type === 'final_group')),
+          .filter((subrow) => subrow.tasks.length > 0),
       }))
-      .filter((row) => row.subrows.some((subrow) => subrow.tasks.length > 0) || row.row_type === 'deferred' || (!filterQuery && row.row_type === 'final_group'))
+      .filter((row) => row.subrows.some((subrow) => subrow.tasks.length > 0))
   }, [allRows, filterQuery])
 
   const allBoardTasks = useMemo(() => allRows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks)), [allRows])
@@ -754,6 +754,7 @@ export default function TaskCenterPage() {
 
   const rowsAfterTaskDetail = useCallback((rows: TaskCenterRow[], task: TaskCenterTask, draft: TaskDetailDraft) => {
     const nextStatus = nextCleaningDetailStatus(task, draft)
+    const nextInspectionMode = draft.keys_hung ? 'self_complete' : draft.inspection_mode
     const nextRows = rows.map((row) => ({
       ...row,
       subrows: row.subrows.map((subrow) => ({
@@ -769,7 +770,7 @@ export default function TaskCenterPage() {
             inspector_id: task.task_source === 'cleaning' ? (draft.inspector_id || null) : item.inspector_id,
             assignee_id: task.task_source === 'work' ? (draft.assignee_id || null) : item.assignee_id,
             status: task.task_source === 'cleaning' ? nextStatus : item.status,
-            inspection_mode: task.task_source === 'cleaning' ? (draft.keys_hung ? 'self_complete' : draft.inspection_mode) : item.inspection_mode,
+            inspection_mode: task.task_source === 'cleaning' ? nextInspectionMode : item.inspection_mode,
             inspection_due_date: task.task_source === 'cleaning'
               ? ((draft.keys_hung || draft.inspection_mode !== 'deferred') ? null : (draft.inspection_due_date ? draft.inspection_due_date.format('YYYY-MM-DD') : null))
               : item.inspection_due_date,
@@ -801,6 +802,15 @@ export default function TaskCenterPage() {
       if (movedTask) break
     }
     if (!movedTask) return nextRows
+    if (task.task_source === 'cleaning' && nextInspectionMode === 'deferred') {
+      const dueDate = draft.inspection_due_date ? draft.inspection_due_date.format('YYYY-MM-DD') : ''
+      if (!dueDate || dueDate !== dateStr) return nextRows
+      const targetRow = ensureBoardRow(nextRows, DEFERRED_INSPECTION_ROW_KEY)
+      const targetSubrow = targetRow.subrows[0]
+      if (!targetSubrow) return nextRows
+      targetSubrow.tasks.push(movedTask)
+      return nextRows
+    }
     const targetRowKey = defaultBoardRowKeyForTask(movedTask)
     const targetRow = ensureBoardRow(nextRows, targetRowKey)
     const targetSubrow = targetRow.subrows[0]
@@ -810,7 +820,7 @@ export default function TaskCenterPage() {
       targetSubrow.tasks.sort((a, b) => a.item_key.localeCompare(b.item_key))
     }
     return nextRows
-  }, [defaultBoardRowKeyForTask, ensureBoardRow, nextCleaningDetailStatus])
+  }, [dateStr, defaultBoardRowKeyForTask, ensureBoardRow, nextCleaningDetailStatus])
 
   const applyTaskDetailLocally = useCallback((task: TaskCenterTask, draft: TaskDetailDraft) => {
     setDayData((prev) => {
@@ -835,6 +845,12 @@ export default function TaskCenterPage() {
       : null
     const shouldRescheduleWork = detailTask.task_source === 'work' && !!rescheduleDate
     const keysHungChanged = detailTask.task_source === 'cleaning' && detailDraft.keys_hung !== isKeysHungStatus(detailTask.status)
+    const inspectionChanged =
+      detailTask.task_source === 'cleaning' && (
+        String(detailTask.inspection_mode || 'pending_decision') !== String((detailDraft.keys_hung ? 'self_complete' : detailDraft.inspection_mode) || 'pending_decision') ||
+        String(detailTask.inspection_due_date || '') !== String(detailDraft.inspection_mode === 'deferred' && detailDraft.inspection_due_date ? detailDraft.inspection_due_date.format('YYYY-MM-DD') : '') ||
+        String(detailTask.inspector_id || '') !== String((detailDraft.keys_hung || detailDraft.inspection_mode === 'pending_decision' || detailDraft.inspection_mode === 'self_complete') ? '' : (detailDraft.inspector_id || ''))
+      )
     const pendingKeys = taskPendingKeys(detailTask)
     const previousRows = cloneRows(allRows)
     const skipChanged =
@@ -871,7 +887,7 @@ export default function TaskCenterPage() {
           status: shouldRescheduleWork ? 'todo' : undefined,
         })
       }
-      if (skipChanged || keysHungChanged) {
+      if (skipChanged || keysHungChanged || inspectionChanged) {
         await saveTaskFlags(
           detailTask,
           shouldRescheduleWork ? false : detailDraft.temporarily_skipped,
@@ -893,7 +909,7 @@ export default function TaskCenterPage() {
     const tasks = row.subrows.flatMap((subrow) => subrow.tasks)
     const inspectionIds = Array.from(new Set(
       tasks
-        .filter((task) => task.task_source === 'cleaning' && (task.can_configure_inspection || task.deferred_inspection_view))
+        .filter((task) => task.task_source === 'cleaning' && (task.can_configure_inspection || task.deferred_inspection_view || isCheckinOnlyCleaningTask(task)))
         .flatMap((task) => task.task_ids),
     ))
     const workIds = tasks.filter((task) => task.task_source === 'work').map((task) => task.task_id)
@@ -1271,7 +1287,7 @@ export default function TaskCenterPage() {
       const collections = rowTaskCollections(fullRow)
       const rowLines: TaskCenterLine[] = []
       const pushBucket = (bucketTasks: TaskCenterTask[], target: TaskCenterLine[], kind: 'cleaning' | 'work' | 'deferred') => {
-        if (!bucketTasks.length && kind !== 'deferred') return
+        if (!bucketTasks.length) return
         const lineCount = Math.max(1, Math.ceil(bucketTasks.length / TASKS_PER_LINE))
         for (let index = 0; index < lineCount; index += 1) {
           globalLineIndex += 1
@@ -1300,20 +1316,6 @@ export default function TaskCenterPage() {
         } else if (workTasks.length) {
           bottomWorkTasks.push(...workTasks)
         }
-      }
-      if (!rowLines.length && row.row_type === 'final_group' && !filteringActive) {
-        globalLineIndex += 1
-        rowLines.push({
-          line_key: `${row.row_key}:line:empty:1`,
-          row_key: row.row_key,
-          row_type: row.row_type,
-          assignments: row.assignments || {},
-          tasks: [],
-          start_index: 0,
-          line_index: globalLineIndex,
-          inspectionIds: [],
-          workIds: [],
-        })
       }
       if (rowLines.length) {
         output.push({
@@ -1364,7 +1366,7 @@ export default function TaskCenterPage() {
         || a.row_key.localeCompare(b.row_key)
     })
     return output
-  }, [allRows, filteredRows, filteringActive, rowTaskCollections])
+  }, [allRows, filteredRows, rowTaskCollections])
 
   const renderLine = useCallback((line: TaskCenterLine) => {
     const dragKey = line.line_key
