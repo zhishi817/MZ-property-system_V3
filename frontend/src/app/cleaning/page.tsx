@@ -1052,6 +1052,21 @@ export default function CleaningPage() {
     return out
   }, [])
 
+  const editModeText = useCallback((form: EditTaskForm) => {
+    if (form.mode === 'stayover') return '入住中清洁'
+    const hasCheckout = form.checkout_ids.length > 0 || form.pending_add_checkout
+    const hasCheckin = form.checkin_ids.length > 0 || form.pending_add_checkin
+    if (hasCheckout && hasCheckin) return '退房入住'
+    if (hasCheckout) return '退房'
+    if (hasCheckin) return '入住'
+    return '清洁任务'
+  }, [])
+
+  const editTaskHeadline = useCallback((form: EditTaskForm) => {
+    const room = propertyLabelById(form.property_id) || '未绑定房源'
+    return `${room}`
+  }, [propertyLabelById])
+
   const openManualCreate = useCallback(() => {
     setManualCreateForm({
       area: null,
@@ -1737,6 +1752,7 @@ export default function CleaningPage() {
         title="编辑清洁任务"
         width={860}
         placement="right"
+        className={styles.cleaningEditDrawer}
         onClose={() => { setEditOpen(false); setEditForm(null) }}
         footer={
           <div style={{ textAlign: 'right' }}>
@@ -1748,68 +1764,100 @@ export default function CleaningPage() {
         }
       >
         {editForm ? (
-          <Form layout="vertical">
-            <Divider orientation="left">基础信息</Divider>
-            <Row gutter={[16, 16]}>
-              <Col span={8}>
-                <Form.Item label="清洁日期">
-                  <DatePicker value={editForm.task_date} onChange={(v) => v && setEditForm((p) => (p ? { ...p, task_date: v } : p))} style={{ width: '100%' }} />
-                </Form.Item>
-              </Col>
-              <Col span={8}>
-                <Form.Item label="状态">
-                  <Select value={editForm.status} onChange={(v) => setEditForm((p) => (p ? { ...p, status: v } : p))} style={{ width: '100%' }} options={statusOptions} />
-                </Form.Item>
-              </Col>
-              <Col span={12}>
-                <Form.Item label="清洁人员">
-                  <Select
-                    allowClear
-                    showSearch
-                    optionFilterProp="label"
-                    value={editForm.cleaner_id || undefined}
-                    onChange={(v) => setEditForm((p) => (p ? { ...p, cleaner_id: v ? String(v) : null } : p))}
-                    style={{ width: '100%' }}
-                    options={cleanerOptions}
-                  />
-                </Form.Item>
-              </Col>
-              <Col span={12}>
-                <Form.Item label="检查人员">
-                  <Select
-                    allowClear
-                    showSearch
-                    optionFilterProp="label"
-                    value={editForm.inspector_id || undefined}
-                    onChange={(v) => setEditForm((p) => (p ? { ...p, inspector_id: v ? String(v) : null } : p))}
-                    style={{ width: '100%' }}
-                    options={inspectorOptions}
-                  />
-                </Form.Item>
-              </Col>
-              {editForm.mode === 'stayover' ? (
-                <Col span={12}>
-                  <Form.Item label="清洁时间">
+          <Form layout="vertical" className={styles.cleaningEditForm}>
+            <div className={styles.cleaningEditHero}>
+              <div className={styles.cleaningEditHeroMain}>
+                <div className={styles.cleaningEditHeroEyebrow}>任务摘要</div>
+                <div className={styles.cleaningEditHeroTitle}>{editTaskHeadline(editForm)}</div>
+                <div className={styles.cleaningEditHeroMeta}>
+                  <span>{editForm.task_date.format('YYYY-MM-DD')}</span>
+                  <span>{editModeText(editForm)}</span>
+                  {editForm.mode !== 'stayover' && editForm.checkin_task_date && !editForm.checkin_task_date.isSame(editForm.task_date, 'day') ? (
+                    <span>入住已改到 {editForm.checkin_task_date.format('YYYY-MM-DD')}</span>
+                  ) : null}
+                </div>
+              </div>
+              <div className={styles.cleaningEditHeroChips}>
+                <span className={styles.cleaningEditChip}>{statusText(editForm.status)}</span>
+                {!editForm.auto_sync_enabled ? <span className={`${styles.cleaningEditChip} ${styles.cleaningEditChipWarn}`}>自动同步已锁定</span> : null}
+                {editForm.mode === 'stayover' ? <span className={`${styles.cleaningEditChip} ${styles.cleaningEditChipSoft}`}>仅清洁安排</span> : null}
+              </div>
+            </div>
+
+            <div className={styles.cleaningEditSection}>
+              <div className={styles.cleaningEditSectionHead}>
+                <div>
+                  <div className={styles.cleaningEditSectionTitle}>基础信息</div>
+                  <div className={styles.cleaningEditSectionHint}>先确认日期、状态和执行人员，下面再处理退房或入住细节。</div>
+                </div>
+              </div>
+              <Row gutter={[16, 16]}>
+                <Col xs={24} md={12} lg={8}>
+                  <Form.Item label="清洁日期">
+                    <DatePicker value={editForm.task_date} onChange={(v) => v && setEditForm((p) => (p ? { ...p, task_date: v } : p))} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={12} lg={8}>
+                  <Form.Item label="状态">
+                    <Select value={editForm.status} onChange={(v) => setEditForm((p) => (p ? { ...p, status: v } : p))} style={{ width: '100%' }} options={statusOptions} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={12}>
+                  <Form.Item label="清洁人员">
                     <Select
                       allowClear
                       showSearch
                       optionFilterProp="label"
-                      value={editForm.checkin_time || undefined}
-                      onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
+                      value={editForm.cleaner_id || undefined}
+                      onChange={(v) => setEditForm((p) => (p ? { ...p, cleaner_id: v ? String(v) : null } : p))}
                       style={{ width: '100%' }}
-                      options={timeOptions}
+                      options={cleanerOptions}
                     />
                   </Form.Item>
                 </Col>
-              ) : null}
-            </Row>
+                <Col xs={24} md={12}>
+                  <Form.Item label="检查人员">
+                    <Select
+                      allowClear
+                      showSearch
+                      optionFilterProp="label"
+                      value={editForm.inspector_id || undefined}
+                      onChange={(v) => setEditForm((p) => (p ? { ...p, inspector_id: v ? String(v) : null } : p))}
+                      style={{ width: '100%' }}
+                      options={inspectorOptions}
+                    />
+                  </Form.Item>
+                </Col>
+                {editForm.mode === 'stayover' ? (
+                  <Col xs={24} md={12}>
+                    <Form.Item label="清洁时间">
+                      <Select
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        value={editForm.checkin_time || undefined}
+                        onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
+                        style={{ width: '100%' }}
+                        options={timeOptions}
+                      />
+                    </Form.Item>
+                  </Col>
+                ) : null}
+              </Row>
+            </div>
 
             {editForm.mode !== 'stayover' ? (
               <>
-                <Divider orientation="left">退房</Divider>
-                <Row gutter={[16, 16]}>
-                  <Col span={24}>
-                    <Form.Item label="新增/取消">
+                <div className={styles.cleaningEditSection}>
+                  <div className={styles.cleaningEditSectionHead}>
+                    <div>
+                      <div className={styles.cleaningEditSectionTitle}>退房安排</div>
+                      <div className={styles.cleaningEditSectionHint}>
+                        {editForm.checkout_ids.length ? `当前已有 ${editForm.checkout_ids.length} 个退房任务。` : '当前没有退房任务。'}
+                        {editForm.pending_add_checkout ? ' 保存后会新增退房。' : ''}
+                      </div>
+                    </div>
+                    <div className={styles.cleaningEditSectionActions}>
                       {editForm.checkout_ids.length ? (
                         <Button
                           danger
@@ -1840,57 +1888,61 @@ export default function CleaningPage() {
                           {editForm.pending_add_checkout ? '取消新增退房' : '新增退房'}
                         </Button>
                       )}
-                    </Form.Item>
-                  </Col>
+                    </div>
+                  </div>
                   {editForm.pending_add_checkout ? (
-                    <Col span={24}>
-                      <Alert type="info" showIcon message="保存时将新增退房任务" />
-                    </Col>
+                    <Alert type="info" showIcon message="保存时将新增退房任务" className={styles.cleaningEditAlert} />
                   ) : null}
                   {!editForm.property_id ? (
-                    <Col span={24}>
-                      <Alert type="warning" showIcon message="该任务缺少 property_id，无法新增退房/入住" />
-                    </Col>
+                    <Alert type="warning" showIcon message="该任务缺少 property_id，无法新增退房/入住" className={styles.cleaningEditAlert} />
                   ) : null}
-                  <Col span={12}>
-                    <Form.Item label="退房密码（旧密码）">
-                      <Input value={editForm.checkout_password} onChange={(e) => setEditForm((p) => (p ? { ...p, checkout_password: e.target.value } : p))} placeholder="退房密码" />
-                    </Form.Item>
-                  </Col>
-                  {editForm.checkout_ids.length || editForm.pending_add_checkout ? (
-                    <Col span={12}>
-                      <Form.Item label="退房时间">
+                  <Row gutter={[16, 16]}>
+                    <Col xs={24} md={12}>
+                      <Form.Item label="退房密码（旧密码）">
+                        <Input value={editForm.checkout_password} onChange={(e) => setEditForm((p) => (p ? { ...p, checkout_password: e.target.value } : p))} placeholder="退房密码" />
+                      </Form.Item>
+                    </Col>
+                    {editForm.checkout_ids.length || editForm.pending_add_checkout ? (
+                      <Col xs={24} md={12}>
+                        <Form.Item label="退房时间">
+                          <Select
+                            allowClear
+                            showSearch
+                            optionFilterProp="label"
+                            value={editForm.checkout_time || undefined}
+                            onChange={(v) => setEditForm((p) => (p ? { ...p, checkout_time: String(v || '') } : p))}
+                            style={{ width: '100%' }}
+                            options={timeOptions}
+                          />
+                        </Form.Item>
+                      </Col>
+                    ) : null}
+                    <Col xs={24} md={12}>
+                      <Form.Item label="需确认已退钥匙套数">
                         <Select
-                          allowClear
-                          showSearch
-                          optionFilterProp="label"
-                          value={editForm.checkout_time || undefined}
-                          onChange={(v) => setEditForm((p) => (p ? { ...p, checkout_time: String(v || '') } : p))}
+                          value={editForm.keys_required_checkout}
+                          onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required_checkout: (Number(v) >= 2 ? 2 : 1) } : p))}
                           style={{ width: '100%' }}
-                          options={timeOptions}
+                          options={[
+                            { label: '1 套', value: 1 },
+                            { label: '2 套', value: 2 },
+                          ]}
                         />
                       </Form.Item>
                     </Col>
-                  ) : null}
-                  <Col span={12}>
-                    <Form.Item label="需确认已退钥匙套数">
-                      <Select
-                        value={editForm.keys_required_checkout}
-                        onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required_checkout: (Number(v) >= 2 ? 2 : 1) } : p))}
-                        style={{ width: '100%' }}
-                        options={[
-                          { label: '1 套', value: 1 },
-                          { label: '2 套', value: 2 },
-                        ]}
-                      />
-                    </Form.Item>
-                  </Col>
-                </Row>
+                  </Row>
+                </div>
 
-                <Divider orientation="left">入住</Divider>
-                <Row gutter={[16, 16]}>
-                  <Col span={12}>
-                    <Form.Item label="新增/取消">
+                <div className={styles.cleaningEditSection}>
+                  <div className={styles.cleaningEditSectionHead}>
+                    <div>
+                      <div className={styles.cleaningEditSectionTitle}>入住安排</div>
+                      <div className={styles.cleaningEditSectionHint}>
+                        {editForm.checkin_ids.length ? `当前已有 ${editForm.checkin_ids.length} 个入住任务。` : '当前没有入住任务。'}
+                        {editForm.pending_add_checkin ? ' 保存后会新增入住。' : ''}
+                      </div>
+                    </div>
+                    <div className={styles.cleaningEditSectionActions}>
                       {editForm.checkin_ids.length ? (
                         <Button
                           danger
@@ -1921,87 +1973,85 @@ export default function CleaningPage() {
                           {editForm.pending_add_checkin ? '取消新增入住' : '新增入住'}
                         </Button>
                       )}
-                    </Form.Item>
-                  </Col>
-                  <Col span={12}>
-                    <Form.Item label="需挂钥匙套数">
-                      <Select
-                        value={editForm.keys_required_checkin}
-                        onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required_checkin: (Number(v) >= 2 ? 2 : 1) } : p))}
-                        style={{ width: '100%' }}
-                        options={[
-                          { label: '1 套', value: 1 },
-                          { label: '2 套', value: 2 },
-                        ]}
-                      />
-                    </Form.Item>
-                  </Col>
+                    </div>
+                  </div>
                   {editForm.pending_add_checkin ? (
-                    <Col span={24}>
-                      <Alert type="info" showIcon message="保存时将新增入住任务" />
-                    </Col>
+                    <Alert type="info" showIcon message="保存时将新增入住任务" className={styles.cleaningEditAlert} />
                   ) : null}
                   {!editForm.property_id ? (
-                    <Col span={24}>
-                      <Alert type="warning" showIcon message="该任务缺少 property_id，无法新增退房/入住" />
+                    <Alert type="warning" showIcon message="该任务缺少 property_id，无法新增退房/入住" className={styles.cleaningEditAlert} />
+                  ) : null}
+                  <Row gutter={[16, 16]}>
+                    <Col xs={24} md={12}>
+                      <Form.Item label="需挂钥匙套数">
+                        <Select
+                          value={editForm.keys_required_checkin}
+                          onChange={(v) => setEditForm((p) => (p ? { ...p, keys_required_checkin: (Number(v) >= 2 ? 2 : 1) } : p))}
+                          style={{ width: '100%' }}
+                          options={[
+                            { label: '1 套', value: 1 },
+                            { label: '2 套', value: 2 },
+                          ]}
+                        />
+                      </Form.Item>
                     </Col>
+                    {editForm.checkin_ids.length || editForm.pending_add_checkin ? (
+                      <>
+                        <Col xs={24} md={12}>
+                          <Form.Item label="入住日期">
+                            <DatePicker value={editForm.checkin_task_date} onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_task_date: v || p.task_date } : p))} style={{ width: '100%' }} />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} md={12}>
+                          <Form.Item label="入住时间">
+                            <Select
+                              allowClear
+                              showSearch
+                              optionFilterProp="label"
+                              value={editForm.checkin_time || undefined}
+                              onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
+                              style={{ width: '100%' }}
+                              options={timeOptions}
+                            />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} md={12}>
+                          <Form.Item label="入住天数">
+                            <InputNumber
+                              style={{ width: '100%' }}
+                              min={0}
+                              placeholder="例如 2"
+                              value={editForm.nights_override ?? undefined}
+                              onChange={(v) => setEditForm((p) => (p ? { ...p, nights_override: v == null ? null : Number(v) } : p))}
+                            />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} md={12}>
+                          <Form.Item label="入住密码（新密码）">
+                            <Input value={editForm.checkin_password} onChange={(e) => setEditForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))} placeholder="入住密码" />
+                          </Form.Item>
+                        </Col>
+                      </>
+                    ) : null}
+                  </Row>
+                  {editForm.checkin_task_date && !editForm.checkin_task_date.isSame(editForm.task_date, 'day') ? (
+                    <Alert type="info" showIcon message="已标记为隔天入住，保存后入住任务会移动到所选日期。" className={styles.cleaningEditAlert} />
                   ) : null}
-                  {editForm.checkin_ids.length || editForm.pending_add_checkin ? (
-                    <>
-                      <Col span={12}>
-                        <Form.Item label="入住日期">
-                          <DatePicker value={editForm.checkin_task_date} onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_task_date: v || p.task_date } : p))} style={{ width: '100%' }} />
-                        </Form.Item>
-                        {editForm.checkin_task_date && !editForm.checkin_task_date.isSame(editForm.task_date, 'day') ? <Alert type="info" showIcon message="已标记为隔天入住（入住任务会移动到所选日期）" /> : null}
-                      </Col>
-                      <Col span={12}>
-                        <Form.Item label="入住时间">
-                          <Select
-                            allowClear
-                            showSearch
-                            optionFilterProp="label"
-                            value={editForm.checkin_time || undefined}
-                            onChange={(v) => setEditForm((p) => (p ? { ...p, checkin_time: String(v || '') } : p))}
-                            style={{ width: '100%' }}
-                            options={timeOptions}
-                          />
-                        </Form.Item>
-                      </Col>
-                      <Col span={12}>
-                        <Form.Item label="入住天数">
-                          <InputNumber
-                            style={{ width: '100%' }}
-                            min={0}
-                            placeholder="例如 2"
-                            value={editForm.nights_override ?? undefined}
-                            onChange={(v) => setEditForm((p) => (p ? { ...p, nights_override: v == null ? null : Number(v) } : p))}
-                          />
-                        </Form.Item>
-                      </Col>
-                      <Col span={12}>
-                        <Form.Item label="入住密码（新密码）">
-                          <Input value={editForm.checkin_password} onChange={(e) => setEditForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))} placeholder="入住密码" />
-                        </Form.Item>
-                      </Col>
-                    </>
-                  ) : null}
-                </Row>
+                </div>
               </>
             ) : null}
 
-            <Divider orientation="left">备注</Divider>
-            <Row gutter={[16, 16]}>
-              <Col span={24}>
-                <Form.Item label="备注">
-                  <Input.TextArea rows={4} value={editForm.note} onChange={(e) => setEditForm((p) => (p ? { ...p, note: e.target.value } : p))} />
-                </Form.Item>
-              </Col>
-              {!editForm.auto_sync_enabled ? (
-                <Col span={24}>
-                  <Alert type="warning" showIcon message="该任务已锁定自动同步" />
-                </Col>
-              ) : null}
-            </Row>
+            <div className={styles.cleaningEditSection}>
+              <div className={styles.cleaningEditSectionHead}>
+                <div>
+                  <div className={styles.cleaningEditSectionTitle}>备注</div>
+                  <div className={styles.cleaningEditSectionHint}>记录密码说明、客人要求或其他需要同步给现场的信息。</div>
+                </div>
+              </div>
+              <Form.Item label="备注" style={{ marginBottom: 0 }}>
+                <Input.TextArea rows={4} value={editForm.note} onChange={(e) => setEditForm((p) => (p ? { ...p, note: e.target.value } : p))} />
+              </Form.Item>
+            </div>
           </Form>
         ) : null}
       </Drawer>

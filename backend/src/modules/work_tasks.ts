@@ -63,6 +63,10 @@ function normUrgency(v: any): string {
   return 'medium'
 }
 
+function autoStatusForWorkAssignee(assigneeId: any): string {
+  return String(assigneeId ?? '').trim() ? 'assigned' : 'todo'
+}
+
 function dayOnly(v: any): string | null {
   const s = String(v ?? '').slice(0, 10)
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null
@@ -236,10 +240,13 @@ router.post('/', requirePerm('cleaning.schedule.manage'), async (req, res) => {
     const sourceId = rawSourceId || uuid()
     const id = `${sourceType}:${sourceId}`
     const now = new Date().toISOString()
-    const status = normStatus(payload.status)
+    const assigneeId = payload.assignee_id === undefined ? null : (normId(payload.assignee_id) || null)
+    const requestedStatus = payload.status === undefined ? undefined : normStatus(payload.status)
+    const status = requestedStatus === undefined || requestedStatus === 'todo' || requestedStatus === 'assigned'
+      ? autoStatusForWorkAssignee(assigneeId)
+      : requestedStatus
     const urgency = normUrgency(payload.urgency)
     const scheduledDate = payload.scheduled_date === undefined ? null : (payload.scheduled_date ? dayOnly(payload.scheduled_date) : null)
-    const assigneeId = payload.assignee_id === undefined ? null : (normId(payload.assignee_id) || null)
     const row = {
       id,
       task_kind: taskKind,
@@ -330,6 +337,15 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), async (req, res) =
     const r0 = await pgPool.query('SELECT * FROM work_tasks WHERE id=$1 LIMIT 1', [id])
     const cur = r0?.rows?.[0] || null
     if (!cur) return res.status(404).json({ message: 'task not found' })
+    if (patch.assignee_id !== undefined) {
+      const beforeStatus = normStatus(cur.status)
+      const incomingStatus = patch.status === undefined ? undefined : normStatus(patch.status)
+      const statusAutoEligible = beforeStatus === 'todo' || beforeStatus === 'assigned'
+      const incomingStatusEligible = incomingStatus === undefined || incomingStatus === 'todo' || incomingStatus === 'assigned'
+      if (statusAutoEligible && incomingStatusEligible) {
+        patch.status = autoStatusForWorkAssignee(normId(patch.assignee_id) || null)
+      }
+    }
     const sourceType = String(cur.source_type || '')
     const sourceId = String(cur.source_id || '')
     const set: string[] = []
