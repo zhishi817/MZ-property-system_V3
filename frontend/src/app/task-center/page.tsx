@@ -76,6 +76,7 @@ type TaskCenterLine = {
 
 type TaskCenterDisplayRow = {
   row_key: string
+  row_title: string
   row_order: number
   row_type: 'region' | 'final_group' | 'deferred'
   assignments: Record<string, any>
@@ -1317,6 +1318,7 @@ export default function TaskCenterPage() {
       if (rowLines.length) {
         output.push({
           row_key: row.row_key,
+          row_title: fullRow.row_title,
           row_order: Number(fullRow.row_order || 0),
           row_type: row.row_type,
           assignments: row.assignments || {},
@@ -1347,6 +1349,7 @@ export default function TaskCenterPage() {
       }
       output.push({
         row_key: 'work:bottom',
+        row_title: '',
         row_order: Number.MAX_SAFE_INTEGER,
         row_type: 'final_group',
         assignments: { executor_id: sameAssignee ? (bottomWorkTasks[0]?.assignee_id || null) : null },
