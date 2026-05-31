@@ -619,6 +619,7 @@ export default function TaskCenterPage() {
     if (task.deferred_inspection_view) return DEFERRED_INSPECTION_ROW_KEY
     if (task.temporarily_skipped) return DEFERRED_ROW_KEY
     if (task.task_source === 'cleaning' && isCompletedBoardStatus(task.status)) return COMPLETED_ROW_KEY
+    if (task.task_source === 'cleaning' && String(task.inspection_mode || '').trim() === 'deferred') return DEFERRED_INSPECTION_ROW_KEY
     const region = String(task.property_region || '').trim()
     return region ? `region:${region}` : DEFERRED_ROW_KEY
   }, [])
@@ -803,8 +804,6 @@ export default function TaskCenterPage() {
     }
     if (!movedTask) return nextRows
     if (task.task_source === 'cleaning' && nextInspectionMode === 'deferred') {
-      const dueDate = draft.inspection_due_date ? draft.inspection_due_date.format('YYYY-MM-DD') : ''
-      if (!dueDate || dueDate !== dateStr) return nextRows
       const targetRow = ensureBoardRow(nextRows, DEFERRED_INSPECTION_ROW_KEY)
       const targetSubrow = targetRow.subrows[0]
       if (!targetSubrow) return nextRows
@@ -820,7 +819,7 @@ export default function TaskCenterPage() {
       targetSubrow.tasks.sort((a, b) => a.item_key.localeCompare(b.item_key))
     }
     return nextRows
-  }, [dateStr, defaultBoardRowKeyForTask, ensureBoardRow, nextCleaningDetailStatus])
+  }, [defaultBoardRowKeyForTask, ensureBoardRow, nextCleaningDetailStatus])
 
   const applyTaskDetailLocally = useCallback((task: TaskCenterTask, draft: TaskDetailDraft) => {
     setDayData((prev) => {
@@ -1429,8 +1428,8 @@ export default function TaskCenterPage() {
       <div key={displayRow.row_key} className={styles.taskCenterBoardRow}>
         <div className={styles.taskCenterBoardRowHead}>
           <div className={styles.taskCenterBoardRowActions}>
-            {displayRow.row_type === 'final_group' && String(displayRow.row_title || '').trim() ? (
-              <Tag color={displayRow.row_key === COMPLETED_ROW_KEY ? 'green' : 'default'}>
+            {displayRow.row_type === 'final_group' && displayRow.row_key === COMPLETED_ROW_KEY && String(displayRow.row_title || '').trim() ? (
+              <Tag color="green">
                 {displayRow.row_title}
               </Tag>
             ) : null}
