@@ -524,11 +524,7 @@ async function loadCleaningTasks(date: string): Promise<BoardTask[]> {
         dateTo: date,
         status: row.status,
       })
-      const suppressBaseTaskToday =
-        inspectionMode === 'deferred' &&
-        d === date &&
-        rawType === 'checkout_clean'
-      if (d === date && !suppressBaseTaskToday) {
+      if (d === date) {
         const sum = summaryText({
           property_region: row.property_region,
           property_code: row.property_code,
@@ -568,10 +564,10 @@ async function loadCleaningTasks(date: string): Promise<BoardTask[]> {
           inspection_mode: inspectionMode as any,
           inspection_due_date: inspectionDueDate,
           deferred_inspection_view: false,
-          can_configure_inspection: rawType === 'checkout_clean',
+          can_configure_inspection: rawType === 'checkout_clean' || rawType === 'checkin_clean',
         })
       }
-      if (projectionDate) {
+      if (projectionDate && !(inspectionMode === 'deferred' && d === date && projectionDate === date)) {
         const sum = inspectionSummaryText({
           property_region: row.property_region,
           property_code: row.property_code,
@@ -662,7 +658,7 @@ async function loadCleaningTasks(date: string): Promise<BoardTask[]> {
         inspection_mode: inspectionMode as any,
         inspection_due_date: inspectionDueDate,
         deferred_inspection_view: false,
-        can_configure_inspection: lower(row.task_type) === 'checkout_clean',
+        can_configure_inspection: lower(row.task_type) === 'checkout_clean' || lower(row.task_type) === 'checkin_clean',
       })
     }
   }
@@ -855,6 +851,7 @@ async function loadBoardItems(date: string, mode: BoardMode) {
 function defaultRegionRowKey(task: BoardTask) {
   if (task.deferred_inspection_view) return DEFERRED_INSPECTION_ROW_KEY
   if (task.task_source === 'cleaning' && isCompletedBoardStatus(task.status)) return COMPLETED_ROW_KEY
+  if (task.task_source === 'cleaning' && inspectionModeOf(task) === 'deferred') return DEFERRED_INSPECTION_ROW_KEY
   const region = text(task.property_region)
   return region ? `region:${region}` : DEFERRED_ROW_KEY
 }
