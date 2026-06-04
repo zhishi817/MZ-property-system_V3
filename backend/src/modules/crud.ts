@@ -527,6 +527,79 @@ function normWorkTaskUrgency(v: any): string {
   return 'medium'
 }
 
+function roleNamesOfUser(user: any): string[] {
+  return Array.from(new Set([
+    String(user?.role || '').trim(),
+    ...((Array.isArray(user?.roles) ? user.roles : []) as any[]).map((x: any) => String(x || '').trim()),
+  ].filter(Boolean)))
+}
+
+function shouldScopePropertyExpenseByPeerRole(resource: string, user: any): boolean {
+  if (resource !== 'property_expenses') return false
+  const roleNames = roleNamesOfUser(user)
+  if (!roleNames.length || roleNames.includes('admin') || roleNames.includes('finance_staff')) return false
+  return roleNames.includes('customer_service')
+}
+
+async function listPeerRoleActorKeys(user: any): Promise<string[]> {
+  const roleNames = roleNamesOfUser(user)
+  if (!roleNames.length) return []
+  if (hasPg && pgPool) {
+    try {
+      const joined = await pgPool.query(
+        `SELECT DISTINCT u.id::text AS id, COALESCE(u.username, '') AS username
+         FROM users u
+         LEFT JOIN user_roles ur ON ur.user_id::text = u.id::text
+         WHERE COALESCE(u.role, '') = ANY($1::text[])
+            OR COALESCE(ur.role_name, '') = ANY($1::text[])`,
+        [roleNames]
+      )
+      const keys = new Set<string>()
+      for (const row of joined?.rows || []) {
+        const id = String((row as any)?.id || '').trim()
+        const username = String((row as any)?.username || '').trim()
+        if (id) keys.add(id)
+        if (username) keys.add(username)
+      }
+      if (keys.size) return Array.from(keys)
+    } catch {
+      try {
+        const fallback = await pgPool.query(
+          `SELECT DISTINCT id::text AS id, COALESCE(username, '') AS username
+           FROM users
+           WHERE COALESCE(role, '') = ANY($1::text[])`,
+          [roleNames]
+        )
+        const keys = new Set<string>()
+        for (const row of fallback?.rows || []) {
+          const id = String((row as any)?.id || '').trim()
+          const username = String((row as any)?.username || '').trim()
+          if (id) keys.add(id)
+          if (username) keys.add(username)
+        }
+        if (keys.size) return Array.from(keys)
+      } catch {}
+    }
+  }
+  const keys = new Set<string>()
+  for (const row of Array.isArray((db as any)?.users) ? (db as any).users : []) {
+    const primaryRole = String((row as any)?.role || '').trim()
+    if (!roleNames.includes(primaryRole)) continue
+    const id = String((row as any)?.id || '').trim()
+    const username = String((row as any)?.username || '').trim()
+    if (id) keys.add(id)
+    if (username) keys.add(username)
+  }
+  return Array.from(keys)
+}
+
+function canReadPropertyExpenseRowByPeerRole(row: any, actorKeys: string[]): boolean {
+  const createdBy = String(row?.created_by || '').trim()
+  if (!createdBy) return true
+  if (!actorKeys.length) return false
+  return actorKeys.includes(createdBy)
+}
+
 async function upsertWorkTaskFromMaintenanceRow(row: any) {
   if (!hasPg) return
   const { pgPool } = require('../dbAdapter')
@@ -730,8 +803,8 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
     return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined
   })()
   const user = (req as any).user || {}
-  if (user?.role === 'customer_service' && resource === 'property_expenses') {
-    filter.created_by = user.sub
+  if (shouldScopePropertyExpenseByPeerRole(resource, user)) {
+    filter.created_by_any = await listPeerRoleActorKeys(user)
   }
   delete filter.limit; delete filter.offset; delete filter.order; delete filter.q; delete filter.withTotal; delete filter.aggregate; delete filter.fields
   try {
@@ -745,6 +818,16 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
           const parts: string[] = []
           const values: any[] = []
           for (const k of keys) {
+            if (k === 'created_by_any') {
+              const vals = Array.isArray((filters as any)[k]) ? (filters as any)[k].map((x: any) => String(x || '').trim()).filter(Boolean) : []
+              if (!vals.length) {
+                parts.push(`COALESCE("created_by",'') = ''`)
+                continue
+              }
+              values.push(vals)
+              parts.push(`(COALESCE("created_by",'') = '' OR "created_by" = ANY($${values.length}::text[]))`)
+              continue
+            }
             if (k.endsWith('_from')) {
               const col = k.slice(0, -5)
               if (/^[a-zA-Z0-9_]+$/.test(col)) {
@@ -1158,7 +1241,13 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
     // Supabase branch removed
     // in-memory fallback
     const arr = (db as any)[camelToArrayKey(resource)] || []
-    let filtered = arr.filter((r: any) => Object.entries(filter).every(([k,v]) => (r?.[k]) == v))
+    let filtered = arr.filter((r: any) => Object.entries(filter).every(([k, v]) => {
+      if (k === 'created_by_any') {
+        const actorKeys = Array.isArray(v) ? v.map((x: any) => String(x || '').trim()).filter(Boolean) : []
+        return canReadPropertyExpenseRowByPeerRole(r, actorKeys)
+      }
+      return (r?.[k]) == v
+    }))
     if ((resource === 'property_maintenance' || resource === 'property_deep_cleaning') && q) {
       const s = q.toLowerCase()
       filtered = filtered.filter((r: any) => {
@@ -1288,15 +1377,24 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
 router.get('/:resource/:id', requireResourcePerm('view'), async (req, res) => {
   const { resource, id } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
+  const user = (req as any).user || {}
+  const peerRoleActorKeys = shouldScopePropertyExpenseByPeerRole(resource, user) ? await listPeerRoleActorKeys(user) : []
   try {
     if (hasPg) {
       const rowsRaw = await pgSelect(resource, '*', { id })
       const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
-      return rows[0] ? res.json(rows[0]) : res.status(404).json({ message: 'not found' })
+      const row = rows[0] || null
+      if (row && resource === 'property_expenses' && shouldScopePropertyExpenseByPeerRole(resource, user) && !canReadPropertyExpenseRowByPeerRole(row, peerRoleActorKeys)) {
+        return res.status(403).json({ message: 'forbidden' })
+      }
+      return row ? res.json(row) : res.status(404).json({ message: 'not found' })
     }
     // Supabase branch removed
     const arr = (db as any)[camelToArrayKey(resource)] || []
     const found = arr.find((x: any) => x.id === id)
+    if (found && resource === 'property_expenses' && shouldScopePropertyExpenseByPeerRole(resource, user) && !canReadPropertyExpenseRowByPeerRole(found, peerRoleActorKeys)) {
+      return res.status(403).json({ message: 'forbidden' })
+    }
     return found ? res.json(found) : res.status(404).json({ message: 'not found' })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'get failed' })
