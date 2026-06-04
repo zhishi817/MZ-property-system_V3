@@ -1,6 +1,7 @@
 "use client"
 import dayjs from 'dayjs'
-import { monthSegments, toDayStr, parseDateOnly, isOwnerStay } from '../lib/orders'
+import { monthSegments, toDayStr, parseDateOnly } from '../lib/orders'
+import { computePropertyRevenueMetrics } from '../lib/propertyRevenueMetrics'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../lib/financeTx'
 import { computeMonthlyStatementBalanceDebug, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../lib/statementBalances'
 import { formatStatementDesc } from '../lib/statementDesc'
@@ -10,7 +11,7 @@ import { API_BASE, authHeaders, fetchWithTimeout } from '../lib/api'
 import { DEFAULT_MONTHLY_STATEMENT_CARRY_START_MONTH } from '../lib/monthlyStatementPrint'
 import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../lib/managementFeeRules'
 
-type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
+type Order = { id: string; property_id?: string; stay_type?: 'guest' | 'owner' | string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
 type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; property_id?: string; occurred_at: string; category?: string; category_detail?: string; note?: string; invoice_url?: string; ref_type?: string; ref_id?: string }
 type Landlord = LandlordWithManagementFeeRules
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
@@ -289,12 +290,12 @@ export default forwardRef<HTMLDivElement, {
     lang: showChinese ? 'zh' : 'en',
   })
   const totalIncome = rentIncome + otherIncome
-  const ownerNights = relatedOrders.reduce((s, x) => s + (isOwnerStay(x) ? Number(x.nights || 0) : 0), 0)
-  const guestNights = relatedOrders.reduce((s, x) => s + (!isOwnerStay(x) ? Number(x.nights || 0) : 0), 0)
   const daysInMonth = endNext.diff(start, 'day')
-  const availableDays = Math.max(0, daysInMonth - ownerNights)
-  const occupancyRate = availableDays ? Math.round(((guestNights / availableDays) * 100 + Number.EPSILON) * 100) / 100 : 0
-  const dailyAverage = guestNights ? Math.round(((totalIncome / guestNights) + Number.EPSILON) * 100) / 100 : 0
+  const { occupancyRate, dailyAverage } = computePropertyRevenueMetrics({
+    orders: relatedOrders,
+    daysInMonth,
+    rentIncome,
+  })
   const landlord = findLandlordForProperty(landlords, propertyId || '', (property as any)?.landlord_id)
   const managementFeeRule = resolveManagementFeeRuleForMonth(landlord, month)
   const managementFeeRecorded = txs

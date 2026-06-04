@@ -7,7 +7,8 @@ import { usePathname } from 'next/navigation'
 import { getJSON, apiList, API_BASE, authHeaders, patchJSON } from '../../../lib/api'
 import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/properties'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
-import { monthSegments, toDayStr, getMonthSegmentsForProperty, isOwnerStay } from '../../../lib/orders'
+import { monthSegments, toDayStr, getMonthSegmentsForProperty } from '../../../lib/orders'
+import { computePropertyRevenueMetrics } from '../../../lib/propertyRevenueMetrics'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome } from '../../../lib/financeTx'
 import { computeMonthlyStatementBalanceDebug, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
 import { formatStatementDesc } from '../../../lib/statementDesc'
@@ -809,12 +810,12 @@ export default function PropertyRevenuePage() {
         const otherIncome = Number(b?.otherIncome || 0)
         const otherIncomeDesc = b?.otherIncomeCats ? Array.from(b.otherIncomeCats).filter(Boolean).join('、') || '-' : '-'
         const totalIncome = rentIncome + otherIncome
-        const ownerNights = related.reduce((s, x) => s + (isOwnerStay(x) ? Number(x.nights || 0) : 0), 0)
-        const guestNights = related.reduce((s, x) => s + (!isOwnerStay(x) ? Number(x.nights || 0) : 0), 0)
         const daysInMonth = rm.end.diff(rm.start,'day')
-        const availableDays = Math.max(0, daysInMonth - ownerNights)
-        const occRate = availableDays ? Math.round(((guestNights / availableDays)*100 + Number.EPSILON)*100)/100 : 0
-        const avg = guestNights ? Math.round(((rentIncome / guestNights) + Number.EPSILON)*100)/100 : 0
+        const { occupancyRate: occRate, dailyAverage: avg } = computePropertyRevenueMetrics({
+          orders: related,
+          daysInMonth,
+          rentIncome,
+        })
         const landlord = findLandlordForProperty(landlords, String(p.id), String((p as any).landlord_id || ''))
         const rate = Number(resolveManagementFeeRuleForMonth(landlord, mk).rate || 0)
         const sums = (b?.expSums || {}) as any

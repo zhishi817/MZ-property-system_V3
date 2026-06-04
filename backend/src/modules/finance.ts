@@ -2327,7 +2327,7 @@ router.get('/rent-segments', requireAnyPerm(['finance.payout', 'finance.tx.write
     if (!m) return res.status(400).json({ message: 'invalid month' })
     if (!property_id) return res.status(400).json({ message: 'missing property_id' })
     if (!hasPg || !pgPool) return res.status(400).json({ message: 'pg required' })
-    const orderSegmentCols = 'id, property_id, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income, confirmation_code, guest_name, source, channel, created_at, updated_at'
+    const orderSegmentCols = 'id, property_id, stay_type, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income, confirmation_code, guest_name, source, channel, created_at, updated_at'
     const ordersRs = await pgPool.query(
       `SELECT ${orderSegmentCols} FROM orders WHERE property_id = $1 AND checkin < $3::date AND checkout > $2::date`,
       [property_id, m.start, m.nextStart]
@@ -2359,7 +2359,7 @@ router.get('/rent-income-by-property', requireAnyPerm(['finance.payout', 'financ
     const m = parseMonthKeyOrNull((req.query as any)?.month)
     if (!m) return res.status(400).json({ message: 'invalid month' })
     if (!hasPg || !pgPool) return res.status(400).json({ message: 'pg required' })
-    const orderSegmentCols = 'id, property_id, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income'
+    const orderSegmentCols = 'id, property_id, stay_type, checkin, checkout, price, cleaning_fee, nights, net_income, status, count_in_income'
     const ordersRs = await pgPool.query(
       `SELECT ${orderSegmentCols} FROM orders WHERE property_id IS NOT NULL AND checkin < $2::date AND checkout > $1::date`,
       [m.start, m.nextStart]
