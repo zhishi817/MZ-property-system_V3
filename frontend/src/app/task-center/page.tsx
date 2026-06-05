@@ -252,6 +252,16 @@ function isCheckinOnlyCleaningTask(task: Pick<TaskCenterTask, 'task_source' | 't
   return timing.showCheckin && !timing.showCheckout
 }
 
+function requiresCleanerAssignment(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view'>) {
+  if (task.task_source !== 'cleaning') return false
+  return !isCheckinOnlyCleaningTask(task)
+}
+
+function preferredStaffIdForTask(task: Pick<TaskCenterTask, 'task_source' | 'task_kind' | 'task_ids' | 'title' | 'detail' | 'deferred_inspection_view' | 'cleaner_id' | 'assignee_id' | 'inspector_id'>) {
+  if (isCheckinOnlyCleaningTask(task)) return String(task.inspector_id || '').trim()
+  return String(task.cleaner_id || task.assignee_id || '').trim()
+}
+
 function isKeysHungStatus(status: string | null | undefined) {
   return String(status || '').trim().toLowerCase() === 'keys_hung'
 }
@@ -460,7 +470,7 @@ export default function TaskCenterPage() {
   }, [])
 
   const assignedColorForTask = useCallback((task: TaskCenterTask) => {
-    const staffId = String(task.cleaner_id || task.assignee_id || '').trim()
+    const staffId = preferredStaffIdForTask(task)
     const hex = staffId ? normalizeHex(staffById.get(staffId)?.color_hex) : null
     return hex
   }, [normalizeHex, staffById])
@@ -557,6 +567,7 @@ export default function TaskCenterPage() {
       .filter((task) => task.task_source === 'cleaning')
     const unresolvedPrimaryCount = cleaningTasks.filter((task) => {
       if (task.temporarily_skipped || task.deferred_inspection_view) return false
+      if (!requiresCleanerAssignment(task)) return false
       return !String(task.cleaner_id || task.assignee_id || '').trim()
     }).length
     const pendingInspectionCount = cleaningTasks.filter((task) => {
@@ -732,7 +743,7 @@ export default function TaskCenterPage() {
   const openTaskDetail = useCallback((task: TaskCenterTask, row: TaskCenterRow, subrow: TaskCenterSubrow) => {
     setDetailTask({ ...task, current_row_key: row.row_key, current_subrow_key: subrow.subrow_key })
     setDetailDraft({
-      cleaner_id: task.cleaner_id || null,
+      cleaner_id: requiresCleanerAssignment(task) ? (task.cleaner_id || null) : null,
       inspector_id: task.inspector_id || null,
       assignee_id: task.assignee_id || null,
       inspection_mode: (task.inspection_mode || 'pending_decision') as TaskDetailDraft['inspection_mode'],
@@ -756,6 +767,7 @@ export default function TaskCenterPage() {
   const rowsAfterTaskDetail = useCallback((rows: TaskCenterRow[], task: TaskCenterTask, draft: TaskDetailDraft) => {
     const nextStatus = nextCleaningDetailStatus(task, draft)
     const nextInspectionMode = draft.keys_hung ? 'self_complete' : draft.inspection_mode
+    const nextCleanerId = requiresCleanerAssignment(task) ? (draft.cleaner_id || null) : null
     const nextRows = rows.map((row) => ({
       ...row,
       subrows: row.subrows.map((subrow) => ({
@@ -767,7 +779,7 @@ export default function TaskCenterPage() {
           if (!sameTask) return item
           return {
             ...item,
-            cleaner_id: task.task_source === 'cleaning' ? (draft.cleaner_id || null) : item.cleaner_id,
+            cleaner_id: task.task_source === 'cleaning' ? nextCleanerId : item.cleaner_id,
             inspector_id: task.task_source === 'cleaning' ? (draft.inspector_id || null) : item.inspector_id,
             assignee_id: task.task_source === 'work' ? (draft.assignee_id || null) : item.assignee_id,
             status: task.task_source === 'cleaning' ? nextStatus : item.status,
@@ -865,8 +877,9 @@ export default function TaskCenterPage() {
       if (detailTask.task_source === 'cleaning') {
         const nextStatus = nextCleaningDetailStatus(detailTask, detailDraft)
         const nextInspectionMode = detailDraft.keys_hung ? 'self_complete' : detailDraft.inspection_mode
+        const nextCleanerId = requiresCleanerAssignment(detailTask) ? (detailDraft.cleaner_id || null) : null
         await patchCleaningTasks(detailTask.task_ids, {
-          cleaner_id: detailDraft.cleaner_id || null,
+          cleaner_id: nextCleanerId,
           inspector_id: nextInspectionMode === 'pending_decision' || nextInspectionMode === 'self_complete' ? null : (detailDraft.inspector_id || null),
           inspection_mode: nextInspectionMode,
           inspection_due_date: nextInspectionMode === 'deferred' ? (detailDraft.inspection_due_date ? detailDraft.inspection_due_date.format('YYYY-MM-DD') : null) : null,
@@ -1216,7 +1229,7 @@ export default function TaskCenterPage() {
     const dragDisabled = pending || lockedByDay || filteringActive
     const timingTags = specialTimingTags(task)
     const detailText = task.skip_reason || (task.task_source === 'cleaning' ? cleaningSecondarySummary(task) : (task.detail || task.summary || ''))
-    const assignedStaffId = String(task.cleaner_id || task.assignee_id || '').trim()
+    const assignedStaffId = preferredStaffIdForTask(task)
     const assignedStaffName = assignedStaffId ? String(staffById.get(assignedStaffId)?.name || '').trim() : ''
     return (
       <div
@@ -1638,18 +1651,25 @@ export default function TaskCenterPage() {
             {detailTask.task_source === 'cleaning' ? (
               <>
                 <div className={styles.taskDetailGrid}>
-                  <div>
-                    <div className={styles.fieldLabel}>清洁人员</div>
-                    <Select
-                      allowClear
-                      showSearch
-                      optionFilterProp="label"
-                      value={detailDraft.cleaner_id || undefined}
-                      onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, cleaner_id: value ? String(value) : null } : prev))}
-                      style={{ width: '100%' }}
-                      options={cleanerOptions}
-                    />
-                  </div>
+                  {requiresCleanerAssignment(detailTask) ? (
+                    <div>
+                      <div className={styles.fieldLabel}>清洁人员</div>
+                      <Select
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        value={detailDraft.cleaner_id || undefined}
+                        onChange={(value) => setDetailDraft((prev) => (prev ? { ...prev, cleaner_id: value ? String(value) : null } : prev))}
+                        style={{ width: '100%' }}
+                        options={cleanerOptions}
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <div className={styles.fieldLabel}>清洁人员</div>
+                      <Input value="纯入住任务无需分配清洁" disabled />
+                    </div>
+                  )}
                   <div>
                     <div className={styles.fieldLabel}>检查安排</div>
                     <Select

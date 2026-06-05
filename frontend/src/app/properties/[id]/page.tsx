@@ -3,6 +3,8 @@ import { Card, Form, Input, InputNumber, Select, Button, message, Space, Tag } f
 import { useEffect, useState } from 'react'
 import { API_BASE } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
+import PropertyPayableTemplatesForm from '../../../components/PropertyPayableTemplatesForm'
+import { hydratePropertyPayableTemplatesForForm, normalizePropertyPayableTemplates } from '../../../lib/propertyPayables'
 
 type Property = {
   id: string
@@ -27,6 +29,7 @@ type Property = {
   safety_extinguisher?: string
   safety_first_aid?: string
   notes?: string
+  payable_templates?: any[]
   created_at?: string
   updated_at?: string
   created_by?: string
@@ -49,7 +52,13 @@ export default function PropertyDetail({ params }: { params: { id: string } }) {
     }
   }
   useEffect(() => {
-    fetch(`${API_BASE}/properties/${params.id}`).then(r => r.json()).then(d => { setData(d); form.setFieldsValue(d) })
+    fetch(`${API_BASE}/properties/${params.id}`).then(r => r.json()).then(d => {
+      setData(d)
+      form.setFieldsValue({
+        ...d,
+        payable_templates: hydratePropertyPayableTemplatesForForm(d?.payable_templates),
+      })
+    })
     fetch(`${API_BASE}/config/dictionaries`).then(r => r.json()).then(setDicts)
     fetch(`${API_BASE}/landlords`).then(r => r.json()).then(setLandlords)
   }, [params.id])
@@ -59,7 +68,7 @@ export default function PropertyDetail({ params }: { params: { id: string } }) {
     const bedroomCount = getBedroomCount(v.type)
     const beds = (v.bedrooms || []).slice(0, bedroomCount)
     const bed_config = beds.map((b: string, i: number) => `Bedroom ${i + 1}: ${b || ''}`).join('; ')
-    const payload = { ...v, bed_config }
+    const payload = { ...v, bed_config, payable_templates: normalizePropertyPayableTemplates(v.payable_templates) }
     const res = await fetch(`${API_BASE}/properties/${params.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('已保存') } else { message.error('保存失败') }
   }
@@ -97,8 +106,8 @@ export default function PropertyDetail({ params }: { params: { id: string } }) {
         ))}
         <Form.Item name="aircon_model" label="空调型号"><Input placeholder="空调品牌/型号" /></Form.Item>
         <Form.Item name="tv_model" label="电视型号"><Input /></Form.Item>
-        
         <Form.Item name="notes" label="备注"><Input.TextArea rows={3} /></Form.Item>
+        <PropertyPayableTemplatesForm form={form} />
         <Space>
           <Tag>创建时间: {data?.created_at || ''}</Tag>
           <Tag>最后修改: {data?.updated_at || ''}</Tag>

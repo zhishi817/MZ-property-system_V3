@@ -5,6 +5,7 @@ import { LockOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { API_BASE } from '../../../lib/api'
+import { sortActivePropertiesByRegionThenCode } from '../../../lib/properties'
 
 function storageKeyPassword() { return 'public_property_expense_password' }
 function storageKeyToken() { return 'public_property_expense_token' }
@@ -16,7 +17,7 @@ export default function PublicPropertyExpensePage() {
   const [token, setToken] = useState<string>('')
   const [loggingIn, setLoggingIn] = useState(false)
   const [invoiceFiles, setInvoiceFiles] = useState<UploadFile[]>([])
-  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
+  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string; region?: string | null; archived?: boolean | null }[]>([])
 
   useEffect(() => {
     try {
@@ -176,9 +177,7 @@ export default function PublicPropertyExpensePage() {
   }
 
   const propertyOptions = useMemo(() => {
-    const arr = Array.isArray(properties) ? properties : []
-    const sorted = [...arr].sort((a, b) => String(a.code || a.address || a.id).localeCompare(String(b.code || b.address || b.id)))
-    return sorted.map((p) => ({ value: p.id, label: p.code || p.address || p.id }))
+    return sortActivePropertiesByRegionThenCode(properties || []).map((p) => ({ value: p.id, label: p.code || p.address || p.id }))
   }, [properties])
 
   return (

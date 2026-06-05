@@ -1,16 +1,25 @@
 "use client"
-import { Card, Form, Input, InputNumber, DatePicker, Select, Upload, Button, Table, Space, App, Modal, Alert, Radio, Drawer, AutoComplete, Typography, Divider, Descriptions } from 'antd'
+import { Card, Form, Input, InputNumber, DatePicker, Select, Upload, Button, Table, Space, App, Modal, Alert, Radio, Drawer, AutoComplete, Typography, Divider, Descriptions, Switch, Tag } from 'antd'
 import { UploadOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import dayjs from 'dayjs'
 import { API_BASE, getJSON, authHeaders, apiList, apiCreate, apiUpdate, apiDelete } from '../../../lib/api'
-import { sortProperties } from '../../../lib/properties'
+import { sortActivePropertiesByRegionThenCode } from '../../../lib/properties'
 import { hasPerm } from '../../../lib/auth'
 import { isVoidedTx, normalizeReportCategory } from '../../../lib/financeTx'
 import AuditTrail from '../../../components/AuditTrail'
 
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; property_id?: string; property_code?: string; fixed_expense_id?: string; month_key?: string; occurred_at: string; due_date?: string; paid_date?: string; created_at?: string; note?: string; ref_type?: string; ref_id?: string; generated_from?: string; is_auto?: boolean; source_title?: string; source_summary?: string; status?: string }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; category_detail?: string; expense_name?: string; property_id?: string; property_code?: string; fixed_expense_id?: string; month_key?: string; occurred_at: string; due_date?: string; paid_date?: string; created_at?: string; note?: string; ref_type?: string; ref_id?: string; generated_from?: string; receipt_id?: string | null; receipt_item_id?: string | null; is_auto?: boolean; source_title?: string; source_summary?: string; status?: string; deleted_at?: string | null; deleted_by?: string | null; delete_source?: string | null }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
+type ReceiptSourceDetail = {
+  id: string
+  receipt_date?: string | null
+  receipt_total_amount?: number | null
+  note?: string | null
+  scope_summary?: string | null
+  images?: Array<{ id: string; url: string }>
+  items?: Array<{ id: string; line_no?: number | null; scope?: string | null; property_code?: string | null; property_address?: string | null; expense_name?: string | null; amount?: number | null; category?: string | null; category_detail?: string | null; note?: string | null; company_expense_id?: string | null; property_expense_id?: string | null }>
+}
 
 function isReadonlyAutoExpense(tx: Partial<Tx> | null | undefined) {
   return !!tx && tx.is_auto === true && ['maintenance', 'deep_cleaning'].includes(String(tx.ref_type || ''))
@@ -22,7 +31,7 @@ export default function ExpensesPage() {
   const { message, modal } = App.useApp()
   const now = dayjs()
   const [list, setList] = useState<Tx[]>([])
-  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
+  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string; region?: string; archived?: boolean | null }[]>([])
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [dupOpen, setDupOpen] = useState(false)
@@ -49,6 +58,8 @@ export default function ExpensesPage() {
   const [backfillResult, setBackfillResult] = useState<any | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailRecord, setDetailRecord] = useState<Tx | null>(null)
+  const [includeDeleted, setIncludeDeleted] = useState(false)
+  const [receiptDetail, setReceiptDetail] = useState<ReceiptSourceDetail | null>(null)
   const getExpenseActualDate = (tx: Partial<Tx> | null | undefined): string | undefined => {
     if (!tx) return undefined
     return String(tx.due_date || tx.occurred_at || tx.paid_date || tx.created_at || '').trim() || undefined
@@ -56,6 +67,7 @@ export default function ExpensesPage() {
   const role = (typeof window !== 'undefined') ? (localStorage.getItem('role') || sessionStorage.getItem('role')) : null
   const canViewList = (role === 'admin') || hasPerm('menu.finance') || hasPerm('property_expenses.view') || role === 'customer_service' || hasPerm('finance.tx.write')
   const canBackfill = hasPerm('finance.tx.write') || hasPerm('property_expenses.write') || hasPerm('company_expenses.write') || role === 'admin'
+  const canIncludeDeleted = role === 'admin' || role === 'finance_staff' || hasPerm('finance.tx.write')
   async function loadSharePasswordInfo() {
     setSharePwdLoading(true)
     try {
@@ -97,7 +109,7 @@ export default function ExpensesPage() {
   async function load() {
     const resource = 'property_expenses'
     if (canViewList) {
-      const rows: any[] = await apiList<any[]>(resource)
+      const rows: any[] = await apiList<any[]>(resource, canIncludeDeleted && includeDeleted ? { include_deleted: 1 } : undefined)
       const mapped: Tx[] = (rows || []).map((r: any) => ({
         id: r.id,
         kind: 'expense',
@@ -105,6 +117,7 @@ export default function ExpensesPage() {
         currency: r.currency || 'AUD',
         category: r.category,
         category_detail: r.category_detail,
+        expense_name: r.expense_name || undefined,
         property_id: r.property_id || undefined,
         property_code: r.property_code || undefined,
         fixed_expense_id: r.fixed_expense_id || undefined,
@@ -117,9 +130,14 @@ export default function ExpensesPage() {
         ref_type: r.ref_type || undefined,
         ref_id: r.ref_id || undefined,
         generated_from: r.generated_from || undefined,
+        receipt_id: r.receipt_id || null,
+        receipt_item_id: r.receipt_item_id || null,
         is_auto: r.is_auto === true,
         source_title: r.source_title || undefined,
         source_summary: r.source_summary || undefined,
+        deleted_at: r.deleted_at || null,
+        deleted_by: r.deleted_by || null,
+        delete_source: r.delete_source || null,
         ...(r.status ? { status: r.status } : {}),
       } as any)).filter((r: Tx) => !isVoidedTx(r as any))
       const sorted = mapped.sort((a, b) => {
@@ -134,7 +152,25 @@ export default function ExpensesPage() {
       setList([])
     }
   }
-  useEffect(() => { load(); getJSON<any>('/properties?include_archived=true').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([])) }, [mode])
+  useEffect(() => { load(); getJSON<any>('/properties?include_archived=true').then((j) => setProperties(Array.isArray(j) ? j : [])).catch(() => setProperties([])) }, [includeDeleted, mode])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      if (!detailOpen || !detailRecord?.receipt_id) {
+        setReceiptDetail(null)
+        return
+      }
+      try {
+        const data = await getJSON<ReceiptSourceDetail>(`/mzapp/expense-receipts/admin/${detailRecord.receipt_id}${detailRecord.deleted_at ? '?include_deleted=1' : ''}`)
+        if (!cancelled) setReceiptDetail(data || null)
+      } catch {
+        if (!cancelled) setReceiptDetail(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [detailOpen, detailRecord?.deleted_at, detailRecord?.receipt_id])
 
   async function runAutoExpensesBackfill(dryRun: boolean) {
     if (backfillLoading) return
@@ -258,17 +294,19 @@ export default function ExpensesPage() {
     const key = normalizeReportCategory(v)
     return CATS.find(c => c.value === key)?.label || v || '-'
   }
-  function catKey(v?: string): string | undefined {
+  function categoryRecordKey(v?: string): string | undefined {
     const s = String(v || '').trim()
-    if (!s) return undefined
-    return normalizeReportCategory(s)
+    return s || undefined
   }
-  function catFilterLabel(k?: string): string {
-    if (!k) return '-'
-    if (k === 'parking_fee') return '车位费'
-    return catLabel(k)
+  function catFilterLabel(raw?: string): string {
+    const key = categoryRecordKey(raw)
+    if (!key) return '-'
+    const normalized = normalizeReportCategory(key)
+    const friendly = normalized === 'parking_fee' ? '车位费' : catLabel(key)
+    if (friendly && friendly !== key) return `${friendly} (${key})`
+    return key
   }
-  const catOptions = Array.from(new Set(list.map(x => catKey(x.category)).filter(Boolean) as string[]))
+  const catOptions = Array.from(new Set(list.map(x => categoryRecordKey(x.category)).filter(Boolean) as string[]))
     .sort((a, b) => catFilterLabel(a).localeCompare(catFilterLabel(b)))
     .map((k) => ({ value: k, label: catFilterLabel(k) }))
   const fmt = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -325,6 +363,7 @@ export default function ExpensesPage() {
       return melDay(d)
     } },
     { title: '房号', dataIndex: 'property_code', render: (v: string, r: any) => (v || (()=>{ const p = properties.find(x => x.id === r.property_id); return p?.code || r.property_id || '-' })()) },
+    { title: '支出名称', dataIndex: 'expense_name', render: (v: string, r: Tx) => v || (r.category === 'other' ? (r.category_detail || '-') : '-') },
     { title: '类别', dataIndex: 'category', render: (_: any, r: Tx) => {
       if (!r?.category) return '-'
       if (r.category === 'other') return r.category_detail ? `其他；${r.category_detail || ''}` : '其他'
@@ -336,6 +375,7 @@ export default function ExpensesPage() {
       if (!s) return '-'
       return <Typography.Text title={s}>{s}</Typography.Text>
     } },
+    { title: '状态', dataIndex: 'deleted_at', render: (_: any, r: Tx) => r.deleted_at ? <Tag color="red">已删除</Tag> : <Tag color="green">有效</Tag> },
     { title: '金额', dataIndex: 'amount', render: (v: number) => `$${fmt(Number(v || 0))}` },
     { title: '发票', key: 'invoices', render: (_: any, r: Tx) => (
       <Button type="link" onClick={() => openInvoices(r.id)}>管理发票</Button>
@@ -343,14 +383,14 @@ export default function ExpensesPage() {
     { title: '操作', render: (_: any, r: Tx) => (
       <Space>
         <Button onClick={() => { setDetailRecord(r); setDetailOpen(true) }}>详情</Button>
-        {(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) && !isReadonlyAutoExpense(r) ? (
+        {(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) && !r.deleted_at && !isReadonlyAutoExpense(r) ? (
           <Button onClick={() => { setEditing(r); setOpen(true); form.setFieldsValue({
             paid_date: dayjs(r.paid_date || r.occurred_at), property_id: r.property_id, category: r.category,
             other_detail: r.category === 'other' ? r.category_detail : undefined,
             amount: r.amount, currency: r.currency, note: r.note,
           }) }}>编辑</Button>
         ) : null}
-        {(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) && hasPerm('property_expenses.delete') && !isReadonlyAutoExpense(r) ? (
+        {(hasPerm('property_expenses.write') || hasPerm('finance.tx.write')) && hasPerm('property_expenses.delete') && !r.deleted_at && !isReadonlyAutoExpense(r) ? (
           <Button danger onClick={() => {
             modal.confirm({ title: '确认删除支出', okType: 'danger', onOk: async () => {
               const resource = 'property_expenses'
@@ -387,11 +427,17 @@ export default function ExpensesPage() {
       <Space style={{ marginBottom: 12 }} wrap>
         {canViewList ? (
           <>
+            {canIncludeDeleted ? (
+              <Space>
+                <Typography.Text>包含已删除</Typography.Text>
+                <Switch checked={includeDeleted} onChange={setIncludeDeleted} />
+              </Space>
+            ) : null}
             <AutoComplete
               value={codeQuery}
               onChange={(v) => setCodeQuery(String(v || ''))}
               style={{ width: 260 }}
-              options={sortProperties(properties).map((p) => {
+              options={sortActivePropertiesByRegionThenCode(properties).map((p) => {
                 const code = String(p.code || p.id || '').trim()
                 return { value: code }
               })}
@@ -416,7 +462,7 @@ export default function ExpensesPage() {
         <Table rowKey={r => r.id} columns={columns as any} dataSource={list.filter(x => {
           const label = String((x as any).property_code || (()=>{ const p = properties.find(pp => pp.id === x.property_id); return p?.code || '' })() || '')
           const codeOk = (!codeQuery || label.toLowerCase().includes(codeQuery.trim().toLowerCase()))
-          const catOk = !catFilter || catKey(x.category) === catFilter
+          const catOk = !catFilter || categoryRecordKey(x.category) === catFilter
           const baseDate = getExpenseActualDate(x)
           const inRange = !dateRange || (!!baseDate && (!dateRange[0] || dayjs(baseDate).diff(dateRange[0], 'day') >= 0) && (!dateRange[1] || dayjs(baseDate).diff(dateRange[1], 'day') <= 0))
           const kindOk = x.kind === 'expense'
@@ -449,7 +495,7 @@ export default function ExpensesPage() {
               showSearch
               optionFilterProp="label"
               filterOption={(input, option) => String((option as any)?.label || '').toLowerCase().includes(String(input || '').toLowerCase())}
-              options={sortProperties(properties).map(p => ({ value: p.id, label: p.code || p.id }))}
+              options={sortActivePropertiesByRegionThenCode(properties).map(p => ({ value: p.id, label: p.code || p.id }))}
             />
           </Form.Item>
           <Form.Item name="category" label="类别" rules={[{ required: true }]}> 
@@ -602,12 +648,22 @@ export default function ExpensesPage() {
             <Divider orientation="left">支出基础信息</Divider>
             <Descriptions bordered column={2} labelStyle={{ width: 120 }}>
               <Descriptions.Item label="支出日期">{melDay(getExpenseActualDate(detailRecord))}</Descriptions.Item>
+              <Descriptions.Item label="支出名称">{detailRecord.expense_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="发票来源ID">{String(detailRecord.receipt_id || '') || '-'}</Descriptions.Item>
               <Descriptions.Item label="类别">{detailRecord.category ? (detailRecord.category === 'other' ? (detailRecord.category_detail ? `其他；${detailRecord.category_detail}` : '其他') : catLabel(detailRecord.category)) : '-'}</Descriptions.Item>
+              <Descriptions.Item label="发票明细ID">{String(detailRecord.receipt_item_id || '') || '-'}</Descriptions.Item>
               <Descriptions.Item label="房号">{detailRecord.property_code || (()=>{ const p = properties.find(x => x.id === detailRecord.property_id); return p?.code || detailRecord.property_id || '-' })()}</Descriptions.Item>
               <Descriptions.Item label="金额">{`$${fmt(Number(detailRecord.amount || 0))}`}</Descriptions.Item>
               <Descriptions.Item label="发票" span={2}>
                 <Button type="link" onClick={() => openInvoices(detailRecord.id)}>查看/管理发票</Button>
               </Descriptions.Item>
+              {detailRecord.deleted_at ? (
+                <>
+                  <Descriptions.Item label="删除时间">{String(detailRecord.deleted_at || '')}</Descriptions.Item>
+                  <Descriptions.Item label="删除人">{String(detailRecord.deleted_by || '-') || '-'}</Descriptions.Item>
+                  <Descriptions.Item label="删除来源" span={2}>{String(detailRecord.delete_source || '-') || '-'}</Descriptions.Item>
+                </>
+              ) : null}
             </Descriptions>
             {(detailRecord.ref_type || detailRecord.ref_id || detailRecord.generated_from || detailRecord.is_auto || detailRecord.source_summary || detailRecord.source_title) ? (
               <>
@@ -627,6 +683,47 @@ export default function ExpensesPage() {
                     </Descriptions.Item>
                   ) : null}
                 </Descriptions>
+              </>
+            ) : null}
+            {receiptDetail ? (
+              <>
+                <Divider orientation="left">原始发票</Divider>
+                <Descriptions bordered column={2} labelStyle={{ width: 120 }}>
+                  <Descriptions.Item label="发票日期">{String(receiptDetail.receipt_date || '').slice(0, 10) || '-'}</Descriptions.Item>
+                  <Descriptions.Item label="发票总金额">{`$${fmt(Number(receiptDetail.receipt_total_amount || 0))}`}</Descriptions.Item>
+                  <Descriptions.Item label="支出范围">{String(receiptDetail.scope_summary || '-') || '-'}</Descriptions.Item>
+                  <Descriptions.Item label="发票备注">{String(receiptDetail.note || '') || '-'}</Descriptions.Item>
+                  <Descriptions.Item label="发票图片" span={2}>
+                    <Space wrap>
+                      {(receiptDetail.images || []).length
+                        ? (receiptDetail.images || []).map((item) => {
+                            const raw = item.url && /^https?:\/\//.test(item.url) ? item.url : (item.url ? `${API_BASE}${item.url}` : '')
+                            return (
+                              <Button key={item.id} size="small" onClick={() => { if (raw) window.open(raw, '_blank', 'noopener,noreferrer') }}>
+                                查看图片
+                              </Button>
+                            )
+                          })
+                        : '-'}
+                    </Space>
+                  </Descriptions.Item>
+                </Descriptions>
+                <Table
+                  size="small"
+                  pagination={false}
+                  rowKey={(row: any) => row.id}
+                  style={{ marginTop: 12 }}
+                  columns={[
+                    { title: '#', dataIndex: 'line_no', width: 60 },
+                    { title: '归属', render: (_: any, row: any) => String(row.scope || '') === 'property' ? '房源支出' : '公司支出' },
+                    { title: '房号/对象', render: (_: any, row: any) => String(row.scope || '') === 'property' ? (String(row.property_code || row.property_address || '-') || '-') : '公司' },
+                    { title: '支出名称', dataIndex: 'expense_name' },
+                    { title: '金额', render: (_: any, row: any) => `$${fmt(Number(row.amount || 0))}` },
+                    { title: '类别', render: (_: any, row: any) => row.category === 'other' ? `其他；${String(row.category_detail || '')}` : (String(row.category || '-') || '-') },
+                    { title: '备注', dataIndex: 'note' },
+                  ]}
+                  dataSource={receiptDetail.items || []}
+                />
               </>
             ) : null}
             <Divider orientation="left">操作记录</Divider>
@@ -724,7 +821,7 @@ export default function ExpensesPage() {
               showSearch
               optionFilterProp="label"
               filterOption={(input, option) => String((option as any)?.label || '').toLowerCase().includes(String(input || '').toLowerCase())}
-              options={sortProperties(properties).map(p => ({ value: p.id, label: `${p.code || p.id}${p.address ? ` - ${p.address}` : ''}` }))}
+              options={sortActivePropertiesByRegionThenCode(properties).map(p => ({ value: p.id, label: `${p.code || p.id}${p.address ? ` - ${p.address}` : ''}` }))}
             />
           </Form.Item>
           <Form.Item name="limit" label="最大扫描条数" initialValue={5000} rules={[{ required: true }]}>

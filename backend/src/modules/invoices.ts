@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { PDFDocument } from 'pdf-lib'
 import { requireAnyPerm, requirePerm } from '../auth'
 import { hasPg, pgDelete, pgInsert, pgPool, pgRunInTransaction, pgSelect, pgUpdate } from '../dbAdapter'
-import { hasR2, r2Upload } from '../r2'
+import { hasR2, r2DeleteByUrl, r2Upload } from '../r2'
 import { addAudit, db, roleHasPermission } from '../store'
 import { v4 as uuid } from 'uuid'
 import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
@@ -283,6 +283,11 @@ async function roleHasPermAsync(roleName: string, code: string) {
 function round2(n: any) {
   const x = Number(n || 0)
   return Math.round(x * 100) / 100
+}
+
+function isInvoiceRepairPhotoKind(kind: any) {
+  const k = String(kind || '').trim().toLowerCase()
+  return k === 'repair_before_photo' || k === 'repair_after_photo'
 }
  
 type GstType = 'GST_10' | 'GST_INCLUDED_10' | 'GST_FREE' | 'INPUT_TAXED'
@@ -659,6 +664,7 @@ router.get('/landlord-options', requireAnyPerm(['invoice.view','invoice.draft.cr
         property_id: propertyId,
         property_code: propertyCode,
         property_address: propertyAddress,
+        property_region: String(p?.region || '').trim() || null,
         landlord_id: landlordId || null,
         landlord_name: landlordName || null,
       }
@@ -671,7 +677,18 @@ router.get('/landlord-options', requireAnyPerm(['invoice.view','invoice.draft.cr
         })
       : out
 
-    filtered.sort((a: any, b: any) => String(a.property_code || '').localeCompare(String(b.property_code || ''), 'en', { numeric: true, sensitivity: 'base' }))
+    const regionOrder = ['Melbourne', 'Southbank', 'South Melbourne', 'West Melbourne', 'St Kilda', 'Docklands']
+    const regionRank = (region?: string | null) => {
+      const value = String(region || '').trim()
+      const idx = regionOrder.indexOf(value)
+      return idx >= 0 ? idx : regionOrder.length + 1
+    }
+    filtered.sort((a: any, b: any) => {
+      const ra = regionRank(a?.property_region)
+      const rb = regionRank(b?.property_region)
+      if (ra !== rb) return ra - rb
+      return String(a.property_code || '').localeCompare(String(b.property_code || ''), 'en', { numeric: true, sensitivity: 'base' })
+    })
     return res.json(filtered.slice(0, 500))
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'list_failed' })
@@ -1466,7 +1483,7 @@ async function buildDraftForSource(source_type: string, source_id: string) {
     }
   }
 
-  const exp = await pgPool!.query('SELECT * FROM property_expenses WHERE id=$1 LIMIT 1', [source_id])
+  const exp = await pgPool!.query('SELECT * FROM property_expenses WHERE id=$1 AND deleted_at IS NULL LIMIT 1', [source_id])
   const e = exp?.rows?.[0]
   if (!e) throw new Error('source_not_found')
   const amount = round2(e.amount || 0)
@@ -1566,6 +1583,13 @@ router.post('/:id/files/upload', requireAnyPerm(['invoice.draft.create','invoice
     await ensureInvoiceTables()
     const user = (req as any).user || {}
     const actor = user?.sub || user?.username || null
+    const invRows = await pgSelect('invoices', '*', { id })
+    const invoice = Array.isArray(invRows) ? invRows[0] : null
+    if (!invoice) return res.status(404).json({ message: 'not_found' })
+    const kind = String((req.body || {}).kind || 'pdf').trim() || 'pdf'
+    if (isInvoiceRepairPhotoKind(kind) && !/^image\//i.test(String(req.file.mimetype || ''))) {
+      return res.status(400).json({ message: 'unsupported_file_type' })
+    }
     const img = (req.file as any).buffer
       ? await resizeUploadImage({ buffer: (req.file as any).buffer, contentType: req.file.mimetype, originalName: req.file.originalname })
       : { buffer: (req.file as any).buffer, contentType: req.file.mimetype, ext: path.extname(req.file.originalname) || '' }
@@ -1585,7 +1609,7 @@ router.post('/:id/files/upload', requireAnyPerm(['invoice.draft.create','invoice
     const rec: any = {
       id: uuid(),
       invoice_id: id,
-      kind: String((req.body || {}).kind || 'pdf'),
+      kind,
       url,
       file_name: req.file.originalname,
       mime_type: req.file.mimetype,
@@ -1597,6 +1621,37 @@ router.post('/:id/files/upload', requireAnyPerm(['invoice.draft.create','invoice
     return res.status(201).json(row)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'upload_failed' })
+  }
+})
+
+router.delete('/:id/files/:fileId', requireAnyPerm(['invoice.draft.create','invoice.issue','invoice.send']), async (req, res) => {
+  const { id, fileId } = req.params
+  try {
+    await ensureInvoiceTables()
+    const user = (req as any).user || {}
+    const actor = user?.sub || user?.username || null
+    const invRows = await pgSelect('invoices', '*', { id })
+    const invoice = Array.isArray(invRows) ? invRows[0] : null
+    if (!invoice) return res.status(404).json({ message: 'not_found' })
+    const rows = await pgSelect('invoice_files', '*', { id: fileId, invoice_id: id })
+    const row = Array.isArray(rows) ? rows[0] : null
+    if (!row) return res.status(404).json({ message: 'file_not_found' })
+
+    const url = String(row.url || '').trim()
+    if (url) {
+      if (hasR2 && /^https?:\/\//i.test(url)) {
+        await r2DeleteByUrl(url)
+      } else if (url.startsWith('/uploads/')) {
+        const full = path.join(process.cwd(), url.replace(/^\//, ''))
+        try { await fs.promises.unlink(full) } catch {}
+      }
+    }
+
+    await pgDelete('invoice_files', fileId)
+    addAudit('Invoice', id, 'delete_file', row, null, actor, { ip: req.ip, user_agent: req.headers['user-agent'] })
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(400).json({ message: e?.message || 'delete_file_failed' })
   }
 })
 

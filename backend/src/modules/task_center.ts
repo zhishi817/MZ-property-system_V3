@@ -296,6 +296,10 @@ function isCheckinOnlyTask(task: { task_type?: string | null; title?: string | n
   return taskType === 'checkin_clean' || (label.includes('入住') && !label.includes('退房'))
 }
 
+function requiresCleanerAssignment(task: { task_type?: string | null; title?: string | null; task_ids?: string[] }) {
+  return !isCheckinOnlyTask(task)
+}
+
 function inspectionModeOf(task: any) {
   const raw = lower(task.inspection_mode)
   if (raw === 'pending_decision' || raw === 'same_day' || raw === 'self_complete' || raw === 'deferred') return raw
@@ -1025,6 +1029,7 @@ function buildEntryReadiness(tasks: BoardTask[]) {
   const cleaningTasks = tasks.filter((task) => task.task_source === 'cleaning')
   const unresolvedPrimary = cleaningTasks.filter((task) => {
     if (task.temporarily_skipped || task.deferred_inspection_view) return false
+    if (!requiresCleanerAssignment(task)) return false
     return !text(task.cleaner_id || task.assignee_id)
   })
   const pendingInspection = cleaningTasks.filter((task) => {

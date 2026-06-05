@@ -3,10 +3,11 @@ import { Card, Space, Select, DatePicker, Input, Button, Typography, Tag, Grid }
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { getJSON } from '../../../lib/api'
+import { sortProperties } from '../../../lib/properties'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, CartesianGrid, LineChart, Line } from 'recharts'
 
 export default function MaintenanceOverviewPage() {
-  const [props, setProps] = useState<{ id: string; code?: string }[]>([])
+  const [props, setProps] = useState<{ id: string; code?: string; region?: string | null }[]>([])
   const [filterPropertyId, setFilterPropertyId] = useState<string | undefined>(undefined)
   const [filterStatus, setFilterStatus] = useState<string | undefined>(undefined)
   const [filterCat, setFilterCat] = useState<string | undefined>(undefined)
@@ -18,7 +19,7 @@ export default function MaintenanceOverviewPage() {
   const screens = Grid.useBreakpoint()
   const isMobile = !screens.md
 
-  const propOptions = useMemo(() => (props || []).map(p => ({ value: p.id, label: p.code || p.id })), [props])
+  const propOptions = useMemo(() => sortProperties(props || []).map(p => ({ value: p.id, label: p.code || p.id })), [props])
   const catOptions = ['入户走廊','客厅','厨房','卧室','阳台','浴室','其他'].map(x => ({ value: x, label: x }))
   const statusOptions = [
     { value: 'pending', label: '待维修' },

@@ -6,14 +6,14 @@ import utc from 'dayjs/plugin/utc'
 import timezone from 'dayjs/plugin/timezone'
 import { useEffect, useRef, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
-import { sortProperties } from '../../../lib/properties'
+import { sortActivePropertiesByRegionThenCode } from '../../../lib/properties'
 import { isDueForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
 import { isAutoPaidInRent } from '../../../lib/recurringPaymentRules'
 import AuditTrail from '../../../components/AuditTrail'
 
-type Recurring = { id: string; property_id?: string; property_ids?: string[]; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; is_paid?: boolean; is_due_month?: boolean; created_at?: string }
+type Recurring = { id: string; property_id?: string; property_ids?: string[]; scope?: 'company'|'property'; vendor?: string; category?: string; amount?: number; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; template_kind?: string; bill_account_no?: string; note?: string; is_paid?: boolean; is_due_month?: boolean; created_at?: string }
 type ExpenseRow = { id: string; fixed_expense_id?: string; month_key?: string; due_date?: string; paid_date?: string; status?: string; property_id?: string; category?: string; amount?: number }
-type Property = { id: string; code?: string; address?: string; region?: string }
+type Property = { id: string; code?: string; address?: string; region?: string; archived?: boolean | null }
 type RecurringPageState = { monthKey?: string; searchText?: string; tablePage?: number; tablePageSize?: number }
 
 const RECURRING_PAGE_STATE_KEY = 'mz.finance.recurring.pageState.v1'
@@ -79,7 +79,7 @@ export default function RecurringPage() {
   async function fetchRecurringPayments() {
     const resp = await fetch(`${API_BASE}/crud/recurring_payments`, { headers: authHeaders(), cache: 'no-store' })
     const rows = resp.ok ? await resp.json().catch(()=>[]) : []
-    return Array.isArray(rows) ? rows : []
+    return Array.isArray(rows) ? rows.filter((row: any) => String(row?.template_kind || 'fixed_expense') !== 'property_payable') : []
   }
   async function fetchProperties() {
     const props = await getJSON<Property[]>('/properties?include_archived=true').catch(()=>[])
@@ -788,7 +788,7 @@ export default function RecurringPage() {
                           showSearch
                           optionFilterProp="label"
                           filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())}
-                          options={sortProperties(properties||[]).map(p=>({ value:p.id, label:p.code||p.address||p.id }))}
+                          options={sortActivePropertiesByRegionThenCode(properties||[]).map(p=>({ value:p.id, label:p.code||p.address||p.id }))}
                         />
                       </Form.Item>
                     </Col>
@@ -802,7 +802,7 @@ export default function RecurringPage() {
                         showSearch
                         optionFilterProp="label"
                         filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())}
-                        options={sortProperties(properties||[]).map(p=>({ value:p.id, label:p.code||p.address||p.id }))}
+                        options={sortActivePropertiesByRegionThenCode(properties||[]).map(p=>({ value:p.id, label:p.code||p.address||p.id }))}
                       />
                     </Form.Item>
                   </Col>

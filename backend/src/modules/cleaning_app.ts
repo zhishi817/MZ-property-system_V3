@@ -89,6 +89,20 @@ async function listInspectionPhotoUrls(taskId: string) {
   }
 }
 
+function normalizeStoredPhotoUrls(raw: any, fallback?: any) {
+  if (Array.isArray(raw)) return Array.from(new Set(raw.map((item) => String(item || '').trim()).filter(Boolean)))
+  const text = String(raw || '').trim()
+  if (text) {
+    try {
+      const parsed = JSON.parse(text)
+      if (Array.isArray(parsed)) return Array.from(new Set(parsed.map((item) => String(item || '').trim()).filter(Boolean)))
+    } catch {}
+    if (/^https?:\/\//i.test(text)) return [text]
+  }
+  const fallbackText = String(fallback || '').trim()
+  return fallbackText ? [fallbackText] : []
+}
+
 async function listDayEndManagerUserIds() {
   const { listManagerUserIds } = require('./notifications')
   return await listManagerUserIds()
@@ -502,6 +516,7 @@ const consumableSchema = z.object({
       qty: z.number().int().min(1).optional(),
       note: z.string().optional(),
       photo_url: z.string().optional(),
+      photo_urls: z.array(z.string().trim().min(1).max(800)).max(12).optional(),
     }),
   ),
 })
@@ -511,8 +526,11 @@ router.get('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), a
     if (!hasPg) return res.json({ items: [] })
     const { pgPool } = require('../dbAdapter')
     if (!pgPool) return res.json({ items: [] })
+    try {
+      await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_urls text;`)
+    } catch {}
     const rows = await pgPool.query(
-      `SELECT id, item_id, qty, need_restock, note, status, photo_url, item_label, created_at
+      `SELECT id, item_id, qty, need_restock, note, status, photo_url, photo_urls, item_label, created_at
        FROM cleaning_consumable_usages
        WHERE task_id = $1
        ORDER BY created_at ASC, id ASC`,
@@ -537,6 +555,7 @@ router.get('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), a
         note: x.note == null ? null : String(x.note),
         status: String(x.status || ''),
         photo_url: x.photo_url == null ? null : String(x.photo_url),
+        photo_urls: normalizeStoredPhotoUrls(x.photo_urls, x.photo_url),
         item_label: x.item_label == null ? null : String(x.item_label),
         created_at: x.created_at == null ? null : String(x.created_at),
       })),
@@ -570,6 +589,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
           );`)
           await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS status text;`)
           await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_url text;`)
+          await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_urls text;`)
           await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS item_label text;`)
         } catch {}
       }
@@ -598,7 +618,8 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
       for (const row of parsed.data.items) {
         const meta: any = byId.get(String(row.item_id)) || null
         const requiresPhoto = meta ? !!meta.requires_photo_when_low : true
-        if (row.status === 'low' && requiresPhoto && !String(row.photo_url || '').trim()) {
+        const photoUrls = normalizeStoredPhotoUrls(row.photo_urls, row.photo_url)
+        if (row.status === 'low' && requiresPhoto && !photoUrls.length) {
           return res.status(400).json({ message: '不足项必须拍照', item_id: row.item_id })
         }
         if (row.status === 'low' && (!row.qty || row.qty < 1)) {
@@ -614,6 +635,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
 
       for (const it of parsed.data.items) {
         const meta: any = byId.get(String(it.item_id)) || null
+        const photoUrls = normalizeStoredPhotoUrls(it.photo_urls, it.photo_url)
         const row = {
           id: require('uuid').v4(),
           task_id: id,
@@ -622,7 +644,8 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
           need_restock: it.status === 'low',
           note: it.note || null,
           status: it.status,
-          photo_url: it.photo_url || null,
+          photo_url: photoUrls[0] || null,
+          photo_urls: photoUrls.length ? JSON.stringify(photoUrls) : null,
           item_label: meta ? String(meta.label || '') : null,
         }
         await pgInsert('cleaning_consumable_usages', row as any)
@@ -638,7 +661,8 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
             label: meta ? String(meta.label || it.item_id || '').trim() : String(it.item_id || '').trim(),
             qty,
             status: 'low',
-            photo_url: String(it.photo_url || '').trim() || null,
+            photo_url: normalizeStoredPhotoUrls(it.photo_urls, it.photo_url)[0] || null,
+            photo_urls: normalizeStoredPhotoUrls(it.photo_urls, it.photo_url),
             note: it.note == null ? null : String(it.note || '').trim(),
           }
         })
@@ -887,10 +911,22 @@ async function ensureCleaningDayEndHandoverTable() {
       user_id text NOT NULL,
       date date NOT NULL,
       no_dirty_linen boolean NOT NULL DEFAULT false,
+      no_warehouse_key boolean NOT NULL DEFAULT false,
       submitted_at timestamptz NOT NULL DEFAULT now(),
+      key_submitted_at timestamptz,
+      dirty_linen_submitted_at timestamptz,
+      warehouse_key_submitted_at timestamptz,
+      consumable_submitted_at timestamptz,
+      reject_submitted_at timestamptz,
       updated_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (user_id, date)
     );`)
+    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS no_warehouse_key boolean NOT NULL DEFAULT false;`)
+    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS key_submitted_at timestamptz;`)
+    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS dirty_linen_submitted_at timestamptz;`)
+    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS warehouse_key_submitted_at timestamptz;`)
+    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS consumable_submitted_at timestamptz;`)
+    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS reject_submitted_at timestamptz;`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_day_end_handover_date ON cleaning_day_end_handover(date);`)
     await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_day_end_reject_items (
       id text PRIMARY KEY,
@@ -1295,6 +1331,7 @@ const restockProofSchema = z
         qty: z.number().int().min(1).optional().nullable(),
         note: z.string().trim().max(800).optional().nullable(),
         proof_url: z.string().trim().min(1).optional().nullable(),
+        proof_urls: z.array(z.string().trim().min(1).max(800)).max(12).optional(),
       }),
     ),
   })
@@ -1314,7 +1351,8 @@ router.get('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fin
          ORDER BY created_at ASC`,
         [id],
       )
-      const items = (r?.rows || []).map((x: any) => {
+      const grouped = new Map<string, any>()
+      for (const x of r?.rows || []) {
         const type = String(x.type || '')
         const itemId = type.includes(':') ? type.split(':').slice(1).join(':') : type
         let meta: any = null
@@ -1322,18 +1360,24 @@ router.get('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fin
           const raw = String(x.note || '').trim()
           meta = raw && (raw.startsWith('{') || raw.startsWith('[')) ? JSON.parse(raw) : null
         } catch {}
-        return {
+        const proofUrl = (() => {
+          const u = String(x.url || '').trim()
+          return u && /^https?:\/\//i.test(u) ? u : null
+        })()
+        const prev = grouped.get(itemId) || {
           item_id: itemId,
-          proof_url: (() => {
-            const u = String(x.url || '').trim()
-            return u && /^https?:\/\//i.test(u) ? u : null
-          })(),
+          proof_url: null,
+          proof_urls: [] as string[],
           status: meta?.status == null ? null : String(meta.status || ''),
           qty: meta?.qty == null ? null : Number(meta.qty),
           note: meta?.note == null ? null : String(meta.note || ''),
           created_at: x.created_at ? String(x.created_at) : null,
         }
-      })
+        if (proofUrl && !prev.proof_urls.includes(proofUrl)) prev.proof_urls.push(proofUrl)
+        prev.proof_url = prev.proof_urls[0] || null
+        grouped.set(itemId, prev)
+      }
+      const items = Array.from(grouped.values())
       return res.json({ items })
     }
     return res.json({ items: [] })
@@ -1363,12 +1407,15 @@ router.post('/tasks/:id/restock-proof', requireAnyPerm(['cleaning_app.inspect.fi
       await pgPool.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'restock_proof:%'`, [id])
       for (const it of parsed.data.items) {
         const meta = { status: it.status, qty: it.qty == null ? null : Number(it.qty), note: it.note == null ? null : String(it.note || '') }
-        const url = String(it.proof_url || '').trim()
-        await pgPool.query(
-          `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
-           VALUES ($1,$2,$3,$4,$5,now())`,
-          [uuid.v4(), id, `restock_proof:${it.item_id}`, url || 'no_photo', JSON.stringify(meta)],
-        )
+        const proofUrls = normalizeStoredPhotoUrls(it.proof_urls, it.proof_url)
+        const urlsToPersist = it.status === 'unavailable' ? ['no_photo'] : (proofUrls.length ? proofUrls : ['no_photo'])
+        for (const url of urlsToPersist) {
+          await pgPool.query(
+            `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at)
+             VALUES ($1,$2,$3,$4,$5,now())`,
+            [uuid.v4(), id, `restock_proof:${it.item_id}`, url, JSON.stringify(meta)],
+          )
+        }
       }
       try { broadcastCleaningEvent({ event: 'restock_proof_saved', task_id: id }) } catch {}
       try {
@@ -1520,9 +1567,11 @@ router.get('/property-codes', requireAnyPerm(['cleaning_app.tasks.finish', 'clea
 const dayEndHandoverPostSchema = z
   .object({
     date: z.string().trim().min(10).max(32),
+    section: z.enum(['all', 'key', 'dirty_linen', 'return_wash', 'warehouse_key', 'consumable', 'reject']).optional(),
     key_photos: z.array(z.object({ url: z.string().trim().min(1).max(800), captured_at: z.string().trim().max(64).optional() })).max(30).default([]),
     dirty_linen_photos: z.array(z.object({ url: z.string().trim().min(1).max(800), captured_at: z.string().trim().max(64).optional() })).max(30).default([]),
     return_wash_photos: z.array(z.object({ url: z.string().trim().min(1).max(800), captured_at: z.string().trim().max(64).optional() })).max(30).default([]),
+    warehouse_key_photos: z.array(z.object({ url: z.string().trim().min(1).max(800), captured_at: z.string().trim().max(64).optional() })).max(30).default([]),
     consumable_photos: z.array(z.object({ url: z.string().trim().min(1).max(800), captured_at: z.string().trim().max(64).optional() })).max(30).default([]),
     reject_items: z.array(z.object({
       linen_type: z.string().trim().min(1).max(80),
@@ -1531,6 +1580,7 @@ const dayEndHandoverPostSchema = z
       photos: z.array(z.object({ url: z.string().trim().min(1).max(800), captured_at: z.string().trim().max(64).optional() })).min(1).max(10),
     })).max(30).default([]),
     no_dirty_linen: z.boolean().optional(),
+    no_warehouse_key: z.boolean().optional(),
   })
   .strict()
 
@@ -1575,9 +1625,9 @@ router.get('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cl
   const parsed = dayEndHandoverListSchema.safeParse(req.query || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   try {
-    if (!hasPg) return res.json({ key_photos: [], dirty_linen_photos: [], return_wash_photos: [], consumable_photos: [], reject_items: [], no_dirty_linen: false, submitted_at: null, updated_at: null })
+    if (!hasPg) return res.json({ key_photos: [], dirty_linen_photos: [], return_wash_photos: [], warehouse_key_photos: [], consumable_photos: [], reject_items: [], no_dirty_linen: false, no_warehouse_key: false, submitted_at: null, updated_at: null })
     const { pgPool } = require('../dbAdapter')
-    if (!pgPool) return res.json({ key_photos: [], dirty_linen_photos: [], return_wash_photos: [], consumable_photos: [], reject_items: [], no_dirty_linen: false, submitted_at: null, updated_at: null })
+    if (!pgPool) return res.json({ key_photos: [], dirty_linen_photos: [], return_wash_photos: [], warehouse_key_photos: [], consumable_photos: [], reject_items: [], no_dirty_linen: false, no_warehouse_key: false, submitted_at: null, updated_at: null })
     await ensureCleaningDayEndHandoverTable()
     const date = String(parsed.data.date || '').slice(0, 10)
     const canAll = canViewDayEndForAllUsers(user)
@@ -1589,12 +1639,13 @@ router.get('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cl
          FROM cleaning_day_end_media
          WHERE user_id = $1::text
            AND ($2::date IS NULL OR date = $2::date)
-           AND kind IN ('backup_key_return', 'dirty_linen_return', 'return_wash_linen', 'remaining_consumables')
+           AND kind IN ('backup_key_return', 'dirty_linen_return', 'return_wash_linen', 'warehouse_key_return', 'remaining_consumables')
          ORDER BY created_at ASC`,
         [userId, date ? date : null],
       ),
       pgPool.query(
-        `SELECT no_dirty_linen, submitted_at, updated_at
+        `SELECT no_dirty_linen, no_warehouse_key, submitted_at, updated_at,
+                key_submitted_at, dirty_linen_submitted_at, warehouse_key_submitted_at, consumable_submitted_at, reject_submitted_at
          FROM cleaning_day_end_handover
          WHERE user_id = $1::text
            AND ($2::date IS NULL OR date = $2::date)
@@ -1639,6 +1690,14 @@ router.get('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cl
         captured_at: x.captured_at ? String(x.captured_at) : null,
         created_at: x.created_at ? String(x.created_at) : null,
       }))
+    const warehouse_key_photos = rows
+      .filter((x: any) => String(x.kind || '') === 'warehouse_key_return')
+      .map((x: any) => ({
+        id: String(x.id || ''),
+        url: String(x.url || ''),
+        captured_at: x.captured_at ? String(x.captured_at) : null,
+        created_at: x.created_at ? String(x.created_at) : null,
+      }))
     const reject_items = (rejectRes?.rows || []).map((x: any) => ({
       id: String(x.id || ''),
       linen_type: String(x.linen_type || ''),
@@ -1657,10 +1716,17 @@ router.get('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cl
       key_photos,
       dirty_linen_photos: return_wash_photos,
       return_wash_photos,
+      warehouse_key_photos,
       consumable_photos,
       reject_items,
       no_dirty_linen: !!statusRow?.no_dirty_linen,
+      no_warehouse_key: !!statusRow?.no_warehouse_key,
       submitted_at: statusRow?.submitted_at ? String(statusRow.submitted_at) : null,
+      key_submitted_at: statusRow?.key_submitted_at ? String(statusRow.key_submitted_at) : null,
+      dirty_linen_submitted_at: statusRow?.dirty_linen_submitted_at ? String(statusRow.dirty_linen_submitted_at) : null,
+      warehouse_key_submitted_at: statusRow?.warehouse_key_submitted_at ? String(statusRow.warehouse_key_submitted_at) : null,
+      consumable_submitted_at: statusRow?.consumable_submitted_at ? String(statusRow.consumable_submitted_at) : null,
+      reject_submitted_at: statusRow?.reject_submitted_at ? String(statusRow.reject_submitted_at) : null,
       updated_at: statusRow?.updated_at ? String(statusRow.updated_at) : null,
     })
   } catch (e: any) {
@@ -1716,81 +1782,109 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
     const uuid = require('uuid')
     const userId = String(user.sub || '').trim()
     const date = String(parsed.data.date || '').slice(0, 10)
+    const section = String(parsed.data.section || 'all').trim() as 'all' | 'key' | 'dirty_linen' | 'return_wash' | 'warehouse_key' | 'consumable' | 'reject'
+    const isAllSection = section === 'all'
+    const writesKey = isAllSection || section === 'key'
+    const writesReturnWash = isAllSection || section === 'dirty_linen' || section === 'return_wash'
+    const writesWarehouseKey = isAllSection || section === 'warehouse_key'
+    const writesConsumable = isAllSection || section === 'consumable'
+    const writesReject = isAllSection || section === 'reject'
     const keyPhotos = Array.isArray(parsed.data.key_photos) ? parsed.data.key_photos : []
     const returnWashPhotos = Array.isArray(parsed.data.return_wash_photos) && parsed.data.return_wash_photos.length
       ? parsed.data.return_wash_photos
       : (Array.isArray(parsed.data.dirty_linen_photos) ? parsed.data.dirty_linen_photos : [])
+    const warehouseKeyPhotos = Array.isArray(parsed.data.warehouse_key_photos) ? parsed.data.warehouse_key_photos : []
     const consumablePhotos = Array.isArray(parsed.data.consumable_photos) ? parsed.data.consumable_photos : []
     const rejectItems = Array.isArray(parsed.data.reject_items) ? parsed.data.reject_items : []
     const noDirtyLinen = !!parsed.data.no_dirty_linen
+    const noWarehouseKey = !!parsed.data.no_warehouse_key
     const inspectorOnlyDayEnd = isInspectorOnlyDayEndUser(user)
     if (inspectorOnlyDayEnd) {
-      if (!consumablePhotos.length) return res.status(400).json({ message: '请上传剩余消耗品照片' })
+      if ((isAllSection || writesConsumable) && !consumablePhotos.length) return res.status(400).json({ message: '请上传剩余消耗品照片' })
     } else {
-      if (!keyPhotos.length) return res.status(400).json({ message: '请先上传备用钥匙照片' })
-      if (!returnWashPhotos.length && !noDirtyLinen) return res.status(400).json({ message: '请上传退洗床品照片' })
+      if (writesKey && !keyPhotos.length) return res.status(400).json({ message: '请先上传备用钥匙照片' })
+      if (writesReturnWash && !returnWashPhotos.length && !noDirtyLinen) return res.status(400).json({ message: '请上传退洗床品照片' })
+      if (section === 'warehouse_key' && !warehouseKeyPhotos.length && !noWarehouseKey) return res.status(400).json({ message: '请上传仓库钥匙照片，或选择今天未使用仓库钥匙' })
     }
 
     const client = await pgPool.connect()
     try {
       await client.query('BEGIN')
-      await client.query(
-        `DELETE FROM cleaning_day_end_media
-         WHERE user_id = $1::text
-           AND date = $2::date
-           AND kind IN ('backup_key_return', 'dirty_linen_return', 'return_wash_linen', 'remaining_consumables')`,
-        [userId, date],
-      )
-      await client.query(
-        `DELETE FROM cleaning_day_end_reject_items
-         WHERE user_id = $1::text
-           AND date = $2::date`,
-        [userId, date],
-      )
-      for (const it of keyPhotos) {
-        const cap = String(it.captured_at || '').trim()
-        const capturedAt = cap ? new Date(cap) : null
-        await client.query(
-          `INSERT INTO cleaning_day_end_media (id, user_id, date, kind, url, captured_at)
-           VALUES ($1,$2,$3,'backup_key_return',$4,$5)`,
-          [uuid.v4(), userId, date, String(it.url), capturedAt ? capturedAt.toISOString() : null],
-        )
+      const insertMediaItems = async (kind: string, items: any[]) => {
+        for (const it of items) {
+          const cap = String(it.captured_at || '').trim()
+          const capturedAt = cap ? new Date(cap) : null
+          await client.query(
+            `INSERT INTO cleaning_day_end_media (id, user_id, date, kind, url, captured_at)
+             VALUES ($1,$2,$3,$4,$5,$6)`,
+            [uuid.v4(), userId, date, kind, String(it.url), capturedAt ? capturedAt.toISOString() : null],
+          )
+        }
       }
-      for (const it of returnWashPhotos) {
-        const cap = String(it.captured_at || '').trim()
-        const capturedAt = cap ? new Date(cap) : null
-        await client.query(
-          `INSERT INTO cleaning_day_end_media (id, user_id, date, kind, url, captured_at)
-           VALUES ($1,$2,$3,'return_wash_linen',$4,$5)`,
-          [uuid.v4(), userId, date, String(it.url), capturedAt ? capturedAt.toISOString() : null],
-        )
+
+      if (writesKey) {
+        await client.query(`DELETE FROM cleaning_day_end_media WHERE user_id = $1::text AND date = $2::date AND kind = 'backup_key_return'`, [userId, date])
+        await insertMediaItems('backup_key_return', keyPhotos)
       }
-      for (const it of consumablePhotos) {
-        const cap = String(it.captured_at || '').trim()
-        const capturedAt = cap ? new Date(cap) : null
-        await client.query(
-          `INSERT INTO cleaning_day_end_media (id, user_id, date, kind, url, captured_at)
-           VALUES ($1,$2,$3,'remaining_consumables',$4,$5)`,
-          [uuid.v4(), userId, date, String(it.url), capturedAt ? capturedAt.toISOString() : null],
-        )
+      if (writesReturnWash) {
+        await client.query(`DELETE FROM cleaning_day_end_media WHERE user_id = $1::text AND date = $2::date AND kind IN ('dirty_linen_return', 'return_wash_linen')`, [userId, date])
+        await insertMediaItems('return_wash_linen', returnWashPhotos)
       }
-      for (const it of rejectItems) {
-        const photos = (Array.isArray(it.photos) ? it.photos : []).map((p: any) => ({
-          url: String(p?.url || ''),
-          captured_at: String(p?.captured_at || '').trim() || null,
-        })).filter((p: any) => !!p.url)
+      if (writesWarehouseKey) {
+        await client.query(`DELETE FROM cleaning_day_end_media WHERE user_id = $1::text AND date = $2::date AND kind = 'warehouse_key_return'`, [userId, date])
+        await insertMediaItems('warehouse_key_return', warehouseKeyPhotos)
+      }
+      if (writesConsumable) {
+        await client.query(`DELETE FROM cleaning_day_end_media WHERE user_id = $1::text AND date = $2::date AND kind = 'remaining_consumables'`, [userId, date])
+        await insertMediaItems('remaining_consumables', consumablePhotos)
+      }
+      if (writesReject) {
         await client.query(
-          `INSERT INTO cleaning_day_end_reject_items (id, user_id, date, linen_type, quantity, used_room, photos_json, created_at, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,now(),now())`,
-          [uuid.v4(), userId, date, String(it.linen_type || ''), Number(it.quantity || 0) || 1, String(it.used_room || ''), JSON.stringify(photos)],
+          `DELETE FROM cleaning_day_end_reject_items
+           WHERE user_id = $1::text
+             AND date = $2::date`,
+          [userId, date],
         )
+        for (const it of rejectItems) {
+          const photos = (Array.isArray(it.photos) ? it.photos : []).map((p: any) => ({
+            url: String(p?.url || ''),
+            captured_at: String(p?.captured_at || '').trim() || null,
+          })).filter((p: any) => !!p.url)
+          await client.query(
+            `INSERT INTO cleaning_day_end_reject_items (id, user_id, date, linen_type, quantity, used_room, photos_json, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,now(),now())`,
+            [uuid.v4(), userId, date, String(it.linen_type || ''), Number(it.quantity || 0) || 1, String(it.used_room || ''), JSON.stringify(photos)],
+          )
+        }
       }
       await client.query(
-        `INSERT INTO cleaning_day_end_handover (user_id, date, no_dirty_linen, submitted_at, updated_at)
-         VALUES ($1,$2,$3,now(),now())
+        `INSERT INTO cleaning_day_end_handover (user_id, date, no_dirty_linen, no_warehouse_key, submitted_at, updated_at)
+         VALUES ($1,$2,$3,$4,now(),now())
          ON CONFLICT (user_id, date)
-         DO UPDATE SET no_dirty_linen = EXCLUDED.no_dirty_linen, submitted_at = now(), updated_at = now()`,
-        [userId, date, noDirtyLinen],
+         DO UPDATE SET submitted_at = now(), updated_at = now()`,
+        [userId, date, noDirtyLinen, noWarehouseKey],
+      )
+      const statusSets: string[] = ['submitted_at = now()', 'updated_at = now()']
+      const statusParams: any[] = [userId, date]
+      if (writesKey) statusSets.push('key_submitted_at = now()')
+      if (writesReturnWash) {
+        statusParams.push(noDirtyLinen)
+        statusSets.push(`no_dirty_linen = $${statusParams.length}`)
+        statusSets.push('dirty_linen_submitted_at = now()')
+      }
+      if (writesWarehouseKey) {
+        statusParams.push(noWarehouseKey)
+        statusSets.push(`no_warehouse_key = $${statusParams.length}`)
+        statusSets.push('warehouse_key_submitted_at = now()')
+      }
+      if (writesConsumable) statusSets.push('consumable_submitted_at = now()')
+      if (writesReject) statusSets.push('reject_submitted_at = now()')
+      await client.query(
+        `UPDATE cleaning_day_end_handover
+            SET ${statusSets.join(', ')}
+          WHERE user_id = $1::text
+            AND date = $2::date`,
+        statusParams,
       )
       await client.query('COMMIT')
     } catch (e) {
@@ -1801,16 +1895,18 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
     }
     try {
       const { syncDayEndRejectLinenUsage } = require('./inventory')
-      await syncDayEndRejectLinenUsage({
-        userId,
-        date,
-        actorId: String(user.sub || '').trim() || null,
-        rejectItems: rejectItems.map((item: any) => ({
-          linen_type: String(item?.linen_type || '').trim(),
-          quantity: Number(item?.quantity || 0) || 0,
-          used_room: String(item?.used_room || '').trim(),
-        })),
-      })
+      if (writesReject) {
+        await syncDayEndRejectLinenUsage({
+          userId,
+          date,
+          actorId: String(user.sub || '').trim() || null,
+          rejectItems: rejectItems.map((item: any) => ({
+            linen_type: String(item?.linen_type || '').trim(),
+            quantity: Number(item?.quantity || 0) || 0,
+            used_room: String(item?.used_room || '').trim(),
+          })),
+        })
+      }
     } catch {}
     try {
       const managerIds = await listDayEndManagerUserIds()
@@ -1823,7 +1919,7 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
           entityId: `day_end_handover_submitted:${date}:${actorId}`,
           updatedAt: new Date().toISOString(),
           title: '日终交接已提交',
-          body: `${actorName} 已提交 ${date} 的日终交接，可进入查看内容。`,
+          body: `${actorName} 已更新 ${date} 的日终交接，可进入查看内容。`,
           recipientUserIds: managerIds,
           priority: 'medium',
           data: {
@@ -1833,6 +1929,7 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
             target_user_id: actorId,
             target_user_name: actorName,
             handover_status: 'submitted',
+            section,
             event_id: `day_end_handover_submitted:${date}:${actorId}`,
           },
         })

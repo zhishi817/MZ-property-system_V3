@@ -3,6 +3,8 @@ import { Table, Card, Button, Modal, Form, Input, InputNumber, Select, message, 
 import React, { useEffect, useState } from 'react'
 import { API_BASE } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
+import PropertyPayableTemplatesForm from '../../components/PropertyPayableTemplatesForm'
+import { hydratePropertyPayableTemplatesForForm, normalizePropertyPayableTemplates, propertyPayableCategoryLabel, propertyPayablePaymentTypeLabel } from '../../lib/propertyPayables'
 
 type Property = { id: string; code?: string; address: string; type: string; capacity: number; region?: string; area_sqm?: number; landlord_id?: string }
 
@@ -96,7 +98,7 @@ export default function PropertiesPage() {
     const booking_listing_name = v.listing_booking || ''
     const listing_names = { other: v.listing_other || '' }
     if (![airbnb_listing_name, booking_listing_name, listing_names.other].some(x => String(x || '').trim())) { message.error('请至少填写一个平台的 Listing 名称'); return }
-    const payload = { code: v.code, address: v.address, type: v.type, capacity: v.capacity, region: v.region === '其他' ? (v.region_other || '') : v.region, area_sqm: v.area_sqm, landlord_id: v.landlord_id, biz_category: v.biz_category, bed_config, aircon_model: v.aircon_model, bedroom_ac: v.bedroom_ac, access_guide_link: v.access_guide_link, garage_guide_link: v.garage_guide_link, building_name: v.building_name, building_facilities: v.building_facilities, building_facility_other: v.building_facility_other, building_contact_name: v.building_contact_name, building_contact_phone: v.building_contact_phone, building_contact_email: v.building_contact_email, tv_model: v.tv_model, notes: v.notes, listing_names, airbnb_listing_name, booking_listing_name }
+    const payload = { code: v.code, address: v.address, type: v.type, capacity: v.capacity, region: v.region === '其他' ? (v.region_other || '') : v.region, area_sqm: v.area_sqm, landlord_id: v.landlord_id, biz_category: v.biz_category, bed_config, aircon_model: v.aircon_model, bedroom_ac: v.bedroom_ac, access_guide_link: v.access_guide_link, garage_guide_link: v.garage_guide_link, building_name: v.building_name, building_facilities: v.building_facilities, building_facility_other: v.building_facility_other, building_contact_name: v.building_contact_name, building_contact_phone: v.building_contact_phone, building_contact_email: v.building_contact_email, tv_model: v.tv_model, notes: v.notes, listing_names, airbnb_listing_name, booking_listing_name, payable_templates: normalizePropertyPayableTemplates(v.payable_templates) }
     const res = await fetch(`${API_BASE}/properties`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('房源已创建'); setOpen(false); form.resetFields(); load() }
     else { let msg = '创建失败'; try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} } message.error(msg) }
@@ -106,7 +108,13 @@ export default function PropertiesPage() {
     setCurrent(record)
     const full = await fetch(`${API_BASE}/properties/${record.id}`).then(r => r.json()).catch(() => record)
     setEditOpen(true)
-    editForm.setFieldsValue({ ...full, listing_airbnb: full?.airbnb_listing_name || '', listing_booking: full?.booking_listing_name || '', listing_other: full?.listing_names?.other || '' })
+    editForm.setFieldsValue({
+      ...full,
+      payable_templates: hydratePropertyPayableTemplatesForForm(full?.payable_templates),
+      listing_airbnb: full?.airbnb_listing_name || '',
+      listing_booking: full?.booking_listing_name || '',
+      listing_other: full?.listing_names?.other || '',
+    })
     setTypeEdit(full?.type)
   }
 
@@ -141,7 +149,7 @@ export default function PropertiesPage() {
     const booking_listing_name = v.listing_booking || ''
     const listing_names = { other: v.listing_other || '' }
     if (![airbnb_listing_name, booking_listing_name, listing_names.other].some(x => String(x || '').trim())) { message.error('请至少填写一个平台的 Listing 名称'); return }
-    const payload = { ...v, region: v.region === '其他' ? (v.region_other || '') : v.region, bed_config, listing_names, airbnb_listing_name, booking_listing_name }
+    const payload = { ...v, region: v.region === '其他' ? (v.region_other || '') : v.region, bed_config, listing_names, airbnb_listing_name, booking_listing_name, payable_templates: normalizePropertyPayableTemplates(v.payable_templates) }
     const res = await fetch(`${API_BASE}/properties/${current?.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('房源已更新'); setEditOpen(false); load() }
     else { let msg = '更新失败'; try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { msg = await res.text() } catch {} } message.error(msg) }
@@ -343,6 +351,7 @@ export default function PropertiesPage() {
             <Col span={8}><Form.Item name="fireworks_view" label="可看新年烟花" valuePropName="checked"><Switch /></Form.Item></Col>
             <Col span={24}><Form.Item name="notes" label="其他备注"><Input.TextArea rows={3} /></Form.Item></Col>
           </Row>
+          <PropertyPayableTemplatesForm form={form} />
         </Form>
       </Modal>
       <Drawer title="房源详情" width={800} onClose={() => setDetailOpen(false)} open={detailOpen}>
@@ -393,6 +402,29 @@ export default function PropertiesPage() {
               <Descriptions.Item label="最后修改">{detail.updated_at || '-'}</Descriptions.Item>
               <Descriptions.Item label="修改人">{detail.updated_by_name || detail.updated_by || '-'}</Descriptions.Item>
             </Descriptions>
+
+            <Divider orientation="left">代付模板预设</Divider>
+            {Array.isArray(detail.payable_templates) && detail.payable_templates.length ? (
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                {detail.payable_templates.map((tpl: any, index: number) => (
+                  <Card key={tpl.id || index} size="small" title={`${tpl.vendor || '代付模板'}${tpl.status === 'paused' ? '（已暂停）' : ''}`}>
+                    <Descriptions bordered column={2} size="small">
+                      <Descriptions.Item label="类别">{propertyPayableCategoryLabel(tpl.category)}</Descriptions.Item>
+                      <Descriptions.Item label="默认金额">{tpl.amount != null ? `$${Number(tpl.amount || 0).toFixed(2)}` : '-'}</Descriptions.Item>
+                      <Descriptions.Item label="起始月份">{tpl.start_month_key || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="Account Number">{tpl.bill_account_no || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="到期日">{tpl.due_day_of_month ? `每月 ${tpl.due_day_of_month} 号` : '-'}</Descriptions.Item>
+                      <Descriptions.Item label="付款周期">{tpl.frequency_months ? `每 ${tpl.frequency_months} 月` : '-'}</Descriptions.Item>
+                      <Descriptions.Item label="付款方式">{propertyPayablePaymentTypeLabel(tpl.payment_type)}</Descriptions.Item>
+                      <Descriptions.Item label="收款方">{tpl.pay_account_name || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="模板备注" span={2}>{tpl.note || '-'}</Descriptions.Item>
+                    </Descriptions>
+                  </Card>
+                ))}
+              </Space>
+            ) : (
+              <div style={{ color: '#888' }}>未预设代付模板</div>
+            )}
           </>
         )}
       </Drawer>
@@ -473,6 +505,7 @@ export default function PropertiesPage() {
             <Col span={8}><Form.Item name="fireworks_view" label="可看新年烟花" valuePropName="checked"><Switch /></Form.Item></Col>
             <Col span={24}><Form.Item name="notes" label="其他备注"><Input.TextArea rows={3} /></Form.Item></Col>
           </Row>
+          <PropertyPayableTemplatesForm form={editForm} />
         </Form>
       </Drawer>
       <Modal open={batchOpen} onCancel={() => setBatchOpen(false)} onOk={submitBatch} title="批量编辑房源" width={800}>

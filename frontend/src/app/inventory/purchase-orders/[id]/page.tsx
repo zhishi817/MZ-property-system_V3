@@ -4,7 +4,7 @@ import { Card, Space, Button, Tag, Table, Modal, Form, InputNumber, message, Des
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { API_BASE, authHeaders, getJSON, patchJSON, postJSON } from '../../../../lib/api'
+import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../../../lib/api'
 import html2canvas from 'html2canvas'
 import jsPDF from 'jspdf'
 import dayjs from 'dayjs'
@@ -392,6 +392,26 @@ export default function PurchaseOrderDetailPage({ params }: any) {
     await load()
   }
 
+  function removeDelivery(row: Delivery) {
+    Modal.confirm({
+      title: '确定删除这条到货记录吗？',
+      content: '删除后会同步回滚这条记录对应的库存变动。',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        await deleteJSON(`/inventory/purchase-orders/${id}/deliveries/${row.id}`)
+        message.success('到货记录已删除')
+        if (editingDelivery?.id === row.id) {
+          setOpen(false)
+          setEditingDelivery(null)
+          deliveryForm.resetFields()
+        }
+        await load()
+      },
+    })
+  }
+
   function openDeliveryEditor(row: Delivery) {
     const deliveryLines = Array.isArray(row.lines) ? row.lines : []
     const deliveryByItem = new Map<string, DeliveryLine>(deliveryLines.map((line) => [String(line.item_id), line] as const))
@@ -658,7 +678,17 @@ export default function PurchaseOrderDetailPage({ params }: any) {
                 { title: '修改时间', dataIndex: 'updated_at', render: (v: string | null) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-' },
                 { title: '修改人', dataIndex: 'updated_by', render: (v: string | null) => v || '-' },
                 { title: '备注', dataIndex: 'note' },
-                { title: '操作', key: 'op', width: 100, render: (_: any, r: Delivery) => <Button onClick={() => openDeliveryEditor(r)}>编辑</Button> },
+                {
+                  title: '操作',
+                  key: 'op',
+                  width: 160,
+                  render: (_: any, r: Delivery) => (
+                    <Space>
+                      <Button onClick={() => openDeliveryEditor(r)}>编辑</Button>
+                      <Button danger onClick={() => removeDelivery(r)}>删除</Button>
+                    </Space>
+                  ),
+                },
               ]}
               dataSource={deliveries}
               pagination={false}

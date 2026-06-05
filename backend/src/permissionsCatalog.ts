@@ -833,6 +833,119 @@ const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
       '会记录推送 endpoint 等设备标识信息，需合规留存与可撤销',
     ],
   },
+  'cleaning_app.expense.company.submit': {
+    displayName: '清洁 App：提交公司支出（中）',
+    riskLevel: 'medium',
+    purpose: '允许在移动端新增公司支出并上传发票照片。',
+    scenarios: [
+      '现场或外勤人员录入公司层面的临时支出',
+      '补录发票照片并通过 OCR 回填基础字段',
+    ],
+    denyImpact: [
+      '无法在 App 新增公司支出',
+    ],
+    privacyRisk: [
+      '会写入金额、票据照片与备注，需控制授权范围',
+    ],
+  },
+  'cleaning_app.expense.company.view.self': {
+    displayName: '清洁 App：查看自己的公司支出（低）',
+    riskLevel: 'low',
+    purpose: '允许查看自己通过移动端提交的公司支出记录。',
+    scenarios: [
+      '核对自己提交的公司支出与票据',
+    ],
+    denyImpact: [
+      '无法在 App 查看自己提交的公司支出',
+    ],
+    privacyRisk: [
+      '可看到金额、票据照片与备注内容，仍需最小授权',
+    ],
+  },
+  'cleaning_app.expense.company.edit.self': {
+    displayName: '清洁 App：编辑自己的公司支出（中）',
+    riskLevel: 'medium',
+    purpose: '允许修改自己通过移动端提交的公司支出及发票照片。',
+    scenarios: [
+      '修正金额、日期、名称或补充票据照片',
+    ],
+    denyImpact: [
+      '无法在 App 修正自己误填的公司支出',
+    ],
+    privacyRisk: [
+      '修改财务数据会影响后续对账，需保留审计记录',
+    ],
+  },
+  'cleaning_app.expense.company.delete.self': {
+    displayName: '清洁 App：删除自己的公司支出（高危）',
+    riskLevel: 'high',
+    purpose: '允许在移动端删除自己提交的公司支出记录（前端表现为永久删除）。',
+    scenarios: [
+      '误录后移除自己提交的错误公司支出',
+    ],
+    denyImpact: [
+      '无法在 App 删除自己误录的公司支出',
+    ],
+    privacyRisk: [
+      '删除会影响财务可见性，必须依赖审计和软删除保留历史',
+    ],
+  },
+  'cleaning_app.expense.property.submit': {
+    displayName: '清洁 App：提交房源支出（中）',
+    riskLevel: 'medium',
+    purpose: '允许在移动端新增房源支出并上传发票照片。',
+    scenarios: [
+      '现场录入某个房源发生的支出并上传票据',
+    ],
+    denyImpact: [
+      '无法在 App 新增房源支出',
+    ],
+    privacyRisk: [
+      '会写入房源、金额、票据照片与备注，需控制岗位范围',
+    ],
+  },
+  'cleaning_app.expense.property.view.self': {
+    displayName: '清洁 App：查看自己的房源支出（低）',
+    riskLevel: 'low',
+    purpose: '允许查看自己通过移动端提交的房源支出记录。',
+    scenarios: [
+      '核对自己提交的房源支出与票据',
+    ],
+    denyImpact: [
+      '无法在 App 查看自己提交的房源支出',
+    ],
+    privacyRisk: [
+      '包含房源信息、金额与票据，需最小授权',
+    ],
+  },
+  'cleaning_app.expense.property.edit.self': {
+    displayName: '清洁 App：编辑自己的房源支出（中）',
+    riskLevel: 'medium',
+    purpose: '允许修改自己通过移动端提交的房源支出及发票照片。',
+    scenarios: [
+      '修正房号、金额、日期、名称或发票照片',
+    ],
+    denyImpact: [
+      '无法在 App 修正自己误填的房源支出',
+    ],
+    privacyRisk: [
+      '修改金额和房源归属会影响后续对账与报表',
+    ],
+  },
+  'cleaning_app.expense.property.delete.self': {
+    displayName: '清洁 App：删除自己的房源支出（高危）',
+    riskLevel: 'high',
+    purpose: '允许在移动端删除自己提交的房源支出记录（前端表现为永久删除）。',
+    scenarios: [
+      '误录后移除自己提交的错误房源支出',
+    ],
+    denyImpact: [
+      '无法在 App 删除自己误录的房源支出',
+    ],
+    privacyRisk: [
+      '删除会影响房源结算口径，必须依赖审计和软删除保留历史',
+    ],
+  },
 }
 
 export function getPermissionMeta(code: string): PermissionMeta {

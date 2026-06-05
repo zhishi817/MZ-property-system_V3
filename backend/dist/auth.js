@@ -6,6 +6,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.users = void 0;
 exports.login = login;
 exports.auth = auth;
+exports.listPermissionCodesForUser = listPermissionCodesForUser;
+exports.userHasAnyPerm = userHasAnyPerm;
 exports.requirePerm = requirePerm;
 exports.requireAnyPerm = requireAnyPerm;
 exports.allowCronTokenOrPerm = allowCronTokenOrPerm;
@@ -18,8 +20,10 @@ const store_1 = require("./store");
 const dbAdapter_1 = require("./dbAdapter");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const SECRET = process.env.JWT_SECRET || 'dev-secret';
-const SESSION_MAX_AGE_HOURS = Number(process.env.SESSION_MAX_AGE_HOURS || 5);
-const SESSION_IDLE_TIMEOUT_MINUTES = Number(process.env.SESSION_IDLE_TIMEOUT_MINUTES || 60);
+const DEFAULT_SESSION_MAX_AGE_HOURS = 7 * 24;
+const DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES = 7 * 24 * 60;
+const SESSION_MAX_AGE_HOURS = Number(process.env.SESSION_MAX_AGE_HOURS || DEFAULT_SESSION_MAX_AGE_HOURS);
+const SESSION_IDLE_TIMEOUT_MINUTES = Number(process.env.SESSION_IDLE_TIMEOUT_MINUTES || DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES);
 const sessionCache = new Map();
 const sessionLastSeenUpdateAt = new Map();
 const permsCache = new Map();
@@ -35,6 +39,26 @@ exports.users = {
     inventory: { id: 'u-inventory', username: 'inventory', role: 'inventory_manager', password: process.env.INVENTORY_PASSWORD || 'inventory' },
     maintenance: { id: 'u-maintenance', username: 'maintenance', role: 'maintenance_staff', password: process.env.MAINTENANCE_PASSWORD || 'maintenance' },
 };
+async function createSessionForUser(userId, req) {
+    if (!dbAdapter_1.hasPg)
+        return null;
+    try {
+        const { pgRunInTransaction } = require('./dbAdapter');
+        const sidNew = await pgRunInTransaction(async (client) => {
+            var _a;
+            const newSid = (0, uuid_1.v4)();
+            const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString();
+            const ua = String(req.headers['user-agent'] || '');
+            const ip = String((req.ip || ((_a = req.socket) === null || _a === void 0 ? void 0 : _a.remoteAddress) || '')).slice(0, 255);
+            await client.query('INSERT INTO sessions(id, user_id, created_at, last_seen_at, expires_at, revoked, ip, user_agent) VALUES($1,$2,now(),now(),$3,false,$4,$5)', [newSid, userId, expiresAt, ip, ua]);
+            return newSid;
+        });
+        return String(sidNew);
+    }
+    catch (_a) {
+        return null;
+    }
+}
 async function login(req, res) {
     const { username, password } = req.body || {};
     if (!username || !password)
@@ -63,24 +87,7 @@ async function login(req, res) {
         catch (_b) { }
         if (!ok)
             return res.status(401).json({ message: 'invalid credentials' });
-        let sid = null;
-        if (dbAdapter_1.hasPg) {
-            try {
-                const { pgRunInTransaction } = require('./dbAdapter');
-                const sidNew = await pgRunInTransaction(async (client) => {
-                    var _a;
-                    await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [row.id]);
-                    const newSid = (0, uuid_1.v4)();
-                    const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString();
-                    const ua = String(req.headers['user-agent'] || '');
-                    const ip = String((req.ip || ((_a = req.socket) === null || _a === void 0 ? void 0 : _a.remoteAddress) || '')).slice(0, 255);
-                    await client.query('INSERT INTO sessions(id, user_id, created_at, last_seen_at, expires_at, revoked, ip, user_agent) VALUES($1,$2,now(),now(),$3,false,$4,$5)', [newSid, row.id, expiresAt, ip, ua]);
-                    return newSid;
-                });
-                sid = String(sidNew);
-            }
-            catch (_c) { }
-        }
+        const sid = await createSessionForUser(String(row.id), req);
         const roles = await fetchUserRolesForUserId(String(row.id), String(row.role || '').trim());
         const payload = { sub: row.id, role: row.role, roles, username: row.username };
         if (sid)
@@ -96,24 +103,7 @@ async function login(req, res) {
             const ok = found.password_hash ? await bcryptjs_1.default.compare(password, found.password_hash) : false;
             if (!ok)
                 return res.status(401).json({ message: 'invalid credentials' });
-            let sid = null;
-            if (dbAdapter_1.hasPg) {
-                try {
-                    const { pgRunInTransaction } = require('./dbAdapter');
-                    const sidNew = await pgRunInTransaction(async (client) => {
-                        var _a;
-                        await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [found.id]);
-                        const newSid = (0, uuid_1.v4)();
-                        const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString();
-                        const ua = String(req.headers['user-agent'] || '');
-                        const ip = String((req.ip || ((_a = req.socket) === null || _a === void 0 ? void 0 : _a.remoteAddress) || '')).slice(0, 255);
-                        await client.query('INSERT INTO sessions(id, user_id, created_at, last_seen_at, expires_at, revoked, ip, user_agent) VALUES($1,$2,now(),now(),$3,false,$4,$5)', [newSid, found.id, expiresAt, ip, ua]);
-                        return newSid;
-                    });
-                    sid = String(sidNew);
-                }
-                catch (_d) { }
-            }
+            const sid = await createSessionForUser(String(found.id), req);
             const roles = await fetchUserRolesForUserId(String(found.id), String(found.role || '').trim());
             const payload = { sub: found.id, role: found.role, roles, username: found.username || found.email };
             if (sid)
@@ -246,19 +236,23 @@ async function hydrateRolesIfMissing(decoded) {
     return { ...(decoded || {}), roles: fetched };
 }
 async function hasAnyPermViaPg(roleName, codes) {
+    const okSet = await listPermissionCodesViaPg(roleName);
+    for (const c of codes) {
+        if (okSet.has(c))
+            return true;
+    }
+    return false;
+}
+async function listPermissionCodesViaPg(roleName) {
     var _a;
     const now = Date.now();
     const cached = permsCache.get(roleName);
     if (cached && now - cached.at <= PERM_CACHE_TTL_MS) {
-        for (const c of codes) {
-            if (cached.okSet.has(c))
-                return true;
-        }
-        return false;
+        return cached.okSet;
     }
     const { pgPool } = require('./dbAdapter');
     if (!pgPool)
-        return false;
+        return new Set();
     let roleId = (_a = store_1.db.roles.find(r => r.name === roleName)) === null || _a === void 0 ? void 0 : _a.id;
     try {
         const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName]);
@@ -275,11 +269,7 @@ async function hasAnyPermViaPg(roleName, codes) {
     }
     catch (_c) { }
     permsCache.set(roleName, { okSet, at: now });
-    for (const c of codes) {
-        if (okSet.has(c))
-            return true;
-    }
-    return false;
+    return okSet;
 }
 function roleNamesOf(user) {
     const arr = Array.isArray(user === null || user === void 0 ? void 0 : user.roles) ? user.roles : [];
@@ -288,6 +278,61 @@ function roleNamesOf(user) {
     if (primary)
         ids.unshift(primary);
     return Array.from(new Set(ids));
+}
+async function listPermissionCodesForRole(roleName) {
+    const out = new Set();
+    try {
+        const { hasPg, pgPool } = require('./dbAdapter');
+        if (hasPg && pgPool) {
+            const okSet = await listPermissionCodesViaPg(roleName);
+            okSet.forEach((code) => out.add(code));
+        }
+    }
+    catch (_a) { }
+    if (!out.size) {
+        for (const perm of store_1.db.permissions || []) {
+            const code = String((perm === null || perm === void 0 ? void 0 : perm.code) || '').trim();
+            if (code && (0, store_1.roleHasPermission)(roleName, code))
+                out.add(code);
+        }
+    }
+    return Array.from(out);
+}
+async function listPermissionCodesForUser(user) {
+    const roleNames = roleNamesOf(user);
+    const out = new Set();
+    if (roleNames.includes('admin')) {
+        for (const perm of store_1.db.permissions || []) {
+            const code = String((perm === null || perm === void 0 ? void 0 : perm.code) || '').trim();
+            if (code)
+                out.add(code);
+        }
+    }
+    for (const roleName of roleNames) {
+        const codes = await listPermissionCodesForRole(roleName);
+        for (const code of codes)
+            out.add(code);
+    }
+    return Array.from(out).sort((a, b) => a.localeCompare(b));
+}
+async function userHasAnyPerm(user, codes) {
+    const roleNames = roleNamesOf(user);
+    if (roleNames.includes('admin'))
+        return true;
+    for (const roleName of roleNames) {
+        try {
+            const { hasPg, pgPool } = require('./dbAdapter');
+            if (hasPg && pgPool) {
+                const ok = await hasAnyPermViaPg(roleName, codes);
+                if (ok)
+                    return true;
+            }
+        }
+        catch (_a) { }
+        if (codes.some((c) => (0, store_1.roleHasPermission)(roleName, c)))
+            return true;
+    }
+    return false;
 }
 function requirePerm(code) {
     return async (req, res, next) => {
@@ -366,19 +411,18 @@ function me(req, res) {
     if (!user)
         return res.status(401).json({ message: 'unauthorized' });
     const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : undefined;
-    if (roles && roles.length)
-        return res.json({ id: user.sub, role: user.role, roles, username: user.username });
     (async () => {
         try {
-            const sub = String(user.sub || '').trim();
-            const fallbackRole = String(user.role || '').trim();
-            const fetched = await fetchUserRolesForUserId(sub, fallbackRole);
-            res.json({ id: user.sub, role: user.role, roles: fetched, username: user.username });
+            const nextRoles = roles && roles.length
+                ? roles
+                : await fetchUserRolesForUserId(String(user.sub || '').trim(), String(user.role || '').trim());
+            const permissions = await listPermissionCodesForUser({ ...(user || {}), roles: nextRoles });
+            res.json({ id: user.sub, role: user.role, roles: nextRoles, username: user.username, permissions });
         }
         catch (_a) {
-            res.json({ id: user.sub, role: user.role, roles: undefined, username: user.username });
+            res.json({ id: user.sub, role: user.role, roles: roles && roles.length ? roles : undefined, username: user.username, permissions: [] });
         }
-    })().catch(() => res.json({ id: user.sub, role: user.role, roles: undefined, username: user.username }));
+    })().catch(() => res.json({ id: user.sub, role: user.role, roles: roles && roles.length ? roles : undefined, username: user.username, permissions: [] }));
 }
 async function setDeletePassword(req, res) {
     const user = req.user;

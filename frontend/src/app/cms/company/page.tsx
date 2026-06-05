@@ -10,7 +10,8 @@ import { CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, CloseOutlin
 type PageType = 'announce' | 'doc' | 'warehouse'
 type PageStatus = 'draft' | 'published'
 type AudienceScope = 'all_staff' | 'cleaners' | 'warehouse_staff' | 'maintenance_staff' | 'managers'
-type DocCategory = 'company_rule' | 'work_guide'
+type DocCategory = 'company_rule' | 'starter_guide' | 'role_guide' | 'work_guide'
+type DocCategoryFilter = 'all' | DocCategory
 type CompanyGuideRole = 'cleaner' | 'cleaning_inspector'
 
 type CompanyPageRow = {
@@ -50,6 +51,39 @@ type Block =
   | { type: 'step'; title: string; contents: StepItem[] }
   | { type: 'legacy_html'; html: string }
 
+const DOC_CATEGORY_META: Record<DocCategory, { label: string; shortLabel: string; description: string; color: string }> = {
+  company_rule: { label: '公司制度', shortLabel: '制度', description: '制度、规范、要求', color: 'gold' },
+  starter_guide: { label: '新手指南', shortLabel: '新手', description: '下载安装、登录、首次使用', color: 'green' },
+  role_guide: { label: '角色使用说明', shortLabel: '角色', description: '按角色拆分的 App 使用说明', color: 'blue' },
+  work_guide: { label: '现场工作指南', shortLabel: '现场', description: '现场 SOP、工作动作与注意事项', color: 'purple' },
+}
+
+const DOC_CATEGORY_OPTIONS = Object.entries(DOC_CATEGORY_META).map(([value, meta]) => ({
+  value: value as DocCategory,
+  label: meta.label,
+}))
+
+const AUDIENCE_OPTIONS: Array<{ value: AudienceScope; label: string }> = [
+  { value: 'all_staff', label: '全员可见' },
+  { value: 'cleaners', label: '保洁团队' },
+  { value: 'warehouse_staff', label: '仓库团队' },
+  { value: 'maintenance_staff', label: '维修团队' },
+  { value: 'managers', label: '管理层' },
+]
+
+const AUDIENCE_LABEL: Record<AudienceScope, string> = {
+  all_staff: '全员可见',
+  cleaners: '保洁团队',
+  warehouse_staff: '仓库团队',
+  maintenance_staff: '维修团队',
+  managers: '管理层',
+}
+
+const STATUS_OPTIONS = [
+  { value: 'draft' as const, label: '草稿' },
+  { value: 'published' as const, label: '已发布' },
+]
+
 const GUIDE_ROLE_OPTIONS = [
   { value: 'cleaner' as const, label: '清洁员' },
   { value: 'cleaning_inspector' as const, label: '检查员' },
@@ -60,7 +94,36 @@ const GUIDE_ROLE_LABEL: Record<CompanyGuideRole, string> = {
   cleaning_inspector: '检查员',
 }
 
-const STARTER_GUIDE_TEMPLATES: Array<{ title: string; guide_role: CompanyGuideRole; blocks: Block[] }> = [
+const APP_STARTER_GUIDE_TEMPLATE: { title: string; blocks: Block[] } = {
+  title: 'MZ Stay App 下载与登录指南',
+  blocks: [
+    { type: 'heading', text: '第一次使用 App，先完成下载安装与登录' },
+    { type: 'paragraph', text: '这份指南给第一次接触 MZ Stay App 的同事使用。建议先完成安装、登录和基础检查，再去看自己角色的使用说明。' },
+    {
+      type: 'step',
+      title: '先向主管领取最新安装方式',
+      contents: [{ type: 'text', text: 'iPhone 通常通过 TestFlight 安装；Android 请使用公司下发的最新安装包或下载链接，不要自行搜索旧版本。' }],
+    },
+    {
+      type: 'step',
+      title: 'iPhone 先安装 TestFlight，再打开邀请链接安装 MZ Stay App',
+      contents: [{ type: 'text', text: '如果页面提示名额、版本或权限异常，先截图发给主管，再确认自己是否用了正确 Apple ID。' }],
+    },
+    {
+      type: 'step',
+      title: '首次登录时，确认账号、临时密码和角色是否正确',
+      contents: [{ type: 'text', text: '登录后先检查姓名、角色、任务列表和常用入口是否正常；如果角色不对，后面的功能也会不一样。' }],
+    },
+    {
+      type: 'step',
+      title: '完成登录后，再进入对应角色的使用说明',
+      contents: [{ type: 'text', text: '清洁员、检查员、仓库和其他角色的操作入口不同，建议按自己的岗位继续阅读对应文档。' }],
+    },
+    { type: 'callout', text: '常见问题：收不到邀请、TestFlight 已过期、登录后看不到任务、角色显示不对。这些问题都建议截图后联系主管或后台同事处理。' },
+  ],
+}
+
+const ROLE_GUIDE_TEMPLATES: Array<{ title: string; guide_role: CompanyGuideRole; blocks: Block[] }> = [
   {
     title: '清洁员入门',
     guide_role: 'cleaner',
@@ -126,6 +189,15 @@ const STARTER_GUIDE_TEMPLATES: Array<{ title: string; guide_role: CompanyGuideRo
   },
 ]
 
+function isGuideRoleCategory(category: string | null | undefined): category is DocCategory {
+  return category === 'role_guide' || category === 'work_guide'
+}
+
+function docCategoryLabel(category: string | null | undefined) {
+  const meta = category ? DOC_CATEGORY_META[category as DocCategory] : null
+  return meta?.label || String(category || '-')
+}
+
 function safeHttpUrl(url: string) {
   const s = String(url || '').trim()
   if (!s) return ''
@@ -162,9 +234,9 @@ function isVideoFileUrl(url: string) {
 function BlocksRenderer({ blocks }: { blocks: Block[] }) {
   let stepNo = 0
   return (
-    <div style={{ lineHeight: 1.7 }}>
+    <div style={{ lineHeight: 1.7, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
       {blocks.map((b, idx) => {
-        if (b.type === 'legacy_html') return <div key={idx} dangerouslySetInnerHTML={{ __html: b.html || '' }} />
+        if (b.type === 'legacy_html') return <div key={idx} style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }} dangerouslySetInnerHTML={{ __html: b.html || '' }} />
         if (b.type === 'heading') return <h2 key={idx} style={{ margin: '16px 0 8px' }}>{b.text}</h2>
         if (b.type === 'callout') return <div key={idx} style={{ background: '#fff7e6', border: '1px solid #ffd591', padding: 10, borderRadius: 8, margin: '10px 0' }}>{b.text}</div>
         if (b.type === 'paragraph') return <p key={idx} style={{ margin: '8px 0' }}>{b.text}</p>
@@ -397,7 +469,7 @@ function BlocksEditor({ blocks, setBlocks }: { blocks: Block[]; setBlocks: (b: B
             </Card>
           ))}
         </div>
-        <div style={{ width: 375, border: '1px solid #eee', borderRadius: 24, padding: 12, boxShadow: '0 6px 20px rgba(0,0,0,0.08)' }}>
+        <div style={{ width: 375, maxWidth: '100%', position: 'sticky', top: 72, border: '1px solid #eee', borderRadius: 24, padding: 12, boxShadow: '0 6px 20px rgba(0,0,0,0.08)', maxHeight: 'calc(100vh - 180px)', overflowY: 'auto', background: '#fff' }}>
           <Typography.Text type="secondary">预览</Typography.Text>
           <div style={{ marginTop: 8 }}>
             <BlocksRenderer blocks={blocks} />
@@ -413,6 +485,7 @@ function CompanyPagesTab({ type }: { type: PageType }) {
   const [rows, setRows] = useState<CompanyPageRow[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [editing, setEditing] = useState<CompanyPageRow | null>(null)
   const [viewOpen, setViewOpen] = useState(false)
   const [viewing, setViewing] = useState<CompanyPageRow | null>(null)
@@ -424,22 +497,31 @@ function CompanyPagesTab({ type }: { type: PageType }) {
   const [form] = Form.useForm()
   const [blocks, setBlocks] = useState<Block[]>([])
   const [rawContent, setRawContent] = useState('')
+  const [docCategoryFilter, setDocCategoryFilter] = useState<DocCategoryFilter>('all')
   const watchedCategory = Form.useWatch('category', form) as DocCategory | undefined
 
   const columns = useMemo(() => {
     const base: any[] = [
       { title: '标题', dataIndex: 'title', width: 260 },
-      { title: '状态', dataIndex: 'status', width: 120, render: (v: any) => <Tag color={String(v) === 'published' ? 'green' : 'default'}>{String(v || '')}</Tag> },
+      { title: '状态', dataIndex: 'status', width: 120, render: (v: any) => <Tag color={String(v) === 'published' ? 'green' : 'default'}>{String(v) === 'published' ? '已发布' : '草稿'}</Tag> },
     ]
     if (type === 'announce') {
       base.push({ title: '置顶', dataIndex: 'pinned', width: 80, render: (v: any) => v ? <Tag color="blue">置顶</Tag> : null })
       base.push({ title: '紧急', dataIndex: 'urgent', width: 80, render: (v: any) => v ? <Tag color="red">紧急</Tag> : null })
       base.push({ title: '发布日期', dataIndex: 'published_at', width: 130 })
       base.push({ title: '过期', dataIndex: 'expires_at', width: 130 })
-      base.push({ title: '受众', dataIndex: 'audience_scope', width: 150 })
+      base.push({ title: '受众', dataIndex: 'audience_scope', width: 150, render: (v: AudienceScope | null | undefined) => v ? AUDIENCE_LABEL[v] || String(v) : <Tag>-</Tag> })
     }
     if (type === 'doc') {
-      base.push({ title: '分类', dataIndex: 'category', width: 140 })
+      base.push({
+        title: '分类',
+        dataIndex: 'category',
+        width: 160,
+        render: (v: string | null | undefined) => {
+          const meta = v ? DOC_CATEGORY_META[v as DocCategory] : null
+          return <Tag color={meta?.color || 'default'}>{meta?.label || String(v || '-')}</Tag>
+        },
+      })
       base.push({
         title: '适用角色',
         dataIndex: 'guide_role',
@@ -449,10 +531,10 @@ function CompanyPagesTab({ type }: { type: PageType }) {
           return label ? <Tag color="blue">{label}</Tag> : <Tag>-</Tag>
         },
       })
-      base.push({ title: '受众', dataIndex: 'audience_scope', width: 150 })
+      base.push({ title: '受众', dataIndex: 'audience_scope', width: 150, render: (v: AudienceScope | null | undefined) => v ? AUDIENCE_LABEL[v] || String(v) : <Tag>-</Tag> })
     }
     if (type === 'warehouse') {
-      base.push({ title: '受众', dataIndex: 'audience_scope', width: 150 })
+      base.push({ title: '受众', dataIndex: 'audience_scope', width: 150, render: (v: AudienceScope | null | undefined) => v ? AUDIENCE_LABEL[v] || String(v) : <Tag>-</Tag> })
     }
     base.push({ title: '更新时间', dataIndex: 'updated_at', width: 190 })
     base.push({
@@ -469,6 +551,28 @@ function CompanyPagesTab({ type }: { type: PageType }) {
     })
     return base
   }, [type])
+
+  const filteredRows = useMemo(() => {
+    if (type !== 'doc' || docCategoryFilter === 'all') return rows
+    return rows.filter((row) => String(row.category || '').trim() === docCategoryFilter)
+  }, [docCategoryFilter, rows, type])
+
+  const docCategoryCards = useMemo(() => {
+    if (type !== 'doc') return []
+    const total = rows.length
+    const cards: Array<{ key: DocCategoryFilter; label: string; description: string; count: number }> = [
+      { key: 'all', label: '全部文档', description: '按全部公司文档查看', count: total },
+    ]
+    for (const key of Object.keys(DOC_CATEGORY_META) as DocCategory[]) {
+      cards.push({
+        key,
+        label: DOC_CATEGORY_META[key].label,
+        description: DOC_CATEGORY_META[key].description,
+        count: rows.filter((row) => String(row.category || '').trim() === key).length,
+      })
+    }
+    return cards
+  }, [rows, type])
 
   async function load() {
     setLoading(true)
@@ -487,9 +591,13 @@ function CompanyPagesTab({ type }: { type: PageType }) {
 
   useEffect(() => {
     if (type !== 'doc') return
-    if (String(watchedCategory || '') === 'work_guide') return
+    if (isGuideRoleCategory(String(watchedCategory || '').trim())) return
     form.setFieldValue('guide_role', undefined)
   }, [form, type, watchedCategory])
+
+  useEffect(() => {
+    if (type !== 'doc') setDocCategoryFilter('all')
+  }, [type])
 
   function resetEditorContent(content: string | null | undefined) {
     const p = parseBlocks(content)
@@ -497,10 +605,37 @@ function CompanyPagesTab({ type }: { type: PageType }) {
     setRawContent(p.raw)
   }
 
-  function openCreate() {
+  function resetEditor() {
     setEditing(null)
     form.resetFields()
     resetEditorContent('')
+  }
+
+  function closeEditor() {
+    if (saving) return
+    setOpen(false)
+    resetEditor()
+  }
+
+  function openCreate(preset?: { category?: DocCategory; guide_role?: CompanyGuideRole; audience_scope?: AudienceScope; title?: string }) {
+    setEditing(null)
+    form.resetFields()
+    resetEditorContent('')
+    const presetCategory = type === 'doc'
+      ? (preset?.category || (docCategoryFilter !== 'all' ? docCategoryFilter : undefined))
+      : undefined
+    form.setFieldsValue({
+      slug: '',
+      title: preset?.title || '',
+      status: 'draft',
+      published_at: null,
+      expires_at: null,
+      pinned: false,
+      urgent: false,
+      category: presetCategory,
+      guide_role: preset?.guide_role,
+      audience_scope: preset?.audience_scope || (presetCategory === 'starter_guide' ? 'all_staff' : undefined),
+    })
     setOpen(true)
   }
 
@@ -651,6 +786,7 @@ function CompanyPagesTab({ type }: { type: PageType }) {
   }
 
   async function submit() {
+    if (saving) return
     const v = await form.validateFields()
     const payload: any = {
       slug: v.slug ? String(v.slug).trim() : undefined,
@@ -667,7 +803,7 @@ function CompanyPagesTab({ type }: { type: PageType }) {
     }
     if (type === 'doc') {
       payload.category = v.category
-      if (String(v.category || '') === 'work_guide') payload.guide_role = v.guide_role || undefined
+      if (isGuideRoleCategory(String(v.category || '').trim())) payload.guide_role = v.guide_role || undefined
     }
     if (!payload.slug) delete payload.slug
     if (!payload.published_at) delete payload.published_at
@@ -675,6 +811,7 @@ function CompanyPagesTab({ type }: { type: PageType }) {
     if (!payload.audience_scope) delete payload.audience_scope
     if (!payload.guide_role) delete payload.guide_role
 
+    setSaving(true)
     try {
       if (editing?.id) {
         await patchJSON(`/cms/company/pages/${encodeURIComponent(String(editing.id))}`, payload)
@@ -684,38 +821,54 @@ function CompanyPagesTab({ type }: { type: PageType }) {
         message.success('已创建')
       }
       setOpen(false)
-      setEditing(null)
-      form.resetFields()
-      resetEditorContent('')
+      resetEditor()
       await load()
     } catch (e: any) {
       message.error(String(e?.message || '保存失败'))
+    } finally {
+      setSaving(false)
     }
   }
 
-  const audienceOptions = [
-    { value: 'all_staff', label: 'all_staff' },
-    { value: 'cleaners', label: 'cleaners' },
-    { value: 'warehouse_staff', label: 'warehouse_staff' },
-    { value: 'maintenance_staff', label: 'maintenance_staff' },
-    { value: 'managers', label: 'managers' },
-  ]
+  async function createAppStarterGuide() {
+    const existed = rows.some((row) => String(row.category || '').trim() === 'starter_guide' && String(row.title || '').trim() === APP_STARTER_GUIDE_TEMPLATE.title)
+    if (existed) {
+      message.info('App 下载与登录指南模板已存在，无需重复创建。')
+      return
+    }
+    Modal.confirm({
+      title: '生成 App 下载与登录模板',
+      content: '将创建 1 篇已发布的新手指南模板，默认设置为全员可见，后续可继续补充下载链接、截图和角色跳转说明。',
+      onOk: async () => {
+        await postJSON('/cms/company/pages', {
+          type: 'doc',
+          title: APP_STARTER_GUIDE_TEMPLATE.title,
+          content: blocksToPayload(APP_STARTER_GUIDE_TEMPLATE.blocks, ''),
+          status: 'published',
+          category: 'starter_guide',
+          audience_scope: 'all_staff',
+        })
+        message.success('已创建 App 下载与登录模板')
+        await load()
+      },
+    })
+  }
 
   async function createStarterGuides() {
     const existingRoles = new Set(
       rows
-        .filter((row) => String(row.category || '').trim() === 'work_guide')
+        .filter((row) => isGuideRoleCategory(String(row.category || '').trim()))
         .map((row) => String(row.guide_role || '').trim())
         .filter(Boolean),
     )
-    const pending = STARTER_GUIDE_TEMPLATES.filter((item) => !existingRoles.has(item.guide_role))
+    const pending = ROLE_GUIDE_TEMPLATES.filter((item) => !existingRoles.has(item.guide_role))
     if (!pending.length) {
-      message.info('双角色新手指南已存在，无需重复创建。')
+      message.info('双角色使用说明已存在，无需重复创建。')
       return
     }
     Modal.confirm({
-      title: '生成双角色新手指南模板',
-      content: `将创建 ${pending.length} 篇已发布的工作指南模板，并默认设置为 cleaners 受众。已存在的角色指南会自动跳过。`,
+      title: '生成双角色使用说明模板',
+      content: `将创建 ${pending.length} 篇已发布的角色使用说明模板，并默认设置为保洁团队可见。已存在的角色文档会自动跳过。`,
       onOk: async () => {
         for (const item of pending) {
           await postJSON('/cms/company/pages', {
@@ -723,12 +876,12 @@ function CompanyPagesTab({ type }: { type: PageType }) {
             title: item.title,
             content: blocksToPayload(item.blocks, ''),
             status: 'published',
-            category: 'work_guide',
+            category: 'role_guide',
             guide_role: item.guide_role,
             audience_scope: 'cleaners',
           })
         }
-        message.success(`已创建 ${pending.length} 篇新手指南模板`)
+        message.success(`已创建 ${pending.length} 篇角色使用说明模板`)
         await load()
       },
     })
@@ -737,13 +890,45 @@ function CompanyPagesTab({ type }: { type: PageType }) {
   return (
     <div>
       <Space style={{ marginBottom: 12 }} wrap>
-        <Button type="primary" onClick={openCreate}>新建</Button>
-        {type === 'doc' ? <Button onClick={createStarterGuides}>生成双角色新手指南模板</Button> : null}
+        <Button type="primary" onClick={() => openCreate()}>新建</Button>
+        {type === 'doc' ? <Button onClick={() => openCreate({ category: 'starter_guide', audience_scope: 'all_staff' })}>新建新手指南</Button> : null}
+        {type === 'doc' ? <Button onClick={() => openCreate({ category: 'role_guide', audience_scope: 'cleaners' })}>新建角色使用说明</Button> : null}
+        {type === 'doc' ? <Button onClick={createAppStarterGuide}>生成 App 下载模板</Button> : null}
+        {type === 'doc' ? <Button onClick={createStarterGuides}>生成双角色使用模板</Button> : null}
         <Button onClick={load} loading={loading}>刷新</Button>
       </Space>
+      {type === 'doc' ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 16 }}>
+          {docCategoryCards.map((item) => {
+            const active = docCategoryFilter === item.key
+            return (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => setDocCategoryFilter(item.key)}
+                style={{
+                  textAlign: 'left',
+                  border: active ? '1px solid #2563eb' : '1px solid #e5e7eb',
+                  background: active ? '#eff6ff' : '#ffffff',
+                  borderRadius: 16,
+                  padding: 14,
+                  cursor: 'pointer',
+                  boxShadow: active ? '0 8px 24px rgba(37,99,235,0.12)' : 'none',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a' }}>{item.label}</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: active ? '#2563eb' : '#0f172a' }}>{item.count}</div>
+                </div>
+                <div style={{ marginTop: 6, color: '#64748b', fontSize: 13 }}>{item.description}</div>
+              </button>
+            )
+          })}
+        </div>
+      ) : null}
       <Table
         rowKey={(r) => String(r.id)}
-        dataSource={rows}
+        dataSource={filteredRows}
         columns={columns as any}
         loading={loading}
         pagination={{ pageSize: 10, showSizeChanger: true }}
@@ -780,9 +965,9 @@ function CompanyPagesTab({ type }: { type: PageType }) {
 
           <div style={{ padding: '18px 22px 0' }}>
             <Space wrap style={{ marginBottom: 18 }}>
-              {viewing?.status ? pill({ icon: <CheckCircleOutlined />, text: String(viewing.status || '').toUpperCase(), tone: String(viewing.status) === 'published' ? 'success' : 'default' }) : null}
-              {viewing?.audience_scope ? pill({ icon: <UserOutlined />, text: `受众: ${String(viewing.audience_scope)}` }) : null}
-              {type === 'doc' && viewing?.category ? pill({ icon: <UserOutlined />, text: `分类: ${String(viewing.category)}` }) : null}
+              {viewing?.status ? pill({ icon: <CheckCircleOutlined />, text: String(viewing.status) === 'published' ? '已发布' : '草稿', tone: String(viewing.status) === 'published' ? 'success' : 'default' }) : null}
+              {viewing?.audience_scope ? pill({ icon: <UserOutlined />, text: `受众: ${AUDIENCE_LABEL[viewing.audience_scope as AudienceScope] || String(viewing.audience_scope)}` }) : null}
+              {type === 'doc' && viewing?.category ? pill({ icon: <UserOutlined />, text: `分类: ${docCategoryLabel(viewing.category)}` }) : null}
               {type === 'doc' && viewing?.guide_role ? pill({ icon: <UserOutlined />, text: `适用角色: ${GUIDE_ROLE_LABEL[viewing.guide_role] || String(viewing.guide_role)}` }) : null}
               {type === 'announce' && viewing?.published_at ? pill({ icon: <CalendarOutlined />, text: `发布: ${String(viewing.published_at)}` }) : null}
               {type === 'announce' && viewing?.expires_at ? pill({ icon: <CalendarOutlined />, text: `过期: ${String(viewing.expires_at)}` }) : null}
@@ -817,80 +1002,96 @@ function CompanyPagesTab({ type }: { type: PageType }) {
           </div>
         </div>
       </Modal>
-      {type === 'warehouse' ? (
-        <Drawer
-          open={open}
-          onClose={() => { setOpen(false); setEditing(null) }}
-          title={editing ? '编辑仓库指南' : '新建仓库指南'}
-          width={1080}
-          destroyOnHidden={false}
-          extra={<Space><Button onClick={() => { setOpen(false); setEditing(null) }}>取消</Button><Button type="primary" onClick={submit}>保存</Button></Space>}
-        >
-          <Form form={form} layout="vertical" initialValues={{ status: 'draft', pinned: false, urgent: false }}>
-            <Form.Item name="slug" label="Slug（可选）"><Input placeholder="例如 warehouse:docklands" /></Form.Item>
-            <Form.Item name="title" label="标题" rules={[{ required: true }]}><Input /></Form.Item>
-            <Form.Item name="status" label="状态" rules={[{ required: true }]}>
-              <Select options={[{ value: 'draft', label: 'draft' }, { value: 'published', label: 'published' }]} />
-            </Form.Item>
-            <Form.Item name="audience_scope" label="受众范围（可选）">
-              <Select allowClear options={audienceOptions} />
-            </Form.Item>
-            <Form.Item label="内容">
-              <BlocksEditor blocks={blocks} setBlocks={setBlocks} />
-            </Form.Item>
-          </Form>
-        </Drawer>
-      ) : (
-        <Modal
-          open={open}
-          onCancel={() => { setOpen(false); setEditing(null) }}
-          onOk={submit}
-          width={980}
-          title={editing ? '编辑' : '新建'}
-        >
-          <Form form={form} layout="vertical" initialValues={{ status: 'draft', pinned: false, urgent: false }}>
-            <Form.Item name="slug" label="Slug（可选）"><Input placeholder="例如 announce:xxxx" /></Form.Item>
-            <Form.Item name="title" label="标题" rules={[{ required: true }]}><Input /></Form.Item>
-            {type === 'doc' ? (
-              <>
-                <Form.Item name="category" label="分类" rules={[{ required: true }]}>
-                  <Select options={[{ value: 'company_rule', label: 'company_rule' }, { value: 'work_guide', label: 'work_guide' }]} />
-                </Form.Item>
-                {watchedCategory === 'work_guide' ? (
-                  <Form.Item name="guide_role" label="适用角色（可选）">
-                    <Select allowClear options={GUIDE_ROLE_OPTIONS} />
+      <Drawer
+        open={open}
+        onClose={closeEditor}
+        title={
+          editing
+            ? (type === 'announce' ? '编辑公告' : (type === 'doc' ? '编辑公司文档' : '编辑仓库指南'))
+            : (type === 'announce' ? '新建公告' : (type === 'doc' ? '新建公司文档' : '新建仓库指南'))
+        }
+        width={1320}
+        destroyOnHidden={false}
+        extra={
+          <Space>
+            <Button onClick={closeEditor} disabled={saving}>取消</Button>
+            <Button type="primary" loading={saving} onClick={() => { submit().catch(() => {}) }}>
+              {editing ? '保存修改' : '立即创建'}
+            </Button>
+          </Space>
+        }
+      >
+        <Form form={form} layout="vertical" initialValues={{ status: 'draft', pinned: false, urgent: false }}>
+          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <Card
+              title="基础信息"
+              style={{ width: 360, maxWidth: '100%', position: 'sticky', top: 0, borderRadius: 16 }}
+              bodyStyle={{ paddingBottom: 8 }}
+            >
+              {type === 'doc' ? (
+                <div style={{ marginBottom: 12, padding: 12, borderRadius: 12, background: '#f8fafc', color: '#475569', lineHeight: 1.6 }}>
+                  新手指南建议放下载安装、登录和首次进入 App；
+                  <br />
+                  角色使用说明建议按岗位拆开写，避免一篇文档塞太多角色内容。
+                </div>
+              ) : null}
+              <Form.Item name="slug" label="Slug（可选）">
+                <Input placeholder={type === 'announce' ? '例如 announce:staff-policy' : (type === 'doc' ? '例如 doc:app-download-guide' : '例如 warehouse:docklands')} />
+              </Form.Item>
+              <Form.Item name="title" label="标题" rules={[{ required: true }]}>
+                <Input />
+              </Form.Item>
+              {type === 'doc' ? (
+                <>
+                  <Form.Item name="category" label="分类" rules={[{ required: true }]}>
+                    <Select options={DOC_CATEGORY_OPTIONS} />
                   </Form.Item>
-                ) : null}
-              </>
-            ) : null}
-            <Form.Item name="status" label="状态" rules={[{ required: true }]}>
-              <Select options={[{ value: 'draft', label: 'draft' }, { value: 'published', label: 'published' }]} />
-            </Form.Item>
-            <Form.Item name="audience_scope" label="受众范围（可选）">
-              <Select allowClear options={audienceOptions} />
-            </Form.Item>
-            {type === 'announce' ? (
-              <>
-                <Form.Item name="published_at" label="发布日期（可选）"><DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" /></Form.Item>
-                <Form.Item name="expires_at" label="过期时间（可选）"><DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" /></Form.Item>
-                <Space style={{ marginBottom: 8 }} wrap>
-                  <Form.Item name="pinned" valuePropName="checked" style={{ marginBottom: 0 }}><Checkbox>置顶</Checkbox></Form.Item>
-                  <Form.Item name="urgent" valuePropName="checked" style={{ marginBottom: 0 }}><Checkbox>紧急</Checkbox></Form.Item>
-                </Space>
-              </>
-            ) : null}
-            <Form.Item label="内容">
-              <BlocksEditor blocks={blocks} setBlocks={setBlocks} />
-            </Form.Item>
-          </Form>
-        </Modal>
-      )}
+                  {isGuideRoleCategory(String(watchedCategory || '').trim()) ? (
+                    <Form.Item name="guide_role" label="适用角色（可选）">
+                      <Select allowClear options={GUIDE_ROLE_OPTIONS} />
+                    </Form.Item>
+                  ) : null}
+                </>
+              ) : null}
+              <Form.Item name="status" label="状态" rules={[{ required: true }]}>
+                <Select options={STATUS_OPTIONS} />
+              </Form.Item>
+              <Form.Item name="audience_scope" label="受众范围（可选）">
+                <Select allowClear options={AUDIENCE_OPTIONS} />
+              </Form.Item>
+              {type === 'announce' ? (
+                <>
+                  <Form.Item name="published_at" label="发布日期（可选）">
+                    <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+                  </Form.Item>
+                  <Form.Item name="expires_at" label="过期时间（可选）">
+                    <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+                  </Form.Item>
+                  <Space style={{ marginBottom: 8 }} wrap>
+                    <Form.Item name="pinned" valuePropName="checked" style={{ marginBottom: 0 }}>
+                      <Checkbox>置顶</Checkbox>
+                    </Form.Item>
+                    <Form.Item name="urgent" valuePropName="checked" style={{ marginBottom: 0 }}>
+                      <Checkbox>紧急</Checkbox>
+                    </Form.Item>
+                  </Space>
+                </>
+              ) : null}
+            </Card>
+            <Card title="内容编辑" style={{ flex: 1, minWidth: 320, borderRadius: 16 }} bodyStyle={{ paddingBottom: 8 }}>
+              <Form.Item label="内容" style={{ marginBottom: 0 }}>
+                <BlocksEditor blocks={blocks} setBlocks={setBlocks} />
+              </Form.Item>
+            </Card>
+          </div>
+        </Form>
+      </Drawer>
 
       <Modal
         open={linkOpen}
         onCancel={() => { setLinkOpen(false); setLinkTarget(null); setLinkRows([]) }}
         footer={null}
-        width={860}
+        width={980}
         title="仓库指南外部访问链接"
       >
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
@@ -911,27 +1112,42 @@ function CompanyPagesTab({ type }: { type: PageType }) {
             loading={linkLoading}
             pagination={false}
             dataSource={linkRows}
+            tableLayout="fixed"
+            scroll={{ x: 900 }}
             columns={[
               {
                 title: '外链',
                 dataIndex: 'token',
+                width: 420,
                 render: (_: any, r: CompanyPagePublicLinkRow) => {
                   const url = buildPublicWarehouseUrl(r.token)
                   return url ? (
-                    <Space wrap>
-                      <Input value={url} readOnly style={{ width: 420, maxWidth: '100%' }} />
-                      <Button onClick={() => { navigator.clipboard?.writeText?.(url); message.success('已复制') }}>复制</Button>
-                      <Button onClick={() => window.open(url, '_blank')}>打开</Button>
-                    </Space>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', minWidth: 0 }}>
+                      <Input value={url} readOnly style={{ width: '100%' }} />
+                      <Space wrap>
+                        <Button onClick={() => { navigator.clipboard?.writeText?.(url); message.success('已复制') }}>复制</Button>
+                        <Button onClick={() => window.open(url, '_blank')}>打开</Button>
+                      </Space>
+                    </div>
                   ) : <Typography.Text type="secondary">无法恢复原始 token</Typography.Text>
                 },
               },
-              { title: '创建时间', dataIndex: 'created_at', width: 180 },
-              { title: '过期时间', dataIndex: 'expires_at', width: 180 },
-              { title: '状态', dataIndex: 'revoked_at', width: 120, render: (v: any) => v ? <Tag color="red">已撤销</Tag> : <Tag color="green">有效</Tag> },
+              {
+                title: '创建时间',
+                dataIndex: 'created_at',
+                width: 160,
+                render: (v: any) => <div style={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>{String(v || '-')}</div>,
+              },
+              {
+                title: '过期时间',
+                dataIndex: 'expires_at',
+                width: 160,
+                render: (v: any) => <div style={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>{String(v || '-')}</div>,
+              },
+              { title: '状态', dataIndex: 'revoked_at', width: 90, render: (v: any) => v ? <Tag color="red">已撤销</Tag> : <Tag color="green">有效</Tag> },
               {
                 title: '操作',
-                width: 100,
+                width: 90,
                 render: (_: any, r: CompanyPagePublicLinkRow) => !r.revoked_at ? <Button danger size="small" onClick={() => revokePublicLink(r.token_hash)}>撤销</Button> : null,
               },
             ] as any}

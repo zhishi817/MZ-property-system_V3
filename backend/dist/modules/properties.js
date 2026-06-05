@@ -8,6 +8,7 @@ const zod_1 = require("zod");
 const auth_1 = require("../auth");
 const uuid_1 = require("uuid");
 exports.router = (0, express_1.Router)();
+const PROPERTY_PAYABLE_TEMPLATE_KIND = 'property_payable';
 exports.router.get('/', (req, res) => {
     const q = req.query || {};
     const includeArchived = String(q.include_archived || '').toLowerCase() === 'true';
@@ -59,6 +60,27 @@ const createSchema = zod_1.z.object({
     booking_listing_name: zod_1.z.string().optional(),
     airbnb_listing_id: zod_1.z.string().optional(),
     booking_listing_id: zod_1.z.string().optional(),
+    payable_templates: zod_1.z.array(zod_1.z.object({
+        id: zod_1.z.string().optional(),
+        vendor: zod_1.z.string().min(1),
+        category: zod_1.z.string().min(1),
+        category_detail: zod_1.z.string().optional(),
+        amount: zod_1.z.coerce.number().optional(),
+        due_day_of_month: zod_1.z.coerce.number().min(1).max(31),
+        frequency_months: zod_1.z.coerce.number().min(1).max(24).optional(),
+        remind_days_before: zod_1.z.coerce.number().min(0).max(30).optional(),
+        payment_type: zod_1.z.enum(['bank_account', 'bpay', 'payid', 'rent_deduction', 'cash']).optional(),
+        pay_account_name: zod_1.z.string().optional(),
+        pay_bsb: zod_1.z.string().optional(),
+        pay_account_number: zod_1.z.string().optional(),
+        pay_ref: zod_1.z.string().optional(),
+        bpay_code: zod_1.z.string().optional(),
+        pay_mobile_number: zod_1.z.string().optional(),
+        report_category: zod_1.z.string().optional(),
+        start_month_key: zod_1.z.string().regex(/^\d{4}-\d{2}$/),
+        bill_account_no: zod_1.z.string().optional(),
+        note: zod_1.z.string().optional(),
+    })).optional(),
 });
 function normListingName(v) {
     const s = String(v !== null && v !== void 0 ? v : '').trim();
@@ -70,6 +92,154 @@ async function ensureListingColumns() {
     await dbAdapter_1.pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_name text');
     await dbAdapter_1.pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_name text');
     await dbAdapter_1.pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS listing_names jsonb');
+}
+async function ensurePropertyColumns() {
+    if (!dbAdapter_1.pgPool)
+        return;
+    await ensureListingColumns();
+    await dbAdapter_1.pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS biz_category text');
+    await dbAdapter_1.pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS building_facility_other text');
+    await dbAdapter_1.pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedroom_ac text');
+    await dbAdapter_1.pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS room_type_code text');
+    await dbAdapter_1.pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS archived boolean DEFAULT false');
+}
+async function ensurePropertyPayableColumns(client) {
+    const executor = client || dbAdapter_1.pgPool;
+    if (!executor)
+        return;
+    await executor.query(`CREATE TABLE IF NOT EXISTS recurring_payments (
+    id text PRIMARY KEY,
+    property_id text REFERENCES properties(id) ON DELETE SET NULL,
+    scope text,
+    vendor text,
+    category text,
+    category_detail text,
+    amount numeric,
+    due_day_of_month integer,
+    frequency_months integer,
+    remind_days_before integer,
+    status text,
+    last_paid_date date,
+    next_due_date date,
+    start_month_key text,
+    pay_account_name text,
+    pay_bsb text,
+    pay_account_number text,
+    pay_ref text,
+    expense_id text,
+    expense_resource text,
+    payment_type text,
+    bpay_code text,
+    pay_mobile_number text,
+    report_category text,
+    amount_mode text,
+    income_base text,
+    rate_percent numeric,
+    property_ids text[],
+    template_kind text,
+    bill_account_no text,
+    note text,
+    created_by text,
+    updated_by text,
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz
+  );`);
+    await executor.query(`ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS template_kind text DEFAULT '${PROPERTY_PAYABLE_TEMPLATE_KIND}';`);
+    await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_account_no text;');
+    await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS note text;');
+    await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS created_by text;');
+    await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS updated_by text;');
+}
+function normalizePayableTemplates(raw, actorId, propertyId) {
+    const rows = Array.isArray(raw) ? raw : [];
+    return rows.map((item) => {
+        var _a;
+        const id = String((item === null || item === void 0 ? void 0 : item.id) || '').trim() || (0, uuid_1.v4)();
+        return {
+            id,
+            property_id: propertyId,
+            scope: 'property',
+            template_kind: PROPERTY_PAYABLE_TEMPLATE_KIND,
+            vendor: String((item === null || item === void 0 ? void 0 : item.vendor) || '').trim(),
+            category: String((item === null || item === void 0 ? void 0 : item.category) || '').trim(),
+            category_detail: String((item === null || item === void 0 ? void 0 : item.category_detail) || '').trim() || null,
+            amount: (item === null || item === void 0 ? void 0 : item.amount) == null ? 0 : Number(item.amount || 0),
+            due_day_of_month: Number((item === null || item === void 0 ? void 0 : item.due_day_of_month) || 1),
+            frequency_months: Math.max(1, Number((item === null || item === void 0 ? void 0 : item.frequency_months) || 1)),
+            remind_days_before: Number((_a = item === null || item === void 0 ? void 0 : item.remind_days_before) !== null && _a !== void 0 ? _a : 3),
+            payment_type: (item === null || item === void 0 ? void 0 : item.payment_type) ? String(item.payment_type) : 'bank_account',
+            pay_account_name: String((item === null || item === void 0 ? void 0 : item.pay_account_name) || '').trim() || null,
+            pay_bsb: String((item === null || item === void 0 ? void 0 : item.pay_bsb) || '').trim() || null,
+            pay_account_number: String((item === null || item === void 0 ? void 0 : item.pay_account_number) || '').trim() || null,
+            pay_ref: String((item === null || item === void 0 ? void 0 : item.pay_ref) || '').trim() || null,
+            bpay_code: String((item === null || item === void 0 ? void 0 : item.bpay_code) || '').trim() || null,
+            pay_mobile_number: String((item === null || item === void 0 ? void 0 : item.pay_mobile_number) || '').trim() || null,
+            report_category: String((item === null || item === void 0 ? void 0 : item.report_category) || '').trim() || null,
+            start_month_key: String((item === null || item === void 0 ? void 0 : item.start_month_key) || '').trim(),
+            bill_account_no: String((item === null || item === void 0 ? void 0 : item.bill_account_no) || '').trim() || null,
+            note: String((item === null || item === void 0 ? void 0 : item.note) || '').trim() || null,
+            status: 'active',
+            created_by: actorId,
+            updated_by: actorId,
+        };
+    });
+}
+async function syncPropertyPayableTemplatesTx(client, propertyId, rawTemplates, actorId) {
+    await ensurePropertyPayableColumns(client);
+    const nextTemplates = normalizePayableTemplates(rawTemplates, actorId, propertyId);
+    const existingRes = await client.query(`SELECT *
+       FROM recurring_payments
+      WHERE property_id = $1
+        AND COALESCE(template_kind, $2) = $3`, [propertyId, 'fixed_expense', PROPERTY_PAYABLE_TEMPLATE_KIND]);
+    const existingRows = Array.isArray(existingRes.rows) ? existingRes.rows : [];
+    const existingById = new Map();
+    existingRows.forEach((row) => existingById.set(String(row.id), row));
+    const keepIds = new Set(nextTemplates.map((row) => String(row.id)));
+    for (const tpl of nextTemplates) {
+        const existing = existingById.get(String(tpl.id));
+        if (existing) {
+            const patch = {
+                property_id: propertyId,
+                scope: 'property',
+                template_kind: PROPERTY_PAYABLE_TEMPLATE_KIND,
+                vendor: tpl.vendor,
+                category: tpl.category,
+                category_detail: tpl.category_detail,
+                amount: tpl.amount,
+                due_day_of_month: tpl.due_day_of_month,
+                frequency_months: tpl.frequency_months,
+                remind_days_before: tpl.remind_days_before,
+                payment_type: tpl.payment_type,
+                pay_account_name: tpl.pay_account_name,
+                pay_bsb: tpl.pay_bsb,
+                pay_account_number: tpl.pay_account_number,
+                pay_ref: tpl.pay_ref,
+                bpay_code: tpl.bpay_code,
+                pay_mobile_number: tpl.pay_mobile_number,
+                report_category: tpl.report_category,
+                start_month_key: tpl.start_month_key,
+                bill_account_no: tpl.bill_account_no,
+                note: tpl.note,
+                updated_by: actorId,
+                updated_at: new Date(),
+            };
+            const after = await (0, dbAdapter_1.pgUpdate)('recurring_payments', String(tpl.id), patch, client);
+            (0, store_1.addAudit)('RecurringPayment', String(tpl.id), 'update', existing, after, actorId || undefined);
+        }
+        else {
+            const created = await (0, dbAdapter_1.pgInsert)('recurring_payments', tpl, client);
+            (0, store_1.addAudit)('RecurringPayment', String(tpl.id), 'create', null, created || tpl, actorId || undefined);
+        }
+    }
+    for (const existing of existingRows) {
+        if (keepIds.has(String(existing.id)))
+            continue;
+        if (String(existing.status || '') === 'paused')
+            continue;
+        const after = await (0, dbAdapter_1.pgUpdate)('recurring_payments', String(existing.id), { status: 'paused', updated_by: actorId, updated_at: new Date() }, client);
+        (0, store_1.addAudit)('RecurringPayment', String(existing.id), 'pause', existing, after, actorId || undefined);
+    }
+    return nextTemplates.map((item) => item.id);
 }
 async function findListingConflictPg(listingName, excludeId) {
     var _a;
@@ -96,7 +266,6 @@ function findListingConflictLocal(listingName, excludeId) {
     return null;
 }
 exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j;
     const parsed = createSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -110,9 +279,10 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
         if (!hasAnyObj && !hasAnyFlat)
             return res.status(400).json({ message: '请至少填写一个平台的 Listing 名称' });
     }
-    catch (_k) { }
+    catch (_a) { }
     const autoCode = `PM-${Math.random().toString(36).slice(2, 6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
     const actor = req.user;
+    const actorId = String((actor === null || actor === void 0 ? void 0 : actor.sub) || (actor === null || actor === void 0 ? void 0 : actor.username) || '').trim() || null;
     const pFull = { id: (0, uuid_1.v4)(), code: parsed.data.code || autoCode, created_by: (actor === null || actor === void 0 ? void 0 : actor.sub) || (actor === null || actor === void 0 ? void 0 : actor.username) || null, ...parsed.data };
     const lnObj = (pFull.listing_names || {});
     pFull.airbnb_listing_name = normListingName(pFull.airbnb_listing_name || lnObj.airbnb || null);
@@ -125,6 +295,7 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
     try {
         // Supabase branch removed
         if (dbAdapter_1.hasPg) {
+            await ensurePropertyColumns();
             const listingCandidates = [
                 pFull.airbnb_listing_name,
                 pFull.booking_listing_name,
@@ -143,118 +314,20 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
                     return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'listing name check failed' });
                 }
             }
-            try {
-                const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
-                (0, store_1.addAudit)('Property', row.id, 'create', null, row);
-                ['guest', 'spare_1', 'spare_2', 'other'].forEach((t) => {
-                    if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-                        store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
-                    }
-                });
-                return res.status(201).json(row);
-            }
-            catch (e) {
-                if (/column\s+"?listing_names"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    try {
-                        await ((_a = require('../dbAdapter').pgPool) === null || _a === void 0 ? void 0 : _a.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS listing_names jsonb'));
-                        const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
-                        (0, store_1.addAudit)('Property', row.id, 'create', null, row);
-                        ['guest', 'spare_1', 'spare_2', 'other'].forEach((t) => {
-                            if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-                                store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
-                            }
-                        });
-                        return res.status(201).json(row);
-                    }
-                    catch (e2) {
-                        return res.status(500).json({ message: (e2 === null || e2 === void 0 ? void 0 : e2.message) || 'failed to add listing_names column' });
-                    }
+            const created = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                const row = await (0, dbAdapter_1.pgInsert)('properties', pBase, client);
+                if (Array.isArray(parsed.data.payable_templates) && parsed.data.payable_templates.length) {
+                    await syncPropertyPayableTemplatesTx(client, String(row.id), parsed.data.payable_templates, actorId);
                 }
-                if (/column\s+"?airbnb_listing_name"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    await ((_b = require('../dbAdapter').pgPool) === null || _b === void 0 ? void 0 : _b.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_name text'));
-                    const row2 = await (0, dbAdapter_1.pgInsert)('properties', pBase);
-                    (0, store_1.addAudit)('Property', row2.id, 'create', null, row2);
-                    return res.status(201).json(row2);
+                return row;
+            });
+            (0, store_1.addAudit)('Property', String((created === null || created === void 0 ? void 0 : created.id) || pFull.id), 'create', null, created, actorId || undefined);
+            ['guest', 'spare_1', 'spare_2', 'other'].forEach((t) => {
+                if (!store_1.db.keySets.find((s) => s.code === ((created === null || created === void 0 ? void 0 : created.code) || '') && s.set_type === t)) {
+                    store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: (created === null || created === void 0 ? void 0 : created.code) || '', items: [] });
                 }
-                if (/column\s+"?booking_listing_name"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    await ((_c = require('../dbAdapter').pgPool) === null || _c === void 0 ? void 0 : _c.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_name text'));
-                    const row2 = await (0, dbAdapter_1.pgInsert)('properties', pBase);
-                    (0, store_1.addAudit)('Property', row2.id, 'create', null, row2);
-                    return res.status(201).json(row2);
-                }
-                if (/column\s+"?airbnb_listing_id"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    await ((_d = require('../dbAdapter').pgPool) === null || _d === void 0 ? void 0 : _d.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_id text'));
-                    const row2 = await (0, dbAdapter_1.pgInsert)('properties', pBase);
-                    (0, store_1.addAudit)('Property', row2.id, 'create', null, row2);
-                    return res.status(201).json(row2);
-                }
-                if (/column\s+"?booking_listing_id"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    await ((_e = require('../dbAdapter').pgPool) === null || _e === void 0 ? void 0 : _e.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_id text'));
-                    const row2 = await (0, dbAdapter_1.pgInsert)('properties', pBase);
-                    (0, store_1.addAudit)('Property', row2.id, 'create', null, row2);
-                    return res.status(201).json(row2);
-                }
-                if (/column\s+"?biz_category"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    try {
-                        await ((_f = require('../dbAdapter').pgPool) === null || _f === void 0 ? void 0 : _f.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS biz_category text'));
-                        const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
-                        (0, store_1.addAudit)('Property', row.id, 'create', null, row);
-                        ['guest', 'spare_1', 'spare_2', 'other'].forEach((t) => {
-                            if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-                                store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
-                            }
-                        });
-                        return res.status(201).json(row);
-                    }
-                    catch (e3) {
-                        return res.status(500).json({ message: (e3 === null || e3 === void 0 ? void 0 : e3.message) || 'failed to add biz_category column' });
-                    }
-                }
-                if (/column\s+"?building_facility_other"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    try {
-                        await ((_g = require('../dbAdapter').pgPool) === null || _g === void 0 ? void 0 : _g.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS building_facility_other text'));
-                        const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
-                        (0, store_1.addAudit)('Property', row.id, 'create', null, row);
-                        ['guest', 'spare_1', 'spare_2', 'other'].forEach((t) => {
-                            if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-                                store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
-                            }
-                        });
-                        return res.status(201).json(row);
-                    }
-                    catch (e4) {
-                        return res.status(500).json({ message: (e4 === null || e4 === void 0 ? void 0 : e4.message) || 'failed to add building_facility_other column' });
-                    }
-                }
-                if (/column\s+"?bedroom_ac"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    try {
-                        await ((_h = require('../dbAdapter').pgPool) === null || _h === void 0 ? void 0 : _h.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedroom_ac text'));
-                        const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
-                        (0, store_1.addAudit)('Property', row.id, 'create', null, row);
-                        ['guest', 'spare_1', 'spare_2', 'other'].forEach((t) => {
-                            if (!store_1.db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-                                store_1.db.keySets.push({ id: (0, uuid_1.v4)(), set_type: t, status: 'available', code: row.code || '', items: [] });
-                            }
-                        });
-                        return res.status(201).json(row);
-                    }
-                    catch (e5) {
-                        return res.status(500).json({ message: (e5 === null || e5 === void 0 ? void 0 : e5.message) || 'failed to add bedroom_ac column' });
-                    }
-                }
-                if (/column\s+"?room_type_code"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    try {
-                        await ((_j = require('../dbAdapter').pgPool) === null || _j === void 0 ? void 0 : _j.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS room_type_code text'));
-                        const row = await (0, dbAdapter_1.pgInsert)('properties', pBase);
-                        (0, store_1.addAudit)('Property', row.id, 'create', null, row);
-                        return res.status(201).json(row);
-                    }
-                    catch (e6) {
-                        return res.status(500).json({ message: (e6 === null || e6 === void 0 ? void 0 : e6.message) || 'failed to add room_type_code column' });
-                    }
-                }
-                return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'create failed' });
-            }
+            });
+            return res.status(201).json(created);
         }
         store_1.db.properties.push(pFull);
         (0, store_1.addAudit)('Property', pFull.id, 'create', null, pFull);
@@ -270,7 +343,6 @@ exports.router.post('/', (0, auth_1.requirePerm)('property.write'), async (req, 
     }
 });
 exports.router.patch('/:id', (0, auth_1.requirePerm)('property.write'), async (req, res) => {
-    var _a, _b, _c, _d, _e;
     const { id } = req.params;
     const body = req.body;
     const cleanedBody = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'bedrooms'));
@@ -282,10 +354,12 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('property.write'), async (r
     }
     const baseKeys = ['code', 'address', 'type', 'capacity', 'room_type_code', 'region', 'area_sqm', 'biz_category', 'building_name', 'building_facilities', 'building_facility_floor', 'building_facility_other', 'building_contact_name', 'building_contact_phone', 'building_contact_email', 'building_notes', 'bed_config', 'tv_model', 'aircon_model', 'bedroom_ac', 'access_guide_link', 'keybox_location', 'keybox_code', 'garage_guide_link', 'floor', 'parking_type', 'parking_space', 'access_type', 'orientation', 'fireworks_view', 'notes', 'landlord_id', 'listing_names', 'airbnb_listing_name', 'booking_listing_name', 'airbnb_listing_id', 'booking_listing_id'];
     const actor = req.user;
+    const actorId = String((actor === null || actor === void 0 ? void 0 : actor.sub) || (actor === null || actor === void 0 ? void 0 : actor.username) || '').trim() || null;
     const bodyBaseRaw = Object.fromEntries(Object.entries(cleanedBody).filter(([k]) => baseKeys.includes(k)));
     const bodyBase = { ...bodyBaseRaw, updated_at: new Date(), updated_by: (actor === null || actor === void 0 ? void 0 : actor.sub) || (actor === null || actor === void 0 ? void 0 : actor.username) || null };
     try {
         if (dbAdapter_1.hasPg) {
+            await ensurePropertyColumns();
             const rows = await (0, dbAdapter_1.pgSelect)('properties', '*', { id });
             const before = rows && rows[0];
             const touchedListing = Object.prototype.hasOwnProperty.call(bodyBaseRaw, 'airbnb_listing_name')
@@ -305,44 +379,15 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('property.write'), async (r
                         return res.status(400).json({ message: `已经存在 Listing 名称：${name}`, code: 'DUPLICATE_LISTING_NAME', listing_name: name });
                 }
             }
-            try {
-                const row = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
-                (0, store_1.addAudit)('Property', id, 'update', before, row);
-                return res.json(row);
-            }
-            catch (e) {
-                if (/column\s+"?listing_names"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    await ((_a = require('../dbAdapter').pgPool) === null || _a === void 0 ? void 0 : _a.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS listing_names jsonb'));
-                    const row2 = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
-                    (0, store_1.addAudit)('Property', id, 'update', before, row2);
-                    return res.json(row2);
+            const row = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                const updated = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase, client);
+                if (Object.prototype.hasOwnProperty.call(body, 'payable_templates')) {
+                    await syncPropertyPayableTemplatesTx(client, id, Array.isArray(body.payable_templates) ? body.payable_templates : [], actorId);
                 }
-                if (/column\s+"?biz_category"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    await ((_b = require('../dbAdapter').pgPool) === null || _b === void 0 ? void 0 : _b.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS biz_category text'));
-                    const row3 = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
-                    (0, store_1.addAudit)('Property', id, 'update', before, row3);
-                    return res.json(row3);
-                }
-                if (/column\s+"?building_facility_other"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    await ((_c = require('../dbAdapter').pgPool) === null || _c === void 0 ? void 0 : _c.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS building_facility_other text'));
-                    const row4 = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
-                    (0, store_1.addAudit)('Property', id, 'update', before, row4);
-                    return res.json(row4);
-                }
-                if (/column\s+"?bedroom_ac"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    await ((_d = require('../dbAdapter').pgPool) === null || _d === void 0 ? void 0 : _d.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedroom_ac text'));
-                    const row5 = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
-                    (0, store_1.addAudit)('Property', id, 'update', before, row5);
-                    return res.json(row5);
-                }
-                if (/column\s+"?room_type_code"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test((e === null || e === void 0 ? void 0 : e.message) || '')) {
-                    await ((_e = require('../dbAdapter').pgPool) === null || _e === void 0 ? void 0 : _e.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS room_type_code text'));
-                    const row6 = await (0, dbAdapter_1.pgUpdate)('properties', id, bodyBase);
-                    (0, store_1.addAudit)('Property', id, 'update', before, row6);
-                    return res.json(row6);
-                }
-                throw e;
-            }
+                return updated;
+            });
+            (0, store_1.addAudit)('Property', id, 'update', before, row, actorId || undefined);
+            return res.json(row);
         }
         const p = store_1.db.properties.find((x) => x.id === id);
         if (!p)
@@ -377,10 +422,23 @@ exports.router.get('/:id', async (req, res) => {
     // Supabase branch removed
     if (dbAdapter_1.hasPg) {
         try {
+            await ensurePropertyPayableColumns();
             const rows = await (0, dbAdapter_1.pgSelect)('properties', '*', { id });
             if (!rows || !rows[0])
                 return res.status(404).json({ message: 'not found' });
             const p = rows[0];
+            try {
+                const payables = await dbAdapter_1.pgPool.query(`SELECT *
+             FROM recurring_payments
+            WHERE property_id = $1
+              AND COALESCE(template_kind, $2) = $3
+            ORDER BY COALESCE(status, 'active') ASC, COALESCE(vendor, '') ASC, COALESCE(created_at, now()) ASC`, [id, 'fixed_expense', PROPERTY_PAYABLE_TEMPLATE_KIND]);
+                p.payable_templates = Array.isArray(payables.rows) ? payables.rows : [];
+            }
+            catch (_a) {
+                ;
+                p.payable_templates = [];
+            }
             if (p.updated_by) {
                 try {
                     const us = await (0, dbAdapter_1.pgSelect)('users', 'username, email', { id: p.updated_by });
@@ -391,7 +449,7 @@ exports.router.get('/:id', async (req, res) => {
                         p.updated_by_name = p.updated_by;
                     }
                 }
-                catch (_a) { }
+                catch (_b) { }
             }
             return res.json(p);
         }
@@ -402,7 +460,7 @@ exports.router.get('/:id', async (req, res) => {
     const p = store_1.db.properties.find((x) => x.id === id);
     if (!p)
         return res.status(404).json({ message: 'not found' });
-    return res.json(p);
+    return res.json({ ...p, payable_templates: [] });
 });
 exports.router.delete('/:id', (0, auth_1.requirePerm)('property.write'), async (req, res) => {
     const { id } = req.params;

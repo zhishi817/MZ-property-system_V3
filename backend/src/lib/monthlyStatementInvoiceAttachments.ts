@@ -122,6 +122,7 @@ export async function collectMonthlyInvoiceAttachments(input: {
     FROM expense_invoices i
     JOIN property_expenses e ON i.expense_id = e.id
     WHERE e.property_id = $1
+      AND e.deleted_at IS NULL
       AND (
         e.month_key = $2
         OR substring(e.due_date::text, 1, 7) = $2

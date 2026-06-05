@@ -145,10 +145,11 @@ async function ensurePropertyGuidePublicLinksTable() {
     token_enc text,
     guide_id text NOT NULL REFERENCES property_guides(id) ON DELETE CASCADE,
     created_at timestamptz NOT NULL DEFAULT now(),
-    expires_at timestamptz NOT NULL,
+    expires_at timestamptz,
     revoked_at timestamptz
   );`)
   await pgPool.query('ALTER TABLE property_guide_public_links ADD COLUMN IF NOT EXISTS token_enc text')
+  try { await pgPool.query('ALTER TABLE property_guide_public_links ALTER COLUMN expires_at DROP NOT NULL') } catch {}
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_links_guide_id ON property_guide_public_links(guide_id);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_links_expires_at ON property_guide_public_links(expires_at);')
 }
@@ -675,11 +676,10 @@ router.post('/:id/public-link', requireAnyPerm(['property_guides.write', 'rbac.m
     if (!String(row.property_id || '')) return res.status(400).json({ message: 'missing property_id' })
     const expiresAtRaw = req.body?.expires_at ? String(req.body.expires_at) : ''
     const expiresAt = (() => {
-      if (expiresAtRaw) {
-        const d = new Date(expiresAtRaw)
-        if (!Number.isNaN(d.getTime())) return d.toISOString()
-      }
-      return new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString()
+      if (!expiresAtRaw) return null
+      const d = new Date(expiresAtRaw)
+      if (!Number.isNaN(d.getTime())) return d.toISOString()
+      return null
     })()
     const token = randomToken(24)
     const tokenHash = sha256Hex(token)
