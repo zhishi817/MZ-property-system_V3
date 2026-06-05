@@ -27,20 +27,6 @@ function round2(n: any): number {
   return Number(x.toFixed(2))
 }
 
-function landlordRentNetTotal(o: OrderLike): number {
-  const totalPrice = Number(o.price || 0)
-  const totalCleaning = Number(o.cleaning_fee || 0)
-  const storedNet = Math.max(0, Number(((o as any).net_income ?? (totalPrice - totalCleaning))))
-  const statusRaw = String((o as any).status || '').toLowerCase()
-  const isCanceled = statusRaw.includes('cancel')
-  const hasPrice = (o as any).price != null && String((o as any).price) !== ''
-  if (!isCanceled && hasPrice) {
-    const baseNet = round2(totalPrice - totalCleaning)
-    if (baseNet >= 0 && storedNet > baseNet) return baseNet
-  }
-  return round2(storedNet)
-}
-
 function toDayStr(raw?: any): string {
   const str = String(raw || '')
   const m = str.match(/^(\d{4}-\d{2}-\d{2})/)
@@ -116,7 +102,7 @@ export function splitOrderByMonths(o: OrderLike): OrderMonthSegment[] {
   if (totalNights <= 0) return []
   const totalPrice = Number(o.price || 0)
   const totalCleaning = Number(o.cleaning_fee || 0)
-  const netTotal = landlordRentNetTotal(o)
+  const netTotal = Math.max(0, Number(((o as any).net_income ?? (totalPrice - totalCleaning))))
   const dailyNet = totalNights ? (Number(netTotal.toFixed(2)) / totalNights) : 0
   const segments: OrderMonthSegment[] = []
   const deductionTotal = Number((o as any).internal_deduction_total || 0)

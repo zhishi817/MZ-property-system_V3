@@ -256,21 +256,6 @@ function autoToNum(v: any): number {
   return Number.isFinite(n1) ? n1 : 0
 }
 
-function roundMoney(v: any): number {
-  const n = Number(v || 0)
-  if (!Number.isFinite(n)) return 0
-  return Number(n.toFixed(2))
-}
-
-function orderLandlordRentNet(o: any): number {
-  const stored = roundMoney(o?.net_income ?? 0)
-  const status = String(o?.status || '').toLowerCase()
-  if (status.includes('cancel')) return stored
-  if (o?.price == null || String(o?.price) === '') return stored
-  const base = roundMoney(Number(o?.price || 0) - Number(o?.cleaning_fee || 0))
-  return base >= 0 && stored > base ? base : stored
-}
-
 function autoNormPayMethod(v: any): string {
   const s = String(v || '').trim()
   const low = s.toLowerCase()
@@ -2319,7 +2304,7 @@ router.get('/property-revenue', async (req, res) => {
         for (const o of ords) {
           const ov = overlapNights(o.checkin, o.checkout)
           const nights = Number(o.nights || 0) || 0
-          const visNet = orderLandlordRentNet(o)
+          const visNet = Number((o as any).visible_net_income ?? o.net_income ?? 0)
           const status = String((o as any).status || '').toLowerCase()
           const isCanceled = status.includes('cancel')
           const include = (!isCanceled) || !!(o as any).count_in_income
@@ -2566,7 +2551,7 @@ router.post('/management-fee/calc', requireAnyPerm(['property_expenses.write','f
     for (const o of ords) {
       const ov = overlapNights(o.checkin, o.checkout)
       const nights = Number(o.nights || 0) || 0
-      const visNet = orderLandlordRentNet(o)
+      const visNet = Number((o as any).visible_net_income ?? o.net_income ?? 0)
       const status = String((o as any).status || '').toLowerCase()
       const isCanceled = status.includes('cancel')
       const include = (!isCanceled) || !!(o as any).count_in_income

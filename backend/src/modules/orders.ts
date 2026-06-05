@@ -44,21 +44,13 @@ function isInactiveOrderStatus(v: any): boolean {
   return false
 }
 
-function landlordRentNetForOrder(o: any): number {
-  const stored = Number(round2(Number(o?.net_income || 0)) || 0)
-  if (isInactiveOrderStatus(o?.status)) return stored
-  if (o?.price == null || String(o?.price) === '') return stored
-  const base = Number(round2(Number(o?.price || 0) - Number(o?.cleaning_fee || 0)) || 0)
-  if (base >= 0 && stored > base) return base
-  return stored
-}
-
 function visibleNetIncomeForOrder(o: any, deductionTotal: number): number {
   const st = String(o?.status || '').toLowerCase()
   const isCanceled = st.includes('cancel')
   const include = (!isCanceled) || !!(o as any)?.count_in_income
   if (!include) return 0
-  return Math.max(0, Number((landlordRentNetForOrder(o) - Number(deductionTotal || 0)).toFixed(2)))
+  const net = Number(o?.net_income || 0)
+  return Math.max(0, Number((net - Number(deductionTotal || 0)).toFixed(2)))
 }
 
 function normalizePropertyId(raw: any): string | undefined {

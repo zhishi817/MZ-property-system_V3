@@ -55,7 +55,7 @@ describe('calcOrderMonthAmounts', () => {
     expect(r2.visibleNetMonth).toBeCloseTo(190, 2)
   })
 
-  it('excludes late-checkout-inflated net income from owner rent', () => {
+  it('preserves historical stored net income for issued reports', () => {
     const o: any = {
       id: 'o4',
       checkin: '2026-01-10T12:00:00',
@@ -66,8 +66,8 @@ describe('calcOrderMonthAmounts', () => {
       status: 'confirmed'
     }
     const r = calcOrderMonthAmounts(o, dayjs('2026-01-01'))
-    expect(r.netMonth).toBeCloseTo(220, 2)
-    expect(r.visibleNetMonth).toBeCloseTo(220, 2)
+    expect(r.netMonth).toBeCloseTo(240, 2)
+    expect(r.visibleNetMonth).toBeCloseTo(240, 2)
   })
 })
 

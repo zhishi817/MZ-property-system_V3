@@ -31,26 +31,6 @@ export function toDayStr(raw?: any): string {
   return ''
 }
 
-function round2(n: any): number {
-  const x = Number(n || 0)
-  if (!Number.isFinite(x)) return 0
-  return Number(x.toFixed(2))
-}
-
-function landlordRentNetTotal(o: OrderLike): number {
-  const totalPrice = Number(o.price || 0)
-  const totalCleaning = Number(o.cleaning_fee || 0)
-  const storedNet = Math.max(0, Number(((o as any).net_income ?? (totalPrice - totalCleaning))))
-  const statusRaw = String((o as any).status || '').toLowerCase()
-  const isCanceled = statusRaw.includes('cancel')
-  const hasPrice = (o as any).price != null && String((o as any).price) !== ''
-  if (!isCanceled && hasPrice) {
-    const baseNet = round2(totalPrice - totalCleaning)
-    if (baseNet >= 0 && storedNet > baseNet) return baseNet
-  }
-  return round2(storedNet)
-}
-
 export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string })[] {
   const ciDay = toDayStr(o.checkin)
   const coDay = toDayStr(o.checkout)
@@ -60,7 +40,7 @@ export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string }
   if (totalNights <= 0) return []
   const totalPrice = Number(o.price || 0)
   const totalCleaning = Number(o.cleaning_fee || 0)
-  const netTotal = landlordRentNetTotal(o)
+  const netTotal = Math.max(0, Number(((o as any).net_income ?? (totalPrice - totalCleaning))))
   const dailyNet = totalNights ? (Number(netTotal.toFixed(2)) / totalNights) : 0
   const segments: (OrderLike & { __rid: string })[] = []
   const deductionTotal = Number((o as any).internal_deduction_total || 0)
@@ -116,13 +96,7 @@ export function calcOrderMonthAmounts(o: OrderLike, monthStart: any) {
   const totalNightsAll = Number((o as any).__src_nights ?? Math.max(0, co.diff(ci, 'day')))
   const totalPrice = Number((o as any).__src_price ?? o.price ?? 0)
   const totalCleaning = Number((o as any).__src_cleaning_fee ?? o.cleaning_fee ?? 0)
-  const hasExplicitPrice = (o as any).__src_price != null || (o as any).price != null
-  const netTotal = landlordRentNetTotal({
-    ...(o as any),
-    price: hasExplicitPrice ? totalPrice : undefined,
-    cleaning_fee: totalCleaning,
-    net_income: (o as any).__src_net_income ?? (o as any).net_income,
-  } as any)
+  const netTotal = Math.max(0, Number(((o as any).__src_net_income ?? (o as any).net_income ?? (totalPrice - totalCleaning))))
   const dailyNet = totalNightsAll ? netTotal / totalNightsAll : 0
   const netMonth = Number((dailyNet * nightsMonth).toFixed(2))
   const lastNight = totalNightsAll > 0 ? co.subtract(1, 'day') : co

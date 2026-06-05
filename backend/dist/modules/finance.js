@@ -297,23 +297,6 @@ function autoToNum(v) {
     const n1 = Number(s);
     return Number.isFinite(n1) ? n1 : 0;
 }
-function roundMoney(v) {
-    const n = Number(v || 0);
-    if (!Number.isFinite(n))
-        return 0;
-    return Number(n.toFixed(2));
-}
-function orderLandlordRentNet(o) {
-    var _a;
-    const stored = roundMoney((_a = o === null || o === void 0 ? void 0 : o.net_income) !== null && _a !== void 0 ? _a : 0);
-    const status = String((o === null || o === void 0 ? void 0 : o.status) || '').toLowerCase();
-    if (status.includes('cancel'))
-        return stored;
-    if ((o === null || o === void 0 ? void 0 : o.price) == null || String(o === null || o === void 0 ? void 0 : o.price) === '')
-        return stored;
-    const base = roundMoney(Number((o === null || o === void 0 ? void 0 : o.price) || 0) - Number((o === null || o === void 0 ? void 0 : o.cleaning_fee) || 0));
-    return base >= 0 && stored > base ? base : stored;
-}
 function autoNormPayMethod(v) {
     const s = String(v || '').trim();
     const low = s.toLowerCase();
@@ -2444,7 +2427,7 @@ exports.router.patch('/property-revenue-status', (0, auth_1.requirePerm)('financ
 });
 // Property revenue aggregated by fixed expenses report_category and order income
 exports.router.get('/property-revenue', async (req, res) => {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e, _f;
     try {
         const { property_id, property_code, month } = (req.query || {});
         if (!month || (!(property_id) && !(property_code)))
@@ -2476,7 +2459,7 @@ exports.router.get('/property-revenue', async (req, res) => {
                     }
                 }
             }
-            catch (_e) { }
+            catch (_g) { }
         }
         const cols = { parking_fee: 0, electricity: 0, water: 0, gas: 0, internet: 0, consumables: 0, body_corp: 0, council: 0, other: 0, management_fee: 0 };
         let rentIncome = 0;
@@ -2506,7 +2489,7 @@ exports.router.get('/property-revenue', async (req, res) => {
                 for (const o of ords) {
                     const ov = overlapNights(o.checkin, o.checkout);
                     const nights = Number(o.nights || 0) || 0;
-                    const visNet = orderLandlordRentNet(o);
+                    const visNet = Number((_f = (_e = o.visible_net_income) !== null && _e !== void 0 ? _e : o.net_income) !== null && _f !== void 0 ? _f : 0);
                     const status = String(o.status || '').toLowerCase();
                     const isCanceled = status.includes('cancel');
                     const include = (!isCanceled) || !!o.count_in_income;
@@ -2527,7 +2510,7 @@ exports.router.get('/property-revenue', async (req, res) => {
                         peRows = rs.rows || [];
                     }
                 }
-                catch (_f) { }
+                catch (_h) { }
                 const rp = await (0, dbAdapter_1.pgSelect)('recurring_payments', '*');
                 const rpRows = Array.isArray(rp) ? rp : [];
                 const map = Object.fromEntries(rpRows.map(r => [String(r.id), String(r.report_category || 'other')]));
@@ -2620,10 +2603,10 @@ exports.router.get('/property-revenue', async (req, res) => {
                         }
                     }
                 }
-                catch (_g) { }
+                catch (_j) { }
             }
         }
-        catch (_h) { }
+        catch (_k) { }
         const totalExpense = Object.entries(cols).reduce((s, [k, v]) => s + (k === 'management_fee' ? Number(v || 0) : Number(v || 0)), 0);
         const payload = {
             property_code: label || pcode || pid,
@@ -2746,7 +2729,7 @@ exports.router.get('/rent-income-by-property', (0, auth_1.requireAnyPerm)(['fina
 });
 // Auto-calc management fee for a property and month, persist into property_expenses and finance_transactions
 exports.router.post('/management-fee/calc', (0, auth_1.requireAnyPerm)(['property_expenses.write', 'finance.tx.write']), async (req, res) => {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f, _g;
     try {
         const { property_id, property_code, month } = (req.body || {});
         if (!month || (!(property_id) && !(property_code)))
@@ -2791,7 +2774,7 @@ exports.router.post('/management-fee/calc', (0, auth_1.requireAnyPerm)(['propert
         for (const o of ords) {
             const ov = overlapNights(o.checkin, o.checkout);
             const nights = Number(o.nights || 0) || 0;
-            const visNet = orderLandlordRentNet(o);
+            const visNet = Number((_d = (_c = o.visible_net_income) !== null && _c !== void 0 ? _c : o.net_income) !== null && _d !== void 0 ? _d : 0);
             const status = String(o.status || '').toLowerCase();
             const isCanceled = status.includes('cancel');
             const include = (!isCanceled) || !!o.count_in_income;
@@ -2827,13 +2810,13 @@ exports.router.post('/management-fee/calc', (0, auth_1.requireAnyPerm)(['propert
             expRow = await (0, dbAdapter_1.pgInsert)('property_expenses', { id: uuid(), property_id: pid, amount: fee, category: 'management_fee', occurred_at: occurred, month_key: ym, note: `auto management fee ${ym}` });
         }
         // write finance transaction for integration
-        const tx = { id: uuid(), kind: 'expense', amount: fee, currency: 'AUD', occurred_at: new Date().toISOString(), ref_type: 'property_expense', ref_id: (expRow === null || expRow === void 0 ? void 0 : expRow.id) || (((_c = existing === null || existing === void 0 ? void 0 : existing[0]) === null || _c === void 0 ? void 0 : _c.id) || null), property_id: pid, category: 'management_fee', note: `management fee ${(prop === null || prop === void 0 ? void 0 : prop.code) || pid} ${ym}` };
+        const tx = { id: uuid(), kind: 'expense', amount: fee, currency: 'AUD', occurred_at: new Date().toISOString(), ref_type: 'property_expense', ref_id: (expRow === null || expRow === void 0 ? void 0 : expRow.id) || (((_e = existing === null || existing === void 0 ? void 0 : existing[0]) === null || _e === void 0 ? void 0 : _e.id) || null), property_id: pid, category: 'management_fee', note: `management fee ${(prop === null || prop === void 0 ? void 0 : prop.code) || pid} ${ym}` };
         await (0, dbAdapter_1.pgInsert)('finance_transactions', tx);
         (0, store_1.addAudit)('FinanceTransaction', tx.id, 'create', null, tx);
         // return with double-check snapshot
         const recorded = await (0, dbAdapter_1.pgSelect)('property_expenses', '*', { property_id: pid, month_key: ym, category: 'management_fee' });
-        const diff = Math.abs(Number((((_d = recorded === null || recorded === void 0 ? void 0 : recorded[0]) === null || _d === void 0 ? void 0 : _d.amount) || 0)) - fee);
-        return res.status(201).json({ property_id: pid, month: ym, rent_income: Number(rentIncome.toFixed(2)), rate, fee, recorded_fee: Number((((_e = recorded === null || recorded === void 0 ? void 0 : recorded[0]) === null || _e === void 0 ? void 0 : _e.amount) || 0)), diff });
+        const diff = Math.abs(Number((((_f = recorded === null || recorded === void 0 ? void 0 : recorded[0]) === null || _f === void 0 ? void 0 : _f.amount) || 0)) - fee);
+        return res.status(201).json({ property_id: pid, month: ym, rent_income: Number(rentIncome.toFixed(2)), rate, fee, recorded_fee: Number((((_g = recorded === null || recorded === void 0 ? void 0 : recorded[0]) === null || _g === void 0 ? void 0 : _g.amount) || 0)), diff });
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'calc_failed' });

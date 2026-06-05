@@ -50,24 +50,14 @@ function isInactiveOrderStatus(v) {
         return true;
     return false;
 }
-function landlordRentNetForOrder(o) {
-    const stored = Number(round2(Number((o === null || o === void 0 ? void 0 : o.net_income) || 0)) || 0);
-    if (isInactiveOrderStatus(o === null || o === void 0 ? void 0 : o.status))
-        return stored;
-    if ((o === null || o === void 0 ? void 0 : o.price) == null || String(o === null || o === void 0 ? void 0 : o.price) === '')
-        return stored;
-    const base = Number(round2(Number((o === null || o === void 0 ? void 0 : o.price) || 0) - Number((o === null || o === void 0 ? void 0 : o.cleaning_fee) || 0)) || 0);
-    if (base >= 0 && stored > base)
-        return base;
-    return stored;
-}
 function visibleNetIncomeForOrder(o, deductionTotal) {
     const st = String((o === null || o === void 0 ? void 0 : o.status) || '').toLowerCase();
     const isCanceled = st.includes('cancel');
     const include = (!isCanceled) || !!(o === null || o === void 0 ? void 0 : o.count_in_income);
     if (!include)
         return 0;
-    return Math.max(0, Number((landlordRentNetForOrder(o) - Number(deductionTotal || 0)).toFixed(2)));
+    const net = Number((o === null || o === void 0 ? void 0 : o.net_income) || 0);
+    return Math.max(0, Number((net - Number(deductionTotal || 0)).toFixed(2)));
 }
 function normalizePropertyId(raw) {
     const s = String(raw || '').trim();

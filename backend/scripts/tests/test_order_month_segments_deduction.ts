@@ -66,8 +66,8 @@ function main() {
     }
     const segs = splitOrderByMonths(order)
     assert.equal(segs.length, 1)
-    assert.equal(sum2(segs as any, 'net_income'), 220)
-    assert.equal(sum2(segs as any, 'visible_net_income'), 220)
+    assert.equal(sum2(segs as any, 'net_income'), 240)
+    assert.equal(sum2(segs as any, 'visible_net_income'), 240)
   }
 
   console.log('OK test_order_month_segments_deduction')

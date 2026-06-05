@@ -144,11 +144,7 @@ export default function OrdersPage() {
     await fetch(`${API_BASE}/finance`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(tx) }).catch(() => {})
   }
   function getLandlordNetIncomeForOrder(o: any): number {
-    const stored = roundMoney(o?.net_income ?? 0)
-    if (isCanceledStatus(o?.status)) return stored
-    if (o?.price == null) return stored
-    const base = roundMoney(Number(o?.price || 0) - Number(o?.cleaning_fee || 0))
-    return stored > base && base >= 0 ? base : stored
+    return roundMoney(o?.net_income ?? 0)
   }
   function computeVisibleNetIncomeForOrder(o: any, deductionTotal: number): number {
     const include = (!isCanceledStatus(o?.status)) || !!(o?.count_in_income)
