@@ -138,13 +138,33 @@ exports.router.get('/', async (req, res) => {
             const from = autoToISODateOnly(q.from);
             const to = autoToISODateOnly(q.to);
             const pid = String(q.property_id || '').trim();
+            const refType = String(q.ref_type || '').trim();
+            const refId = String(q.ref_id || '').trim();
+            const category = String(q.category || '').trim();
+            const kind = String(q.kind || '').trim();
             let rows = [];
-            if (dbAdapter_2.pgPool && (from || to || pid)) {
+            if (dbAdapter_2.pgPool && (from || to || pid || refType || refId || category || kind)) {
                 const vals = [];
                 const where = [];
                 if (pid) {
                     vals.push(pid);
                     where.push(`property_id = $${vals.length}`);
+                }
+                if (refType) {
+                    vals.push(refType);
+                    where.push(`ref_type = $${vals.length}`);
+                }
+                if (refId) {
+                    vals.push(refId);
+                    where.push(`ref_id = $${vals.length}`);
+                }
+                if (category) {
+                    vals.push(category);
+                    where.push(`lower(coalesce(category,'')) = lower($${vals.length})`);
+                }
+                if (kind) {
+                    vals.push(kind);
+                    where.push(`lower(coalesce(kind,'')) = lower($${vals.length})`);
                 }
                 if (from && to) {
                     vals.push(from, to);
@@ -184,8 +204,20 @@ exports.router.get('/', async (req, res) => {
         const from = autoToISODateOnly(q.from);
         const to = autoToISODateOnly(q.to);
         const pid = String(q.property_id || '').trim();
+        const refType = String(q.ref_type || '').trim();
+        const refId = String(q.ref_id || '').trim();
+        const category = String(q.category || '').trim().toLowerCase();
+        const kind = String(q.kind || '').trim().toLowerCase();
         return res.json((store_1.db.financeTransactions || []).filter((r) => {
             if (pid && String((r === null || r === void 0 ? void 0 : r.property_id) || '') !== pid)
+                return false;
+            if (refType && String((r === null || r === void 0 ? void 0 : r.ref_type) || '') !== refType)
+                return false;
+            if (refId && String((r === null || r === void 0 ? void 0 : r.ref_id) || '') !== refId)
+                return false;
+            if (category && String((r === null || r === void 0 ? void 0 : r.category) || '').toLowerCase() !== category)
+                return false;
+            if (kind && String((r === null || r === void 0 ? void 0 : r.kind) || '').toLowerCase() !== kind)
                 return false;
             const d = autoToISODateOnly((r === null || r === void 0 ? void 0 : r.occurred_at) || (r === null || r === void 0 ? void 0 : r.created_at));
             if (from && (!d || d < from))
@@ -200,8 +232,20 @@ exports.router.get('/', async (req, res) => {
         const from = autoToISODateOnly(q.from);
         const to = autoToISODateOnly(q.to);
         const pid = String(q.property_id || '').trim();
+        const refType = String(q.ref_type || '').trim();
+        const refId = String(q.ref_id || '').trim();
+        const category = String(q.category || '').trim().toLowerCase();
+        const kind = String(q.kind || '').trim().toLowerCase();
         return res.json((store_1.db.financeTransactions || []).filter((r) => {
             if (pid && String((r === null || r === void 0 ? void 0 : r.property_id) || '') !== pid)
+                return false;
+            if (refType && String((r === null || r === void 0 ? void 0 : r.ref_type) || '') !== refType)
+                return false;
+            if (refId && String((r === null || r === void 0 ? void 0 : r.ref_id) || '') !== refId)
+                return false;
+            if (category && String((r === null || r === void 0 ? void 0 : r.category) || '').toLowerCase() !== category)
+                return false;
+            if (kind && String((r === null || r === void 0 ? void 0 : r.kind) || '').toLowerCase() !== kind)
                 return false;
             const d = autoToISODateOnly((r === null || r === void 0 ? void 0 : r.occurred_at) || (r === null || r === void 0 ? void 0 : r.created_at));
             if (from && (!d || d < from))
@@ -252,6 +296,23 @@ function autoToNum(v) {
     const s = String(v || '').replace(/[^0-9.\-]/g, '');
     const n1 = Number(s);
     return Number.isFinite(n1) ? n1 : 0;
+}
+function roundMoney(v) {
+    const n = Number(v || 0);
+    if (!Number.isFinite(n))
+        return 0;
+    return Number(n.toFixed(2));
+}
+function orderLandlordRentNet(o) {
+    var _a;
+    const stored = roundMoney((_a = o === null || o === void 0 ? void 0 : o.net_income) !== null && _a !== void 0 ? _a : 0);
+    const status = String((o === null || o === void 0 ? void 0 : o.status) || '').toLowerCase();
+    if (status.includes('cancel'))
+        return stored;
+    if ((o === null || o === void 0 ? void 0 : o.price) == null || String(o === null || o === void 0 ? void 0 : o.price) === '')
+        return stored;
+    const base = roundMoney(Number((o === null || o === void 0 ? void 0 : o.price) || 0) - Number((o === null || o === void 0 ? void 0 : o.cleaning_fee) || 0));
+    return base >= 0 && stored > base ? base : stored;
 }
 function autoNormPayMethod(v) {
     const s = String(v || '').trim();
@@ -830,15 +891,91 @@ exports.router.post('/', (0, auth_1.requirePerm)('finance.tx.write'), async (req
     }
     const { v4: uuid } = require('uuid');
     const tx = { id: uuid(), occurred_at: parsed.data.occurred_at || new Date().toISOString(), ...parsed.data };
-    store_1.db.financeTransactions.push(tx);
-    (0, store_1.addAudit)('FinanceTransaction', tx.id, 'create', null, tx);
+    const memoryCategory = String(tx.category || '').toLowerCase();
+    const memoryOrderIncomeLinked = String(tx.kind) === 'income' && String(tx.ref_type || '') === 'order' && String(tx.ref_id || '') && (memoryCategory === 'cancel_fee' || memoryCategory === 'late_checkout');
+    let memoryTx = tx;
+    if (memoryOrderIncomeLinked) {
+        const dupIdx = store_1.db.financeTransactions.findIndex((r) => (String((r === null || r === void 0 ? void 0 : r.kind) || '') === 'income' &&
+            String((r === null || r === void 0 ? void 0 : r.ref_type) || '') === 'order' &&
+            String((r === null || r === void 0 ? void 0 : r.ref_id) || '') === String(tx.ref_id || '') &&
+            String((r === null || r === void 0 ? void 0 : r.category) || '').toLowerCase() === memoryCategory));
+        if (dupIdx >= 0) {
+            const prev = store_1.db.financeTransactions[dupIdx];
+            memoryTx = { ...prev, ...tx, id: prev.id, category: memoryCategory, ref_type: 'order', ref_id: String(tx.ref_id || '') };
+            store_1.db.financeTransactions[dupIdx] = memoryTx;
+            (0, store_1.addAudit)('FinanceTransaction', memoryTx.id, 'update', prev, memoryTx);
+        }
+        else {
+            store_1.db.financeTransactions.push(tx);
+            (0, store_1.addAudit)('FinanceTransaction', tx.id, 'create', null, tx);
+        }
+    }
+    else {
+        store_1.db.financeTransactions.push(tx);
+        (0, store_1.addAudit)('FinanceTransaction', tx.id, 'create', null, tx);
+    }
     if (dbAdapter_1.hasPg) {
         try {
             const result = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
                 function normalizeStatus(raw) { return String(raw || '').trim().toLowerCase(); }
                 function isCanceledStatus(raw) {
                     const s = normalizeStatus(raw);
-                    return s === 'canceled' || s === 'cancelled';
+                    return s.includes('cancel');
+                }
+                async function syncCompanyIncomeForTx(txLike) {
+                    try {
+                        const cat = String(txLike.category || '').toLowerCase();
+                        const isIncome = String(txLike.kind) === 'income';
+                        if (!isIncome || !(cat === 'cancel_fee' || cat === 'late_checkout' || cat === 'other' || cat === 'cleaning_fee' || cat === 'mgmt_fee'))
+                            return {};
+                        const occurred = String(txLike.occurred_at || '').slice(0, 10) || new Date().toISOString().slice(0, 10);
+                        const rec = {
+                            occurred_at: occurred,
+                            amount: Number(txLike.amount || 0),
+                            currency: String(txLike.currency || 'AUD'),
+                            category: cat || 'other',
+                            note: String(txLike.note || ''),
+                            property_id: txLike.property_id || null,
+                            ref_type: txLike.ref_type || null,
+                            ref_id: txLike.ref_id || null,
+                        };
+                        if (cat === 'cancel_fee' && String(txLike.ref_type || '') === 'order' && String(txLike.ref_id || '')) {
+                            const oid = String(txLike.ref_id);
+                            const ordRows = await (0, dbAdapter_1.pgSelect)('orders', 'id,status,count_in_income', { id: oid }, client);
+                            const ord = Array.isArray(ordRows) ? ordRows[0] : null;
+                            const canceled = isCanceledStatus(ord === null || ord === void 0 ? void 0 : ord.status);
+                            const countInIncome = !!(ord === null || ord === void 0 ? void 0 : ord.count_in_income);
+                            if (canceled && countInIncome) {
+                                await client.query(`DELETE FROM company_incomes WHERE category=$1 AND ref_type=$2 AND ref_id=$3`, [cat, rec.ref_type, rec.ref_id]);
+                                return { skippedCompanyIncome: true };
+                            }
+                        }
+                        if (rec.ref_type && rec.ref_id) {
+                            const existing = await (0, dbAdapter_1.pgSelect)('company_incomes', '*', { category: rec.category, ref_type: rec.ref_type, ref_id: rec.ref_id }, client);
+                            const prev = Array.isArray(existing) ? existing[0] : null;
+                            if (prev === null || prev === void 0 ? void 0 : prev.id) {
+                                const updated = await (0, dbAdapter_1.pgUpdate)('company_incomes', String(prev.id), rec, client);
+                                if (updated)
+                                    (0, store_1.addAudit)('CompanyIncome', String(updated.id || prev.id), 'update', prev, updated);
+                                return { companyIncome: updated || prev };
+                            }
+                            const ins = await (0, dbAdapter_1.pgInsert)('company_incomes', { id: uuid(), ...rec }, client);
+                            if (ins)
+                                (0, store_1.addAudit)('CompanyIncome', String(ins.id || ''), 'create', null, ins);
+                            return { companyIncome: ins };
+                        }
+                        const dup2 = await (0, dbAdapter_1.pgSelect)('company_incomes', '*', { occurred_at: rec.occurred_at, category: rec.category, amount: rec.amount, note: rec.note, property_id: rec.property_id }, client);
+                        if (!(Array.isArray(dup2) && dup2[0])) {
+                            const ins = await (0, dbAdapter_1.pgInsert)('company_incomes', { id: uuid(), ...rec }, client);
+                            if (ins)
+                                (0, store_1.addAudit)('CompanyIncome', String(ins.id || ''), 'create', null, ins);
+                            return { companyIncome: ins };
+                        }
+                        return { companyIncome: dup2[0] };
+                    }
+                    catch (_a) {
+                        return {};
+                    }
                 }
                 try {
                     await client.query('ALTER TABLE company_incomes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;');
@@ -848,55 +985,33 @@ exports.router.post('/', (0, auth_1.requirePerm)('finance.tx.write'), async (req
                 }
                 catch (_a) { }
                 const cat0 = String(tx.category || '').toLowerCase();
-                if (String(tx.kind) === 'income' && cat0 === 'cancel_fee' && String(tx.ref_type || '') === 'order' && String(tx.ref_id || '')) {
-                    const dup = await (0, dbAdapter_1.pgSelect)('finance_transactions', '*', { ref_type: 'order', ref_id: String(tx.ref_id), category: 'cancel_fee' }, client);
+                const orderIncomeLinked = String(tx.kind) === 'income' && String(tx.ref_type || '') === 'order' && String(tx.ref_id || '') && (cat0 === 'cancel_fee' || cat0 === 'late_checkout');
+                if (orderIncomeLinked) {
+                    const dup = await (0, dbAdapter_1.pgSelect)('finance_transactions', '*', { ref_type: 'order', ref_id: String(tx.ref_id), category: cat0 }, client);
                     if (Array.isArray(dup) && dup[0]) {
-                        return { txRow: dup[0], duplicated: true };
+                        const prev = dup[0];
+                        const payload = {
+                            kind: tx.kind,
+                            amount: Number(tx.amount || 0),
+                            currency: String(tx.currency || 'AUD'),
+                            occurred_at: tx.occurred_at || new Date().toISOString(),
+                            note: tx.note || '',
+                            category: cat0,
+                            property_id: tx.property_id || null,
+                            ref_type: 'order',
+                            ref_id: String(tx.ref_id),
+                            category_detail: tx.category_detail || null,
+                            invoice_url: tx.invoice_url || null,
+                        };
+                        const updatedTx = await (0, dbAdapter_1.pgUpdate)('finance_transactions', String(prev.id), payload, client);
+                        await syncCompanyIncomeForTx(updatedTx || { ...prev, ...payload });
+                        return { txRow: updatedTx || { ...prev, ...payload }, duplicated: true };
                     }
                 }
                 const txRow = await (0, dbAdapter_1.pgInsert)('finance_transactions', tx, client);
-                try {
-                    const cat = String(tx.category || '').toLowerCase();
-                    const isIncome = String(tx.kind) === 'income';
-                    if (isIncome && (cat === 'cancel_fee' || cat === 'late_checkout' || cat === 'other' || cat === 'cleaning_fee' || cat === 'mgmt_fee')) {
-                        const occurred = String(tx.occurred_at || '').slice(0, 10) || new Date().toISOString().slice(0, 10);
-                        const rec = {
-                            id: uuid(),
-                            occurred_at: occurred,
-                            amount: Number(tx.amount || 0),
-                            currency: String(tx.currency || 'AUD'),
-                            category: cat || 'other',
-                            note: String(tx.note || ''),
-                            property_id: tx.property_id || null,
-                            ref_type: tx.ref_type || null,
-                            ref_id: tx.ref_id || null,
-                        };
-                        if (cat === 'cancel_fee' && String(tx.ref_type || '') === 'order' && String(tx.ref_id || '')) {
-                            const oid = String(tx.ref_id);
-                            const ordRows = await (0, dbAdapter_1.pgSelect)('orders', 'id,status,count_in_income', { id: oid }, client);
-                            const ord = Array.isArray(ordRows) ? ordRows[0] : null;
-                            const canceled = isCanceledStatus(ord === null || ord === void 0 ? void 0 : ord.status);
-                            const countInIncome = !!(ord === null || ord === void 0 ? void 0 : ord.count_in_income);
-                            if (canceled && countInIncome) {
-                                return { txRow: txRow || tx, duplicated: false, skippedCompanyIncome: true };
-                            }
-                        }
-                        if (rec.ref_type && rec.ref_id) {
-                            const ins = await (0, dbAdapter_2.pgInsertOnConflictDoNothing)('company_incomes', rec, ['category', 'ref_type', 'ref_id'], client);
-                            if (ins)
-                                (0, store_1.addAudit)('CompanyIncome', String(ins.id || rec.id), 'create', null, ins);
-                        }
-                        else {
-                            const dup2 = await (0, dbAdapter_1.pgSelect)('company_incomes', '*', { occurred_at: rec.occurred_at, category: rec.category, amount: rec.amount, note: rec.note, property_id: rec.property_id }, client);
-                            if (!(Array.isArray(dup2) && dup2[0])) {
-                                const ins = await (0, dbAdapter_1.pgInsert)('company_incomes', rec, client);
-                                if (ins)
-                                    (0, store_1.addAudit)('CompanyIncome', String(ins.id || rec.id), 'create', null, ins);
-                            }
-                        }
-                    }
-                }
-                catch (_b) { }
+                const companySync = await syncCompanyIncomeForTx(txRow || tx);
+                if (companySync === null || companySync === void 0 ? void 0 : companySync.skippedCompanyIncome)
+                    return { txRow: txRow || tx, duplicated: false, skippedCompanyIncome: true };
                 return { txRow: txRow || tx, duplicated: false };
             });
             const row = result === null || result === void 0 ? void 0 : result.txRow;
@@ -907,7 +1022,7 @@ exports.router.post('/', (0, auth_1.requirePerm)('finance.tx.write'), async (req
             return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'pg insert failed' });
         }
     }
-    return res.status(201).json(tx);
+    return res.status(memoryOrderIncomeLinked && memoryTx.id !== tx.id ? 200 : 201).json(memoryTx);
 });
 // Backfill company_incomes from finance_transactions for a given month
 exports.router.post('/company-incomes/backfill', (0, auth_1.requireAnyPerm)(['finance.tx.write', 'company_incomes.write']), async (req, res) => {
@@ -931,7 +1046,7 @@ exports.router.post('/company-incomes/backfill', (0, auth_1.requireAnyPerm)(['fi
             function normalizeStatus(raw) { return String(raw || '').trim().toLowerCase(); }
             function isCanceledStatus(raw) {
                 const s = normalizeStatus(raw);
-                return s === 'canceled' || s === 'cancelled';
+                return s.includes('cancel');
             }
             const result = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
                 try {
@@ -2329,7 +2444,7 @@ exports.router.patch('/property-revenue-status', (0, auth_1.requirePerm)('financ
 });
 // Property revenue aggregated by fixed expenses report_category and order income
 exports.router.get('/property-revenue', async (req, res) => {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d;
     try {
         const { property_id, property_code, month } = (req.query || {});
         if (!month || (!(property_id) && !(property_code)))
@@ -2361,7 +2476,7 @@ exports.router.get('/property-revenue', async (req, res) => {
                     }
                 }
             }
-            catch (_g) { }
+            catch (_e) { }
         }
         const cols = { parking_fee: 0, electricity: 0, water: 0, gas: 0, internet: 0, consumables: 0, body_corp: 0, council: 0, other: 0, management_fee: 0 };
         let rentIncome = 0;
@@ -2391,7 +2506,7 @@ exports.router.get('/property-revenue', async (req, res) => {
                 for (const o of ords) {
                     const ov = overlapNights(o.checkin, o.checkout);
                     const nights = Number(o.nights || 0) || 0;
-                    const visNet = Number((_f = (_e = o.visible_net_income) !== null && _e !== void 0 ? _e : o.net_income) !== null && _f !== void 0 ? _f : 0);
+                    const visNet = orderLandlordRentNet(o);
                     const status = String(o.status || '').toLowerCase();
                     const isCanceled = status.includes('cancel');
                     const include = (!isCanceled) || !!o.count_in_income;
@@ -2412,7 +2527,7 @@ exports.router.get('/property-revenue', async (req, res) => {
                         peRows = rs.rows || [];
                     }
                 }
-                catch (_h) { }
+                catch (_f) { }
                 const rp = await (0, dbAdapter_1.pgSelect)('recurring_payments', '*');
                 const rpRows = Array.isArray(rp) ? rp : [];
                 const map = Object.fromEntries(rpRows.map(r => [String(r.id), String(r.report_category || 'other')]));
@@ -2505,10 +2620,10 @@ exports.router.get('/property-revenue', async (req, res) => {
                         }
                     }
                 }
-                catch (_j) { }
+                catch (_g) { }
             }
         }
-        catch (_k) { }
+        catch (_h) { }
         const totalExpense = Object.entries(cols).reduce((s, [k, v]) => s + (k === 'management_fee' ? Number(v || 0) : Number(v || 0)), 0);
         const payload = {
             property_code: label || pcode || pid,
@@ -2631,7 +2746,7 @@ exports.router.get('/rent-income-by-property', (0, auth_1.requireAnyPerm)(['fina
 });
 // Auto-calc management fee for a property and month, persist into property_expenses and finance_transactions
 exports.router.post('/management-fee/calc', (0, auth_1.requireAnyPerm)(['property_expenses.write', 'finance.tx.write']), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e;
     try {
         const { property_id, property_code, month } = (req.body || {});
         if (!month || (!(property_id) && !(property_code)))
@@ -2676,7 +2791,7 @@ exports.router.post('/management-fee/calc', (0, auth_1.requireAnyPerm)(['propert
         for (const o of ords) {
             const ov = overlapNights(o.checkin, o.checkout);
             const nights = Number(o.nights || 0) || 0;
-            const visNet = Number((_d = (_c = o.visible_net_income) !== null && _c !== void 0 ? _c : o.net_income) !== null && _d !== void 0 ? _d : 0);
+            const visNet = orderLandlordRentNet(o);
             const status = String(o.status || '').toLowerCase();
             const isCanceled = status.includes('cancel');
             const include = (!isCanceled) || !!o.count_in_income;
@@ -2712,13 +2827,13 @@ exports.router.post('/management-fee/calc', (0, auth_1.requireAnyPerm)(['propert
             expRow = await (0, dbAdapter_1.pgInsert)('property_expenses', { id: uuid(), property_id: pid, amount: fee, category: 'management_fee', occurred_at: occurred, month_key: ym, note: `auto management fee ${ym}` });
         }
         // write finance transaction for integration
-        const tx = { id: uuid(), kind: 'expense', amount: fee, currency: 'AUD', occurred_at: new Date().toISOString(), ref_type: 'property_expense', ref_id: (expRow === null || expRow === void 0 ? void 0 : expRow.id) || (((_e = existing === null || existing === void 0 ? void 0 : existing[0]) === null || _e === void 0 ? void 0 : _e.id) || null), property_id: pid, category: 'management_fee', note: `management fee ${(prop === null || prop === void 0 ? void 0 : prop.code) || pid} ${ym}` };
+        const tx = { id: uuid(), kind: 'expense', amount: fee, currency: 'AUD', occurred_at: new Date().toISOString(), ref_type: 'property_expense', ref_id: (expRow === null || expRow === void 0 ? void 0 : expRow.id) || (((_c = existing === null || existing === void 0 ? void 0 : existing[0]) === null || _c === void 0 ? void 0 : _c.id) || null), property_id: pid, category: 'management_fee', note: `management fee ${(prop === null || prop === void 0 ? void 0 : prop.code) || pid} ${ym}` };
         await (0, dbAdapter_1.pgInsert)('finance_transactions', tx);
         (0, store_1.addAudit)('FinanceTransaction', tx.id, 'create', null, tx);
         // return with double-check snapshot
         const recorded = await (0, dbAdapter_1.pgSelect)('property_expenses', '*', { property_id: pid, month_key: ym, category: 'management_fee' });
-        const diff = Math.abs(Number((((_f = recorded === null || recorded === void 0 ? void 0 : recorded[0]) === null || _f === void 0 ? void 0 : _f.amount) || 0)) - fee);
-        return res.status(201).json({ property_id: pid, month: ym, rent_income: Number(rentIncome.toFixed(2)), rate, fee, recorded_fee: Number((((_g = recorded === null || recorded === void 0 ? void 0 : recorded[0]) === null || _g === void 0 ? void 0 : _g.amount) || 0)), diff });
+        const diff = Math.abs(Number((((_d = recorded === null || recorded === void 0 ? void 0 : recorded[0]) === null || _d === void 0 ? void 0 : _d.amount) || 0)) - fee);
+        return res.status(201).json({ property_id: pid, month: ym, rent_income: Number(rentIncome.toFixed(2)), rate, fee, recorded_fee: Number((((_e = recorded === null || recorded === void 0 ? void 0 : recorded[0]) === null || _e === void 0 ? void 0 : _e.amount) || 0)), diff });
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'calc_failed' });
@@ -3026,11 +3141,23 @@ exports.router.patch('/:id', (0, auth_1.requirePerm)('finance.tx.write'), async 
 exports.router.delete('/:id', (0, auth_1.requirePerm)('finance.tx.write'), async (req, res) => {
     const { id } = req.params;
     const idx = store_1.db.financeTransactions.findIndex(x => x.id === id);
+    const prev = idx !== -1 ? store_1.db.financeTransactions[idx] : null;
     if (idx !== -1)
         store_1.db.financeTransactions.splice(idx, 1);
     if (dbAdapter_1.hasPg) {
         try {
-            await (0, dbAdapter_1.pgDelete)('finance_transactions', id);
+            await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+                const rows = await (0, dbAdapter_1.pgSelect)('finance_transactions', '*', { id }, client);
+                const tx = (Array.isArray(rows) && rows[0]) ? rows[0] : prev;
+                await (0, dbAdapter_1.pgDelete)('finance_transactions', id, client);
+                const cat = String((tx === null || tx === void 0 ? void 0 : tx.category) || '').toLowerCase();
+                const isIncome = String((tx === null || tx === void 0 ? void 0 : tx.kind) || '') === 'income';
+                const refType = String((tx === null || tx === void 0 ? void 0 : tx.ref_type) || '');
+                const refId = String((tx === null || tx === void 0 ? void 0 : tx.ref_id) || '');
+                if (isIncome && refType && refId && (cat === 'cancel_fee' || cat === 'late_checkout' || cat === 'other' || cat === 'cleaning_fee' || cat === 'mgmt_fee')) {
+                    await client.query(`DELETE FROM company_incomes WHERE category=$1 AND ref_type=$2 AND ref_id=$3`, [cat, refType, refId]);
+                }
+            });
             return res.json({ ok: true });
         }
         catch (_a) { }

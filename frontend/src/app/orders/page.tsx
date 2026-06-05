@@ -82,12 +82,78 @@ export default function OrdersPage() {
     }, 0)
     return Number(sum.toFixed(2))
   }
+  function roundMoney(v: any): number {
+    const n = Number(v || 0)
+    if (!Number.isFinite(n)) return 0
+    return Number(n.toFixed(2))
+  }
+  function isCanceledStatus(raw: any): boolean {
+    const s = String(raw || '').trim().toLowerCase()
+    return s.includes('cancel')
+  }
+  function getLateCheckoutAmount(v: any): number {
+    return roundMoney(v?.late_checkout ? 20 : Number(v?.late_checkout_fee || 0))
+  }
+  function getLateCheckoutFormFields(amount: number) {
+    const n = roundMoney(amount)
+    if (n <= 0) return { late_checkout: false, late_checkout_fee: undefined }
+    if (Math.abs(n - 20) < 0.005) return { late_checkout: true, late_checkout_fee: undefined }
+    return { late_checkout: false, late_checkout_fee: n }
+  }
+  function computeLandlordRentNet(price: any, cleaning: any, status: any, cancelFee?: any): number {
+    const base = isCanceledStatus(status) ? Number(cancelFee || 0) : Number(price || 0)
+    return Math.max(0, roundMoney(base - Number(cleaning || 0)))
+  }
+  async function getLinkedIncomeRows(orderId: string, category: string): Promise<any[]> {
+    const qs = new URLSearchParams({ ref_type: 'order', ref_id: String(orderId), category })
+    const rows = await getJSON<any[]>(`/finance?${qs.toString()}`).catch(() => [])
+    return (Array.isArray(rows) ? rows : []).filter((row: any) => (
+      String(row?.kind || '').toLowerCase() === 'income' &&
+      String(row?.ref_type || '') === 'order' &&
+      String(row?.ref_id || '') === String(orderId) &&
+      String(row?.category || '').toLowerCase() === String(category || '').toLowerCase()
+    ))
+  }
+  async function getLinkedIncomeAmount(orderId: string, category: string): Promise<number> {
+    const rows = await getLinkedIncomeRows(orderId, category)
+    const first = rows.find((r: any) => String(r?.kind || '').toLowerCase() === 'income') || rows[0]
+    return roundMoney(first?.amount || 0)
+  }
+  async function syncLinkedIncome(params: { orderId?: string | null; amount: number; category: string; note: string; propertyId?: string; occurredAt?: string }) {
+    const orderId = String(params.orderId || '').trim()
+    if (!orderId) return
+    const amount = roundMoney(params.amount)
+    if (amount <= 0) {
+      const existing = await getLinkedIncomeRows(orderId, params.category)
+      await Promise.all(existing.map((row: any) => (
+        row?.id ? fetch(`${API_BASE}/finance/${encodeURIComponent(String(row.id))}`, { method: 'DELETE', headers: { ...authHeaders() } }).catch(() => null) : Promise.resolve(null)
+      )))
+      return
+    }
+    const tx = {
+      kind: 'income',
+      amount,
+      currency: 'AUD',
+      occurred_at: params.occurredAt || new Date().toISOString().slice(0, 10),
+      note: params.note,
+      category: params.category,
+      property_id: params.propertyId,
+      ref_type: 'order',
+      ref_id: orderId,
+    }
+    await fetch(`${API_BASE}/finance`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(tx) }).catch(() => {})
+  }
+  function getLandlordNetIncomeForOrder(o: any): number {
+    const stored = roundMoney(o?.net_income ?? 0)
+    if (isCanceledStatus(o?.status)) return stored
+    if (o?.price == null) return stored
+    const base = roundMoney(Number(o?.price || 0) - Number(o?.cleaning_fee || 0))
+    return stored > base && base >= 0 ? base : stored
+  }
   function computeVisibleNetIncomeForOrder(o: any, deductionTotal: number): number {
-    const st = String(o?.status || '').toLowerCase()
-    const isCanceled = st.includes('cancel')
-    const include = (!isCanceled) || !!(o?.count_in_income)
+    const include = (!isCanceledStatus(o?.status)) || !!(o?.count_in_income)
     if (!include) return 0
-    const net = Number(o?.net_income ?? 0) || 0
+    const net = getLandlordNetIncomeForOrder(o)
     return Math.max(0, Number((net - Number(deductionTotal || 0)).toFixed(2)))
   }
   function applyDeductionTotalsToLocalOrder(orderId: string, deductions: any[]) {
@@ -764,13 +830,15 @@ export default function OrdersPage() {
       checkout: o.checkout ? dayjs(o.checkout) : undefined,
       status: o.status || 'confirmed',
       payment_currency: (o as any).payment_currency || 'AUD',
-      guest_phone: (o as any).guest_phone || ''
+      guest_phone: (o as any).guest_phone || '',
+      ...getLateCheckoutFormFields(0)
     })
     // 再异步拉取完整数据并二次填充（失败时保持现有值）
     try {
-      const [full, ds] = await Promise.all([
+      const [full, ds, lateAmount] = await Promise.all([
         getJSON<Order>(`/orders/${o.id}`),
-        fetch(`${API_BASE}/orders/${o.id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json()).catch(() => [])
+        fetch(`${API_BASE}/orders/${o.id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json()).catch(() => []),
+        getLinkedIncomeAmount(o.id, 'late_checkout')
       ])
       const pid = full.property_id
       const p = (Array.isArray(properties) ? properties : []).find(x => x.id === pid)
@@ -786,7 +854,8 @@ export default function OrdersPage() {
         checkout: full.checkout ? dayjs(full.checkout) : undefined,
         status: full.status || 'confirmed',
         payment_currency: (full as any).payment_currency || 'AUD',
-        guest_phone: (full as any).guest_phone || ''
+        guest_phone: (full as any).guest_phone || '',
+        ...getLateCheckoutFormFields(lateAmount)
       })
       const arr = Array.isArray(ds) ? ds : []
       setEditDeductions(arr)
@@ -817,11 +886,9 @@ export default function OrdersPage() {
     const totalPaymentRaw = isBooking ? Number(v.total_payment_raw ?? 0) : null
     const price = isBooking ? Number((Number(totalPaymentRaw || 0) * BOOKING_NET_RATE).toFixed(2)) : Number(v.price || 0)
     const cleaning = Number(v.cleaning_fee || 0)
-    const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+    const lateFee = getLateCheckoutAmount(v)
     const cancelFee = Number(v.cancel_fee || 0)
-    const stNorm = String(v.status || '').toLowerCase()
-    const isCanceled = stNorm === 'canceled' || stNorm === 'cancelled'
-    const net = Math.max(0, (isCanceled ? 0 : price) + lateFee + cancelFee - cleaning)
+    const net = computeLandlordRentNet(price, cleaning, v.status, cancelFee)
     const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
     const selectedNew = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
         const payload = {
@@ -861,13 +928,8 @@ export default function OrdersPage() {
       const res = await fetch(`${API_BASE}/orders/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
       if (res.status === 201) {
         const created = await res.json()
-      async function writeIncome(amount: number, cat: string, note: string) {
-        if (!amount || amount <= 0) return
-        const tx = { kind: 'income', amount: Number(amount), currency: 'AUD', occurred_at: v.checkout.format('YYYY-MM-DD'), note, category: cat, property_id: v.property_id, ref_type: 'order', ref_id: created?.id }
-        await fetch(`${API_BASE}/finance`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(tx) }).catch(() => {})
-      }
-      await writeIncome(lateFee, 'late_checkout', 'Late checkout income')
-      if ((v.status || '') === 'canceled') await writeIncome(cancelFee, 'cancel_fee', 'Cancelation fee')
+      await syncLinkedIncome({ orderId: created?.id, amount: lateFee, category: 'late_checkout', note: 'Late checkout income', propertyId: v.property_id, occurredAt: v.checkout.format('YYYY-MM-DD') })
+      if ((v.status || '') === 'canceled') await syncLinkedIncome({ orderId: created?.id, amount: cancelFee, category: 'cancel_fee', note: 'Cancelation fee', propertyId: v.property_id, occurredAt: v.checkout.format('YYYY-MM-DD') })
       message.success('订单已创建'); setOpen(false); form.resetFields(); load()
       }
       else if (res.status === 200) {
@@ -889,11 +951,9 @@ export default function OrdersPage() {
     const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
     const price = Number(v.price || 0)
     const cleaning = Number(v.cleaning_fee || 0)
-    const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+    const lateFee = getLateCheckoutAmount(v)
     const cancelFee = Number(v.cancel_fee || 0)
-    const stNorm = String(v.status || '').toLowerCase()
-    const isCanceled = stNorm === 'canceled' || stNorm === 'cancelled'
-    const net = Math.max(0, (isCanceled ? 0 : price) + lateFee + cancelFee - cleaning)
+    const net = computeLandlordRentNet(price, cleaning, v.status, cancelFee)
     const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
     const selectedEdit = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
     const payload = { ...v, property_code: (v.property_code || selectedEdit?.code || selectedEdit?.address || v.property_id), checkin: dayjs(v.checkin).format('YYYY-MM-DD') + 'T12:00:00', checkout: dayjs(v.checkout).format('YYYY-MM-DD') + 'T11:59:59', nights, net_income: Number(net).toFixed(2) ? Number(Number(net).toFixed(2)) : net, avg_nightly_price: Number(avg).toFixed(2) ? Number(Number(avg).toFixed(2)) : avg, price: Number(price).toFixed(2) ? Number(Number(price).toFixed(2)) : price, cleaning_fee: Number(cleaning).toFixed(2) ? Number(Number(cleaning).toFixed(2)) : cleaning, payment_currency: (v.payment_currency || 'AUD'), count_in_income: v.count_in_income != null ? !!v.count_in_income : ((v.status || '') === 'canceled' ? false : true) }
@@ -905,15 +965,10 @@ export default function OrdersPage() {
       return
     }
     if (res!.ok) {
-      async function writeIncome(amount: number, cat: string, note: string) {
-        if (!amount || amount <= 0) return
-        const tx = { kind: 'income', amount: Number(amount), currency: 'AUD', occurred_at: dayjs(v.checkout).format('YYYY-MM-DD'), note, category: cat, property_id: v.property_id, ref_type: 'order', ref_id: current?.id }
-        await fetch(`${API_BASE}/finance`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(tx) }).catch(() => {})
-      }
-      const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+      const lateFee = getLateCheckoutAmount(v)
       const cancelFee = Number(v.cancel_fee || 0)
-      await writeIncome(lateFee, 'late_checkout', 'Late checkout income')
-      if ((v.status || '') === 'canceled') await writeIncome(cancelFee, 'cancel_fee', 'Cancelation fee')
+      await syncLinkedIncome({ orderId: current?.id, amount: lateFee, category: 'late_checkout', note: 'Late checkout income', propertyId: v.property_id, occurredAt: dayjs(v.checkout).format('YYYY-MM-DD') })
+      if ((v.status || '') === 'canceled') await syncLinkedIncome({ orderId: current?.id, amount: cancelFee, category: 'cancel_fee', note: 'Cancelation fee', propertyId: v.property_id, occurredAt: dayjs(v.checkout).format('YYYY-MM-DD') })
       message.success('订单已更新'); setEditOpen(false); load()
     }
     else {
@@ -932,11 +987,9 @@ export default function OrdersPage() {
     const totalPaymentRaw = isBooking ? Number(v.total_payment_raw ?? 0) : null
     const price = isBooking ? Number((Number(totalPaymentRaw || 0) * BOOKING_NET_RATE).toFixed(2)) : Number(v.price || 0)
     const cleaning = Number(v.cleaning_fee || 0)
-    const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+    const lateFee = getLateCheckoutAmount(v)
     const cancelFee = Number(v.cancel_fee || 0)
-    const stNorm = String(v.status || '').toLowerCase()
-    const isCanceled = stNorm === 'canceled' || stNorm === 'cancelled'
-    const net = Math.max(0, (isCanceled ? 0 : price) + lateFee + cancelFee - cleaning)
+    const net = computeLandlordRentNet(price, cleaning, v.status, cancelFee)
     const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
     const selectedNew = (Array.isArray(properties) ? properties : []).find(p => p.id === v.property_id)
     const payload = {
@@ -966,15 +1019,10 @@ export default function OrdersPage() {
         const created = await res.json().catch(()=>null)
         message.success(res.status===201 ? '订单已创建' : '已覆盖更新重复订单')
         setDupOpen(false); setOpen(false); form.resetFields(); load()
-        const lateFee2 = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+        const lateFee2 = getLateCheckoutAmount(v)
         const cancelFee2 = Number(v.cancel_fee || 0)
-        async function writeIncome(amount: number, cat: string, note: string) {
-          if (!amount || amount <= 0) return
-          const tx = { kind: 'income', amount: Number(amount), currency: 'AUD', occurred_at: v.checkout.format('YYYY-MM-DD'), note, category: cat, property_id: v.property_id, ref_type: 'order', ref_id: created?.id }
-          await fetch(`${API_BASE}/finance`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(tx) }).catch(() => {})
-        }
-        await writeIncome(lateFee2, 'late_checkout', 'Late checkout income')
-        if ((v.status || '') === 'canceled') await writeIncome(cancelFee2, 'cancel_fee', 'Cancelation fee')
+        await syncLinkedIncome({ orderId: created?.id, amount: lateFee2, category: 'late_checkout', note: 'Late checkout income', propertyId: v.property_id, occurredAt: v.checkout.format('YYYY-MM-DD') })
+        if ((v.status || '') === 'canceled') await syncLinkedIncome({ orderId: created?.id, amount: cancelFee2, category: 'cancel_fee', note: 'Cancelation fee', propertyId: v.property_id, occurredAt: v.checkout.format('YYYY-MM-DD') })
       } else {
         const j = await res.json().catch(()=>({}))
         message.error(j?.message || '覆盖创建失败')
@@ -1031,12 +1079,12 @@ export default function OrdersPage() {
       return money(visibleTotal)
     } },
     { title: '清洁费', dataIndex: 'cleaning_fee', render: (_:any, r:Order)=> monthFilter ? money(calcOrderMonthAmounts(r as any, monthFilter).cleanMonth) : money(r.cleaning_fee) },
-    { title: '总收入', dataIndex: 'net_income', render: (_:any, r:Order)=> {
+    { title: '房东净租金', dataIndex: 'net_income', render: (_:any, r:Order)=> {
       if (monthFilter) return money(calcOrderMonthAmounts(r as any, monthFilter).visibleNetMonth)
       const st = String((r as any).status || '').toLowerCase()
       const isCanceled = st.includes('cancel')
       const include = (!isCanceled) || !!((r as any).count_in_income)
-      const net = Number((r as any).net_income ?? r.net_income ?? 0)
+      const net = getLandlordNetIncomeForOrder(r)
       const ded = Number((r as any).internal_deduction_total ?? (r as any).internal_deduction ?? 0)
       return money(include ? Number((net - ded).toFixed(2)) : 0)
     } },
@@ -1047,7 +1095,7 @@ export default function OrdersPage() {
       const st = String((r as any).status || '').toLowerCase()
       const isCanceled = st.includes('cancel')
       const include = (!isCanceled) || !!((r as any).count_in_income)
-      const net = Number((r as any).net_income ?? r.net_income ?? 0)
+      const net = getLandlordNetIncomeForOrder(r)
       const ded = Number((r as any).internal_deduction_total ?? (r as any).internal_deduction ?? 0)
       const visible = include ? Math.max(0, Number((net - ded).toFixed(2))) : 0
       return money(visible / nights)
@@ -1152,19 +1200,15 @@ export default function OrdersPage() {
       const ci = String(o.checkin || '').slice(0,10)
       const co = String(o.checkout || '').slice(0,10)
       if (!ci || !co) return false
-      const st = String((o as any).status || '').toLowerCase()
-      const isCanceled = st.includes('cancel')
-      const include = (!isCanceled) || !!(o as any).count_in_income
+      const include = (!isCanceledStatus((o as any).status)) || !!(o as any).count_in_income
       return include && o.property_id === calPid
     })
     return orders.map(o => {
       const stKey = String((o as any).status || '').toLowerCase()
       const styleToken = statusStyle[stKey] || (sourceStyle[o.source || 'other'] || { bg: '#F3F4F6', border: '#9CA3AF', text: '#111827' })
-      const total = Number((o as any).__src_price ?? o.price ?? 0)
       const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0)
-      const cleaning = Number((o as any).__src_cleaning_fee ?? (o as any).cleaning_fee ?? 0)
-      const net = Number((o as any).net_income ?? Math.max(0, Number((total - cleaning).toFixed(2))))
-      const visibleNet = Number((o as any).visible_net_income ?? Math.max(0, Number((net - ded).toFixed(2))))
+      const net = getLandlordNetIncomeForOrder(o)
+      const visibleNet = Math.max(0, Number((net - ded).toFixed(2)))
       return {
         id: String(o.id),
         title: `${o.guest_name || ''}   $${money(visibleNet)}`,
@@ -1248,9 +1292,7 @@ export default function OrdersPage() {
       .filter(o => {
         const ciDay = dayStr(o.checkin)
         const coDay = dayStr(o.checkout)
-        const st = String((o as any).status || '').toLowerCase()
-        const isCanceled = st.includes('cancel')
-        const include = (!isCanceled) || !!(o as any).count_in_income
+        const include = (!isCanceledStatus((o as any).status)) || !!(o as any).count_in_income
         return include && o.property_id === calPid && ciDay && coDay && ciDay <= dateStr && coDay > dateStr
       }) as any,
       sortKey,
@@ -1279,7 +1321,7 @@ export default function OrdersPage() {
               <div>房号：{getPropertyCodeLabel(o as Order)}</div>
               <div>入住：{fmtDay((o as any).__src_checkin || o.checkin)}，退房：{fmtDay((o as any).__src_checkout || o.checkout)}</div>
               <div>总租金：${money((o as any).__src_price ?? o.price)}，清洁费：${money((o as any).__src_cleaning_fee ?? o.cleaning_fee)}</div>
-              <div>净收入：${money((o as any).net_income ?? o.net_income)}</div>
+              <div>房东净租金：${money(getLandlordNetIncomeForOrder(o))}</div>
               <div>确认码：{(o as any).confirmation_code || ''}</div>
             </div>
           )
@@ -1558,10 +1600,10 @@ export default function OrdersPage() {
               right.style.fontWeight = '600'
               const order = ((arg.event.extendedProps as any)?.order as any) || {}
               const total = Number(order.__src_price ?? order.price ?? 0)
-              const ded = Number(order.internal_deduction_total ?? order.internal_deduction ?? 0)
               const cleaning = Number(order.__src_cleaning_fee ?? order.cleaning_fee ?? 0)
-              const net = Number(order.net_income ?? Math.max(0, Number((total - cleaning).toFixed(2))))
-              const visibleNet = Number(order.visible_net_income ?? Math.max(0, Number((net - ded).toFixed(2))))
+              const ded = Number(order.internal_deduction_total ?? order.internal_deduction ?? 0)
+              const net = getLandlordNetIncomeForOrder(order)
+              const visibleNet = Math.max(0, Number((net - ded).toFixed(2)))
               right.textContent = `$${money(visibleNet)}`
               try {
                 const ci = String(order.checkin || '').slice(0, 10)
@@ -1578,7 +1620,7 @@ export default function OrdersPage() {
                   `订单总租金：$${money(visibleTotal)}`,
                   `清洁费：$${money(cleaning)}`,
                   `内部扣减：$${money(ded)}`,
-                  `可见净额：$${money(visibleNet)}`,
+                  `房东净租金：$${money(visibleNet)}`,
                   `状态：${status || '-'}`,
                   `确认码：${String(order.confirmation_code || '')}`,
                   `来源：${sourceLabel(order.source)}`,
@@ -1720,11 +1762,9 @@ export default function OrdersPage() {
             const raw = isBooking ? Number(v.total_payment_raw || 0) : null
             const price = isBooking ? Number((Number(raw || 0) * BOOKING_NET_RATE).toFixed(2)) : Number(v.price || 0)
             const cleaning = Number(v.cleaning_fee || 0)
-            const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+            const lateFee = getLateCheckoutAmount(v)
             const cancelFee = Number(v.cancel_fee || 0)
-            const stNorm = String(v.status || '').toLowerCase()
-            const isCanceled = stNorm === 'canceled' || stNorm === 'cancelled'
-            const net = Math.max(0, (isCanceled ? 0 : price) + lateFee + cancelFee - cleaning)
+            const net = computeLandlordRentNet(price, cleaning, v.status, cancelFee)
             const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
             return (
               <Card size="small" style={{ marginTop: 8 }}>
@@ -1732,7 +1772,7 @@ export default function OrdersPage() {
                   <Tag color="blue">入住天数: {nights}</Tag>
                   {isBooking ? <Tag color="default">原始总租金: {Number(raw || 0).toFixed(2)}</Tag> : null}
                   {isBooking ? <Tag color="blue">价格(*{BOOKING_NET_RATE}): {Number(price || 0).toFixed(2)}</Tag> : null}
-                  <Tag color="green">总收入: {Number(net).toFixed(2)}</Tag>
+                  <Tag color="green">房东净租金: {Number(net).toFixed(2)}</Tag>
                   {v.late_checkout || v.late_checkout_fee ? <Tag color="purple">晚退收入: {lateFee}</Tag> : null}
                   {v.cancel_fee ? <Tag color="orange">取消费: {cancelFee}</Tag> : null}
                   <Tag color="purple">晚均价: {Number(avg).toFixed(2)}</Tag>
@@ -2051,11 +2091,9 @@ export default function OrdersPage() {
                   const nights = v.checkin && v.checkout ? Math.max(0, dayjs(v.checkout).diff(dayjs(v.checkin), 'day')) : 0
                   const price = Number(v.price || 0)
                   const cleaning = Number(v.cleaning_fee || 0)
-                  const lateFee = v.late_checkout ? 20 : Number(v.late_checkout_fee || 0)
+                  const lateFee = getLateCheckoutAmount(v)
                   const cancelFee = Number(v.cancel_fee || 0)
-                  const stNorm = String(v.status || '').toLowerCase()
-                  const isCanceled = stNorm === 'canceled' || stNorm === 'cancelled'
-                  const net = Math.max(0, (isCanceled ? 0 : price) + lateFee + cancelFee - cleaning)
+                  const net = computeLandlordRentNet(price, cleaning, v.status, cancelFee)
                   const dedSum = sumActiveDeductions(editDeductions)
                   const visible = Math.max(0, Number((net - dedSum).toFixed(2)))
                   const avg = nights > 0 ? Number((visible / nights).toFixed(2)) : 0
@@ -2063,7 +2101,7 @@ export default function OrdersPage() {
                     <Card size="small" style={{ background: '#f5f5f5' }}>
                       <Space wrap>
                         <Tag color="blue">入住天数: {nights}</Tag>
-                        <Tag color="green">总收入: {Number(net).toFixed(2)}</Tag>
+                        <Tag color="green">房东净租金: {Number(net).toFixed(2)}</Tag>
                         {v.late_checkout || v.late_checkout_fee ? <Tag color="purple">晚退收入: {lateFee}</Tag> : null}
                         {v.cancel_fee ? <Tag color="orange">取消费: {cancelFee}</Tag> : null}
                         <Tag color="purple">晚均价: {Number(avg).toFixed(2)}</Tag>
@@ -2176,9 +2214,9 @@ export default function OrdersPage() {
           <Descriptions.Item label="状态">{detail.status}</Descriptions.Item>
           <Descriptions.Item label="付款币种">{(detail as any).payment_currency || 'AUD'}</Descriptions.Item>
           <Descriptions.Item label="到账状态">{(detail as any).payment_received ? '已到账' : '未到账'}</Descriptions.Item>
-          <Descriptions.Item label="原始净额">{(detail as any).net_income ?? 0}</Descriptions.Item>
+          <Descriptions.Item label="房东净租金">{money(getLandlordNetIncomeForOrder(detail))}</Descriptions.Item>
           <Descriptions.Item label="内部扣减汇总">{(detail as any).internal_deduction_total ?? 0}</Descriptions.Item>
-          <Descriptions.Item label="可见净额">{(detail as any).visible_net_income ?? (((detail as any).net_income ?? 0))}</Descriptions.Item>
+          <Descriptions.Item label="房东可见净额">{money(Math.max(0, getLandlordNetIncomeForOrder(detail) - Number((detail as any).internal_deduction_total || 0)))}</Descriptions.Item>
         </Descriptions>
       )}
       <Card style={{ marginTop: 12 }} title="内部扣减">

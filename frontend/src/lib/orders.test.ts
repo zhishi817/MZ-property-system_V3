@@ -54,6 +54,21 @@ describe('calcOrderMonthAmounts', () => {
     const r2 = calcOrderMonthAmounts({ ...o, count_in_income: true }, dayjs('2026-01-01'))
     expect(r2.visibleNetMonth).toBeCloseTo(190, 2)
   })
+
+  it('excludes late-checkout-inflated net income from owner rent', () => {
+    const o: any = {
+      id: 'o4',
+      checkin: '2026-01-10T12:00:00',
+      checkout: '2026-01-12T11:59:59',
+      price: 300,
+      cleaning_fee: 80,
+      net_income: 240,
+      status: 'confirmed'
+    }
+    const r = calcOrderMonthAmounts(o, dayjs('2026-01-01'))
+    expect(r.netMonth).toBeCloseTo(220, 2)
+    expect(r.visibleNetMonth).toBeCloseTo(220, 2)
+  })
 })
 
 describe('toDayStr', () => {
