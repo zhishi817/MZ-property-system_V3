@@ -6574,6 +6574,81 @@ router.patch('/purchase-orders/:id/deliveries/:deliveryId', requireAnyPerm([...i
   }
 })
 
+router.delete('/purchase-orders/:id/deliveries/:deliveryId', requireAnyPerm([...inventoryPurchaseOrderWritePerms]), async (req, res) => {
+  const po_id = String(req.params.id || '')
+  const deliveryId = String(req.params.deliveryId || '')
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const result = await pgRunInTransaction(async (client) => {
+      const po = await client.query(`SELECT * FROM purchase_orders WHERE id = $1 FOR UPDATE`, [po_id])
+      const p = po.rows?.[0]
+      if (!p) return { ok: false as const, code: 404 as const, message: 'po not found' }
+
+      const existing = await client.query(
+        `SELECT * FROM purchase_deliveries WHERE id = $1 AND po_id = $2 FOR UPDATE`,
+        [deliveryId, po_id],
+      )
+      const prevDelivery = existing.rows?.[0]
+      if (!prevDelivery) return { ok: false as const, code: 404 as const, message: 'delivery not found' }
+
+      const prevLines = await client.query(
+        `SELECT * FROM purchase_delivery_lines WHERE delivery_id = $1 FOR UPDATE`,
+        [deliveryId],
+      )
+      for (const line of prevLines.rows || []) {
+        const quantityReceived = Number(line.quantity_received || 0)
+        if (quantityReceived <= 0) continue
+        const reversed = await applyStockDeltaInTx(client, {
+          warehouse_id: p.warehouse_id,
+          item_id: String(line.item_id || ''),
+          type: 'out',
+          quantity: quantityReceived,
+          reason: 'purchase_delivery_delete',
+          ref_type: 'po',
+          ref_id: po_id,
+          actor_id: actorId(req),
+          note: prevDelivery.note || line.note || null,
+        })
+        if (!reversed.ok) return reversed
+      }
+
+      await client.query(`DELETE FROM purchase_deliveries WHERE id = $1 AND po_id = $2`, [deliveryId, po_id])
+
+      const remaining = await client.query(
+        `SELECT COUNT(*)::int AS count
+         FROM purchase_deliveries
+         WHERE po_id = $1`,
+        [po_id],
+      )
+      const hasRemainingDeliveries = Number(remaining.rows?.[0]?.count || 0) > 0
+      const nextStatus = hasRemainingDeliveries ? 'received' : (String(p.ordered_date || '').trim() ? 'ordered' : 'draft')
+      const poAfter = await client.query(
+        `UPDATE purchase_orders
+         SET status = $1,
+             updated_at = now()
+         WHERE id = $2
+         RETURNING *`,
+        [nextStatus, po_id],
+      )
+
+      return {
+        ok: true as const,
+        deleted: true as const,
+        delivery_id: deliveryId,
+        po: poAfter.rows?.[0] || null,
+        before: { delivery: prevDelivery, lines: prevLines.rows || [] },
+      }
+    })
+
+    if (!(result as any)?.ok) return res.status((result as any).code).json({ message: (result as any).message })
+    addAudit('PurchaseDelivery', deliveryId, 'delete', (result as any)?.before || null, { deleted: true, po: (result as any)?.po || null }, actorId(req))
+    return res.json(result)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
 router.get('/deliveries', requirePerm('inventory.view'), async (req, res) => {
   try {
     if (!(hasPg && pgPool)) return res.json([])

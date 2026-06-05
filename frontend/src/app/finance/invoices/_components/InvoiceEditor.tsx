@@ -1,15 +1,17 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { App, Button, Card, Checkbox, Col, Collapse, DatePicker, Divider, Form, Grid, Input, InputNumber, Modal, Popconfirm, Row, Select, Space, Steps, Table, Tag, Tooltip } from 'antd'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { App, Button, Card, Checkbox, Col, Collapse, DatePicker, Divider, Form, Grid, Input, InputNumber, Modal, Popconfirm, Row, Select, Space, Steps, Table, Tag, Tooltip, Upload } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import type { UploadFile } from 'antd/es/upload/interface'
 import dayjs from 'dayjs'
 import { useRouter } from 'next/navigation'
-import { PlusOutlined, EditOutlined, DeleteOutlined, ArrowLeftOutlined, SettingOutlined, InfoCircleOutlined } from '@ant-design/icons'
-import { API_BASE, authHeaders, getJSON, patchJSON, postJSON } from '../../../../lib/api'
+import { PlusOutlined, EditOutlined, DeleteOutlined, ArrowLeftOutlined, SettingOutlined, InfoCircleOutlined, PictureOutlined } from '@ant-design/icons'
+import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../../../lib/api'
 import { hasPerm } from '../../../../lib/auth'
 import { buildInvoicePayload } from '../../../../lib/invoicePayload'
 import { canBackendAutosaveDraft, computeLine, computeTotals, extractDiscount, normalizeLineItemsForSave, stableHash, type GstType } from '../../../../lib/invoiceEditorModel'
+import { sortActivePropertiesByRegionThenCode } from '../../../../lib/properties'
 import styles from './InvoiceEditor.module.css'
 
 type Company = {
@@ -65,7 +67,47 @@ type InvoiceDetail = {
   updated_at?: string
   company?: Company
   line_items?: any[]
-  files?: any[]
+  files?: InvoiceFileRecord[]
+}
+
+type InvoiceFileRecord = {
+  id: string
+  kind?: string
+  url?: string
+  file_name?: string
+  mime_type?: string
+  created_at?: string
+}
+
+const INVOICE_REPAIR_BEFORE_KIND = 'repair_before_photo'
+const INVOICE_REPAIR_AFTER_KIND = 'repair_after_photo'
+
+function normalizeInvoiceFileUrl(url: any) {
+  const u = String(url || '').trim()
+  if (!u) return ''
+  if (/^https?:\/\//i.test(u)) return u
+  if (u.startsWith('/')) return `${API_BASE}${u}`
+  return u
+}
+
+function isImageInvoiceFile(file: InvoiceFileRecord | null | undefined) {
+  const mt = String(file?.mime_type || '').toLowerCase()
+  const u = String(file?.url || '').toLowerCase()
+  return mt.startsWith('image/') || /\.(png|jpg|jpeg|webp|gif)($|\?)/i.test(u)
+}
+
+function toUploadFileList(files: InvoiceFileRecord[] | undefined, kind: string): UploadFile[] {
+  const list = Array.isArray(files) ? files : []
+  return list
+    .filter((file) => String(file?.kind || '').trim() === kind)
+    .filter((file) => isImageInvoiceFile(file))
+    .sort((a, b) => String(a?.created_at || '').localeCompare(String(b?.created_at || '')))
+    .map((file, idx) => ({
+      uid: String(file.id || `${kind}-${idx}`),
+      name: String(file.file_name || `${kind}-${idx + 1}`),
+      status: 'done',
+      url: normalizeInvoiceFileUrl(file.url),
+    } as UploadFile))
 }
 
 function fmtMoney(n: any) {
@@ -144,13 +186,15 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
   const [discountAmount, setDiscountAmount] = useState<number>(0)
   const [savedCustomers, setSavedCustomers] = useState<Array<{ id: string; name?: string; email?: string; phone?: string; abn?: string; address?: string }>>([])
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | undefined>(undefined)
-  const [propertyOptions, setPropertyOptions] = useState<Array<{ property_id: string; property_code: string; property_address: string; landlord_name: string }>>([])
+  const [propertyOptions, setPropertyOptions] = useState<Array<{ property_id: string; property_code: string; property_address: string; property_region?: string | null; landlord_name: string }>>([])
   const [propertyOptionsLoading, setPropertyOptionsLoading] = useState(false)
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | undefined>(undefined)
   const [saveAsCommonCustomer, setSaveAsCommonCustomer] = useState(false)
   const [auditRows, setAuditRows] = useState<any[]>([])
   const [sendLogs, setSendLogs] = useState<any[]>([])
   const [paymentEvents, setPaymentEvents] = useState<any[]>([])
+  const [beforePhotoFiles, setBeforePhotoFiles] = useState<UploadFile[]>([])
+  const [afterPhotoFiles, setAfterPhotoFiles] = useState<UploadFile[]>([])
   const [formVersion, setFormVersion] = useState(0)
   const propertySearchTimerRef = useRef<any>(null)
 
@@ -164,6 +208,12 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
   const [itemModalOpen, setItemModalOpen] = useState(false)
   const [itemModalIndex, setItemModalIndex] = useState<number | null>(null)
   const [itemModalForm] = Form.useForm()
+
+  function syncRepairPhotoFiles(files?: InvoiceFileRecord[]) {
+    setBeforePhotoFiles(toUploadFileList(files, INVOICE_REPAIR_BEFORE_KIND))
+    setAfterPhotoFiles(toUploadFileList(files, INVOICE_REPAIR_AFTER_KIND))
+  }
+
   function setLineItems(next: any[]) {
     form.setFieldsValue({ line_items: next })
     setFormVersion(v => v + 1)
@@ -220,13 +270,16 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       const qLower = qs.toLowerCase()
       const out = (Array.isArray(props) ? props : [])
         .filter((p: any) => p?.archived === true ? false : true)
+      const sorted = sortActivePropertiesByRegionThenCode(out as any)
+      return sorted
         .map((p: any) => {
           const propertyId = String(p?.id || '').trim()
           const propertyCode = String(p?.code || propertyId).trim()
           const propertyAddress = String(p?.address || '').trim()
+          const propertyRegion = String(p?.region || '').trim()
           const landlordId = String(p?.landlord_id || '').trim() || fallbackLandlordIdByProperty[propertyId] || ''
           const landlordName = landlordId ? (landlordById[landlordId] || '') : ''
-          return { property_id: propertyId, property_code: propertyCode, property_address: propertyAddress, landlord_name: landlordName }
+          return { property_id: propertyId, property_code: propertyCode, property_address: propertyAddress, property_region: propertyRegion || null, landlord_name: landlordName }
         })
         .filter((x: any) => x.property_id && x.property_code)
         .filter((x: any) => {
@@ -234,8 +287,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
           const label = `${x.property_code} ${x.property_address || ''} ${x.landlord_name || ''}`.toLowerCase()
           return label.includes(qLower)
         })
-      out.sort((a: any, b: any) => String(a.property_code || '').localeCompare(String(b.property_code || ''), 'en', { numeric: true, sensitivity: 'base' }))
-      return out.slice(0, 500)
+        .slice(0, 500)
     }
 
     setPropertyOptionsLoading(true)
@@ -248,6 +300,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
         property_id: String(x?.property_id || '').trim(),
         property_code: String(x?.property_code || '').trim(),
         property_address: String(x?.property_address || '').trim(),
+        property_region: String(x?.property_region || '').trim() || null,
         landlord_name: String(x?.landlord_name || '').trim(),
       })).filter((x: any) => x.property_id && x.property_code))
     } catch {
@@ -268,6 +321,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
     try {
       const j = await getJSON<any>(`/invoices/${id}`)
       setInvoice(j)
+      syncRepairPhotoFiles(j?.files)
       const extracted = extractDiscount(j.line_items || [])
       setDiscountAmount(Number(extracted.discount_amount || 0))
       form.setFieldsValue({
@@ -348,6 +402,90 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
 
   function buildPayload(values: any, status: string) {
     return buildInvoicePayload(values, status, discountAmount)
+  }
+
+  async function ensureInvoiceIdForPhotoUpload() {
+    if (invoiceId) return invoiceId
+    const values = form.getFieldsValue(true)
+    if (!canBackendAutosaveDraft({ company_id: values.company_id, line_items: values.line_items })) {
+      message.warning('请先填写开票主体与至少 1 条项目描述，再保存草稿后上传照片')
+      return null
+    }
+    return await saveDraft({ silent: true })
+  }
+
+  async function uploadRepairPhoto(params: {
+    kind: typeof INVOICE_REPAIR_BEFORE_KIND | typeof INVOICE_REPAIR_AFTER_KIND
+    file: File
+    uid: string
+    setFiles: Dispatch<SetStateAction<UploadFile[]>>
+    onProgress?: (evt: { percent: number }) => void
+  }) {
+    const id = await ensureInvoiceIdForPhotoUpload()
+    if (!id) throw new Error('请先保存草稿后再上传照片')
+    const fd = new FormData()
+    fd.append('file', params.file)
+    fd.append('kind', params.kind)
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', `${API_BASE}/invoices/${id}/files/upload`)
+      const headers = authHeaders() as Record<string, string>
+      Object.keys(headers || {}).forEach((key) => xhr.setRequestHeader(key, headers[key]))
+      xhr.upload.onprogress = (evt) => {
+        if (!evt.lengthComputable) return
+        const percent = Number((((evt.loaded || 0) / (evt.total || 1)) * 100).toFixed(0))
+        params.onProgress?.({ percent })
+        params.setFiles((current) => current.map((file) => file.uid === params.uid ? { ...file, status: 'uploading', percent } as UploadFile : file))
+      }
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState !== 4) return
+        try {
+          const body = JSON.parse(xhr.responseText || '{}')
+          if (xhr.status >= 200 && xhr.status < 300 && body?.id) {
+            params.setFiles((current) => current.map((file) => file.uid === params.uid ? {
+              ...file,
+              status: 'done',
+              percent: 100,
+              uid: String(body.id || params.uid),
+              url: normalizeInvoiceFileUrl(body.url),
+            } as UploadFile : file))
+            resolve()
+            return
+          }
+          reject(new Error(String(body?.message || 'upload_failed')))
+        } catch (e) {
+          reject(e)
+        }
+      }
+      xhr.onerror = () => reject(new Error('upload_failed'))
+      xhr.send(fd)
+    })
+    await loadInvoice(id)
+  }
+
+  async function removeRepairPhoto(file: UploadFile, setFiles: Dispatch<SetStateAction<UploadFile[]>>) {
+    const fileId = String(file?.uid || '').trim()
+    if (!fileId) return false
+    const id = invoiceId
+    if (!id) {
+      setFiles((current) => current.filter((item) => item.uid !== file.uid))
+      return false
+    }
+    try {
+      await deleteJSON<any>(`/invoices/${id}/files/${fileId}`)
+      setFiles((current) => current.filter((item) => item.uid !== file.uid))
+      await loadInvoice(id)
+      message.success('照片已删除')
+    } catch (e: any) {
+      message.error(String(e?.message || '删除照片失败'))
+    }
+    return false
+  }
+
+  function previewRepairPhoto(file: UploadFile) {
+    const url = normalizeInvoiceFileUrl(file?.url)
+    if (!url) return
+    try { window.open(url, '_blank', 'noopener,noreferrer') } catch {}
   }
 
   async function saveCustomerIfNeeded(params?: { silent?: boolean; fromAutosave?: boolean }) {
@@ -1159,6 +1297,82 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                 </Row>
               </Card>
 
+              <Card className={styles.sectionCard} title={<div className={styles.sectionTitle}><span>维修照片</span><span className={styles.muted}>选填</span></div>} style={{ marginBottom: 12 }}>
+                <div className={styles.muted} style={{ marginBottom: 12 }}>支持上传维修前照片和维修后照片，也可以只上传维修后照片。</div>
+                <Row gutter={16}>
+                  <Col xs={24} md={12}>
+                    <Form.Item label="维修前照片">
+                      <Upload
+                        accept="image/*"
+                        listType="picture-card"
+                        multiple
+                        fileList={beforePhotoFiles}
+                        onPreview={previewRepairPhoto}
+                        onRemove={(file) => removeRepairPhoto(file, setBeforePhotoFiles)}
+                        customRequest={async ({ file, onProgress, onSuccess, onError }: any) => {
+                          const uid = Math.random().toString(36).slice(2)
+                          setBeforePhotoFiles((current) => [...current, { uid, name: (file as any)?.name || 'before-photo', status: 'uploading', percent: 0 } as UploadFile])
+                          try {
+                            await uploadRepairPhoto({
+                              kind: INVOICE_REPAIR_BEFORE_KIND,
+                              file: file as File,
+                              uid,
+                              setFiles: setBeforePhotoFiles,
+                              onProgress,
+                            })
+                            onSuccess?.({ ok: true }, file)
+                          } catch (e: any) {
+                            setBeforePhotoFiles((current) => current.map((item) => item.uid === uid ? { ...item, status: 'error' } as UploadFile : item))
+                            onError?.(e)
+                            message.error(String(e?.message || '上传维修前照片失败'))
+                          }
+                        }}
+                      >
+                        <div>
+                          <PictureOutlined />
+                          <div style={{ marginTop: 8 }}>上传</div>
+                        </div>
+                      </Upload>
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} md={12}>
+                    <Form.Item label="维修后照片">
+                      <Upload
+                        accept="image/*"
+                        listType="picture-card"
+                        multiple
+                        fileList={afterPhotoFiles}
+                        onPreview={previewRepairPhoto}
+                        onRemove={(file) => removeRepairPhoto(file, setAfterPhotoFiles)}
+                        customRequest={async ({ file, onProgress, onSuccess, onError }: any) => {
+                          const uid = Math.random().toString(36).slice(2)
+                          setAfterPhotoFiles((current) => [...current, { uid, name: (file as any)?.name || 'after-photo', status: 'uploading', percent: 0 } as UploadFile])
+                          try {
+                            await uploadRepairPhoto({
+                              kind: INVOICE_REPAIR_AFTER_KIND,
+                              file: file as File,
+                              uid,
+                              setFiles: setAfterPhotoFiles,
+                              onProgress,
+                            })
+                            onSuccess?.({ ok: true }, file)
+                          } catch (e: any) {
+                            setAfterPhotoFiles((current) => current.map((item) => item.uid === uid ? { ...item, status: 'error' } as UploadFile : item))
+                            onError?.(e)
+                            message.error(String(e?.message || '上传维修后照片失败'))
+                          }
+                        }}
+                      >
+                        <div>
+                          <PictureOutlined />
+                          <div style={{ marginTop: 8 }}>上传</div>
+                        </div>
+                      </Upload>
+                    </Form.Item>
+                  </Col>
+                </Row>
+              </Card>
+
               {mode === 'edit' && invoiceId ? (
                 <Collapse
                   items={[
@@ -1295,13 +1509,26 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
               >
                 取消
               </Button>
-              <Button onClick={() => saveDraft({})} loading={saving}>{status === 'draft' ? '保存草稿' : '保存'}</Button>
+              {status === 'draft' ? (
+                <Button onClick={() => saveDraft({})} loading={saving}>保存草稿</Button>
+              ) : null}
               <Button onClick={() => {
                 if (!invoiceId) { message.warning('请先保存草稿'); return }
                 try { router.push(`/finance/invoices/${invoiceId}/preview`) } catch {}
               }} disabled={!invoiceId}>预览/打印</Button>
-              <Button type="primary" onClick={submitPrimary} loading={saving} disabled={!hasPerm('invoice.draft.create') && !hasPerm('invoice.issue')}>
-                {String(invoice?.status || 'draft') === 'draft' ? '提交' : '保存'}
+              <Button
+                type="primary"
+                onClick={() => {
+                  if (status === 'draft') {
+                    submitPrimary().catch(() => {})
+                    return
+                  }
+                  saveDraft({}).catch(() => {})
+                }}
+                loading={saving}
+                disabled={!hasPerm('invoice.draft.create') && !hasPerm('invoice.issue')}
+              >
+                {status === 'draft' ? '提交并预览' : '保存修改'}
               </Button>
             </div>
           </div>

@@ -317,10 +317,14 @@ async function ensureAutoExpenseSchema(client: any) {
     currency text NOT NULL DEFAULT 'AUD',
     category text,
     category_detail text,
+    expense_name text,
     note text,
     invoice_url text,
     created_at timestamptz DEFAULT now(),
     created_by text,
+    deleted_at timestamptz,
+    deleted_by text,
+    delete_source text,
     fixed_expense_id text,
     month_key text,
     due_date date,
@@ -342,10 +346,14 @@ async function ensureAutoExpenseSchema(client: any) {
     currency text NOT NULL DEFAULT 'AUD',
     category text,
     category_detail text,
+    expense_name text,
     note text,
     invoice_url text,
     created_at timestamptz DEFAULT now(),
     created_by text,
+    deleted_at timestamptz,
+    deleted_by text,
+    delete_source text,
     fixed_expense_id text,
     month_key text,
     due_date date,
@@ -362,7 +370,11 @@ async function ensureAutoExpenseSchema(client: any) {
     source_summary text
   );`)
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS expense_name text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS note text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS deleted_at timestamptz;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS deleted_by text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS delete_source text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_method text;')
@@ -377,8 +389,12 @@ async function ensureAutoExpenseSchema(client: any) {
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_expense_month_key ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS expense_name text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS invoice_url text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_at timestamptz;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_by text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS delete_source text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
@@ -782,6 +798,10 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
   const { resource } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
   const filter: Record<string, any> = { ...(req.query || {}) }
+  const roleNames = Array.from(new Set([String((req as any)?.user?.role || '').trim(), ...((Array.isArray((req as any)?.user?.roles) ? (req as any).user.roles : []) as any[]).map((x: any) => String(x || '').trim())].filter(Boolean)))
+  const canIncludeDeleted = roleNames.includes('admin') || roleNames.includes('finance_staff')
+  const includeDeleted = canIncludeDeleted && String((req.query as any)?.include_deleted || '') === '1'
+  const softDeleteResource = resource === 'property_expenses' || resource === 'company_expenses'
   const q = typeof (req.query as any)?.q === 'string' ? String((req.query as any).q || '').trim() : ''
   const withTotal = String((req.query as any)?.withTotal || '') === '1'
   const aggregate = String((req.query as any)?.aggregate || '') === '1'
@@ -806,7 +826,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
   if (shouldScopePropertyExpenseByPeerRole(resource, user)) {
     filter.created_by_any = await listPeerRoleActorKeys(user)
   }
-  delete filter.limit; delete filter.offset; delete filter.order; delete filter.q; delete filter.withTotal; delete filter.aggregate; delete filter.fields
+  delete filter.limit; delete filter.offset; delete filter.order; delete filter.q; delete filter.withTotal; delete filter.aggregate; delete filter.fields; delete filter.include_deleted
   try {
     if (hasPg) {
       try {
@@ -855,6 +875,10 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
           return { clause: ` WHERE ${parts.join(' AND ')}`, values }
         }
         const w = buildWhere(Object.keys(filter).length ? filter : undefined)
+        const applySoftDeleteClause = (clause: string) => {
+          if (!softDeleteResource || includeDeleted) return clause
+          return clause ? `${clause} AND "${resource}"."deleted_at" IS NULL` : ` WHERE "${resource}"."deleted_at" IS NULL`
+        }
         let orderBy = ''
         if (resource === 'property_expenses') {
           orderBy = ' ORDER BY paid_date DESC NULLS LAST, due_date DESC NULLS LAST, occurred_at DESC'
@@ -956,6 +980,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
               ].join(' OR ')
               return { clause: `${clause}${or})`, values: [...w.values, like] }
             })()
+            const baseClause = applySoftDeleteClause(w2.clause)
             const getLimitOffset = () => {
               const parts: string[] = []
               const values = [...w2.values]
@@ -964,7 +989,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
               return { clause: parts.join(''), values }
             }
             if (aggregate && (resource === 'property_maintenance' || resource === 'property_deep_cleaning')) {
-              const baseWhere = w2.clause
+              const baseWhere = baseClause
               const vals = w2.values
               const q1 = await pgPool.query(`SELECT COUNT(*)::int AS total FROM ${resource}${baseWhere}`, vals)
               const q2 = await pgPool.query(`SELECT COALESCE(status,'') AS key, COUNT(*)::int AS value FROM ${resource}${baseWhere} GROUP BY COALESCE(status,'') ORDER BY value DESC`, vals)
@@ -982,11 +1007,11 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
               })
             }
             const lo = getLimitOffset()
-            const sql = `SELECT ${selectCols} FROM ${resource}${w2.clause}${orderBy}${lo.clause}`
+            const sql = `SELECT ${selectCols} FROM ${resource}${baseClause}${orderBy}${lo.clause}`
             const resq = await pgPool.query(sql, lo.values)
             rows.push(...(resq?.rows || []))
             if (withTotal || typeof limit === 'number' || typeof offset === 'number') {
-              const c = await pgPool.query(`SELECT COUNT(*)::int AS total FROM ${resource}${w2.clause}`, w2.values)
+              const c = await pgPool.query(`SELECT COUNT(*)::int AS total FROM ${resource}${baseClause}`, w2.values)
               const total = c?.rows?.[0]?.total
               if (typeof total === 'number') res.setHeader('X-Total-Count', String(total))
             }
@@ -1248,6 +1273,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
       }
       return (r?.[k]) == v
     }))
+    if (softDeleteResource && !includeDeleted) filtered = filtered.filter((r: any) => !r?.deleted_at)
     if ((resource === 'property_maintenance' || resource === 'property_deep_cleaning') && q) {
       const s = q.toLowerCase()
       filtered = filtered.filter((r: any) => {
@@ -1377,6 +1403,10 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
 router.get('/:resource/:id', requireResourcePerm('view'), async (req, res) => {
   const { resource, id } = req.params
   if (!okResource(resource)) return res.status(404).json({ message: 'resource not allowed' })
+  const roleNames = Array.from(new Set([String((req as any)?.user?.role || '').trim(), ...((Array.isArray((req as any)?.user?.roles) ? (req as any).user.roles : []) as any[]).map((x: any) => String(x || '').trim())].filter(Boolean)))
+  const canIncludeDeleted = roleNames.includes('admin') || roleNames.includes('finance_staff')
+  const includeDeleted = canIncludeDeleted && String((req.query as any)?.include_deleted || '') === '1'
+  const softDeleteResource = resource === 'property_expenses' || resource === 'company_expenses'
   const user = (req as any).user || {}
   const peerRoleActorKeys = shouldScopePropertyExpenseByPeerRole(resource, user) ? await listPeerRoleActorKeys(user) : []
   try {
@@ -1384,6 +1414,7 @@ router.get('/:resource/:id', requireResourcePerm('view'), async (req, res) => {
       const rowsRaw = await pgSelect(resource, '*', { id })
       const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
       const row = rows[0] || null
+      if (row && softDeleteResource && row.deleted_at && !includeDeleted) return res.status(404).json({ message: 'not found' })
       if (row && resource === 'property_expenses' && shouldScopePropertyExpenseByPeerRole(resource, user) && !canReadPropertyExpenseRowByPeerRole(row, peerRoleActorKeys)) {
         return res.status(403).json({ message: 'forbidden' })
       }
@@ -1392,6 +1423,7 @@ router.get('/:resource/:id', requireResourcePerm('view'), async (req, res) => {
     // Supabase branch removed
     const arr = (db as any)[camelToArrayKey(resource)] || []
     const found = arr.find((x: any) => x.id === id)
+    if (found && softDeleteResource && found.deleted_at && !includeDeleted) return res.status(404).json({ message: 'not found' })
     if (found && resource === 'property_expenses' && shouldScopePropertyExpenseByPeerRole(resource, user) && !canReadPropertyExpenseRowByPeerRole(found, peerRoleActorKeys)) {
       return res.status(403).json({ message: 'forbidden' })
     }
@@ -1897,7 +1929,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
 
           let toInsert: any = payload
           if (resource === 'property_expenses') {
-            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','pay_method','pay_other_note','ref_type','ref_id']
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','expense_name','note','property_id','created_by','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','pay_method','pay_other_note','ref_type','ref_id']
             const cleaned: any = { id: payload.id }
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -1915,7 +1947,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
             } catch {}
             toInsert = cleaned
           } else if (resource === 'company_expenses') {
-            const allow = ['id','occurred_at','amount','currency','category','category_detail','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','ref_type','ref_id']
+            const allow = ['id','occurred_at','amount','currency','category','category_detail','expense_name','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status','generated_from','ref_type','ref_id']
             const cleaned: any = { id: payload.id }
             for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
             if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -2708,7 +2740,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
       if (resource === 'property_expenses') {
         const autoLocked = before && before.is_auto === true && ['maintenance', 'deep_cleaning'].includes(String(before.ref_type || ''))
         if (autoLocked) return res.status(403).json({ message: 'auto_generated_expense_readonly' })
-        const allow = ['occurred_at','amount','currency','category','category_detail','note','property_id','fixed_expense_id','month_key','due_date','paid_date','status']
+        const allow = ['occurred_at','amount','currency','category','category_detail','expense_name','note','property_id','fixed_expense_id','month_key','due_date','paid_date','status']
         const cleaned: any = {}
         for (const k of allow) { if (payload[k] !== undefined) cleaned[k] = payload[k] }
         if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)
@@ -2726,7 +2758,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         } catch {}
         toUpdate = cleaned
       } else if (resource === 'company_expenses') {
-        const allow = ['occurred_at','amount','currency','category','category_detail','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status']
+        const allow = ['occurred_at','amount','currency','category','category_detail','expense_name','note','invoice_url','fixed_expense_id','month_key','due_date','paid_date','status']
         const cleaned: any = {}
         for (const k of allow) { if ((payload as any)[k] !== undefined) cleaned[k] = (payload as any)[k] }
         if (cleaned.amount !== undefined) cleaned.amount = Number(cleaned.amount || 0)

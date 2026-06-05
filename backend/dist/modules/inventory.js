@@ -788,10 +788,14 @@ async function bootstrapInventorySchema() {
       received_at timestamptz NOT NULL DEFAULT now(),
       received_by text,
       note text,
-      created_at timestamptz NOT NULL DEFAULT now()
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz,
+      updated_by text
     );`);
         await dbAdapter_1.pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_deliveries_po ON purchase_deliveries(po_id);');
         await dbAdapter_1.pgPool.query('CREATE INDEX IF NOT EXISTS idx_purchase_deliveries_received_at ON purchase_deliveries(received_at);');
+        await dbAdapter_1.pgPool.query('ALTER TABLE purchase_deliveries ADD COLUMN IF NOT EXISTS updated_at timestamptz;');
+        await dbAdapter_1.pgPool.query('ALTER TABLE purchase_deliveries ADD COLUMN IF NOT EXISTS updated_by text;');
         await dbAdapter_1.pgPool.query(`CREATE TABLE IF NOT EXISTS purchase_delivery_lines (
       id text PRIMARY KEY,
       delivery_id text NOT NULL REFERENCES purchase_deliveries(id) ON DELETE CASCADE,
@@ -6056,7 +6060,25 @@ exports.router.get('/purchase-orders/:id', (0, auth_1.requireAnyPerm)([...invent
        WHERE l.po_id = $1
        ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`, [id]);
         const deliveries = await dbAdapter_1.pgPool.query(`SELECT d.* FROM purchase_deliveries d WHERE d.po_id = $1 ORDER BY d.received_at DESC`, [id]);
-        return res.json({ po: po.rows[0], lines: lines.rows || [], deliveries: deliveries.rows || [] });
+        const deliveryRows = deliveries.rows || [];
+        if (deliveryRows.length) {
+            const ids = deliveryRows.map((row) => String(row.id));
+            const deliveryLines = await dbAdapter_1.pgPool.query(`SELECT dl.*, i.name AS item_name, i.sku AS item_sku, lt.sort_order
+         FROM purchase_delivery_lines dl
+         JOIN inventory_items i ON i.id = dl.item_id
+         LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
+         WHERE dl.delivery_id = ANY($1::text[])
+         ORDER BY dl.delivery_id, COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`, [ids]);
+            const byDelivery = new Map();
+            for (const line of deliveryLines.rows || []) {
+                const deliveryId = String(line.delivery_id || '');
+                byDelivery.set(deliveryId, [...(byDelivery.get(deliveryId) || []), line]);
+            }
+            for (const delivery of deliveryRows) {
+                delivery.lines = byDelivery.get(String(delivery.id)) || [];
+            }
+        }
+        return res.json({ po: po.rows[0], lines: lines.rows || [], deliveries: deliveryRows });
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
@@ -6235,7 +6257,7 @@ exports.router.post('/purchase-orders/:id/export', (0, auth_1.requireAnyPerm)([.
 const deliverySchema = zod_1.z.object({
     received_at: zod_1.z.string().optional(),
     note: zod_1.z.string().optional(),
-    lines: zod_1.z.array(zod_1.z.object({ item_id: zod_1.z.string().min(1), quantity_received: zod_1.z.number().int().min(1), note: zod_1.z.string().optional() })).min(1),
+    lines: zod_1.z.array(zod_1.z.object({ item_id: zod_1.z.string().min(1), quantity_received: zod_1.z.number().int().min(0), note: zod_1.z.string().optional() })).min(1),
 });
 exports.router.post('/purchase-orders/:id/deliveries', (0, auth_1.requireAnyPerm)([...inventoryPurchaseOrderWritePerms]), async (req, res) => {
     var _a;
@@ -6265,19 +6287,21 @@ exports.router.post('/purchase-orders/:id/deliveries', (0, auth_1.requireAnyPerm
            VALUES ($1,$2,$3,$4,$5)
            RETURNING *`, [dlId, deliveryId, ln.item_id, ln.quantity_received, ln.note || null]);
                 lineRows.push(((_b = row.rows) === null || _b === void 0 ? void 0 : _b[0]) || null);
-                const applied = await applyStockDeltaInTx(client, {
-                    warehouse_id: p.warehouse_id,
-                    item_id: ln.item_id,
-                    type: 'in',
-                    quantity: ln.quantity_received,
-                    reason: 'purchase_delivery',
-                    ref_type: 'po',
-                    ref_id: po_id,
-                    actor_id: actorId(req),
-                    note: parsed.data.note || null,
-                });
-                if (!applied.ok)
-                    return applied;
+                if (ln.quantity_received > 0) {
+                    const applied = await applyStockDeltaInTx(client, {
+                        warehouse_id: p.warehouse_id,
+                        item_id: ln.item_id,
+                        type: 'in',
+                        quantity: ln.quantity_received,
+                        reason: 'purchase_delivery',
+                        ref_type: 'po',
+                        ref_id: po_id,
+                        actor_id: actorId(req),
+                        note: parsed.data.note || null,
+                    });
+                    if (!applied.ok)
+                        return applied;
+                }
             }
             const poAfter = await client.query(`UPDATE purchase_orders SET status = $1, updated_at = now() WHERE id = $2 RETURNING *`, ['received', po_id]);
             return { ok: true, delivery: ((_c = d.rows) === null || _c === void 0 ? void 0 : _c[0]) || null, lines: lineRows, po: ((_d = poAfter.rows) === null || _d === void 0 ? void 0 : _d[0]) || null };
@@ -6286,6 +6310,148 @@ exports.router.post('/purchase-orders/:id/deliveries', (0, auth_1.requireAnyPerm
             return res.status(result.code).json({ message: result.message });
         (0, store_1.addAudit)('PurchaseDelivery', ((_a = result === null || result === void 0 ? void 0 : result.delivery) === null || _a === void 0 ? void 0 : _a.id) || po_id, 'create', null, result, actorId(req));
         return res.status(201).json(result);
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
+    }
+});
+exports.router.patch('/purchase-orders/:id/deliveries/:deliveryId', (0, auth_1.requireAnyPerm)([...inventoryPurchaseOrderWritePerms]), async (req, res) => {
+    const parsed = deliverySchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json(parsed.error.format());
+    const po_id = String(req.params.id || '');
+    const deliveryId = String(req.params.deliveryId || '');
+    try {
+        if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
+            return res.status(501).json({ message: 'not available without PG' });
+        await ensureInventorySchema();
+        const result = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+            var _a, _b, _c, _d;
+            const po = await client.query(`SELECT * FROM purchase_orders WHERE id = $1`, [po_id]);
+            const p = (_a = po.rows) === null || _a === void 0 ? void 0 : _a[0];
+            if (!p)
+                return { ok: false, code: 404, message: 'po not found' };
+            const existing = await client.query(`SELECT * FROM purchase_deliveries WHERE id = $1 AND po_id = $2 FOR UPDATE`, [deliveryId, po_id]);
+            const prevDelivery = (_b = existing.rows) === null || _b === void 0 ? void 0 : _b[0];
+            if (!prevDelivery)
+                return { ok: false, code: 404, message: 'delivery not found' };
+            const prevLines = await client.query(`SELECT * FROM purchase_delivery_lines WHERE delivery_id = $1 FOR UPDATE`, [deliveryId]);
+            const oldByItem = new Map();
+            for (const line of prevLines.rows || []) {
+                const itemId = String(line.item_id || '');
+                oldByItem.set(itemId, Number(oldByItem.get(itemId) || 0) + Number(line.quantity_received || 0));
+            }
+            const newByItem = new Map();
+            for (const line of parsed.data.lines) {
+                newByItem.set(line.item_id, Number(newByItem.get(line.item_id) || 0) + Number(line.quantity_received || 0));
+            }
+            const changedItemIds = new Set([...oldByItem.keys(), ...newByItem.keys()]);
+            for (const itemId of changedItemIds) {
+                const delta = Number(newByItem.get(itemId) || 0) - Number(oldByItem.get(itemId) || 0);
+                if (delta === 0)
+                    continue;
+                const applied = await applyStockDeltaInTx(client, {
+                    warehouse_id: p.warehouse_id,
+                    item_id: itemId,
+                    type: delta > 0 ? 'in' : 'out',
+                    quantity: Math.abs(delta),
+                    reason: 'purchase_delivery_edit',
+                    ref_type: 'po',
+                    ref_id: po_id,
+                    actor_id: actorId(req),
+                    note: parsed.data.note || null,
+                });
+                if (!applied.ok)
+                    return applied;
+            }
+            const receivedAt = String(parsed.data.received_at || '').trim();
+            const delivery = await client.query(`UPDATE purchase_deliveries
+         SET received_at = COALESCE(NULLIF($1,'')::timestamptz, received_at),
+             note = $2,
+             updated_at = now(),
+             updated_by = $3
+         WHERE id = $4 AND po_id = $5
+         RETURNING *`, [receivedAt || null, parsed.data.note || null, actorId(req), deliveryId, po_id]);
+            await client.query(`DELETE FROM purchase_delivery_lines WHERE delivery_id = $1`, [deliveryId]);
+            const lineRows = [];
+            for (const line of parsed.data.lines) {
+                const dlId = (0, uuid_1.v4)();
+                const inserted = await client.query(`INSERT INTO purchase_delivery_lines (id, delivery_id, item_id, quantity_received, note)
+           VALUES ($1,$2,$3,$4,$5)
+           RETURNING *`, [dlId, deliveryId, line.item_id, line.quantity_received, line.note || null]);
+                lineRows.push(((_c = inserted.rows) === null || _c === void 0 ? void 0 : _c[0]) || null);
+            }
+            await client.query(`UPDATE purchase_orders SET updated_at = now() WHERE id = $1`, [po_id]);
+            return { ok: true, delivery: ((_d = delivery.rows) === null || _d === void 0 ? void 0 : _d[0]) || null, lines: lineRows };
+        });
+        if (!(result === null || result === void 0 ? void 0 : result.ok))
+            return res.status(result.code).json({ message: result.message });
+        (0, store_1.addAudit)('PurchaseDelivery', deliveryId, 'update', null, result, actorId(req));
+        return res.json(result);
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
+    }
+});
+exports.router.delete('/purchase-orders/:id/deliveries/:deliveryId', (0, auth_1.requireAnyPerm)([...inventoryPurchaseOrderWritePerms]), async (req, res) => {
+    const po_id = String(req.params.id || '');
+    const deliveryId = String(req.params.deliveryId || '');
+    try {
+        if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
+            return res.status(501).json({ message: 'not available without PG' });
+        await ensureInventorySchema();
+        const result = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+            var _a, _b, _c, _d, _e;
+            const po = await client.query(`SELECT * FROM purchase_orders WHERE id = $1 FOR UPDATE`, [po_id]);
+            const p = (_a = po.rows) === null || _a === void 0 ? void 0 : _a[0];
+            if (!p)
+                return { ok: false, code: 404, message: 'po not found' };
+            const existing = await client.query(`SELECT * FROM purchase_deliveries WHERE id = $1 AND po_id = $2 FOR UPDATE`, [deliveryId, po_id]);
+            const prevDelivery = (_b = existing.rows) === null || _b === void 0 ? void 0 : _b[0];
+            if (!prevDelivery)
+                return { ok: false, code: 404, message: 'delivery not found' };
+            const prevLines = await client.query(`SELECT * FROM purchase_delivery_lines WHERE delivery_id = $1 FOR UPDATE`, [deliveryId]);
+            for (const line of prevLines.rows || []) {
+                const quantityReceived = Number(line.quantity_received || 0);
+                if (quantityReceived <= 0)
+                    continue;
+                const reversed = await applyStockDeltaInTx(client, {
+                    warehouse_id: p.warehouse_id,
+                    item_id: String(line.item_id || ''),
+                    type: 'out',
+                    quantity: quantityReceived,
+                    reason: 'purchase_delivery_delete',
+                    ref_type: 'po',
+                    ref_id: po_id,
+                    actor_id: actorId(req),
+                    note: prevDelivery.note || line.note || null,
+                });
+                if (!reversed.ok)
+                    return reversed;
+            }
+            await client.query(`DELETE FROM purchase_deliveries WHERE id = $1 AND po_id = $2`, [deliveryId, po_id]);
+            const remaining = await client.query(`SELECT COUNT(*)::int AS count
+         FROM purchase_deliveries
+         WHERE po_id = $1`, [po_id]);
+            const hasRemainingDeliveries = Number(((_d = (_c = remaining.rows) === null || _c === void 0 ? void 0 : _c[0]) === null || _d === void 0 ? void 0 : _d.count) || 0) > 0;
+            const nextStatus = hasRemainingDeliveries ? 'received' : (String(p.ordered_date || '').trim() ? 'ordered' : 'draft');
+            const poAfter = await client.query(`UPDATE purchase_orders
+         SET status = $1,
+             updated_at = now()
+         WHERE id = $2
+         RETURNING *`, [nextStatus, po_id]);
+            return {
+                ok: true,
+                deleted: true,
+                delivery_id: deliveryId,
+                po: ((_e = poAfter.rows) === null || _e === void 0 ? void 0 : _e[0]) || null,
+                before: { delivery: prevDelivery, lines: prevLines.rows || [] },
+            };
+        });
+        if (!(result === null || result === void 0 ? void 0 : result.ok))
+            return res.status(result.code).json({ message: result.message });
+        (0, store_1.addAudit)('PurchaseDelivery', deliveryId, 'delete', (result === null || result === void 0 ? void 0 : result.before) || null, { deleted: true, po: (result === null || result === void 0 ? void 0 : result.po) || null }, actorId(req));
+        return res.json(result);
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
@@ -6330,7 +6496,7 @@ exports.router.get('/deliveries', (0, auth_1.requirePerm)('inventory.view'), asy
           AND i.category = $${values.length}
       )`);
         }
-        const rows = await dbAdapter_1.pgPool.query(`SELECT d.id, d.po_id, d.received_at, d.received_by, d.note,
+        const rows = await dbAdapter_1.pgPool.query(`SELECT d.id, d.po_id, d.received_at, d.received_by, d.updated_at, d.updated_by, d.note,
               po.supplier_id, po.warehouse_id,
               s.name AS supplier_name,
               w.code AS warehouse_code, w.name AS warehouse_name,
@@ -6342,7 +6508,7 @@ exports.router.get('/deliveries', (0, auth_1.requirePerm)('inventory.view'), asy
        JOIN warehouses w ON w.id = po.warehouse_id
        LEFT JOIN purchase_delivery_lines dl ON dl.delivery_id = d.id
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       GROUP BY d.id, d.po_id, d.received_at, d.received_by, d.note, po.supplier_id, po.warehouse_id, s.name, w.code, w.name
+       GROUP BY d.id, d.po_id, d.received_at, d.received_by, d.updated_at, d.updated_by, d.note, po.supplier_id, po.warehouse_id, s.name, w.code, w.name
        ORDER BY d.received_at DESC
        LIMIT 200`, values);
         return res.json(rows.rows || []);

@@ -1,0 +1,5 @@
+interface:
+  display_name: "MZ Room Search Rules"
+  short_description: "Standardize room search suggestions from live property data."
+  default_prompt: "Use $mz-room-search-rules when building or updating房号搜索、房号提示、房号下拉，让候选项来自数据库 properties 记录，排除 archived，并按区域再按房号排序。"
+

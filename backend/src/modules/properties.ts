@@ -1,11 +1,12 @@
 import { Router } from 'express'
 import { db, Property, addAudit } from '../store'
-import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
+import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
 import { z } from 'zod'
 import { requirePerm } from '../auth'
 import { v4 as uuidv4 } from 'uuid'
 
 export const router = Router()
+const PROPERTY_PAYABLE_TEMPLATE_KIND = 'property_payable'
 
 router.get('/', (req, res) => {
   const q: any = req.query || {}
@@ -59,6 +60,27 @@ const createSchema = z.object({
   booking_listing_name: z.string().optional(),
   airbnb_listing_id: z.string().optional(),
   booking_listing_id: z.string().optional(),
+  payable_templates: z.array(z.object({
+    id: z.string().optional(),
+    vendor: z.string().min(1),
+    category: z.string().min(1),
+    category_detail: z.string().optional(),
+    amount: z.coerce.number().optional(),
+    due_day_of_month: z.coerce.number().min(1).max(31),
+    frequency_months: z.coerce.number().min(1).max(24).optional(),
+    remind_days_before: z.coerce.number().min(0).max(30).optional(),
+    payment_type: z.enum(['bank_account', 'bpay', 'payid', 'rent_deduction', 'cash']).optional(),
+    pay_account_name: z.string().optional(),
+    pay_bsb: z.string().optional(),
+    pay_account_number: z.string().optional(),
+    pay_ref: z.string().optional(),
+    bpay_code: z.string().optional(),
+    pay_mobile_number: z.string().optional(),
+    report_category: z.string().optional(),
+    start_month_key: z.string().regex(/^\d{4}-\d{2}$/),
+    bill_account_no: z.string().optional(),
+    note: z.string().optional(),
+  })).optional(),
 })
 
 function normListingName(v: any) {
@@ -71,6 +93,158 @@ async function ensureListingColumns() {
   await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_name text')
   await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_name text')
   await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS listing_names jsonb')
+}
+
+async function ensurePropertyColumns() {
+  if (!pgPool) return
+  await ensureListingColumns()
+  await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS biz_category text')
+  await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS building_facility_other text')
+  await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedroom_ac text')
+  await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS room_type_code text')
+  await pgPool.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS archived boolean DEFAULT false')
+}
+
+async function ensurePropertyPayableColumns(client?: any) {
+  const executor = client || pgPool
+  if (!executor) return
+  await executor.query(`CREATE TABLE IF NOT EXISTS recurring_payments (
+    id text PRIMARY KEY,
+    property_id text REFERENCES properties(id) ON DELETE SET NULL,
+    scope text,
+    vendor text,
+    category text,
+    category_detail text,
+    amount numeric,
+    due_day_of_month integer,
+    frequency_months integer,
+    remind_days_before integer,
+    status text,
+    last_paid_date date,
+    next_due_date date,
+    start_month_key text,
+    pay_account_name text,
+    pay_bsb text,
+    pay_account_number text,
+    pay_ref text,
+    expense_id text,
+    expense_resource text,
+    payment_type text,
+    bpay_code text,
+    pay_mobile_number text,
+    report_category text,
+    amount_mode text,
+    income_base text,
+    rate_percent numeric,
+    property_ids text[],
+    template_kind text,
+    bill_account_no text,
+    note text,
+    created_by text,
+    updated_by text,
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz
+  );`)
+  await executor.query(`ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS template_kind text DEFAULT '${PROPERTY_PAYABLE_TEMPLATE_KIND}';`)
+  await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS bill_account_no text;')
+  await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS note text;')
+  await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS created_by text;')
+  await executor.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS updated_by text;')
+}
+
+function normalizePayableTemplates(raw: any[] | undefined, actorId: string | null, propertyId: string) {
+  const rows = Array.isArray(raw) ? raw : []
+  return rows.map((item) => {
+    const id = String(item?.id || '').trim() || uuidv4()
+    return {
+      id,
+      property_id: propertyId,
+      scope: 'property',
+      template_kind: PROPERTY_PAYABLE_TEMPLATE_KIND,
+      vendor: String(item?.vendor || '').trim(),
+      category: String(item?.category || '').trim(),
+      category_detail: String(item?.category_detail || '').trim() || null,
+      amount: item?.amount == null ? 0 : Number(item.amount || 0),
+      due_day_of_month: Number(item?.due_day_of_month || 1),
+      frequency_months: Math.max(1, Number(item?.frequency_months || 1)),
+      remind_days_before: Number(item?.remind_days_before ?? 3),
+      payment_type: item?.payment_type ? String(item.payment_type) : 'bank_account',
+      pay_account_name: String(item?.pay_account_name || '').trim() || null,
+      pay_bsb: String(item?.pay_bsb || '').trim() || null,
+      pay_account_number: String(item?.pay_account_number || '').trim() || null,
+      pay_ref: String(item?.pay_ref || '').trim() || null,
+      bpay_code: String(item?.bpay_code || '').trim() || null,
+      pay_mobile_number: String(item?.pay_mobile_number || '').trim() || null,
+      report_category: String(item?.report_category || '').trim() || null,
+      start_month_key: String(item?.start_month_key || '').trim(),
+      bill_account_no: String(item?.bill_account_no || '').trim() || null,
+      note: String(item?.note || '').trim() || null,
+      status: 'active',
+      created_by: actorId,
+      updated_by: actorId,
+    }
+  })
+}
+
+async function syncPropertyPayableTemplatesTx(client: any, propertyId: string, rawTemplates: any[] | undefined, actorId: string | null) {
+  await ensurePropertyPayableColumns(client)
+  const nextTemplates = normalizePayableTemplates(rawTemplates, actorId, propertyId)
+  const existingRes = await client.query(
+    `SELECT *
+       FROM recurring_payments
+      WHERE property_id = $1
+        AND COALESCE(template_kind, $2) = $3`,
+    [propertyId, 'fixed_expense', PROPERTY_PAYABLE_TEMPLATE_KIND]
+  )
+  const existingRows: any[] = Array.isArray(existingRes.rows) ? existingRes.rows : []
+  const existingById = new Map<string, any>()
+  existingRows.forEach((row) => existingById.set(String(row.id), row))
+  const keepIds = new Set(nextTemplates.map((row) => String(row.id)))
+
+  for (const tpl of nextTemplates) {
+    const existing = existingById.get(String(tpl.id))
+    if (existing) {
+      const patch = {
+        property_id: propertyId,
+        scope: 'property',
+        template_kind: PROPERTY_PAYABLE_TEMPLATE_KIND,
+        vendor: tpl.vendor,
+        category: tpl.category,
+        category_detail: tpl.category_detail,
+        amount: tpl.amount,
+        due_day_of_month: tpl.due_day_of_month,
+        frequency_months: tpl.frequency_months,
+        remind_days_before: tpl.remind_days_before,
+        payment_type: tpl.payment_type,
+        pay_account_name: tpl.pay_account_name,
+        pay_bsb: tpl.pay_bsb,
+        pay_account_number: tpl.pay_account_number,
+        pay_ref: tpl.pay_ref,
+        bpay_code: tpl.bpay_code,
+        pay_mobile_number: tpl.pay_mobile_number,
+        report_category: tpl.report_category,
+        start_month_key: tpl.start_month_key,
+        bill_account_no: tpl.bill_account_no,
+        note: tpl.note,
+        updated_by: actorId,
+        updated_at: new Date(),
+      }
+      const after = await pgUpdate('recurring_payments', String(tpl.id), patch, client)
+      addAudit('RecurringPayment', String(tpl.id), 'update', existing, after, actorId || undefined)
+    } else {
+      const created = await pgInsert('recurring_payments', tpl, client)
+      addAudit('RecurringPayment', String(tpl.id), 'create', null, created || tpl, actorId || undefined)
+    }
+  }
+
+  for (const existing of existingRows) {
+    if (keepIds.has(String(existing.id))) continue
+    if (String(existing.status || '') === 'paused') continue
+    const after = await pgUpdate('recurring_payments', String(existing.id), { status: 'paused', updated_by: actorId, updated_at: new Date() }, client)
+    addAudit('RecurringPayment', String(existing.id), 'pause', existing, after, actorId || undefined)
+  }
+
+  return nextTemplates.map((item) => item.id)
 }
 
 async function findListingConflictPg(listingName: string, excludeId?: string | null) {
@@ -111,6 +285,7 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
   } catch {}
   const autoCode = `PM-${Math.random().toString(36).slice(2,6).toUpperCase()}-${Date.now().toString().slice(-4)}`
   const actor = (req as any).user
+  const actorId = String(actor?.sub || actor?.username || '').trim() || null
   const pFull: any = { id: uuidv4(), code: parsed.data.code || autoCode, created_by: actor?.sub || actor?.username || null, ...parsed.data }
   const lnObj = (pFull.listing_names || {}) as any
   pFull.airbnb_listing_name = normListingName(pFull.airbnb_listing_name || lnObj.airbnb || null)
@@ -123,6 +298,7 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
   try {
     // Supabase branch removed
     if (hasPg) {
+      await ensurePropertyColumns()
       const listingCandidates = [
         pFull.airbnb_listing_name,
         pFull.booking_listing_name,
@@ -139,112 +315,20 @@ router.post('/', requirePerm('property.write'), async (req, res) => {
           return res.status(500).json({ message: e?.message || 'listing name check failed' })
         }
       }
-      try {
-        const row = await pgInsert('properties', pBase)
-        addAudit('Property', row.id, 'create', null, row)
-        ;['guest','spare_1','spare_2','other'].forEach((t) => {
-          if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-            db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
-          }
-        })
-        return res.status(201).json(row)
-      } catch (e: any) {
-        if (/column\s+"?listing_names"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          try {
-            await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS listing_names jsonb')
-            const row = await pgInsert('properties', pBase)
-            addAudit('Property', row.id, 'create', null, row)
-            ;['guest','spare_1','spare_2','other'].forEach((t) => {
-              if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-                db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
-              }
-            })
-            return res.status(201).json(row)
-          } catch (e2: any) {
-            return res.status(500).json({ message: e2?.message || 'failed to add listing_names column' })
-          }
+      const created = await pgRunInTransaction(async (client) => {
+        const row = await pgInsert('properties', pBase, client)
+        if (Array.isArray(parsed.data.payable_templates) && parsed.data.payable_templates.length) {
+          await syncPropertyPayableTemplatesTx(client, String(row.id), parsed.data.payable_templates, actorId)
         }
-        if (/column\s+"?airbnb_listing_name"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_name text')
-          const row2 = await pgInsert('properties', pBase)
-          addAudit('Property', row2.id, 'create', null, row2)
-          return res.status(201).json(row2)
+        return row
+      })
+      addAudit('Property', String((created as any)?.id || pFull.id), 'create', null, created, actorId || undefined)
+      ;['guest','spare_1','spare_2','other'].forEach((t) => {
+        if (!db.keySets.find((s) => s.code === ((created as any)?.code || '') && s.set_type === t)) {
+          db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: (created as any)?.code || '', items: [] } as any)
         }
-        if (/column\s+"?booking_listing_name"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_name text')
-          const row2 = await pgInsert('properties', pBase)
-          addAudit('Property', row2.id, 'create', null, row2)
-          return res.status(201).json(row2)
-        }
-        if (/column\s+"?airbnb_listing_id"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS airbnb_listing_id text')
-          const row2 = await pgInsert('properties', pBase)
-          addAudit('Property', row2.id, 'create', null, row2)
-          return res.status(201).json(row2)
-        }
-        if (/column\s+"?booking_listing_id"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS booking_listing_id text')
-          const row2 = await pgInsert('properties', pBase)
-          addAudit('Property', row2.id, 'create', null, row2)
-          return res.status(201).json(row2)
-        }
-        if (/column\s+"?biz_category"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          try {
-            await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS biz_category text')
-            const row = await pgInsert('properties', pBase)
-            addAudit('Property', row.id, 'create', null, row)
-            ;['guest','spare_1','spare_2','other'].forEach((t) => {
-              if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-                db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
-              }
-            })
-            return res.status(201).json(row)
-          } catch (e3: any) {
-            return res.status(500).json({ message: e3?.message || 'failed to add biz_category column' })
-          }
-        }
-        if (/column\s+"?building_facility_other"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          try {
-            await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS building_facility_other text')
-            const row = await pgInsert('properties', pBase)
-            addAudit('Property', row.id, 'create', null, row)
-            ;['guest','spare_1','spare_2','other'].forEach((t) => {
-              if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-                db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
-              }
-            })
-            return res.status(201).json(row)
-          } catch (e4: any) {
-            return res.status(500).json({ message: e4?.message || 'failed to add building_facility_other column' })
-          }
-        }
-        if (/column\s+"?bedroom_ac"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          try {
-            await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedroom_ac text')
-            const row = await pgInsert('properties', pBase)
-            addAudit('Property', row.id, 'create', null, row)
-            ;['guest','spare_1','spare_2','other'].forEach((t) => {
-              if (!db.keySets.find((s) => s.code === (row.code || '') && s.set_type === t)) {
-                db.keySets.push({ id: uuidv4(), set_type: t, status: 'available', code: row.code || '', items: [] } as any)
-              }
-            })
-            return res.status(201).json(row)
-          } catch (e5: any) {
-            return res.status(500).json({ message: e5?.message || 'failed to add bedroom_ac column' })
-          }
-        }
-        if (/column\s+"?room_type_code"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          try {
-            await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS room_type_code text')
-            const row = await pgInsert('properties', pBase)
-            addAudit('Property', row.id, 'create', null, row)
-            return res.status(201).json(row)
-          } catch (e6: any) {
-            return res.status(500).json({ message: e6?.message || 'failed to add room_type_code column' })
-          }
-        }
-        return res.status(500).json({ message: e?.message || 'create failed' })
-      }
+      })
+      return res.status(201).json(created)
     }
     db.properties.push(pFull)
     addAudit('Property', pFull.id, 'create', null, pFull)
@@ -271,10 +355,12 @@ router.patch('/:id', requirePerm('property.write'), async (req, res) => {
   }
   const baseKeys = ['code','address','type','capacity','room_type_code','region','area_sqm','biz_category','building_name','building_facilities','building_facility_floor','building_facility_other','building_contact_name','building_contact_phone','building_contact_email','building_notes','bed_config','tv_model','aircon_model','bedroom_ac','access_guide_link','keybox_location','keybox_code','garage_guide_link','floor','parking_type','parking_space','access_type','orientation','fireworks_view','notes','landlord_id','listing_names','airbnb_listing_name','booking_listing_name','airbnb_listing_id','booking_listing_id']
   const actor = (req as any).user
+  const actorId = String(actor?.sub || actor?.username || '').trim() || null
   const bodyBaseRaw: any = Object.fromEntries(Object.entries(cleanedBody).filter(([k]) => baseKeys.includes(k)))
   const bodyBase: any = { ...bodyBaseRaw, updated_at: new Date(), updated_by: actor?.sub || actor?.username || null }
   try {
     if (hasPg) {
+      await ensurePropertyColumns()
       const rows: any = await pgSelect('properties', '*', { id })
       const before = rows && rows[0]
       const touchedListing = Object.prototype.hasOwnProperty.call(bodyBaseRaw, 'airbnb_listing_name')
@@ -293,43 +379,15 @@ router.patch('/:id', requirePerm('property.write'), async (req, res) => {
           if (conflict) return res.status(400).json({ message: `已经存在 Listing 名称：${name}`, code: 'DUPLICATE_LISTING_NAME', listing_name: name })
         }
       }
-      try {
-        const row = await pgUpdate('properties', id, bodyBase)
-        addAudit('Property', id, 'update', before, row)
-        return res.json(row)
-      } catch (e: any) {
-        if (/column\s+"?listing_names"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS listing_names jsonb')
-          const row2 = await pgUpdate('properties', id, bodyBase)
-          addAudit('Property', id, 'update', before, row2)
-          return res.json(row2)
+      const row = await pgRunInTransaction(async (client) => {
+        const updated = await pgUpdate('properties', id, bodyBase, client)
+        if (Object.prototype.hasOwnProperty.call(body, 'payable_templates')) {
+          await syncPropertyPayableTemplatesTx(client, id, Array.isArray(body.payable_templates) ? body.payable_templates : [], actorId)
         }
-        if (/column\s+"?biz_category"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS biz_category text')
-          const row3 = await pgUpdate('properties', id, bodyBase)
-          addAudit('Property', id, 'update', before, row3)
-          return res.json(row3)
-        }
-        if (/column\s+"?building_facility_other"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS building_facility_other text')
-          const row4 = await pgUpdate('properties', id, bodyBase)
-          addAudit('Property', id, 'update', before, row4)
-          return res.json(row4)
-        }
-        if (/column\s+"?bedroom_ac"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS bedroom_ac text')
-          const row5 = await pgUpdate('properties', id, bodyBase)
-          addAudit('Property', id, 'update', before, row5)
-          return res.json(row5)
-        }
-        if (/column\s+"?room_type_code"?\s+of\s+relation\s+"?properties"?\s+does\s+not\s+exist/i.test(e?.message || '')) {
-          await require('../dbAdapter').pgPool?.query('ALTER TABLE properties ADD COLUMN IF NOT EXISTS room_type_code text')
-          const row6 = await pgUpdate('properties', id, bodyBase)
-          addAudit('Property', id, 'update', before, row6)
-          return res.json(row6)
-        }
-        throw e
-      }
+        return updated
+      })
+      addAudit('Property', id, 'update', before, row, actorId || undefined)
+      return res.json(row)
     }
     const p = db.properties.find((x) => x.id === id)
     if (!p) return res.status(404).json({ message: 'not found' })
@@ -362,9 +420,23 @@ router.get('/:id', async (req, res) => {
   // Supabase branch removed
   if (hasPg) {
     try {
+      await ensurePropertyPayableColumns()
       const rows = await pgSelect('properties', '*', { id })
       if (!rows || !rows[0]) return res.status(404).json({ message: 'not found' })
       const p = rows[0]
+      try {
+        const payables = await pgPool!.query(
+          `SELECT *
+             FROM recurring_payments
+            WHERE property_id = $1
+              AND COALESCE(template_kind, $2) = $3
+            ORDER BY COALESCE(status, 'active') ASC, COALESCE(vendor, '') ASC, COALESCE(created_at, now()) ASC`,
+          [id, 'fixed_expense', PROPERTY_PAYABLE_TEMPLATE_KIND]
+        )
+        ;(p as any).payable_templates = Array.isArray(payables.rows) ? payables.rows : []
+      } catch {
+        ;(p as any).payable_templates = []
+      }
       if (p.updated_by) {
         try {
           const us = await pgSelect('users', 'username, email', { id: p.updated_by })
@@ -382,7 +454,7 @@ router.get('/:id', async (req, res) => {
   }
   const p = db.properties.find((x) => x.id === id)
   if (!p) return res.status(404).json({ message: 'not found' })
-  return res.json(p)
+  return res.json({ ...p, payable_templates: [] })
 })
 
 router.delete('/:id', requirePerm('property.write'), async (req, res) => {

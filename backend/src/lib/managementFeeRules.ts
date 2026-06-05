@@ -166,6 +166,7 @@ export async function ruleHasRecordedManagementFeeUsage(landlordId: string, effe
        FROM property_expenses
       WHERE category='management_fee'
         AND property_id = ANY($1::text[])
+        AND deleted_at IS NULL
         AND month_key IS NOT NULL
         AND month_key >= $2
       LIMIT 1`,

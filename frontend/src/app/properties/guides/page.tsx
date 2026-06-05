@@ -1,6 +1,6 @@
 "use client"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { App, Button, Card, DatePicker, Drawer, Form, Grid, Input, Modal, Select, Space, Table, Tag } from 'antd'
+import { App, Button, Card, Drawer, Form, Grid, Input, Modal, Select, Space, Table, Tag } from 'antd'
 import dayjs from 'dayjs'
 import { API_BASE, authHeaders } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
@@ -25,7 +25,7 @@ type GuideRow = {
   published_at?: string
 }
 
-type LinkRow = { token_hash: string; guide_id: string; created_at: string; expires_at: string; revoked_at?: string | null; token?: string | null }
+type LinkRow = { token_hash: string; guide_id: string; created_at: string; expires_at?: string | null; revoked_at?: string | null; token?: string | null }
 
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { ...init, headers: { ...(init?.headers || {}), ...authHeaders() } })
@@ -64,7 +64,6 @@ export default function Page() {
   const [linksOpen, setLinksOpen] = useState(false)
   const [linksGuide, setLinksGuide] = useState<GuideRow | null>(null)
   const [links, setLinks] = useState<LinkRow[]>([])
-  const [linkExpiresAt, setLinkExpiresAt] = useState<any>(null)
   const [newToken, setNewToken] = useState<string>('')
 
   const [pwdInfo, setPwdInfo] = useState<{ configured: boolean; password_updated_at: string | null }>({ configured: false, password_updated_at: null })
@@ -294,7 +293,6 @@ export default function Page() {
     setLinksGuide(row)
     setLinksOpen(true)
     setNewToken('')
-    setLinkExpiresAt(null)
     try {
       const rows = await fetchJSON<LinkRow[]>(`/property-guides/${row.id}/public-links`)
       setLinks(Array.isArray(rows) ? rows : [])
@@ -307,17 +305,13 @@ export default function Page() {
   async function createLink() {
     if (!linksGuide) return
     try {
-      const expires_at = linkExpiresAt ? dayjs(linkExpiresAt).toISOString() : undefined
-      const body = expires_at ? { expires_at } : {}
-      const r = await fetchJSON<any>(`/property-guides/${linksGuide.id}/public-link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const r = await fetchJSON<any>(`/property-guides/${linksGuide.id}/public-link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
       const token = String(r?.token || '')
-      const exp = String(r?.expires_at || '')
       if (!token) throw new Error('missing token')
       setNewToken(token)
       message.success('外链已生成')
       const rows = await fetchJSON<LinkRow[]>(`/property-guides/${linksGuide.id}/public-links`)
       setLinks(Array.isArray(rows) ? rows : [])
-      if (exp) setLinkExpiresAt(dayjs(exp))
     } catch (e: any) {
       message.error(`生成失败：${e?.message || ''}`)
     }
@@ -581,8 +575,7 @@ export default function Page() {
                   <span>Guide：</span>
                   <Tag>{linksGuide.language}</Tag>
                   <Tag>{linksGuide.version}</Tag>
-                  <span>过期时间：</span>
-                  <DatePicker showTime value={linkExpiresAt} onChange={setLinkExpiresAt as any} style={{ width: 220, maxWidth: '100%' }} />
+                  <Tag color="blue">不过期</Tag>
                 </Space>
                 <div style={{ display: 'flex', justifyContent: isMobile ? 'flex-start' : 'flex-end' }}>
                   <Button type="primary" onClick={createLink}>生成外链</Button>
@@ -631,14 +624,14 @@ export default function Page() {
                     )
                   },
                 },
-                { title: 'expires_at', dataIndex: 'expires_at', width: 160 },
+                { title: 'expires_at', dataIndex: 'expires_at', width: 160, render: (v: any) => v || '不过期' },
                 { title: 'revoked_at', dataIndex: 'revoked_at', width: 140, render: (v: any) => v || '-' },
                 {
                   title: '状态',
                   width: 90,
                   render: (_: any, r: LinkRow) => {
                     const revoked = !!r.revoked_at
-                    const expired = r.expires_at ? dayjs(r.expires_at).isBefore(dayjs()) : true
+                    const expired = r.expires_at ? dayjs(r.expires_at).isBefore(dayjs()) : false
                     if (revoked) return <Tag color="default">revoked</Tag>
                     if (expired) return <Tag color="red">expired</Tag>
                     return <Tag color="green">active</Tag>

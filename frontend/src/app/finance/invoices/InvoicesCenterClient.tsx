@@ -302,7 +302,11 @@ export default function InvoicesCenterClient() {
 
   const previewBestFile = useMemo(() => {
     const files = Array.isArray(previewInvoice?.files) ? previewInvoice.files : []
-    const sorted = [...files].sort((a: any, b: any) => String(b?.created_at || '').localeCompare(String(a?.created_at || '')))
+    const previewable = files.filter((x: any) => {
+      const kind = String(x?.kind || '').trim().toLowerCase()
+      return kind !== 'repair_before_photo' && kind !== 'repair_after_photo'
+    })
+    const sorted = [...previewable].sort((a: any, b: any) => String(b?.created_at || '').localeCompare(String(a?.created_at || '')))
     const pdf = sorted.find((x: any) => /pdf/i.test(String(x?.mime_type || '')) || /\.pdf($|\?)/i.test(String(x?.url || '')))
     const img = sorted.find((x: any) => /(png|jpg|jpeg|webp)/i.test(String(x?.mime_type || '')) || /\.(png|jpg|jpeg|webp)($|\?)/i.test(String(x?.url || '')))
     return pdf || img || null

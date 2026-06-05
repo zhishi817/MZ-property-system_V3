@@ -115,8 +115,12 @@ async function ensureCmsCompanyPublicLinksTable() {
 
 const pageTypeSchema = z.enum(['announce', 'doc', 'warehouse'])
 const audienceScopeSchema = z.enum(['all_staff', 'cleaners', 'warehouse_staff', 'maintenance_staff', 'managers']).optional()
-const categorySchema = z.enum(['company_rule', 'work_guide']).optional()
+const categorySchema = z.enum(['company_rule', 'starter_guide', 'role_guide', 'work_guide']).optional()
 const guideRoleSchema = z.enum(['cleaner', 'cleaning_inspector']).optional()
+
+function categorySupportsGuideRole(category: string | null | undefined) {
+  return category === 'role_guide' || category === 'work_guide'
+}
 
 const createSchema = z.object({
   type: pageTypeSchema,
@@ -250,7 +254,7 @@ router.post('/company/pages', requirePerm('cms_pages.write'), async (req, res) =
     if (!cat) return res.status(400).json({ message: 'missing category' })
   }
   const guideRole =
-    type === 'doc' && String(parsed.data.category || '').trim() === 'work_guide'
+    type === 'doc' && categorySupportsGuideRole(String(parsed.data.category || '').trim())
       ? String(parsed.data.guide_role || '').trim() || null
       : null
 
@@ -325,7 +329,7 @@ router.patch('/company/pages/:id', requirePerm('cms_pages.write'), async (req, r
       delete patch.guide_role
     } else {
       const nextCategory = patch.category === undefined ? String(before.category || '').trim() : String(patch.category || '').trim()
-      if (nextCategory !== 'work_guide') {
+      if (!categorySupportsGuideRole(nextCategory)) {
         patch.guide_role = null
       } else if (patch.guide_role === undefined) {
         patch.guide_role = String(before.guide_role || '').trim() || null

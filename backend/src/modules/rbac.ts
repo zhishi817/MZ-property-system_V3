@@ -489,6 +489,7 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
     'menu.cleaning.visible': ['cleaning_tasks'],
     'menu.finance.expenses.visible': ['property_expenses'],
     'menu.finance.recurring.visible': ['recurring_payments'],
+    'menu.finance.property_payables.visible': ['recurring_payments', 'property_expenses'],
     'menu.finance.orders.visible': ['order'],
     'menu.finance.company_overview.visible': ['finance_transactions','order','properties','property_expenses'],
     'menu.finance.company_revenue.visible': ['company_incomes','company_expenses'],

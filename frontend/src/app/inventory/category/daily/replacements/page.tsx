@@ -8,7 +8,7 @@ import dayjs from 'dayjs'
 import { API_BASE, authHeaders, getJSON, patchJSON, postJSON } from '../../../../../lib/api'
 import { sortProperties } from '../../../../../lib/properties'
 
-type PropertyRow = { id: string; code?: string | null; address?: string | null }
+type PropertyRow = { id: string; code?: string | null; address?: string | null; region?: string | null }
 type DailyItem = { id: string; item_name: string; sku: string; is_active?: boolean }
 type Me = { id: string; username?: string | null; display_name?: string | null }
 
@@ -76,6 +76,7 @@ export default function DailyReplacementsPage() {
       id: String(row.id),
       code: row.code || undefined,
       address: row.address || undefined,
+      region: row.region || undefined,
     }))
     setProperties(sortProperties(normalizedProperties))
     setItems((dailyItems || []).filter((row) => row.is_active !== false))

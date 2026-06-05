@@ -582,7 +582,7 @@ exports.router.get('/history', (0, auth_1.requireAnyPerm)(['cleaning.view', 'cle
 const patchTaskSchema = zod_1.z.object({
     property_id: zod_1.z.string().nullable().optional(),
     task_date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    status: zod_1.z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled']).optional(),
+    status: zod_1.z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled', 'keys_hung']).optional(),
     assignee_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     cleaner_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     inspector_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
@@ -865,7 +865,7 @@ const createTaskSchema = zod_1.z.object({
     create_mode: zod_1.z.enum(['checkout', 'checkin', 'turnover', 'stayover']).optional(),
     task_date: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     property_id: zod_1.z.string().min(1),
-    status: zod_1.z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled']).optional(),
+    status: zod_1.z.enum(['pending', 'assigned', 'in_progress', 'completed', 'cancelled', 'keys_hung']).optional(),
     cleaner_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     inspector_id: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
     inspection_mode: zod_1.z.enum(['pending_decision', 'same_day', 'self_complete', 'deferred']).optional().nullable(),

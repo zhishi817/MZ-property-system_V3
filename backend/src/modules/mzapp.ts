@@ -7,6 +7,7 @@ import { hasR2, r2Upload } from '../r2'
 import crypto from 'crypto'
 import sharp from 'sharp'
 import fs from 'fs'
+import { listPermissionCodesForUser, userHasAnyPerm } from '../auth'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { deferredProjectionDate, effectiveInspectionMode, isInspectionFinishedStatus, mergeInspectionPlan } from '../lib/cleaningInspection'
@@ -97,6 +98,975 @@ function hasRole(user: any, roleName: string) {
 
 function canViewAll(user: any) {
   return hasRole(user, 'admin') || hasRole(user, 'offline_manager') || hasRole(user, 'customer_service')
+}
+
+function normalizeStoredPhotoUrls(raw: any, fallback?: any) {
+  if (Array.isArray(raw)) return Array.from(new Set(raw.map((item) => String(item || '').trim()).filter(Boolean)))
+  const text = String(raw || '').trim()
+  if (text) {
+    try {
+      const parsed = JSON.parse(text)
+      if (Array.isArray(parsed)) return Array.from(new Set(parsed.map((item) => String(item || '').trim()).filter(Boolean)))
+    } catch {}
+    if (/^https?:\/\//i.test(text)) return [text]
+  }
+  const fallbackText = String(fallback || '').trim()
+  return fallbackText ? [fallbackText] : []
+}
+
+type MzappExpenseScope = 'company' | 'property'
+
+const MZAPP_PROPERTY_REGION_ORDER = ['Melbourne', 'Southbank', 'South Melbourne', 'West Melbourne', 'St Kilda', 'Docklands']
+const COMPANY_EXPENSE_CATEGORIES = [
+  { value: 'office', label: '办公' },
+  { value: 'bedding_fee', label: '床品费' },
+  { value: 'office_rent', label: '办公室租金' },
+  { value: 'car_loan', label: '车贷' },
+  { value: 'electricity', label: '电费' },
+  { value: 'internet', label: '网费' },
+  { value: 'water', label: '水费' },
+  { value: 'fuel', label: '油费' },
+  { value: 'parking_fee', label: '车位费' },
+  { value: 'maintenance_materials', label: '维修材料费' },
+  { value: 'tax', label: '税费' },
+  { value: 'service', label: '服务采购' },
+  { value: 'other', label: '其他' },
+]
+const PROPERTY_EXPENSE_CATEGORIES = [
+  { value: 'electricity', label: '电费' },
+  { value: 'water', label: '水费' },
+  { value: 'gas_hot_water', label: '煤气/热水费' },
+  { value: 'internet', label: '网费' },
+  { value: 'consumables', label: '消耗品费' },
+  { value: 'carpark', label: '车位费' },
+  { value: 'owners_corp', label: '物业费' },
+  { value: 'council_rate', label: '市政费' },
+  { value: 'parking_fee', label: '停车费' },
+  { value: 'other', label: '其他' },
+]
+
+const mzappExpenseCreateSchema = z.object({
+  scope: z.enum(['company', 'property']),
+  property_id: z.string().optional(),
+  occurred_at: z.string(),
+  amount: z.coerce.number().positive(),
+  category: z.string().min(1),
+  category_detail: z.string().optional(),
+  expense_name: z.string().optional(),
+  note: z.string().optional(),
+  receipt_urls: z.array(z.string().min(1)).max(5).optional(),
+})
+
+const mzappExpenseUpdateSchema = mzappExpenseCreateSchema.partial().extend({
+  scope: z.enum(['company', 'property']),
+})
+
+const mzappExpenseOcrSchema = z.object({
+  scope: z.enum(['company', 'property']),
+  receipt_url: z.string().min(1),
+})
+
+const mzappExpenseReceiptItemSchema = z.object({
+  id: z.string().optional(),
+  scope: z.enum(['company', 'property']),
+  property_id: z.string().optional(),
+  expense_name: z.string().min(1),
+  amount: z.coerce.number().positive(),
+  category: z.string().min(1),
+  category_detail: z.string().optional(),
+  note: z.string().optional(),
+})
+
+const mzappExpenseReceiptCreateSchema = z.object({
+  receipt_total_amount: z.coerce.number().positive(),
+  receipt_date: z.string(),
+  note: z.string().optional(),
+  receipt_urls: z.array(z.string().min(1)).min(1).max(5),
+  items: z.array(mzappExpenseReceiptItemSchema).min(1).max(50),
+})
+
+const mzappExpenseReceiptUpdateSchema = mzappExpenseReceiptCreateSchema
+
+function mzappExpensePermission(scope: MzappExpenseScope, action: 'submit' | 'view.self' | 'edit.self' | 'delete.self') {
+  return `cleaning_app.expense.${scope}.${action}`
+}
+
+function cmpPropertyCode(a?: string, b?: string) {
+  const A = String(a || '').trim().toUpperCase()
+  const B = String(b || '').trim().toUpperCase()
+  if (!A && !B) return 0
+  if (!A) return 1
+  if (!B) return -1
+  const isDigitA = /\d/.test(A[0] || '')
+  const isDigitB = /\d/.test(B[0] || '')
+  if (isDigitA !== isDigitB) return isDigitA ? -1 : 1
+  const tok = (s: string) => s.match(/\d+|[A-Z]+|[^A-Z0-9]+/g) || []
+  const ta = tok(A)
+  const tb = tok(B)
+  const n = Math.min(ta.length, tb.length)
+  for (let i = 0; i < n; i++) {
+    const xa = ta[i]
+    const xb = tb[i]
+    const da = /^\d+$/.test(xa)
+    const db = /^\d+$/.test(xb)
+    if (da && db) {
+      const va = Number(xa)
+      const vb = Number(xb)
+      if (va !== vb) return va - vb
+    } else {
+      const c = xa.localeCompare(xb)
+      if (c !== 0) return c
+    }
+  }
+  if (ta.length !== tb.length) return ta.length - tb.length
+  return A.localeCompare(B)
+}
+
+function propertyRegionRank(region0?: string | null) {
+  const region = String(region0 || '').trim()
+  const idx = MZAPP_PROPERTY_REGION_ORDER.indexOf(region)
+  return idx >= 0 ? idx : MZAPP_PROPERTY_REGION_ORDER.length + 1
+}
+
+function sortActivePropertiesByRegionThenCode<T extends { code?: string; region?: string | null; archived?: boolean | null }>(rows: T[]) {
+  return (Array.isArray(rows) ? rows : [])
+    .filter((row) => row?.archived !== true)
+    .slice()
+    .sort((a, b) => {
+      const ra = propertyRegionRank(a?.region)
+      const rb = propertyRegionRank(b?.region)
+      if (ra !== rb) return ra - rb
+      return cmpPropertyCode(a?.code, b?.code)
+    })
+}
+
+function normalizeExpenseReceiptUrls(input: any) {
+  return Array.from(new Set((Array.isArray(input) ? input : []).map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 5)
+}
+
+async function ensureMzappExpenseSchema() {
+  if (!hasPg || !pgPool) return
+  if ((ensureMzappExpenseSchema as any)._promise) return await (ensureMzappExpenseSchema as any)._promise
+  ;(ensureMzappExpenseSchema as any)._promise = (async () => {
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS company_expenses (
+    id text PRIMARY KEY,
+    occurred_at date NOT NULL,
+    amount numeric NOT NULL,
+    currency text NOT NULL DEFAULT 'AUD',
+    category text,
+    category_detail text,
+    expense_name text,
+    note text,
+    invoice_url text,
+    created_at timestamptz DEFAULT now(),
+    created_by text,
+    deleted_at timestamptz,
+    deleted_by text,
+    delete_source text,
+    fixed_expense_id text,
+    month_key text,
+    due_date date,
+    paid_date date,
+    status text,
+    generated_from text,
+    ref_type text,
+    ref_id text,
+    is_auto boolean DEFAULT false,
+    manual_override boolean DEFAULT false,
+    source_title text,
+    source_summary text
+  );`)
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_expenses (
+    id text PRIMARY KEY,
+    property_id text,
+    occurred_at date NOT NULL,
+    amount numeric NOT NULL,
+    currency text NOT NULL DEFAULT 'AUD',
+    category text,
+    category_detail text,
+    expense_name text,
+    note text,
+    invoice_url text,
+    created_at timestamptz DEFAULT now(),
+    created_by text,
+    deleted_at timestamptz,
+    deleted_by text,
+    delete_source text,
+    fixed_expense_id text,
+    month_key text,
+    due_date date,
+    paid_date date,
+    status text,
+    pay_method text,
+    pay_other_note text,
+    generated_from text,
+    ref_type text,
+    ref_id text,
+    is_auto boolean DEFAULT false,
+    manual_override boolean DEFAULT false,
+    source_title text,
+    source_summary text
+  );`)
+  await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
+  await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS expense_name text;')
+  await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS invoice_url text;')
+  await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS created_by text;')
+  await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_at timestamptz;')
+  await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_by text;')
+  await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS delete_source text;')
+  await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+  await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS receipt_id text;')
+  await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS receipt_item_id text;')
+  await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
+  await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS expense_name text;')
+  await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS invoice_url text;')
+  await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS created_by text;')
+  await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS deleted_at timestamptz;')
+  await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS deleted_by text;')
+  await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS delete_source text;')
+  await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+  await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS receipt_id text;')
+  await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS receipt_item_id text;')
+  })().catch((e: any) => {
+    ;(ensureMzappExpenseSchema as any)._promise = null
+    throw e
+  })
+  return await (ensureMzappExpenseSchema as any)._promise
+}
+
+async function ensureMzappExpenseInvoicesTable() {
+  if (!hasPg || !pgPool) return
+  if ((ensureMzappExpenseInvoicesTable as any)._promise) return await (ensureMzappExpenseInvoicesTable as any)._promise
+  ;(ensureMzappExpenseInvoicesTable as any)._promise = (async () => {
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS expense_invoices (
+    id text PRIMARY KEY,
+    expense_id text REFERENCES property_expenses(id) ON DELETE CASCADE,
+    company_expense_id text REFERENCES company_expenses(id) ON DELETE CASCADE,
+    url text NOT NULL,
+    file_name text,
+    mime_type text,
+    file_size integer,
+    created_at timestamptz DEFAULT now(),
+    created_by text
+  );`)
+  await pgPool.query('ALTER TABLE expense_invoices ADD COLUMN IF NOT EXISTS company_expense_id text;')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_expense_invoices_expense ON expense_invoices(expense_id);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_expense_invoices_company_expense ON expense_invoices(company_expense_id);')
+  })().catch((e: any) => {
+    ;(ensureMzappExpenseInvoicesTable as any)._promise = null
+    throw e
+  })
+  return await (ensureMzappExpenseInvoicesTable as any)._promise
+}
+
+async function listExpenseReceipts(scope: MzappExpenseScope, expenseId: string, db: any = pgPool) {
+  if (!hasPg || !db) return []
+  await ensureMzappExpenseInvoicesTable()
+  const col = scope === 'property' ? 'expense_id' : 'company_expense_id'
+  const r = await db.query(
+    `SELECT id, expense_id, company_expense_id, url, file_name, mime_type, file_size, created_at, created_by
+       FROM expense_invoices
+      WHERE ${col} = $1
+      ORDER BY created_at ASC NULLS LAST, id ASC`,
+    [expenseId],
+  )
+  return r?.rows || []
+}
+
+async function syncExpenseReceipts(scope: MzappExpenseScope, expenseId: string, receiptUrls: string[], user: any, db: any = pgPool) {
+  if (!hasPg || !db) return
+  await ensureMzappExpenseInvoicesTable()
+  const col = scope === 'property' ? 'expense_id' : 'company_expense_id'
+  const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
+  const normalized = normalizeExpenseReceiptUrls(receiptUrls)
+  const currentRows = await listExpenseReceipts(scope, expenseId, db)
+  const currentByUrl = new Map<string, any>()
+  for (const row of currentRows) currentByUrl.set(String(row?.url || '').trim(), row)
+  for (const row of currentRows) {
+    const url = String(row?.url || '').trim()
+    if (url && !normalized.includes(url)) await db.query('DELETE FROM expense_invoices WHERE id = $1', [String(row.id)])
+  }
+  for (const url of normalized) {
+    if (!currentByUrl.has(url)) {
+      await db.query(
+        `INSERT INTO expense_invoices (id, ${col}, url, created_by)
+         VALUES ($1, $2, $3, $4)`,
+        [crypto.randomUUID(), expenseId, url, String(user?.sub || user?.username || 'mzapp')],
+      )
+    }
+  }
+  await db.query(
+    `UPDATE ${table}
+        SET invoice_url = $2
+      WHERE id = $1`,
+    [expenseId, normalized[0] || null],
+  )
+}
+
+async function ensureMzappExpenseReceiptSchema() {
+  if (!hasPg || !pgPool) return
+  if ((ensureMzappExpenseReceiptSchema as any)._promise) return await (ensureMzappExpenseReceiptSchema as any)._promise
+  ;(ensureMzappExpenseReceiptSchema as any)._promise = (async () => {
+  await ensureMzappExpenseSchema()
+  await ensureMzappExpenseInvoicesTable()
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS expense_receipts (
+    id text PRIMARY KEY,
+    receipt_date date NOT NULL,
+    receipt_total_amount numeric NOT NULL,
+    currency text NOT NULL DEFAULT 'AUD',
+    note text,
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now(),
+    created_by text,
+    generated_from text,
+    deleted_at timestamptz,
+    deleted_by text,
+    delete_source text
+  );`)
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS expense_receipt_images (
+    id text PRIMARY KEY,
+    receipt_id text NOT NULL REFERENCES expense_receipts(id) ON DELETE CASCADE,
+    url text NOT NULL,
+    sort_index integer NOT NULL DEFAULT 0,
+    created_at timestamptz DEFAULT now(),
+    created_by text
+  );`)
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS expense_receipt_items (
+    id text PRIMARY KEY,
+    receipt_id text NOT NULL REFERENCES expense_receipts(id) ON DELETE CASCADE,
+    line_no integer NOT NULL,
+    scope text NOT NULL,
+    property_id text,
+    expense_name text NOT NULL,
+    amount numeric NOT NULL,
+    category text NOT NULL,
+    category_detail text,
+    note text,
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now()
+  );`)
+  await pgPool.query('ALTER TABLE expense_receipts ADD COLUMN IF NOT EXISTS receipt_date date;')
+  await pgPool.query('ALTER TABLE expense_receipts ADD COLUMN IF NOT EXISTS receipt_total_amount numeric;')
+  await pgPool.query("ALTER TABLE expense_receipts ALTER COLUMN currency SET DEFAULT 'AUD';")
+  await pgPool.query('ALTER TABLE expense_receipts ADD COLUMN IF NOT EXISTS note text;')
+  await pgPool.query('ALTER TABLE expense_receipts ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();')
+  await pgPool.query('ALTER TABLE expense_receipts ADD COLUMN IF NOT EXISTS created_by text;')
+  await pgPool.query('ALTER TABLE expense_receipts ADD COLUMN IF NOT EXISTS generated_from text;')
+  await pgPool.query('ALTER TABLE expense_receipts ADD COLUMN IF NOT EXISTS deleted_at timestamptz;')
+  await pgPool.query('ALTER TABLE expense_receipts ADD COLUMN IF NOT EXISTS deleted_by text;')
+  await pgPool.query('ALTER TABLE expense_receipts ADD COLUMN IF NOT EXISTS delete_source text;')
+  await pgPool.query('ALTER TABLE expense_receipt_images ADD COLUMN IF NOT EXISTS sort_index integer NOT NULL DEFAULT 0;')
+  await pgPool.query('ALTER TABLE expense_receipt_images ADD COLUMN IF NOT EXISTS created_by text;')
+  await pgPool.query('ALTER TABLE expense_receipt_items ADD COLUMN IF NOT EXISTS line_no integer NOT NULL DEFAULT 1;')
+  await pgPool.query('ALTER TABLE expense_receipt_items ADD COLUMN IF NOT EXISTS scope text;')
+  await pgPool.query('ALTER TABLE expense_receipt_items ADD COLUMN IF NOT EXISTS property_id text;')
+  await pgPool.query('ALTER TABLE expense_receipt_items ADD COLUMN IF NOT EXISTS expense_name text;')
+  await pgPool.query('ALTER TABLE expense_receipt_items ADD COLUMN IF NOT EXISTS amount numeric;')
+  await pgPool.query('ALTER TABLE expense_receipt_items ADD COLUMN IF NOT EXISTS category text;')
+  await pgPool.query('ALTER TABLE expense_receipt_items ADD COLUMN IF NOT EXISTS category_detail text;')
+  await pgPool.query('ALTER TABLE expense_receipt_items ADD COLUMN IF NOT EXISTS note text;')
+  await pgPool.query('ALTER TABLE expense_receipt_items ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_expense_receipt_images_receipt ON expense_receipt_images(receipt_id, sort_index, created_at);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_expense_receipt_items_receipt ON expense_receipt_items(receipt_id, line_no, created_at);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_company_expenses_receipt ON company_expenses(receipt_id, receipt_item_id);')
+  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_expenses_receipt ON property_expenses(receipt_id, receipt_item_id);')
+  })().catch((e: any) => {
+    ;(ensureMzappExpenseReceiptSchema as any)._promise = null
+    throw e
+  })
+  return await (ensureMzappExpenseReceiptSchema as any)._promise
+}
+
+async function listActivePropertiesForMzapp() {
+  if (!hasPg || !pgPool) return []
+  const r = await pgPool.query('SELECT id, code, address, region, archived FROM properties')
+  return sortActivePropertiesByRegionThenCode((r?.rows || []).map((row: any) => ({
+    id: String(row?.id || ''),
+    code: String(row?.code || ''),
+    address: String(row?.address || ''),
+    region: row?.region == null ? null : String(row.region || ''),
+    archived: row?.archived === true,
+  })))
+}
+
+async function mzappPropertyExists(propertyId: string) {
+  const id = String(propertyId || '').trim()
+  if (!id || !hasPg || !pgPool) return false
+  const r = await pgPool.query(
+    `SELECT 1
+       FROM properties
+      WHERE id = $1
+        AND COALESCE(archived, false) = false
+      LIMIT 1`,
+    [id],
+  )
+  return !!r.rowCount
+}
+
+async function mzappUserHasScopePerm(user: any, scope: MzappExpenseScope, action: 'submit' | 'view.self' | 'edit.self' | 'delete.self') {
+  return await userHasAnyPerm(user, [mzappExpensePermission(scope, action)])
+}
+
+async function listMzappScopesForUser(user: any) {
+  const scopes: MzappExpenseScope[] = []
+  if (await userHasAnyPerm(user, [
+    mzappExpensePermission('company', 'submit'),
+    mzappExpensePermission('company', 'view.self'),
+    mzappExpensePermission('company', 'edit.self'),
+    mzappExpensePermission('company', 'delete.self'),
+  ])) scopes.push('company')
+  if (await userHasAnyPerm(user, [
+    mzappExpensePermission('property', 'submit'),
+    mzappExpensePermission('property', 'view.self'),
+    mzappExpensePermission('property', 'edit.self'),
+    mzappExpensePermission('property', 'delete.self'),
+  ])) scopes.push('property')
+  return scopes
+}
+
+function mzappActorId(user: any) {
+  return String(user?.sub || user?.username || 'mzapp')
+}
+
+function roundMoney(value: any) {
+  return Number(Number(value || 0).toFixed(2))
+}
+
+function moneyToCents(value: any) {
+  return Math.round(Number(value || 0) * 100)
+}
+
+function expenseCategoriesForScope(scope: MzappExpenseScope) {
+  return scope === 'company' ? COMPANY_EXPENSE_CATEGORIES : PROPERTY_EXPENSE_CATEGORIES
+}
+
+function normalizeReceiptItems(input: any) {
+  const items = Array.isArray(input) ? input : []
+  return items.map((item, index) => ({
+    id: String(item?.id || '').trim() || undefined,
+    line_no: index + 1,
+    scope: String(item?.scope || '').trim() === 'property' ? 'property' : 'company',
+    property_id: String(item?.property_id || '').trim() || undefined,
+    expense_name: String(item?.expense_name || '').trim(),
+    amount: roundMoney(item?.amount || 0),
+    category: String(item?.category || '').trim(),
+    category_detail: String(item?.category_detail || '').trim() || undefined,
+    note: String(item?.note || '').trim() || undefined,
+  }))
+}
+
+async function assertValidReceiptPayload(user: any, payload: any, action: 'submit' | 'edit.self') {
+  const receiptDate = dayOnly(payload?.receipt_date)
+  if (!receiptDate) throw new Error('invalid receipt_date')
+  const receiptUrls = normalizeExpenseReceiptUrls(payload?.receipt_urls)
+  if (!receiptUrls.length) throw new Error('missing receipt_urls')
+  const items = normalizeReceiptItems(payload?.items)
+  if (!items.length) throw new Error('missing items')
+  const receiptTotalAmount = roundMoney(payload?.receipt_total_amount || 0)
+  if (!(receiptTotalAmount > 0)) throw new Error('invalid receipt_total_amount')
+  const totalCents = items.reduce((sum, item) => sum + moneyToCents(item.amount), 0)
+  if (moneyToCents(receiptTotalAmount) !== totalCents) throw new Error('items_total_mismatch')
+  const scopes = Array.from(new Set(items.map((item) => item.scope as MzappExpenseScope)))
+  for (const scope of scopes) {
+    if (!(await mzappUserHasScopePerm(user, scope, action))) throw new Error('forbidden')
+  }
+  for (const item of items) {
+    if (!item.expense_name) throw new Error('missing expense_name')
+    if (!(item.amount > 0)) throw new Error('invalid item amount')
+    if (item.scope === 'property') {
+      if (!item.property_id) throw new Error('missing property_id')
+      if (!(await mzappPropertyExists(item.property_id))) throw new Error('invalid property_id')
+    } else if (item.property_id) {
+      throw new Error('property_id_not_allowed')
+    }
+    const allowedCategories = new Set(expenseCategoriesForScope(item.scope as MzappExpenseScope).map((entry) => entry.value))
+    if (!allowedCategories.has(item.category)) throw new Error('invalid category')
+    if (item.category === 'other' && !String(item.category_detail || '').trim()) throw new Error('missing category_detail')
+  }
+  return {
+    receipt_total_amount: receiptTotalAmount,
+    receipt_date: receiptDate,
+    note: String(payload?.note || '').trim() || null,
+    receipt_urls: receiptUrls,
+    items,
+  }
+}
+
+function buildReceiptScopeSummary(items: Array<{ scope?: string | null }>) {
+  const scopes = Array.from(new Set((Array.isArray(items) ? items : []).map((item) => String(item?.scope || '').trim()).filter(Boolean)))
+  if (!scopes.length) return '未分配'
+  if (scopes.length > 1) return '混合支出'
+  return scopes[0] === 'property' ? '房源支出' : '公司支出'
+}
+
+async function listReceiptImages(receiptId: string, db: any = pgPool) {
+  if (!hasPg || !db) return []
+  const r = await db.query(
+    `SELECT id, receipt_id, url, sort_index, created_at, created_by
+       FROM expense_receipt_images
+      WHERE receipt_id = $1
+      ORDER BY sort_index ASC, created_at ASC NULLS LAST, id ASC`,
+    [receiptId],
+  )
+  return r?.rows || []
+}
+
+async function listReceiptItems(receiptId: string, db: any = pgPool) {
+  if (!hasPg || !db) return []
+  const r = await db.query(
+    `SELECT i.id, i.receipt_id, i.line_no, i.scope, i.property_id, i.expense_name, i.amount, i.category, i.category_detail, i.note, i.created_at, i.updated_at,
+            p.code AS property_code, p.address AS property_address, p.region AS property_region
+       FROM expense_receipt_items i
+       LEFT JOIN properties p ON p.id = i.property_id
+      WHERE i.receipt_id = $1
+      ORDER BY i.line_no ASC, i.created_at ASC NULLS LAST, i.id ASC`,
+    [receiptId],
+  )
+  return r?.rows || []
+}
+
+async function listActiveGeneratedExpensesByReceipt(receiptId: string, db: any = pgPool) {
+  if (!hasPg || !db) return { company: [], property: [] }
+  const [company, property] = await Promise.all([
+    db.query(
+      `SELECT id, receipt_id, receipt_item_id, deleted_at
+         FROM company_expenses
+        WHERE receipt_id = $1`,
+      [receiptId],
+    ),
+    db.query(
+      `SELECT id, receipt_id, receipt_item_id, property_id, deleted_at
+         FROM property_expenses
+        WHERE receipt_id = $1`,
+      [receiptId],
+    ),
+  ])
+  return {
+    company: company?.rows || [],
+    property: property?.rows || [],
+  }
+}
+
+async function buildReceiptDetail(receiptId: string, db: any = pgPool, opts?: { includeDeleted?: boolean }) {
+  if (!hasPg || !db) return null
+  const receiptR = await db.query(
+    `SELECT *
+       FROM expense_receipts
+      WHERE id = $1
+        ${opts?.includeDeleted ? '' : 'AND deleted_at IS NULL'}
+      LIMIT 1`,
+    [receiptId],
+  )
+  const receipt = receiptR?.rows?.[0]
+  if (!receipt) return null
+  const [images, items, generated] = await Promise.all([
+    listReceiptImages(receiptId, db),
+    listReceiptItems(receiptId, db),
+    listActiveGeneratedExpensesByReceipt(receiptId, db),
+  ])
+  const byItem = new Map<string, { company_expense_id?: string; property_expense_id?: string }>()
+  for (const row of generated.company || []) {
+    if (row?.deleted_at) continue
+    byItem.set(String(row.receipt_item_id || ''), { ...(byItem.get(String(row.receipt_item_id || '')) || {}), company_expense_id: String(row.id || '') })
+  }
+  for (const row of generated.property || []) {
+    if (row?.deleted_at) continue
+    byItem.set(String(row.receipt_item_id || ''), { ...(byItem.get(String(row.receipt_item_id || '')) || {}), property_expense_id: String(row.id || '') })
+  }
+  const normalizedItems = (items || []).map((item: any) => ({
+    ...item,
+    amount: roundMoney(item?.amount || 0),
+    ...byItem.get(String(item?.id || '')),
+  }))
+  return {
+    ...receipt,
+    receipt_total_amount: roundMoney(receipt?.receipt_total_amount || 0),
+    first_image_url: String(images?.[0]?.url || '').trim() || null,
+    item_count: normalizedItems.length,
+    scope_summary: buildReceiptScopeSummary(normalizedItems),
+    images,
+    items: normalizedItems,
+  }
+}
+
+async function backfillLegacyMzappExpensesToReceiptsForUser(user: any, db: any = pgPool) {
+  if (!hasPg || !db) return
+  const actor = mzappActorId(user)
+  await ensureMzappExpenseReceiptSchema()
+  const companyRows = await db.query(
+    `SELECT id, occurred_at, amount, category, category_detail, expense_name, note, invoice_url, created_by, generated_from, deleted_at, created_at
+       FROM company_expenses
+      WHERE created_by = $1
+        AND COALESCE(generated_from, '') = 'mzapp'
+        AND receipt_id IS NULL
+        AND deleted_at IS NULL`,
+    [actor],
+  )
+  const propertyRows = await db.query(
+    `SELECT id, property_id, occurred_at, amount, category, category_detail, expense_name, note, invoice_url, created_by, generated_from, deleted_at, created_at
+       FROM property_expenses
+      WHERE created_by = $1
+        AND COALESCE(generated_from, '') = 'mzapp'
+        AND receipt_id IS NULL
+        AND deleted_at IS NULL`,
+    [actor],
+  )
+  const legacyRows = [
+    ...(companyRows?.rows || []).map((row: any) => ({ ...row, scope: 'company' as const })),
+    ...(propertyRows?.rows || []).map((row: any) => ({ ...row, scope: 'property' as const })),
+  ]
+  for (const row of legacyRows) {
+    const existingReceiptId = String(row?.receipt_id || '').trim()
+    if (existingReceiptId) continue
+    const receiptId = crypto.randomUUID()
+    const receiptItemId = crypto.randomUUID()
+    const occurredAt = dayOnly(row?.occurred_at) || String(row?.occurred_at || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
+    const note = String(row?.note || '').trim() || null
+    const receiptUrl = String(row?.invoice_url || '').trim()
+    const receiptUrls = receiptUrl ? [receiptUrl] : await listExpenseReceipts(row.scope, String(row.id || ''), db).then((items) => items.map((item: any) => String(item?.url || '').trim()).filter(Boolean))
+    await db.query(
+      `INSERT INTO expense_receipts (id, receipt_date, receipt_total_amount, currency, note, created_by, generated_from, created_at, updated_at)
+       VALUES ($1, $2, $3, 'AUD', $4, $5, 'mzapp', COALESCE($6::timestamptz, now()), now())`,
+      [receiptId, occurredAt, roundMoney(row?.amount || 0), note, actor, row?.created_at || null],
+    )
+    await replaceReceiptImages(db, receiptId, receiptUrls, user)
+    await db.query(
+      `INSERT INTO expense_receipt_items (id, receipt_id, line_no, scope, property_id, expense_name, amount, category, category_detail, note, created_at, updated_at)
+       VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamptz, now()), now())`,
+      [
+        receiptItemId,
+        receiptId,
+        row.scope,
+        row.scope === 'property' ? String(row?.property_id || '').trim() || null : null,
+        String(row?.expense_name || '').trim() || String(row?.category_detail || row?.category || '').trim() || '未命名支出',
+        roundMoney(row?.amount || 0),
+        String(row?.category || '').trim() || 'other',
+        String(row?.category_detail || '').trim() || null,
+        note,
+        row?.created_at || null,
+      ],
+    )
+    if (row.scope === 'company') {
+      await db.query(
+        `UPDATE company_expenses
+            SET receipt_id = $2,
+                receipt_item_id = $3,
+                invoice_url = $4
+          WHERE id = $1`,
+        [String(row.id || ''), receiptId, receiptItemId, receiptUrls[0] || null],
+      )
+    } else {
+      await db.query(
+        `UPDATE property_expenses
+            SET receipt_id = $2,
+                receipt_item_id = $3,
+                invoice_url = $4
+          WHERE id = $1`,
+        [String(row.id || ''), receiptId, receiptItemId, receiptUrls[0] || null],
+      )
+    }
+  }
+}
+
+async function replaceReceiptImages(db: any, receiptId: string, urls: string[], user: any) {
+  await db.query('DELETE FROM expense_receipt_images WHERE receipt_id = $1', [receiptId])
+  for (let index = 0; index < urls.length; index++) {
+    await db.query(
+      `INSERT INTO expense_receipt_images (id, receipt_id, url, sort_index, created_by)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [crypto.randomUUID(), receiptId, urls[index], index, mzappActorId(user)],
+    )
+  }
+}
+
+async function upsertReceiptItemRow(db: any, receiptId: string, item: any) {
+  const itemId = String(item?.id || '').trim() || crypto.randomUUID()
+  const existing = await db.query('SELECT id FROM expense_receipt_items WHERE id = $1 AND receipt_id = $2 LIMIT 1', [itemId, receiptId])
+  if (existing?.rowCount) {
+    await db.query(
+      `UPDATE expense_receipt_items
+          SET line_no = $3,
+              scope = $4,
+              property_id = $5,
+              expense_name = $6,
+              amount = $7,
+              category = $8,
+              category_detail = $9,
+              note = $10,
+              updated_at = now()
+        WHERE id = $1
+          AND receipt_id = $2`,
+      [itemId, receiptId, item.line_no, item.scope, item.property_id || null, item.expense_name, item.amount, item.category, item.category_detail || null, item.note || null],
+    )
+  } else {
+    await db.query(
+      `INSERT INTO expense_receipt_items (id, receipt_id, line_no, scope, property_id, expense_name, amount, category, category_detail, note)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [itemId, receiptId, item.line_no, item.scope, item.property_id || null, item.expense_name, item.amount, item.category, item.category_detail || null, item.note || null],
+    )
+  }
+  return itemId
+}
+
+async function softDeleteGeneratedExpensesByReceiptItem(db: any, receiptItemId: string, user: any) {
+  const actor = mzappActorId(user)
+  const now = new Date().toISOString()
+  await db.query(
+    `UPDATE company_expenses
+        SET deleted_at = COALESCE(deleted_at, $2),
+            deleted_by = COALESCE(deleted_by, $3),
+            delete_source = COALESCE(delete_source, 'mzapp')
+      WHERE receipt_item_id = $1
+        AND deleted_at IS NULL`,
+    [receiptItemId, now, actor],
+  )
+  await db.query(
+    `UPDATE property_expenses
+        SET deleted_at = COALESCE(deleted_at, $2),
+            deleted_by = COALESCE(deleted_by, $3),
+            delete_source = COALESCE(delete_source, 'mzapp')
+      WHERE receipt_item_id = $1
+        AND deleted_at IS NULL`,
+    [receiptItemId, now, actor],
+  )
+}
+
+async function upsertGeneratedExpenseFromReceiptItem(
+  db: any,
+  receipt: { id: string; receipt_date: string; note?: string | null },
+  item: any,
+  receiptUrls: string[],
+  user: any,
+) {
+  const actor = mzappActorId(user)
+  const occurredAt = dayOnly(receipt.receipt_date) || new Date().toISOString().slice(0, 10)
+  const monthKey = occurredAt.slice(0, 7)
+  if (item.scope === 'company') {
+    await db.query(
+      `UPDATE property_expenses
+          SET deleted_at = COALESCE(deleted_at, now()),
+              deleted_by = COALESCE(deleted_by, $2),
+              delete_source = COALESCE(delete_source, 'mzapp')
+        WHERE receipt_item_id = $1
+          AND deleted_at IS NULL`,
+      [item.id, actor],
+    )
+    const existing = await db.query(
+      `SELECT id
+         FROM company_expenses
+        WHERE receipt_item_id = $1
+          AND deleted_at IS NULL
+        ORDER BY created_at DESC NULLS LAST
+        LIMIT 1`,
+      [item.id],
+    )
+    const expenseId = String(existing?.rows?.[0]?.id || '').trim() || crypto.randomUUID()
+    const values = [
+      expenseId,
+      occurredAt,
+      monthKey,
+      item.amount,
+      item.category,
+      item.category === 'other' ? item.category_detail || null : item.category_detail || null,
+      item.expense_name,
+      item.note || null,
+      receiptUrls[0] || null,
+      actor,
+      receipt.id,
+      item.id,
+    ]
+    if (existing?.rowCount) {
+      await db.query(
+        `UPDATE company_expenses
+            SET occurred_at = $2,
+                due_date = $2,
+                paid_date = $2,
+                month_key = $3,
+                amount = $4,
+                currency = 'AUD',
+                category = $5,
+                category_detail = $6,
+                expense_name = $7,
+                note = $8,
+                invoice_url = $9,
+                created_by = COALESCE(created_by, $10),
+                generated_from = 'mzapp',
+                receipt_id = $11,
+                receipt_item_id = $12,
+                deleted_at = NULL,
+                deleted_by = NULL,
+                delete_source = NULL
+          WHERE id = $1`,
+        values,
+      )
+    } else {
+      await db.query(
+        `INSERT INTO company_expenses (id, occurred_at, due_date, paid_date, month_key, amount, currency, category, category_detail, expense_name, note, invoice_url, created_by, generated_from, receipt_id, receipt_item_id)
+         VALUES ($1, $2, $2, $2, $3, $4, 'AUD', $5, $6, $7, $8, $9, $10, 'mzapp', $11, $12)`,
+        values,
+      )
+    }
+    await syncExpenseReceipts('company', expenseId, receiptUrls, user, db)
+    return { scope: 'company' as const, expenseId }
+  }
+  await db.query(
+    `UPDATE company_expenses
+        SET deleted_at = COALESCE(deleted_at, now()),
+            deleted_by = COALESCE(deleted_by, $2),
+            delete_source = COALESCE(delete_source, 'mzapp')
+      WHERE receipt_item_id = $1
+        AND deleted_at IS NULL`,
+    [item.id, actor],
+  )
+  const existing = await db.query(
+    `SELECT id
+       FROM property_expenses
+      WHERE receipt_item_id = $1
+        AND deleted_at IS NULL
+      ORDER BY created_at DESC NULLS LAST
+      LIMIT 1`,
+    [item.id],
+  )
+  const expenseId = String(existing?.rows?.[0]?.id || '').trim() || crypto.randomUUID()
+  const values = [
+    expenseId,
+    String(item.property_id || '').trim(),
+    occurredAt,
+    monthKey,
+    item.amount,
+    item.category,
+    item.category === 'other' ? item.category_detail || null : item.category_detail || null,
+    item.expense_name,
+    item.note || null,
+    receiptUrls[0] || null,
+    actor,
+    receipt.id,
+    item.id,
+  ]
+  if (existing?.rowCount) {
+    await db.query(
+      `UPDATE property_expenses
+          SET property_id = $2,
+              occurred_at = $3,
+              due_date = $3,
+              paid_date = $3,
+              month_key = $4,
+              amount = $5,
+              currency = 'AUD',
+              category = $6,
+              category_detail = $7,
+              expense_name = $8,
+              note = $9,
+              invoice_url = $10,
+              created_by = COALESCE(created_by, $11),
+              generated_from = 'mzapp',
+              receipt_id = $12,
+              receipt_item_id = $13,
+              deleted_at = NULL,
+              deleted_by = NULL,
+              delete_source = NULL
+        WHERE id = $1`,
+      values,
+    )
+  } else {
+    await db.query(
+      `INSERT INTO property_expenses (id, property_id, occurred_at, due_date, paid_date, month_key, amount, currency, category, category_detail, expense_name, note, invoice_url, created_by, generated_from, receipt_id, receipt_item_id)
+       VALUES ($1, $2, $3, $3, $3, $4, $5, 'AUD', $6, $7, $8, $9, $10, $11, 'mzapp', $12, $13)`,
+      values,
+    )
+  }
+  await syncExpenseReceipts('property', expenseId, receiptUrls, user, db)
+  return { scope: 'property' as const, expenseId }
+}
+
+async function mzappUploadExpenseReceipt(file: Express.Multer.File) {
+  const ext = path.extname(String(file?.originalname || '')) || '.jpg'
+  if (hasR2 && (file as any)?.buffer) {
+    const key = `mzapp/expenses/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+    const buffer = Buffer.isBuffer((file as any).buffer) ? (file as any).buffer : Buffer.from((file as any).buffer || '')
+    const mime = String(file?.mimetype || 'application/octet-stream')
+    const uploaded = await r2Upload(key, mime, buffer)
+    return uploaded
+  }
+  const filePath = String((file as any)?.path || '').trim()
+  if (filePath) return `/uploads/${path.basename(filePath)}`
+  throw new Error('upload_failed')
+}
+
+async function resolveReceiptImageInput(receiptUrl: string) {
+  const raw = String(receiptUrl || '').trim()
+  if (!raw) return null
+  if (/^https?:\/\//i.test(raw) || /^data:/i.test(raw)) return raw
+  const normalized = raw.startsWith('/') ? raw : `/${raw}`
+  if (/^\/uploads\//i.test(normalized)) {
+    const rel = normalized.replace(/^\/+/, '')
+    const full = path.join(process.cwd(), rel)
+    const buf = await fs.promises.readFile(full)
+    const ext = path.extname(full).toLowerCase()
+    const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg'
+    return `data:${mime};base64,${buf.toString('base64')}`
+  }
+  return raw
+}
+
+function tryParseJsonObject(raw: string) {
+  const text = String(raw || '').trim()
+  if (!text) return null
+  try { return JSON.parse(text) } catch {}
+  const match = text.match(/\{[\s\S]*\}/)
+  if (!match) return null
+  try { return JSON.parse(match[0]) } catch {}
+  return null
+}
+
+async function ocrExpenseReceipt(receiptUrl: string) {
+  const apiKey = String(process.env.OPENAI_API_KEY || '').trim()
+  const model = String(process.env.MZAPP_EXPENSE_OCR_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini').trim()
+  const baseUrl = String(process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').trim().replace(/\/+$/g, '')
+  if (!apiKey) return { available: false, reason: 'ocr_not_configured', suggestion: {} }
+  try {
+    const imageInput = await resolveReceiptImageInput(receiptUrl)
+    if (!imageInput) return { available: false, reason: 'receipt_not_accessible', suggestion: {} }
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content: 'You extract receipt data. Return JSON only with keys expense_name, amount, occurred_at. expense_name should be a short item or merchant description in Chinese when obvious, otherwise original text. amount should be a number without currency symbol. occurred_at must be YYYY-MM-DD when confident, otherwise null.',
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Read this receipt image and extract the best guess for expense_name, amount, and occurred_at. If unsure, use null.' },
+              { type: 'image_url', image_url: { url: imageInput } },
+            ],
+          },
+        ],
+      }),
+    })
+    if (!resp.ok) return { available: false, reason: 'ocr_provider_error', suggestion: {} }
+    const data: any = await resp.json().catch(() => null)
+    const raw = String(data?.choices?.[0]?.message?.content || '').trim()
+    const parsed = tryParseJsonObject(raw) || {}
+    const amount = Number(parsed?.amount)
+    const occurredAt = dayOnly(parsed?.occurred_at)
+    const suggestion = {
+      expense_name: String(parsed?.expense_name || '').trim() || undefined,
+      amount: Number.isFinite(amount) && amount > 0 ? Number(amount.toFixed(2)) : undefined,
+      occurred_at: occurredAt || undefined,
+    }
+    const hasSuggestion = !!(suggestion.expense_name || suggestion.amount != null || suggestion.occurred_at)
+    return { available: true, reason: hasSuggestion ? undefined : 'no_fields_extracted', suggestion }
+  } catch {
+    return { available: false, reason: 'ocr_provider_error', suggestion: {} }
+  }
 }
 
 function isCleanerRole(user: any) {
@@ -691,6 +1661,7 @@ async function ensureCleaningChecklistTables() {
       await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_checklist_active_sort ON cleaning_checklist_items (active, sort_order, created_at);`)
       await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS status text;`)
       await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_url text;`)
+      await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_urls text;`)
       await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS item_label text;`)
       await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_consumables_status ON cleaning_consumable_usages (status);`)
       await pgPool.query(
@@ -931,6 +1902,7 @@ router.get('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
   if (!(isInspectorRole(user) || isCleanerInspectorRole(user) || canViewAll(user))) return res.status(403).json({ message: 'forbidden' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
+    await ensureCleaningChecklistTables()
     await ensureCleaningTaskMediaTable()
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
@@ -972,6 +1944,7 @@ router.get('/cleaning-tasks/:id/consumables', async (req, res) => {
   if (!id) return res.status(400).json({ message: 'missing id' })
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   try {
+    await ensureCleaningChecklistTables()
     await ensureCleaningTaskMediaTable()
     const r0 = await pgPool.query('SELECT id, inspector_id, cleaner_id, assignee_id FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
@@ -982,7 +1955,7 @@ router.get('/cleaning-tasks/:id/consumables', async (req, res) => {
     if (!canViewAll(user) && inspectorId !== userId && cleanerId !== userId && assigneeId !== userId) return res.status(403).json({ message: 'forbidden' })
 
     const rows = await pgPool.query(
-      `SELECT id, item_id, qty, need_restock, note, status, photo_url, item_label, created_at
+      `SELECT id, item_id, qty, need_restock, note, status, photo_url, photo_urls, item_label, created_at
        FROM cleaning_consumable_usages
        WHERE task_id = $1
        ORDER BY created_at ASC, id ASC`,
@@ -1007,6 +1980,7 @@ router.get('/cleaning-tasks/:id/consumables', async (req, res) => {
         note: x.note == null ? null : String(x.note),
         status: String(x.status || ''),
         photo_url: x.photo_url == null ? null : String(x.photo_url),
+        photo_urls: normalizeStoredPhotoUrls(x.photo_urls, x.photo_url),
         item_label: x.item_label == null ? null : String(x.item_label),
         created_at: x.created_at == null ? null : String(x.created_at),
       })),
@@ -1117,6 +2091,7 @@ const restockProofSchema = z
         qty: z.number().int().min(1).optional().nullable(),
         note: z.string().trim().max(800).optional().nullable(),
         proof_url: z.string().trim().min(1).max(800).optional().nullable(),
+        proof_urls: z.array(z.string().trim().min(1).max(800)).max(12).optional(),
       }),
     ),
     confirmed_sufficient: z.boolean().optional(),
@@ -1150,7 +2125,8 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     )
     const rows = r?.rows || []
     const confirmRow = rows.find((x: any) => String(x.type || '').trim() === 'inspection_consumables_confirmed') || null
-    const items = rows.filter((x: any) => String(x.type || '').trim().startsWith('restock_proof:')).map((x: any) => {
+    const grouped = new Map<string, any>()
+    for (const x of rows.filter((row: any) => String(row.type || '').trim().startsWith('restock_proof:'))) {
       const type = String(x.type || '')
       const itemId = type.includes(':') ? type.split(':').slice(1).join(':') : type
       let meta: any = null
@@ -1158,18 +2134,24 @@ router.get('/cleaning-tasks/:id/restock-proof', async (req, res) => {
         const raw = String(x.note || '').trim()
         meta = raw && (raw.startsWith('{') || raw.startsWith('[')) ? JSON.parse(raw) : null
       } catch {}
-      return {
+      const proofUrl = (() => {
+        const u = String(x.url || '').trim()
+        return u && /^https?:\/\//i.test(u) ? u : null
+      })()
+      const prev = grouped.get(itemId) || {
         item_id: itemId,
-        proof_url: (() => {
-          const u = String(x.url || '').trim()
-          return u && /^https?:\/\//i.test(u) ? u : null
-        })(),
+        proof_url: null,
+        proof_urls: [] as string[],
         status: String(meta?.status || ''),
         qty: meta?.qty == null ? null : Number(meta.qty),
         note: meta?.note == null ? null : String(meta.note || ''),
         created_at: x.created_at ? String(x.created_at) : null,
       }
-    })
+      if (proofUrl && !prev.proof_urls.includes(proofUrl)) prev.proof_urls.push(proofUrl)
+      prev.proof_url = prev.proof_urls[0] || null
+      grouped.set(itemId, prev)
+    }
+    const items = Array.from(grouped.values())
     return res.json({
       items,
       confirmed_sufficient: !!confirmRow,
@@ -1221,12 +2203,15 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
     const batchId = uuid.v4()
     for (const it of parsed.data.items) {
       const meta = { status: it.status, qty: it.qty == null ? null : Number(it.qty), note: it.note == null ? null : String(it.note || '') }
-      const url = String(it.proof_url || '').trim()
-      await pgPool.query(
-        `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
-         VALUES ($1,$2,$3,$4,$5,now(),$6)`,
-        [uuid.v4(), id, `restock_proof:${it.item_id}`, url || 'no_photo', JSON.stringify(meta), userId],
-      )
+      const proofUrls = normalizeStoredPhotoUrls(it.proof_urls, it.proof_url)
+      const urlsToPersist = it.status === 'unavailable' ? ['no_photo'] : (proofUrls.length ? proofUrls : ['no_photo'])
+      for (const url of urlsToPersist) {
+        await pgPool.query(
+          `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
+           VALUES ($1,$2,$3,$4,$5,now(),$6)`,
+          [uuid.v4(), id, `restock_proof:${it.item_id}`, url, JSON.stringify(meta), userId],
+        )
+      }
     }
     if (confirmedSufficient) {
       await pgPool.query(
@@ -2254,6 +3239,620 @@ router.patch('/checklist-items/:id', async (req, res) => {
     return res.json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'checklist_patch_failed' })
+  }
+})
+
+router.get('/expenses/bootstrap', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  try {
+    const permissions = await listPermissionCodesForUser(user)
+    const scopes = await listMzappScopesForUser(user)
+    if (!scopes.length) return res.status(403).json({ message: 'forbidden' })
+    const properties = scopes.includes('property') ? await listActivePropertiesForMzapp() : []
+    return res.json({
+      permissions,
+      scopes,
+      categories: {
+        company: COMPANY_EXPENSE_CATEGORIES,
+        property: PROPERTY_EXPENSE_CATEGORIES,
+      },
+      properties,
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'bootstrap_failed' })
+  }
+})
+
+router.post('/expenses/receipts/upload', upload.single('file'), async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!req.file) return res.status(400).json({ message: 'missing file' })
+  try {
+    const allowed = await userHasAnyPerm(user, [
+      mzappExpensePermission('company', 'submit'),
+      mzappExpensePermission('company', 'edit.self'),
+      mzappExpensePermission('property', 'submit'),
+      mzappExpensePermission('property', 'edit.self'),
+    ])
+    if (!allowed) return res.status(403).json({ message: 'forbidden' })
+    const url = await mzappUploadExpenseReceipt(req.file as Express.Multer.File)
+    return res.status(201).json({ url })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'upload_failed' })
+  }
+})
+
+router.post('/expenses/ocr', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = mzappExpenseOcrSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ message: 'invalid payload' })
+  try {
+    const allowed = await userHasAnyPerm(user, [
+      mzappExpensePermission(parsed.data.scope, 'submit'),
+      mzappExpensePermission(parsed.data.scope, 'edit.self'),
+    ])
+    if (!allowed) return res.status(403).json({ message: 'forbidden' })
+    const result = await ocrExpenseReceipt(parsed.data.receipt_url)
+    return res.json(result)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'ocr_failed' })
+  }
+})
+
+router.post('/expenses', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = mzappExpenseCreateSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ message: 'invalid payload' })
+  const body = parsed.data
+  const scope = body.scope as MzappExpenseScope
+  try {
+    if (!(await mzappUserHasScopePerm(user, scope, 'submit'))) return res.status(403).json({ message: 'forbidden' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+    await ensureMzappExpenseSchema()
+    await ensureMzappExpenseInvoicesTable()
+    const occurredAt = dayOnly(body.occurred_at)
+    if (!occurredAt) return res.status(400).json({ message: 'invalid occurred_at' })
+    const receiptUrls = normalizeExpenseReceiptUrls(body.receipt_urls)
+    if (scope === 'company' && body.property_id) return res.status(400).json({ message: 'property_id_not_allowed' })
+    if (scope === 'property' && !String(body.property_id || '').trim()) return res.status(400).json({ message: 'missing property_id' })
+    if (scope === 'property' && !(await mzappPropertyExists(String(body.property_id || '').trim()))) return res.status(400).json({ message: 'invalid property_id' })
+    const allowedCategories = new Set((scope === 'company' ? COMPANY_EXPENSE_CATEGORIES : PROPERTY_EXPENSE_CATEGORIES).map((item) => item.value))
+    if (!allowedCategories.has(String(body.category || '').trim())) return res.status(400).json({ message: 'invalid category' })
+    if (String(body.category || '').trim() === 'other' && !String(body.category_detail || '').trim()) return res.status(400).json({ message: 'missing category_detail' })
+    const id = crypto.randomUUID()
+    const monthKey = occurredAt.slice(0, 7)
+    const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
+    const payload: any = {
+      id,
+      occurred_at: occurredAt,
+      due_date: occurredAt,
+      paid_date: occurredAt,
+      month_key: monthKey,
+      amount: Number(Number(body.amount || 0).toFixed(2)),
+      currency: 'AUD',
+      category: String(body.category || '').trim(),
+      category_detail: String(body.category || '').trim() === 'other' ? String(body.category_detail || '').trim() : (String(body.category_detail || '').trim() || null),
+      expense_name: String(body.expense_name || '').trim() || null,
+      note: String(body.note || '').trim() || null,
+      invoice_url: receiptUrls[0] || null,
+      created_by: String(user.sub || user.username || 'mzapp'),
+      generated_from: 'mzapp',
+      deleted_at: null,
+      deleted_by: null,
+      delete_source: null,
+    }
+    if (scope === 'property') payload.property_id = String(body.property_id || '').trim()
+    const keys = Object.keys(payload)
+    const vals = keys.map((key) => payload[key])
+    const sql = `INSERT INTO ${table} (${keys.map((key) => `"${key}"`).join(', ')}) VALUES (${vals.map((_, idx) => `$${idx + 1}`).join(', ')}) RETURNING *`
+    const inserted = await pgPool.query(sql, vals)
+    await syncExpenseReceipts(scope, id, receiptUrls, user)
+    const row = inserted?.rows?.[0] || { ...payload }
+    try { const { addAudit } = require('../store'); addAudit(table, id, 'create', null, row, String(user.sub || user.username || 'mzapp')) } catch {}
+    return res.status(201).json({ ...row, scope, receipts: await listExpenseReceipts(scope, id) })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'create_failed' })
+  }
+})
+
+router.get('/expenses/mine', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+    await ensureMzappExpenseSchema()
+    const scopeRaw = String((req.query as any)?.scope || '').trim()
+    const allowedScopes = await listMzappScopesForUser(user)
+    const scopes = (scopeRaw === 'company' || scopeRaw === 'property') ? [scopeRaw as MzappExpenseScope].filter((item) => allowedScopes.includes(item)) : allowedScopes
+    if (!scopes.length) return res.status(403).json({ message: 'forbidden' })
+    const limit = Math.max(1, Math.min(100, Number((req.query as any)?.limit || 50) || 50))
+    const offset = Math.max(0, Number((req.query as any)?.offset || 0) || 0)
+    const out: any[] = []
+    for (const scope of scopes) {
+      if (!(await mzappUserHasScopePerm(user, scope, 'view.self'))) continue
+      const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
+      const cols = scope === 'property'
+        ? `e.id, e.property_id, p.code AS property_code, p.address AS property_address, p.region AS property_region, e.occurred_at, e.amount, e.currency, e.category, e.category_detail, e.expense_name, e.note, e.invoice_url, e.created_at, e.created_by`
+        : `e.id, null::text AS property_id, null::text AS property_code, null::text AS property_address, null::text AS property_region, e.occurred_at, e.amount, e.currency, e.category, e.category_detail, e.expense_name, e.note, e.invoice_url, e.created_at, e.created_by`
+      const join = scope === 'property' ? ' LEFT JOIN properties p ON p.id = e.property_id' : ''
+      const r = await pgPool.query(
+        `SELECT ${cols}
+           FROM ${table} e${join}
+          WHERE e.created_by = $1
+            AND COALESCE(e.generated_from, '') = 'mzapp'
+            AND e.deleted_at IS NULL
+          ORDER BY e.created_at DESC NULLS LAST, e.occurred_at DESC NULLS LAST, e.id DESC`,
+        [String(user.sub || user.username || '')],
+      )
+      out.push(...(r?.rows || []).map((row: any) => ({ ...row, scope })))
+    }
+    out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || String(b.occurred_at || '').localeCompare(String(a.occurred_at || '')))
+    return res.json({ items: out.slice(offset, offset + limit), total: out.length })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'list_failed' })
+  }
+})
+
+router.get('/expenses/mine/:scope/:id', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const scope = String(req.params.scope || '').trim() === 'company' ? 'company' : String(req.params.scope || '').trim() === 'property' ? 'property' : ''
+  const id = String(req.params.id || '').trim()
+  if (!scope || !id) return res.status(400).json({ message: 'invalid scope or id' })
+  try {
+    if (!(await mzappUserHasScopePerm(user, scope as MzappExpenseScope, 'view.self'))) return res.status(403).json({ message: 'forbidden' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+    await ensureMzappExpenseSchema()
+    const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
+    const join = scope === 'property' ? ' LEFT JOIN properties p ON p.id = e.property_id' : ''
+    const cols = scope === 'property'
+      ? `e.*, p.code AS property_code, p.address AS property_address, p.region AS property_region`
+      : 'e.*'
+    const r = await pgPool.query(
+      `SELECT ${cols}
+         FROM ${table} e${join}
+        WHERE e.id = $1
+          AND e.created_by = $2
+          AND COALESCE(e.generated_from, '') = 'mzapp'
+          AND e.deleted_at IS NULL
+        LIMIT 1`,
+      [id, String(user.sub || user.username || '')],
+    )
+    const row = r?.rows?.[0]
+    if (!row) return res.status(404).json({ message: 'not_found' })
+    return res.json({ ...row, scope, receipts: await listExpenseReceipts(scope as MzappExpenseScope, id) })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'detail_failed' })
+  }
+})
+
+router.patch('/expenses/mine/:scope/:id', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const scope = String(req.params.scope || '').trim() === 'company' ? 'company' : String(req.params.scope || '').trim() === 'property' ? 'property' : ''
+  const id = String(req.params.id || '').trim()
+  if (!scope || !id) return res.status(400).json({ message: 'invalid scope or id' })
+  const parsed = mzappExpenseUpdateSchema.safeParse({ ...(req.body || {}), scope })
+  if (!parsed.success) return res.status(400).json({ message: 'invalid payload' })
+  try {
+    if (!(await mzappUserHasScopePerm(user, scope as MzappExpenseScope, 'edit.self'))) return res.status(403).json({ message: 'forbidden' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+    await ensureMzappExpenseSchema()
+    const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
+    const beforeR = await pgPool.query(
+      `SELECT * FROM ${table}
+        WHERE id = $1
+          AND created_by = $2
+          AND COALESCE(generated_from, '') = 'mzapp'
+          AND deleted_at IS NULL
+        LIMIT 1`,
+      [id, String(user.sub || user.username || '')],
+    )
+    const before = beforeR?.rows?.[0]
+    if (!before) return res.status(404).json({ message: 'not_found' })
+    const body = parsed.data
+    const patch: Record<string, any> = {}
+    if (body.occurred_at !== undefined) {
+      const occurredAt = dayOnly(body.occurred_at)
+      if (!occurredAt) return res.status(400).json({ message: 'invalid occurred_at' })
+      patch.occurred_at = occurredAt
+      patch.due_date = occurredAt
+      patch.paid_date = occurredAt
+      patch.month_key = occurredAt.slice(0, 7)
+    }
+    if (body.amount !== undefined) patch.amount = Number(Number(body.amount || 0).toFixed(2))
+    if (body.category !== undefined) patch.category = String(body.category || '').trim()
+    const category = String((patch.category ?? before.category ?? '') || '').trim()
+    if (category) {
+      const allowedCategories = new Set(((scope === 'company' ? COMPANY_EXPENSE_CATEGORIES : PROPERTY_EXPENSE_CATEGORIES)).map((item) => item.value))
+      if (!allowedCategories.has(category)) return res.status(400).json({ message: 'invalid category' })
+      if (category === 'other') {
+        const detail = body.category_detail !== undefined ? String(body.category_detail || '').trim() : String(before.category_detail || '').trim()
+        if (!detail) return res.status(400).json({ message: 'missing category_detail' })
+        patch.category_detail = detail
+      } else if (body.category_detail !== undefined) {
+        patch.category_detail = String(body.category_detail || '').trim() || null
+      }
+    }
+    if (scope === 'property' && body.property_id !== undefined) {
+      if (!String(body.property_id || '').trim()) return res.status(400).json({ message: 'missing property_id' })
+      if (!(await mzappPropertyExists(String(body.property_id || '').trim()))) return res.status(400).json({ message: 'invalid property_id' })
+      patch.property_id = String(body.property_id || '').trim()
+    }
+    if (scope === 'company' && body.property_id !== undefined && String(body.property_id || '').trim()) return res.status(400).json({ message: 'property_id_not_allowed' })
+    if (body.expense_name !== undefined) patch.expense_name = String(body.expense_name || '').trim() || null
+    if (body.note !== undefined) patch.note = String(body.note || '').trim() || null
+    const receiptUrls = body.receipt_urls !== undefined ? normalizeExpenseReceiptUrls(body.receipt_urls) : await listExpenseReceipts(scope as MzappExpenseScope, id).then((rows) => rows.map((row: any) => String(row?.url || '').trim()).filter(Boolean))
+    patch.invoice_url = receiptUrls[0] || null
+    const keys = Object.keys(patch)
+    if (!keys.length && body.receipt_urls === undefined) return res.json({ ...before, scope, receipts: await listExpenseReceipts(scope as MzappExpenseScope, id) })
+    const values = keys.map((key) => patch[key])
+    if (keys.length) {
+      await pgPool.query(
+        `UPDATE ${table}
+            SET ${keys.map((key, idx) => `"${key}" = $${idx + 1}`).join(', ')}
+          WHERE id = $${keys.length + 1}`,
+        [...values, id],
+      )
+    }
+    await syncExpenseReceipts(scope as MzappExpenseScope, id, receiptUrls, user)
+    const afterR = await pgPool.query(`SELECT * FROM ${table} WHERE id = $1 LIMIT 1`, [id])
+    const after = afterR?.rows?.[0] || { ...before, ...patch }
+    try { const { addAudit } = require('../store'); addAudit(table, id, 'update', before, after, String(user.sub || user.username || 'mzapp')) } catch {}
+    return res.json({ ...after, scope, receipts: await listExpenseReceipts(scope as MzappExpenseScope, id) })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'update_failed' })
+  }
+})
+
+router.delete('/expenses/mine/:scope/:id', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const scope = String(req.params.scope || '').trim() === 'company' ? 'company' : String(req.params.scope || '').trim() === 'property' ? 'property' : ''
+  const id = String(req.params.id || '').trim()
+  if (!scope || !id) return res.status(400).json({ message: 'invalid scope or id' })
+  try {
+    if (!(await mzappUserHasScopePerm(user, scope as MzappExpenseScope, 'delete.self'))) return res.status(403).json({ message: 'forbidden' })
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+    await ensureMzappExpenseSchema()
+    const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
+    const beforeR = await pgPool.query(
+      `SELECT * FROM ${table}
+        WHERE id = $1
+          AND created_by = $2
+          AND COALESCE(generated_from, '') = 'mzapp'
+          AND deleted_at IS NULL
+        LIMIT 1`,
+      [id, String(user.sub || user.username || '')],
+    )
+    const before = beforeR?.rows?.[0]
+    if (!before) return res.status(404).json({ message: 'not_found' })
+    const now = new Date().toISOString()
+    await pgPool.query(
+      `UPDATE ${table}
+          SET deleted_at = $2,
+              deleted_by = $3,
+              delete_source = 'mzapp'
+        WHERE id = $1`,
+      [id, now, String(user.sub || user.username || 'mzapp')],
+    )
+    const after = { ...before, deleted_at: now, deleted_by: String(user.sub || user.username || 'mzapp'), delete_source: 'mzapp' }
+    try { const { addAudit } = require('../store'); addAudit(table, id, 'delete', before, after, String(user.sub || user.username || 'mzapp')) } catch {}
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'delete_failed' })
+  }
+})
+
+router.get('/expense-receipts/bootstrap', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  try {
+    const permissions = await listPermissionCodesForUser(user)
+    const scopes = await listMzappScopesForUser(user)
+    if (!scopes.length) return res.status(403).json({ message: 'forbidden' })
+    const properties = scopes.includes('property') ? await listActivePropertiesForMzapp() : []
+    return res.json({
+      permissions,
+      scopes,
+      categories: {
+        company: COMPANY_EXPENSE_CATEGORIES,
+        property: PROPERTY_EXPENSE_CATEGORIES,
+      },
+      properties,
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'bootstrap_failed' })
+  }
+})
+
+router.post('/expense-receipts/images/upload', upload.single('file'), async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!req.file) return res.status(400).json({ message: 'missing file' })
+  try {
+    const allowed = await userHasAnyPerm(user, [
+      mzappExpensePermission('company', 'submit'),
+      mzappExpensePermission('company', 'edit.self'),
+      mzappExpensePermission('property', 'submit'),
+      mzappExpensePermission('property', 'edit.self'),
+    ])
+    if (!allowed) return res.status(403).json({ message: 'forbidden' })
+    const url = await mzappUploadExpenseReceipt(req.file as Express.Multer.File)
+    return res.status(201).json({ url })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'upload_failed' })
+  }
+})
+
+router.post('/expense-receipts', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = mzappExpenseReceiptCreateSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ message: 'invalid payload' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureMzappExpenseReceiptSchema()
+    const normalized = await assertValidReceiptPayload(user, parsed.data, 'submit')
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      const receiptId = crypto.randomUUID()
+      await client.query(
+        `INSERT INTO expense_receipts (id, receipt_date, receipt_total_amount, currency, note, created_by, generated_from)
+         VALUES ($1, $2, $3, 'AUD', $4, $5, 'mzapp')`,
+        [receiptId, normalized.receipt_date, normalized.receipt_total_amount, normalized.note, mzappActorId(user)],
+      )
+      await replaceReceiptImages(client, receiptId, normalized.receipt_urls, user)
+      for (const item of normalized.items) {
+        const itemId = await upsertReceiptItemRow(client, receiptId, item)
+        await upsertGeneratedExpenseFromReceiptItem(client, { id: receiptId, receipt_date: normalized.receipt_date, note: normalized.note }, { ...item, id: itemId }, normalized.receipt_urls, user)
+      }
+      await client.query('COMMIT')
+      const detail = await buildReceiptDetail(receiptId, pgPool)
+      try { const { addAudit } = require('../store'); addAudit('expense_receipts', receiptId, 'create', null, detail, mzappActorId(user)) } catch {}
+      return res.status(201).json(detail)
+    } catch (e) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw e
+    } finally {
+      client.release()
+    }
+  } catch (e: any) {
+    const msg = String(e?.message || 'create_failed')
+    if (['invalid receipt_date','missing receipt_urls','missing items','invalid receipt_total_amount','items_total_mismatch','missing expense_name','invalid item amount','missing property_id','invalid property_id','property_id_not_allowed','invalid category','missing category_detail','forbidden'].includes(msg)) {
+      return res.status(msg === 'forbidden' ? 403 : 400).json({ message: msg })
+    }
+    return res.status(500).json({ message: msg || 'create_failed' })
+  }
+})
+
+router.get('/expense-receipts/mine', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureMzappExpenseReceiptSchema()
+    await backfillLegacyMzappExpensesToReceiptsForUser(user, pgPool)
+    const canViewCompany = await mzappUserHasScopePerm(user, 'company', 'view.self')
+    const canViewProperty = await mzappUserHasScopePerm(user, 'property', 'view.self')
+    if (!canViewCompany && !canViewProperty) return res.status(403).json({ message: 'forbidden' })
+    const limit = Math.max(1, Math.min(100, Number((req.query as any)?.limit || 50) || 50))
+    const offset = Math.max(0, Number((req.query as any)?.offset || 0) || 0)
+    const rows = await pgPool.query(
+      `WITH item_summary AS (
+         SELECT receipt_id,
+                count(*)::int AS item_count,
+                bool_or(scope = 'company') AS has_company,
+                bool_or(scope = 'property') AS has_property,
+                CASE
+                  WHEN bool_or(scope = 'company') AND bool_or(scope = 'property') THEN '混合支出'
+                  WHEN bool_or(scope = 'property') THEN '房源支出'
+                  WHEN bool_or(scope = 'company') THEN '公司支出'
+                  ELSE '未分配'
+                END AS scope_summary
+           FROM expense_receipt_items
+          GROUP BY receipt_id
+       ),
+       first_image AS (
+         SELECT DISTINCT ON (receipt_id) receipt_id, url AS first_image_url
+           FROM expense_receipt_images
+          ORDER BY receipt_id, sort_index ASC, created_at ASC NULLS LAST, id ASC
+       )
+       SELECT r.*,
+              COALESCE(s.item_count, 0) AS item_count,
+              COALESCE(s.scope_summary, '未分配') AS scope_summary,
+              f.first_image_url
+         FROM expense_receipts
+         r
+         LEFT JOIN item_summary s ON s.receipt_id = r.id
+         LEFT JOIN first_image f ON f.receipt_id = r.id
+        WHERE r.created_by = $1
+          AND COALESCE(r.generated_from, '') = 'mzapp'
+          AND r.deleted_at IS NULL
+          AND ($2::boolean OR COALESCE(s.has_company, false) = false)
+          AND ($3::boolean OR COALESCE(s.has_property, false) = false)
+        ORDER BY r.created_at DESC NULLS LAST, r.id DESC`,
+      [mzappActorId(user), canViewCompany, canViewProperty],
+    )
+    const items = (rows?.rows || []).map((row: any) => ({
+      ...row,
+      receipt_total_amount: roundMoney(row?.receipt_total_amount || 0),
+      item_count: Number(row?.item_count || 0),
+      scope_summary: String(row?.scope_summary || '未分配'),
+      first_image_url: String(row?.first_image_url || '').trim() || null,
+    }))
+    return res.json({ items: items.slice(offset, offset + limit), total: items.length })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'list_failed' })
+  }
+})
+
+router.get('/expense-receipts/mine/:id', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'invalid id' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureMzappExpenseReceiptSchema()
+    await backfillLegacyMzappExpensesToReceiptsForUser(user, pgPool)
+    const detail = await buildReceiptDetail(id, pgPool)
+    if (!detail) return res.status(404).json({ message: 'not_found' })
+    if (String(detail.created_by || '') !== mzappActorId(user) || String(detail.generated_from || '') !== 'mzapp') return res.status(404).json({ message: 'not_found' })
+    const scopes = Array.from(new Set((detail.items || []).map((item: any) => String(item?.scope || '').trim()).filter(Boolean))) as MzappExpenseScope[]
+    for (const scope of scopes) {
+      if (!(await mzappUserHasScopePerm(user, scope, 'view.self'))) return res.status(403).json({ message: 'forbidden' })
+    }
+    return res.json(detail)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'detail_failed' })
+  }
+})
+
+router.patch('/expense-receipts/mine/:id', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'invalid id' })
+  const parsed = mzappExpenseReceiptUpdateSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ message: 'invalid payload' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureMzappExpenseReceiptSchema()
+    const before = await buildReceiptDetail(id, pgPool)
+    if (!before || String(before.created_by || '') !== mzappActorId(user) || String(before.generated_from || '') !== 'mzapp') return res.status(404).json({ message: 'not_found' })
+    const beforeScopes = Array.from(new Set((before.items || []).map((item: any) => String(item?.scope || '').trim()).filter(Boolean))) as MzappExpenseScope[]
+    for (const scope of beforeScopes) {
+      if (!(await mzappUserHasScopePerm(user, scope, 'edit.self'))) return res.status(403).json({ message: 'forbidden' })
+    }
+    const normalized = await assertValidReceiptPayload(user, parsed.data, 'edit.self')
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query(
+        `UPDATE expense_receipts
+            SET receipt_date = $2,
+                receipt_total_amount = $3,
+                note = $4,
+                updated_at = now()
+          WHERE id = $1`,
+        [id, normalized.receipt_date, normalized.receipt_total_amount, normalized.note],
+      )
+      await replaceReceiptImages(client, id, normalized.receipt_urls, user)
+      const existingIds = new Set((before.items || []).map((item: any) => String(item?.id || '').trim()).filter(Boolean))
+      const keptIds = new Set<string>()
+      for (const item of normalized.items) {
+        const itemId = await upsertReceiptItemRow(client, id, item)
+        keptIds.add(itemId)
+        await upsertGeneratedExpenseFromReceiptItem(client, { id, receipt_date: normalized.receipt_date, note: normalized.note }, { ...item, id: itemId }, normalized.receipt_urls, user)
+      }
+      for (const existingId0 of existingIds) {
+        const existingId = String(existingId0 || '').trim()
+        if (!existingId) continue
+        if (keptIds.has(existingId)) continue
+        await softDeleteGeneratedExpensesByReceiptItem(client, existingId, user)
+        await client.query('DELETE FROM expense_receipt_items WHERE id = $1 AND receipt_id = $2', [existingId, id])
+      }
+      await client.query('COMMIT')
+      const after = await buildReceiptDetail(id, pgPool)
+      try { const { addAudit } = require('../store'); addAudit('expense_receipts', id, 'update', before, after, mzappActorId(user)) } catch {}
+      return res.json(after)
+    } catch (e) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw e
+    } finally {
+      client.release()
+    }
+  } catch (e: any) {
+    const msg = String(e?.message || 'update_failed')
+    if (['invalid receipt_date','missing receipt_urls','missing items','invalid receipt_total_amount','items_total_mismatch','missing expense_name','invalid item amount','missing property_id','invalid property_id','property_id_not_allowed','invalid category','missing category_detail','forbidden'].includes(msg)) {
+      return res.status(msg === 'forbidden' ? 403 : 400).json({ message: msg })
+    }
+    return res.status(500).json({ message: msg || 'update_failed' })
+  }
+})
+
+router.delete('/expense-receipts/mine/:id', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'invalid id' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    await ensureMzappExpenseReceiptSchema()
+    const before = await buildReceiptDetail(id, pgPool)
+    if (!before || String(before.created_by || '') !== mzappActorId(user) || String(before.generated_from || '') !== 'mzapp') return res.status(404).json({ message: 'not_found' })
+    const scopes = Array.from(new Set((before.items || []).map((item: any) => String(item?.scope || '').trim()).filter(Boolean))) as MzappExpenseScope[]
+    for (const scope of scopes) {
+      if (!(await mzappUserHasScopePerm(user, scope, 'delete.self'))) return res.status(403).json({ message: 'forbidden' })
+    }
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      const now = new Date().toISOString()
+      const actor = mzappActorId(user)
+      await client.query(
+        `UPDATE expense_receipts
+            SET deleted_at = $2,
+                deleted_by = $3,
+                delete_source = 'mzapp',
+                updated_at = now()
+          WHERE id = $1`,
+        [id, now, actor],
+      )
+      await client.query(
+        `UPDATE company_expenses
+            SET deleted_at = COALESCE(deleted_at, $2),
+                deleted_by = COALESCE(deleted_by, $3),
+                delete_source = COALESCE(delete_source, 'mzapp')
+          WHERE receipt_id = $1
+            AND deleted_at IS NULL`,
+        [id, now, actor],
+      )
+      await client.query(
+        `UPDATE property_expenses
+            SET deleted_at = COALESCE(deleted_at, $2),
+                deleted_by = COALESCE(deleted_by, $3),
+                delete_source = COALESCE(delete_source, 'mzapp')
+          WHERE receipt_id = $1
+            AND deleted_at IS NULL`,
+        [id, now, actor],
+      )
+      await client.query('COMMIT')
+      const after = await buildReceiptDetail(id, pgPool, { includeDeleted: true })
+      try { const { addAudit } = require('../store'); addAudit('expense_receipts', id, 'delete', before, after, actor) } catch {}
+      return res.json({ ok: true })
+    } catch (e) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw e
+    } finally {
+      client.release()
+    }
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'delete_failed' })
+  }
+})
+
+router.get('/expense-receipts/admin/:id', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'invalid id' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    const allowed = hasRole(user, 'admin') || hasRole(user, 'finance_staff') || hasRole(user, 'customer_service') || await userHasAnyPerm(user, ['finance.tx.write', 'company_expenses.view', 'property_expenses.view'])
+    if (!allowed) return res.status(403).json({ message: 'forbidden' })
+    await ensureMzappExpenseReceiptSchema()
+    const includeDeleted = String((req.query as any)?.include_deleted || '').trim() === '1'
+    const detail = await buildReceiptDetail(id, pgPool, { includeDeleted })
+    if (!detail) return res.status(404).json({ message: 'not_found' })
+    return res.json(detail)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'detail_failed' })
   }
 })
 

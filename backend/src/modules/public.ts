@@ -25,6 +25,23 @@ export const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
 let ensureMaintenanceProgressSubmitSchemaPromise: Promise<void> | null = null
 
+const PROPERTY_REGION_ORDER = ['Melbourne', 'Southbank', 'South Melbourne', 'West Melbourne', 'St Kilda', 'Docklands']
+function propertyRegionRank(region?: string | null) {
+  const value = String(region || '').trim()
+  const idx = PROPERTY_REGION_ORDER.indexOf(value)
+  return idx >= 0 ? idx : PROPERTY_REGION_ORDER.length + 1
+}
+function comparePropertyRegionThenCode(a: any, b: any) {
+  const ra = propertyRegionRank(a?.region)
+  const rb = propertyRegionRank(b?.region)
+  if (ra !== rb) return ra - rb
+  return String(a?.code || a?.address || a?.id || '').localeCompare(
+    String(b?.code || b?.address || b?.id || ''),
+    'en',
+    { numeric: true, sensitivity: 'base' }
+  )
+}
+
 router.get('/r2-image', async (req, res) => {
   try {
     const u = String((req.query as any)?.url || (req.query as any)?.u || '').trim()
@@ -464,9 +481,10 @@ async function ensurePropertyGuidePublicLinksTable() {
     token_hash text PRIMARY KEY,
     guide_id text NOT NULL REFERENCES property_guides(id) ON DELETE CASCADE,
     created_at timestamptz NOT NULL DEFAULT now(),
-    expires_at timestamptz NOT NULL,
+    expires_at timestamptz,
     revoked_at timestamptz
   );`)
+  try { await pgPool.query('ALTER TABLE property_guide_public_links ALTER COLUMN expires_at DROP NOT NULL') } catch {}
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_links_guide_id ON property_guide_public_links(guide_id);')
   await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_guide_links_expires_at ON property_guide_public_links(expires_at);')
 }
@@ -750,11 +768,19 @@ router.post('/repair/upload', upload.single('file'), async (req, res) => {
 router.get('/properties', async (_req, res) => {
   try {
     if (hasPg) {
-      const rows = await pgSelect('properties', 'id,code,address') as any[]
-      return res.json(Array.isArray(rows) ? rows : [])
+      const rows = await pgSelect('properties', 'id,code,address,region,archived') as any[]
+      const list = (Array.isArray(rows) ? rows : [])
+        .filter((row: any) => row?.archived !== true)
+        .sort(comparePropertyRegionThenCode)
+        .map((row: any) => ({ id: row.id, code: row.code, address: row.address, region: row.region }))
+      return res.json(list)
     }
     const { db } = require('../store')
-    return res.json((db.properties || []).map((p: any) => ({ id: p.id, code: p.code, address: p.address })))
+    const list = (db.properties || [])
+      .filter((p: any) => p?.archived !== true)
+      .sort(comparePropertyRegionThenCode)
+      .map((p: any) => ({ id: p.id, code: p.code, address: p.address, region: p.region }))
+    return res.json(list)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'list failed' })
   }
@@ -1234,8 +1260,12 @@ router.get('/property-expense/properties', async (req, res) => {
     const iatSec = Number(v.iat || 0) * 1000
     const pwdAt = new Date(access.password_updated_at).getTime()
     if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
-    const r = await pgPool.query('SELECT id, code, address FROM properties ORDER BY COALESCE(code, address, id)')
-    return res.json(Array.isArray(r.rows) ? r.rows : [])
+    const r = await pgPool.query('SELECT id, code, address, region, archived FROM properties')
+    const list = (Array.isArray(r.rows) ? r.rows : [])
+      .filter((row: any) => row?.archived !== true)
+      .sort(comparePropertyRegionThenCode)
+      .map((row: any) => ({ id: row.id, code: row.code, address: row.address, region: row.region }))
+    return res.json(list)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'list failed' })
   }
@@ -1313,7 +1343,7 @@ router.post('/property-expense/:expenseId/upload', upload.single('file'), async 
     const iatSec = Number(v.iat || 0) * 1000
     const pwdAt = new Date(access.password_updated_at).getTime()
     if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
-    const ex = await pgPool.query('SELECT 1 FROM property_expenses WHERE id = $1 LIMIT 1', [expenseId])
+    const ex = await pgPool.query('SELECT 1 FROM property_expenses WHERE id = $1 AND deleted_at IS NULL LIMIT 1', [expenseId])
     if (!ex.rowCount) return res.status(404).json({ message: 'expense not found' })
     if (!hasR2 || !(req.file as any).buffer) {
       return res.status(500).json({ message: 'R2 not configured' })
@@ -1763,7 +1793,7 @@ router.get('/guide/p/:token/status', async (req, res) => {
     const row = r.rows?.[0] || {}
     const expires_at = row?.expires_at ? new Date(row.expires_at).toISOString() : null
     const revoked = !!row?.revoked_at
-    const expired = expires_at ? (new Date(expires_at).getTime() <= Date.now()) : true
+    const expired = expires_at ? (new Date(expires_at).getTime() <= Date.now()) : false
     return res.json({ active: !revoked && !expired, expires_at, revoked, language: row?.language || null, version: row?.version || null })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'status failed' })
@@ -1795,14 +1825,14 @@ router.post('/guide/p/:token/login', async (req, res) => {
     if (!r?.rowCount) return res.status(404).json({ message: 'not found' })
     const row = r.rows?.[0] || {}
     if (row?.revoked_at) return res.status(404).json({ message: 'not found' })
-    const linkExpiresAt = row?.expires_at ? new Date(row.expires_at).getTime() : 0
-    if (!linkExpiresAt || linkExpiresAt <= Date.now()) return res.status(404).json({ message: 'not found' })
+    const linkExpiresAt = row?.expires_at ? new Date(row.expires_at).getTime() : null
+    if (linkExpiresAt != null && linkExpiresAt <= Date.now()) return res.status(404).json({ message: 'not found' })
     if (String(row?.status || '') !== 'published') return res.status(404).json({ message: 'not found' })
 
     await ensurePropertyGuidePublicSessionsTable()
     const now = Date.now()
     const maxMs = 12 * 3600 * 1000
-    const sessionExpiresMs = Math.min(now + maxMs, linkExpiresAt)
+    const sessionExpiresMs = linkExpiresAt != null ? Math.min(now + maxMs, linkExpiresAt) : (now + maxMs)
     const sessionExpiresAt = new Date(sessionExpiresMs).toISOString()
     const sessionId = randomToken(32)
     const sessionHash = sha256Hex(sessionId)
@@ -1844,8 +1874,8 @@ router.get('/guide/p/:token', async (req, res) => {
     if (!r?.rowCount) return res.status(404).json({ message: 'not found' })
     const row = r.rows?.[0] || {}
     if (row?.revoked_at) return res.status(404).json({ message: 'not found' })
-    const linkExpiresAt = row?.expires_at ? new Date(row.expires_at).getTime() : 0
-    if (!linkExpiresAt || linkExpiresAt <= Date.now()) return res.status(404).json({ message: 'not found' })
+    const linkExpiresAt = row?.expires_at ? new Date(row.expires_at).getTime() : null
+    if (linkExpiresAt != null && linkExpiresAt <= Date.now()) return res.status(404).json({ message: 'not found' })
     if (String(row?.status || '') !== 'published') return res.status(404).json({ message: 'not found' })
 
     const sid = readGuideSessionId(req)
@@ -1891,7 +1921,7 @@ router.get('/guide/p/:token', async (req, res) => {
       language: row.language || null,
       version: row.version || null,
       content_json: row.content_json || { sections: [] },
-      link_expires_at: new Date(linkExpiresAt).toISOString(),
+      link_expires_at: linkExpiresAt != null ? new Date(linkExpiresAt).toISOString() : null,
       session_expires_at: new Date(sessExpiresAt).toISOString(),
     })
   } catch (e: any) {

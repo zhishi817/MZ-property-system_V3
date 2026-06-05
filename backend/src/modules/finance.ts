@@ -327,10 +327,14 @@ async function ensureAutoExpenseSchema(client: any) {
     currency text NOT NULL DEFAULT 'AUD',
     category text,
     category_detail text,
+    expense_name text,
     note text,
     invoice_url text,
     created_at timestamptz DEFAULT now(),
     created_by text,
+    deleted_at timestamptz,
+    deleted_by text,
+    delete_source text,
     fixed_expense_id text,
     month_key text,
     due_date date,
@@ -352,10 +356,14 @@ async function ensureAutoExpenseSchema(client: any) {
     currency text NOT NULL DEFAULT 'AUD',
     category text,
     category_detail text,
+    expense_name text,
     note text,
     invoice_url text,
     created_at timestamptz DEFAULT now(),
     created_by text,
+    deleted_at timestamptz,
+    deleted_by text,
+    delete_source text,
     fixed_expense_id text,
     month_key text,
     due_date date,
@@ -372,12 +380,18 @@ async function ensureAutoExpenseSchema(client: any) {
     source_summary text
   );`)
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS expense_name text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS note text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS deleted_at timestamptz;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS deleted_by text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS delete_source text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS due_date date;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_method text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS pay_other_note text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS receipt_id text;')
+  await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS receipt_item_id text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
   await must('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS is_auto boolean DEFAULT false;')
@@ -387,10 +401,17 @@ async function ensureAutoExpenseSchema(client: any) {
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_ref ON property_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
   await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_expense_month_key ON property_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';")
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS expense_name text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS invoice_url text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_at timestamptz;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_by text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS delete_source text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS receipt_id text;')
+  await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS receipt_item_id text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
   await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS is_auto boolean DEFAULT false;')
@@ -1046,29 +1067,39 @@ router.post('/invoices', requireAnyPerm(['finance.tx.write','property_expenses.w
   }
 })
 
+async function ensureExpenseInvoicesTable(client?: any) {
+  const dbClient = client || pgPool
+  if (!dbClient) return
+  await dbClient.query(`CREATE TABLE IF NOT EXISTS expense_invoices (
+    id text PRIMARY KEY,
+    expense_id text REFERENCES property_expenses(id) ON DELETE CASCADE,
+    company_expense_id text REFERENCES company_expenses(id) ON DELETE CASCADE,
+    url text NOT NULL,
+    file_name text,
+    mime_type text,
+    file_size integer,
+    created_at timestamptz DEFAULT now(),
+    created_by text
+  );`)
+  await dbClient.query('ALTER TABLE expense_invoices ADD COLUMN IF NOT EXISTS company_expense_id text;')
+  await dbClient.query('CREATE INDEX IF NOT EXISTS idx_expense_invoices_expense ON expense_invoices(expense_id);')
+  await dbClient.query('CREATE INDEX IF NOT EXISTS idx_expense_invoices_company_expense ON expense_invoices(company_expense_id);')
+}
+
 // Expense-specific invoice resource
 router.get('/expense-invoices/:expenseId', requireAnyPerm(['property_expenses.view','finance.tx.write','property_expenses.write']), async (req, res) => {
   const { expenseId } = req.params
   try {
     if (hasPg) {
       try {
+        await ensureExpenseInvoicesTable()
         const rows = await pgSelect('expense_invoices', '*', { expense_id: expenseId })
         return res.json(Array.isArray(rows) ? rows : [])
       } catch (e: any) {
         const msg = String(e?.message || '')
         const { pgPool } = require('../dbAdapter')
         if (pgPool && /relation\s+"?expense_invoices"?\s+does\s+not\s+exist/i.test(msg)) {
-          await pgPool.query(`CREATE TABLE IF NOT EXISTS expense_invoices (
-            id text PRIMARY KEY,
-            expense_id text REFERENCES property_expenses(id) ON DELETE CASCADE,
-            url text NOT NULL,
-            file_name text,
-            mime_type text,
-            file_size integer,
-            created_at timestamptz DEFAULT now(),
-            created_by text
-          );`)
-          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_expense_invoices_expense ON expense_invoices(expense_id);')
+          await ensureExpenseInvoicesTable(pgPool)
           const rows2 = await pgSelect('expense_invoices', '*', { expense_id: expenseId })
           return res.json(Array.isArray(rows2) ? rows2 : [])
         }
@@ -1106,6 +1137,7 @@ router.post('/expense-invoices/:expenseId/upload', requireAnyPerm(['property_exp
     }
     if (hasPg) {
       try {
+        await ensureExpenseInvoicesTable()
         const row = await pgInsert('expense_invoices', {
           id: uuid(),
           expense_id: expenseId,
@@ -1120,17 +1152,7 @@ router.post('/expense-invoices/:expenseId/upload', requireAnyPerm(['property_exp
         const msg = String(e?.message || '')
         const { pgPool } = require('../dbAdapter')
         if (pgPool && /relation\s+"?expense_invoices"?\s+does\s+not\s+exist/i.test(msg)) {
-          await pgPool.query(`CREATE TABLE IF NOT EXISTS expense_invoices (
-            id text PRIMARY KEY,
-            expense_id text REFERENCES property_expenses(id) ON DELETE CASCADE,
-            url text NOT NULL,
-            file_name text,
-            mime_type text,
-            file_size integer,
-            created_at timestamptz DEFAULT now(),
-            created_by text
-          );`)
-          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_expense_invoices_expense ON expense_invoices(expense_id);')
+          await ensureExpenseInvoicesTable(pgPool)
           const row2 = await pgInsert('expense_invoices', {
             id: uuid(), expense_id: expenseId, url,
             file_name: req.file.originalname, mime_type: req.file.mimetype,
@@ -1153,21 +1175,11 @@ router.delete('/expense-invoices/:id', requireAnyPerm(['property_expenses.write'
   const { id } = req.params
   try {
     if (hasPg) {
-      try { await pgDelete('expense_invoices', id); return res.json({ ok: true }) } catch (e: any) {
+      try { await ensureExpenseInvoicesTable(); await pgDelete('expense_invoices', id); return res.json({ ok: true }) } catch (e: any) {
         const msg = String(e?.message || '')
         const { pgPool } = require('../dbAdapter')
         if (pgPool && /relation\s+"?expense_invoices"?\s+does\s+not\s+exist/i.test(msg)) {
-          await pgPool.query(`CREATE TABLE IF NOT EXISTS expense_invoices (
-            id text PRIMARY KEY,
-            expense_id text REFERENCES property_expenses(id) ON DELETE CASCADE,
-            url text NOT NULL,
-            file_name text,
-            mime_type text,
-            file_size integer,
-            created_at timestamptz DEFAULT now(),
-            created_by text
-          );`)
-          await pgPool.query('CREATE INDEX IF NOT EXISTS idx_expense_invoices_expense ON expense_invoices(expense_id);')
+          await ensureExpenseInvoicesTable(pgPool)
           await pgDelete('expense_invoices', id)
           return res.json({ ok: true })
         }
@@ -1179,6 +1191,24 @@ router.delete('/expense-invoices/:id', requireAnyPerm(['property_expenses.write'
     return res.json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'delete failed' })
+  }
+})
+
+router.get('/expense-invoices/company/:expenseId', requireAnyPerm(['company_expenses.view','finance.tx.write','company_expenses.write']), async (req, res) => {
+  const { expenseId } = req.params
+  try {
+    if (hasPg) {
+      await ensureExpenseInvoicesTable()
+      const rows = await pgPool?.query(
+        'SELECT * FROM expense_invoices WHERE company_expense_id = $1 ORDER BY created_at ASC NULLS LAST, id ASC',
+        [expenseId],
+      )
+      return res.json(rows?.rows || [])
+    }
+    const rows = db.expenseInvoices.filter((x: any) => String(x.company_expense_id || '') === String(expenseId))
+    return res.json(rows)
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'list failed' })
   }
 })
 
@@ -1217,7 +1247,7 @@ router.get('/expense-invoices/search', requireAnyPerm(['property_expenses.view',
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
       if (pgPool) {
-        const sql = `SELECT i.* FROM expense_invoices i JOIN property_expenses e ON i.expense_id = e.id WHERE e.property_id = $1 AND e.occurred_at >= $2 AND e.occurred_at <= $3 ORDER BY i.created_at ASC`
+        const sql = `SELECT i.* FROM expense_invoices i JOIN property_expenses e ON i.expense_id = e.id WHERE e.property_id = $1 AND e.deleted_at IS NULL AND e.occurred_at >= $2 AND e.occurred_at <= $3 ORDER BY i.created_at ASC`
         const r = await pgPool.query(sql, [pid, from, to])
         return res.json(r.rows || [])
       }

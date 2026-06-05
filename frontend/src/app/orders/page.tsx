@@ -11,7 +11,7 @@ import interactionPlugin from '@fullcalendar/interaction'
 import { API_BASE, getJSON, authHeaders } from '../../lib/api'
 import { sortOrders } from '../../lib/orderSort'
 import { monthSegments, getMonthSegmentsForProperty, calcOrderMonthAmounts, toDayStr } from '../../lib/orders'
-import { sortProperties } from '../../lib/properties'
+import { sortActivePropertiesByRegionThenCode } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 import { buildSegments, placeIntoLanes } from '../../lib/calendarTimeline'
 import AuditTrail from '../../components/AuditTrail'
@@ -35,7 +35,7 @@ export default function OrdersPage() {
   const [confQuery, setConfQuery] = useState('')
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [hasDeductionOnly, setHasDeductionOnly] = useState(false)
-  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string }[]>([])
+  const [properties, setProperties] = useState<{ id: string; code?: string; address?: string; region?: string; archived?: boolean | null }[]>([])
   const [importOpen, setImportOpen] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importPercent, setImportPercent] = useState<number>(0)
@@ -1360,7 +1360,7 @@ export default function OrdersPage() {
         ) : (
           <>
             <DatePicker picker="month" value={calMonth} onChange={setCalMonth as any} />
-            <Select showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="选择房号" style={{ width: 220 }} value={calPid} onChange={setCalPid} options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.id}))} />
+            <Select showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="选择房号" style={{ width: 220 }} value={calPid} onChange={setCalPid} options={sortActivePropertiesByRegionThenCode(properties).map(p=>({value:p.id,label:p.code||p.id}))} />
             <Button onClick={async () => {
               if (!calPid) { message.warning('请选择房号'); return }
               if (!calRef.current) return
@@ -1639,7 +1639,7 @@ export default function OrdersPage() {
           <Select
             showSearch
             optionFilterProp="label"
-            options={sortProperties(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.code || p.address || p.id }))}
+            options={sortActivePropertiesByRegionThenCode(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.code || p.address || p.id }))}
             onChange={(val, opt) => {
               const label = (opt as any)?.label || ''
               form.setFieldsValue({ property_code: label })
@@ -1801,7 +1801,7 @@ export default function OrdersPage() {
           { title: '失败原因', dataIndex: 'reason', render: (v:any, r:any)=> <span style={{ wordBreak:'break-word' }}>{String(v||'')}</span> },
           { title: '房号', render: (_:any, r:any)=> (
             <Select showSearch optionFilterProp="label" placeholder="选择房号" style={{ width: 220 }}
-              options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))}
+              options={sortActivePropertiesByRegionThenCode(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))}
               onChange={(pid, opt)=>{ (r as any).__pid = pid; (r as any).__pcode = (opt as any)?.label }} />
           ) },
           { title: '操作', render: (_:any, r:any)=> (
@@ -1864,7 +1864,7 @@ export default function OrdersPage() {
                   { title: '解析预览', dataIndex: 'parse_preview', render: (v:any)=> <span style={{ wordBreak:'break-word' }}>{v||''}</span> },
                   { title: '房号', render: (_:any, r:any)=> (
                     <Select showSearch optionFilterProp="label" placeholder="选择房号" style={{ width: 220 }}
-                      options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))}
+                      options={sortActivePropertiesByRegionThenCode(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))}
                       onChange={(pid)=>{ (r as any).__pid = pid }} />
                   ) },
                   { title: '操作', render: (_:any, r:any)=> (
@@ -1961,7 +1961,7 @@ export default function OrdersPage() {
                 <Select
                   showSearch
                   optionFilterProp="label"
-                  options={sortProperties(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.code || p.address || p.id }))}
+                  options={sortActivePropertiesByRegionThenCode(Array.isArray(properties) ? properties : []).map(p => ({ value: p.id, label: p.code || p.address || p.id }))}
                   onChange={(val, opt) => {
                     const label = (opt as any)?.label || ''
                     editForm.setFieldsValue({ property_code: label })
@@ -2277,7 +2277,7 @@ export default function OrdersPage() {
                 { title: '失败原因', dataIndex: 'reason', render: (v:any)=> <Tag color="red">{String(v||'').replace('unmatched_property','找不到房号').replace('missing_confirmation_code','确认码为空').replace('write_failed','写入失败')}</Tag> },
                 { title: '选择房号并导入', render: (_:any, r:any) => (
                   <Space>
-                    <Select showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="选择房号" style={{ width: 220 }} options={sortProperties(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))}
+                    <Select showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="选择房号" style={{ width: 220 }} options={sortActivePropertiesByRegionThenCode(properties).map(p=>({value:p.id,label:p.code||p.address||p.id}))}
                       onChange={(pid)=>{ (r as any).__pid = pid }} />
                     <Button type="primary" onClick={()=> resolveImport(r.id, (r as any).__pid)}>导入</Button>
                   </Space>

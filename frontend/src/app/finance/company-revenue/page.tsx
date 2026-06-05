@@ -1,5 +1,5 @@
 "use client"
-import { Card, DatePicker, Table, Space, Button, Modal, Form, InputNumber, Select, DatePicker as DP, Input, message, Segmented, Upload, Typography, Divider, Drawer, Descriptions } from 'antd'
+import { Card, DatePicker, Table, Space, Button, Modal, Form, InputNumber, Select, DatePicker as DP, Input, message, Segmented, Upload, Typography, Divider, Drawer, Descriptions, Switch, Tag } from 'antd'
 import { LeftOutlined, RightOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
@@ -9,7 +9,17 @@ import AuditTrail from '../../../components/AuditTrail'
 import { findLandlordForProperty, resolveManagementFeeRuleForMonth, type LandlordWithManagementFeeRules } from '../../../lib/managementFeeRules'
 
 type Order = { id: string; price?: number; cleaning_fee?: number; checkin?: string; checkout?: string; property_id?: string }
-type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; occurred_at: string }
+type Tx = { id: string; kind: 'income'|'expense'; amount: number; currency: string; category?: string; expense_name?: string; category_detail?: string; note?: string; invoice_url?: string | null; occurred_at: string; receipt_id?: string | null; receipt_item_id?: string | null; deleted_at?: string | null; deleted_by?: string | null; delete_source?: string | null }
+type ExpenseInvoice = { id: string; url: string; file_name?: string | null; mime_type?: string | null; file_size?: number | null; created_at?: string | null }
+type ReceiptSourceDetail = {
+  id: string
+  receipt_date?: string | null
+  receipt_total_amount?: number | null
+  note?: string | null
+  scope_summary?: string | null
+  images?: Array<{ id: string; url: string }>
+  items?: Array<{ id: string; line_no?: number | null; scope?: string | null; property_code?: string | null; property_address?: string | null; expense_name?: string | null; amount?: number | null; category?: string | null; category_detail?: string | null; note?: string | null; company_expense_id?: string | null; property_expense_id?: string | null }>
+}
 type Landlord = LandlordWithManagementFeeRules
 
 export default function CompanyRevenuePage() {
@@ -32,12 +42,18 @@ export default function CompanyRevenuePage() {
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailKind, setDetailKind] = useState<'income' | 'expense'>('income')
   const [detailRow, setDetailRow] = useState<any | null>(null)
+  const [expenseInvoices, setExpenseInvoices] = useState<ExpenseInvoice[]>([])
+  const [receiptDetail, setReceiptDetail] = useState<ReceiptSourceDetail | null>(null)
+  const [includeDeleted, setIncludeDeleted] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
   const [shareUrl, setShareUrl] = useState('')
   const [sharePwdUpdatedAt, setSharePwdUpdatedAt] = useState<string | null>(null)
   const [sharePwdValue, setSharePwdValue] = useState('')
   const [sharePwdLoading, setSharePwdLoading] = useState(false)
   const [sharePwdSaving, setSharePwdSaving] = useState(false)
+  const role = (typeof window !== 'undefined') ? (localStorage.getItem('role') || sessionStorage.getItem('role')) : null
+  const canIncludeDeleted = role === 'admin' || role === 'finance_staff'
+
   function sortCompanyExpenses(rows: any[]) {
     const arr = Array.isArray(rows) ? [...rows] : []
     arr.sort((a: any, b: any) => String(b.occurred_at || '').localeCompare(String(a.occurred_at || '')))
@@ -48,7 +64,7 @@ export default function CompanyRevenuePage() {
     apiList<any[]>('company_incomes').then((rows)=> setCompanyIncomes(Array.isArray(rows)?rows:[]) ).catch(()=>setCompanyIncomes([]))
     getJSON<Landlord[]>('/landlords').then(setLandlords).catch(()=>setLandlords([]))
     getJSON<any>('/properties').then((j)=>setProperties(j||[])).catch(()=>setProperties([]))
-    apiList<any[]>('company_expenses').then((rows)=> setCompanyExpenses(sortCompanyExpenses(rows as any)) ).catch(()=>setCompanyExpenses([]))
+    apiList<any[]>('company_expenses', canIncludeDeleted && includeDeleted ? { include_deleted: 1 } : undefined).then((rows)=> setCompanyExpenses(sortCompanyExpenses(rows as any)) ).catch(()=>setCompanyExpenses([]))
   }
 
   function openEditIncomeRow(r: any) {
@@ -61,18 +77,54 @@ export default function CompanyRevenuePage() {
     setEditingExpense(r)
     setExpenseOpen(true)
     const inv = String(r.invoice_url || '')
-    expenseForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, other_detail: r.category === 'other' ? r.category_detail : undefined, note: r.note, invoice_url: inv || undefined })
+    expenseForm.setFieldsValue({ date: dayjs(r.occurred_at), amount: Number(r.amount||0), category: r.category, expense_name: r.expense_name || undefined, other_detail: r.category === 'other' ? r.category_detail : undefined, note: r.note, invoice_url: inv || undefined })
     setExpenseInvoiceFiles(inv ? [{ uid: 'invoice', name: inv.split('/').pop() || 'invoice', status: 'done', url: absUrl(inv) }] : [])
   }
-  useEffect(() => { loadAll() }, [])
+  useEffect(() => { loadAll() }, [includeDeleted])
   useEffect(() => {
     const ym = month ? `${month.year()}-${String(month.month()+1).padStart(2,'0')}` : ''
     if (ym) {
       fetch(`${API_BASE}/finance/company-incomes/backfill`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ month: ym }) }).catch(()=>{})
     }
-    apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(sortCompanyExpenses(rows as any))).catch(()=>{})
+    apiList<any[]>('company_expenses', canIncludeDeleted && includeDeleted ? { include_deleted: 1 } : undefined).then((rows)=>setCompanyExpenses(sortCompanyExpenses(rows as any))).catch(()=>{})
     apiList<any[]>('company_incomes').then((rows)=>setCompanyIncomes(Array.isArray(rows)?rows:[])).catch(()=>{})
-  }, [month])
+  }, [canIncludeDeleted, includeDeleted, month])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      if (!detailOpen || detailKind !== 'expense' || !detailRow?.id) {
+        setExpenseInvoices([])
+        return
+      }
+      try {
+        const rows = await getJSON<ExpenseInvoice[]>(`/finance/expense-invoices/company/${detailRow.id}`)
+        if (!cancelled) setExpenseInvoices(Array.isArray(rows) ? rows : [])
+      } catch {
+        if (!cancelled) setExpenseInvoices([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [detailKind, detailOpen, detailRow?.id])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      if (!detailOpen || detailKind !== 'expense' || !detailRow?.receipt_id) {
+        setReceiptDetail(null)
+        return
+      }
+      try {
+        const data = await getJSON<ReceiptSourceDetail>(`/mzapp/expense-receipts/admin/${detailRow.receipt_id}${detailRow.deleted_at ? '?include_deleted=1' : ''}`)
+        if (!cancelled) setReceiptDetail(data || null)
+      } catch {
+        if (!cancelled) setReceiptDetail(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [detailKind, detailOpen, detailRow?.deleted_at, detailRow?.receipt_id])
   const ym = month ? { y: month.year(), m: month.month()+1 } : null
   const start = ym ? dayjs(`${ym.y}-${String(ym.m).padStart(2,'0')}-01`) : null
   const end = start ? start.endOf('month') : null
@@ -207,12 +259,12 @@ export default function CompanyRevenuePage() {
     if (savingExpense) return
     setSavingExpense(true)
     const v = await expenseForm.validateFields()
-    const payload = { amount: Number(v.amount || 0), currency: 'AUD', occurred_at: dayjs(v.date).format('YYYY-MM-DD'), category: v.category, category_detail: v.category === 'other' ? (v.other_detail || '') : undefined, note: v.category === 'other' ? (v.note || '') : v.note, invoice_url: v.invoice_url || undefined }
+    const payload = { amount: Number(v.amount || 0), currency: 'AUD', occurred_at: dayjs(v.date).format('YYYY-MM-DD'), category: v.category, expense_name: v.expense_name || undefined, category_detail: v.category === 'other' ? (v.other_detail || '') : undefined, note: v.category === 'other' ? (v.note || '') : v.note, invoice_url: v.invoice_url || undefined }
     try {
       if (editingExpense) await apiUpdate('company_expenses', editingExpense.id, payload); else await apiCreate('company_expenses', payload)
       message.success(editingExpense ? '支出已更新' : '支出已记录')
       setExpenseOpen(false); expenseForm.resetFields(); setEditingExpense(null); setExpenseInvoiceFiles([])
-      apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(Array.isArray(rows)?rows:[])).catch(()=>{})
+      apiList<any[]>('company_expenses', canIncludeDeleted && includeDeleted ? { include_deleted: 1 } : undefined).then((rows)=>setCompanyExpenses(sortCompanyExpenses(rows as any))).catch(()=>{})
     } catch (e: any) { message.error(e?.message || '记录失败') } finally { setSavingExpense(false) }
   }
 
@@ -230,6 +282,12 @@ export default function CompanyRevenuePage() {
       extra={
         <Space>
           <Segmented options={[{label:'统计',value:'stats'},{label:'明细',value:'details'}]} value={view} onChange={setView as any} />
+          {canIncludeDeleted ? (
+            <Space>
+              <Typography.Text>包含已删除</Typography.Text>
+              <Switch checked={includeDeleted} onChange={setIncludeDeleted} />
+            </Space>
+          ) : null}
           <Button onClick={() => {
             try {
               const origin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -321,16 +379,29 @@ export default function CompanyRevenuePage() {
             })}
             columns={[
               { title:'日期', dataIndex:'occurred_at', width: COL.date, render:(v:string)=> dayjs(v).format('DD/MM/YYYY') },
+              { title:'支出名称', dataIndex:'expense_name', width: COL.other, render:(v:any, r:any) => String(v || '').trim() || (r.category === 'other' ? (r.category_detail || '-') : '-') },
               { title:'类别', dataIndex:'category', width: COL.category, render:(v:any)=>expenseCategoryLabel(v) },
+              { title:'状态', dataIndex:'deleted_at', width: 90, align:'center', render: (_:any, r:any) => r.deleted_at ? <Tag color="red">已删除</Tag> : <Tag color="green">有效</Tag> },
               { title:'金额', dataIndex:'amount', width: COL.amount, align:'right', render:(v:number)=>`$${fmt(v)}` },
               { title:'币种', dataIndex:'currency', width: COL.currency, align:'center' },
-              { title:'发票', dataIndex:'invoice_url', width: 90, align:'center', render: (v:any) => v ? <Button size="small" onClick={(e: any) => { e?.stopPropagation?.(); const u = absUrl(String(v||'')); if (u) window.open(u, '_blank', 'noopener,noreferrer') }}>查看</Button> : '-' },
+              { title:'发票', dataIndex:'invoice_url', width: 90, align:'center', render: (_:any, r:any) => <Button size="small" onClick={async (e: any) => {
+                e?.stopPropagation?.()
+                try {
+                  const rows = await getJSON<ExpenseInvoice[]>(`/finance/expense-invoices/company/${r.id}`)
+                  setExpenseInvoices(Array.isArray(rows) ? rows : [])
+                } catch {
+                  setExpenseInvoices([])
+                }
+                setDetailKind('expense')
+                setDetailRow(r)
+                setDetailOpen(true)
+              }}>查看</Button> },
               { title:'其他支出描述', dataIndex:'category_detail', width: COL.other, render: (v:any, r:any) => (r.category === 'other' ? (v || '-') : '-') },
               { title:'备注', dataIndex:'note', width: COL.note },
               { title:'操作', key:'ops', width: COL.ops, align:'center', render: (_:any, r:any) => (
                 <Space>
-                  <Button onClick={() => openEditExpenseRow(r)}>编辑</Button>
-                  <Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_expenses', r.id); apiList<any[]>('company_expenses').then((rows)=>setCompanyExpenses(Array.isArray(rows)?rows:[])); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button>
+                  {!r.deleted_at ? <Button onClick={() => openEditExpenseRow(r)}>编辑</Button> : null}
+                  {!r.deleted_at ? <Button danger onClick={() => { Modal.confirm({ title:'确认删除？', okType:'danger', onOk: async ()=> { try { await apiDelete('company_expenses', r.id); apiList<any[]>('company_expenses', canIncludeDeleted && includeDeleted ? { include_deleted: 1 } : undefined).then((rows)=>setCompanyExpenses(sortCompanyExpenses(rows as any))).catch(()=>{}); message.success('已删除') } catch { message.error('删除失败') } } }) }}>删除</Button> : null}
                 </Space>
               ) }
             ]}
@@ -366,14 +437,70 @@ export default function CompanyRevenuePage() {
                   <Descriptions.Item label="金额">{`$${fmt(Number(detailRow.amount || 0))}`}</Descriptions.Item>
                   <Descriptions.Item label="币种">{String(detailRow.currency || 'AUD')}</Descriptions.Item>
                   <Descriptions.Item label="房号">{String(detailRow.property_code || detailRow.property_id || '')}</Descriptions.Item>
+                  {detailKind === 'expense' ? <Descriptions.Item label="支出名称">{String(detailRow.expense_name || '') || '-'}</Descriptions.Item> : null}
+                  {detailKind === 'expense' ? <Descriptions.Item label="发票来源ID">{String(detailRow.receipt_id || '') || '-'}</Descriptions.Item> : null}
+                  {detailKind === 'expense' ? <Descriptions.Item label="发票明细ID">{String(detailRow.receipt_item_id || '') || '-'}</Descriptions.Item> : null}
                   <Descriptions.Item label="备注">{String(detailRow.note || '')}</Descriptions.Item>
                   {detailKind === 'expense' ? (
                     <>
                       <Descriptions.Item label="其他支出描述">{detailRow.category === 'other' ? String(detailRow.category_detail || '') : ''}</Descriptions.Item>
-                      <Descriptions.Item label="发票">{detailRow.invoice_url ? <Button size="small" onClick={() => { const u = absUrl(String(detailRow.invoice_url || '')); if (u) window.open(u, '_blank', 'noopener,noreferrer') }}>查看</Button> : '-'}</Descriptions.Item>
+                      <Descriptions.Item label="发票">
+                        <Space wrap>
+                          {expenseInvoices.length ? expenseInvoices.map((item) => (
+                            <Button key={item.id} size="small" onClick={() => { const u = absUrl(String(item.url || '')); if (u) window.open(u, '_blank', 'noopener,noreferrer') }}>
+                              {String(item.file_name || item.id || '发票')}
+                            </Button>
+                          )) : (detailRow.invoice_url ? <Button size="small" onClick={() => { const u = absUrl(String(detailRow.invoice_url || '')); if (u) window.open(u, '_blank', 'noopener,noreferrer') }}>查看</Button> : '-')}
+                        </Space>
+                      </Descriptions.Item>
+                      {detailRow.deleted_at ? (
+                        <>
+                          <Descriptions.Item label="删除时间">{String(detailRow.deleted_at || '')}</Descriptions.Item>
+                          <Descriptions.Item label="删除人">{String(detailRow.deleted_by || '-') || '-'}</Descriptions.Item>
+                          <Descriptions.Item label="删除来源">{String(detailRow.delete_source || '-') || '-'}</Descriptions.Item>
+                        </>
+                      ) : null}
                     </>
                   ) : null}
                 </Descriptions>
+                {detailKind === 'expense' && receiptDetail ? (
+                  <>
+                    <Divider orientation="left">原始发票</Divider>
+                    <Descriptions bordered size="small" column={1}>
+                      <Descriptions.Item label="发票日期">{String(receiptDetail.receipt_date || '').slice(0, 10) || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="发票总金额">{`$${fmt(Number(receiptDetail.receipt_total_amount || 0))}`}</Descriptions.Item>
+                      <Descriptions.Item label="支出范围">{String(receiptDetail.scope_summary || '-') || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="发票备注">{String(receiptDetail.note || '') || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="发票图片">
+                        <Space wrap>
+                          {(receiptDetail.images || []).length
+                            ? (receiptDetail.images || []).map((item) => (
+                                <Button key={item.id} size="small" onClick={() => { const u = absUrl(String(item.url || '')); if (u) window.open(u, '_blank', 'noopener,noreferrer') }}>
+                                  查看图片
+                                </Button>
+                              ))
+                            : '-'}
+                        </Space>
+                      </Descriptions.Item>
+                    </Descriptions>
+                    <Table
+                      size="small"
+                      pagination={false}
+                      rowKey={(row: any) => row.id}
+                      style={{ marginTop: 12 }}
+                      columns={[
+                        { title: '#', dataIndex: 'line_no', width: 60 },
+                        { title: '归属', render: (_: any, row: any) => String(row.scope || '') === 'property' ? '房源支出' : '公司支出' },
+                        { title: '房号/对象', render: (_: any, row: any) => String(row.scope || '') === 'property' ? (String(row.property_code || row.property_address || '-') || '-') : '公司' },
+                        { title: '支出名称', dataIndex: 'expense_name' },
+                        { title: '金额', render: (_: any, row: any) => `$${fmt(Number(row.amount || 0))}` },
+                        { title: '类别', render: (_: any, row: any) => row.category === 'other' ? `其他；${String(row.category_detail || '')}` : (String(row.category || '-') || '-') },
+                        { title: '备注', dataIndex: 'note' },
+                      ]}
+                      dataSource={receiptDetail.items || []}
+                    />
+                  </>
+                ) : null}
                 <Divider orientation="left">操作记录</Divider>
                 <AuditTrail refs={[
                   { entity: detailKind === 'income' ? 'company_incomes' : 'company_expenses', entity_id: String(detailRow.id) },
@@ -412,6 +539,9 @@ export default function CompanyRevenuePage() {
             <Form.Item name="amount" label="金额" rules={[{ required: true }]}><InputNumber min={0} step={1} style={{ width:'100%' }} /></Form.Item>
             <Form.Item name="category" label="类别" rules={[{ required: true }]}> 
               <Select options={expenseCategoryOptions} />
+            </Form.Item>
+            <Form.Item name="expense_name" label="支出名称">
+              <Input />
             </Form.Item>
             <Form.Item noStyle shouldUpdate>
               {() => {

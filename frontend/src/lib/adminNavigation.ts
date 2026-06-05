@@ -429,6 +429,23 @@ export const ADMIN_NAVIGATION: AdminNavNode[] = [
         actionPerms: ['recurring_payments.view', 'recurring_payments.write', 'recurring_payments.delete', 'recurring_payments.archive'],
       },
       {
+        id: 'finance-property-payables',
+        label: '房源代付',
+        href: '/finance/property-payables',
+        visibleWhenAny: ['menu.finance.property_payables.visible', 'menu.finance.recurring.visible', 'menu.finance.expenses.visible'],
+        rbacKey: 'menu.finance.property_payables.visible',
+        actionPerms: [
+          'recurring_payments.view',
+          'recurring_payments.write',
+          'recurring_payments.delete',
+          'recurring_payments.archive',
+          'property_expenses.view',
+          'property_expenses.write',
+          'property_expenses.delete',
+          'property_expenses.archive',
+        ],
+      },
+      {
         id: 'finance-invoices',
         label: '发票中心',
         href: '/finance/invoices',

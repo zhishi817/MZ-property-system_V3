@@ -6,8 +6,10 @@ import { hasPg, pgSelect } from './dbAdapter'
 import bcrypt from 'bcryptjs'
 
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
-const SESSION_MAX_AGE_HOURS = Number(process.env.SESSION_MAX_AGE_HOURS || 5)
-const SESSION_IDLE_TIMEOUT_MINUTES = Number(process.env.SESSION_IDLE_TIMEOUT_MINUTES || 60)
+const DEFAULT_SESSION_MAX_AGE_HOURS = 7 * 24
+const DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES = 7 * 24 * 60
+const SESSION_MAX_AGE_HOURS = Number(process.env.SESSION_MAX_AGE_HOURS || DEFAULT_SESSION_MAX_AGE_HOURS)
+const SESSION_IDLE_TIMEOUT_MINUTES = Number(process.env.SESSION_IDLE_TIMEOUT_MINUTES || DEFAULT_SESSION_IDLE_TIMEOUT_MINUTES)
 
 type User = { id: string; username: string; role: string }
 
@@ -27,6 +29,27 @@ export const users: Record<string, User & { password: string }> = {
   finance: { id: 'u-finance', username: 'finance', role: 'finance_staff', password: process.env.FINANCE_PASSWORD || 'finance' },
   inventory: { id: 'u-inventory', username: 'inventory', role: 'inventory_manager', password: process.env.INVENTORY_PASSWORD || 'inventory' },
   maintenance: { id: 'u-maintenance', username: 'maintenance', role: 'maintenance_staff', password: process.env.MAINTENANCE_PASSWORD || 'maintenance' },
+}
+
+async function createSessionForUser(userId: string, req: Request) {
+  if (!hasPg) return null
+  try {
+    const { pgRunInTransaction } = require('./dbAdapter')
+    const sidNew = await pgRunInTransaction(async (client: any) => {
+      const newSid = uuid()
+      const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString()
+      const ua = String(req.headers['user-agent'] || '')
+      const ip = String((req.ip || req.socket?.remoteAddress || '')).slice(0, 255)
+      await client.query(
+        'INSERT INTO sessions(id, user_id, created_at, last_seen_at, expires_at, revoked, ip, user_agent) VALUES($1,$2,now(),now(),$3,false,$4,$5)',
+        [newSid, userId, expiresAt, ip, ua],
+      )
+      return newSid
+    })
+    return String(sidNew)
+  } catch {
+    return null
+  }
 }
 
 export async function login(req: Request, res: Response) {
@@ -52,25 +75,7 @@ export async function login(req: Request, res: Response) {
       if (hash) ok = await bcrypt.compare(password, hash)
     } catch {}
     if (!ok) return res.status(401).json({ message: 'invalid credentials' })
-    let sid: string | null = null
-    if (hasPg) {
-      try {
-        const { pgRunInTransaction } = require('./dbAdapter')
-        const sidNew = await pgRunInTransaction(async (client: any) => {
-          await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [row.id])
-          const newSid = uuid()
-          const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString()
-          const ua = String(req.headers['user-agent'] || '')
-          const ip = String((req.ip || req.socket?.remoteAddress || '')).slice(0, 255)
-          await client.query(
-            'INSERT INTO sessions(id, user_id, created_at, last_seen_at, expires_at, revoked, ip, user_agent) VALUES($1,$2,now(),now(),$3,false,$4,$5)',
-            [newSid, row.id, expiresAt, ip, ua]
-          )
-          return newSid
-        })
-        sid = String(sidNew)
-      } catch {}
-    }
+    const sid = await createSessionForUser(String(row.id), req)
     const roles = await fetchUserRolesForUserId(String(row.id), String(row.role || '').trim())
     const payload: any = { sub: row.id, role: row.role, roles, username: row.username }
     if (sid) payload.sid = sid
@@ -84,25 +89,7 @@ export async function login(req: Request, res: Response) {
     if (found) {
       const ok = found.password_hash ? await bcrypt.compare(password, found.password_hash) : false
       if (!ok) return res.status(401).json({ message: 'invalid credentials' })
-      let sid: string | null = null
-      if (hasPg) {
-        try {
-          const { pgRunInTransaction } = require('./dbAdapter')
-          const sidNew = await pgRunInTransaction(async (client: any) => {
-            await client.query('UPDATE sessions SET revoked=true WHERE user_id=$1 AND revoked=false', [found.id])
-            const newSid = uuid()
-            const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_HOURS * 3600 * 1000).toISOString()
-            const ua = String(req.headers['user-agent'] || '')
-            const ip = String((req.ip || req.socket?.remoteAddress || '')).slice(0, 255)
-            await client.query(
-              'INSERT INTO sessions(id, user_id, created_at, last_seen_at, expires_at, revoked, ip, user_agent) VALUES($1,$2,now(),now(),$3,false,$4,$5)',
-              [newSid, found.id, expiresAt, ip, ua]
-            )
-            return newSid
-          })
-          sid = String(sidNew)
-        } catch {}
-      }
+      const sid = await createSessionForUser(String(found.id), req)
       const roles = await fetchUserRolesForUserId(String(found.id), String(found.role || '').trim())
       const payload: any = { sub: found.id, role: found.role, roles, username: found.username || found.email }
       if (sid) payload.sid = sid
@@ -218,14 +205,19 @@ async function hydrateRolesIfMissing(decoded: any) {
 }
 
 async function hasAnyPermViaPg(roleName: string, codes: string[]): Promise<boolean> {
+  const okSet = await listPermissionCodesViaPg(roleName)
+  for (const c of codes) { if (okSet.has(c)) return true }
+  return false
+}
+
+async function listPermissionCodesViaPg(roleName: string): Promise<Set<string>> {
   const now = Date.now()
   const cached = permsCache.get(roleName)
   if (cached && now - cached.at <= PERM_CACHE_TTL_MS) {
-    for (const c of codes) { if (cached.okSet.has(c)) return true }
-    return false
+    return cached.okSet
   }
   const { pgPool } = require('./dbAdapter')
-  if (!pgPool) return false
+  if (!pgPool) return new Set<string>()
   let roleId = db.roles.find(r => r.name === roleName)?.id
   try {
     const r0 = await pgPool.query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [roleName])
@@ -238,8 +230,7 @@ async function hasAnyPermViaPg(roleName: string, codes: string[]): Promise<boole
     for (const row of (r?.rows || []) as any[]) okSet.add(String(row.permission_code))
   } catch {}
   permsCache.set(roleName, { okSet, at: now })
-  for (const c of codes) { if (okSet.has(c)) return true }
-  return false
+  return okSet
 }
 
 function roleNamesOf(user: any) {
@@ -248,6 +239,56 @@ function roleNamesOf(user: any) {
   const primary = String(user?.role || '').trim()
   if (primary) ids.unshift(primary)
   return Array.from(new Set(ids))
+}
+
+async function listPermissionCodesForRole(roleName: string): Promise<string[]> {
+  const out = new Set<string>()
+  try {
+    const { hasPg, pgPool } = require('./dbAdapter')
+    if (hasPg && pgPool) {
+      const okSet = await listPermissionCodesViaPg(roleName)
+      okSet.forEach((code) => out.add(code))
+    }
+  } catch {}
+  if (!out.size) {
+    for (const perm of db.permissions || []) {
+      const code = String((perm as any)?.code || '').trim()
+      if (code && roleHasPermission(roleName, code)) out.add(code)
+    }
+  }
+  return Array.from(out)
+}
+
+export async function listPermissionCodesForUser(user: any): Promise<string[]> {
+  const roleNames = roleNamesOf(user)
+  const out = new Set<string>()
+  if (roleNames.includes('admin')) {
+    for (const perm of db.permissions || []) {
+      const code = String((perm as any)?.code || '').trim()
+      if (code) out.add(code)
+    }
+  }
+  for (const roleName of roleNames) {
+    const codes = await listPermissionCodesForRole(roleName)
+    for (const code of codes) out.add(code)
+  }
+  return Array.from(out).sort((a, b) => a.localeCompare(b))
+}
+
+export async function userHasAnyPerm(user: any, codes: string[]): Promise<boolean> {
+  const roleNames = roleNamesOf(user)
+  if (roleNames.includes('admin')) return true
+  for (const roleName of roleNames) {
+    try {
+      const { hasPg, pgPool } = require('./dbAdapter')
+      if (hasPg && pgPool) {
+        const ok = await hasAnyPermViaPg(roleName, codes)
+        if (ok) return true
+      }
+    } catch {}
+    if (codes.some((c) => roleHasPermission(roleName, c))) return true
+  }
+  return false
 }
 
 export function requirePerm(code: string) {
@@ -313,17 +354,17 @@ export function me(req: Request, res: Response) {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : undefined
-  if (roles && roles.length) return res.json({ id: user.sub, role: user.role, roles, username: user.username })
   ;(async () => {
     try {
-      const sub = String(user.sub || '').trim()
-      const fallbackRole = String(user.role || '').trim()
-      const fetched = await fetchUserRolesForUserId(sub, fallbackRole)
-      res.json({ id: user.sub, role: user.role, roles: fetched, username: user.username })
+      const nextRoles = roles && roles.length
+        ? roles
+        : await fetchUserRolesForUserId(String(user.sub || '').trim(), String(user.role || '').trim())
+      const permissions = await listPermissionCodesForUser({ ...(user || {}), roles: nextRoles })
+      res.json({ id: user.sub, role: user.role, roles: nextRoles, username: user.username, permissions })
     } catch {
-      res.json({ id: user.sub, role: user.role, roles: undefined, username: user.username })
+      res.json({ id: user.sub, role: user.role, roles: roles && roles.length ? roles : undefined, username: user.username, permissions: [] })
     }
-  })().catch(() => res.json({ id: user.sub, role: user.role, roles: undefined, username: user.username }))
+  })().catch(() => res.json({ id: user.sub, role: user.role, roles: roles && roles.length ? roles : undefined, username: user.username, permissions: [] }))
 }
 
 export async function setDeletePassword(req: Request, res: Response) {
