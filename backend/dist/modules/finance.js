@@ -474,14 +474,6 @@ async function ensureAutoExpenseSchema(client) {
     await must('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_summary text;');
     await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_ref ON company_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;");
     await safeQuery("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_fixed_month ON company_expenses(fixed_expense_id, month_key) WHERE fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> '';");
-    await safeQuery('DROP INDEX IF EXISTS uniq_company_expenses;');
-    await safeQuery(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses
-    ON company_expenses (occurred_at, category, amount, COALESCE(note, ''))
-    WHERE COALESCE(generated_from, '') <> 'mzapp' AND deleted_at IS NULL;`);
-    await safeQuery('DROP INDEX IF EXISTS uniq_property_expenses;');
-    await safeQuery(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses
-    ON property_expenses (property_id, occurred_at, category, amount, COALESCE(note, ''))
-    WHERE COALESCE(generated_from, '') <> 'mzapp' AND deleted_at IS NULL;`);
 }
 async function autoUpsertPropertyExpenseByRef(client, input) {
     var _a, _b;

@@ -327,14 +327,6 @@ async function ensureMzappExpenseSchema() {
   await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
   await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS receipt_id text;')
   await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS receipt_item_id text;')
-  await pgPool.query('DROP INDEX IF EXISTS uniq_company_expenses;')
-  await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses
-    ON company_expenses (occurred_at, category, amount, COALESCE(note, ''))
-    WHERE COALESCE(generated_from, '') <> 'mzapp' AND deleted_at IS NULL;`)
-  await pgPool.query('DROP INDEX IF EXISTS uniq_property_expenses;')
-  await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses
-    ON property_expenses (property_id, occurred_at, category, amount, COALESCE(note, ''))
-    WHERE COALESCE(generated_from, '') <> 'mzapp' AND deleted_at IS NULL;`)
   })().catch((e: any) => {
     ;(ensureMzappExpenseSchema as any)._promise = null
     throw e
