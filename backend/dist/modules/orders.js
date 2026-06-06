@@ -50,6 +50,15 @@ function isInactiveOrderStatus(v) {
         return true;
     return false;
 }
+function visibleNetIncomeForOrder(o, deductionTotal) {
+    const st = String((o === null || o === void 0 ? void 0 : o.status) || '').toLowerCase();
+    const isCanceled = st.includes('cancel');
+    const include = (!isCanceled) || !!(o === null || o === void 0 ? void 0 : o.count_in_income);
+    if (!include)
+        return 0;
+    const net = Number((o === null || o === void 0 ? void 0 : o.net_income) || 0);
+    return Math.max(0, Number((net - Number(deductionTotal || 0)).toFixed(2)));
+}
 function normalizePropertyId(raw) {
     const s = String(raw || '').trim();
     if (!s)
@@ -288,11 +297,7 @@ exports.router.get('/', async (req, res) => {
                 catch (_b) { }
                 return rows.map(r => {
                     const t = totals[String(r.id)] || 0;
-                    const vn = Number(r.net_income || 0) - t;
-                    const status = String(r.status || '').toLowerCase();
-                    const isCanceled = status.includes('cancel');
-                    const include = (!isCanceled) || !!r.count_in_income;
-                    const visible = include ? Number(vn.toFixed(2)) : 0;
+                    const visible = visibleNetIncomeForOrder(r, t);
                     const sj = syncByOrder[String(r.id)] || null;
                     return {
                         ...r,
@@ -333,8 +338,7 @@ exports.router.get('/', async (req, res) => {
             const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) };
             const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
             const t = (store_1.db.orderInternalDeductions || []).filter((d) => String(d.order_id || '') === String(o.id) && (d.is_active !== false)).reduce((s, x) => s + Number(x.amount || 0), 0);
-            const vn = Number(row.net_income || 0) - t;
-            return { ...row, internal_deduction_total: Number(Number(t || 0).toFixed(2)), visible_net_income: Number(vn.toFixed(2)) };
+            return { ...row, internal_deduction_total: Number(Number(t || 0).toFixed(2)), visible_net_income: visibleNetIncomeForOrder(row, t) };
         });
         return res.json(out);
     }
@@ -359,8 +363,7 @@ exports.router.get('/', async (req, res) => {
             const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) };
             const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
             const t = (store_1.db.orderInternalDeductions || []).filter((d) => String(d.order_id || '') === String(o.id) && (d.is_active !== false)).reduce((s, x) => s + Number(x.amount || 0), 0);
-            const vn = Number(row.net_income || 0) - t;
-            return { ...row, internal_deduction_total: Number(Number(t || 0).toFixed(2)), visible_net_income: Number(vn.toFixed(2)) };
+            return { ...row, internal_deduction_total: Number(Number(t || 0).toFixed(2)), visible_net_income: visibleNetIncomeForOrder(row, t) };
         });
         return res.json(out2);
     }
@@ -408,14 +411,10 @@ exports.router.get('/:id', async (req, res) => {
         const prop = store_1.db.properties.find((p) => String(p.id) === String(local.property_id)) || store_1.db.properties.find((p) => String(p.code || '') === String(local.property_id || '')) || store_1.db.properties.find((p) => { const ln = (p === null || p === void 0 ? void 0 : p.listing_names) || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String(local.listing_name || '').toLowerCase()); });
         const property_name = (prop === null || prop === void 0 ? void 0 : prop.address) || undefined;
         const label = (local.property_code || (prop === null || prop === void 0 ? void 0 : prop.code) || (prop === null || prop === void 0 ? void 0 : prop.address) || local.property_id || '');
-        const st = String(local.status || '').toLowerCase();
-        const isCanceled = st.includes('cancel');
-        const include = (!isCanceled) || !!(local.count_in_income);
         const total = store_1.db.orderInternalDeductions.filter((d) => d.order_id === id && d.is_active).reduce((s, x) => s + Number(x.amount || 0), 0);
-        const vn = Number(local.net_income || 0) - Number(total || 0);
         const base = { ...local, checkin: dayOnly(local.checkin), checkout: dayOnly(local.checkout) };
         const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
-        return res.json({ ...row, internal_deduction_total: Number(Number(total || 0).toFixed(2)), visible_net_income: include ? Number(vn.toFixed(2)) : 0 });
+        return res.json({ ...row, internal_deduction_total: Number(Number(total || 0).toFixed(2)), visible_net_income: visibleNetIncomeForOrder(row, total) });
     }
     try {
         if (dbAdapter_1.hasPg) {
@@ -429,7 +428,6 @@ exports.router.get('/:id', async (req, res) => {
                     total = Number(((_b = (_a = rs === null || rs === void 0 ? void 0 : rs.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.total) || 0);
                 }
                 catch (_c) { }
-                const vn = Number(row.net_income || 0) - total;
                 let property_name = undefined;
                 let label = String(row.property_code || '');
                 try {
@@ -443,12 +441,9 @@ exports.router.get('/:id', async (req, res) => {
                     if (!label)
                         label = String(row.property_id || '');
                 }
-                const st = String(row.status || '').toLowerCase();
-                const isCanceled = st.includes('cancel');
-                const include = (!isCanceled) || !!row.count_in_income;
                 const base = { ...row, checkin: dayOnly(row.checkin), checkout: dayOnly(row.checkout) };
                 const withProp = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label };
-                return res.json({ ...withProp, internal_deduction_total: Number(total.toFixed(2)), visible_net_income: include ? Number(vn.toFixed(2)) : 0 });
+                return res.json({ ...withProp, internal_deduction_total: Number(total.toFixed(2)), visible_net_income: visibleNetIncomeForOrder(withProp, total) });
             }
         }
         // Supabase branch removed

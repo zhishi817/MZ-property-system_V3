@@ -44,6 +44,15 @@ function isInactiveOrderStatus(v: any): boolean {
   return false
 }
 
+function visibleNetIncomeForOrder(o: any, deductionTotal: number): number {
+  const st = String(o?.status || '').toLowerCase()
+  const isCanceled = st.includes('cancel')
+  const include = (!isCanceled) || !!(o as any)?.count_in_income
+  if (!include) return 0
+  const net = Number(o?.net_income || 0)
+  return Math.max(0, Number((net - Number(deductionTotal || 0)).toFixed(2)))
+}
+
 function normalizePropertyId(raw: any): string | undefined {
   const s = String(raw || '').trim()
   if (!s) return undefined
@@ -247,11 +256,7 @@ router.get('/', async (req, res) => {
         } catch {}
         return rows.map(r => {
           const t = totals[String(r.id)] || 0
-          const vn = Number(r.net_income || 0) - t
-          const status = String((r as any).status || '').toLowerCase()
-          const isCanceled = status.includes('cancel')
-          const include = (!isCanceled) || !!(r as any).count_in_income
-          const visible = include ? Number(vn.toFixed(2)) : 0
+          const visible = visibleNetIncomeForOrder(r, t)
           const sj = syncByOrder[String(r.id)] || null
           return {
             ...r,
@@ -288,8 +293,7 @@ router.get('/', async (req, res) => {
       const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) }
       const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label }
       const t = (db.orderInternalDeductions || []).filter((d: any) => String(d.order_id || '') === String(o.id) && (d.is_active !== false)).reduce((s: number, x: any) => s + Number(x.amount || 0), 0)
-      const vn = Number(row.net_income || 0) - t
-      return { ...row, internal_deduction_total: Number(Number(t || 0).toFixed(2)), visible_net_income: Number(vn.toFixed(2)) }
+      return { ...row, internal_deduction_total: Number(Number(t || 0).toFixed(2)), visible_net_income: visibleNetIncomeForOrder(row, t) }
     })
     return res.json(out)
   } catch {
@@ -309,8 +313,7 @@ router.get('/', async (req, res) => {
       const base = { ...o, checkin: dayOnly(o.checkin), checkout: dayOnly(o.checkout) }
       const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label }
       const t = (db.orderInternalDeductions || []).filter((d: any) => String(d.order_id || '') === String(o.id) && (d.is_active !== false)).reduce((s: number, x: any) => s + Number(x.amount || 0), 0)
-      const vn = Number(row.net_income || 0) - t
-      return { ...row, internal_deduction_total: Number(Number(t || 0).toFixed(2)), visible_net_income: Number(vn.toFixed(2)) }
+      return { ...row, internal_deduction_total: Number(Number(t || 0).toFixed(2)), visible_net_income: visibleNetIncomeForOrder(row, t) }
     })
     return res.json(out2)
   }
@@ -353,14 +356,10 @@ router.get('/:id', async (req, res) => {
     const prop = db.properties.find((p) => String(p.id) === String(local.property_id)) || db.properties.find((p) => String(p.code || '') === String(local.property_id || '')) || (db.properties as any[]).find((p: any) => { const ln = p?.listing_names || {}; return Object.values(ln || {}).map(String).map(s => s.toLowerCase()).includes(String((local as any).listing_name || '').toLowerCase()) })
     const property_name = prop?.address || undefined
     const label = (local.property_code || prop?.code || prop?.address || local.property_id || '')
-    const st = String((local as any).status || '').toLowerCase()
-    const isCanceled = st.includes('cancel')
-    const include = (!isCanceled) || !!((local as any).count_in_income)
     const total = (db as any).orderInternalDeductions.filter((d: any) => d.order_id === id && d.is_active).reduce((s: number, x: any) => s + Number(x.amount || 0), 0)
-    const vn = Number(local.net_income || 0) - Number(total || 0)
     const base = { ...local, checkin: dayOnly(local.checkin), checkout: dayOnly(local.checkout) }
     const row = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label }
-    return res.json({ ...row, internal_deduction_total: Number(Number(total || 0).toFixed(2)), visible_net_income: include ? Number(vn.toFixed(2)) : 0 })
+    return res.json({ ...row, internal_deduction_total: Number(Number(total || 0).toFixed(2)), visible_net_income: visibleNetIncomeForOrder(row, total) })
   }
   try {
     if (hasPg) {
@@ -373,7 +372,6 @@ router.get('/:id', async (req, res) => {
           const rs = await pgPool?.query('SELECT COALESCE(SUM(amount),0) AS total FROM order_internal_deductions WHERE is_active=true AND order_id=$1', [id])
           total = Number((rs?.rows?.[0]?.total) || 0)
         } catch {}
-        const vn = Number(row.net_income || 0) - total
         let property_name: string | undefined = undefined
         let label = String(row.property_code || '')
         try {
@@ -384,12 +382,9 @@ router.get('/:id', async (req, res) => {
         } catch {
           if (!label) label = String(row.property_id || '')
         }
-        const st = String(row.status || '').toLowerCase()
-        const isCanceled = st.includes('cancel')
-        const include = (!isCanceled) || !!(row as any).count_in_income
         const base = { ...row, checkin: dayOnly(row.checkin), checkout: dayOnly(row.checkout) }
         const withProp = property_name ? { ...base, property_code: label, property_name } : { ...base, property_code: label }
-        return res.json({ ...withProp, internal_deduction_total: Number(total.toFixed(2)), visible_net_income: include ? Number(vn.toFixed(2)) : 0 })
+        return res.json({ ...withProp, internal_deduction_total: Number(total.toFixed(2)), visible_net_income: visibleNetIncomeForOrder(withProp, total) })
       }
     }
     // Supabase branch removed
