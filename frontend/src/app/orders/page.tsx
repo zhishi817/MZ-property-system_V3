@@ -66,6 +66,7 @@ export default function OrdersPage() {
   const [detailOpen, setDetailOpen] = useState(false)
   const [detail, setDetail] = useState<Order | null>(null)
   const [detailDeductions, setDetailDeductions] = useState<any[]>([])
+  const [detailLateCheckoutAmount, setDetailLateCheckoutAmount] = useState<number>(0)
   const [detailDedAmount, setDetailDedAmount] = useState<number>(0)
   const [detailDedDesc, setDetailDedDesc] = useState<string>('')
   const [detailDedNote, setDetailDedNote] = useState<string>('')
@@ -765,13 +766,16 @@ export default function OrdersPage() {
     setDetailOpen(true)
     setDetailLoading(true)
     setDetailDedAmount(0); setDetailDedDesc(''); setDetailDedNote(''); setDetailEditing(null)
+    setDetailLateCheckoutAmount(0)
     const id = typeof record === 'string' ? record : record.id
     try {
-      const [o, ds] = await Promise.all([
+      const [o, ds, lateAmount] = await Promise.all([
         getJSON<Order>(`/orders/${id}`).catch(() => null as any),
-        fetch(`${API_BASE}/orders/${id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json()).catch(() => [])
+        fetch(`${API_BASE}/orders/${id}/internal-deductions`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json()).catch(() => []),
+        getLinkedIncomeAmount(id, 'late_checkout')
       ])
       if (o) setDetail(o)
+      setDetailLateCheckoutAmount(Number(lateAmount || 0))
       setDetailDeductions(Array.isArray(ds) ? ds : [])
       try { applyDeductionTotalsToLocalOrder(id, Array.isArray(ds) ? ds : []) } catch {}
     } finally { setDetailLoading(false) }
@@ -2210,6 +2214,7 @@ export default function OrdersPage() {
           <Descriptions.Item label="状态">{detail.status}</Descriptions.Item>
           <Descriptions.Item label="付款币种">{(detail as any).payment_currency || 'AUD'}</Descriptions.Item>
           <Descriptions.Item label="到账状态">{(detail as any).payment_received ? '已到账' : '未到账'}</Descriptions.Item>
+          <Descriptions.Item label="晚退收入">{detailLateCheckoutAmount > 0 ? <Tag color="purple">{money(detailLateCheckoutAmount)}（公司收入）</Tag> : '无'}</Descriptions.Item>
           <Descriptions.Item label="房东净租金">{money(getLandlordNetIncomeForOrder(detail))}</Descriptions.Item>
           <Descriptions.Item label="内部扣减汇总">{(detail as any).internal_deduction_total ?? 0}</Descriptions.Item>
           <Descriptions.Item label="房东可见净额">{money(Math.max(0, getLandlordNetIncomeForOrder(detail) - Number((detail as any).internal_deduction_total || 0)))}</Descriptions.Item>
