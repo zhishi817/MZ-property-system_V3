@@ -7,7 +7,7 @@ import { hasR2, r2Upload } from '../r2'
 import fs from 'fs'
 import { z } from 'zod'
 import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } from '../fingerprint'
-import { requirePerm, requireAnyPerm } from '../auth'
+import { requirePerm, requireAnyPerm, userHasAnyPerm } from '../auth'
 import { PDFDocument } from 'pdf-lib'
 import { pgInsertOnConflictDoNothing, pgPool } from '../dbAdapter'
 import { getChromiumBrowser, resetChromiumBrowser } from '../lib/playwright'
@@ -22,10 +22,15 @@ import { schedulePdfJobsKick } from '../services/pdfJobsWorker'
 import { r2GetObjectByKey } from '../r2'
 import { computeMonthSegmentsForOrders, sumSegmentsVisibleNetIncome } from '../lib/orderMonthSegments'
 import { countPhotoUrls, loadMonthlyStatementPhotoRows, recordHasPhotoUrls } from '../lib/monthlyStatementPhotoRecords'
-import { ensureManagementFeeRulesTable, resolveManagementFeeRateForMonth } from '../lib/managementFeeRules'
+import {
+  ensureManagementFeeRulesTable,
+  listManagementFeeRulesByLandlordIds,
+  resolveManagementFeeRateForMonth,
+} from '../lib/managementFeeRules'
 import { generateStatementPhotoPackPdf, type StatementPhotoPackSection } from '../lib/monthlyStatementPhotoPack'
 import { collectMonthlyInvoiceAttachments } from '../lib/monthlyStatementInvoiceAttachments'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
+import { buildCompanyRevenueReport } from '../lib/companyRevenueReport'
 
 export const router = Router()
 const upload = hasR2 ? multer({ storage: multer.memoryStorage() }) : multer({ dest: path.join(process.cwd(), 'uploads') })
@@ -114,6 +119,156 @@ function normalizeOrdersForMonthSegments(rows: any[]) {
     checkout: dateOnlyForOrderSegment(o?.checkout),
   }))
 }
+
+const companyRevenueViewPerms = [
+  'company_incomes.view',
+  'company_incomes.write',
+  'company_expenses.view',
+  'company_expenses.write',
+  'finance.tx.write',
+]
+
+router.get('/company-revenue/report', requireAnyPerm(companyRevenueViewPerms), async (req, res) => {
+  try {
+    const month = String((req.query as any)?.month || '').trim()
+    const range = monthRangeISO(month)
+    if (!range) return res.status(400).json({ message: 'invalid month' })
+    if (!hasPg || !pgPool) return res.status(400).json({ message: 'pg required' })
+
+    const user = (req as any).user || {}
+    const roleNames = Array.from(new Set([
+      String(user?.role || '').trim(),
+      ...(Array.isArray(user?.roles) ? user.roles.map((role: any) => String(role || '').trim()) : []),
+    ].filter(Boolean)))
+    const [canViewIncome, canViewExpense] = await Promise.all([
+      userHasAnyPerm(user, ['company_incomes.view', 'company_incomes.write', 'finance.tx.write']),
+      userHasAnyPerm(user, ['company_expenses.view', 'company_expenses.write', 'finance.tx.write']),
+    ])
+    const canIncludeDeleted = roleNames.includes('admin') || roleNames.includes('finance_staff')
+    const includeDeleted = canIncludeDeleted && String((req.query as any)?.include_deleted || '') === '1'
+
+    const ordersPromise = canViewIncome
+      ? pgPool.query(
+          `SELECT *
+             FROM orders
+            WHERE checkout IS NOT NULL
+              AND (
+                (checkin < $2::date AND checkout > $1::date)
+                OR (checkout >= $1::date AND checkout < $2::date)
+              )`,
+          [range.start, range.end],
+        )
+      : Promise.resolve({ rows: [] } as any)
+    const incomesPromise = canViewIncome
+      ? pgPool.query(
+          `SELECT *
+             FROM company_incomes
+            WHERE occurred_at >= $1::date
+              AND occurred_at < $2::date`,
+          [range.start, range.end],
+        )
+      : Promise.resolve({ rows: [] } as any)
+    const expensesPromise = canViewExpense
+      ? pgPool.query(
+          `SELECT *
+             FROM company_expenses
+            WHERE (
+                  fixed_expense_id IS NOT NULL
+              AND fixed_expense_id <> ''
+              AND month_key = $1
+            )
+               OR (
+                 (fixed_expense_id IS NULL OR fixed_expense_id = '')
+                 AND COALESCE(paid_date, occurred_at)::date >= $2::date
+                 AND COALESCE(paid_date, occurred_at)::date < $3::date
+               )`,
+          [month, range.start, range.end],
+        )
+      : Promise.resolve({ rows: [] } as any)
+
+    const [ordersResult, incomesResult, expensesResult] = await Promise.all([
+      ordersPromise,
+      incomesPromise,
+      expensesPromise,
+    ])
+    const orders = normalizeOrdersForMonthSegments(ordersResult.rows || [])
+    const incomes = Array.isArray(incomesResult.rows) ? incomesResult.rows : []
+    const expenses = Array.isArray(expensesResult.rows) ? expensesResult.rows : []
+    const orderIds = orders.map((order: any) => String(order?.id || '')).filter(Boolean)
+    const propertyIds = Array.from(new Set([
+      ...orders.map((order: any) => String(order?.property_id || '')),
+      ...incomes.map((row: any) => String(row?.property_id || '')),
+      ...expenses.map((row: any) => String(row?.property_id || '')),
+    ].filter(Boolean)))
+
+    const [deductionsResult, propertiesResult] = await Promise.all([
+      canViewIncome && orderIds.length
+        ? pgPool.query(
+            `SELECT order_id, COALESCE(SUM(amount), 0) AS total
+               FROM order_internal_deductions
+              WHERE is_active = true
+                AND order_id = ANY($1::text[])
+              GROUP BY order_id`,
+            [orderIds],
+          ).catch(() => ({ rows: [] } as any))
+        : Promise.resolve({ rows: [] } as any),
+      propertyIds.length
+        ? pgPool.query(
+            `SELECT id, code, address, landlord_id
+               FROM properties
+              WHERE id = ANY($1::text[])`,
+            [propertyIds],
+          )
+        : Promise.resolve({ rows: [] } as any),
+    ])
+    const deductionByOrder = new Map(
+      (deductionsResult.rows || []).map((row: any) => [String(row.order_id), Number(row.total || 0)]),
+    )
+    const enrichedOrders = orders.map((order: any) => ({
+      ...order,
+      internal_deduction_total: Number(deductionByOrder.get(String(order.id)) || 0),
+    }))
+    const properties = Array.isArray(propertiesResult.rows) ? propertiesResult.rows : []
+    const landlordIds: string[] = Array.from(new Set<string>(
+      properties.map((property: any) => String(property?.landlord_id || '')).filter(Boolean),
+    ))
+    const managementFeeRulesByLandlord = canViewIncome && landlordIds.length
+      ? await listManagementFeeRulesByLandlordIds(landlordIds)
+      : {}
+
+    const report = buildCompanyRevenueReport({
+      month,
+      orders: enrichedOrders,
+      properties,
+      managementFeeRulesByLandlord,
+      companyIncomes: incomes,
+      companyExpenses: expenses,
+      includeDeleted,
+    })
+
+    return res.json({
+      ...report,
+      capabilities: {
+        can_view_income: canViewIncome,
+        can_view_expense: canViewExpense,
+        can_include_deleted: canIncludeDeleted,
+      },
+      summary: {
+        total_income: canViewIncome ? report.summary.total_income : null,
+        total_expense: canViewExpense ? report.summary.total_expense : null,
+        net_revenue: canViewIncome && canViewExpense ? report.summary.net_revenue : null,
+        net_margin: canViewIncome && canViewExpense ? report.summary.net_margin : null,
+      },
+      income_categories: canViewIncome ? report.income_categories : [],
+      expense_categories: canViewExpense ? report.expense_categories : [],
+      income_rows: canViewIncome ? report.income_rows : [],
+      expense_rows: canViewExpense ? report.expense_rows : [],
+      warnings: canViewIncome ? report.warnings : [],
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'company revenue report failed' })
+  }
+})
 
 router.get('/', async (req, res) => {
   try {

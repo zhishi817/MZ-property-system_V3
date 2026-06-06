@@ -30,6 +30,7 @@ const managementFeeRules_1 = require("../lib/managementFeeRules");
 const monthlyStatementPhotoPack_1 = require("../lib/monthlyStatementPhotoPack");
 const monthlyStatementInvoiceAttachments_1 = require("../lib/monthlyStatementInvoiceAttachments");
 const autoExpenseSourceSummary_1 = require("../lib/autoExpenseSourceSummary");
+const companyRevenueReport_1 = require("../lib/companyRevenueReport");
 exports.router = (0, express_1.Router)();
 const upload = r2_1.hasR2 ? (0, multer_1.default)({ storage: multer_1.default.memoryStorage() }) : (0, multer_1.default)({ dest: path_1.default.join(process.cwd(), 'uploads') });
 const memUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
@@ -131,6 +132,133 @@ function normalizeOrdersForMonthSegments(rows) {
         checkout: dateOnlyForOrderSegment(o === null || o === void 0 ? void 0 : o.checkout),
     }));
 }
+const companyRevenueViewPerms = [
+    'company_incomes.view',
+    'company_incomes.write',
+    'company_expenses.view',
+    'company_expenses.write',
+    'finance.tx.write',
+];
+exports.router.get('/company-revenue/report', (0, auth_1.requireAnyPerm)(companyRevenueViewPerms), async (req, res) => {
+    var _a, _b;
+    try {
+        const month = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.month) || '').trim();
+        const range = monthRangeISO(month);
+        if (!range)
+            return res.status(400).json({ message: 'invalid month' });
+        if (!dbAdapter_1.hasPg || !dbAdapter_2.pgPool)
+            return res.status(400).json({ message: 'pg required' });
+        const user = req.user || {};
+        const roleNames = Array.from(new Set([
+            String((user === null || user === void 0 ? void 0 : user.role) || '').trim(),
+            ...(Array.isArray(user === null || user === void 0 ? void 0 : user.roles) ? user.roles.map((role) => String(role || '').trim()) : []),
+        ].filter(Boolean)));
+        const [canViewIncome, canViewExpense] = await Promise.all([
+            (0, auth_1.userHasAnyPerm)(user, ['company_incomes.view', 'company_incomes.write', 'finance.tx.write']),
+            (0, auth_1.userHasAnyPerm)(user, ['company_expenses.view', 'company_expenses.write', 'finance.tx.write']),
+        ]);
+        const canIncludeDeleted = roleNames.includes('admin') || roleNames.includes('finance_staff');
+        const includeDeleted = canIncludeDeleted && String(((_b = req.query) === null || _b === void 0 ? void 0 : _b.include_deleted) || '') === '1';
+        const ordersPromise = canViewIncome
+            ? dbAdapter_2.pgPool.query(`SELECT *
+             FROM orders
+            WHERE checkout IS NOT NULL
+              AND (
+                (checkin < $2::date AND checkout > $1::date)
+                OR (checkout >= $1::date AND checkout < $2::date)
+              )`, [range.start, range.end])
+            : Promise.resolve({ rows: [] });
+        const incomesPromise = canViewIncome
+            ? dbAdapter_2.pgPool.query(`SELECT *
+             FROM company_incomes
+            WHERE occurred_at >= $1::date
+              AND occurred_at < $2::date`, [range.start, range.end])
+            : Promise.resolve({ rows: [] });
+        const expensesPromise = canViewExpense
+            ? dbAdapter_2.pgPool.query(`SELECT *
+             FROM company_expenses
+            WHERE (
+                  fixed_expense_id IS NOT NULL
+              AND fixed_expense_id <> ''
+              AND month_key = $1
+            )
+               OR (
+                 (fixed_expense_id IS NULL OR fixed_expense_id = '')
+                 AND COALESCE(paid_date, occurred_at)::date >= $2::date
+                 AND COALESCE(paid_date, occurred_at)::date < $3::date
+               )`, [month, range.start, range.end])
+            : Promise.resolve({ rows: [] });
+        const [ordersResult, incomesResult, expensesResult] = await Promise.all([
+            ordersPromise,
+            incomesPromise,
+            expensesPromise,
+        ]);
+        const orders = normalizeOrdersForMonthSegments(ordersResult.rows || []);
+        const incomes = Array.isArray(incomesResult.rows) ? incomesResult.rows : [];
+        const expenses = Array.isArray(expensesResult.rows) ? expensesResult.rows : [];
+        const orderIds = orders.map((order) => String((order === null || order === void 0 ? void 0 : order.id) || '')).filter(Boolean);
+        const propertyIds = Array.from(new Set([
+            ...orders.map((order) => String((order === null || order === void 0 ? void 0 : order.property_id) || '')),
+            ...incomes.map((row) => String((row === null || row === void 0 ? void 0 : row.property_id) || '')),
+            ...expenses.map((row) => String((row === null || row === void 0 ? void 0 : row.property_id) || '')),
+        ].filter(Boolean)));
+        const [deductionsResult, propertiesResult] = await Promise.all([
+            canViewIncome && orderIds.length
+                ? dbAdapter_2.pgPool.query(`SELECT order_id, COALESCE(SUM(amount), 0) AS total
+               FROM order_internal_deductions
+              WHERE is_active = true
+                AND order_id = ANY($1::text[])
+              GROUP BY order_id`, [orderIds]).catch(() => ({ rows: [] }))
+                : Promise.resolve({ rows: [] }),
+            propertyIds.length
+                ? dbAdapter_2.pgPool.query(`SELECT id, code, address, landlord_id
+               FROM properties
+              WHERE id = ANY($1::text[])`, [propertyIds])
+                : Promise.resolve({ rows: [] }),
+        ]);
+        const deductionByOrder = new Map((deductionsResult.rows || []).map((row) => [String(row.order_id), Number(row.total || 0)]));
+        const enrichedOrders = orders.map((order) => ({
+            ...order,
+            internal_deduction_total: Number(deductionByOrder.get(String(order.id)) || 0),
+        }));
+        const properties = Array.isArray(propertiesResult.rows) ? propertiesResult.rows : [];
+        const landlordIds = Array.from(new Set(properties.map((property) => String((property === null || property === void 0 ? void 0 : property.landlord_id) || '')).filter(Boolean)));
+        const managementFeeRulesByLandlord = canViewIncome && landlordIds.length
+            ? await (0, managementFeeRules_1.listManagementFeeRulesByLandlordIds)(landlordIds)
+            : {};
+        const report = (0, companyRevenueReport_1.buildCompanyRevenueReport)({
+            month,
+            orders: enrichedOrders,
+            properties,
+            managementFeeRulesByLandlord,
+            companyIncomes: incomes,
+            companyExpenses: expenses,
+            includeDeleted,
+        });
+        return res.json({
+            ...report,
+            capabilities: {
+                can_view_income: canViewIncome,
+                can_view_expense: canViewExpense,
+                can_include_deleted: canIncludeDeleted,
+            },
+            summary: {
+                total_income: canViewIncome ? report.summary.total_income : null,
+                total_expense: canViewExpense ? report.summary.total_expense : null,
+                net_revenue: canViewIncome && canViewExpense ? report.summary.net_revenue : null,
+                net_margin: canViewIncome && canViewExpense ? report.summary.net_margin : null,
+            },
+            income_categories: canViewIncome ? report.income_categories : [],
+            expense_categories: canViewExpense ? report.expense_categories : [],
+            income_rows: canViewIncome ? report.income_rows : [],
+            expense_rows: canViewExpense ? report.expense_rows : [],
+            warnings: canViewIncome ? report.warnings : [],
+        });
+    }
+    catch (e) {
+        return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'company revenue report failed' });
+    }
+});
 exports.router.get('/', async (req, res) => {
     try {
         if (dbAdapter_1.hasPg) {
