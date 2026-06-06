@@ -6,6 +6,7 @@ import { v4 as uuid } from 'uuid'
 import { PoolClient } from 'pg'
 
 type JobMode = 'incremental' | 'backfill'
+let zeroAmountAirbnbBackfillRunning = false
 
 function toDateOnly(y: number, m: number, d: number): string {
   const mm = String(m).padStart(2, '0')
@@ -463,13 +464,8 @@ async function loadPropertyIndex(): Promise<Record<string, string>> {
     if (hasPg) {
       const rowsRaw: any = await pgSelect('properties', 'id,airbnb_listing_name')
       const rows: any[] = Array.isArray(rowsRaw) ? rowsRaw : []
-      function normalizeIndexKey(s: string): string {
-        const t = normalizeText(String(s || ''))
-        const x = t.replace(/[“”]/g, '"').replace(/[‘’]/g, "'")
-        return x.trim().toLowerCase()
-      }
       rows.forEach((p: any) => {
-        const nm = normalizeIndexKey(String(p.airbnb_listing_name || ''))
+        const nm = normalizePropertyIndexKey(String(p.airbnb_listing_name || ''))
         if (nm) byName[nm] = String(p.id)
       })
     }
@@ -478,6 +474,11 @@ async function loadPropertyIndex(): Promise<Record<string, string>> {
 }
 
 function normalizeText(s: string): string { return String(s || '').replace(/\s+/g, ' ').trim() }
+function normalizePropertyIndexKey(s: string): string {
+  const t = normalizeText(String(s || ''))
+  const x = t.replace(/[“”]/g, '"').replace(/[‘’]/g, "'")
+  return x.trim().toLowerCase()
+}
 
 export function extractFieldsFromHtml(html: string, headerDate: Date): {
   confirmation_code?: string
@@ -631,7 +632,7 @@ export function extractFieldsFromHtml(html: string, headerDate: Date): {
   const mx = /([0-9]+)\s+nights\s+room\s+fee/i.exec(bodyText)
   if (mx) nights = Number(mx[1])
   function parseAmountAfter(label: string): number | undefined {
-    const re = new RegExp(label + '\\s*[$]?\\s*([0-9][0-9,.]*)', 'i')
+    const re = new RegExp(label + '\\s*(?:A\\$|AU\\$|AUD\\s*\\$?|\\$)?\\s*([0-9][0-9,.]*)', 'i')
     const m = re.exec(bodyText)
     if (!m) return undefined
     const v = Number(String(m[1]).replace(/[,]/g, ''))
@@ -760,7 +761,7 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
   const price = round2(fields.price || 0) || 0
   const cleaning = round2(fields.cleaning_fee || 0) || 0
   const net = round2(price - cleaning) || 0
-  const avg = nights && nights > 0 ? (round2(price / nights) || 0) : 0
+  const avg = nights && nights > 0 ? (round2(net / nights) || 0) : 0
   const idempotency_key = `airbnb_email:${cc}`
   if (dryRun) {
     const sample = { confirmation_code: cc, guest_name: fields.guest_name, listing_name: fields.listing_name, checkin: ci, checkout: co, nights, price, cleaning_fee: cleaning, net_income: net, avg_nightly_price: avg, property_match: !!pid, property_id: pid }
@@ -768,8 +769,26 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
   }
   if (hasPg) {
     try {
-      const dup: any[] = await pgSelect('orders', 'id', { source: sourceTag, confirmation_code: cc, property_id: pid }) as any[] || []
+      const dup: any[] = await pgSelect('orders', 'id,price,cleaning_fee,net_income,avg_nightly_price,nights', { source: sourceTag, confirmation_code: cc, property_id: pid }) as any[] || []
       if (Array.isArray(dup) && dup[0]) {
+        const existing = dup[0] as any
+        const hasParsedAmount = Number(price || 0) > 0 || Number(cleaning || 0) > 0 || Number(net || 0) > 0
+        const existingMissingAmount = Number(existing.price || 0) <= 0 && Number(existing.cleaning_fee || 0) <= 0 && Number(existing.net_income || 0) <= 0
+        let amountUpdated = false
+        if (hasParsedAmount && existingMissingAmount && pgPool) {
+          try {
+            const amountUpd = await pgPool.query(
+              `UPDATE orders
+               SET price=$2, cleaning_fee=$3, net_income=$4, avg_nightly_price=$5, nights=$6
+               WHERE id=$1`,
+              [String(existing.id), price, cleaning, net, avg, nights || null]
+            )
+            amountUpdated = Number(amountUpd?.rowCount || 0) > 0
+            console.log(JSON.stringify({ tag: 'orders_amount_backfill_done', order_id: String(existing.id), confirmation_code: cc, price, cleaning_fee: cleaning, net_income: net, rowCount: Number(amountUpd?.rowCount || 0) }))
+          } catch (e: any) {
+            console.error(JSON.stringify({ tag: 'db_write_failed', table: 'orders', action: 'amount_backfill', order_id: String(existing.id), code: String((e as any)?.code || ''), message: String(e?.message || '') }))
+          }
+        }
         console.log(JSON.stringify({ tag: 'orders_write_done', action: 'duplicate_check', upserted: false, duplicate: true, order_id: dup[0].id }))
         try {
           const { pgRunInTransaction } = require('../dbAdapter')
@@ -779,7 +798,7 @@ async function processMessage(acc: { user: string; pass: string; folder: string 
           })
         } catch {}
         try { if (pgPool) { await pgPool.query("UPDATE email_orders_raw SET status='resolved', extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object('resolved_order_id', $2::text) WHERE uid=$1", [Number(msg.uid || 0), String(dup[0].id || '')]) } } catch {}
-        return { matched: true, inserted: false, skipped_duplicate: true, failed: false, order_id: dup[0].id, last_uid: Number(msg.uid || 0) }
+        return { matched: true, inserted: false, updated: amountUpdated, skipped_duplicate: !amountUpdated, failed: false, order_id: dup[0].id, last_uid: Number(msg.uid || 0) }
       }
     } catch {}
     const payload: any = { id: uuid(), source: sourceTag, external_id: cc, property_id: pid, guest_name: fields.guest_name, checkin: ci, checkout: co, price, cleaning_fee: cleaning, net_income: net, avg_nightly_price: avg, nights, currency: 'AUD', status: 'confirmed', confirmation_code: cc, idempotency_key, payment_currency: 'AUD', payment_received: false, email_header_at: headerDate?.toISOString?.() ? new Date(headerDate as Date) : undefined, year_inferred: !!fields.year_inferred, raw_checkin_text: fields.raw_checkin_text, raw_checkout_text: fields.raw_checkout_text }
@@ -1182,6 +1201,161 @@ router.post('/email-sync/run', requirePerm('order.manage'), async (req, res) => 
     if (e?.next_allowed_at) payload.next_allowed_at = e.next_allowed_at
     if (e?.running_since) payload.running_since = e.running_since
     return res.status(status).json(payload)
+  }
+})
+
+router.post('/email-sync/backfill-zero-amount-airbnb', requirePerm('order.manage'), async (req, res) => {
+  try {
+    if (!hasPg || !pgPool) return res.status(400).json({ message: 'pg required' })
+    const pool = pgPool
+    const dryRun = !!(req.body || {})?.dry_run
+    const batchSize = Math.max(1, Math.min(50, Number((req.body || {})?.batch_size || 10)))
+    const rs = await pool.query(
+      `WITH zero_orders AS (
+         SELECT
+           o.id,
+           o.confirmation_code,
+           o.email_header_at,
+           o.property_id
+         FROM orders o
+         WHERE o.source = 'airbnb_email'
+           AND COALESCE(o.price, 0) = 0
+           AND COALESCE(o.cleaning_fee, 0) = 0
+           AND COALESCE(o.net_income, 0) = 0
+           AND o.status NOT ILIKE '%cancel%'
+       ),
+       affected AS (
+         SELECT
+           mail.account,
+           mail.uid,
+           o.id,
+           o.confirmation_code,
+           p.code AS property_code,
+           o.email_header_at
+         FROM zero_orders o
+         JOIN LATERAL (
+           SELECT candidate.account, candidate.uid
+           FROM (
+             SELECT
+               NULLIF(esi.account, '') AS account,
+               esi.uid::bigint AS uid,
+               esi.created_at
+             FROM email_sync_items esi
+             WHERE esi.uid IS NOT NULL
+               AND NULLIF(esi.account, '') IS NOT NULL
+               AND (
+                 esi.order_id::text = o.id::text
+                 OR (
+                   NULLIF(o.confirmation_code, '') IS NOT NULL
+                   AND (
+                     esi.confirmation_code = o.confirmation_code
+                     OR COALESCE(esi.parse_preview, '') LIKE ('cc=' || o.confirmation_code || ' %')
+                   )
+                 )
+               )
+             UNION ALL
+             SELECT
+               NULLIF(raw.account, '') AS account,
+               raw.uid::bigint AS uid,
+               raw.created_at
+             FROM email_orders_raw raw
+             WHERE raw.uid IS NOT NULL
+               AND NULLIF(raw.account, '') IS NOT NULL
+               AND NULLIF(o.confirmation_code, '') IS NOT NULL
+               AND raw.confirmation_code = o.confirmation_code
+           ) candidate
+           ORDER BY candidate.created_at DESC NULLS LAST
+           LIMIT 1
+         ) mail ON true
+         LEFT JOIN properties p ON p.id = o.property_id
+       )
+       SELECT
+         account,
+         array_agg(uid ORDER BY email_header_at DESC NULLS LAST) AS uids,
+         count(*)::int AS affected_count,
+         jsonb_agg(jsonb_build_object(
+           'id', id,
+           'confirmation_code', confirmation_code,
+           'property_code', property_code,
+           'uid', uid,
+           'email_header_at', email_header_at
+         ) ORDER BY email_header_at DESC NULLS LAST) AS orders
+       FROM affected
+       GROUP BY account
+       ORDER BY account`
+    )
+    const groups = (rs.rows || []).map((r: any) => ({
+      account: String(r.account || ''),
+      uids: (Array.isArray(r.uids) ? r.uids : []).map((n: any) => Number(n)).filter((n: number) => Number.isFinite(n)),
+      affected_count: Number(r.affected_count || 0),
+      orders: Array.isArray(r.orders) ? r.orders : [],
+    })).filter((g: any) => g.account && g.uids.length)
+    const affectedCount = groups.reduce((sum: number, g: any) => sum + Number(g.affected_count || 0), 0)
+    if (dryRun || affectedCount <= 0) return res.json({ ok: true, dry_run: dryRun, affected_count: affectedCount, groups })
+
+    if (zeroAmountAirbnbBackfillRunning) return res.status(409).json({ message: 'zero_amount_airbnb_backfill_running', reason: 'already_running' })
+    const runId = uuid()
+    const plannedBatches = groups.reduce((sum: number, g: any) => sum + Math.ceil(g.uids.length / 50), 0)
+    zeroAmountAirbnbBackfillRunning = true
+    res.status(202).json({
+      ok: true,
+      started: true,
+      run_id: runId,
+      affected_count: affectedCount,
+      batch_count: plannedBatches,
+      groups: groups.map((g: any) => ({ account: g.account, affected_count: g.affected_count, uid_count: g.uids.length })),
+    })
+    setImmediate(async () => {
+      const batches: any[] = []
+      try {
+        console.log(JSON.stringify({ tag: 'zero_amount_airbnb_backfill_started', run_id: runId, affected_count: affectedCount, batch_count: plannedBatches }))
+        for (const g of groups) {
+          for (let i = 0; i < g.uids.length; i += 50) {
+            const uids = g.uids.slice(i, i + 50)
+            const batch: any = { account: g.account, uids, uid_count: uids.length, ok: false }
+            try {
+              batch.result = await runEmailSyncJob({
+                mode: 'incremental',
+                account: g.account,
+                uids,
+                max_per_run: 50,
+                max_messages: 50,
+                batch_size: batchSize,
+                concurrency: 1,
+                batch_sleep_ms: 0,
+                min_interval_ms: 0,
+                trigger_source: 'zero_amount_airbnb_backfill',
+              })
+              batch.ok = true
+            } catch (e: any) {
+              batch.error = String(e?.message || 'sync failed')
+              batch.reason = e?.reason || null
+              batch.status = Number(e?.status || 500)
+            }
+            batches.push(batch)
+            console.log(JSON.stringify({ tag: 'zero_amount_airbnb_backfill_batch_done', run_id: runId, account: batch.account, uid_count: batch.uid_count, ok: batch.ok, reason: batch.reason || null, status: batch.status || null }))
+          }
+        }
+        const left = await pool.query(
+          `SELECT count(*)::int AS remaining
+           FROM orders
+           WHERE source = 'airbnb_email'
+             AND COALESCE(price, 0) = 0
+             AND COALESCE(cleaning_fee, 0) = 0
+             AND COALESCE(net_income, 0) = 0
+             AND status NOT ILIKE '%cancel%'`
+        )
+        const failed_batches = batches.filter(b => !b.ok).length
+        console.log(JSON.stringify({ tag: 'zero_amount_airbnb_backfill_done', run_id: runId, ok: failed_batches === 0, affected_count: affectedCount, batch_count: batches.length, failed_batches, remaining: Number(left?.rows?.[0]?.remaining || 0) }))
+      } catch (e: any) {
+        console.error(JSON.stringify({ tag: 'zero_amount_airbnb_backfill_failed', run_id: runId, message: String(e?.message || '') }))
+      } finally {
+        zeroAmountAirbnbBackfillRunning = false
+      }
+    })
+    return
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'backfill_zero_amount_airbnb_failed') })
   }
 })
 
@@ -2136,6 +2310,7 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
   const max_messages_capped = Math.min(HARD_CAP, Number(max_messages || HARD_CAP))
   const max_per_run_capped = Math.min(HARD_CAP, Number(max_per_run || HARD_CAP))
   const uids_capped = Array.isArray(uids) ? (uids as number[]).slice(0, HARD_CAP) : undefined
+  const explicitUidMode = Array.isArray(uids_capped) && uids_capped.length > 0
   if (!hasPg) throw Object.assign(new Error('pg required'), { status: 400 })
   try { await ensureEmailSyncTables() } catch {}
   try { await cleanupStaleRunning() } catch {}
@@ -2245,6 +2420,7 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
       let failureMessage: string | null = null
       let retryPhasePending = true
       let retryDueUids: number[] = []
+      let explicitUidsPending = explicitUidMode
       try {
         const rs = await dbq(dbClient).query('SELECT DISTINCT uid FROM email_sync_items WHERE account=$1 AND status=\'retry\' AND uid IS NOT NULL AND next_retry_at IS NOT NULL AND next_retry_at <= now() ORDER BY next_retry_at ASC LIMIT $2', [acc.user, HARD_CAP])
         retryDueUids = (rs?.rows || []).map((r: any) => Number(r.uid || 0)).filter((n: number) => Number.isFinite(n))
@@ -2257,8 +2433,12 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
           uidList = retryDueUids.slice(0, limit)
           retryDueUids = retryDueUids.slice(uidList.length)
           if (!retryDueUids.length) retryPhasePending = false
+        } else if (explicitUidsPending) {
+          uidList = (uids_capped as number[]).slice(0, limit)
+          explicitUidsPending = false
         } else {
-          uidList = (Array.isArray(uids_capped) && uids_capped.length) ? (uids_capped as number[]) : await fetchUids(imap, mode === 'incremental' ? { uidFrom: lastUid, limit } : { since: windowFrom, before: windowTo, limit })
+          if (explicitUidMode) break
+          uidList = await fetchUids(imap, mode === 'incremental' ? { uidFrom: lastUid, limit } : { since: windowFrom, before: windowTo, limit })
         }
         if (!uidList.length) break
         const batches: number[][] = []
@@ -2308,7 +2488,7 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                 if (notWhitelisted) {
                   try {
                     if (itemId) {
-                      await dbq(dbClient).query('UPDATE email_sync_items SET status=$4, reason=$5::text WHERE account=$1 AND run_id::text=$2 AND uid=$3', [acc.user, runIdKeyStr, uid, 'skipped', 'not_whitelisted'])
+                      await dbq(dbClient).query('UPDATE email_sync_items SET status=$4::text, reason=$5::text WHERE account=$1::text AND run_id::text=$2::text AND uid=$3::bigint', [acc.user, runIdKeyStr, uid, 'skipped', 'not_whitelisted'])
                     }
                   } catch {}
                   continue
@@ -2318,7 +2498,7 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                     assertItemStatus('parsed')
                     const confCodeP = ((String((r as any)?.sample?.confirmation_code || (r as any)?.confirmation_code || '')).match(/\b[A-Z0-9]{8,10}\b/)?.[0] || '') || null
                     const listingP = String((r as any)?.sample?.listing_name || '' || (r as any)?.listing_name || '' ) || null
-                    const upd1 = await dbq(dbClient).query('UPDATE email_sync_items SET status=$4, confirmation_code=$5, listing_name=$6 WHERE account=$1 AND run_id::text=$2 AND uid=$3', [acc.user, runIdKeyStr, uid, 'parsed', confCodeP, listingP])
+                    const upd1 = await dbq(dbClient).query('UPDATE email_sync_items SET status=$4::text, confirmation_code=$5::text, listing_name=$6::text WHERE account=$1::text AND run_id::text=$2::text AND uid=$3::bigint', [acc.user, runIdKeyStr, uid, 'parsed', confCodeP, listingP])
                     console.log(JSON.stringify({ tag: 'items_update_rowcount', step: 'parsed', account: acc.user, run_id: runIdKeyStr, uid, rowCount: (upd1 as any)?.rowCount || 0 }))
                   }
                 } catch {}
@@ -2370,11 +2550,11 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                   safeDbLog('email_sync_items','update', updPayload, { columns: ['account','run_id','uid','status','reason','error_code','error_message','listing_name','header_date','parse_preview','order_id','confirmation_code'] })
                   let upd2
                   try {
-                    upd2 = await dbq(dbClient).query(`UPDATE email_sync_items SET status=$4, reason=$5::text, error_code=$6::text, error_message=$7::text, listing_name=$8::text, header_date=$9${HEADER_DATE_CAST}, parse_preview=COALESCE(NULLIF($10,''), parse_preview), order_id=$11::text, parse_probe=$12, confirmation_code=$13::text WHERE account=$1 AND run_id::text=$2 AND uid=$3`, [acc.user, runIdKeyStr, uid, updPayload.status, updPayload.reason, updPayload.error_code, updPayload.error_message, updPayload.listing_name, updPayload.header_date, updPayload.parse_preview, updPayload.order_id, JSON.stringify(parseProbe), confCode])
+                    upd2 = await dbq(dbClient).query(`UPDATE email_sync_items SET status=$2::text, reason=$3::text, error_code=$4::text, error_message=$5::text, listing_name=$6::text, header_date=$7${HEADER_DATE_CAST}, parse_preview=COALESCE(NULLIF($8::text,''), parse_preview), order_id=$9::text, parse_probe=$10::jsonb, confirmation_code=$11::text WHERE id=$1`, [itemId, updPayload.status, updPayload.reason, updPayload.error_code, updPayload.error_message, updPayload.listing_name, updPayload.header_date, updPayload.parse_preview, updPayload.order_id, JSON.stringify(parseProbe), confCode])
                   } catch (e: any) {
                     const code = String((e && (e.code || (e as any).code)) || '')
                     if (code === '23514') {
-                      upd2 = await dbq(dbClient).query(`UPDATE email_sync_items SET status=$4, reason=NULL, error_code=$6::text, error_message=$7::text, listing_name=$8::text, header_date=$9${HEADER_DATE_CAST}, parse_preview=COALESCE(NULLIF($10,''), parse_preview), order_id=$11::text, parse_probe=$12, confirmation_code=$13::text WHERE account=$1 AND run_id::text=$2 AND uid=$3`, [acc.user, runIdKeyStr, uid, updPayload.status, /* reason null */ null, updPayload.error_code, updPayload.error_message, updPayload.listing_name, updPayload.header_date, updPayload.parse_preview, updPayload.order_id, JSON.stringify(parseProbe), confCode])
+                      upd2 = await dbq(dbClient).query(`UPDATE email_sync_items SET status=$2::text, reason=NULL::text, error_code=$4::text, error_message=$5::text, listing_name=$6::text, header_date=$7${HEADER_DATE_CAST}, parse_preview=COALESCE(NULLIF($8::text,''), parse_preview), order_id=$9::text, parse_probe=$10::jsonb, confirmation_code=$11::text WHERE id=$1`, [itemId, updPayload.status, /* reason null */ null, updPayload.error_code, updPayload.error_message, updPayload.listing_name, updPayload.header_date, updPayload.parse_preview, updPayload.order_id, JSON.stringify(parseProbe), confCode])
                     } else { throw e }
                   }
                     const rc2 = (upd2 as any)?.rowCount || 0
@@ -2448,7 +2628,7 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                     try {
                       if (itemId) {
                         assertItemStatus('parsed')
-                        await dbq(dbClient).query('UPDATE email_sync_items SET status=$2 WHERE id=$1 AND (status IS NULL OR status = $3)', [itemId, 'parsed', 'scanned'])
+                        await dbq(dbClient).query('UPDATE email_sync_items SET status=$2::text WHERE id=$1 AND (status IS NULL OR status = $3::text)', [itemId, 'parsed', 'scanned'])
                       }
                     } catch {}
                     const subj3 = String(env?.subject || '')
@@ -2488,7 +2668,7 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                     const payloadR = { source: 'imap', uid, subject: String(env?.subject || ''), account: acc.user }
                     console.error(JSON.stringify({ tag: 'db_write_failed', table: 'email_orders_raw', columns: ['source','uid','message_id','header_date','envelope','html','plain','status','subject','sender','account'], code: String((e as any)?.code || ''), message: String(e?.message || ''), payload_keys: Object.keys(payloadR), payload_sample: { uid, subject: String(env?.subject||''), account: acc.user, run_id: startRunId } }))
                     try {
-                    const updFail = await dbq(dbClient).query('UPDATE email_sync_items SET status=$4, reason=$5 WHERE account=$1 AND run_id::text=$2 AND uid=$3', [acc.user, runIdKeyStr, uid, 'skipped', 'db_write_failed'])
+                    const updFail = await dbq(dbClient).query('UPDATE email_sync_items SET status=$4::text, reason=$5::text WHERE account=$1::text AND run_id::text=$2::text AND uid=$3::bigint', [acc.user, runIdKeyStr, uid, 'skipped', 'db_write_failed'])
                       console.log(JSON.stringify({ tag: 'items_update_rowcount', step: 'raw_fail', account: acc.user, run_id: runIdKeyStr, uid, rowCount: (updFail as any)?.rowCount || 0 }))
                     } catch {}
                   }
@@ -2499,7 +2679,7 @@ export async function runEmailSyncJob(opts: EmailSyncOptions = {}): Promise<any>
                 if (!failureCode) failureCode = 'uid_processing_failed'
                 if (!failureMessage) failureMessage = String(e?.message || '')
                 try {
-                  const updUidFail = await dbq(dbClient).query('UPDATE email_sync_items SET status=$4, reason=$5, error_code=$6, error_message=$7 WHERE account=$1 AND run_id::text=$2 AND uid=$3', [acc.user, runIdKeyStr, uid, 'skipped', 'uid_processing_failed', 'uid_processing_failed', String(e?.message || '')])
+                  const updUidFail = await dbq(dbClient).query('UPDATE email_sync_items SET status=$4::text, reason=$5::text, error_code=$6::text, error_message=$7::text WHERE account=$1::text AND run_id::text=$2::text AND uid=$3::bigint', [acc.user, runIdKeyStr, uid, 'skipped', 'uid_processing_failed', 'uid_processing_failed', String(e?.message || '')])
                   console.error(JSON.stringify({ tag: 'uid_failed_item_update', uid, run_id: runIdKeyStr, account: acc.user, rowCount: (updUidFail as any)?.rowCount || 0, code: 'uid_processing_failed', message: String(e?.message || '') }))
                 } catch {}
               } finally { if (mode === 'incremental') { if (uid > lastUid) lastUid = uid } }

@@ -25,6 +25,7 @@ const BOOKING_NET_RATE = 0.83
 export default function OrdersPage() {
   const { message } = App.useApp()
   const router = useRouter()
+  const [mounted, setMounted] = useState(false)
   const [data, setData] = useState<Order[]>([])
   const [open, setOpen] = useState(false)
   const [form] = Form.useForm()
@@ -147,6 +148,29 @@ export default function OrdersPage() {
   function getLandlordNetIncomeForOrder(o: any): number {
     return roundMoney(o?.net_income ?? 0)
   }
+  function hasAmountValue(v: any): boolean {
+    if (v === null || v === undefined || v === '') return false
+    return Number.isFinite(Number(v))
+  }
+  function getOrderStoredNet(o: any): number {
+    if (hasAmountValue(o?.net_income)) return roundMoney(o.net_income)
+    const total = hasAmountValue(o?.price) ? Number(o.price) : 0
+    return roundMoney(total - Number(o?.cleaning_fee || 0))
+  }
+  function getOrderTotalRent(o: any): number {
+    const storedPrice = hasAmountValue(o?.__src_price) ? Number(o.__src_price) : (hasAmountValue(o?.price) ? Number(o.price) : 0)
+    const storedNet = getOrderStoredNet(o)
+    const cleaning = Number(o?.cleaning_fee || o?.__src_cleaning_fee || 0)
+    if (storedPrice > 0 || storedNet <= 0) return roundMoney(storedPrice)
+    return roundMoney(storedNet + cleaning)
+  }
+  function normalizeOrderListAmounts(o: any, nights: number) {
+    const cleaning = Number(o?.cleaning_fee || 0)
+    const net = getOrderStoredNet(o)
+    const total = getOrderTotalRent({ ...o, cleaning_fee: cleaning, net_income: net })
+    const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
+    return { ...o, __rid: o.id, nights, net_income: net, avg_nightly_price: avg, __src_price: total > 0 ? total : undefined }
+  }
   function computeVisibleNetIncomeForOrder(o: any, deductionTotal: number): number {
     const include = (!isCanceledStatus(o?.status)) || !!(o?.count_in_income)
     if (!include) return 0
@@ -189,10 +213,14 @@ export default function OrdersPage() {
   const [selfCheckLoading, setSelfCheckLoading] = useState(false)
   const [selfCheckData, setSelfCheckData] = useState<any | null>(null)
   const [syncing, setSyncing] = useState(false)
+  const [zeroAmountBackfillLoading, setZeroAmountBackfillLoading] = useState(false)
   const [dupOpen, setDupOpen] = useState(false)
   const [dupLoading, setDupLoading] = useState(false)
   const [dupResult, setDupResult] = useState<any | null>(null)
   const [creatingOrder, setCreatingOrder] = useState(false)
+  useEffect(() => {
+    setMounted(true)
+  }, [])
   function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
   function getPropertyCodeLabel(o: Order) {
     const p = getPropertyById(o.property_id)
@@ -426,6 +454,72 @@ export default function OrdersPage() {
       else if (res.ok) { message.success('已触发手动同步'); load() }
       else { message.error(j?.message || `触发失败（HTTP ${res.status}）`) }
     } catch { message.error('触发失败') } finally { setSyncing(false) }
+  }
+  async function backfillZeroAmountAirbnbOrders() {
+    if (zeroAmountBackfillLoading) return
+    setZeroAmountBackfillLoading(true)
+    let preview: any = null
+    try {
+      const res = await fetch(`${API_BASE}/jobs/email-sync/backfill-zero-amount-airbnb`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ dry_run: true }),
+      })
+      preview = await res.json().catch(() => null)
+      if (!res.ok) {
+        message.error(preview?.message || `查询失败（HTTP ${res.status}）`)
+        return
+      }
+    } catch {
+      message.error('查询失败')
+      return
+    } finally {
+      setZeroAmountBackfillLoading(false)
+    }
+    const affected = Number(preview?.affected_count || 0)
+    if (affected <= 0) {
+      message.info('没有需要回补的0金额Airbnb订单')
+      return
+    }
+    const accounts = (Array.isArray(preview?.groups) ? preview.groups : [])
+      .map((g: any) => `${String(g.account || '')}: ${Number(g.affected_count || 0)}条`)
+      .filter(Boolean)
+      .join('；')
+    Modal.confirm({
+      title: '回补0金额Airbnb订单',
+      content: `找到 ${affected} 条受影响订单。系统会按UID分批重跑邮件同步并补回金额。${accounts ? `账号：${accounts}` : ''}`,
+      okText: '按UID回补',
+      cancelText: '取消',
+      onOk: async () => {
+        setZeroAmountBackfillLoading(true)
+        try {
+          const res = await fetch(`${API_BASE}/jobs/email-sync/backfill-zero-amount-airbnb`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({ batch_size: 10 }),
+          })
+          const j = await res.json().catch(() => null)
+          if (res.status === 202 && j?.started) {
+            message.success(`已启动后台回补，共 ${Number(j?.affected_count || 0)} 条，批次 ${Number(j?.batch_count || 0)} 个。稍后刷新列表查看金额。`)
+            setTimeout(() => { load() }, 5000)
+          } else if (res.status === 409) {
+            message.warning('已有回补任务正在运行，请等终端完成后再刷新')
+          } else if (res.ok || res.status === 207) {
+            const failed = Number(j?.failed_batches || 0)
+            const remaining = Number(j?.remaining || 0)
+            if (failed > 0) message.warning(`回补完成但有 ${failed} 批失败，剩余0金额 ${remaining} 条`)
+            else message.success(`回补完成，剩余0金额 ${remaining} 条`)
+            load()
+          } else {
+            message.error(j?.message || `回补失败（HTTP ${res.status}）`)
+          }
+        } catch {
+          message.error('回补失败')
+        } finally {
+          setZeroAmountBackfillLoading(false)
+        }
+      },
+    })
   }
   async function previewTodayEmails() {
     if (previewLoading) return
@@ -1071,9 +1165,9 @@ export default function OrdersPage() {
       if (!monthFilter) return Number(((r as any).__src_nights ?? r.nights ?? 0))
       return calcOrderMonthAmounts(r as any, monthFilter).nightsMonth
     } },
-    { title: '当月租金(AUD)', dataIndex: 'price', render: (_:any, r:Order)=> monthFilter ? money(calcOrderMonthAmounts(r as any, monthFilter).visibleNetMonth) : money((r as any).__src_price ?? r.price) },
+    { title: '当月租金(AUD)', dataIndex: 'price', render: (_:any, r:Order)=> monthFilter ? money(calcOrderMonthAmounts(r as any, monthFilter).visibleNetMonth) : money(getOrderTotalRent(r)) },
     { title: '订单总租金', dataIndex: '__src_price', render: (_:any, r:Order)=> {
-      const total = ((r as any).total_payment_raw ?? (r as any).__src_price ?? r.price ?? (((r as any).net_income || 0) + ((r as any).cleaning_fee || 0)))
+      const total = hasAmountValue((r as any).total_payment_raw) ? Number((r as any).total_payment_raw) : getOrderTotalRent(r)
       const ded = Number((r as any).internal_deduction_total ?? (r as any).internal_deduction ?? 0)
       const visibleTotal = Math.max(0, Number((Number(total || 0) - ded).toFixed(2)))
       return money(visibleTotal)
@@ -1251,9 +1345,10 @@ export default function OrdersPage() {
     const co = dayjs(coDay).startOf('day')
     const totalNights = Math.max(0, co.diff(ci, 'day'))
     if (totalNights <= 0) return []
-    const totalPrice = Number(o.price || 0)
     const totalCleaning = Number(o.cleaning_fee || 0)
-    const dailyNet = totalNights ? (Number((totalPrice - totalCleaning).toFixed(2)) / totalNights) : 0
+    const netTotal = getOrderStoredNet(o)
+    const totalPrice = getOrderTotalRent(o)
+    const dailyNet = totalNights ? (Number(netTotal.toFixed(2)) / totalNights) : 0
     const segments: (Order & { __rid?: string })[] = []
     let s = ci
     while (s.isBefore(co)) {
@@ -1265,7 +1360,7 @@ export default function OrdersPage() {
       const price = Number((net + clean).toFixed(2))
       const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
       const __rid = `${o.id}|${s.format('YYYYMM')}`
-      segments.push({ ...o, __rid, checkin: s.format('YYYY-MM-DD') + 'T12:00:00', checkout: e.format('YYYY-MM-DD') + 'T11:59:59', nights, price, cleaning_fee: clean, net_income: net, avg_nightly_price: avg } as any)
+      segments.push({ ...o, __rid, __src_checkin: o.checkin, __src_checkout: o.checkout, __src_price: totalPrice, __src_cleaning_fee: totalCleaning, __src_net_income: Number(netTotal.toFixed(2)), __src_nights: totalNights, checkin: s.format('YYYY-MM-DD') + 'T12:00:00', checkout: e.format('YYYY-MM-DD') + 'T11:59:59', nights, price, cleaning_fee: clean, net_income: net, avg_nightly_price: avg } as any)
       s = e
     }
     return segments
@@ -1320,7 +1415,7 @@ export default function OrdersPage() {
               <div style={{ fontWeight:600 }}>{o.guest_name || ''}</div>
               <div>房号：{getPropertyCodeLabel(o as Order)}</div>
               <div>入住：{fmtDay((o as any).__src_checkin || o.checkin)}，退房：{fmtDay((o as any).__src_checkout || o.checkout)}</div>
-              <div>总租金：${money((o as any).__src_price ?? o.price)}，清洁费：${money((o as any).__src_cleaning_fee ?? o.cleaning_fee)}</div>
+              <div>总租金：${money(getOrderTotalRent(o))}，清洁费：${money((o as any).__src_cleaning_fee ?? o.cleaning_fee)}</div>
               <div>房东净租金：${money(getLandlordNetIncomeForOrder(o))}</div>
               <div>确认码：{(o as any).confirmation_code || ''}</div>
             </div>
@@ -1360,7 +1455,7 @@ export default function OrdersPage() {
                 {isStart ? `${(o.guest_name || '').toString()}` : ''}
               </span>
               <span style={{ fontWeight: 600, color: styleToken.text, opacity: isEnd ? 1 : 0.75 }}>
-                {isEnd ? `$${money((o as any).__src_price ?? o.price)}` : ''}
+                {isEnd ? `$${money(getOrderTotalRent(o))}` : ''}
               </span>
             </div>
             </Tooltip>
@@ -1373,8 +1468,16 @@ export default function OrdersPage() {
     )
   }
 
+  if (!mounted) {
+    return (
+      <Card title={<span style={{ fontSize: 24, fontWeight: 600 }}>订单管理</span>} bodyStyle={{ padding: 16 }} style={{ margin: 24 }}>
+        <div style={{ height: 420 }} />
+      </Card>
+    )
+  }
+
   return (
-    <Card title={<span style={{ fontSize: 24, fontWeight: 600 }}>订单管理</span>} bodyStyle={{ padding: 16 }} style={{ margin: 24 }} extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}{hasPerm('order.manage') ? <Button onClick={manualSyncOrders} disabled={syncing}>手动同步订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={openFailures}>失败订单邮件手动入库</Button> : null}</Space>}>
+    <Card title={<span style={{ fontSize: 24, fontWeight: 600 }}>订单管理</span>} bodyStyle={{ padding: 16 }} style={{ margin: 24 }} extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}{hasPerm('order.manage') ? <Button onClick={manualSyncOrders} disabled={syncing || zeroAmountBackfillLoading}>手动同步订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={backfillZeroAmountAirbnbOrders} loading={zeroAmountBackfillLoading}>回补0金额订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={openFailures}>失败订单邮件手动入库</Button> : null}</Space>}>
       <Space style={{ marginBottom: 16 }} wrap>
         <Radio.Group value={view} onChange={(e)=>setView(e.target.value)}>
           <Radio.Button value="list">列表</Radio.Button>
@@ -1459,11 +1562,7 @@ export default function OrdersPage() {
                 const ci = dayjs(ciStr, 'YYYY-MM-DD', true)
                 const co = dayjs(coStr, 'YYYY-MM-DD', true)
                 const nights = (ci.isValid() && co.isValid()) ? Math.max(0, co.diff(ci, 'day')) : Number(o.nights || 0)
-              const price = Number(o.price || 0)
-              const cleaning = Number(o.cleaning_fee || 0)
-              const net = Number((price - cleaning).toFixed(2))
-              const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
-                return { ...o, __rid: o.id, nights, net_income: net, avg_nightly_price: avg, __src_price: price }
+                return normalizeOrderListAmounts(o, nights)
               })
               const filtered1 = raw.filter(o => {
                 const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
@@ -1506,11 +1605,7 @@ export default function OrdersPage() {
               const ci = dayjs(ciStr, 'YYYY-MM-DD', true)
               const co = dayjs(coStr, 'YYYY-MM-DD', true)
               const nights = (ci.isValid() && co.isValid()) ? Math.max(0, co.diff(ci, 'day')) : Number(o.nights || 0)
-              const price = Number(o.price || 0)
-              const cleaning = Number(o.cleaning_fee || 0)
-              const net = Number((price - cleaning).toFixed(2))
-              const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
-              return { ...o, __rid: o.id, nights, net_income: net, avg_nightly_price: avg, __src_price: price }
+              return normalizeOrderListAmounts(o, nights)
             })
             const filtered2 = raw.filter(o => {
               const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
@@ -1599,7 +1694,7 @@ export default function OrdersPage() {
               right.className = 'bar-right'
               right.style.fontWeight = '600'
               const order = ((arg.event.extendedProps as any)?.order as any) || {}
-              const total = Number(order.__src_price ?? order.price ?? 0)
+              const total = getOrderTotalRent(order)
               const cleaning = Number(order.__src_cleaning_fee ?? order.cleaning_fee ?? 0)
               const ded = Number(order.internal_deduction_total ?? order.internal_deduction ?? 0)
               const net = getLandlordNetIncomeForOrder(order)
