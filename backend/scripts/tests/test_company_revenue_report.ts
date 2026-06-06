@@ -18,6 +18,10 @@ function report(overrides: Partial<Parameters<typeof buildCompanyRevenueReport>[
     month: '2026-06',
     orders: [],
     properties,
+    landlords: [
+      { id: 'l1', management_fee_rate: 0.2, property_ids: ['p1'] },
+      { id: 'l2', management_fee_rate: null, property_ids: ['p2'] },
+    ],
     managementFeeRulesByLandlord: rules,
     companyIncomes: [],
     companyExpenses: [],
@@ -32,6 +36,48 @@ function categoryTotal(result: ReturnType<typeof report>, kind: 'income' | 'expe
 }
 
 function main() {
+  {
+    const result = report({
+      orders: [{
+        id: 'current-rate-fallback',
+        property_id: 'p3',
+        checkin: '2026-06-16',
+        checkout: '2026-06-18',
+        net_income: 500,
+        cleaning_fee: 0,
+        status: 'confirmed',
+      }],
+      properties: [{ id: 'p3', code: 'MSQ3401E' }],
+      landlords: [{ id: 'l3', management_fee_rate: 0.18, property_ids: ['p3'] }],
+      managementFeeRulesByLandlord: {},
+    })
+    assert.equal(categoryTotal(result, 'income', 'mgmt_fee'), 90)
+    assert.equal(result.warnings.length, 0)
+    assert.ok(result.income_rows[0].calculation?.includes('当前管理费率回退'))
+  }
+
+  {
+    const result = report({
+      month: '2026-05',
+      orders: [{
+        id: 'future-rate',
+        property_id: 'p3',
+        checkin: '2026-05-16',
+        checkout: '2026-05-18',
+        net_income: 500,
+        cleaning_fee: 0,
+        status: 'confirmed',
+      }],
+      properties: [{ id: 'p3', code: 'MSQ3401E', landlord_id: 'l3' }],
+      landlords: [{ id: 'l3', management_fee_rate: 0.18, property_ids: ['p3'] }],
+      managementFeeRulesByLandlord: {
+        l3: [{ effective_from_month: '2026-06', management_fee_rate: 0.18 }],
+      },
+    })
+    assert.equal(categoryTotal(result, 'income', 'mgmt_fee'), 0)
+    assert.equal(result.warnings.length, 1)
+  }
+
   {
     const result = report({
       orders: [{
