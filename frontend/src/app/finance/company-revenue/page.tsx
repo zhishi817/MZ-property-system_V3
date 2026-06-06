@@ -664,7 +664,7 @@ export default function CompanyRevenuePage() {
                 content={
                   <div className={styles.warningPopover}>
                     <Typography.Paragraph type="secondary" className={styles.warningIntro}>
-                      以下房源缺少 {monthKey} 可用的管理费率规则，对应管理费暂未计入统计。
+                      以下房源既没有 {monthKey} 可用的历史费率规则，也没有当前管理费率，对应管理费暂未计入统计。
                     </Typography.Paragraph>
                     <div className={styles.warningList}>
                       {report.warnings.map((warning, index) => (

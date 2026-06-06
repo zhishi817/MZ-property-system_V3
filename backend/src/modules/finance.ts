@@ -229,8 +229,21 @@ router.get('/company-revenue/report', requireAnyPerm(companyRevenueViewPerms), a
       internal_deduction_total: Number(deductionByOrder.get(String(order.id)) || 0),
     }))
     const properties = Array.isArray(propertiesResult.rows) ? propertiesResult.rows : []
-    const landlordIds: string[] = Array.from(new Set<string>(
+    const directLandlordIds: string[] = Array.from(new Set<string>(
       properties.map((property: any) => String(property?.landlord_id || '')).filter(Boolean),
+    ))
+    const landlordsResult = canViewIncome && propertyIds.length
+      ? await pgPool.query(
+          `SELECT id, management_fee_rate, property_ids
+             FROM landlords
+            WHERE id = ANY($1::text[])
+               OR COALESCE(property_ids, ARRAY[]::text[]) && $2::text[]`,
+          [directLandlordIds, propertyIds],
+        )
+      : { rows: [] }
+    const landlords = Array.isArray(landlordsResult.rows) ? landlordsResult.rows : []
+    const landlordIds: string[] = Array.from(new Set<string>(
+      landlords.map((landlord: any) => String(landlord?.id || '')).filter(Boolean),
     ))
     const managementFeeRulesByLandlord = canViewIncome && landlordIds.length
       ? await listManagementFeeRulesByLandlordIds(landlordIds)
@@ -240,6 +253,7 @@ router.get('/company-revenue/report', requireAnyPerm(companyRevenueViewPerms), a
       month,
       orders: enrichedOrders,
       properties,
+      landlords,
       managementFeeRulesByLandlord,
       companyIncomes: incomes,
       companyExpenses: expenses,

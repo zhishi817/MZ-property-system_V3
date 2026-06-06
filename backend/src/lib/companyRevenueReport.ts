@@ -12,6 +12,12 @@ export type CompanyRevenueManagementFeeRule = {
   management_fee_rate: number
 }
 
+export type CompanyRevenueLandlord = {
+  id: string
+  management_fee_rate?: number | null
+  property_ids?: string[] | null
+}
+
 export type CompanyRevenueRow = {
   id: string
   record_id?: string | null
@@ -77,6 +83,7 @@ type ReportInput = {
   month: string
   orders: any[]
   properties: CompanyRevenueProperty[]
+  landlords: CompanyRevenueLandlord[]
   managementFeeRulesByLandlord: Record<string, CompanyRevenueManagementFeeRule[]>
   companyIncomes: any[]
   companyExpenses: any[]
@@ -164,12 +171,23 @@ function propertyLabel(property: CompanyRevenueProperty | undefined, fallback?: 
 function resolveManagementFeeRule(
   rules: CompanyRevenueManagementFeeRule[] | undefined,
   month: string,
-): CompanyRevenueManagementFeeRule | null {
-  return (Array.isArray(rules) ? rules : [])
+  currentRate?: number | null,
+): (CompanyRevenueManagementFeeRule & { source: 'historical_rule' | 'current_rate' }) | null {
+  const validRules = (Array.isArray(rules) ? rules : [])
     .filter((rule) => /^\d{4}-\d{2}$/.test(String(rule?.effective_from_month || '')))
     .slice()
     .sort((a, b) => String(b.effective_from_month).localeCompare(String(a.effective_from_month)))
-    .find((rule) => String(rule.effective_from_month) <= month) || null
+  const historical = validRules.find((rule) => String(rule.effective_from_month) <= month) || null
+  if (historical) return { ...historical, source: 'historical_rule' }
+  if (validRules.length) return null
+  if (currentRate !== null && currentRate !== undefined && Number.isFinite(Number(currentRate))) {
+    return {
+      effective_from_month: month,
+      management_fee_rate: Number(currentRate),
+      source: 'current_rate',
+    }
+  }
+  return null
 }
 
 function manualIncomeRow(row: any, property?: CompanyRevenueProperty, sourceType = 'manual_income'): CompanyRevenueRow {
@@ -229,7 +247,25 @@ function buildCategorySummary(
 
 export function buildCompanyRevenueReport(input: ReportInput): CompanyRevenueReport {
   const { start, nextStart, end } = monthBounds(input.month)
-  const properties = new Map((input.properties || []).map((property) => [String(property.id), property]))
+  const landlords = new Map((input.landlords || []).map((landlord) => [String(landlord.id), landlord]))
+  const landlordByPropertyId = new Map<string, CompanyRevenueLandlord>()
+  for (const landlord of input.landlords || []) {
+    for (const propertyId of Array.isArray(landlord?.property_ids) ? landlord.property_ids : []) {
+      const id = String(propertyId || '').trim()
+      if (id && !landlordByPropertyId.has(id)) landlordByPropertyId.set(id, landlord)
+    }
+  }
+  const properties = new Map((input.properties || []).map((property) => {
+    const propertyId = String(property.id)
+    const linkedLandlord = landlordByPropertyId.get(propertyId)
+    return [
+      propertyId,
+      {
+        ...property,
+        landlord_id: String(property?.landlord_id || linkedLandlord?.id || '') || null,
+      },
+    ]
+  }))
   const manualRows = (input.companyIncomes || []).filter((row) => inMonth(row?.occurred_at, start, nextStart))
   const overrideByKey = new Map<string, any>()
   for (const row of manualRows) {
@@ -252,14 +288,19 @@ export function buildCompanyRevenueReport(input: ReportInput): CompanyRevenueRep
     const propertyId = String(segment?.property_id || '')
     const property = properties.get(propertyId)
     const landlordId = String(property?.landlord_id || '')
-    const rule = resolveManagementFeeRule(input.managementFeeRulesByLandlord[landlordId], input.month)
+    const landlord = landlords.get(landlordId)
+    const rule = resolveManagementFeeRule(
+      input.managementFeeRulesByLandlord[landlordId],
+      input.month,
+      landlord?.management_fee_rate,
+    )
     if (!rule) {
       if (!warnedProperties.has(propertyId || orderId)) {
         warnedProperties.add(propertyId || orderId)
         const label = propertyLabel(property, propertyId) || '未知房源'
         warnings.push({
           code: 'management_fee_rule_missing',
-          message: `${label} 缺少 ${input.month} 可用的管理费率规则，管理费未计入`,
+          message: `${label} 缺少 ${input.month} 可用的历史规则和当前管理费率，管理费未计入`,
           property_id: propertyId || undefined,
           property_code: label || undefined,
         })
@@ -300,7 +341,7 @@ export function buildCompanyRevenueReport(input: ReportInput): CompanyRevenueRep
       is_effective: true,
       ref_type: 'order',
       ref_id: orderId || null,
-      calculation: `$${visibleRent.toFixed(2)} × ${(Number(rule.management_fee_rate || 0) * 100).toFixed(2)}%`,
+      calculation: `$${visibleRent.toFixed(2)} × ${(Number(rule.management_fee_rate || 0) * 100).toFixed(2)}%${rule.source === 'current_rate' ? '（当前管理费率回退）' : ''}`,
     })
   }
 

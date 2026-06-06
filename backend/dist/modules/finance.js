@@ -222,7 +222,15 @@ exports.router.get('/company-revenue/report', (0, auth_1.requireAnyPerm)(company
             internal_deduction_total: Number(deductionByOrder.get(String(order.id)) || 0),
         }));
         const properties = Array.isArray(propertiesResult.rows) ? propertiesResult.rows : [];
-        const landlordIds = Array.from(new Set(properties.map((property) => String((property === null || property === void 0 ? void 0 : property.landlord_id) || '')).filter(Boolean)));
+        const directLandlordIds = Array.from(new Set(properties.map((property) => String((property === null || property === void 0 ? void 0 : property.landlord_id) || '')).filter(Boolean)));
+        const landlordsResult = canViewIncome && propertyIds.length
+            ? await dbAdapter_2.pgPool.query(`SELECT id, management_fee_rate, property_ids
+             FROM landlords
+            WHERE id = ANY($1::text[])
+               OR COALESCE(property_ids, ARRAY[]::text[]) && $2::text[]`, [directLandlordIds, propertyIds])
+            : { rows: [] };
+        const landlords = Array.isArray(landlordsResult.rows) ? landlordsResult.rows : [];
+        const landlordIds = Array.from(new Set(landlords.map((landlord) => String((landlord === null || landlord === void 0 ? void 0 : landlord.id) || '')).filter(Boolean)));
         const managementFeeRulesByLandlord = canViewIncome && landlordIds.length
             ? await (0, managementFeeRules_1.listManagementFeeRulesByLandlordIds)(landlordIds)
             : {};
@@ -230,6 +238,7 @@ exports.router.get('/company-revenue/report', (0, auth_1.requireAnyPerm)(company
             month,
             orders: enrichedOrders,
             properties,
+            landlords,
             managementFeeRulesByLandlord,
             companyIncomes: incomes,
             companyExpenses: expenses,
