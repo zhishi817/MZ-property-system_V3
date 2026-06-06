@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import dayjs from 'dayjs'
-import { calcOrderMonthAmounts, toDayStr, isOwnerStay, normalizeStayType } from './orders'
+import { calcOrderMonthAmounts, splitOrderByMonths, toDayStr, isOwnerStay, normalizeStayType } from './orders'
 import { execFileSync } from 'node:child_process'
 
 describe('calcOrderMonthAmounts', () => {
@@ -68,6 +68,25 @@ describe('calcOrderMonthAmounts', () => {
     const r = calcOrderMonthAmounts(o, dayjs('2026-01-01'))
     expect(r.netMonth).toBeCloseTo(240, 2)
     expect(r.visibleNetMonth).toBeCloseTo(240, 2)
+  })
+
+  it('keeps stored net income when price is missing or zero', () => {
+    const o: any = {
+      id: 'o5',
+      checkin: '2026-06-10T12:00:00',
+      checkout: '2026-06-12T11:59:59',
+      price: 0,
+      cleaning_fee: 80,
+      net_income: 320,
+      status: 'confirmed'
+    }
+    const segs = splitOrderByMonths(o)
+    expect(segs).toHaveLength(1)
+    expect((segs[0] as any).__src_price).toBeCloseTo(400, 2)
+    expect(segs[0].net_income).toBeCloseTo(320, 2)
+    const r = calcOrderMonthAmounts(segs[0] as any, dayjs('2026-06-01'))
+    expect(r.netMonth).toBeCloseTo(320, 2)
+    expect(r.priceMonth).toBeCloseTo(400, 2)
   })
 })
 

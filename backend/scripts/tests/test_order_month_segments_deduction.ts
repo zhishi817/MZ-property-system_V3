@@ -70,6 +70,25 @@ function main() {
     assert.equal(sum2(segs as any, 'visible_net_income'), 240)
   }
 
+  {
+    const order: any = {
+      id: 'o4',
+      property_id: 'p1',
+      checkin: '2026-06-10',
+      checkout: '2026-06-12',
+      price: 0,
+      cleaning_fee: 80,
+      net_income: 320,
+      status: 'confirmed',
+      count_in_income: true,
+    }
+    const segs = splitOrderByMonths(order)
+    assert.equal(segs.length, 1)
+    assert.equal(round2((segs[0] as any).__src_price), 400)
+    assert.equal(sum2(segs as any, 'net_income'), 320)
+    assert.equal(sum2(segs as any, 'visible_net_income'), 320)
+  }
+
   console.log('OK test_order_month_segments_deduction')
 }
 

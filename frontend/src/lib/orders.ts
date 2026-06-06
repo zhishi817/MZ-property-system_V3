@@ -23,6 +23,11 @@ export function isOwnerStay(o: any): boolean {
   return normalizeStayType((o as any)?.stay_type) === 'owner'
 }
 
+function hasAmountValue(v: any): boolean {
+  if (v === null || v === undefined || v === '') return false
+  return Number.isFinite(Number(v))
+}
+
 export function toDayStr(raw?: any): string {
   const str = String(raw || '')
   const m = str.match(/^(\d{4}-\d{2}-\d{2})/)
@@ -38,9 +43,11 @@ export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string }
   const co = parseDateOnly(coDay)
   const totalNights = Math.max(0, co.diff(ci, 'day'))
   if (totalNights <= 0) return []
-  const totalPrice = Number(o.price || 0)
   const totalCleaning = Number(o.cleaning_fee || 0)
-  const netTotal = Math.max(0, Number(((o as any).net_income ?? (totalPrice - totalCleaning))))
+  const storedPrice = hasAmountValue(o.price) ? Number(o.price) : 0
+  const netFallback = storedPrice - totalCleaning
+  const netTotal = Math.max(0, Number(hasAmountValue((o as any).net_income) ? (o as any).net_income : netFallback))
+  const totalPrice = (storedPrice > 0 || netTotal <= 0) ? storedPrice : Number((netTotal + totalCleaning).toFixed(2))
   const dailyNet = totalNights ? (Number(netTotal.toFixed(2)) / totalNights) : 0
   const segments: (OrderLike & { __rid: string })[] = []
   const deductionTotal = Number((o as any).internal_deduction_total || 0)
@@ -94,9 +101,11 @@ export function calcOrderMonthAmounts(o: OrderLike, monthStart: any) {
   const b = co.isBefore(meNext) ? co : meNext
   const nightsMonth = Math.max(0, b.diff(a, 'day'))
   const totalNightsAll = Number((o as any).__src_nights ?? Math.max(0, co.diff(ci, 'day')))
-  const totalPrice = Number((o as any).__src_price ?? o.price ?? 0)
   const totalCleaning = Number((o as any).__src_cleaning_fee ?? o.cleaning_fee ?? 0)
-  const netTotal = Math.max(0, Number(((o as any).__src_net_income ?? (o as any).net_income ?? (totalPrice - totalCleaning))))
+  const storedPriceRaw = hasAmountValue((o as any).__src_price) ? (o as any).__src_price : o.price
+  const storedPrice = hasAmountValue(storedPriceRaw) ? Number(storedPriceRaw) : 0
+  const netFallback = storedPrice - totalCleaning
+  const netTotal = Math.max(0, Number(hasAmountValue((o as any).__src_net_income) ? (o as any).__src_net_income : (hasAmountValue((o as any).net_income) ? (o as any).net_income : netFallback)))
   const dailyNet = totalNightsAll ? netTotal / totalNightsAll : 0
   const netMonth = Number((dailyNet * nightsMonth).toFixed(2))
   const lastNight = totalNightsAll > 0 ? co.subtract(1, 'day') : co

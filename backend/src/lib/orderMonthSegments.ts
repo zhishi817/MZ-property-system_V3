@@ -27,6 +27,11 @@ function round2(n: any): number {
   return Number(x.toFixed(2))
 }
 
+function hasAmountValue(v: any): boolean {
+  if (v === null || v === undefined || v === '') return false
+  return Number.isFinite(Number(v))
+}
+
 function toDayStr(raw?: any): string {
   const str = String(raw || '')
   const m = str.match(/^(\d{4}-\d{2}-\d{2})/)
@@ -100,9 +105,11 @@ export function splitOrderByMonths(o: OrderLike): OrderMonthSegment[] {
   const co = parseDateOnly(coDay)
   const totalNights = Math.max(0, diffDays(ci, co))
   if (totalNights <= 0) return []
-  const totalPrice = Number(o.price || 0)
   const totalCleaning = Number(o.cleaning_fee || 0)
-  const netTotal = Math.max(0, Number(((o as any).net_income ?? (totalPrice - totalCleaning))))
+  const storedPrice = hasAmountValue(o.price) ? Number(o.price) : 0
+  const netFallback = storedPrice - totalCleaning
+  const netTotal = Math.max(0, Number(hasAmountValue((o as any).net_income) ? (o as any).net_income : netFallback))
+  const totalPrice = (storedPrice > 0 || netTotal <= 0) ? storedPrice : Number((netTotal + totalCleaning).toFixed(2))
   const dailyNet = totalNights ? (Number(netTotal.toFixed(2)) / totalNights) : 0
   const segments: OrderMonthSegment[] = []
   const deductionTotal = Number((o as any).internal_deduction_total || 0)
