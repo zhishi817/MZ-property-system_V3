@@ -678,13 +678,18 @@ export default function TaskCenterPage() {
       subrow_key: DEFAULT_SUBROW_KEY,
       subrow_order: 1,
     })),
-    items: rows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks.map((task, taskIndex) => ({
-      task_source: task.task_source,
-      task_id: task.task_id,
-      row_key: row.row_key,
-      subrow_key: DEFAULT_SUBROW_KEY,
-      item_order: taskIndex + 1,
-    })))),
+    items: rows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks.flatMap((task, taskIndex) => {
+      const taskIds = task.task_source === 'cleaning'
+        ? Array.from(new Set(task.task_ids.map((taskId) => String(taskId)).filter(Boolean)))
+        : [String(task.task_id)]
+      return taskIds.map((taskId) => ({
+        task_source: task.task_source,
+        task_id: taskId,
+        row_key: row.row_key,
+        subrow_key: DEFAULT_SUBROW_KEY,
+        item_order: taskIndex + 1,
+      }))
+    }))),
   }), [])
 
   const persistBoardLayout = useCallback(async (rows: TaskCenterRow[]) => {

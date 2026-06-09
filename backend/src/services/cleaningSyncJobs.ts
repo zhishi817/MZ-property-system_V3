@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { pgRunAfterCommit } from '../dbAdapter'
 import { ensureCleaningSyncJobsSchema } from './cleaningSyncJobsSchema'
 
 export type CleaningSyncJobAction = 'created' | 'updated' | 'deleted'
@@ -27,6 +28,21 @@ function stableStringify(v: any): string {
 function fingerprintOf(action: CleaningSyncJobAction, orderId: string, snapshot: any): string {
   const s = stableStringify({ action, order_id: orderId, snapshot })
   return crypto.createHash('sha1').update(s).digest('hex')
+}
+
+function kickCleaningSyncWorkerAfterCommit() {
+  try {
+    const { scheduleCleaningSyncJobsKick } = require('./cleaningSyncJobsWorker')
+    scheduleCleaningSyncJobsKick(0, false)
+  } catch {}
+}
+
+function requestCleaningSyncWorkerKick(client: any) {
+  if (pgRunAfterCommit(client, kickCleaningSyncWorkerAfterCommit)) return
+  try {
+    const { scheduleCleaningSyncJobsKick } = require('./cleaningSyncJobsWorker')
+    scheduleCleaningSyncJobsKick()
+  } catch {}
 }
 
 export async function enqueueCleaningSyncJobTx(
@@ -118,6 +134,7 @@ export async function enqueueCleaningSyncJobTx(
        WHERE id=$1`,
       [existingId, fp, snapshot]
     )
+    requestCleaningSyncWorkerKick(client)
     return { id: existingId, merged: true }
   }
 
@@ -128,5 +145,6 @@ export async function enqueueCleaningSyncJobTx(
      VALUES($1,$2,$3,$4,$5,'pending',0,10,now(),NULL)`,
     [id, orderId, action, fp, snapshot]
   )
+  requestCleaningSyncWorkerKick(client)
   return { id, merged: false }
 }

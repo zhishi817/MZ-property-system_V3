@@ -41,6 +41,7 @@ import cron from 'node-cron'
 import crudRouter from './modules/crud'
 import recurringRouter from './modules/recurring'
 import { router as invoicesRouter } from './modules/invoices'
+import { router as employmentContractsRouter } from './modules/employment_contracts'
 import { router as cmsCompanyRouter } from './modules/cms_company'
 import { router as cmsCompanySecretsRouter } from './modules/cms_company_secrets'
 import { publicRouter as guestSitePublicRouter, adminRouter as guestSiteAdminRouter } from './modules/guest_site'
@@ -53,7 +54,7 @@ import publicRouter from './modules/public'
 import publicAdminRouter from './modules/public_admin'
 import { r2Status } from './r2'
 import { getPlaywrightDiagnostics } from './lib/playwright'
-import { runNotificationQueueCleanup, startNotificationQueueWorker } from './services/notificationQueueWorker'
+import { runNotificationQueueCleanup, runNotificationQueueRecoveryOnce, startNotificationQueueWorker } from './services/notificationQueueWorker'
 import { bootstrapCleaningSyncSchemaV2 } from './services/cleaningSync'
  
  
@@ -328,6 +329,7 @@ app.use('/property-guide-link-sync', propertyGuideLinkSyncRouter)
 app.use('/jobs', jobsRouter)
 app.use('/onboarding', propertyOnboardingRouter)
 app.use('/invoices', invoicesRouter)
+app.use('/employment-contracts', employmentContractsRouter)
 app.use('/cms', cmsCompanyRouter)
 app.use('/cms', cmsCompanySecretsRouter)
 app.use('/cms', guestSiteAdminRouter)
@@ -451,11 +453,23 @@ function onServerListening() {
   }
   try {
     const enabled = String(process.env.NOTIFICATION_WORKER_ENABLED || 'true').toLowerCase() === 'true'
-    const intervalMs = Math.max(1000, Math.min(60000, Number(process.env.NOTIFICATION_WORKER_INTERVAL_MS || 10000)))
     const batchSize = Math.max(1, Math.min(200, Number(process.env.NOTIFICATION_WORKER_BATCH_SIZE || 50)))
     if (enabled && hasPg) {
-      console.log(`[notifications][worker] enabled interval_ms=${intervalMs} batch_size=${batchSize}`)
-      startNotificationQueueWorker({ intervalMs, batchSize })
+      const runOnStart = String(process.env.NOTIFICATION_WORKER_RUN_ON_START || 'true').toLowerCase() === 'true'
+      const fallbackExpr = String(process.env.NOTIFICATION_WORKER_FALLBACK_CRON || '0 * * * *')
+      console.log(`[notifications][worker] enabled mode=event batch_size=${batchSize} fallback_cron=${fallbackExpr}`)
+      startNotificationQueueWorker({ batchSize, runOnStart })
+      const fallbackTask = cron.schedule(fallbackExpr, async () => {
+        try {
+          const result = await runNotificationQueueRecoveryOnce()
+          if (Number(result?.taken || 0) > 0 || Number(result?.failed || 0) > 0) {
+            console.log(`[notifications][fallback] taken=${Number(result?.taken || 0)} sent=${Number(result?.sent || 0)} failed=${Number(result?.failed || 0)}`)
+          }
+        } catch (e: any) {
+          console.error(`[notifications][fallback] error message=${String(e?.message || '')}`)
+        }
+      }, { scheduled: true })
+      fallbackTask.start()
       const expr = String(process.env.NOTIFICATION_CLEANUP_CRON || '15 3 * * *')
       const task = cron.schedule(expr, async () => {
         try {
@@ -571,8 +585,8 @@ function onServerListening() {
     try {
       const enabled = String(process.env.CLEANING_SYNC_JOBS_ENABLED || 'true').toLowerCase() === 'true'
       if (enabled && hasPg) {
-        const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '*/5 * * * *')
-        console.log(`[cleaning-sync-jobs][schedule] enabled cron=${expr}`)
+        const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '0 * * * *')
+        console.log(`[cleaning-sync-jobs][schedule] enabled mode=fallback cron=${expr}`)
         let inFlight = false
         const task = cron.schedule(expr, async () => {
           if (inFlight) { try { console.log('[cleaning-sync-jobs][schedule] skipped_reason=in_flight') } catch {} ; return }
@@ -657,24 +671,34 @@ function onServerListening() {
   })()
   ;(async () => {
     try {
-      const enabled = String(process.env.CLEANING_SYNC_RETRY_ENABLED || 'true').toLowerCase() === 'true'
+      const defaultEnabled = appEnv === 'prod'
+      const enabled = String(
+        process.env.CLEANING_SYNC_RETRY_ENABLED ?? (defaultEnabled ? 'true' : 'false'),
+      ).trim().toLowerCase() === 'true'
       if (enabled && hasPg) {
-        const expr = String(process.env.CLEANING_SYNC_RETRY_CRON || '*/5 * * * *')
-        console.log(`[cleaning-sync-retry][schedule] enabled cron=${expr}`)
+        const expr = String(process.env.CLEANING_SYNC_RETRY_CRON || '0 * * * *')
+        console.log(`[cleaning-sync-retry][schedule] enabled mode=fallback cron=${expr}`)
         const task = cron.schedule(expr, async () => {
+          let lockClient: any = null
+          let locked = false
           try {
             const key = 246813579
-            const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [key])
-            const ok = !!(lock?.rows?.[0]?.ok)
-            if (!ok) return
+            lockClient = await pgPool!.connect()
+            const lock = await lockClient.query('SELECT pg_try_advisory_lock($1) AS ok', [key])
+            locked = !!(lock?.rows?.[0]?.ok)
+            if (!locked) return
             const { processDueCleaningSyncRetries } = require('./services/cleaningSyncRetry')
             const r = await processDueCleaningSyncRetries({ limit: Math.min(20, Number(process.env.CLEANING_SYNC_RETRY_BATCH || 10)) })
             if ((r?.processed || 0) > 0 || (r?.failed || 0) > 0) {
               console.log(`[cleaning-sync-retry][schedule] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0}`)
             }
-            try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [key]) } catch {}
           } catch (e: any) {
             console.error(`[cleaning-sync-retry][schedule] error message=${String(e?.message || '')}`)
+          } finally {
+            if (locked && lockClient) {
+              try { await lockClient.query('SELECT pg_advisory_unlock($1)', [246813579]) } catch {}
+            }
+            try { lockClient?.release() } catch {}
           }
         }, { scheduled: true })
         task.start()

@@ -458,6 +458,10 @@ if (db.roles.length === 0) {
     { code: 'order.deduction.manage' },
     { code: 'onboarding.read' },
     { code: 'onboarding.manage' },
+    { code: 'employment_contracts.view' },
+    { code: 'employment_contracts.create' },
+    { code: 'employment_contracts.write' },
+    { code: 'employment_contracts.delete' },
     // menu visibility controls
     { code: 'menu.dashboard' },
     { code: 'menu.landlords' },
@@ -470,6 +474,7 @@ if (db.roles.length === 0) {
     { code: 'menu.cms' },
     { code: 'menu.onboarding' },
     { code: 'menu.guest_site' },
+    { code: 'menu.hr' },
     // submenu visibles
     { code: 'menu.properties.list.visible' },
     { code: 'menu.properties.keys.visible' },
@@ -492,6 +497,7 @@ if (db.roles.length === 0) {
     { code: 'menu.guest_site.settings.visible' },
     { code: 'menu.guest_site.properties.visible' },
     { code: 'menu.guest_site.inquiries.visible' },
+    { code: 'menu.hr.employment_contracts.visible' },
     { code: 'guest_site_settings.view' },
     { code: 'guest_site_settings.write' },
     { code: 'guest_site_properties.view' },
@@ -533,7 +539,7 @@ if (db.roles.length === 0) {
   // 管理员：所有权限
   grant(adminId, db.permissions.map(p => p.code))
   // 客服：房源可写、订单查看/编辑、查看清洁安排、可管理订单（允许创建）、允许录入公司/房源支出
-  grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','order.cancel','cleaning.view','finance.tx.write','invoice.view','invoice.draft.create','onboarding.manage','onboarding.read','menu.dashboard','menu.properties','menu.finance','menu.finance.invoices.visible','menu.finance.property_payables.visible','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.cms','menu.onboarding','menu.guest_site','menu.guest_site.settings.visible','menu.guest_site.properties.visible','menu.guest_site.inquiries.visible','guest_site_settings.view','guest_site_settings.write','guest_site_properties.view','guest_site_properties.write','guest_site_inquiries.view','guest_site_inquiries.write','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload','cleaning_app.expense.company.submit','cleaning_app.expense.company.view.self','cleaning_app.expense.company.edit.self','cleaning_app.expense.company.delete.self','cleaning_app.expense.property.submit','cleaning_app.expense.property.view.self','cleaning_app.expense.property.edit.self','cleaning_app.expense.property.delete.self'])
+  grant(csId, ['property.write','order.view','order.write','order.manage','order.deduction.manage','order.cancel','cleaning.view','finance.tx.write','invoice.view','invoice.draft.create','onboarding.manage','onboarding.read','menu.dashboard','menu.properties','menu.finance','menu.finance.invoices.visible','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','menu.cms','menu.onboarding','menu.guest_site','menu.guest_site.settings.visible','menu.guest_site.properties.visible','menu.guest_site.inquiries.visible','guest_site_settings.view','guest_site_settings.write','guest_site_properties.view','guest_site_properties.write','guest_site_inquiries.view','guest_site_inquiries.write','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload','cleaning_app.expense.company.submit','cleaning_app.expense.company.view.self','cleaning_app.expense.company.edit.self','cleaning_app.expense.company.delete.self','cleaning_app.expense.property.submit','cleaning_app.expense.property.view.self','cleaning_app.expense.property.edit.self','cleaning_app.expense.property.delete.self'])
   // 线下运营：可在 App 管理页进入任务详情、提交房源问题反馈并上传证据
   grant(offlineMgrId, ['menu.dashboard','menu.cleaning','menu.cleaning.overview.visible','menu.cleaning.task_center.visible','menu.cleaning.daily.visible','cleaning.view','cleaning_app.sse.subscribe','cleaning_app.issues.report','cleaning_app.media.upload'])
   // 清洁/检查管理员：清洁排班与任务分配（仅查看房源，无写权限）

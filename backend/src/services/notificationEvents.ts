@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid'
-import { hasPg, pgPool } from '../dbAdapter'
+import { hasPg, pgPool, pgRunAfterCommit } from '../dbAdapter'
 import { listInspectionTaskUserIds, listCleaningTaskUserIds, listUserIdsByRoles, listWorkTaskUserIds } from '../modules/notifications'
 import {
   getNotificationRule,
@@ -257,6 +257,21 @@ function logDisabledRule(params: EmitNotificationEventParams, eventId: string, r
   } catch {}
 }
 
+function kickNotificationWorkerAfterCommit() {
+  try {
+    const { scheduleNotificationQueueKick } = require('./notificationQueueWorker')
+    scheduleNotificationQueueKick(0, false)
+  } catch {}
+}
+
+function requestNotificationWorkerKick(client: any) {
+  if (pgRunAfterCommit(client, kickNotificationWorkerAfterCommit)) return
+  try {
+    const { scheduleNotificationQueueKick } = require('./notificationQueueWorker')
+    scheduleNotificationQueueKick()
+  } catch {}
+}
+
 async function resolveAudienceRecipients(audience: NotificationAudienceType, params: EmitNotificationEventParams, client: any) {
   const entityId = String(params.entityId || '').trim()
   if (!entityId) return []
@@ -386,6 +401,10 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
       [uuid(), userNotificationId, userId, eventId],
     )
     inserted++
+  }
+
+  if (inserted > 0) {
+    requestNotificationWorkerKick(client)
   }
 
   return { ok: true, sent: inserted, event_id: eventId, rule_version: ruleVersion, config_state: configState }

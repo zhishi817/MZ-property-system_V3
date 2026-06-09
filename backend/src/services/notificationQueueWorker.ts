@@ -127,6 +127,113 @@ async function processOnce(batchSize: number) {
   return { taken: batch.length, sent: sentIds.length, failed: failed.length }
 }
 
+type QueueDrainResult = {
+  taken: number
+  sent: number
+  failed: number
+  locked: boolean
+  moreWork: boolean
+}
+
+let eventWorkerEnabled = false
+let configuredBatchSize = 50
+let eventTimer: ReturnType<typeof setTimeout> | null = null
+let eventTimerDueAt = 0
+let eventRunning = false
+let eventRerunRequested = false
+let eventRetryOnEmpty = false
+
+async function drainNotificationQueue(batchSize: number): Promise<QueueDrainResult> {
+  if (!hasPg || !pgPool) return { taken: 0, sent: 0, failed: 0, locked: false, moreWork: false }
+  const lockClient = await pgPool.connect()
+  let locked = false
+  let taken = 0
+  let sent = 0
+  let failed = 0
+  let moreWork = false
+  try {
+    const lock = await lockClient.query('SELECT pg_try_advisory_lock($1) AS ok', [NOTIFICATION_WORKER_LOCK_KEY])
+    locked = !!(lock?.rows?.[0]?.ok)
+    if (!locked) return { taken, sent, failed, locked, moreWork }
+
+    for (let round = 0; round < 20; round++) {
+      const result = await processOnce(batchSize)
+      taken += Number(result.taken || 0)
+      sent += Number(result.sent || 0)
+      failed += Number(result.failed || 0)
+      moreWork = Number(result.taken || 0) >= batchSize
+      if (!moreWork) break
+    }
+    return { taken, sent, failed, locked, moreWork }
+  } finally {
+    if (locked) {
+      try { await lockClient.query('SELECT pg_advisory_unlock($1)', [NOTIFICATION_WORKER_LOCK_KEY]) } catch {}
+    }
+    lockClient.release()
+  }
+}
+
+function setEventTimer(delayMs: number) {
+  const delay = Math.max(0, Math.floor(delayMs))
+  const dueAt = Date.now() + delay
+  if (eventTimer && eventTimerDueAt <= dueAt) return
+  if (eventTimer) clearTimeout(eventTimer)
+  eventTimerDueAt = dueAt
+  eventTimer = setTimeout(() => {
+    eventTimer = null
+    eventTimerDueAt = 0
+    void runEventDrain()
+  }, delay)
+  try { (eventTimer as any).unref?.() } catch {}
+}
+
+async function runEventDrain() {
+  if (!eventWorkerEnabled) return
+  if (eventRunning) {
+    eventRerunRequested = true
+    return
+  }
+
+  eventRunning = true
+  const retryOnEmpty = eventRetryOnEmpty
+  eventRetryOnEmpty = false
+  eventRerunRequested = false
+  let result: QueueDrainResult = { taken: 0, sent: 0, failed: 0, locked: false, moreWork: false }
+  try {
+    result = await drainNotificationQueue(configuredBatchSize)
+    if (result.taken > 0 || result.failed > 0) {
+      console.log(`[notifications][event] taken=${result.taken} sent=${result.sent} failed=${result.failed}`)
+    }
+  } catch (e: any) {
+    console.error(`[notifications][event] error message=${String(e?.message || '')}`)
+  } finally {
+    eventRunning = false
+  }
+
+  if (eventRerunRequested || result.moreWork) {
+    setEventTimer(25)
+  } else if (retryOnEmpty && result.locked && result.taken === 0) {
+    // Supports callers that enqueue inside a transaction without introducing permanent polling.
+    scheduleNotificationQueueKick(750, false)
+  } else if (result.failed > 0) {
+    scheduleNotificationQueueKick(61_000, false)
+  }
+}
+
+export function scheduleNotificationQueueKick(delayMs = 50, retryOnEmpty = true) {
+  if (!eventWorkerEnabled) return
+  eventRetryOnEmpty = eventRetryOnEmpty || retryOnEmpty
+  if (eventRunning) {
+    eventRerunRequested = true
+    return
+  }
+  setEventTimer(delayMs)
+}
+
+export async function runNotificationQueueRecoveryOnce() {
+  return await drainNotificationQueue(configuredBatchSize)
+}
+
 export async function runNotificationQueueCleanup() {
   if (!hasPg || !pgPool) return { ok: true }
   await ensureNotificationStorage()
@@ -142,61 +249,16 @@ export async function runNotificationQueueCleanup() {
   return { ok: true }
 }
 
-export function startNotificationQueueWorker(params?: { intervalMs?: number; batchSize?: number }) {
-  const baseIntervalMs = Math.max(1000, Math.min(60000, Number(params?.intervalMs || 10000)))
-  const maxIdleIntervalMs = Math.max(baseIntervalMs, Math.min(10 * 60 * 1000, Number(process.env.NOTIFICATION_WORKER_MAX_IDLE_INTERVAL_MS || 5 * 60 * 1000)))
-  const batchSize = Math.max(1, Math.min(200, Number(params?.batchSize || 50)))
-  let stopped = false
-  let running = false
-  let emptyRounds = 0
-
-  const scheduleNext = (delayMs: number) => {
-    const timer = setTimeout(runLoop, delayMs)
-    if (typeof (timer as any)?.unref === 'function') {
-      try { (timer as any).unref() } catch {}
-    }
-    return timer
-  }
-
-  const nextDelayMs = (hadWork: boolean) => {
-    if (hadWork) {
-      emptyRounds = 0
-      return baseIntervalMs
-    }
-    emptyRounds = Math.min(emptyRounds + 1, 6)
-    return Math.min(maxIdleIntervalMs, baseIntervalMs * Math.max(1, 2 ** Math.max(0, emptyRounds - 1)))
-  }
-
-  const runLoop = async () => {
-    if (stopped) return
-    if (running) return
-    running = true
-    try {
-      let locked = true
-      if (hasPg && pgPool) {
-        const lock = await pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [NOTIFICATION_WORKER_LOCK_KEY])
-        locked = !!(lock?.rows?.[0]?.ok)
-      }
-      if (!locked) {
-        scheduleNext(baseIntervalMs)
-        return
-      }
-      try {
-        const result = await processOnce(batchSize).catch(() => ({ taken: 0, sent: 0, failed: 0 }))
-        scheduleNext(nextDelayMs(Number(result?.taken || 0) > 0))
-      } finally {
-        if (hasPg && pgPool) {
-          try { await pgPool.query('SELECT pg_advisory_unlock($1)', [NOTIFICATION_WORKER_LOCK_KEY]) } catch {}
-        }
-      }
-    } finally {
-      running = false
-    }
-  }
-
-  void runLoop()
-
+export function startNotificationQueueWorker(params?: { batchSize?: number; runOnStart?: boolean }) {
+  configuredBatchSize = Math.max(1, Math.min(200, Number(params?.batchSize || 50)))
+  eventWorkerEnabled = true
+  if (params?.runOnStart !== false) scheduleNotificationQueueKick(250, false)
   return () => {
-    stopped = true
+    eventWorkerEnabled = false
+    eventRerunRequested = false
+    eventRetryOnEmpty = false
+    if (eventTimer) clearTimeout(eventTimer)
+    eventTimer = null
+    eventTimerDueAt = 0
   }
 }

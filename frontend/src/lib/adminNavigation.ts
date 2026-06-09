@@ -44,6 +44,27 @@ export const ADMIN_NAVIGATION: AdminNavNode[] = [
     ],
   },
   {
+    id: 'hr',
+    label: '人事管理',
+    visibleWhenAny: ['menu.hr'],
+    rbacKey: 'menu.hr',
+    children: [
+      {
+        id: 'hr-employment-contracts',
+        label: '劳动合同',
+        href: '/hr/employment-contracts',
+        visibleWhenAny: ['menu.hr.employment_contracts.visible'],
+        rbacKey: 'menu.hr.employment_contracts.visible',
+        actionPerms: [
+          'employment_contracts.view',
+          'employment_contracts.create',
+          'employment_contracts.write',
+          'employment_contracts.delete',
+        ],
+      },
+    ],
+  },
+  {
     id: 'properties',
     label: '房源管理',
     visibleWhenAny: ['menu.properties'],
@@ -432,7 +453,7 @@ export const ADMIN_NAVIGATION: AdminNavNode[] = [
         id: 'finance-property-payables',
         label: '房源代付',
         href: '/finance/property-payables',
-        visibleWhenAny: ['menu.finance.property_payables.visible', 'menu.finance.recurring.visible', 'menu.finance.expenses.visible'],
+        visibleWhenAny: ['menu.finance.property_payables.visible'],
         rbacKey: 'menu.finance.property_payables.visible',
         actionPerms: [
           'recurring_payments.view',

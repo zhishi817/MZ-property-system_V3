@@ -1340,11 +1340,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            t.inspection_due_date::text AS inspection_due_date,
            t.scheduled_at,
            t.key_photo_uploaded_at,
-           EXISTS(
-             SELECT 1
-             FROM cleaning_task_media m
-             WHERE m.task_id::text = t.id::text AND m.type = 'key_photo'
-           ) AS has_key_photo,
+           key_media.task_id IS NOT NULL AS has_key_photo,
            t.checkout_time,
            t.checkin_time,
            t.nights_override,
@@ -1356,6 +1352,11 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            COALESCE(t.nights_override, o.nights) AS nights
          FROM cleaning_tasks t
          LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
+         LEFT JOIN (
+           SELECT DISTINCT task_id::text AS task_id
+           FROM cleaning_task_media
+           WHERE type = 'key_photo'
+         ) key_media ON key_media.task_id = t.id::text
          LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
          LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
          WHERE (

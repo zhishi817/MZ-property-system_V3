@@ -123,3 +123,63 @@ export function mergeInspectionPlan(
 
   return { inspectionMode: 'pending_decision', inspectionDueDate: null }
 }
+
+function mergedTaskStatus(statuses: any[]): string {
+  const values = statuses.map((status) => String(status || '').trim().toLowerCase() || 'pending')
+  if (values.length && values.every((status) => status === 'cancelled' || status === 'canceled')) return 'cancelled'
+  if (values.includes('pending')) return 'pending'
+  if (values.includes('assigned')) return 'assigned'
+  if (values.includes('in_progress')) return 'in_progress'
+  if (values.includes('completed')) return 'completed'
+  if (values.length) return values[0]
+  return 'pending'
+}
+
+function matchingId(rows: any[], pick: (row: any) => any): { matches: boolean; value: string | null } {
+  if (!rows.length) return { matches: true, value: null }
+  const values = rows.map((row) => String(pick(row) || '').trim())
+  return {
+    matches: values.every((value) => value === values[0]),
+    value: values[0] || null,
+  }
+}
+
+export function mergeTurnoverTaskPlan(
+  rows: Array<{
+    task_type?: any
+    cleaner_id?: any
+    assignee_id?: any
+    inspector_id?: any
+    status?: any
+    inspection_mode?: any
+    inspection_due_date?: any
+  }>,
+): {
+  cleanerId: string | null
+  assigneeId: string | null
+  inspectorId: string | null
+  status: string
+  inspectionMode: InspectionMode
+  inspectionDueDate: string | null
+} {
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : []
+  const checkoutRows = list.filter((row) => cleaningInspectionTaskKind(row?.task_type) === 'checkout')
+  const primaryRows = checkoutRows.length ? checkoutRows : list
+  const cleaner = matchingId(primaryRows, (row) => row?.cleaner_id || row?.assignee_id)
+  const assignee = matchingId(primaryRows, (row) => row?.assignee_id)
+  const inspectionRows = checkoutRows.length
+    ? checkoutRows
+    : list.filter((row) => cleaningInspectionTaskKind(row?.task_type) !== 'stayover')
+  const inspector = matchingId(inspectionRows.length ? inspectionRows : list, (row) => row?.inspector_id)
+  const inspectionPlan = mergeInspectionPlan(list)
+  const cleanerId = cleaner.matches ? cleaner.value : null
+
+  return {
+    cleanerId,
+    assigneeId: assignee.matches ? (assignee.value || cleanerId) : cleanerId,
+    inspectorId: inspector.matches ? inspector.value : null,
+    status: mergedTaskStatus(primaryRows.map((row) => row?.status)),
+    inspectionMode: inspectionPlan.inspectionMode,
+    inspectionDueDate: inspectionPlan.inspectionDueDate,
+  }
+}

@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requireAnyPerm } from '../auth'
+import { requireAnyPerm, requirePerm, userHasAnyPerm } from '../auth'
 import { addAudit } from '../store'
 import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
 import { z } from 'zod'
@@ -106,6 +106,7 @@ function dueMonthKeysBetween(start: string, end: string, freqMonths: number): st
 const RECURRING_SNAPSHOT_CONFLICT_WHERE = `fixed_expense_id IS NOT NULL AND fixed_expense_id <> '' AND month_key IS NOT NULL AND month_key <> ''`
 const TEMPLATE_KIND_FIXED_EXPENSE = 'fixed_expense'
 const TEMPLATE_KIND_PROPERTY_PAYABLE = 'property_payable'
+const PROPERTY_PAYABLE_MENU_PERM = 'menu.finance.property_payables.visible'
 
 type RecurringSnapshotPayload = {
   fixedExpenseId: string
@@ -159,6 +160,10 @@ function buildRecurringSnapshotPayload(input: RecurringSnapshotPayload) {
 
 function isPropertyPayableTemplate(row: any): boolean {
   return String((row as any)?.template_kind || TEMPLATE_KIND_FIXED_EXPENSE) === TEMPLATE_KIND_PROPERTY_PAYABLE
+}
+
+async function canAccessPropertyPayables(req: any): Promise<boolean> {
+  return userHasAnyPerm(req?.user || {}, [PROPERTY_PAYABLE_MENU_PERM])
 }
 
 function normalizeBool(v: any): boolean {
@@ -640,7 +645,7 @@ async function computeSnapshotAmountTx(client: any, paymentRow: any, paymentMont
   return round2(Math.max(0, base) * rate / 100)
 }
 
-router.get('/property-payables/workbench', requireAnyPerm(['recurring_payments.view', 'property_expenses.view', 'finance.tx.write']), async (req, res) => {
+router.get('/property-payables/workbench', requirePerm(PROPERTY_PAYABLE_MENU_PERM), requireAnyPerm(['recurring_payments.view', 'finance.tx.write']), async (req, res) => {
   if (!hasPg) return res.status(500).json({ message: 'pg not available' })
   const monthKey = String((req.query as any)?.month_key || currentMonthKeyAU()).trim()
   if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month key' })
@@ -762,7 +767,7 @@ router.get('/property-payables/workbench', requireAnyPerm(['recurring_payments.v
   }
 })
 
-router.get('/property-payables/vendors', requireAnyPerm(['recurring_payments.view', 'property_expenses.view', 'finance.tx.write', 'property.write', 'properties.write']), async (_req, res) => {
+router.get('/property-payables/vendors', requirePerm(PROPERTY_PAYABLE_MENU_PERM), requireAnyPerm(['recurring_payments.view', 'finance.tx.write', 'property.write', 'properties.write']), async (_req, res) => {
   if (!hasPg) return res.status(500).json({ message: 'pg not available' })
   try {
     await ensureSchemasOnce()
@@ -805,6 +810,9 @@ router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx
   ;(payment as any).template_kind = String((payment as any).template_kind || TEMPLATE_KIND_FIXED_EXPENSE)
   ;(payment as any).created_by = actorId
   ;(payment as any).updated_by = actorId
+  if (String((payment as any).template_kind || '') === TEMPLATE_KIND_PROPERTY_PAYABLE && !(await canAccessPropertyPayables(req))) {
+    return res.status(403).json({ message: 'forbidden' })
+  }
   const freq = Number(payment.frequency_months || 1)
   const dueDay = Number(payment.due_day_of_month || 1)
   const mode = String((payment as any).amount_mode || 'fixed')
@@ -948,6 +956,7 @@ router.post('/payments/:id/pause', requireAnyPerm(['recurring_payments.write', '
       const beforeRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
       const before = beforeRes.rows?.[0] || null
       if (!before) return { notFound: true }
+      if (isPropertyPayableTemplate(before) && !(await canAccessPropertyPayables(req))) return { forbidden: true }
       const afterRes = await client.query(`UPDATE recurring_payments SET status='paused', updated_at = now() WHERE id = $1 RETURNING *`, [id])
       const after = afterRes.rows?.[0] || null
       const guard = `(generated_from = 'recurring_payments' OR (coalesce(generated_from,'') = '' AND coalesce(note,'') ILIKE 'Fixed payment%'))`
@@ -1010,6 +1019,7 @@ router.post('/payments/:id/pause', requireAnyPerm(['recurring_payments.write', '
       return { before, after, cleared_company_expenses: Number(d1.rowCount || 0), cleared_property_expenses: Number(d2.rowCount || 0), from_month_key: currentMonthKey }
     })
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
+    if ((result as any)?.forbidden) return res.status(403).json({ message: 'forbidden' })
     addAudit('RecurringPayment', String(id), 'pause', (result as any).before, (result as any).after, (req as any).user?.sub)
     return res.json({ ok: true, paused: true, cleared_company_expenses: (result as any).cleared_company_expenses || 0, cleared_property_expenses: (result as any).cleared_property_expenses || 0, from_month_key: (result as any).from_month_key || null })
   } catch (e: any) {
@@ -1035,6 +1045,7 @@ router.post('/payments/:id/resume', requireAnyPerm(['recurring_payments.write', 
       const beforeRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
       const before = beforeRes.rows?.[0] || null
       if (!before) return { notFound: true }
+      if (isPropertyPayableTemplate(before) && !(await canAccessPropertyPayables(req))) return { forbidden: true }
       const afterRes = await client.query(`UPDATE recurring_payments SET status='active', updated_at = now() WHERE id = $1 RETURNING *`, [id])
       const after = afterRes.rows?.[0] || before
 
@@ -1067,6 +1078,7 @@ router.post('/payments/:id/resume', requireAnyPerm(['recurring_payments.write', 
       return { before, after, month_key: monthKey, ensured: true }
     })
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
+    if ((result as any)?.forbidden) return res.status(403).json({ message: 'forbidden' })
     addAudit('RecurringPayment', String(id), 'resume', (result as any).before, (result as any).after, (req as any).user?.sub)
     return res.json({ ok: true, resumed: true, month_key: (result as any).month_key || monthKey, ensured: (result as any).ensured !== false })
   } catch (e: any) {
@@ -1092,6 +1104,7 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
       const beforeRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
       const payment = beforeRes.rows?.[0] || null
       if (!payment) return { notFound: true }
+      if (isPropertyPayableTemplate(payment) && !(await canAccessPropertyPayables(req))) return { forbidden: true }
       const scope = String(payment.scope || 'company')
       const table = scope === 'property' ? 'property_expenses' : 'company_expenses'
       const dueDay = Number(payment.due_day_of_month || 1)
@@ -1138,6 +1151,7 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
       return { ensured: true, inserted: rowUp?.inserted ? 1 : 0, updated: rowUp?.inserted ? 0 : 1, month_key: monthKey }
     })
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
+    if ((result as any)?.forbidden) return res.status(403).json({ message: 'forbidden' })
     return res.json({ ok: true, ...result })
   } catch (e: any) {
     const msg = String(e?.message || 'ensure failed')
@@ -1163,6 +1177,7 @@ router.post('/payments/:id/confirm-amount', requireAnyPerm(['recurring_payments.
       const payment = payRes.rows?.[0] || null
       if (!payment) return { notFound: true }
       if (!isPropertyPayableTemplate(payment)) return { invalid: 'only_property_payable_supported' }
+      if (!(await canAccessPropertyPayables(req))) return { forbidden: true }
       const changed = await confirmPropertyPayableSnapshotTx(client, payment, monthKey, {
         amount: Number(parsed.data.amount || 0),
         dueDate: parsed.data.due_date || null,
@@ -1174,6 +1189,7 @@ router.post('/payments/:id/confirm-amount', requireAnyPerm(['recurring_payments.
       return { ok: true, snapshot_id: String(changed.after.id), month_key: monthKey, row: changed.after }
     })
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
+    if ((result as any)?.forbidden) return res.status(403).json({ message: 'forbidden' })
     if ((result as any)?.invalid) return res.status(400).json({ message: (result as any).invalid })
     if ((result as any)?.failed) return res.status(500).json({ message: 'confirm amount failed' })
     return res.json(result)
@@ -1200,6 +1216,7 @@ router.post('/payments/:id/mark-paid', requireAnyPerm(['recurring_payments.write
       const payment = payRes.rows?.[0] || null
       if (!payment) return { notFound: true }
       if (isPropertyPayableTemplate(payment)) {
+        if (!(await canAccessPropertyPayables(req))) return { forbidden: true }
         const ensured = await ensurePropertyPayableSnapshotTx(client, payment, monthKey, actorId)
         const expenseId = String(ensured?.id || '').trim()
         if (!expenseId) return { failed: true }
@@ -1241,6 +1258,7 @@ router.post('/payments/:id/mark-paid', requireAnyPerm(['recurring_payments.write
       return { ok: true, expense_id: expenseId, month_key: monthKey }
     })
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
+    if ((result as any)?.forbidden) return res.status(403).json({ message: 'forbidden' })
     if ((result as any)?.confirmationRequired) return res.status(409).json({ message: '请先确认本月账单金额' })
     if ((result as any)?.failed) return res.status(500).json({ message: 'mark paid failed' })
     return res.json(result)
@@ -1269,6 +1287,7 @@ router.post('/payments/:id/unmark-paid', requireAnyPerm(['recurring_payments.wri
       const payment = payRes.rows?.[0] || null
       if (!payment) return { notFound: true }
       if (isPropertyPayableTemplate(payment)) {
+        if (!(await canAccessPropertyPayables(req))) return { forbidden: true }
         const ensured = await ensurePropertyPayableSnapshotTx(client, payment, monthKey, actorId)
         const expenseId = String(ensured?.id || '').trim()
         if (!expenseId) return { failed: true }
@@ -1309,6 +1328,7 @@ router.post('/payments/:id/unmark-paid', requireAnyPerm(['recurring_payments.wri
       return { ok: true, expense_id: expenseId, month_key: monthKey }
     })
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
+    if ((result as any)?.forbidden) return res.status(403).json({ message: 'forbidden' })
     if ((result as any)?.failed) return res.status(500).json({ message: 'unmark paid failed' })
     return res.json(result)
   } catch (e: any) {
@@ -1339,6 +1359,7 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
       if (!before) return { notFound: true }
       const nextMode = String((Object.prototype.hasOwnProperty.call(payload, 'amount_mode') ? payload.amount_mode : (before as any).amount_mode) || 'fixed')
       const nextTemplateKind = String((Object.prototype.hasOwnProperty.call(payload, 'template_kind') ? payload.template_kind : (before as any).template_kind) || TEMPLATE_KIND_FIXED_EXPENSE)
+      if ((isPropertyPayableTemplate(before) || nextTemplateKind === TEMPLATE_KIND_PROPERTY_PAYABLE) && !(await canAccessPropertyPayables(req))) return { forbidden: true }
       const nextPids = (() => {
         if (Object.prototype.hasOwnProperty.call(payload, 'property_ids')) {
           const ids = normalizePropertyIds(payload.property_ids)
@@ -1491,6 +1512,7 @@ router.patch('/payments/:id', requireAnyPerm(['recurring_payments.write','financ
       return { updated, rowCount: cnt, autoMarked }
     })
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
+    if ((result as any)?.forbidden) return res.status(403).json({ message: 'forbidden' })
     if ((result as any)?.invalid) return res.status(400).json({ message: String((result as any).invalid) })
     const { updated, rowCount, autoMarked } = result as any
     return res.json({ ok: true, updated, syncedCount: rowCount, autoMarked: Number(autoMarked || 0), currentMonth })

@@ -628,6 +628,7 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
                         inserted++;
                 }
                 await client.query('COMMIT');
+                (0, auth_1.clearPermissionCacheForRoles)(binding.variants);
                 console.log(`[RBAC] write done role_id=${role_id} inserted=${inserted}`);
             }
             catch (e) {
@@ -649,6 +650,7 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
     }
     store_1.db.rolePermissions = store_1.db.rolePermissions.filter(rp => rp.role_id !== role_id);
     finalCodes.forEach(code => store_1.db.rolePermissions.push({ role_id, permission_code: code }));
+    (0, auth_1.clearPermissionCacheForRoles)([role_id]);
     try {
         if (!dbAdapter_1.hasPg)
             (0, persistence_1.saveRolePermissions)(store_1.db.rolePermissions);
@@ -678,6 +680,7 @@ exports.router.delete('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'
             }
             catch (_b) { }
             await pgPool.query('DELETE FROM role_permissions WHERE role_id = ANY($1::text[])', [binding.variants]);
+            (0, auth_1.clearPermissionCacheForRoles)(binding.variants);
             return res.json({ ok: true });
         }
     }
@@ -686,6 +689,7 @@ exports.router.delete('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'
     }
     const variants = new Set(binding.variants);
     store_1.db.rolePermissions = store_1.db.rolePermissions.filter((rp) => !variants.has(String(rp.role_id || '')));
+    (0, auth_1.clearPermissionCacheForRoles)(Array.from(variants));
     try {
         if (!dbAdapter_1.hasPg)
             (0, persistence_1.saveRolePermissions)(store_1.db.rolePermissions);

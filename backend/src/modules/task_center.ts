@@ -5,7 +5,7 @@ import { requireAnyPerm, requirePerm } from '../auth'
 import { db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
 import { ensureCleaningSchemaV2 } from '../services/cleaningSync'
-import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode } from '../lib/cleaningInspection'
+import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, mergeTurnoverTaskPlan } from '../lib/cleaningInspection'
 
 export const router = Router()
 
@@ -399,9 +399,15 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
       const all = [...checkins, ...checkouts]
       const ids = all.flatMap((x) => x.task_ids).filter(Boolean)
       const first = all[0]
-      const cleanerId = all.every((x) => text(x.cleaner_id || x.assignee_id) === text(all[0].cleaner_id || all[0].assignee_id)) ? (text(all[0].cleaner_id || all[0].assignee_id) || null) : null
-      const assigneeId = all.every((x) => text(x.assignee_id) === text(all[0].assignee_id)) ? (text(all[0].assignee_id) || cleanerId) : cleanerId
-      const inspectorId = all.every((x) => text(x.inspector_id) === text(all[0].inspector_id)) ? (text(all[0].inspector_id) || null) : null
+      const turnoverPlan = mergeTurnoverTaskPlan(all.map((task) => ({
+        task_type: task.task_kind,
+        cleaner_id: task.cleaner_id,
+        assignee_id: task.assignee_id,
+        inspector_id: task.inspector_id,
+        status: task.status,
+        inspection_mode: task.inspection_mode,
+        inspection_due_date: task.inspection_due_date,
+      })))
       const autoSync = all.every((x) => x.auto_sync_enabled !== false)
       const checkout = checkouts[0]
       const checkin = checkins[0]
@@ -420,19 +426,22 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         ...first,
         item_key: `cleaning:${ids.join(',')}`,
         task_id: ids.join(','),
-        task_ids: Array.from(new Set(ids)),
+        task_ids: Array.from(new Set([
+          ...checkouts.flatMap((task) => task.task_ids),
+          ...checkins.flatMap((task) => task.task_ids),
+        ].filter(Boolean))),
         task_kind: 'turnover',
         title: mergedSummary.title,
         detail: [mergedSummary.detail, nightsText].filter(Boolean).join('，'),
-        status: mergedStatus(all.map((x) => x.status)),
-        assignee_id: assigneeId,
-        cleaner_id: cleanerId,
-        inspector_id: inspectorId,
+        status: turnoverPlan.status,
+        assignee_id: turnoverPlan.assigneeId,
+        cleaner_id: turnoverPlan.cleanerId,
+        inspector_id: turnoverPlan.inspectorId,
         auto_sync_enabled: autoSync,
         has_key_photo: all.some((x) => !!x.has_key_photo),
         key_photo_uploaded_at: all.find((x) => text(x.key_photo_uploaded_at))?.key_photo_uploaded_at || null,
-        inspection_mode: checkout.inspection_mode || checkin.inspection_mode || null,
-        inspection_due_date: checkout.inspection_due_date || checkin.inspection_due_date || null,
+        inspection_mode: turnoverPlan.inspectionMode,
+        inspection_due_date: turnoverPlan.inspectionDueDate,
         old_code: null,
         new_code: null,
         summary_checkout_time: checkout.summary_checkout_time || null,
@@ -476,11 +485,7 @@ async function loadCleaningTasks(date: string): Promise<BoardTask[]> {
          t.inspection_due_date::text AS inspection_due_date,
          t.scheduled_at,
          t.key_photo_uploaded_at,
-         EXISTS(
-           SELECT 1
-           FROM cleaning_task_media m
-           WHERE m.task_id::text = t.id::text AND m.type = 'key_photo'
-         ) AS has_key_photo,
+         key_media.task_id IS NOT NULL AS has_key_photo,
          t.checkout_time,
          t.checkin_time,
          t.nights_override,
@@ -491,6 +496,11 @@ async function loadCleaningTasks(date: string): Promise<BoardTask[]> {
          COALESCE(t.nights_override, o.nights) AS nights
        FROM cleaning_tasks t
        LEFT JOIN orders o ON (o.id::text) = (t.order_id::text)
+       LEFT JOIN (
+         SELECT DISTINCT task_id::text AS task_id
+         FROM cleaning_task_media
+         WHERE type = 'key_photo'
+       ) key_media ON key_media.task_id = t.id::text
        LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
        LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
        WHERE (
@@ -909,7 +919,9 @@ function buildRows(params: {
   const deferredTasks: BoardTask[] = []
   const deferredInspectionTasks: BoardTask[] = []
   for (const task of params.tasks) {
-    const rawIds = task.task_source === 'cleaning' && task.deferred_inspection_view ? task.task_ids : [task.task_id]
+    const rawIds = task.task_source === 'cleaning'
+      ? Array.from(new Set([task.task_id, ...task.task_ids].map((taskId) => text(taskId)).filter(Boolean)))
+      : [task.task_id]
     const matchFlags = rawIds
       .map((id) => params.taskFlags.get(`${params.date}|${task.task_source}|${id}`))
       .filter(Boolean) as TaskFlag[]
@@ -926,7 +938,12 @@ function buildRows(params: {
       deferredTasks.push(task)
       continue
     }
-    const layout = params.itemLayouts.get(boardTaskKey(task.task_source, task.task_id))
+    const layoutKeys = task.task_source === 'cleaning'
+      ? [task.task_id, ...task.task_ids]
+      : [task.task_id]
+    const layout = Array.from(new Set(layoutKeys.map((taskId) => text(taskId)).filter(Boolean)))
+      .map((taskId) => params.itemLayouts.get(boardTaskKey(task.task_source, taskId)))
+      .find(Boolean)
     let rowKey = layout?.row_key || defaultRegionRowKey(task)
     if (rowKey === DEFERRED_ROW_KEY) rowKey = defaultRegionRowKey(task)
     const rowMeta = params.rowMetas.get(rowKey)

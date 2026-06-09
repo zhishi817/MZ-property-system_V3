@@ -376,3 +376,44 @@
 ### Open Issues / Follow-ups
 - 当前新 skill 已覆盖后台 CRUD 页面通用规则，但尚未把具体模块示例拆到 `references/`；如果后续规则继续增多，可再按 inventory / finance 等场景补充细分参考文档。
 - 后续新增后台 CRUD 页面时，需要在实际开发流程中显式使用该 skill，才能持续保持一致性。
+
+## 晚退收入 SQL 回填
+
+- Date: 2026-06-06
+- Task: 晚退收入 SQL 回填
+- Status: implemented
+
+### Confirmed Plan
+- 只读取 `late check out.xlsx` 当前可见的 458 条记录，隐藏行全部排除。
+- 使用第一份 CSV 的 83 个唯一确认码作为排除清单；其中 58 个与 Excel 可见行重合。
+- 最终回填来源固定为 400 个唯一确认码，金额合计 AUD 7,999.97。
+- 按确认码精确匹配订单；订单缺失、匹配歧义、退房日期缺失或已有晚退收入时跳过并报告。
+- 同时创建订单关联的 `finance_transactions` 晚退收入和 `company_incomes` 公司收入，不修改房东租金字段。
+- 先提供只读预览 SQL，再提供事务化正式 SQL。
+
+### Implementation Result
+- 已生成 `late_checkout_income_2026_01_05_preview.sql`，执行后固定 `ROLLBACK`。
+- 已生成 `late_checkout_income_2026_01_05_apply.sql`，包含来源硬校验、advisory lock、双表写入、镜像金额校验、审计日志和最终结果报告。
+- 已补充 Neon SQL Editor 专用紧凑版本，将完整可执行 SQL 压缩为单行，避免复制预览内容时在第 100 行截断。
+- 正式 SQL 使用确定性批次 ID，并在写入前检查已有订单关联晚退记录。
+- 已增加操作说明，明确 Neon SQL Editor 中的预览和正式执行顺序。
+- 未连接或修改正式数据库；本次完成的是可执行 SQL 产物。
+
+### Validation
+- 两份 SQL 均包含 400 个来源元组，金额均为 AUD 7,999.97。
+- 来源确认码无重复，所有候选金额均为正数。
+- 预览 SQL 以 `ROLLBACK` 结束，正式 SQL 以 `COMMIT` 结束。
+- 静态检查确认两份 SQL 均不包含对 `orders` 表的写操作。
+- 当前机器没有本地 PostgreSQL/`psql` 运行环境，因此未执行数据库级语法和事务测试。
+
+### Files / Areas
+- `backend/scripts/backfills/late_checkout_income_2026_01_05_preview.sql`
+- `backend/scripts/backfills/late_checkout_income_2026_01_05_apply.sql`
+- `backend/scripts/backfills/late_checkout_income_2026_01_05_preview_neon.sql`
+- `backend/scripts/backfills/late_checkout_income_2026_01_05_apply_neon.sql`
+- `backend/scripts/backfills/late_checkout_income_2026_01_05_README.md`
+- `docs/execution-records.md`
+
+### Open Issues / Follow-ups
+- 必须先在正式 Neon SQL Editor 执行预览 SQL，并人工核对 `ready`、`missing_order`、`ambiguous_order` 和已有收入分类。
+- 正式执行结果中的 `inserted_finance_count` 与 `inserted_company_count`、两侧金额必须一致。

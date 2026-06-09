@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react'
 import { API_BASE } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
 import PropertyPayableTemplatesForm from '../../components/PropertyPayableTemplatesForm'
+import TableRowActions from '../../components/TableRowActions'
 import { hydratePropertyPayableTemplatesForForm, normalizePropertyPayableTemplates, propertyPayableCategoryLabel, propertyPayablePaymentTypeLabel } from '../../lib/propertyPayables'
 
 type Property = { id: string; code?: string; address: string; type: string; capacity: number; region?: string; area_sqm?: number; landlord_id?: string }
@@ -182,11 +183,13 @@ export default function PropertiesPage() {
     { title: '区域', dataIndex: 'region' },
     { title: '面积(㎡)', dataIndex: 'area_sqm' },
     { title: '操作', render: (_: any, r: Property) => (
-      <Space>
-        <Button onClick={() => openDetail(r.id)}>详情</Button>
-        {canWrite && <Button onClick={() => openEdit(r)}>编辑</Button>}
-        {canWrite && <Button danger onClick={() => confirmDelete(r)}>归档</Button>}
-      </Space>
+      <TableRowActions
+        actions={[
+          { key: 'detail', label: '详情', onClick: () => openDetail(r.id) },
+          { key: 'edit', label: '编辑', onClick: () => openEdit(r), hidden: !canWrite },
+          { key: 'archive', label: '归档', onClick: () => confirmDelete(r), danger: true, hidden: !canWrite },
+        ]}
+      />
     ) },
   ]
 

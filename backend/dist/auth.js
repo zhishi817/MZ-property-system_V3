@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.users = void 0;
+exports.clearPermissionCacheForRoles = clearPermissionCacheForRoles;
 exports.login = login;
 exports.auth = auth;
 exports.listPermissionCodesForUser = listPermissionCodesForUser;
@@ -30,6 +31,17 @@ const permsCache = new Map();
 const SESSION_CACHE_TTL_MS = Number(process.env.SESSION_CACHE_TTL_MS || 15000);
 const SESSION_TOUCH_INTERVAL_MS = Number(process.env.SESSION_TOUCH_INTERVAL_MS || 60000);
 const PERM_CACHE_TTL_MS = Number(process.env.PERM_CACHE_TTL_MS || 5 * 60 * 1000);
+function clearPermissionCacheForRoles(roleNames) {
+    if (!roleNames || !roleNames.length) {
+        permsCache.clear();
+        return;
+    }
+    for (const roleName of roleNames) {
+        const key = String(roleName || '').trim();
+        if (key)
+            permsCache.delete(key);
+    }
+}
 exports.users = {
     admin: { id: 'u-admin', username: 'admin', role: 'admin', password: process.env.ADMIN_PASSWORD || 'admin' },
     cs: { id: 'u-cs', username: 'cs', role: 'customer_service', password: process.env.CS_PASSWORD || 'cs' },

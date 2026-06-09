@@ -560,6 +560,12 @@ function shouldScopePropertyExpenseByPeerRole(resource: string, user: any): bool
 async function listPeerRoleActorKeys(user: any): Promise<string[]> {
   const roleNames = roleNamesOfUser(user)
   if (!roleNames.length) return []
+  const addCurrentActorKeys = (keys: Set<string>) => {
+    const id = String(user?.sub || user?.id || '').trim()
+    const username = String(user?.username || '').trim()
+    if (id) keys.add(id)
+    if (username) keys.add(username)
+  }
   if (hasPg && pgPool) {
     try {
       const joined = await pgPool.query(
@@ -577,6 +583,7 @@ async function listPeerRoleActorKeys(user: any): Promise<string[]> {
         if (id) keys.add(id)
         if (username) keys.add(username)
       }
+      addCurrentActorKeys(keys)
       if (keys.size) return Array.from(keys)
     } catch {
       try {
@@ -593,6 +600,7 @@ async function listPeerRoleActorKeys(user: any): Promise<string[]> {
           if (id) keys.add(id)
           if (username) keys.add(username)
         }
+        addCurrentActorKeys(keys)
         if (keys.size) return Array.from(keys)
       } catch {}
     }
@@ -606,12 +614,13 @@ async function listPeerRoleActorKeys(user: any): Promise<string[]> {
     if (id) keys.add(id)
     if (username) keys.add(username)
   }
+  addCurrentActorKeys(keys)
   return Array.from(keys)
 }
 
 function canReadPropertyExpenseRowByPeerRole(row: any, actorKeys: string[]): boolean {
   const createdBy = String(row?.created_by || '').trim()
-  if (!createdBy) return true
+  if (!createdBy) return false
   if (!actorKeys.length) return false
   return actorKeys.includes(createdBy)
 }
@@ -841,11 +850,11 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
             if (k === 'created_by_any') {
               const vals = Array.isArray((filters as any)[k]) ? (filters as any)[k].map((x: any) => String(x || '').trim()).filter(Boolean) : []
               if (!vals.length) {
-                parts.push(`COALESCE("created_by",'') = ''`)
+                parts.push('1=0')
                 continue
               }
               values.push(vals)
-              parts.push(`(COALESCE("created_by",'') = '' OR "created_by" = ANY($${values.length}::text[]))`)
+              parts.push(`"created_by" = ANY($${values.length}::text[])`)
               continue
             }
             if (k.endsWith('_from')) {

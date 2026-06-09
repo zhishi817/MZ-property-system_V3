@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mergeInspectionPlan } from '../../src/lib/cleaningInspection'
+import { mergeInspectionPlan, mergeTurnoverTaskPlan } from '../../src/lib/cleaningInspection'
 
 function testTurnoverCheckoutAssignmentWinsOverPendingFallback() {
   const out = mergeInspectionPlan([
@@ -72,9 +72,60 @@ function testStayoverRemainsSelfComplete() {
   assert.equal(out.inspectionDueDate, null)
 }
 
+function testTemporaryCheckinDoesNotUnassignScheduledCheckout() {
+  const out = mergeTurnoverTaskPlan([
+    {
+      task_type: 'checkout_clean',
+      cleaner_id: 'cleaner-1',
+      assignee_id: 'cleaner-1',
+      inspector_id: null,
+      inspection_mode: 'pending_decision',
+      status: 'assigned',
+    },
+    {
+      task_type: 'checkin_clean',
+      cleaner_id: null,
+      assignee_id: null,
+      inspector_id: null,
+      inspection_mode: 'same_day',
+      status: 'pending',
+    },
+  ])
+  assert.equal(out.cleanerId, 'cleaner-1')
+  assert.equal(out.assigneeId, 'cleaner-1')
+  assert.equal(out.status, 'assigned')
+  assert.equal(out.inspectionMode, 'pending_decision')
+  assert.equal(out.inspectorId, null)
+}
+
+function testTemporaryCheckinDoesNotClearCheckoutInspector() {
+  const out = mergeTurnoverTaskPlan([
+    {
+      task_type: 'checkout_clean',
+      cleaner_id: 'cleaner-1',
+      assignee_id: 'cleaner-1',
+      inspector_id: 'inspector-1',
+      inspection_mode: 'same_day',
+      status: 'assigned',
+    },
+    {
+      task_type: 'checkin_clean',
+      cleaner_id: null,
+      assignee_id: null,
+      inspector_id: null,
+      inspection_mode: 'same_day',
+      status: 'pending',
+    },
+  ])
+  assert.equal(out.inspectorId, 'inspector-1')
+  assert.equal(out.inspectionMode, 'same_day')
+}
+
 testTurnoverCheckoutAssignmentWinsOverPendingFallback()
 testTurnoverPendingCheckoutDoesNotGetPromotedByCheckinDefault()
 testDeferredCheckoutKeepsDeferredDate()
 testStayoverRemainsSelfComplete()
+testTemporaryCheckinDoesNotUnassignScheduledCheckout()
+testTemporaryCheckinDoesNotClearCheckoutInspector()
 
 console.log('test_cleaning_inspection_merge: ok')

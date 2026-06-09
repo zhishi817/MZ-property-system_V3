@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { db } from '../store'
 import { saveRolePermissions, saveRoles } from '../persistence'
 import { z } from 'zod'
-import { requirePerm, auth } from '../auth'
+import { clearPermissionCacheForRoles, requirePerm, auth } from '../auth'
 import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete } from '../dbAdapter'
 import bcrypt from 'bcryptjs'
 import { getPermissionMeta } from '../permissionsCatalog'
@@ -565,6 +565,7 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
           if (r && r.rows && r.rows[0]) inserted++
         }
         await client.query('COMMIT')
+        clearPermissionCacheForRoles(binding.variants)
         console.log(`[RBAC] write done role_id=${role_id} inserted=${inserted}`)
       } catch (e: any) {
         try { await client.query('ROLLBACK') } catch {}
@@ -578,6 +579,7 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
   db.rolePermissions = db.rolePermissions.filter(rp => rp.role_id !== role_id)
   finalCodes.forEach(code => db.rolePermissions.push({ role_id, permission_code: code }))
+  clearPermissionCacheForRoles([role_id])
   try { if (!hasPg) saveRolePermissions(db.rolePermissions) } catch {}
   res.json({ ok: true })
 })
@@ -600,11 +602,13 @@ router.delete('/role-permissions', requirePerm('rbac.manage'), async (req, res) 
         await pgPool.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_role_perm ON role_permissions(role_id, permission_code);')
       } catch {}
       await pgPool.query('DELETE FROM role_permissions WHERE role_id = ANY($1::text[])', [binding.variants])
+      clearPermissionCacheForRoles(binding.variants)
       return res.json({ ok: true })
     }
   } catch (e: any) { return res.status(500).json({ message: e.message }) }
   const variants = new Set(binding.variants)
   db.rolePermissions = db.rolePermissions.filter((rp) => !variants.has(String(rp.role_id || '')))
+  clearPermissionCacheForRoles(Array.from(variants))
   try { if (!hasPg) saveRolePermissions(db.rolePermissions) } catch {}
   return res.json({ ok: true })
 })
