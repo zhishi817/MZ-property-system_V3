@@ -80,7 +80,7 @@ async function main() {
     return
   }
   try {
-    const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '*/5 * * * *')
+    const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '0 * * * *')
     console.log(`[cleaning-sync-jobs][worker] cron=${expr}`)
     let inFlight = false
     const task = cron.schedule(expr, async () => {

@@ -455,7 +455,7 @@ export default function ExpensesPage() {
             <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} format="DD/MM/YYYY" />
           </>
         ) : (
-          <Alert type="info" message="您可以记录房源支出，列表明细对客服不可见" showIcon />
+          <Alert type="info" message="客服仅可查看客服团队创建的房源支出记录" showIcon />
         )}
       </Space>
       {canViewList && (

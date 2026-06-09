@@ -21,6 +21,17 @@ const SESSION_CACHE_TTL_MS = Number(process.env.SESSION_CACHE_TTL_MS || 15000)
 const SESSION_TOUCH_INTERVAL_MS = Number(process.env.SESSION_TOUCH_INTERVAL_MS || 60000)
 const PERM_CACHE_TTL_MS = Number(process.env.PERM_CACHE_TTL_MS || 5 * 60 * 1000)
 
+export function clearPermissionCacheForRoles(roleNames?: string[]) {
+  if (!roleNames || !roleNames.length) {
+    permsCache.clear()
+    return
+  }
+  for (const roleName of roleNames) {
+    const key = String(roleName || '').trim()
+    if (key) permsCache.delete(key)
+  }
+}
+
 export const users: Record<string, User & { password: string }> = {
   admin: { id: 'u-admin', username: 'admin', role: 'admin', password: process.env.ADMIN_PASSWORD || 'admin' },
   cs: { id: 'u-cs', username: 'cs', role: 'customer_service', password: process.env.CS_PASSWORD || 'cs' },

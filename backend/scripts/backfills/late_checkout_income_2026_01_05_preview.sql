@@ -1,0 +1,524 @@
+-- Late checkout income backfill: January-May 2026 visible Excel rows
+-- Generated from:
+--   1. odd-brook-19353862_production_neondb_2026-06-06_00-22-22.csv
+--   2. late check out.xlsx
+-- Source rules:
+--   - Use only currently visible Excel rows.
+--   - Exclude confirmation codes present in the 83-row bug CSV.
+--   - Final embedded source: 400 unique confirmation codes, AUD 7,999.97.
+--   - Existing late_checkout finance/company income rows are skipped.
+--   - Missing or ambiguous order matches are skipped and reported.
+--   - No order price, net_income, or landlord rent fields are updated.
+
+-- PREVIEW ONLY: this transaction is always rolled back.
+BEGIN;
+SET LOCAL statement_timeout = '5min';
+SET LOCAL lock_timeout = '15s';
+SELECT pg_advisory_xact_lock(2026060601);
+
+CREATE TEMP TABLE late_checkout_source (
+  source_row integer PRIMARY KEY,
+  confirmation_code text NOT NULL UNIQUE,
+  amount numeric(12,2) NOT NULL CHECK (amount > 0)
+) ON COMMIT DROP;
+
+INSERT INTO late_checkout_source (source_row, confirmation_code, amount) VALUES
+  (1, 'HMMD8TKJYZ', 20.00),
+  (3, 'HMK3RFJZJX', 20.00),
+  (5, 'HMK8PAX3K2', 20.00),
+  (7, 'HM5MJ5AD2R', 20.00),
+  (9, 'HMAHPM2BRW', 20.00),
+  (11, 'HMEA8A2QZA', 20.00),
+  (17, 'HMKZAQRX4Z', 20.00),
+  (23, 'HM5MNNP3AF', 20.00),
+  (25, 'HMS9982XQ8', 20.00),
+  (28, 'HMN8J9AAXW', 20.00),
+  (30, 'HMDXM3SJ8X', 20.00),
+  (34, 'HMBDSXCJXJ', 20.00),
+  (36, 'HM5J4CNBBK', 20.00),
+  (42, 'HMQ5BQDE5Y', 20.00),
+  (44, 'HMCN5HC84B', 20.00),
+  (46, 'HMJZHF2MKA', 20.00),
+  (48, 'HMMFFTKQ2S', 20.00),
+  (50, 'HM88PM9R3S', 20.00),
+  (52, 'HMSFTDP8WY', 20.00),
+  (54, 'HM9HWJAWRP', 20.00),
+  (56, 'HMY4QYXQWQ', 20.00),
+  (59, 'HMQWTJQE5W', 20.00),
+  (60, 'HMZSEW92RN', 20.00),
+  (64, 'HMHM8CWDEQ', 20.00),
+  (66, 'HMJM2ZB2NH', 20.00),
+  (68, 'HMKRW8RJX8', 20.01),
+  (70, 'HMAXNAEWPZ', 20.00),
+  (71, 'HMHHENW3RB', 20.00),
+  (73, 'HMSBPNQMFK', 20.00),
+  (77, 'HMHYR9JAMX', 20.00),
+  (83, 'HM9Q8RSMAS', 20.00),
+  (89, 'HM8QFBPJF9', 20.00),
+  (92, 'HMJ895SJPJ', 20.00),
+  (94, 'HMZRCZMS3N', 20.00),
+  (98, 'HMXFSZC93R', 20.00),
+  (104, 'HMDFYA9BTZ', 20.00),
+  (106, 'HMW5989SAB', 20.00),
+  (109, 'HM2CAQ42CP', 20.00),
+  (111, 'HMW8J3BRRK', 20.00),
+  (113, 'HMS3YDQWZF', 20.00),
+  (115, 'HMDQ5ZQ49J', 20.00),
+  (118, 'HMZQQE4TCZ', 20.00),
+  (120, 'HMWRBX4E38', 20.00),
+  (122, 'HMQSYQNNQS', 20.00),
+  (124, 'HMTAP898BB', 20.00),
+  (130, 'HMWPRFWZYR', 19.99),
+  (132, 'HMF95YCASR', 20.00),
+  (136, 'HMFCEWZS3C', 20.00),
+  (144, 'HMPTFMNBTH', 20.00),
+  (146, 'HMKPJS2824', 20.00),
+  (148, 'HMJC9DF9WD', 20.00),
+  (150, 'HMH3N49HJ9', 20.00),
+  (152, 'HM9FA9JWQN', 20.00),
+  (154, 'HMS95AEXX2', 20.00),
+  (156, 'HMASNYTYFN', 20.00),
+  (160, 'HMKB2SXDZY', 20.00),
+  (162, 'HMMCY29ZXR', 20.00),
+  (164, 'HM9NRT2NCB', 20.00),
+  (168, 'HM4243CPZF', 20.00),
+  (170, 'HMB9BJH5YT', 20.00),
+  (174, 'HMCPH3CJ4E', 20.00),
+  (178, 'HMDQY3B5WH', 20.00),
+  (180, 'HMSY3HSZ44', 20.00),
+  (183, 'HMWB9MZKW5', 20.00),
+  (185, 'HMTRQS9XQ9', 20.00),
+  (187, 'HM54MAA4K2', 20.00),
+  (190, 'HMTJSWEHCB', 20.00),
+  (192, 'HM3SD8TH49', 20.00),
+  (194, 'HM9FBJFNFC', 20.00),
+  (200, 'HMQNCB8SWR', 20.00),
+  (202, 'HM2YC5TYZA', 20.00),
+  (208, 'HMEJBJC3EZ', 20.00),
+  (210, 'HM92X2ACS3', 20.00),
+  (212, 'HMAKM48YCX', 20.00),
+  (214, 'HMKSRKHJ2T', 20.00),
+  (216, 'HM28PQN3PQ', 20.00),
+  (218, 'HMTH3SQA3A', 20.00),
+  (220, 'HMJ2XE5DWM', 20.00),
+  (222, 'HMXTCWSSFP', 20.00),
+  (224, 'HMEERTRHFT', 20.00),
+  (226, 'HMYB9ZWKER', 20.00),
+  (236, 'HMPQMH8588', 20.00),
+  (238, 'HM28FX9YBC', 20.00),
+  (243, 'HM5ADSTCXC', 20.00),
+  (245, 'HMKMQQNWKN', 20.00),
+  (247, 'HME5BWRAJJ', 20.00),
+  (249, 'HMHYKYMQSZ', 19.99),
+  (250, 'HMJ8TN2MNW', 20.00),
+  (252, 'HM98MRDWZ4', 20.00),
+  (255, 'HMPM9YZEKQ', 20.00),
+  (256, 'HMTPW99WQX', 20.00),
+  (259, 'HMST2RC2A8', 20.00),
+  (261, 'HMAHEEAXZ5', 20.00),
+  (267, 'HMKKM9RNBQ', 20.00),
+  (270, 'HMEA5XY8R5', 20.00),
+  (278, 'HMRZS3JT92', 20.00),
+  (280, 'HM8TM5EXXJ', 20.00),
+  (282, 'HMRDRW9WPS', 20.00),
+  (286, 'HMKPA9JQDA', 20.00),
+  (290, 'HMQPAMHQSN', 20.00),
+  (292, 'HMXM8DRBX2', 19.99),
+  (296, 'HM2YKQF4BX', 20.00),
+  (298, 'HMTW8DQK3A', 20.00),
+  (300, 'HMSB3N8MJY', 20.00),
+  (302, 'HMR38ZAKMA', 20.00),
+  (304, 'HM3EEJXCCF', 20.00),
+  (308, 'HM98FKB2AR', 20.00),
+  (310, 'HMJYZ2YE42', 20.00),
+  (312, 'HMPT84WMRK', 20.00),
+  (314, 'HMNXKAJ8YK', 20.00),
+  (318, 'HM8K3QXPER', 20.00),
+  (321, 'HMJR9NDTRC', 20.00),
+  (331, 'HMKXSJ58QY', 20.00),
+  (333, 'HMFN5XANAE', 20.00),
+  (337, 'HMHQATY3M8', 20.00),
+  (339, 'HM9XYRNHH3', 20.00),
+  (341, 'HM9TX38C9Z', 20.00),
+  (343, 'HM3RM4Y85A', 20.00),
+  (345, 'HMRYMC4BDX', 20.00),
+  (347, 'HMC25XABPC', 20.00),
+  (348, 'HMCC3A3WCT', 19.99),
+  (350, 'HMRNS8YP3F', 20.00),
+  (352, 'HM3SHF8WJ9', 20.00),
+  (354, 'HMSKE5CHZS', 20.00),
+  (356, 'HMYXXB3B2Z', 20.00),
+  (366, 'HMSJM9XJRP', 20.00),
+  (372, 'HMTZZMYT4D', 20.00),
+  (376, 'HMRWE3R3A5', 20.00),
+  (378, 'HMSCAR3NEA', 20.00),
+  (382, 'HMWHBTW93H', 20.00),
+  (387, 'HMRP2QE4MJ', 20.00),
+  (390, 'HMNYHRHAR5', 20.00),
+  (391, 'HMBT2FC8RJ', 20.00),
+  (400, 'HMJDCCWYWZ', 20.00),
+  (408, 'HMD3QZETAY', 20.00),
+  (409, 'HM33EQC2NQ', 20.00),
+  (411, 'HMR9XH38WR', 20.00),
+  (413, 'HMZSJ8Z4JM', 20.00),
+  (415, 'HMWH5DRPP2', 20.00),
+  (417, 'HMC9HA9BED', 20.00),
+  (418, 'HMP8KEQCFE', 20.00),
+  (420, 'HMQ8QKDJYS', 19.99),
+  (428, 'HMW8PYTKAB', 20.00),
+  (430, 'HMH3E49F9S', 20.00),
+  (432, 'HM2KQ5NMST', 20.00),
+  (433, 'HMDS3NYQWS', 20.00),
+  (435, 'HMB9SW53WQ', 20.00),
+  (436, 'HM5Y5DMNY3', 20.00),
+  (440, 'HMNZ2YRZMY', 20.00),
+  (442, 'HMJ4JNZNRJ', 20.00),
+  (444, 'HMXHKEEFMA', 20.00),
+  (446, 'HM2NYJHJ8D', 20.00),
+  (451, 'HM5QXN4NM3', 19.99),
+  (455, 'HMYAPTQNMQ', 20.00),
+  (457, 'HMKPB8C4ET', 20.00),
+  (459, 'HMJACJYZCJ', 20.00),
+  (462, 'HMF2NRB4SK', 20.00),
+  (463, 'HMX5F52ESJ', 20.00),
+  (465, 'HM8QNSCPCT', 20.01),
+  (467, 'HM34D3MA25', 20.00),
+  (469, 'HM2MTT49JJ', 20.00),
+  (471, 'HMYJ4R2BBZ', 20.00),
+  (473, 'HMZY9ZD5YF', 20.00),
+  (475, 'HMYJ8TKKDY', 20.00),
+  (477, 'HMMFKPD54N', 20.00),
+  (479, 'HMQPMFCXNZ', 20.00),
+  (482, 'HMBFARJ5E4', 20.00),
+  (484, 'HMHSW4C4EJ', 20.00),
+  (488, 'HMMY3C4DSH', 20.00),
+  (490, 'HMJBAM3D4S', 20.00),
+  (492, 'HM4XSARYT8', 20.00),
+  (496, 'HMPW5J2BH4', 20.00),
+  (497, 'HMHB55JWJF', 20.00),
+  (500, 'HMKPMM8ZMB', 20.00),
+  (502, 'HMQMPB2MBF', 20.00),
+  (504, 'HM2HA2W3AW', 20.00),
+  (505, 'HMKYF9A9TX', 20.00),
+  (507, 'HMWN2NN9T9', 20.00),
+  (509, 'HM448NFA3R', 20.00),
+  (510, 'HMZ5C9WDNP', 20.00),
+  (514, 'HMFTS38J85', 20.00),
+  (516, 'HM4XJ4D9D4', 19.99),
+  (518, 'HMZM4NER95', 20.00),
+  (520, 'HMSHCEAZ3R', 20.00),
+  (522, 'HMXQ39RHAN', 20.00),
+  (524, 'HM53JQTM8Y', 20.00),
+  (525, 'HMPYC4MEBN', 20.00),
+  (526, 'HMPSN5BJRS', 20.00),
+  (528, 'HM9SCZHR4J', 20.00),
+  (532, 'HM3Y28NACK', 20.00),
+  (536, 'HM32EFW5N5', 20.00),
+  (538, 'HMTZY8H3TQ', 20.00),
+  (539, 'HMJMSZHK3Q', 20.00),
+  (541, 'HMYFMSZFXQ', 20.00),
+  (545, 'HMBCCHP5YH', 20.00),
+  (547, 'HMKWKDHTBA', 20.00),
+  (549, 'HMQYRXC8FQ', 20.00),
+  (550, 'HM28H4ZTWW', 20.00),
+  (552, 'HMEZX8H888', 20.00),
+  (553, 'HMEPS5QM29', 20.00),
+  (555, 'HMEPKX2AQY', 20.00),
+  (557, 'HM2NFCTTCE', 20.00),
+  (561, 'HMN8EYDMXZ', 20.00),
+  (563, 'HM3BPK3ARW', 20.00),
+  (565, 'HMWP2P2FSX', 20.00),
+  (567, 'HM5D8SCDMF', 20.00),
+  (569, 'HMQ32WAXEW', 20.00),
+  (571, 'HMENCBSMC9', 20.00),
+  (573, 'HMR4ZH9PRA', 20.00),
+  (575, 'HME2E3M4XM', 20.00),
+  (577, 'HMJT83EMW5', 20.00),
+  (580, 'HMCCE5QRFN', 20.00),
+  (582, 'HMJEXYQ33S', 20.00),
+  (583, 'HMM8Y2TA5P', 20.00),
+  (585, 'HMJTTCJK2X', 20.00),
+  (587, 'HMZNRNSYP3', 20.00),
+  (590, 'HMWDQ8B4DT', 20.00),
+  (591, 'HMXCXFEXDZ', 20.00),
+  (592, 'HM3RBK5ZBJ', 20.00),
+  (593, 'HMM59E9D4B', 20.00),
+  (594, 'HMDENTRW3B', 20.00),
+  (595, 'HM9A4RZJ93', 20.00),
+  (596, 'HMHQRPHCT8', 20.00),
+  (597, 'HM25849J34', 20.00),
+  (598, 'HMQRDN2D95', 20.00),
+  (599, 'HMRYWJ3DZ8', 20.00),
+  (600, 'HMBQX4EMCA', 20.00),
+  (601, 'HMTQEHQZNT', 20.01),
+  (602, 'HMPDKX9KA9', 20.00),
+  (603, 'HMW58WNCCE', 20.00),
+  (604, 'HM5H25NPZT', 20.00),
+  (605, 'HM885MTHKK', 20.00),
+  (606, 'HM345AR82T', 20.01),
+  (607, 'HMJT5BRD8H', 20.00),
+  (608, 'HMMHHD89PW', 20.00),
+  (609, 'HMK8X5WSWZ', 20.00),
+  (610, 'HM38BSY2HC', 20.00),
+  (611, 'HMJXFTWBCY', 20.00),
+  (612, 'HM4A8FEK44', 20.00),
+  (613, 'HMZZQEXATR', 20.00),
+  (614, 'HMWJPDFJN9', 20.00),
+  (615, 'HMHXKWWWQT', 20.00),
+  (616, 'HMZ99JJ4XN', 20.00),
+  (617, 'HMTX5XWD2C', 20.00),
+  (618, 'HMYPSPFZB4', 20.00),
+  (619, 'HMMCYEMMSH', 20.00),
+  (620, 'HMNRQ5YDMS', 20.00),
+  (621, 'HMY2J8YRHF', 20.00),
+  (622, 'HM8Z8KFQZW', 20.00),
+  (623, 'HM92BW44H2', 20.00),
+  (624, 'HM4DZRXFA2', 20.00),
+  (625, 'HMEYZXN8EK', 20.00),
+  (626, 'HMJ5W4YEW2', 20.00),
+  (627, 'HMJ4X358MK', 20.00),
+  (628, 'HM4FXDRHXE', 20.00),
+  (629, 'HMYH3ST99R', 20.00),
+  (630, 'HM28B2JFHW', 20.00),
+  (631, 'HMX5SEPMBW', 20.00),
+  (632, 'HMP23EQMJC', 20.00),
+  (633, 'HM48BK4MKS', 20.00),
+  (634, 'HMKASZA4C3', 20.00),
+  (635, 'HMY49BAKD2', 20.00),
+  (636, 'HMQZXTJ9A5', 20.00),
+  (637, 'HMHJQBACAJ', 20.00),
+  (638, 'HM55HXC8SW', 20.00),
+  (639, 'HM33JHYHZ8', 20.00),
+  (640, 'HMJFWCZTAF', 20.01),
+  (641, 'HM9BT43YT8', 20.00),
+  (642, 'HM9ZMJS835', 20.00),
+  (643, 'HM439NE8AQ', 20.01),
+  (644, 'HMFFWM2EZ9', 20.00),
+  (645, 'HMHYS25HHK', 20.00),
+  (646, 'HMJHHWDFCB', 19.99),
+  (647, 'HMMQRNJEZA', 19.99),
+  (648, 'HMBBY3KXWN', 20.00),
+  (649, 'HMHWQAQAE5', 20.00),
+  (650, 'HMKHF3HDSQ', 20.00),
+  (651, 'HMSDDD8WAB', 20.00),
+  (652, 'HMD2ZHKWT2', 20.00),
+  (653, 'HM5X88QPQX', 20.00),
+  (654, 'HMKMBM3K4D', 20.00),
+  (655, 'HMSQTEAKH5', 20.00),
+  (656, 'HMHTRNCXPP', 20.00),
+  (657, 'HMWZ3Z9YJ2', 20.00),
+  (658, 'HMSE3ARAPW', 20.00),
+  (659, 'HMBF4Z8AD8', 20.00),
+  (660, 'HMRKPBHW59', 20.00),
+  (661, 'HMCENBP2KT', 20.00),
+  (662, 'HMH2SX899F', 19.99),
+  (663, 'HMZBZXBWWF', 20.00),
+  (664, 'HMS2KWWAX5', 20.00),
+  (665, 'HMXHDJTW5M', 20.00),
+  (666, 'HM4FFN3R3Q', 20.00),
+  (667, 'HM5JTNZSYQ', 20.00),
+  (668, 'HM9FDKM3M8', 20.01),
+  (669, 'HMEJXMBE2Y', 20.01),
+  (670, 'HM44J9BCAW', 20.00),
+  (671, 'HMSFT9HE5H', 20.00),
+  (672, 'HM8SJECN8K', 20.00),
+  (673, 'HMFBET5XSK', 20.00),
+  (674, 'HMYAND5X58', 20.00),
+  (675, 'HMPBSMYQY2', 20.00),
+  (676, 'HMMFPRJSE8', 20.00),
+  (677, 'HMP55JFQXN', 20.00),
+  (678, 'HMNHPA5F2B', 20.00),
+  (679, 'HM48X25MSW', 20.00),
+  (680, 'HMAEQHNJF4', 20.00),
+  (682, 'HMCN2MHQ3R', 20.00),
+  (683, 'HM52Y4MWMH', 20.00),
+  (684, 'HMDBKP8YPF', 20.00),
+  (685, 'HM33YHSN4W', 20.00),
+  (686, 'HM8M35ETN3', 20.00),
+  (687, 'HMY9XB4FS3', 20.00),
+  (688, 'HM89Y5TAQZ', 20.00),
+  (689, 'HM4WYEB8SD', 20.00),
+  (690, 'HMHQPWDX5B', 20.00),
+  (692, 'HM9X4KK38Y', 20.00),
+  (693, 'HMMY5TDXSM', 20.00),
+  (700, 'HMRWCRECDJ', 20.00),
+  (701, 'HM9YT4YYWP', 20.00),
+  (703, 'HMT8B4SRT4', 20.00),
+  (705, 'HM2D4ADNXZ', 20.00),
+  (706, 'HMW9MHPTPA', 20.00),
+  (708, 'HM425E8TX4', 20.00),
+  (709, 'HM4RWBDNFE', 20.00),
+  (710, 'HM8FQZW9PN', 20.00),
+  (711, 'HMJMRBZ2NH', 20.00),
+  (713, 'HMTTCBSCTN', 20.00),
+  (714, 'HMCMHXMBQT', 20.00),
+  (715, 'HMFQFSHA3J', 20.00),
+  (716, 'HM38ATSWDE', 20.00),
+  (717, 'HM2XNYNDE4', 20.00),
+  (718, 'HM3BH4AKWZ', 20.00),
+  (719, 'HM8N5MB3EH', 20.00),
+  (720, 'HM2SH5BB9Z', 20.00),
+  (721, 'HMAMBQ5KHY', 20.00),
+  (722, 'HMMN43XPAW', 20.00),
+  (723, 'HMZREEEM98', 20.00),
+  (724, 'HM4CPZ28DH', 20.00),
+  (725, 'HM2KYTKYJP', 20.00),
+  (726, 'HMQJEX252Z', 20.00),
+  (728, 'HMKFM3QHFQ', 20.00),
+  (731, 'HM2A2SQ54C', 20.00),
+  (732, 'HMRXENBMHP', 20.00),
+  (734, 'HMMHNDQJZR', 20.00),
+  (736, 'HMPKFTEN5D', 20.00),
+  (738, 'HM2E9HYKC5', 20.00),
+  (740, 'HMEK8KQ5ZN', 20.00),
+  (741, 'HMK3NBMJAZ', 20.00),
+  (743, 'HMN3ECHXWC', 20.00),
+  (744, 'HMXR43TYQZ', 20.00),
+  (745, 'HMCRX88HZP', 20.00),
+  (750, 'HMZ5SX98ZM', 20.00),
+  (751, 'HMZQB2H9X2', 20.00),
+  (753, 'HMNCPT5QWX', 20.00),
+  (754, 'HM2JC84CTY', 20.00),
+  (755, 'HM3DT2JXCK', 20.00),
+  (756, 'HMBJ9KPJ4Q', 20.00),
+  (757, 'HM423DPATP', 20.00),
+  (758, 'HMRY3429YR', 20.00),
+  (759, 'HMJMAFXBN2', 20.00),
+  (760, 'HMQDT44RNS', 20.00),
+  (761, 'HM8ECR5ZKE', 20.00),
+  (764, 'HMBAHHKYBA', 20.00),
+  (767, 'HMME4Q9K2Y', 20.00),
+  (769, 'HMRNZH9QY5', 20.00),
+  (770, 'HMXWR33YYP', 20.00),
+  (771, 'HM8A5CBCCE', 20.00),
+  (772, 'HMZ3NTZT5P', 20.00),
+  (773, 'HMRT3RSD4A', 20.00),
+  (774, 'HMRKAP2KY8', 20.00),
+  (775, 'HMNDMWN8EB', 20.00),
+  (776, 'HMK9RMB32W', 20.00),
+  (777, 'HMNYNMACA9', 20.00),
+  (778, 'HM92TTHNYX', 20.00),
+  (780, 'HMSRJSZ2NQ', 20.00),
+  (781, 'HM8A3JPQ5R', 20.00),
+  (782, 'HMCSMBTYB5', 20.00),
+  (783, 'HMBSZEM9QM', 20.00),
+  (784, 'HMXZ3EHWQH', 20.00),
+  (785, 'HMHA8AJM9T', 19.99),
+  (786, 'HMHQAB2EK8', 20.00),
+  (787, 'HMJKQ55PXZ', 20.00),
+  (788, 'HM5K88Y9FQ', 20.00),
+  (789, 'HMMCF8RRC3', 20.00),
+  (790, 'HMEH3DEXX9', 20.00),
+  (791, 'HMJ8SQ9KY8', 20.00),
+  (792, 'HMM4FR9EE5', 20.00),
+  (793, 'HMQAQJWWBD', 20.00),
+  (794, 'HMKE2E4STM', 20.00),
+  (795, 'HMWSQ3TMEQ', 20.00),
+  (796, 'HMFJA9EDA9', 20.00),
+  (797, 'HMSWEPFXZQ', 20.00),
+  (798, 'HMH583TKE8', 20.00),
+  (799, 'HM3C25SCCF', 20.00),
+  (800, 'HM32ENQADQ', 20.00),
+  (801, 'HMKR4TSA2E', 20.00),
+  (802, 'HM59ECEWPB', 20.00),
+  (803, 'HMRTZ99HZF', 20.00),
+  (804, 'HMBTQAN8K3', 20.00);
+
+DO $validation$
+DECLARE
+  source_count integer;
+  source_total numeric(12,2);
+BEGIN
+  SELECT count(*), round(coalesce(sum(amount), 0), 2)
+    INTO source_count, source_total
+    FROM late_checkout_source;
+
+  IF source_count <> 400 THEN
+    RAISE EXCEPTION 'Source row validation failed: expected 400, got %', source_count;
+  END IF;
+  IF source_total <> 7999.97 THEN
+    RAISE EXCEPTION 'Source amount validation failed: expected 7999.97, got %', source_total;
+  END IF;
+END
+$validation$;
+
+CREATE TEMP TABLE late_checkout_resolution ON COMMIT DROP AS
+WITH order_matches AS (
+  SELECT
+    source.source_row,
+    source.confirmation_code,
+    source.amount,
+    count(orders.id)::integer AS order_match_count,
+    min(orders.id) AS order_id,
+    min(orders.property_id) AS property_id,
+    min(orders.checkout) AS checkout
+  FROM late_checkout_source source
+  LEFT JOIN orders
+    ON upper(trim(orders.confirmation_code)) = source.confirmation_code
+  GROUP BY source.source_row, source.confirmation_code, source.amount
+),
+flags AS (
+  SELECT
+    matches.*,
+    CASE
+      WHEN matches.order_match_count = 1 THEN EXISTS (
+        SELECT 1
+        FROM finance_transactions tx
+        WHERE tx.kind = 'income'
+          AND lower(coalesce(tx.category, '')) = 'late_checkout'
+          AND tx.ref_type = 'order'
+          AND tx.ref_id = matches.order_id
+      )
+      ELSE false
+    END AS has_finance_transaction,
+    CASE
+      WHEN matches.order_match_count = 1 THEN EXISTS (
+        SELECT 1
+        FROM company_incomes income
+        WHERE lower(coalesce(income.category, '')) = 'late_checkout'
+          AND income.ref_type = 'order'
+          AND income.ref_id = matches.order_id
+      )
+      ELSE false
+    END AS has_company_income
+  FROM order_matches matches
+)
+SELECT
+  flags.*,
+  CASE
+    WHEN order_match_count = 0 THEN 'missing_order'
+    WHEN order_match_count > 1 THEN 'ambiguous_order'
+    WHEN checkout IS NULL THEN 'missing_checkout'
+    WHEN has_finance_transaction THEN 'existing_finance_transaction'
+    WHEN has_company_income THEN 'existing_company_income'
+    ELSE 'ready'
+  END AS resolution
+FROM flags;
+
+SELECT
+  resolution,
+  count(*) AS record_count,
+  round(sum(amount), 2) AS amount_total
+FROM late_checkout_resolution
+GROUP BY resolution
+ORDER BY resolution;
+
+SELECT
+  source_row,
+  confirmation_code,
+  amount,
+  order_match_count,
+  order_id,
+  checkout,
+  resolution
+FROM late_checkout_resolution
+WHERE resolution <> 'ready'
+ORDER BY source_row;
+
+SELECT
+  count(*) AS ready_count,
+  round(sum(amount), 2) AS ready_amount
+FROM late_checkout_resolution
+WHERE resolution = 'ready';
+
+ROLLBACK;

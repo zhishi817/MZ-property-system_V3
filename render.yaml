@@ -12,6 +12,34 @@ services:
         value: dev
       - key: DATABASE_URL
         value: ${NEON_DATABASE_URL_DEV}
+      - key: EMAIL_SYNC_SCHEDULE_ENABLED
+        value: "true"
+      - key: EMAIL_SYNC_CRON
+        value: "0 10 */3 * *"
+      - key: EMAIL_SYNC_WATCHDOG_ENABLED
+        value: "false"
+      - key: CLEANING_BACKFILL_FAST_ENABLED
+        value: "true"
+      - key: CLEANING_BACKFILL_FAST_CRON
+        value: "30 10 */3 * *"
+      - key: CLEANING_BACKFILL_SLOW_ENABLED
+        value: "false"
+      - key: CLEANING_SYNC_JOBS_CRON
+        value: "0 * * * *"
+      - key: CLEANING_SYNC_RETRY_ENABLED
+        value: "false"
+      - key: NOTIFICATION_WORKER_ENABLED
+        value: "true"
+      - key: NOTIFICATION_WORKER_FALLBACK_CRON
+        value: "0 * * * *"
+      - key: CUSTOMER_SERVICE_MEMO_REMINDER_ENABLED
+        value: "false"
+      - key: KEY_UPLOAD_REMINDER_ENABLED
+        value: "false"
+      - key: DAY_END_HANDOVER_REMINDER_ENABLED
+        value: "false"
+      - key: PG_POOL_MAX
+        value: "3"
 
   - type: worker
     name: mz-backend-dev-pdf-worker
@@ -26,6 +54,12 @@ services:
         value: dev
       - key: DATABASE_URL
         value: ${NEON_DATABASE_URL_DEV}
+      - key: PDF_JOBS_CRON
+        value: "0 */6 * * *"
+      - key: PDF_JOBS_RUN_ON_START
+        value: "false"
+      - key: PG_POOL_MAX
+        value: "1"
 
   - type: web
     name: mz-backend-prod
@@ -40,6 +74,20 @@ services:
         value: prod
       - key: DATABASE_URL
         value: ${NEON_DATABASE_URL_PROD}
+      - key: CLEANING_SYNC_JOBS_ENABLED
+        value: "true"
+      - key: CLEANING_SYNC_JOBS_EVENT_ENABLED
+        value: "true"
+      - key: CLEANING_SYNC_JOBS_CRON
+        value: "0 * * * *"
+      - key: CLEANING_SYNC_RETRY_ENABLED
+        value: "true"
+      - key: CLEANING_SYNC_RETRY_CRON
+        value: "0 * * * *"
+      - key: NOTIFICATION_WORKER_ENABLED
+        value: "true"
+      - key: NOTIFICATION_WORKER_FALLBACK_CRON
+        value: "0 * * * *"
 
   - type: worker
     name: mz-backend-prod-pdf-worker

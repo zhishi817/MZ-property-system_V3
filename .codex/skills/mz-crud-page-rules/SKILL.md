@@ -28,6 +28,8 @@ Keep admin CRUD pages visually and behaviorally consistent across the repo.
 
 ## Row Actions
 
+Use `$mz-table-row-actions` for action button styling, layout, permission visibility, and destructive actions.
+
 Default row action order:
 
 - `详情`
@@ -88,4 +90,5 @@ Use these as reference patterns:
 ## When To Use Another Skill
 
 - Use `$mz-property-system-map` to find which module, page, and API own the feature.
+- Use `$mz-table-row-actions` whenever a table operation column is added or changed.
 - Use this skill after the owning surface is known and the task is to build or refactor the actual CRUD page UI and interaction rules.

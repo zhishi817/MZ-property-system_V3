@@ -110,6 +110,7 @@ export default function PropertyPayablesPage() {
   const [calendarRows, setCalendarRows] = useState<WorkbenchRow[]>([])
   const [summary, setSummary] = useState({ unpaid_amount: 0, awaiting_confirmation_count: 0, overdue_count: 0, paid_amount: 0 })
   const [properties, setProperties] = useState<Property[]>([])
+  const [selectedPropertyId, setSelectedPropertyId] = useState<string | undefined>()
   const [loading, setLoading] = useState(true)
   const [dayOpen, setDayOpen] = useState(false)
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
@@ -160,7 +161,7 @@ export default function PropertyPayablesPage() {
   }, [fetchWorkbenchMonth, message, month])
 
   async function loadProperties() {
-    const data = await getJSON<Property[]>('/properties?include_archived=true').catch(() => [])
+    const data = await getJSON<Property[]>('/properties').catch(() => [])
     setProperties(Array.isArray(data) ? data : [])
   }
 
@@ -172,14 +173,40 @@ export default function PropertyPayablesPage() {
     void loadWorkbench()
   }, [loadWorkbench])
 
-  const propertyOptions = useMemo(
-    () => sortActivePropertiesByRegionThenCode(properties || []).map((item) => ({ value: item.id, label: item.code || item.address || item.id })),
-    [properties]
+  const propertyOptions = useMemo(() => sortActivePropertiesByRegionThenCode(properties || []).map((item) => {
+    const code = String(item.code || '').trim()
+    const address = String(item.address || '').trim()
+    const region = String(item.region || '').trim()
+    return {
+      value: item.id,
+      label: code || address || item.id,
+      searchText: [code, address, region].filter(Boolean).join(' ').toLowerCase(),
+    }
+  }), [properties])
+
+  const filteredRows = useMemo(
+    () => selectedPropertyId ? rows.filter((row) => String(row.property_id || '') === selectedPropertyId) : rows,
+    [rows, selectedPropertyId]
   )
+
+  const filteredCalendarRows = useMemo(
+    () => selectedPropertyId ? calendarRows.filter((row) => String(row.property_id || '') === selectedPropertyId) : calendarRows,
+    [calendarRows, selectedPropertyId]
+  )
+
+  const visibleSummary = useMemo(() => {
+    if (!selectedPropertyId) return summary
+    return {
+      unpaid_amount: filteredRows.filter((row) => row.status !== 'paid').reduce((sum, row) => sum + Number(row.amount || 0), 0),
+      awaiting_confirmation_count: filteredRows.filter((row) => row.status !== 'paid' && !row.amount_confirmed).length,
+      overdue_count: filteredRows.filter((row) => row.is_overdue).length,
+      paid_amount: filteredRows.filter((row) => row.status === 'paid').reduce((sum, row) => sum + Number(row.amount || 0), 0),
+    }
+  }, [filteredRows, selectedPropertyId, summary])
 
   const rowsByDueDate = useMemo(() => {
     const map = new Map<string, WorkbenchRow[]>()
-    for (const row of calendarRows) {
+    for (const row of filteredCalendarRows) {
       const key = String(row.due_date || '').trim()
       if (!key) continue
       const list = map.get(key) || []
@@ -200,7 +227,7 @@ export default function PropertyPayablesPage() {
       )
     })
     return map
-  }, [calendarRows])
+  }, [filteredCalendarRows])
 
   const selectedDayRows = useMemo(() => {
     if (!selectedDay) return []
@@ -214,7 +241,7 @@ export default function PropertyPayablesPage() {
   }, [calendarScale, month])
 
   const calendarEvents = useMemo(() => {
-    return calendarRows
+    return filteredCalendarRows
       .filter((row) => !!row.due_date)
       .map((row) => {
         const stateClass = row.status === 'paid'
@@ -237,7 +264,7 @@ export default function PropertyPayablesPage() {
           },
         }
       })
-  }, [calendarRows])
+  }, [filteredCalendarRows])
 
   const calendarTitle = useMemo(() => {
     if (calendarScale === 'month') return month.format('YYYY 年 MM 月')
@@ -433,9 +460,9 @@ export default function PropertyPayablesPage() {
   useEffect(() => {
     if (!detailRow) return
     const next = rowsByDueDate.get(String(detailRow.due_date || ''))?.find((row) => sameWorkbenchRow(row, detailRow))
-      || calendarRows.find((row) => sameWorkbenchRow(row, detailRow))
+      || filteredCalendarRows.find((row) => sameWorkbenchRow(row, detailRow))
     if (next && next !== detailRow) setDetailRow(next)
-  }, [calendarRows, detailRow, rowsByDueDate])
+  }, [detailRow, filteredCalendarRows, rowsByDueDate])
 
   async function openInvoices(row: WorkbenchRow) {
     if (!row.snapshot_id) {
@@ -546,11 +573,25 @@ export default function PropertyPayablesPage() {
         </Space>
       }
     >
+      <div style={{ marginBottom: 12 }}>
+        <Select
+          allowClear
+          showSearch
+          value={selectedPropertyId}
+          placeholder="按房号搜索"
+          options={propertyOptions}
+          onChange={(value) => setSelectedPropertyId(value || undefined)}
+          filterOption={(input, option) => String((option as any)?.searchText || (option as any)?.label || '').includes(input.trim().toLowerCase())}
+          notFoundContent="没有匹配的房源"
+          style={{ width: 320, maxWidth: '100%' }}
+        />
+      </div>
+
       <Row gutter={[12, 12]}>
-        <Col xs={24} md={6}><Card><Statistic title="本月待付金额" prefix="$" precision={2} value={summary.unpaid_amount} /></Card></Col>
-        <Col xs={24} md={6}><Card><Statistic title="本月待确认数量" value={summary.awaiting_confirmation_count} valueStyle={{ color: summary.awaiting_confirmation_count ? '#fa8c16' : undefined }} /></Card></Col>
-        <Col xs={24} md={6}><Card><Statistic title="逾期数量" value={summary.overdue_count} valueStyle={{ color: summary.overdue_count ? '#cf1322' : undefined }} /></Card></Col>
-        <Col xs={24} md={6}><Card><Statistic title="本月已付金额" prefix="$" precision={2} value={summary.paid_amount} /></Card></Col>
+        <Col xs={24} md={6}><Card><Statistic title="本月待付金额" prefix="$" precision={2} value={visibleSummary.unpaid_amount} /></Card></Col>
+        <Col xs={24} md={6}><Card><Statistic title="本月待确认数量" value={visibleSummary.awaiting_confirmation_count} valueStyle={{ color: visibleSummary.awaiting_confirmation_count ? '#fa8c16' : undefined }} /></Card></Col>
+        <Col xs={24} md={6}><Card><Statistic title="逾期数量" value={visibleSummary.overdue_count} valueStyle={{ color: visibleSummary.overdue_count ? '#cf1322' : undefined }} /></Card></Col>
+        <Col xs={24} md={6}><Card><Statistic title="本月已付金额" prefix="$" precision={2} value={visibleSummary.paid_amount} /></Card></Col>
       </Row>
 
       <Card
@@ -623,7 +664,7 @@ export default function PropertyPayablesPage() {
         <Table
           rowKey={(row) => `${row.template_id}:${selectedMonthKey}`}
           columns={columns as any}
-          dataSource={rows}
+          dataSource={filteredRows}
           loading={loading}
           pagination={{ pageSize: 20 }}
           rowClassName={(row) => row.is_overdue ? 'property-payable-row-overdue' : (isDueSoon(row) ? 'property-payable-row-due-soon' : '')}

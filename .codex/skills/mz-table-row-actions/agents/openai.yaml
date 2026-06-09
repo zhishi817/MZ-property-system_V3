@@ -1,0 +1,4 @@
+interface:
+  display_name: "MZ 表格操作列"
+  short_description: "Standardize MZ admin row action buttons"
+  default_prompt: "Use $mz-table-row-actions to standardize this MZ admin table operation column."

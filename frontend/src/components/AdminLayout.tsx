@@ -132,6 +132,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   function iconFor(id: string) {
     if (id === 'dashboard') return <ProfileOutlined />
     if (id === 'landlords') return <TeamOutlined />
+    if (id === 'hr') return <TeamOutlined />
     if (id === 'properties') return <ApartmentOutlined />
     if (id === 'keys') return <KeyOutlined />
     if (id === 'finance') return <DollarOutlined />

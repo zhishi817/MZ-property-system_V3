@@ -11,7 +11,6 @@ import {
   Descriptions,
   Divider,
   Drawer,
-  Dropdown,
   Form,
   Input,
   InputNumber,
@@ -35,7 +34,6 @@ import {
   BellOutlined,
   DownloadOutlined,
   LeftOutlined,
-  MoreOutlined,
   PlusOutlined,
   RightOutlined,
   SearchOutlined,
@@ -59,6 +57,7 @@ import {
 import { downloadNamedBlob } from '../../../lib/download'
 import { sortProperties } from '../../../lib/properties'
 import AuditTrail from '../../../components/AuditTrail'
+import TableRowActions from '../../../components/TableRowActions'
 import styles from './page.module.css'
 
 const CompanyRevenueComposition = dynamic(
@@ -545,21 +544,16 @@ export default function CompanyRevenuePage() {
     {
       title: '操作',
       key: 'actions',
-      width: 170,
+      width: 280,
       fixed: 'right',
       render: (_value, row) => (
-        <Space size={4}>
-          <Button type="link" size="small" onClick={() => openDetailRow(row)}>详情</Button>
-          {row.editable && canWriteIncome ? <Button type="link" size="small" onClick={() => openEditIncomeRow(row)}>编辑</Button> : null}
-          {row.editable && canDeleteIncome ? (
-            <Dropdown
-              menu={{ items: [{ key: 'delete', label: '删除', danger: true, onClick: () => confirmDelete(row) }] }}
-              trigger={['click']}
-            >
-              <Button type="text" size="small" icon={<MoreOutlined />} />
-            </Dropdown>
-          ) : null}
-        </Space>
+        <TableRowActions
+          actions={[
+            { key: 'detail', label: '详情', onClick: () => openDetailRow(row) },
+            { key: 'edit', label: '编辑', onClick: () => openEditIncomeRow(row), hidden: !(row.editable && canWriteIncome) },
+            { key: 'delete', label: '删除', onClick: () => confirmDelete(row), danger: true, hidden: !(row.editable && canDeleteIncome) },
+          ]}
+        />
       ),
     },
   ]
@@ -625,21 +619,16 @@ export default function CompanyRevenuePage() {
     {
       title: '操作',
       key: 'actions',
-      width: 170,
+      width: 280,
       fixed: 'right',
       render: (_value, row) => (
-        <Space size={4}>
-          <Button type="link" size="small" onClick={() => openDetailRow(row)}>详情</Button>
-          {row.editable && canWriteExpense ? <Button type="link" size="small" onClick={() => openEditExpenseRow(row)}>编辑</Button> : null}
-          {row.editable && canDeleteExpense ? (
-            <Dropdown
-              menu={{ items: [{ key: 'delete', label: '删除', danger: true, onClick: () => confirmDelete(row) }] }}
-              trigger={['click']}
-            >
-              <Button type="text" size="small" icon={<MoreOutlined />} />
-            </Dropdown>
-          ) : null}
-        </Space>
+        <TableRowActions
+          actions={[
+            { key: 'detail', label: '详情', onClick: () => openDetailRow(row) },
+            { key: 'edit', label: '编辑', onClick: () => openEditExpenseRow(row), hidden: !(row.editable && canWriteExpense) },
+            { key: 'delete', label: '删除', onClick: () => confirmDelete(row), danger: true, hidden: !(row.editable && canDeleteExpense) },
+          ]}
+        />
       ),
     },
   ]

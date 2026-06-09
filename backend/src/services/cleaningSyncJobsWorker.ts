@@ -233,3 +233,91 @@ export async function processCleaningSyncJobsOnce(opts: { limit?: number; reclai
   }
   return { processed: jobs.length, ok, failed, reclaimed }
 }
+
+let eventTimer: ReturnType<typeof setTimeout> | null = null
+let eventTimerDueAt = 0
+let eventRunning = false
+let eventRerunRequested = false
+let eventRetryOnEmpty = false
+
+function eventWorkerEnabled() {
+  const jobsEnabled = String(process.env.CLEANING_SYNC_JOBS_ENABLED || 'true').trim().toLowerCase() === 'true'
+  const eventEnabled = String(process.env.CLEANING_SYNC_JOBS_EVENT_ENABLED || 'true').trim().toLowerCase() === 'true'
+  return jobsEnabled && eventEnabled
+}
+
+function setEventTimer(delayMs: number) {
+  const delay = Math.max(0, Math.floor(delayMs))
+  const dueAt = Date.now() + delay
+  if (eventTimer && eventTimerDueAt <= dueAt) return
+  if (eventTimer) clearTimeout(eventTimer)
+  eventTimerDueAt = dueAt
+  eventTimer = setTimeout(() => {
+    eventTimer = null
+    eventTimerDueAt = 0
+    void runEventDrain()
+  }, delay)
+  try { (eventTimer as any).unref?.() } catch {}
+}
+
+async function runEventDrain() {
+  if (!eventWorkerEnabled()) return
+  if (eventRunning) {
+    eventRerunRequested = true
+    return
+  }
+
+  eventRunning = true
+  const retryOnEmpty = eventRetryOnEmpty
+  eventRetryOnEmpty = false
+  eventRerunRequested = false
+  let processed = 0
+  let ok = 0
+  let failed = 0
+  let reclaimed = 0
+  let moreWork = false
+
+  try {
+    const limit = Math.min(20, Math.max(1, Number(process.env.CLEANING_SYNC_JOBS_BATCH || 10)))
+    const reclaimTimeoutMinutes = Math.min(120, Math.max(1, Number(process.env.CLEANING_SYNC_JOBS_RECLAIM_MINUTES || 10)))
+    for (let round = 0; round < 20; round++) {
+      const result = await processCleaningSyncJobsOnce({
+        limit,
+        reclaim_timeout_minutes: reclaimTimeoutMinutes,
+      })
+      processed += Number(result.processed || 0)
+      ok += Number(result.ok || 0)
+      failed += Number(result.failed || 0)
+      reclaimed += Number(result.reclaimed || 0)
+      moreWork = Number(result.processed || 0) >= limit
+      if (!moreWork) break
+    }
+    if (processed > 0 || failed > 0 || reclaimed > 0) {
+      console.log(`[cleaning-sync-jobs][event] processed=${processed} ok=${ok} failed=${failed} reclaimed=${reclaimed}`)
+    }
+  } catch (e: any) {
+    console.error(`[cleaning-sync-jobs][event] error message=${String(e?.message || '')}`)
+  } finally {
+    eventRunning = false
+  }
+
+  if (eventRerunRequested || moreWork) {
+    setEventTimer(25)
+  } else if (retryOnEmpty && processed === 0) {
+    // Enqueue usually runs inside a transaction. Retry once after COMMIT has had time to finish.
+    scheduleCleaningSyncJobsKick(750, false)
+  } else if (failed > 0) {
+    // Keep retry latency low while this process is alive; the hourly cron remains the durable fallback.
+    scheduleCleaningSyncJobsKick(61_000, false)
+  }
+}
+
+export function scheduleCleaningSyncJobsKick(delayMs = 50, retryOnEmpty = true) {
+  if (!eventWorkerEnabled()) return
+  eventRetryOnEmpty = eventRetryOnEmpty || retryOnEmpty
+  if (eventRunning) {
+    eventRerunRequested = true
+    return
+  }
+  setEventTimer(delayMs)
+}

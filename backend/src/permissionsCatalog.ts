@@ -52,6 +52,7 @@ const resourceNames: Record<string, string> = {
   inventory_other_usage: '其他物品使用记录',
   inventory_suppliers: '供应商列表',
   inventory_region_rules: '供应区域规则',
+  employment_contracts: '劳动合同',
 }
 
 const moduleNames: Record<string, string> = {
@@ -66,6 +67,7 @@ const moduleNames: Record<string, string> = {
   cms: 'CMS',
   guest_site: 'Guest Website',
   onboarding: 'Onboarding',
+  hr: '人事管理',
 }
 
 function capFirst(s: string) {

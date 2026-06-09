@@ -46,6 +46,7 @@ const node_cron_1 = __importDefault(require("node-cron"));
 const crud_1 = __importDefault(require("./modules/crud"));
 const recurring_1 = __importDefault(require("./modules/recurring"));
 const invoices_1 = require("./modules/invoices");
+const employment_contracts_1 = require("./modules/employment_contracts");
 const cms_company_1 = require("./modules/cms_company");
 const cms_company_secrets_1 = require("./modules/cms_company_secrets");
 const guest_site_1 = require("./modules/guest_site");
@@ -373,6 +374,7 @@ app.use('/property-guide-link-sync', property_guide_link_sync_1.router);
 app.use('/jobs', jobs_1.router);
 app.use('/onboarding', propertyOnboarding_1.router);
 app.use('/invoices', invoices_1.router);
+app.use('/employment-contracts', employment_contracts_1.router);
 app.use('/cms', cms_company_1.router);
 app.use('/cms', cms_company_secrets_1.router);
 app.use('/cms', guest_site_1.adminRouter);
@@ -529,11 +531,24 @@ function onServerListening() {
     }
     try {
         const enabled = String(process.env.NOTIFICATION_WORKER_ENABLED || 'true').toLowerCase() === 'true';
-        const intervalMs = Math.max(1000, Math.min(60000, Number(process.env.NOTIFICATION_WORKER_INTERVAL_MS || 10000)));
         const batchSize = Math.max(1, Math.min(200, Number(process.env.NOTIFICATION_WORKER_BATCH_SIZE || 50)));
         if (enabled && dbAdapter_1.hasPg) {
-            console.log(`[notifications][worker] enabled interval_ms=${intervalMs} batch_size=${batchSize}`);
-            (0, notificationQueueWorker_1.startNotificationQueueWorker)({ intervalMs, batchSize });
+            const runOnStart = String(process.env.NOTIFICATION_WORKER_RUN_ON_START || 'true').toLowerCase() === 'true';
+            const fallbackExpr = String(process.env.NOTIFICATION_WORKER_FALLBACK_CRON || '0 * * * *');
+            console.log(`[notifications][worker] enabled mode=event batch_size=${batchSize} fallback_cron=${fallbackExpr}`);
+            (0, notificationQueueWorker_1.startNotificationQueueWorker)({ batchSize, runOnStart });
+            const fallbackTask = node_cron_1.default.schedule(fallbackExpr, async () => {
+                try {
+                    const result = await (0, notificationQueueWorker_1.runNotificationQueueRecoveryOnce)();
+                    if (Number((result === null || result === void 0 ? void 0 : result.taken) || 0) > 0 || Number((result === null || result === void 0 ? void 0 : result.failed) || 0) > 0) {
+                        console.log(`[notifications][fallback] taken=${Number((result === null || result === void 0 ? void 0 : result.taken) || 0)} sent=${Number((result === null || result === void 0 ? void 0 : result.sent) || 0)} failed=${Number((result === null || result === void 0 ? void 0 : result.failed) || 0)}`);
+                    }
+                }
+                catch (e) {
+                    console.error(`[notifications][fallback] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                }
+            }, { scheduled: true });
+            fallbackTask.start();
             const expr = String(process.env.NOTIFICATION_CLEANUP_CRON || '15 3 * * *');
             const task = node_cron_1.default.schedule(expr, async () => {
                 try {
@@ -664,8 +679,8 @@ function onServerListening() {
         try {
             const enabled = String(process.env.CLEANING_SYNC_JOBS_ENABLED || 'true').toLowerCase() === 'true';
             if (enabled && dbAdapter_1.hasPg) {
-                const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '*/5 * * * *');
-                console.log(`[cleaning-sync-jobs][schedule] enabled cron=${expr}`);
+                const expr = String(process.env.CLEANING_SYNC_JOBS_CRON || '0 * * * *');
+                console.log(`[cleaning-sync-jobs][schedule] enabled mode=fallback cron=${expr}`);
                 let inFlight = false;
                 const task = node_cron_1.default.schedule(expr, async () => {
                     if (inFlight) {
@@ -768,31 +783,44 @@ function onServerListening() {
         }
     })();
     (async () => {
+        var _a;
         try {
-            const enabled = String(process.env.CLEANING_SYNC_RETRY_ENABLED || 'true').toLowerCase() === 'true';
+            const defaultEnabled = appEnv === 'prod';
+            const enabled = String((_a = process.env.CLEANING_SYNC_RETRY_ENABLED) !== null && _a !== void 0 ? _a : (defaultEnabled ? 'true' : 'false')).trim().toLowerCase() === 'true';
             if (enabled && dbAdapter_1.hasPg) {
-                const expr = String(process.env.CLEANING_SYNC_RETRY_CRON || '*/5 * * * *');
-                console.log(`[cleaning-sync-retry][schedule] enabled cron=${expr}`);
+                const expr = String(process.env.CLEANING_SYNC_RETRY_CRON || '0 * * * *');
+                console.log(`[cleaning-sync-retry][schedule] enabled mode=fallback cron=${expr}`);
                 const task = node_cron_1.default.schedule(expr, async () => {
                     var _a, _b;
+                    let lockClient = null;
+                    let locked = false;
                     try {
                         const key = 246813579;
-                        const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [key]);
-                        const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
-                        if (!ok)
+                        lockClient = await dbAdapter_1.pgPool.connect();
+                        const lock = await lockClient.query('SELECT pg_try_advisory_lock($1) AS ok', [key]);
+                        locked = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
+                        if (!locked)
                             return;
                         const { processDueCleaningSyncRetries } = require('./services/cleaningSyncRetry');
                         const r = await processDueCleaningSyncRetries({ limit: Math.min(20, Number(process.env.CLEANING_SYNC_RETRY_BATCH || 10)) });
                         if (((r === null || r === void 0 ? void 0 : r.processed) || 0) > 0 || ((r === null || r === void 0 ? void 0 : r.failed) || 0) > 0) {
                             console.log(`[cleaning-sync-retry][schedule] processed=${r.processed || 0} ok=${r.ok || 0} failed=${r.failed || 0}`);
                         }
-                        try {
-                            await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [key]);
-                        }
-                        catch (_c) { }
                     }
                     catch (e) {
                         console.error(`[cleaning-sync-retry][schedule] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                    }
+                    finally {
+                        if (locked && lockClient) {
+                            try {
+                                await lockClient.query('SELECT pg_advisory_unlock($1)', [246813579]);
+                            }
+                            catch (_c) { }
+                        }
+                        try {
+                            lockClient === null || lockClient === void 0 ? void 0 : lockClient.release();
+                        }
+                        catch (_d) { }
                     }
                 }, { scheduled: true });
                 task.start();

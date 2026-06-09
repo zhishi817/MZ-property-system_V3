@@ -7,6 +7,7 @@ types.setTypeParser(1184, (val) => val)
 const conn = process.env.DATABASE_URL || ''
 export const pgPool = conn ? new Pool({ connectionString: conn, ssl: { rejectUnauthorized: false }, max: Number(process.env.PG_POOL_MAX || 10), idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000), connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 10000) }) : null
 export const hasPg = !!pgPool
+const afterCommitCallbacksKey = Symbol.for('mz_pg_after_commit_callbacks')
 try {
   if (pgPool) {
     pgPool.on('error', (err) => {
@@ -14,6 +15,13 @@ try {
     })
   }
 } catch {}
+
+export function pgRunAfterCommit(client: any, callback: () => void): boolean {
+  const callbacks = client?.[afterCommitCallbacksKey]
+  if (!(callbacks instanceof Set)) return false
+  callbacks.add(callback)
+  return true
+}
 
 function buildWhere(filters?: Record<string, any>) {
   const keys = Object.keys(filters || {})
@@ -71,6 +79,7 @@ export async function pgDelete(table: string, id: string, client?: any) {
 export async function pgRunInTransaction<T>(cb: (client: any) => Promise<T>) {
   if (!pgPool) return null
   const client = await pgPool.connect()
+  ;(client as any)[afterCommitCallbacksKey] = new Set<() => void>()
   try {
     const k = Symbol.for('mz_pg_client_error_listener_attached')
     if (!(client as any)[k]) {
@@ -84,11 +93,17 @@ export async function pgRunInTransaction<T>(cb: (client: any) => Promise<T>) {
     await client.query('BEGIN')
     const result = await cb(client)
     await client.query('COMMIT')
+    const callbacks = Array.from((client as any)[afterCommitCallbacksKey] || []) as Array<() => void>
+    ;(client as any)[afterCommitCallbacksKey] = new Set<() => void>()
+    for (const callback of callbacks) {
+      try { callback() } catch {}
+    }
     return result
   } catch (e) {
     try { await client.query('ROLLBACK') } catch {}
     throw e
   } finally {
+    try { delete (client as any)[afterCommitCallbacksKey] } catch {}
     client.release()
   }
 }

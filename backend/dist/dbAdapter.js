@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.hasPg = exports.pgPool = void 0;
+exports.pgRunAfterCommit = pgRunAfterCommit;
 exports.pgSelect = pgSelect;
 exports.pgInsert = pgInsert;
 exports.pgUpdate = pgUpdate;
@@ -15,6 +16,7 @@ pg_1.types.setTypeParser(1184, (val) => val);
 const conn = process.env.DATABASE_URL || '';
 exports.pgPool = conn ? new pg_1.Pool({ connectionString: conn, ssl: { rejectUnauthorized: false }, max: Number(process.env.PG_POOL_MAX || 10), idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000), connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 10000) }) : null;
 exports.hasPg = !!exports.pgPool;
+const afterCommitCallbacksKey = Symbol.for('mz_pg_after_commit_callbacks');
 try {
     if (exports.pgPool) {
         exports.pgPool.on('error', (err) => {
@@ -26,6 +28,13 @@ try {
     }
 }
 catch (_a) { }
+function pgRunAfterCommit(client, callback) {
+    const callbacks = client === null || client === void 0 ? void 0 : client[afterCommitCallbacksKey];
+    if (!(callbacks instanceof Set))
+        return false;
+    callbacks.add(callback);
+    return true;
+}
 function buildWhere(filters) {
     const keys = Object.keys(filters || {});
     if (!keys.length)
@@ -83,6 +92,7 @@ async function pgRunInTransaction(cb) {
     if (!exports.pgPool)
         return null;
     const client = await exports.pgPool.connect();
+    client[afterCommitCallbacksKey] = new Set();
     try {
         const k = Symbol.for('mz_pg_client_error_listener_attached');
         if (!client[k]) {
@@ -101,16 +111,28 @@ async function pgRunInTransaction(cb) {
         await client.query('BEGIN');
         const result = await cb(client);
         await client.query('COMMIT');
+        const callbacks = Array.from(client[afterCommitCallbacksKey] || []);
+        client[afterCommitCallbacksKey] = new Set();
+        for (const callback of callbacks) {
+            try {
+                callback();
+            }
+            catch (_b) { }
+        }
         return result;
     }
     catch (e) {
         try {
             await client.query('ROLLBACK');
         }
-        catch (_b) { }
+        catch (_c) { }
         throw e;
     }
     finally {
+        try {
+            delete client[afterCommitCallbacksKey];
+        }
+        catch (_d) { }
         client.release();
     }
 }
