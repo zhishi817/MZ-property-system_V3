@@ -64,6 +64,8 @@ type WorkbenchRow = {
   is_due_soon?: boolean
 }
 type ExpenseInvoice = { id: string; expense_id: string; url: string; file_name?: string; mime_type?: string; file_size?: number }
+type WorkbenchMonthData = { rows: WorkbenchRow[]; summary: any; month_key?: string }
+type WorkbenchBatchData = WorkbenchMonthData & { months?: Record<string, WorkbenchMonthData>; month_keys?: string[] }
 
 function monthKey(d: dayjs.Dayjs) {
   return d.format('YYYY-MM')
@@ -131,25 +133,32 @@ export default function PropertyPayablesPage() {
 
   const selectedMonthKey = monthKey(month)
 
-  const fetchWorkbenchMonth = useCallback(async (targetMonthKey: string) => {
-    return getJSON<{ rows: WorkbenchRow[]; summary: any }>(`/recurring/property-payables/workbench?month_key=${encodeURIComponent(targetMonthKey)}`)
+  const fetchWorkbenchMonths = useCallback(async (targetMonthKeys: string[], currentMonthKey: string) => {
+    const params = new URLSearchParams()
+    params.set('month_key', currentMonthKey)
+    params.set('month_keys', targetMonthKeys.join(','))
+    return getJSON<WorkbenchBatchData>(`/recurring/property-payables/workbench?${params.toString()}`)
   }, [])
 
   const loadWorkbench = useCallback(async () => {
     setLoading(true)
     try {
       const monthKeys = surroundingMonthKeys(month)
-      const [prevData, data, nextData] = await Promise.all(monthKeys.map((mk) => fetchWorkbenchMonth(mk)))
-      const mergedCalendarRows = [prevData, data, nextData]
+      const currentMonthKey = monthKey(month)
+      const data = await fetchWorkbenchMonths(monthKeys, currentMonthKey)
+      const dataByMonth = data?.months || {}
+      const currentData = dataByMonth[currentMonthKey] || data
+      const mergedCalendarRows = monthKeys
+        .map((mk) => dataByMonth[mk] || (mk === currentMonthKey ? currentData : null))
         .flatMap((item) => Array.isArray(item?.rows) ? item.rows : [])
         .filter((item, index, list) => list.findIndex((row) => `${row.template_id}:${row.due_date || ''}` === `${item.template_id}:${item.due_date || ''}`) === index)
-      setRows(Array.isArray(data?.rows) ? data.rows : [])
+      setRows(Array.isArray(currentData?.rows) ? currentData.rows : [])
       setCalendarRows(mergedCalendarRows)
       setSummary({
-        unpaid_amount: Number(data?.summary?.unpaid_amount || 0),
-        awaiting_confirmation_count: Number(data?.summary?.awaiting_confirmation_count || 0),
-        overdue_count: Number(data?.summary?.overdue_count || 0),
-        paid_amount: Number(data?.summary?.paid_amount || 0),
+        unpaid_amount: Number(currentData?.summary?.unpaid_amount || 0),
+        awaiting_confirmation_count: Number(currentData?.summary?.awaiting_confirmation_count || 0),
+        overdue_count: Number(currentData?.summary?.overdue_count || 0),
+        paid_amount: Number(currentData?.summary?.paid_amount || 0),
       })
     } catch (e: any) {
       message.error(e?.message || '加载房源代付失败')
@@ -158,7 +167,7 @@ export default function PropertyPayablesPage() {
     } finally {
       setLoading(false)
     }
-  }, [fetchWorkbenchMonth, message, month])
+  }, [fetchWorkbenchMonths, message, month])
 
   async function loadProperties() {
     const data = await getJSON<Property[]>('/properties').catch(() => [])

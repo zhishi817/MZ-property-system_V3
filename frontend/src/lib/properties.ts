@@ -41,18 +41,28 @@ export function sortProperties<T extends PropertyLike>(arr: T[]): T[] {
   return sortPropertiesByRegionThenCode(arr)
 }
 
-const REGION_ORDER = ['Melbourne','Southbank','South Melbourne','West Melbourne','St Kilda','Docklands']
-function regionRank(r?: string) {
-  const s = String(r || '')
-  const idx = REGION_ORDER.indexOf(s)
-  return idx >= 0 ? idx : REGION_ORDER.length + 1
+export const PROPERTY_REGION_ORDER = ['Melbourne','Southbank','South Melbourne','West Melbourne','St Kilda','Docklands'] as const
+
+function propertyRegionSortKey(r?: string | null) {
+  const s = String(r || '').trim()
+  if (!s || s === '其他' || s === '未分区') return { bucket: 2, rank: 0, name: '' }
+  const idx = (PROPERTY_REGION_ORDER as readonly string[]).indexOf(s)
+  if (idx >= 0) return { bucket: 0, rank: idx, name: s }
+  return { bucket: 1, rank: 0, name: s }
+}
+
+export function cmpPropertyRegion(a?: string | null, b?: string | null) {
+  const A = propertyRegionSortKey(a)
+  const B = propertyRegionSortKey(b)
+  if (A.bucket !== B.bucket) return A.bucket - B.bucket
+  if (A.rank !== B.rank) return A.rank - B.rank
+  return A.name.localeCompare(B.name)
 }
 
 export function sortPropertiesByRegionThenCode<T extends PropertyLike>(arr: T[]): T[] {
   return (Array.isArray(arr) ? arr : []).slice().sort((a, b) => {
-    const ra = regionRank((a as any).region)
-    const rb = regionRank((b as any).region)
-    if (ra !== rb) return ra - rb
+    const byRegion = cmpPropertyRegion((a as any).region, (b as any).region)
+    if (byRegion !== 0) return byRegion
     return cmpPropertyCode(a.code, b.code)
   })
 }

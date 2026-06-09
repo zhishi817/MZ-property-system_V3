@@ -5,9 +5,18 @@ import { API_BASE } from '../../lib/api'
 import { hasPerm } from '../../lib/auth'
 import PropertyPayableTemplatesForm from '../../components/PropertyPayableTemplatesForm'
 import TableRowActions from '../../components/TableRowActions'
+import { PROPERTY_REGION_ORDER, cmpPropertyCode } from '../../lib/properties'
 import { hydratePropertyPayableTemplatesForForm, normalizePropertyPayableTemplates, propertyPayableCategoryLabel, propertyPayablePaymentTypeLabel } from '../../lib/propertyPayables'
 
 type Property = { id: string; code?: string; address: string; type: string; capacity: number; region?: string; area_sqm?: number; landlord_id?: string }
+const REGION_FILTER_OPTIONS = [
+  ...PROPERTY_REGION_ORDER.map((value) => ({ value, label: value })),
+  { value: '未分区', label: '未分区' },
+]
+const REGION_FORM_OPTIONS = [
+  ...PROPERTY_REGION_ORDER.map((value) => ({ value, label: value })),
+  { value: '其他', label: '其他' },
+]
 
 export default function PropertiesPage() {
   const [mounted, setMounted] = useState(false)
@@ -200,14 +209,14 @@ export default function PropertiesPage() {
       <Space>
         <span>显示归档</span>
         <Switch checked={showArchived} onChange={setShowArchived as any} />
-        <Select allowClear placeholder="按区域筛选" value={regionFilter} onChange={setRegionFilter as any} style={{ width: 160 }} options={[{value:'Melbourne',label:'Melbourne'},{value:'Southbank',label:'Southbank'},{value:'South Melbourne',label:'South Melbourne'},{value:'West Melbourne',label:'West Melbourne'},{value:'St Kilda',label:'St Kilda'},{value:'Docklands',label:'Docklands'},{value:'未分区',label:'未分区'}]} />
+        <Select allowClear placeholder="按区域筛选" value={regionFilter} onChange={setRegionFilter as any} style={{ width: 160 }} options={REGION_FILTER_OPTIONS} />
         <Input.Search allowClear placeholder="搜索房源" onSearch={setQuery} onChange={(e) => setQuery(e.target.value)} style={{ width: 260 }} />
         {canWrite && <Button type="primary" onClick={() => setOpen(true)}>新建房源</Button>}
       </Space>
     }>
       {(() => {
         const q = query.trim().toLowerCase()
-        const known = ['Melbourne','Southbank','South Melbourne','West Melbourne','St Kilda','Docklands']
+        const known = PROPERTY_REGION_ORDER
         const matchQuery = (p: any) => {
           if (!q) return true
           return (
@@ -222,37 +231,7 @@ export default function PropertiesPage() {
           if (regionFilter === '未分区') return !p.region || String(p.region) === '其他'
           return String(p.region) === regionFilter
         }
-        function cmpCode(a?: string, b?: string) {
-          const A = String(a || '').trim().toUpperCase()
-          const B = String(b || '').trim().toUpperCase()
-          if (!A && !B) return 0
-          if (!A) return 1
-          if (!B) return -1
-          const isDigitA = /\d/.test(A[0] || '')
-          const isDigitB = /\d/.test(B[0] || '')
-          if (isDigitA !== isDigitB) return isDigitA ? -1 : 1
-          const tok = (s: string) => s.match(/\d+|[A-Z]+|[^A-Z0-9]+/g) || []
-          const ta = tok(A)
-          const tb = tok(B)
-          const n = Math.min(ta.length, tb.length)
-          for (let i = 0; i < n; i++) {
-            const xa = ta[i]
-            const xb = tb[i]
-            const da = /^\d+$/.test(xa)
-            const db = /^\d+$/.test(xb)
-            if (da && db) {
-              const va = Number(xa)
-              const vb = Number(xb)
-              if (va !== vb) return va - vb
-            } else {
-              const c = xa.localeCompare(xb)
-              if (c !== 0) return c
-            }
-          }
-          if (ta.length !== tb.length) return ta.length - tb.length
-          return A.localeCompare(B)
-        }
-        const rows = data.filter(p => matchQuery(p) && matchRegion(p)).slice().sort((a,b)=> cmpCode(a.code, b.code))
+        const rows = data.filter(p => matchQuery(p) && matchRegion(p)).slice().sort((a,b)=> cmpPropertyCode(a.code, b.code))
         if (regionFilter) {
           return (
             <Table rowKey={(r:any)=>r.id} columns={columns as any} dataSource={rows} rowSelection={canWrite ? { selectedRowKeys, onChange: setSelectedRowKeys as any } : undefined} pagination={{ pageSize: 10 }} />
@@ -261,17 +240,17 @@ export default function PropertiesPage() {
         const groups: { name: string, rows: any[] }[] = []
         const used = new Set<string>()
         for (const r of known) {
-          const rs = rows.filter(x => String(x.region || '') === r).slice().sort((a,b)=> cmpCode(a.code, b.code))
+          const rs = rows.filter(x => String(x.region || '') === r).slice().sort((a,b)=> cmpPropertyCode(a.code, b.code))
           if (rs.length) { groups.push({ name: r, rows: rs }); used.add(r) }
         }
         const uniques = Array.from(new Set(rows.map(x => String(x.region || '未分区'))))
           .filter(name => name && name !== '其他' && !used.has(name) && name !== '未分区')
           .sort()
         for (const name of uniques) {
-          const rs = rows.filter(x => String(x.region || '') === name).slice().sort((a,b)=> cmpCode(a.code, b.code))
+          const rs = rows.filter(x => String(x.region || '') === name).slice().sort((a,b)=> cmpPropertyCode(a.code, b.code))
           if (rs.length) groups.push({ name, rows: rs })
         }
-        const unknown = rows.filter(x => !x.region || String(x.region) === '其他').slice().sort((a,b)=> cmpCode(a.code, b.code))
+        const unknown = rows.filter(x => !x.region || String(x.region) === '其他').slice().sort((a,b)=> cmpPropertyCode(a.code, b.code))
         if (unknown.length) groups.push({ name: '未分区', rows: unknown })
         return groups.map(g => (
           <div key={g.name}>
@@ -293,7 +272,7 @@ export default function PropertiesPage() {
             <Col span={8}><Form.Item name="code" label="房号" rules={[{ required: true, message: '房号必填' }]}><Input placeholder="请输入房号" /></Form.Item></Col>
             <Col span={8}><Form.Item name="landlord_id" label="房源隶属房东"><Select allowClear options={landlords.map(l => ({ value: l.id, label: l.name }))} /></Form.Item></Col>
             <Col span={8}><Form.Item name="region" label="房源区域划分" rules={[{ required: true }]}>
-              <Select options={[{value:'Melbourne',label:'Melbourne'},{value:'Southbank',label:'Southbank'},{value:'South Melbourne',label:'South Melbourne'},{value:'West Melbourne',label:'West Melbourne'},{value:'St Kilda',label:'St Kilda'},{value:'Docklands',label:'Docklands'},{value:'其他',label:'其他'}]} />
+              <Select options={REGION_FORM_OPTIONS} />
             </Form.Item></Col>
             <Form.Item noStyle shouldUpdate={(prev, cur) => prev.region !== cur.region}>
               {() => (form.getFieldValue('region') === '其他' ? (
@@ -357,7 +336,31 @@ export default function PropertiesPage() {
           <PropertyPayableTemplatesForm form={form} />
         </Form>
       </Modal>
-      <Drawer title="房源详情" width={800} onClose={() => setDetailOpen(false)} open={detailOpen}>
+      <Drawer
+        title="房源详情"
+        width={800}
+        onClose={() => setDetailOpen(false)}
+        open={detailOpen}
+        footer={
+          <div style={{ textAlign: 'right' }}>
+            <Space>
+              <Button onClick={() => setDetailOpen(false)}>取消</Button>
+              {canWrite && detail?.id ? (
+                <Button
+                  type="primary"
+                  onClick={() => {
+                    const row = detail as Property
+                    setDetailOpen(false)
+                    openEdit(row)
+                  }}
+                >
+                  编辑
+                </Button>
+              ) : null}
+            </Space>
+          </div>
+        }
+      >
         {detail && (
           <>
             <Descriptions title="房源基础信息" bordered column={2} labelStyle={{ width: '120px' }}>
@@ -451,7 +454,7 @@ export default function PropertiesPage() {
             <Col span={8}><Form.Item name="code" label="房号" rules={[{ required: true, message: '房号必填' }]}><Input placeholder="请输入房号" /></Form.Item></Col>
             <Col span={8}><Form.Item name="landlord_id" label="房东"><Select allowClear options={landlords.map(l => ({ value: l.id, label: l.name }))} /></Form.Item></Col>
             <Col span={8}><Form.Item name="region" label="区域" rules={[{ required: true }]}>
-              <Select options={[{value:'Melbourne',label:'Melbourne'},{value:'Southbank',label:'Southbank'},{value:'South Melbourne',label:'South Melbourne'},{value:'West Melbourne',label:'West Melbourne'},{value:'St Kilda',label:'St Kilda'},{value:'Docklands',label:'Docklands'},{value:'其他',label:'其他'}]} />
+              <Select options={REGION_FORM_OPTIONS} />
             </Form.Item></Col>
             <Form.Item noStyle shouldUpdate={(prev, cur) => prev.region !== cur.region}>
               {() => (editForm.getFieldValue('region') === '其他' ? (

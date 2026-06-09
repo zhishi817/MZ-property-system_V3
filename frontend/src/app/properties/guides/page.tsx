@@ -4,9 +4,10 @@ import { App, Button, Card, Drawer, Form, Grid, Input, Modal, Select, Space, Tab
 import dayjs from 'dayjs'
 import { API_BASE, authHeaders } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
+import { sortPropertiesByRegionThenCode } from '../../../lib/properties'
 import PropertyGuideEditor, { type GuideContent } from '../../../components/PropertyGuideEditor'
 
-type PropertyRow = { id: string; code?: string; address?: string; building_name?: string }
+type PropertyRow = { id: string; code?: string; address?: string; building_name?: string; region?: string | null; archived?: boolean | null }
 type GuideRow = {
   id: string
   property_id: string | null
@@ -70,13 +71,16 @@ export default function Page() {
   const [pwdCurrent, setPwdCurrent] = useState<{ configured: boolean; password: string | null; password_updated_at: string | null; reason?: string } | null>(null)
   const [pwdVisible, setPwdVisible] = useState(false)
 
+  const sortedProperties = useMemo(() => sortPropertiesByRegionThenCode(properties), [properties])
+  const propertyOrder = useMemo(() => new Map(sortedProperties.map((p, index) => [String(p.id), index])), [sortedProperties])
+
   const propertyOptions = useMemo(
     () =>
-      properties.map((p) => ({
+      sortedProperties.map((p) => ({
         value: p.id,
         label: `${p.code ? `${p.code} - ` : ''}${p.address || p.id}`,
       })),
-    [properties]
+    [sortedProperties]
   )
 
   async function loadProperties() {
@@ -138,14 +142,24 @@ export default function Page() {
 
   const filteredRows = useMemo(() => {
     const kw = keyword.trim().toLowerCase()
-    if (!kw) return rows
     const propById = new Map(properties.map((p) => [p.id, p]))
-    return rows.filter((r) => {
+    const matched = kw ? rows.filter((r) => {
       const p = r.property_id ? propById.get(r.property_id) : undefined
       const hay = [r.version, r.language, r.status, p?.code, p?.address].map((x) => String(x || '').toLowerCase()).join(' ')
       return hay.includes(kw)
+    }) : rows
+    return matched.slice().sort((a, b) => {
+      const ai = a.property_id ? propertyOrder.get(String(a.property_id)) : undefined
+      const bi = b.property_id ? propertyOrder.get(String(b.property_id)) : undefined
+      if (ai !== undefined && bi !== undefined && ai !== bi) return ai - bi
+      if (ai !== undefined) return -1
+      if (bi !== undefined) return 1
+      const at = Date.parse(String(a.updated_at || a.created_at || '')) || 0
+      const bt = Date.parse(String(b.updated_at || b.created_at || '')) || 0
+      if (at !== bt) return bt - at
+      return String(a.id || '').localeCompare(String(b.id || ''))
     })
-  }, [keyword, properties, rows])
+  }, [keyword, properties, propertyOrder, rows])
 
   function openEditor(row: GuideRow) {
     setEditing(row)
