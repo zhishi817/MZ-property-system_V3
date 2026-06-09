@@ -1,5 +1,15 @@
 # Changelog
 
+## Dev (2026-06-09)
+
+### build.1
+
+- Version: `0.2.8-property-payables.20260609+build.1`
+- Finance / property payables: Load the workbench with one batched month request and make the GET workbench path read-only (no transaction and no automatic snapshot writes), reducing the 3-month load from multi-second/timeout-prone requests to a sub-second read path in local verification.
+- Finance / property payables: Keep current-month rows and calendar rows backed by the new `month_keys` response while preserving old single-month API compatibility.
+- Properties: Centralize property region/code sorting helpers and reuse them on property lists and guide lists so room ordering is consistent across property-facing admin pages.
+- Properties: Add a detail-drawer edit action and shared region option constants for property create/edit/filter controls.
+
 ## Dev (2026-05-18)
 
 ### build.1

@@ -645,125 +645,194 @@ async function computeSnapshotAmountTx(client: any, paymentRow: any, paymentMont
   return round2(Math.max(0, base) * rate / 100)
 }
 
+type PropertyPayableWorkbenchResult = {
+  rows: any[]
+  summary: {
+    unpaid_amount: number
+    awaiting_confirmation_count: number
+    overdue_count: number
+    paid_amount: number
+  }
+  month_key: string
+}
+
+function pushMonthKeysFromRaw(out: string[], raw: any) {
+  if (Array.isArray(raw)) {
+    raw.forEach((item) => pushMonthKeysFromRaw(out, item))
+    return
+  }
+  const s = String(raw || '').trim()
+  if (!s) return
+  s.split(',').map((item) => item.trim()).filter(Boolean).forEach((item) => out.push(item))
+}
+
+function parsePropertyPayableWorkbenchMonths(query: any) {
+  const requested: string[] = []
+  pushMonthKeysFromRaw(requested, query?.month_keys)
+  const fallbackMonthKey = String(query?.month_key || currentMonthKeyAU()).trim()
+  const monthKeys = Array.from(new Set((requested.length ? requested : [fallbackMonthKey]).map((item) => item.trim()).filter(Boolean)))
+  const result = {
+    monthKeys,
+    primaryMonthKey: fallbackMonthKey,
+    isBatch: requested.length > 0,
+    error: '',
+  }
+  if (!monthKeys.length || monthKeys.some((mk) => !/^\d{4}-\d{2}$/.test(mk))) {
+    result.error = 'invalid month key'
+    return result
+  }
+  if (monthKeys.length > 6) {
+    result.error = 'too many month keys'
+    return result
+  }
+  if (!/^\d{4}-\d{2}$/.test(result.primaryMonthKey) || !monthKeys.includes(result.primaryMonthKey)) {
+    result.primaryMonthKey = monthKeys[0]
+  }
+  return result
+}
+
+function buildPropertyPayableWorkbenchMonth(
+  templates: any[],
+  snapByTemplate: Map<string, any>,
+  monthKey: string,
+  today: string,
+  dueSoonCutoff: string,
+): PropertyPayableWorkbenchResult {
+  const rows = templates
+    .map((tpl) => {
+      const startMonth = String(tpl?.start_month_key || '').trim()
+      const freq = Number(tpl?.frequency_months || 1)
+      const isDue = !!startMonth && isDueMonthKey(startMonth, monthKey, freq)
+      const snapshot = snapByTemplate.get(String(tpl.id)) || null
+      if (!isDue && !snapshot) return null
+      const dueDate = String(snapshot?.due_date || computeDueISO(monthKey, Number(tpl?.due_day_of_month || 1)) || '').slice(0, 10)
+      const paid = String(snapshot?.status || '') === 'paid'
+      const overdue = !paid && !!dueDate && dueDate < today
+      const dueSoon = !paid && !overdue && !!dueDate && dueDate <= dueSoonCutoff
+      const amountConfirmed = normalizeBool(snapshot?.amount_confirmed)
+      let sortBucket = 3
+      if (overdue) sortBucket = 0
+      else if (dueSoon) sortBucket = 1
+      else if (!paid) sortBucket = 2
+      return {
+        template_id: String(tpl.id),
+        snapshot_id: snapshot?.id ? String(snapshot.id) : null,
+        property_id: String(tpl.property_id || '').trim() || null,
+        property_code: tpl.property_code || null,
+        property_address: tpl.property_address || null,
+        vendor: tpl.vendor || '',
+        category: tpl.category || 'other',
+        category_detail: tpl.category_detail || null,
+        start_month_key: startMonth || null,
+        due_day_of_month: Number(tpl.due_day_of_month || 1),
+        frequency_months: Number(tpl.frequency_months || 1),
+        report_category: tpl.report_category || null,
+        template_note: tpl.note || null,
+        bill_account_no: tpl.bill_account_no || null,
+        template_status: tpl.status || 'active',
+        payment_type: tpl.payment_type || null,
+        pay_account_name: tpl.pay_account_name || null,
+        pay_bsb: tpl.pay_bsb || null,
+        pay_account_number: tpl.pay_account_number || null,
+        pay_ref: tpl.pay_ref || null,
+        bpay_code: tpl.bpay_code || null,
+        pay_mobile_number: tpl.pay_mobile_number || null,
+        amount: Number(snapshot?.amount ?? tpl.amount ?? 0),
+        due_date: dueDate || null,
+        paid_date: snapshot?.paid_date ? String(snapshot.paid_date).slice(0, 10) : null,
+        status: paid ? 'paid' : 'unpaid',
+        note: snapshot?.note || null,
+        amount_confirmed: amountConfirmed,
+        amount_confirmed_by: snapshot?.amount_confirmed_by || null,
+        amount_confirmed_at: snapshot?.amount_confirmed_at || null,
+        paid_by: snapshot?.paid_by || null,
+        paid_confirmed_at: snapshot?.paid_confirmed_at || null,
+        remind_days_before: Number(tpl.remind_days_before || 3),
+        is_overdue: overdue,
+        is_due_soon: dueSoon,
+        sort_bucket: sortBucket,
+      }
+    })
+    .filter(Boolean)
+    .sort((a: any, b: any) => {
+      if (a.sort_bucket !== b.sort_bucket) return a.sort_bucket - b.sort_bucket
+      const ad = String(a.due_date || '9999-12-31')
+      const bd = String(b.due_date || '9999-12-31')
+      if (ad !== bd) return ad.localeCompare(bd)
+      const ap = String(a.property_code || a.property_address || '')
+      const bp = String(b.property_code || b.property_address || '')
+      if (ap !== bp) return ap.localeCompare(bp)
+      return String(a.vendor || '').localeCompare(String(b.vendor || ''))
+    }) as any[]
+  const summary = {
+    unpaid_amount: round2(rows.filter((r: any) => r.status !== 'paid').reduce((sum: number, r: any) => sum + Number(r.amount || 0), 0)),
+    awaiting_confirmation_count: rows.filter((r: any) => r.status !== 'paid' && !r.amount_confirmed).length,
+    overdue_count: rows.filter((r: any) => r.is_overdue).length,
+    paid_amount: round2(rows.filter((r: any) => r.status === 'paid').reduce((sum: number, r: any) => sum + Number(r.amount || 0), 0)),
+  }
+  return { rows, summary, month_key: monthKey }
+}
+
 router.get('/property-payables/workbench', requirePerm(PROPERTY_PAYABLE_MENU_PERM), requireAnyPerm(['recurring_payments.view', 'finance.tx.write']), async (req, res) => {
   if (!hasPg) return res.status(500).json({ message: 'pg not available' })
-  const monthKey = String((req.query as any)?.month_key || currentMonthKeyAU()).trim()
-  if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month key' })
+  const parsedMonths = parsePropertyPayableWorkbenchMonths((req as any).query || {})
+  if (parsedMonths.error) return res.status(400).json({ message: parsedMonths.error })
   try {
-    const result = await pgRunInTransaction(async (client) => {
-      await applyTxTimeouts(client)
-      await ensureSchemasOnce()
-      const tplRes = await client.query(
-        `SELECT rp.*,
-                p.code AS property_code,
-                p.address AS property_address
-           FROM recurring_payments rp
-           LEFT JOIN properties p ON p.id = rp.property_id
-          WHERE COALESCE(rp.template_kind, $1) = $2
-            AND COALESCE(rp.scope, 'property') = 'property'
-          ORDER BY COALESCE(rp.status, 'active') ASC, COALESCE(rp.vendor, '') ASC, COALESCE(p.code, '') ASC`,
-        [TEMPLATE_KIND_FIXED_EXPENSE, TEMPLATE_KIND_PROPERTY_PAYABLE]
-      )
-      const templates: any[] = Array.isArray(tplRes.rows) ? tplRes.rows : []
-      for (const tpl of templates) {
-        const startMonth = String(tpl?.start_month_key || '').trim()
-        const freq = Number(tpl?.frequency_months || 1)
-        if (!startMonth || !isDueMonthKey(startMonth, monthKey, freq)) continue
-        if (String(tpl?.status || 'active') === 'paused') continue
-        await ensurePropertyPayableSnapshotTx(client, tpl, monthKey)
-      }
-      const expRes = await client.query(
-        `SELECT *
-           FROM property_expenses
-          WHERE month_key = $1
-            AND fixed_expense_id IS NOT NULL
-            AND fixed_expense_id <> ''`,
-        [monthKey]
-      )
-      const snapByTemplate = new Map<string, any>()
-      for (const row of Array.isArray(expRes.rows) ? expRes.rows : []) {
-        const key = String((row as any)?.fixed_expense_id || '').trim()
-        if (key) snapByTemplate.set(key, row)
-      }
-      const today = currentDateISOAU()
-      const dueSoonCutoff = addDaysISO(today, 3) || today
-      const rows = templates
-        .map((tpl) => {
-          const startMonth = String(tpl?.start_month_key || '').trim()
-          const freq = Number(tpl?.frequency_months || 1)
-          const isDue = !!startMonth && isDueMonthKey(startMonth, monthKey, freq)
-          const snapshot = snapByTemplate.get(String(tpl.id)) || null
-          if (!isDue && !snapshot) return null
-          const dueDate = String(snapshot?.due_date || computeDueISO(monthKey, Number(tpl?.due_day_of_month || 1)) || '').slice(0, 10)
-          const paid = String(snapshot?.status || '') === 'paid'
-          const overdue = !paid && !!dueDate && dueDate < today
-          const dueSoon = !paid && !overdue && !!dueDate && dueDate <= dueSoonCutoff
-          const amountConfirmed = normalizeBool(snapshot?.amount_confirmed)
-          let sortBucket = 3
-          if (overdue) sortBucket = 0
-          else if (dueSoon) sortBucket = 1
-          else if (!paid) sortBucket = 2
-          return {
-            template_id: String(tpl.id),
-            snapshot_id: snapshot?.id ? String(snapshot.id) : null,
-            property_id: String(tpl.property_id || '').trim() || null,
-            property_code: tpl.property_code || null,
-            property_address: tpl.property_address || null,
-            vendor: tpl.vendor || '',
-            category: tpl.category || 'other',
-            category_detail: tpl.category_detail || null,
-            start_month_key: startMonth || null,
-            due_day_of_month: Number(tpl.due_day_of_month || 1),
-            frequency_months: Number(tpl.frequency_months || 1),
-            report_category: tpl.report_category || null,
-            template_note: tpl.note || null,
-            bill_account_no: tpl.bill_account_no || null,
-            template_status: tpl.status || 'active',
-            payment_type: tpl.payment_type || null,
-            pay_account_name: tpl.pay_account_name || null,
-            pay_bsb: tpl.pay_bsb || null,
-            pay_account_number: tpl.pay_account_number || null,
-            pay_ref: tpl.pay_ref || null,
-            bpay_code: tpl.bpay_code || null,
-            pay_mobile_number: tpl.pay_mobile_number || null,
-            amount: Number(snapshot?.amount ?? tpl.amount ?? 0),
-            due_date: dueDate || null,
-            paid_date: snapshot?.paid_date ? String(snapshot.paid_date).slice(0, 10) : null,
-            status: paid ? 'paid' : 'unpaid',
-            note: snapshot?.note || null,
-            amount_confirmed: amountConfirmed,
-            amount_confirmed_by: snapshot?.amount_confirmed_by || null,
-            amount_confirmed_at: snapshot?.amount_confirmed_at || null,
-            paid_by: snapshot?.paid_by || null,
-            paid_confirmed_at: snapshot?.paid_confirmed_at || null,
-            remind_days_before: Number(tpl.remind_days_before || 3),
-            is_overdue: overdue,
-            is_due_soon: dueSoon,
-            sort_bucket: sortBucket,
-          }
-        })
-        .filter(Boolean)
-        .sort((a: any, b: any) => {
-          if (a.sort_bucket !== b.sort_bucket) return a.sort_bucket - b.sort_bucket
-          const ad = String(a.due_date || '9999-12-31')
-          const bd = String(b.due_date || '9999-12-31')
-          if (ad !== bd) return ad.localeCompare(bd)
-          const ap = String(a.property_code || a.property_address || '')
-          const bp = String(b.property_code || b.property_address || '')
-          if (ap !== bp) return ap.localeCompare(bp)
-          return String(a.vendor || '').localeCompare(String(b.vendor || ''))
-        })
-      const summary = {
-        unpaid_amount: round2(rows.filter((r: any) => r.status !== 'paid').reduce((sum: number, r: any) => sum + Number(r.amount || 0), 0)),
-        awaiting_confirmation_count: rows.filter((r: any) => r.status !== 'paid' && !r.amount_confirmed).length,
-        overdue_count: rows.filter((r: any) => r.is_overdue).length,
-        paid_amount: round2(rows.filter((r: any) => r.status === 'paid').reduce((sum: number, r: any) => sum + Number(r.amount || 0), 0)),
-      }
-      return { rows, summary, month_key: monthKey }
-    })
+    const tplRes = await pgPool!.query(
+      `SELECT rp.*,
+              p.code AS property_code,
+              p.address AS property_address
+         FROM recurring_payments rp
+         LEFT JOIN properties p ON p.id = rp.property_id
+        WHERE COALESCE(rp.template_kind, $1) = $2
+          AND COALESCE(rp.scope, 'property') = 'property'
+        ORDER BY COALESCE(rp.status, 'active') ASC, COALESCE(rp.vendor, '') ASC, COALESCE(p.code, '') ASC`,
+      [TEMPLATE_KIND_FIXED_EXPENSE, TEMPLATE_KIND_PROPERTY_PAYABLE]
+    )
+    const expRes = await pgPool!.query(
+      `SELECT id,
+              fixed_expense_id,
+              month_key,
+              amount,
+              due_date,
+              paid_date,
+              status,
+              note,
+              amount_confirmed,
+              amount_confirmed_by,
+              amount_confirmed_at,
+              paid_by,
+              paid_confirmed_at
+         FROM property_expenses
+        WHERE month_key = ANY($1::text[])
+          AND fixed_expense_id IS NOT NULL
+          AND fixed_expense_id <> ''`,
+      [parsedMonths.monthKeys]
+    )
+    const templates: any[] = Array.isArray(tplRes.rows) ? tplRes.rows : []
+    const snapshotsByMonth = new Map<string, Map<string, any>>()
+    for (const row of Array.isArray(expRes.rows) ? expRes.rows : []) {
+      const mk = String((row as any)?.month_key || '').trim()
+      const key = String((row as any)?.fixed_expense_id || '').trim()
+      if (!mk || !key) continue
+      const monthMap = snapshotsByMonth.get(mk) || new Map<string, any>()
+      monthMap.set(key, row)
+      snapshotsByMonth.set(mk, monthMap)
+    }
+    const today = currentDateISOAU()
+    const dueSoonCutoff = addDaysISO(today, 3) || today
+    const months: Record<string, PropertyPayableWorkbenchResult> = {}
+    for (const monthKey of parsedMonths.monthKeys) {
+      months[monthKey] = buildPropertyPayableWorkbenchMonth(templates, snapshotsByMonth.get(monthKey) || new Map<string, any>(), monthKey, today, dueSoonCutoff)
+    }
+    const primary = months[parsedMonths.primaryMonthKey] || months[parsedMonths.monthKeys[0]]
+    const result = parsedMonths.isBatch ? { ...primary, months, month_keys: parsedMonths.monthKeys } : primary
     return res.json(result)
   } catch (e: any) {
-    return res.status(500).json({ message: String(e?.message || 'property payable workbench failed') })
+    const msg = String(e?.message || 'property payable workbench failed')
+    if (/timeout exceeded when trying to connect/i.test(msg)) return res.status(503).json({ message: msg })
+    if (/lock timeout/i.test(msg)) return res.status(503).json({ message: msg })
+    return res.status(500).json({ message: msg })
   }
 })
 
