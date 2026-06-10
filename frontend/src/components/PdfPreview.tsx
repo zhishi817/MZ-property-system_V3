@@ -40,6 +40,7 @@ const DEFAULT_MESSAGES: PdfPreviewMessages = {
 function normalizePdfError(raw: any, messages: PdfPreviewMessages) {
   const text = String(raw?.message || raw || '').trim()
   if (/Unexpected server response/i.test(text)) return messages.notFoundError
+  if (/load failed|setting up fake worker failed/i.test(text)) return messages.genericError
   return text || messages.genericError
 }
 
@@ -59,7 +60,7 @@ export default function PdfPreview({ url, messages }: PdfPreviewProps) {
       setPages([])
       try {
         const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-        pdfjs.GlobalWorkerOptions.workerSrc ||= `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs.version}/legacy/build/pdf.worker.min.mjs`
+        pdfjs.GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.min.mjs'
         const doc = await pdfjs.getDocument(url).promise
         const rendered: RenderedPage[] = []
 

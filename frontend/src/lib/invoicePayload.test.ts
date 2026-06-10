@@ -21,7 +21,7 @@ describe('buildInvoicePayload', () => {
     expect(p.line_items[0].gst_type).toBe('GST_10')
   })
 
-  it('builds quote draft payload with valid_until and gst hidden (GST_FREE)', () => {
+  it('builds quote draft payload with valid_until and preserves selected gst type', () => {
     const values = {
       company_id: 'c1',
       invoice_type: 'quote',
@@ -37,7 +37,7 @@ describe('buildInvoicePayload', () => {
     expect(p.invoice_type).toBe('quote')
     expect(p.valid_until).toBe('2026-03-09')
     expect(p.due_date).toBeUndefined()
-    expect(p.line_items[0].gst_type).toBe('GST_FREE')
+    expect(p.line_items[0].gst_type).toBe('GST_10')
   })
 
   it('builds receipt draft payload with line items and gst hidden (GST_FREE)', () => {

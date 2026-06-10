@@ -1,6 +1,6 @@
 {
   "name": "mz-property-backend",
-  "version": "0.2.9-api-readiness.20260610+build.1",
+  "version": "0.2.10-quote-signing.20260610+build.1",
   "private": true,
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",

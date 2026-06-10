@@ -9,7 +9,8 @@ describe('invoice-template runtime', () => {
     expect(s).toContain('inv.invoice_type')
     expect(s).toContain('QUOTE')
     expect(s).toContain('RECEIPT')
-    expect(s).toContain('本报价单仅供参考，具体以实际交易为准')
+    expect(s).not.toContain('本报价单仅供参考，具体以实际交易为准')
+    expect(s).toContain("invType !== 'receipt'")
   })
 
   it('renders company address without country and in single line', () => {

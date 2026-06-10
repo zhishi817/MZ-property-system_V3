@@ -2,6 +2,14 @@
 
 ## Dev (2026-06-10)
 
+### build.2
+
+- Version: `0.2.10-quote-signing.20260610+build.1`
+- Finance / quotes: Quotes can now keep each line item's GST selection instead of being forced to No GST; receipt line items remain GST-free.
+- Finance / quote templates: Remove the Chinese-only quote disclaimer from generated quote PDFs and include payment instructions on quotes as well as invoices.
+- Public signing: Serve the PDF.js worker locally so authorization agreement preview works in restrictive mobile/WebView environments, and show a retryable load-error state when signing data cannot be loaded.
+- Public share pages: Add retryable load-error states to maintenance and deep-cleaning public share pages so failed API loads do not display empty edit forms.
+
 ### build.1
 
 - Version: `0.2.9-api-readiness.20260610+build.1`

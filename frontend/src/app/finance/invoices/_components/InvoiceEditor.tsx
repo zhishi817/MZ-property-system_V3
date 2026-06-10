@@ -202,6 +202,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
   const lastSavedHashRef = useRef<string>('')
   const lineItems = Form.useWatch('line_items', form) as any[] | undefined
   const invoiceType = String(Form.useWatch('invoice_type', form) || 'invoice')
+  const lineItemsSupportGst = invoiceType !== 'receipt'
   const watchedIssueDate = Form.useWatch('issue_date', form)
   const watchedValidUntil = Form.useWatch('valid_until', form)
   const canSwitchInvoiceType = hasPerm('invoice.type.switch')
@@ -728,7 +729,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
   }, [canSwitchInvoiceType, invoiceType])
 
   useEffect(() => {
-    if (invoiceType === 'invoice') return
+    if (invoiceType !== 'receipt') return
     const list = (form.getFieldValue('line_items') || []) as any[]
     if (!Array.isArray(list) || !list.length) return
     const needs = list.some((x) => String(x?.gst_type || '') !== 'GST_FREE')
@@ -859,7 +860,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
       </Form.Item>
     ) },
     { title: '税率', dataIndex: 'gst_type', width: 140, render: (_: any, _r: any, idx: number) => (
-      invoiceType === 'invoice' ? (
+      lineItemsSupportGst ? (
         <Form.Item name={['line_items', idx, 'gst_type']} rules={[{ required: true }]} style={{ marginBottom: 0 }}>
           <Select options={[
             { value: 'GST_INCLUDED_10', label: 'Included GST' },
@@ -1197,7 +1198,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                               </Form.Item>
                             </Col>
                             <Col span={6}>
-                              {invoiceType === 'invoice' ? (
+                              {lineItemsSupportGst ? (
                                 <Form.Item name={['line_items', idx, 'gst_type']} label="税率" rules={[{ required: true }]}>
                                   <Select options={[
                                     { value: 'GST_INCLUDED_10', label: 'Included GST' },
@@ -1264,7 +1265,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
                       </Form.Item>
                     </Col>
                     <Col span={6}>
-                      {invoiceType === 'invoice' ? (
+                      {lineItemsSupportGst ? (
                         <Form.Item name="gst_type" label="税率" rules={[{ required: true }]}>
                           <Select options={[
                             { value: 'GST_INCLUDED_10', label: 'Included GST' },
@@ -1452,7 +1453,7 @@ export function InvoiceEditor(props: { mode: 'new' | 'edit'; invoiceId?: string 
             <Col xs={24} lg={8}>
               <Card className={styles.summaryCard} title="金额计算" styles={{ body: { padding: 16 } }}>
                 <div className={styles.summaryRow}><span>小计</span><b>{fmtMoney(derived.totals.subtotal)}</b></div>
-                {invoiceType === 'invoice' ? (
+                {lineItemsSupportGst ? (
                   <>
                     <div className={styles.summaryRow}><span>GST 模式</span><span>{gstModeLabel}</span></div>
                     <div className={styles.summaryRow}><span>税费 (GST)</span><b>{fmtMoney(derived.totals.tax_total)}</b></div>
