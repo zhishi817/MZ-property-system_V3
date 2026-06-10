@@ -40,7 +40,7 @@ import { router as jobsRouter, runEmailSyncJob } from './modules/jobs'
 import cron from 'node-cron'
 import crudRouter from './modules/crud'
 import recurringRouter from './modules/recurring'
-import { router as invoicesRouter } from './modules/invoices'
+import { router as invoicesRouter, warmupInvoicesModule } from './modules/invoices'
 import { router as employmentContractsRouter } from './modules/employment_contracts'
 import { router as cmsCompanyRouter } from './modules/cms_company'
 import { router as cmsCompanySecretsRouter } from './modules/cms_company_secrets'
@@ -93,6 +93,16 @@ if (isProd && hasPg) {
   if (/localhost/i.test(url)) throw new Error('DATABASE_URL 不能使用 localhost')
   if (!/[?&](sslmode=require|sslmode=verify-full|ssl=true|ssl=1)\b/i.test(url)) throw new Error('DATABASE_URL 需开启 SSL（例如 sslmode=require）')
 }
+
+type StartupWarmupStatus = 'pending' | 'running' | 'ready' | 'failed' | 'skipped'
+const startupWarmupState: {
+  status: StartupWarmupStatus
+  started_at?: string
+  completed_at?: string
+  duration_ms?: number
+  error?: string
+} = { status: hasPg ? 'pending' : 'skipped' }
+let startupWarmupPromise: Promise<void> | null = null
 
 const app = express()
 app.use((req: any, res, next) => {
@@ -158,6 +168,35 @@ app.get('/health/db', async (_req, res) => {
     result.pg_error = e?.message
   }
   res.json(result)
+})
+app.get('/health/ready', async (_req, res) => {
+  const started = Date.now()
+  try {
+    if (hasPg && startupWarmupState.status === 'pending' && !startupWarmupPromise) {
+      return res.status(503).json({ status: 'starting', warmup: startupWarmupState, latency_ms: Date.now() - started })
+    }
+    if (startupWarmupPromise) await startupWarmupPromise
+    const result: any = {
+      status: startupWarmupState.status === 'failed' ? 'degraded' : 'ok',
+      warmup: startupWarmupState,
+      pg: false,
+      latency_ms: Date.now() - started,
+    }
+    if (pgPool) {
+      const r = await pgPool.query('SELECT 1 AS ok')
+      result.pg = !!(r?.rows?.[0]?.ok)
+      if (!result.pg) return res.status(503).json(result)
+    }
+    result.latency_ms = Date.now() - started
+    return res.json(result)
+  } catch (e: any) {
+    return res.status(503).json({
+      status: 'error',
+      message: String(e?.message || ''),
+      warmup: startupWarmupState,
+      latency_ms: Date.now() - started,
+    })
+  }
 })
 app.get('/health/config', (_req, res) => {
   const cfg: any = {
@@ -942,14 +981,30 @@ function onServerListening() {
   })
 
 async function runStartupWarmups() {
-  if (!hasPg) return
+  if (!hasPg) {
+    startupWarmupState.status = 'skipped'
+    return
+  }
   const warmupStartedAt = Date.now()
+  startupWarmupState.status = 'running'
+  startupWarmupState.started_at = new Date(warmupStartedAt).toISOString()
+  startupWarmupState.completed_at = undefined
+  startupWarmupState.duration_ms = undefined
+  startupWarmupState.error = undefined
   try {
     await bootstrapCleaningSyncSchemaV2()
     await warmupMzappModule()
     await warmupInventoryModule()
-    console.log(`[bootstrap] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`)
+    await warmupInvoicesModule()
+    startupWarmupState.status = 'ready'
+    startupWarmupState.duration_ms = Date.now() - warmupStartedAt
+    startupWarmupState.completed_at = new Date().toISOString()
+    console.log(`[bootstrap] warmup_completed duration_ms=${startupWarmupState.duration_ms}`)
   } catch (err: any) {
+    startupWarmupState.status = 'failed'
+    startupWarmupState.duration_ms = Date.now() - warmupStartedAt
+    startupWarmupState.completed_at = new Date().toISOString()
+    startupWarmupState.error = String(err?.message || '')
     console.error(`[bootstrap] warmup_failed message=${String(err?.message || '')}`)
   }
 }
@@ -965,7 +1020,8 @@ async function startServer() {
     console.error(`❌ Server failed to start. code=${code} message=${String(err?.message || '')}`)
     process.exit(1)
   })
-  void runStartupWarmups()
+  startupWarmupPromise = runStartupWarmups()
+  void startupWarmupPromise
 
 }
 

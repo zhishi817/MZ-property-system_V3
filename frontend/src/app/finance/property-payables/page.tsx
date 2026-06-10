@@ -626,7 +626,7 @@ export default function PropertyPayablesPage() {
                     className={`property-payable-calendar-period-card${index === 1 ? ' is-current' : ''}`}
                   >
                     <div className="property-payable-calendar-period-heading">{calendarPeriodTitle(calendarPeriod)}</div>
-                    <div className="property-payable-calendar">
+                    <div className={`property-payable-calendar property-payable-calendar--${calendarScale}`}>
                       <FullCalendar
                         key={`${calendarScale}:${calendarPeriod.format('YYYY-MM-DD')}`}
                         plugins={[dayGridPlugin, interactionPlugin]}
@@ -636,7 +636,7 @@ export default function PropertyPayablesPage() {
                         height="auto"
                         firstDay={1}
                         fixedWeekCount={false}
-                        dayMaxEvents={calendarScale === 'month' ? 5 : false}
+                        dayMaxEvents={false}
                         moreLinkClick="popover"
                         selectable
                         selectMirror={false}
@@ -973,136 +973,6 @@ export default function PropertyPayablesPage() {
         ) : null}
       </Modal>
 
-      <style jsx global>{`
-        .property-payable-row-overdue td {
-          background: #fff1f0 !important;
-        }
-        .property-payable-row-pending td {
-          background: #fff7e6 !important;
-        }
-        .property-payable-row-due-soon td {
-          background: #fff7e6 !important;
-        }
-        .property-payable-card-overdue {
-          border-color: #ffccc7;
-          background: #fff1f0;
-        }
-        .property-payable-card-pending {
-          border-color: #ffe7ba;
-          background: #fff7e6;
-        }
-        .property-payable-card-due-soon {
-          border-color: #ffe7ba;
-          background: #fff7e6;
-        }
-        .property-payable-calendar-strip {
-          display: flex;
-          gap: 16px;
-          overflow-x: auto;
-          padding-bottom: 8px;
-          -webkit-overflow-scrolling: touch;
-          overscroll-behavior-x: contain;
-          scroll-snap-type: x mandatory;
-        }
-        .property-payable-calendar-strip::-webkit-scrollbar {
-          height: 10px;
-        }
-        .property-payable-calendar-strip::-webkit-scrollbar-thumb {
-          background: #d9d9d9;
-          border-radius: 999px;
-        }
-        .property-payable-calendar-period-card {
-          flex: 0 0 auto;
-          width: min(1040px, calc(100vw - 112px));
-          min-width: 320px;
-          border: 1px solid #f0f0f0;
-          border-radius: 16px;
-          background: #fff;
-          padding: 10px;
-          scroll-snap-align: center;
-        }
-        .property-payable-calendar-period-card.is-current {
-          border-color: #91caff;
-          box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.08);
-        }
-        .property-payable-calendar-period-heading {
-          margin-bottom: 8px;
-          padding: 0 4px;
-          color: #262626;
-          font-size: 14px;
-          font-weight: 700;
-        }
-        .property-payable-calendar .fc {
-          box-shadow: none;
-        }
-        .property-payable-calendar .fc-toolbar {
-          display: none;
-        }
-        .property-payable-calendar .fc-daygrid-day-frame {
-          min-height: 110px;
-        }
-        .property-payable-calendar .fc-event {
-          cursor: pointer;
-          border-radius: 10px;
-          border-width: 1.5px;
-          padding: 0;
-          opacity: 1 !important;
-        }
-        .property-payable-calendar .fc-event-main {
-          padding: 0;
-          color: inherit !important;
-        }
-        .property-payable-calendar .fc-daygrid-event {
-          margin-top: 4px !important;
-        }
-        .property-payable-calendar .fc-event-title,
-        .property-payable-calendar .fc-event-time,
-        .property-payable-calendar .fc-event-main-frame,
-        .property-payable-calendar .fc-event-main-frame * {
-          color: inherit !important;
-        }
-        .property-payable-event-card {
-          padding: 6px 8px;
-          line-height: 1.25;
-          color: inherit !important;
-        }
-        .property-payable-event-title {
-          font-size: 13px;
-          font-weight: 800;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          color: inherit !important;
-        }
-        .property-payable-event-subtitle {
-          font-size: 12px;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          opacity: 1;
-          color: inherit !important;
-        }
-        .property-payable-calendar .property-payable-event--overdue {
-          background: #ffe0dc;
-          border-color: #ff7875;
-          color: #7f1d1d;
-        }
-        .property-payable-calendar .property-payable-event--due-soon {
-          background: #ffefcc;
-          border-color: #ffb84d;
-          color: #7c4300;
-        }
-        .property-payable-calendar .property-payable-event--normal {
-          background: #ffffff;
-          border-color: #d9d9d9;
-          color: #262626;
-        }
-        .property-payable-calendar .property-payable-event--paid {
-          background: #e8f8d9;
-          border-color: #95de64;
-          color: #1f5f1f;
-        }
-      `}</style>
     </Card>
   )
 }

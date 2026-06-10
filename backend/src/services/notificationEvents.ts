@@ -103,7 +103,11 @@ export async function ensureNotificationStorage() {
 
     ensured = true
   })()
-    .catch(() => {})
+    .catch((e) => {
+      ensured = false
+      ensuring = null
+      throw e
+    })
     .finally(() => {
       ensuring = null
     })

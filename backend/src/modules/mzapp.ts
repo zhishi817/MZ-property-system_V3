@@ -1533,8 +1533,7 @@ async function ensureCleaningTaskMediaTable() {
   if (mediaEnsured) return
   if (mediaEnsuring) return mediaEnsuring
   mediaEnsuring = (async () => {
-    try {
-      await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_task_media (
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_task_media (
         id text PRIMARY KEY,
         task_id text REFERENCES cleaning_tasks(id) ON DELETE CASCADE,
         type text,
@@ -1548,15 +1547,17 @@ async function ensureCleaningTaskMediaTable() {
         mime text,
         created_at timestamptz DEFAULT now()
       );`)
-      await pgPool.query(`ALTER TABLE cleaning_task_media ADD COLUMN IF NOT EXISTS note text;`)
-      await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task ON cleaning_task_media(task_id);`)
-      await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_type ON cleaning_task_media(type);`)
-      await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type ON cleaning_task_media(task_id, type);`)
-    } finally {
-      mediaEnsured = true
-    }
+    await pgPool.query(`ALTER TABLE cleaning_task_media ADD COLUMN IF NOT EXISTS note text;`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task ON cleaning_task_media(task_id);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_type ON cleaning_task_media(type);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_task_media_task_type ON cleaning_task_media(task_id, type);`)
+    mediaEnsured = true
   })()
-    .catch(() => {})
+    .catch((e) => {
+      mediaEnsured = false
+      mediaEnsuring = null
+      throw e
+    })
     .finally(() => {
       mediaEnsuring = null
     })
@@ -1579,14 +1580,15 @@ async function ensureCleaningCheckoutColumns() {
   if (checkoutEnsured) return
   if (checkoutEnsuring) return checkoutEnsuring
   checkoutEnsuring = (async () => {
-    try {
-      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checked_out_at timestamptz;`)
-      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkout_marked_by text;`)
-    } finally {
-      checkoutEnsured = true
-    }
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checked_out_at timestamptz;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS checkout_marked_by text;`)
+    checkoutEnsured = true
   })()
-    .catch(() => {})
+    .catch((e) => {
+      checkoutEnsured = false
+      checkoutEnsuring = null
+      throw e
+    })
     .finally(() => {
       checkoutEnsuring = null
     })
@@ -1601,14 +1603,15 @@ async function ensureCleaningCustomerColumns() {
   if (cleaningCustomerEnsured) return
   if (cleaningCustomerEnsuring) return cleaningCustomerEnsuring
   cleaningCustomerEnsuring = (async () => {
-    try {
-      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS guest_special_request text;`)
-      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
-    } finally {
-      cleaningCustomerEnsured = true
-    }
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS guest_special_request text;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
+    cleaningCustomerEnsured = true
   })()
-    .catch(() => {})
+    .catch((e) => {
+      cleaningCustomerEnsured = false
+      cleaningCustomerEnsuring = null
+      throw e
+    })
     .finally(() => {
       cleaningCustomerEnsuring = null
     })
@@ -1623,14 +1626,15 @@ async function ensureCleaningInspectionColumns() {
   if (cleaningInspectionEnsured) return
   if (cleaningInspectionEnsuring) return cleaningInspectionEnsuring
   cleaningInspectionEnsuring = (async () => {
-    try {
-      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_mode text;`)
-      await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
-    } finally {
-      cleaningInspectionEnsured = true
-    }
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_mode text;`)
+    await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS inspection_due_date date;`)
+    cleaningInspectionEnsured = true
   })()
-    .catch(() => {})
+    .catch((e) => {
+      cleaningInspectionEnsured = false
+      cleaningInspectionEnsuring = null
+      throw e
+    })
     .finally(() => {
       cleaningInspectionEnsuring = null
     })
@@ -1645,8 +1649,7 @@ async function ensureCleaningChecklistTables() {
   if (checklistEnsured) return
   if (checklistEnsuring) return checklistEnsuring
   checklistEnsuring = (async () => {
-    try {
-      await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_checklist_items (
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_checklist_items (
         id text PRIMARY KEY,
         label text NOT NULL,
         kind text NOT NULL DEFAULT 'consumable',
@@ -1658,13 +1661,13 @@ async function ensureCleaningChecklistTables() {
         created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now()
       );`)
-      await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_checklist_active_sort ON cleaning_checklist_items (active, sort_order, created_at);`)
-      await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS status text;`)
-      await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_url text;`)
-      await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_urls text;`)
-      await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS item_label text;`)
-      await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_consumables_status ON cleaning_consumable_usages (status);`)
-      await pgPool.query(
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_checklist_active_sort ON cleaning_checklist_items (active, sort_order, created_at);`)
+    await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS status text;`)
+    await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_url text;`)
+    await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS photo_urls text;`)
+    await pgPool.query(`ALTER TABLE cleaning_consumable_usages ADD COLUMN IF NOT EXISTS item_label text;`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_consumables_status ON cleaning_consumable_usages (status);`)
+    await pgPool.query(
         `INSERT INTO cleaning_checklist_items (id, label, kind, required, requires_photo_when_low, active, sort_order)
          VALUES
           ('toilet_paper','卷纸','consumable',true,true,true,10),
@@ -1690,12 +1693,14 @@ async function ensureCleaningChecklistTables() {
           ('spare_pillowcase','备用枕套','consumable',true,true,true,210),
           ('other','其他','consumable',false,true,true,900)
          ON CONFLICT (id) DO NOTHING`,
-      )
-    } finally {
-      checklistEnsured = true
-    }
+    )
+    checklistEnsured = true
   })()
-    .catch(() => {})
+    .catch((e) => {
+      checklistEnsured = false
+      checklistEnsuring = null
+      throw e
+    })
     .finally(() => {
       checklistEnsuring = null
     })
@@ -1710,27 +1715,28 @@ async function ensureCleaningTaskSortColumns() {
   if (cleaningSortEnsured) return
   if (cleaningSortEnsuring) return cleaningSortEnsuring
   cleaningSortEnsuring = (async () => {
-    try {
-      const r = await pgPool.query(
+    const r = await pgPool.query(
         `SELECT column_name
          FROM information_schema.columns
          WHERE table_schema = 'public'
            AND table_name = 'cleaning_tasks'
-           AND column_name = ANY($1::text[])`,
-        [['sort_index_cleaner', 'sort_index_inspector']],
-      )
-      const have = new Set((r?.rows || []).map((x: any) => String(x.column_name || '')))
-      if (!have.has('sort_index_cleaner')) {
-        await pgPool.query(`ALTER TABLE IF EXISTS cleaning_tasks ADD COLUMN IF NOT EXISTS sort_index_cleaner integer;`)
-      }
-      if (!have.has('sort_index_inspector')) {
-        await pgPool.query(`ALTER TABLE IF EXISTS cleaning_tasks ADD COLUMN IF NOT EXISTS sort_index_inspector integer;`)
-      }
-    } finally {
-      cleaningSortEnsured = true
+         AND column_name = ANY($1::text[])`,
+      [['sort_index_cleaner', 'sort_index_inspector']],
+    )
+    const have = new Set((r?.rows || []).map((x: any) => String(x.column_name || '')))
+    if (!have.has('sort_index_cleaner')) {
+      await pgPool.query(`ALTER TABLE IF EXISTS cleaning_tasks ADD COLUMN IF NOT EXISTS sort_index_cleaner integer;`)
     }
+    if (!have.has('sort_index_inspector')) {
+      await pgPool.query(`ALTER TABLE IF EXISTS cleaning_tasks ADD COLUMN IF NOT EXISTS sort_index_inspector integer;`)
+    }
+    cleaningSortEnsured = true
   })()
-    .catch(() => {})
+    .catch((e) => {
+      cleaningSortEnsured = false
+      cleaningSortEnsuring = null
+      throw e
+    })
     .finally(() => {
       cleaningSortEnsuring = null
     })
@@ -5079,8 +5085,7 @@ async function ensurePropertyMaintenanceColumns() {
   if (propertyMaintenanceColumnsEnsured) return
   if (propertyMaintenanceColumnsEnsuring) return propertyMaintenanceColumnsEnsuring
   propertyMaintenanceColumnsEnsuring = (async () => {
-    try {
-      await pgPool.query(`CREATE TABLE IF NOT EXISTS property_maintenance (
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS property_maintenance (
         id text PRIMARY KEY,
         property_id text,
         occurred_at date,
@@ -5089,31 +5094,34 @@ async function ensurePropertyMaintenanceColumns() {
         created_by text,
         created_at timestamptz DEFAULT now()
       );`)
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category_detail text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS updated_at timestamptz;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS review_status text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS reviewed_by text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS review_notes text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS project_items jsonb;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS invoice_description_en text;')
-      await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
-      await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_maintenance_dedup ON property_maintenance(property_id, dedup_fingerprint, submitted_at);')
-      propertyMaintenanceColumnsEnsured = true
-    } finally {
-      propertyMaintenanceColumnsEnsuring = null
-    }
-  })().catch(() => {})
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS property_code text;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS status text;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS submitter_name text;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS category_detail text;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS repair_notes text;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS area text;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS work_no text;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS completed_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS updated_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS review_status text;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS reviewed_by text;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS review_notes text;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS project_items jsonb;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS invoice_description_en text;')
+    await pgPool.query('ALTER TABLE property_maintenance ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_maintenance_dedup ON property_maintenance(property_id, dedup_fingerprint, submitted_at);')
+    propertyMaintenanceColumnsEnsured = true
+  })().catch((e) => {
+    propertyMaintenanceColumnsEnsured = false
+    propertyMaintenanceColumnsEnsuring = null
+    throw e
+  }).finally(() => {
+    propertyMaintenanceColumnsEnsuring = null
+  })
   return propertyMaintenanceColumnsEnsuring
 }
 
@@ -5122,8 +5130,7 @@ async function ensurePropertyDeepCleaningColumns() {
   if (propertyDeepCleaningColumnsEnsured) return
   if (propertyDeepCleaningColumnsEnsuring) return propertyDeepCleaningColumnsEnsuring
   propertyDeepCleaningColumnsEnsuring = (async () => {
-    try {
-      await pgPool.query(`CREATE TABLE IF NOT EXISTS property_deep_cleaning (
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS property_deep_cleaning (
         id text PRIMARY KEY,
         property_id text,
         occurred_at date,
@@ -5132,34 +5139,37 @@ async function ensurePropertyDeepCleaningColumns() {
         created_by text,
         created_at timestamptz DEFAULT now()
       );`)
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS property_code text;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS status text;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS submitter_name text;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_desc text;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS started_at timestamptz;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS ended_at timestamptz;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS duration_minutes integer;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS repair_notes text;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS work_no text;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS completed_at timestamptz;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS updated_at timestamptz;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS review_status text;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_by text;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS review_notes text;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_items jsonb;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS invoice_description_en text;')
-      await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
-      await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_dedup ON property_deep_cleaning(property_id, dedup_fingerprint, submitted_at);')
-      propertyDeepCleaningColumnsEnsured = true
-    } finally {
-      propertyDeepCleaningColumnsEnsuring = null
-    }
-  })().catch(() => {})
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS property_code text;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS status text;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS submitter_name text;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_desc text;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS started_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS ended_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS duration_minutes integer;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS repair_notes text;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS work_no text;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS completed_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS updated_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS review_status text;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_by text;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS review_notes text;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_items jsonb;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS invoice_description_en text;')
+    await pgPool.query('ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_dedup ON property_deep_cleaning(property_id, dedup_fingerprint, submitted_at);')
+    propertyDeepCleaningColumnsEnsured = true
+  })().catch((e) => {
+    propertyDeepCleaningColumnsEnsured = false
+    propertyDeepCleaningColumnsEnsuring = null
+    throw e
+  }).finally(() => {
+    propertyDeepCleaningColumnsEnsuring = null
+  })
   return propertyDeepCleaningColumnsEnsuring
 }
 
@@ -5321,32 +5331,34 @@ async function ensurePropertyDailyNecessitiesColumns() {
   if (propertyDailyNecessitiesColumnsEnsured) return
   if (propertyDailyNecessitiesColumnsEnsuring) return propertyDailyNecessitiesColumnsEnsuring
   propertyDailyNecessitiesColumnsEnsuring = (async () => {
-    try {
-      await pgPool.query(`CREATE TABLE IF NOT EXISTS property_daily_necessities (
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS property_daily_necessities (
         id text PRIMARY KEY,
         property_id text,
         created_by text,
         created_at timestamptz DEFAULT now()
       );`)
-      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS property_code text;')
-      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS status text;')
-      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS item_name text;')
-      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS quantity integer;')
-      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS note text;')
-      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
-      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS source_task_id text;')
-      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
-      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitter_name text;')
-      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS invoice_description_en text;')
-      await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
-      await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_prop ON property_daily_necessities(property_id);')
-      await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_status ON property_daily_necessities(status);')
-      await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_created_at ON property_daily_necessities(created_at);')
-      propertyDailyNecessitiesColumnsEnsured = true
-    } finally {
-      propertyDailyNecessitiesColumnsEnsuring = null
-    }
-  })().catch(() => {})
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS property_code text;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS status text;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS item_name text;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS quantity integer;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS note text;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS photo_urls jsonb;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS source_task_id text;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitted_at timestamptz;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS submitter_name text;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS invoice_description_en text;')
+    await pgPool.query('ALTER TABLE property_daily_necessities ADD COLUMN IF NOT EXISTS dedup_fingerprint text;')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_prop ON property_daily_necessities(property_id);')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_status ON property_daily_necessities(status);')
+    await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_daily_necessities_created_at ON property_daily_necessities(created_at);')
+    propertyDailyNecessitiesColumnsEnsured = true
+  })().catch((e) => {
+    propertyDailyNecessitiesColumnsEnsured = false
+    propertyDailyNecessitiesColumnsEnsuring = null
+    throw e
+  }).finally(() => {
+    propertyDailyNecessitiesColumnsEnsuring = null
+  })
   return propertyDailyNecessitiesColumnsEnsuring
 }
 
