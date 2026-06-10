@@ -398,6 +398,37 @@ function documentDownloadFilename(row: any, suffix = '') {
   return [propertyCode, documentNo].filter(Boolean).join('-') + `${suffix}.pdf`
 }
 
+function sendPdfBuffer(req: any, res: any, input: { body: Buffer; contentType?: string }, filename: string, disposition: 'inline' | 'attachment') {
+  const body = Buffer.isBuffer(input.body) ? input.body : Buffer.from(input.body || [])
+  const size = body.byteLength
+  res.setHeader('Content-Type', input.contentType || 'application/pdf')
+  res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`)
+  res.setHeader('Accept-Ranges', 'bytes')
+  res.setHeader('Cache-Control', 'no-store')
+
+  const rawRange = String(req.headers?.range || '').trim()
+  const match = rawRange.match(/^bytes=(\d*)-(\d*)$/)
+  if (!match) {
+    res.setHeader('Content-Length', String(size))
+    return res.status(200).send(body)
+  }
+
+  const startRaw = match[1]
+  const endRaw = match[2]
+  const suffixLength = !startRaw && endRaw ? Number(endRaw) : null
+  const start = suffixLength ? Math.max(0, size - suffixLength) : Number(startRaw || 0)
+  const end = endRaw && startRaw ? Number(endRaw) : size - 1
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || start >= size) {
+    res.setHeader('Content-Range', `bytes */${size}`)
+    return res.status(416).end()
+  }
+  const finalEnd = Math.min(end, size - 1)
+  const chunk = body.subarray(start, finalEnd + 1)
+  res.setHeader('Content-Range', `bytes ${start}-${finalEnd}/${size}`)
+  res.setHeader('Content-Length', String(chunk.byteLength))
+  return res.status(206).send(chunk)
+}
+
 async function listDocumentAttachments(documentId: string): Promise<LandlordDocumentAttachment[]> {
   await ensureLandlordDocumentsTables()
   const r = await pgPool!.query(
@@ -887,9 +918,7 @@ router.get('/:id/download-current-draft', requireAnyPerm(VIEW_PERMS), async (req
     if (!obj?.body?.length) return res.status(404).json({ message: 'file not found' })
     const doc = await loadDocument(id)
     const filename = documentDownloadFilename(doc || { id }, '')
-    res.setHeader('Content-Type', obj.contentType || 'application/pdf')
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
-    return res.status(200).send(obj.body)
+    return sendPdfBuffer(req, res, { body: obj.body, contentType: obj.contentType }, filename, 'attachment')
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'download failed' })
   }
@@ -913,9 +942,7 @@ router.get('/:id/download-current-signed', requireAnyPerm(VIEW_PERMS), async (re
     if (!obj?.body?.length) return res.status(404).json({ message: 'file not found' })
     const doc = await loadDocument(id)
     const filename = documentDownloadFilename(doc || { id }, '-signed')
-    res.setHeader('Content-Type', obj.contentType || 'application/pdf')
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
-    return res.status(200).send(obj.body)
+    return sendPdfBuffer(req, res, { body: obj.body, contentType: obj.contentType }, filename, 'attachment')
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'download signed failed' })
   }
@@ -1099,9 +1126,7 @@ publicRouter.get('/landlord-documents/sign/:token/draft.pdf', async (req, res) =
     const obj = await r2GetObjectByKey(String(fileKey))
     if (!obj?.body?.length) return res.status(404).json({ message: 'file not found' })
     const filename = String(fileName || `${row.id}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_')
-    res.setHeader('Content-Type', obj.contentType || 'application/pdf')
-    res.setHeader('Content-Disposition', `inline; filename="${filename}"`)
-    return res.status(200).send(obj.body)
+    return sendPdfBuffer(req, res, { body: obj.body, contentType: obj.contentType }, filename, 'inline')
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'public draft download failed' })
   }

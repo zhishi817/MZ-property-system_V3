@@ -24,13 +24,25 @@ function isLocalAbsoluteUrl(s: string) {
   }
 }
 
+function normalizeAbsoluteApiBase(s: string) {
+  try {
+    const u = new URL(String(s))
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return String(s).replace(/\/+$/g, '')
+    u.hostname = u.hostname.toLowerCase()
+    const pathname = String(u.pathname || '').replace(/\/+$/g, '')
+    return `${u.protocol}//${u.host}${pathname === '/' ? '' : pathname}`
+  } catch {
+    return String(s).replace(/\/+$/g, '')
+  }
+}
+
 const IS_DEV = process.env.NODE_ENV !== 'production'
 const API_BASE = (() => {
   const raw = String(API_BASE_ENV || '').trim()
   if (!raw) return IS_DEV ? '/api' : ''
   if (raw.startsWith('/')) return raw.replace(/\/+$/g, '')
   if (IS_DEV && isLocalAbsoluteUrl(raw)) return '/api'
-  if (isNonLocalAbsoluteUrl(raw)) return raw.replace(/\/+$/g, '')
+  if (isNonLocalAbsoluteUrl(raw)) return normalizeAbsoluteApiBase(raw)
   return raw.replace(/\/+$/g, '')
 })()
 
