@@ -191,6 +191,51 @@ function apiMessage(raw: any, fallback: string, copy: SignPageCopy) {
   return copy.apiErrors[key] || key
 }
 
+function isAbsoluteHttpUrl(value: string) {
+  return /^https?:\/\//i.test(String(value || '').trim())
+}
+
+function publicSignPath(token: string, suffix = '') {
+  return `/public/landlord-documents/sign/${encodeURIComponent(token)}${suffix}`
+}
+
+function publicApiUrl(path: string) {
+  if (API_BASE && isAbsoluteHttpUrl(API_BASE)) return `/api${path}`
+  return `${API_BASE}${path}`
+}
+
+function publicApiCandidates(path: string) {
+  const values = [
+    publicApiUrl(path),
+    `${API_BASE}${path}`,
+  ]
+  return values.filter((value, index, arr) => value && arr.indexOf(value) === index)
+}
+
+async function fetchPublicJson(path: string, init?: RequestInit) {
+  const candidates = publicApiCandidates(path)
+  let lastError: any = null
+  for (let i = 0; i < candidates.length; i += 1) {
+    const url = candidates[i]
+    try {
+      const res = await fetch(url, init)
+      const contentType = res.headers.get('content-type') || ''
+      const json = /application\/json/i.test(contentType) ? await res.json().catch(() => null) : null
+      if (res.status === 404 && !json && i + 1 < candidates.length) continue
+      return { res, json }
+    } catch (e: any) {
+      lastError = e
+    }
+  }
+  throw lastError || new Error('Load failed')
+}
+
+function normalizeLoadError(raw: any, fallback: string) {
+  const text = String(raw?.message || raw || '').trim()
+  if (/load failed|failed to fetch|networkerror|network request failed|abort/i.test(text)) return fallback
+  return text || fallback
+}
+
 function displayValue(value: any) {
   return String(value || '').trim() || '-'
 }
@@ -209,7 +254,7 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
   const [languagePreference, setLanguagePreference] = useState<LanguagePreference>('auto')
   const [languageReady, setLanguageReady] = useState(false)
 
-  const draftUrl = useMemo(() => `${API_BASE}/public/landlord-documents/sign/${encodeURIComponent(token)}/draft.pdf`, [token])
+  const draftUrl = useMemo(() => publicApiUrl(publicSignPath(token, '/draft.pdf')), [token])
   const locale = languagePreference === 'auto' ? browserLocale : languagePreference
   const copy = COPY[locale]
   const copyRef = useRef(copy)
@@ -227,8 +272,7 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
     setLoading(true)
     setLoadError('')
     try {
-      const res = await fetch(`${API_BASE}/public/landlord-documents/sign/${encodeURIComponent(token)}`, { cache: 'no-store' })
-      const j = await res.json().catch(() => null)
+      const { res, json: j } = await fetchPublicJson(publicSignPath(token), { cache: 'no-store' })
       if (res.status === 404) {
         setDoc(null)
         setSubmitted(true)
@@ -243,7 +287,7 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
       setSignedUrl(String(j?.current_signed_url || ''))
       form.setFieldsValue({ signed_name: j?.landlord_name || '' })
     } catch (e: any) {
-      const msg = e?.message || activeCopy.loadFailed
+      const msg = normalizeLoadError(e, activeCopy.loadFailed)
       message.error(msg)
       setLoadError(msg)
       setDoc(null)
@@ -260,7 +304,7 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
     }
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/public/landlord-documents/sign/${encodeURIComponent(token)}/submit`, {
+      const { res, json: j } = await fetchPublicJson(publicSignPath(token, '/submit'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -268,7 +312,6 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
           signature_data_url: signPadRef.current.toDataURL(),
         }),
       })
-      const j = await res.json().catch(() => null)
       if (!res.ok) throw new Error(apiMessage(j?.message, copy.signFailed, copy))
       setSubmitted(true)
       setLinkClosed(false)
@@ -318,23 +361,25 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
           />
         </div>
 
-        <Card loading={loading} style={{ borderRadius: 12 }}>
-          <Typography.Title level={3} style={{ marginTop: 0 }}>
-            {linkClosed ? copy.signedLinkUnavailableTitle : doc?.type === 'agency_authority' ? copy.titleAgency : copy.titleServiceAgreement}
-          </Typography.Title>
-          {linkClosed ? (
-            <>
-              <Typography.Paragraph style={{ marginBottom: 6 }}>{copy.signedLinkUnavailableBody}</Typography.Paragraph>
-              <Typography.Paragraph style={{ marginBottom: 0 }}>{copy.signedThanks}</Typography.Paragraph>
-            </>
-          ) : (
-            <>
-              <Typography.Paragraph style={{ marginBottom: 6 }}>{copy.documentNo}: {displayValue(doc?.document_no)}</Typography.Paragraph>
-              <Typography.Paragraph style={{ marginBottom: 6 }}>{copy.property}: {displayValue([doc?.property_code, doc?.property_address].filter(Boolean).join(' / '))}</Typography.Paragraph>
-              <Typography.Paragraph style={{ marginBottom: 0 }}>{copy.mzSigner}: {displayValue(doc?.mz_signed_name)} {doc?.mz_signed_at ? `(${String(doc.mz_signed_at).slice(0, 10)})` : ''}</Typography.Paragraph>
-            </>
-          )}
-        </Card>
+        {loadError && !loading && !doc && !linkClosed ? null : (
+          <Card loading={loading} style={{ borderRadius: 12 }}>
+            <Typography.Title level={3} style={{ marginTop: 0 }}>
+              {linkClosed ? copy.signedLinkUnavailableTitle : doc?.type === 'agency_authority' ? copy.titleAgency : copy.titleServiceAgreement}
+            </Typography.Title>
+            {linkClosed ? (
+              <>
+                <Typography.Paragraph style={{ marginBottom: 6 }}>{copy.signedLinkUnavailableBody}</Typography.Paragraph>
+                <Typography.Paragraph style={{ marginBottom: 0 }}>{copy.signedThanks}</Typography.Paragraph>
+              </>
+            ) : (
+              <>
+                <Typography.Paragraph style={{ marginBottom: 6 }}>{copy.documentNo}: {displayValue(doc?.document_no)}</Typography.Paragraph>
+                <Typography.Paragraph style={{ marginBottom: 6 }}>{copy.property}: {displayValue([doc?.property_code, doc?.property_address].filter(Boolean).join(' / '))}</Typography.Paragraph>
+                <Typography.Paragraph style={{ marginBottom: 0 }}>{copy.mzSigner}: {displayValue(doc?.mz_signed_name)} {doc?.mz_signed_at ? `(${String(doc.mz_signed_at).slice(0, 10)})` : ''}</Typography.Paragraph>
+              </>
+            )}
+          </Card>
+        )}
 
         {loadError && !loading ? (
           <Card title={copy.previewTitle} style={{ borderRadius: 12 }}>

@@ -27,7 +27,23 @@ loadEnvLocalIntoProcessEnv()
 const isDev = process.env.NODE_ENV !== 'production' || process.env.VERCEL_ENV === 'development'
 const envName = process.env.RENDER_ENV || (isDev ? 'dev' : 'prod')
 const vercelEnv = process.env.VERCEL_ENV
-const apiBase = (() => {
+
+function normalizeApiBase(raw) {
+  const s = String(raw || '').trim().replace(/\/+$/g, '')
+  if (!s) return ''
+  if (s.startsWith('/')) return s
+  try {
+    const u = new URL(s)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return s
+    u.hostname = u.hostname.toLowerCase()
+    const pathname = String(u.pathname || '').replace(/\/+$/g, '')
+    return `${u.protocol}//${u.host}${pathname === '/' ? '' : pathname}`
+  } catch {
+    return s
+  }
+}
+
+const apiBase = normalizeApiBase((() => {
   if (isDev) return process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_DEV || '/api'
   if (process.env.NEXT_PUBLIC_API_BASE) return process.env.NEXT_PUBLIC_API_BASE
   if (vercelEnv === 'preview') return process.env.NEXT_PUBLIC_API_BASE_PREVIEW || 'https://mz-property-system-v3-1.onrender.com'
@@ -35,7 +51,7 @@ const apiBase = (() => {
   if (envName === 'dev' && process.env.NEXT_PUBLIC_API_BASE_DEV) return process.env.NEXT_PUBLIC_API_BASE_DEV
   if (envName === 'prod' && process.env.NEXT_PUBLIC_API_BASE_PROD) return process.env.NEXT_PUBLIC_API_BASE_PROD
   return 'https://mz-property-system-v3.onrender.com'
-})()
+})())
 
 // 防呆检查：确保环境变量正确并避免生产使用 http
 if (!apiBase) {
@@ -57,7 +73,6 @@ const nextConfig = {
     NEXT_PUBLIC_COMMIT_SHA: process.env.VERCEL_GIT_COMMIT_SHA || process.env.COMMIT_REF || process.env.RENDER_GIT_COMMIT || '',
   },
   async rewrites() {
-    if (!isDev) return []
     const normalizeTarget = (raw) => {
       const s = String(raw || '').trim().replace(/\/+$/g, '')
       if (!s) return ''
@@ -72,8 +87,11 @@ const nextConfig = {
         return ''
       }
     }
-    const desired = normalizeTarget(process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_DEV || '')
-    const destination = desired || 'http://localhost:4002'
+    const desired = isDev
+      ? normalizeTarget(process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_DEV || '')
+      : normalizeTarget(apiBase)
+    const destination = desired || (isDev ? 'http://localhost:4002' : '')
+    if (!destination) return []
     return [
       { source: '/api/:path*', destination: `${destination}/:path*` },
     ]

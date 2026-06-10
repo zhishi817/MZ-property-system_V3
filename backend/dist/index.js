@@ -137,8 +137,8 @@ const corsOpts = {
     },
     credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Guide-Session'],
-    exposedHeaders: ['X-Total-Count', 'x-auto-expense-sync', 'x-auto-expense-reason', 'x-auto-expense-error']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Guide-Session', 'Range'],
+    exposedHeaders: ['X-Total-Count', 'x-auto-expense-sync', 'x-auto-expense-reason', 'x-auto-expense-error', 'Content-Length', 'Content-Range', 'Accept-Ranges', 'Content-Disposition', 'Content-Type']
 };
 app.use((0, cors_1.default)(corsOpts));
 app.options('*', (0, cors_1.default)(corsOpts));

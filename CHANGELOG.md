@@ -2,6 +2,13 @@
 
 ## Dev (2026-06-10)
 
+### build.3
+
+- Version: `0.2.11-public-sign-proxy.20260610+build.1`
+- Public signing: Route the mobile signing page through the same-origin `/api` proxy first, with fallback to the absolute backend URL, to avoid Safari/WebView cross-origin `Load failed` errors.
+- Frontend config: Normalize API host casing in production builds so environment values such as mixed-case Render hostnames do not leak into browser requests.
+- Landlord document PDFs: Expose PDF/Range response headers and support byte-range responses for current draft/signed downloads and public signing previews.
+
 ### build.2
 
 - Version: `0.2.10-quote-signing.20260610+build.1`
