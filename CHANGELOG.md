@@ -1,5 +1,15 @@
 # Changelog
 
+## Dev (2026-06-10)
+
+### build.1
+
+- Version: `0.2.9-api-readiness.20260610+build.1`
+- Backend / API readiness: Add `/health/ready` and make local dev wait for database warmup before starting the frontend, reducing cold-start request races against schema initialization.
+- Invoices: Reset failed invoice schema initialization promises and include invoice schema warmup in startup readiness so `/invoices/companies` can recover after transient database connection timeouts.
+- Notifications / MZ App: Harden notification and MZ App schema guards so failed initialization is not silently cached as successful; affected flows include notification inbox, unread counts, cleaning task media/checklist fields, manager fields, and property feedbacks.
+- Finance / property payables UI: Move property-payable calendar styles into global CSS and keep expanded calendar events scrollable across month/week/day views.
+
 ## Dev (2026-06-09)
 
 ### build.1

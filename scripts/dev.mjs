@@ -26,6 +26,7 @@ function readBackendPortFromEnvLocal() {
 
 const BACKEND_PORT = process.env.PORT_OVERRIDE || process.env.PORT || readBackendPortFromEnvLocal() || '4002'
 const BACKEND_HEALTH_URL = `http://localhost:${BACKEND_PORT}/health`
+const BACKEND_READY_URL = `http://localhost:${BACKEND_PORT}/health/ready`
 
 function npmCmd() {
   return process.platform === 'win32' ? 'npm.cmd' : 'npm'
@@ -52,6 +53,16 @@ async function waitForBackendHealth() {
   for (;;) {
     try {
       const res = await fetch(BACKEND_HEALTH_URL, { method: 'GET' })
+      if (res.ok) return
+    } catch {}
+    await sleep(1000)
+  }
+}
+
+async function waitForBackendReady() {
+  for (;;) {
+    try {
+      const res = await fetch(BACKEND_READY_URL, { method: 'GET' })
       if (res.ok) return
     } catch {}
     await sleep(1000)
@@ -99,8 +110,10 @@ try {
   cleanupPort(FRONTEND_PORT)
   console.log('[dev] waiting for backend health before starting frontend...')
   await waitForBackendHealth()
+  console.log('[dev] waiting for backend readiness before starting frontend...')
+  await waitForBackendReady()
   if (shuttingDown) process.exit(0)
-  console.log('[dev] backend healthy, starting frontend...')
+  console.log('[dev] backend ready, starting frontend...')
   frontend = spawnDev('frontend', FRONTEND_CWD, ['run', 'dev'])
   frontend.on('exit', () => {
     if (!shuttingDown) shutdown(1)

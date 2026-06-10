@@ -228,11 +228,20 @@ async function ensureInvoiceTables() {
     updated_at timestamptz,
     UNIQUE(company_id, ymd, invoice_type)
   );`)
-  })()
+  })().catch((e) => {
+    invoiceSchemaReady = null
+    throw e
+  })
   return invoiceSchemaReady
 }
  
-void ensureInvoiceTables().catch(() => {})
+export async function warmupInvoicesModule() {
+  await ensureInvoiceTables()
+}
+
+void ensureInvoiceTables().catch((e: any) => {
+  try { console.error(`[invoices][schema] warmup_failed message=${String(e?.message || '')}`) } catch {}
+})
  
 function nowIso() {
   return new Date().toISOString()

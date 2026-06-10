@@ -100,6 +100,8 @@ if (isProd && dbAdapter_1.hasPg) {
     if (!/[?&](sslmode=require|sslmode=verify-full|ssl=true|ssl=1)\b/i.test(url))
         throw new Error('DATABASE_URL 需开启 SSL（例如 sslmode=require）');
 }
+const startupWarmupState = { status: dbAdapter_1.hasPg ? 'pending' : 'skipped' };
+let startupWarmupPromise = null;
 const app = (0, express_1.default)();
 app.use((req, res, next) => {
     const headerTraceId = String(req.headers['x-trace-id'] || req.headers['x-request-id'] || '').trim();
@@ -171,6 +173,39 @@ app.get('/health/db', async (_req, res) => {
         result.pg_error = e === null || e === void 0 ? void 0 : e.message;
     }
     res.json(result);
+});
+app.get('/health/ready', async (_req, res) => {
+    var _a, _b;
+    const started = Date.now();
+    try {
+        if (dbAdapter_1.hasPg && startupWarmupState.status === 'pending' && !startupWarmupPromise) {
+            return res.status(503).json({ status: 'starting', warmup: startupWarmupState, latency_ms: Date.now() - started });
+        }
+        if (startupWarmupPromise)
+            await startupWarmupPromise;
+        const result = {
+            status: startupWarmupState.status === 'failed' ? 'degraded' : 'ok',
+            warmup: startupWarmupState,
+            pg: false,
+            latency_ms: Date.now() - started,
+        };
+        if (dbAdapter_1.pgPool) {
+            const r = await dbAdapter_1.pgPool.query('SELECT 1 AS ok');
+            result.pg = !!((_b = (_a = r === null || r === void 0 ? void 0 : r.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
+            if (!result.pg)
+                return res.status(503).json(result);
+        }
+        result.latency_ms = Date.now() - started;
+        return res.json(result);
+    }
+    catch (e) {
+        return res.status(503).json({
+            status: 'error',
+            message: String((e === null || e === void 0 ? void 0 : e.message) || ''),
+            warmup: startupWarmupState,
+            latency_ms: Date.now() - started,
+        });
+    }
 });
 app.get('/health/config', (_req, res) => {
     const cfg = {
@@ -1078,16 +1113,31 @@ app.get('/health/email-sync', async (_req, res) => {
     }
 });
 async function runStartupWarmups() {
-    if (!dbAdapter_1.hasPg)
+    if (!dbAdapter_1.hasPg) {
+        startupWarmupState.status = 'skipped';
         return;
+    }
     const warmupStartedAt = Date.now();
+    startupWarmupState.status = 'running';
+    startupWarmupState.started_at = new Date(warmupStartedAt).toISOString();
+    startupWarmupState.completed_at = undefined;
+    startupWarmupState.duration_ms = undefined;
+    startupWarmupState.error = undefined;
     try {
         await (0, cleaningSync_1.bootstrapCleaningSyncSchemaV2)();
         await (0, mzapp_1.warmupMzappModule)();
         await (0, inventory_1.warmupInventoryModule)();
-        console.log(`[bootstrap] warmup_completed duration_ms=${Date.now() - warmupStartedAt}`);
+        await (0, invoices_1.warmupInvoicesModule)();
+        startupWarmupState.status = 'ready';
+        startupWarmupState.duration_ms = Date.now() - warmupStartedAt;
+        startupWarmupState.completed_at = new Date().toISOString();
+        console.log(`[bootstrap] warmup_completed duration_ms=${startupWarmupState.duration_ms}`);
     }
     catch (err) {
+        startupWarmupState.status = 'failed';
+        startupWarmupState.duration_ms = Date.now() - warmupStartedAt;
+        startupWarmupState.completed_at = new Date().toISOString();
+        startupWarmupState.error = String((err === null || err === void 0 ? void 0 : err.message) || '');
         console.error(`[bootstrap] warmup_failed message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
     }
 }
@@ -1102,6 +1152,7 @@ async function startServer() {
         console.error(`❌ Server failed to start. code=${code} message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
         process.exit(1);
     });
-    void runStartupWarmups();
+    startupWarmupPromise = runStartupWarmups();
+    void startupWarmupPromise;
 }
 void startServer();
