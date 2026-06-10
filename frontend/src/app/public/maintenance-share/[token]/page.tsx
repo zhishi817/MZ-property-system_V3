@@ -1,5 +1,5 @@
 "use client"
-import { App, Button, Card, DatePicker, Form, Input, InputNumber, Select, Space, Switch, Typography, Upload } from 'antd'
+import { Alert, App, Button, Card, DatePicker, Form, Input, InputNumber, Select, Space, Switch, Typography, Upload } from 'antd'
 import { LockOutlined, UploadOutlined } from '@ant-design/icons'
 import type { UploadFile } from 'antd/es/upload/interface'
 import dayjs from 'dayjs'
@@ -53,6 +53,7 @@ export default function PublicMaintenanceSharePage({ params }: { params: { token
   const [pwdForm] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [record, setRecord] = useState<MaintenanceRecord | null>(null)
+  const [loadError, setLoadError] = useState('')
   const [shareJwt, setShareJwt] = useState<string>('')
   const [files, setFiles] = useState<UploadFile[]>([])
   const [urls, setUrls] = useState<string[]>([])
@@ -66,10 +67,17 @@ export default function PublicMaintenanceSharePage({ params }: { params: { token
   async function loadRecord() {
     if (!shareId) return
     setLoading(true)
+    setLoadError('')
     try {
       const res = await fetch(`${API_BASE}/public/maintenance-share/${encodeURIComponent(shareId)}`, { cache: 'no-store' })
       const j = await res.json().catch(() => null)
-      if (!res.ok) { message.error(j?.message || '加载失败'); setRecord(null); return }
+      if (!res.ok) {
+        const msg = j?.message || '加载失败'
+        message.error(msg)
+        setLoadError(msg)
+        setRecord(null)
+        return
+      }
       setRecord(j)
       const rawUrls: any = j?.repair_photo_urls
       let initUrls: string[] = Array.isArray(rawUrls) ? rawUrls : []
@@ -100,7 +108,9 @@ export default function PublicMaintenanceSharePage({ params }: { params: { token
         completed_at: j?.completed_at ? dayjs(String(j.completed_at)) : null,
       })
     } catch {
-      message.error('加载失败')
+      const msg = '加载失败'
+      message.error(msg)
+      setLoadError(msg)
       setRecord(null)
     } finally {
       setLoading(false)
@@ -194,6 +204,17 @@ export default function PublicMaintenanceSharePage({ params }: { params: { token
           </Space>
         </Card>
 
+        {loadError && !loading ? (
+          <Card style={{ borderRadius: 12 }}>
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Alert type="error" message={loadError} showIcon />
+              <Button onClick={loadRecord}>重新加载</Button>
+            </Space>
+          </Card>
+        ) : null}
+
+        {record ? (
+          <>
         <Card loading={loading} style={{ borderRadius: 12 }} title={<Space><LockOutlined />输入密码后可编辑</Space>}>
           <Form form={pwdForm} layout="inline">
             <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
@@ -319,6 +340,8 @@ export default function PublicMaintenanceSharePage({ params }: { params: { token
             </Button>
           </Form>
         </Card>
+          </>
+        ) : null}
       </Space>
     </div>
   )

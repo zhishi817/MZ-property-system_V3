@@ -12,7 +12,7 @@ export function buildInvoicePayload(values: any, status: string, discountAmount:
   const isReceipt = t === 'receipt'
   const userItems = (values.line_items || []) as InvoiceLineItemInput[]
   const items0 = normalizeLineItemsForSave({ user_items: userItems, discount_amount: discountAmount })
-  const items = (isQuote || isReceipt) ? items0.map((x) => ({ ...x, gst_type: 'GST_FREE' as GstType })) : items0
+  const items = isReceipt ? items0.map((x) => ({ ...x, gst_type: 'GST_FREE' as GstType })) : items0
 
   return {
     company_id: values.company_id,

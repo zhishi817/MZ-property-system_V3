@@ -102,6 +102,12 @@
     return 'GST'
   }
 
+  function shouldShowGstRow(invType, totals) {
+    if (invType === 'invoice') return true
+    if (invType !== 'quote') return false
+    return Math.abs(Number(totals && totals.tax_total || 0)) > 0
+  }
+
   function payStatus(inv, totals) {
     var st = String(inv && inv.status || '')
     if (st === 'paid') return 'PAID'
@@ -256,7 +262,7 @@
       '<div class="inv-card inv-summary-card">' +
       '<table class="inv-summary">' +
       '<tr><td>Subtotal</td><td>$' + escapeHtml(formatMoney(totals.subtotal)) + '</td></tr>' +
-      (invType === 'invoice' ? ('<tr><td>' + escapeHtml(gstLabel(items)) + '</td><td>$' + escapeHtml(formatMoney(totals.tax_total)) + '</td></tr>') : '') +
+      (shouldShowGstRow(invType, totals) ? ('<tr><td>' + escapeHtml(gstLabel(items)) + '</td><td>$' + escapeHtml(formatMoney(totals.tax_total)) + '</td></tr>') : '') +
       '<tr><td class="strong">Total</td><td class="strong">$' + escapeHtml(formatMoney(totals.total)) + '</td></tr>' +
       '</table>' +
       '<div class="inv-amount-due">' +
@@ -265,15 +271,14 @@
       '<td class="value">$' + escapeHtml(formatMoney(amountValue)) + '<span class="cur">' + escapeHtml(inv.currency || 'AUD') + '</span></td>' +
       '</tr></table>' +
       '<div class="inv-pay-status">' + escapeHtml(payStatus(inv, totals)) + '</div>' +
-      ((invType === 'invoice' && payMethodText(inv)) ? ('<div class="inv-pay-method">' + escapeHtml(payMethodText(inv)) + '</div>') : '') +
+      ((invType !== 'receipt' && payMethodText(inv)) ? ('<div class="inv-pay-method">' + escapeHtml(payMethodText(inv)) + '</div>') : '') +
       '</div>' +
       '</div>' +
       '</td>' +
       '</tr></table>' +
-      (invType === 'invoice'
+      (invType !== 'receipt'
         ? ('<div class="inv-card inv-payment-bottom"><h3>Payment&nbsp;Instructions</h3><div class="text inv-lines" style="font-size:12px; color:rgba(17,24,39,0.75); white-space:normal; word-wrap:break-word;">' + renderLinesHtml(payInst || '-') + '</div></div>')
         : '') +
-      (invType === 'quote' ? ('<div class="inv-disclaimer">本报价单仅供参考，具体以实际交易为准</div>') : '') +
       '</div>' +
       '</div>' +
       '</div>'
@@ -357,22 +362,21 @@
       '<div class="inv-card inv-summary-card" style="border-color:rgba(0,82,217,0.25)">' +
       '<table class="inv-summary">' +
       '<tr><td>Subtotal</td><td>$' + escapeHtml(formatMoney(totals.subtotal)) + '</td></tr>' +
-      (invType === 'invoice' ? ('<tr><td>' + escapeHtml(gstLabel(items)) + '</td><td>$' + escapeHtml(formatMoney(totals.tax_total)) + '</td></tr>') : '') +
+      (shouldShowGstRow(invType, totals) ? ('<tr><td>' + escapeHtml(gstLabel(items)) + '</td><td>$' + escapeHtml(formatMoney(totals.tax_total)) + '</td></tr>') : '') +
       '<tr><td class="strong">Total</td><td class="strong">$' + escapeHtml(formatMoney(totals.total)) + '</td></tr>' +
       '</table>' +
       '<div class="inv-amount-due" style="background:rgba(0,82,217,0.06)">' +
       '<div class="label">' + escapeHtml(amountLabel) + '</div>' +
       '<div class="value" style="color:var(--inv-primary)">$' + escapeHtml(formatMoney(amountValue)) + '<span class="cur">' + escapeHtml(inv.currency || 'AUD') + '</span><div class="inv-pay-status">' + escapeHtml(payStatus(inv, totals)) + '</div>' +
-      ((invType === 'invoice' && payMethodText(inv)) ? ('<div class="inv-pay-method">' + escapeHtml(payMethodText(inv)) + '</div>') : '') +
+      ((invType !== 'receipt' && payMethodText(inv)) ? ('<div class="inv-pay-method">' + escapeHtml(payMethodText(inv)) + '</div>') : '') +
       '</div>' +
       '</div>' +
       '</div>' +
       '</div>' +
       '</div>' +
-      (invType === 'invoice'
+      (invType !== 'receipt'
         ? ('<div class="inv-card inv-payment-bottom"><h3>Payment&nbsp;Instructions</h3><div class="text inv-lines" style="font-size:12px; color:rgba(17,24,39,0.75); white-space:normal; word-wrap:break-word;">' + renderLinesHtml(payInst || '-') + '</div></div>')
         : '') +
-      (invType === 'quote' ? ('<div class="inv-disclaimer">本报价单仅供参考，具体以实际交易为准</div>') : '') +
       '</div></div></div>'
     )
   }

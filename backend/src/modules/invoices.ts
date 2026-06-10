@@ -850,7 +850,7 @@ router.post('/', requireAnyPerm(['invoice.draft.create','invoice.issue']), async
     const invoiceType = canSwitchType ? normalizeInvoiceType(v.invoice_type) : 'invoice'
     const invoiceId = uuid()
     const lines = v.line_items.map((x, idx) => {
-      const gstType: GstType = (invoiceType === 'invoice' ? (x.gst_type as GstType) : 'GST_FREE')
+      const gstType: GstType = (invoiceType === 'receipt' ? 'GST_FREE' : (x.gst_type as GstType))
       const computed = computeLine({ quantity: x.quantity, unit_price: x.unit_price, gst_type: gstType })
       return {
         id: uuid(),
@@ -1054,7 +1054,7 @@ router.patch('/:id', requireAnyPerm(['invoice.draft.create','invoice.issue']), a
       let nextLines: any[] = []
       if (Array.isArray(v.line_items)) {
         nextLines = v.line_items.map((x, idx) => {
-          const gstType: GstType = (nextType === 'invoice' ? (x.gst_type as GstType) : 'GST_FREE')
+          const gstType: GstType = (nextType === 'receipt' ? 'GST_FREE' : (x.gst_type as GstType))
           const computed = computeLine({ quantity: x.quantity, unit_price: x.unit_price, gst_type: gstType })
           return {
             id: uuid(),
@@ -1075,7 +1075,7 @@ router.patch('/:id', requireAnyPerm(['invoice.draft.create','invoice.issue']), a
         const rsLines = await client.query('SELECT * FROM invoice_line_items WHERE invoice_id=$1 ORDER BY sort_order ASC', [id])
         const existing = rsLines?.rows || []
         nextLines = existing.map((x: any, idx: number) => {
-          const gstType: GstType = (nextType === 'invoice' ? (x.gst_type as GstType) : 'GST_FREE')
+          const gstType: GstType = (nextType === 'receipt' ? 'GST_FREE' : (x.gst_type as GstType))
           const computed = computeLine({ quantity: x.quantity, unit_price: x.unit_price, gst_type: gstType })
           return {
             id: String(x.id || uuid()),

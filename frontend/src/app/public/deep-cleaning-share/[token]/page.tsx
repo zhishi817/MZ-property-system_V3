@@ -1,5 +1,5 @@
 "use client"
-import { App, Button, Card, DatePicker, Form, Input, InputNumber, Select, Space, Typography, Upload } from 'antd'
+import { Alert, App, Button, Card, DatePicker, Form, Input, InputNumber, Select, Space, Typography, Upload } from 'antd'
 import { LockOutlined } from '@ant-design/icons'
 import type { UploadFile } from 'antd/es/upload/interface'
 import dayjs from 'dayjs'
@@ -37,6 +37,7 @@ export default function PublicDeepCleaningSharePage({ params }: { params: { toke
   const [pwdForm] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [record, setRecord] = useState<DeepCleaningRecord | null>(null)
+  const [loadError, setLoadError] = useState('')
   const [shareJwt, setShareJwt] = useState<string>('')
   const [beforeFiles, setBeforeFiles] = useState<UploadFile[]>([])
   const [afterFiles, setAfterFiles] = useState<UploadFile[]>([])
@@ -51,10 +52,17 @@ export default function PublicDeepCleaningSharePage({ params }: { params: { toke
   async function loadRecord() {
     if (!shareId) return
     setLoading(true)
+    setLoadError('')
     try {
       const res = await fetch(`${API_BASE}/public/deep-cleaning-share/${encodeURIComponent(shareId)}`, { cache: 'no-store' })
       const j = await res.json().catch(() => null)
-      if (!res.ok) { message.error(j?.message || '加载失败'); setRecord(null); return }
+      if (!res.ok) {
+        const msg = j?.message || '加载失败'
+        message.error(msg)
+        setLoadError(msg)
+        setRecord(null)
+        return
+      }
       setRecord(j)
       const b: string[] = Array.isArray(j?.photo_urls) ? j.photo_urls : []
       const a: string[] = Array.isArray(j?.repair_photo_urls) ? j.repair_photo_urls : []
@@ -76,7 +84,9 @@ export default function PublicDeepCleaningSharePage({ params }: { params: { toke
         labor_cost: j?.labor_cost !== undefined && j?.labor_cost !== null ? Number(j?.labor_cost || 0) : undefined,
       })
     } catch {
-      message.error('加载失败')
+      const msg = '加载失败'
+      message.error(msg)
+      setLoadError(msg)
       setRecord(null)
     } finally {
       setLoading(false)
@@ -181,6 +191,17 @@ export default function PublicDeepCleaningSharePage({ params }: { params: { toke
           </Space>
         </Card>
 
+        {loadError && !loading ? (
+          <Card style={{ borderRadius: 12 }}>
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Alert type="error" message={loadError} showIcon />
+              <Button onClick={loadRecord}>重新加载</Button>
+            </Space>
+          </Card>
+        ) : null}
+
+        {record ? (
+          <>
         <Card loading={loading} style={{ borderRadius: 12 }} title={<Space><LockOutlined />输入密码后可编辑</Space>}>
           <Form form={pwdForm} layout="inline">
             <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
@@ -357,8 +378,9 @@ export default function PublicDeepCleaningSharePage({ params }: { params: { toke
             <Button type="primary" onClick={save} loading={loading} disabled={!shareJwt}>保存</Button>
           </Form>
         </Card>
+          </>
+        ) : null}
       </Space>
     </div>
   )
 }
-

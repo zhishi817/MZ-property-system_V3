@@ -52,6 +52,7 @@ type SignPageCopy = {
   signatureExtra: string
   clearSignature: string
   confirmSign: string
+  retry: string
   loadFailed: string
   signFirst: string
   signFailed: string
@@ -94,6 +95,7 @@ const COPY: Record<Locale, SignPageCopy> = {
     signatureExtra: '请在下方签名，提交后系统会生成最终签署版 PDF。',
     clearSignature: '清空签名',
     confirmSign: '确认签署',
+    retry: '重新加载',
     loadFailed: '加载失败',
     signFirst: '请先签名',
     signFailed: '签署失败',
@@ -144,6 +146,7 @@ const COPY: Record<Locale, SignPageCopy> = {
     signatureExtra: 'Sign below. After submission, the system will generate the final signed PDF.',
     clearSignature: 'Clear Signature',
     confirmSign: 'Confirm Signature',
+    retry: 'Retry',
     loadFailed: 'Failed to load',
     signFirst: 'Please sign first',
     signFailed: 'Signing failed',
@@ -198,6 +201,7 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
   const signPadRef = useRef<SignaturePadHandle | null>(null)
   const [doc, setDoc] = useState<SignDoc | null>(null)
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
   const [submitted, setSubmitted] = useState(false)
   const [linkClosed, setLinkClosed] = useState(false)
   const [signedUrl, setSignedUrl] = useState('')
@@ -221,6 +225,7 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
     if (!token) return
     const activeCopy = copyRef.current
     setLoading(true)
+    setLoadError('')
     try {
       const res = await fetch(`${API_BASE}/public/landlord-documents/sign/${encodeURIComponent(token)}`, { cache: 'no-store' })
       const j = await res.json().catch(() => null)
@@ -238,7 +243,9 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
       setSignedUrl(String(j?.current_signed_url || ''))
       form.setFieldsValue({ signed_name: j?.landlord_name || '' })
     } catch (e: any) {
-      message.error(e?.message || activeCopy.loadFailed)
+      const msg = e?.message || activeCopy.loadFailed
+      message.error(msg)
+      setLoadError(msg)
       setDoc(null)
     } finally {
       setLoading(false)
@@ -329,7 +336,14 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
           )}
         </Card>
 
-        {completed ? (
+        {loadError && !loading ? (
+          <Card title={copy.previewTitle} style={{ borderRadius: 12 }}>
+            <Space direction="vertical" size={12}>
+              <Typography.Text type="danger">{loadError}</Typography.Text>
+              <Button onClick={load}>{copy.retry}</Button>
+            </Space>
+          </Card>
+        ) : completed ? (
           <Card title={copy.signedTitle} style={{ borderRadius: 12 }}>
             <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <Typography.Title level={4} style={{ marginTop: 0, marginBottom: 0 }}>{copy.signedTitle}</Typography.Title>
@@ -339,7 +353,7 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
               {signedPdfUrl ? <Button type="primary" href={signedPdfUrl} target="_blank">{copy.openSignedPdf}</Button> : null}
             </Space>
           </Card>
-        ) : (
+        ) : doc ? (
           <>
             <Card title={copy.previewTitle} style={{ borderRadius: 12 }}>
               <PdfPreview url={draftUrl} messages={copy.pdfPreview} />
@@ -360,7 +374,7 @@ export default function PublicLandlordDocumentSignPage({ params }: { params: { t
               </Form>
             </Card>
           </>
-        )}
+        ) : null}
       </Space>
     </div>
   )
