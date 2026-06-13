@@ -3,7 +3,7 @@ import crypto from 'crypto'
 import multer from 'multer'
 import { v4 as uuidv4 } from 'uuid'
 import { z } from 'zod'
-import { hasR2, r2GetObjectByKey, r2Upload } from '../r2'
+import { hasR2, r2DeleteByUrl, r2GetObjectByKey, r2Upload } from '../r2'
 import { requireAnyPerm } from '../auth'
 import { addAudit } from '../store'
 import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
@@ -1078,6 +1078,36 @@ router.patch('/:id/signed-versions/:versionId/set-current', requireAnyPerm(WRITE
     return res.json({ document: await loadDocument(id) })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'set current failed' })
+  }
+})
+
+router.delete('/:id/signed-versions/:versionId', requireAnyPerm(WRITE_PERMS), async (req, res) => {
+  try {
+    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
+    await ensureLandlordDocumentsTables()
+    const id = String(req.params.id || '').trim()
+    const versionId = String(req.params.versionId || '').trim()
+    const doc = await loadDocument(id)
+    if (!doc) return res.status(404).json({ message: 'not found' })
+    const r0 = await pgPool.query('SELECT * FROM landlord_document_versions WHERE id=$1 AND document_id=$2 AND kind=$3 LIMIT 1', [versionId, id, 'signed'])
+    const version = r0.rows?.[0] || null
+    if (!version) return res.status(404).json({ message: 'version not found' })
+    if (version.is_current || String((doc as any).current_signed_version_id || '') === versionId) {
+      return res.status(409).json({ message: 'cannot_delete_current_signed_version' })
+    }
+    const actor = actorOf(req)
+    await pgRunInTransaction(async (client) => {
+      await client.query('DELETE FROM landlord_document_versions WHERE id=$1 AND document_id=$2 AND kind=$3', [versionId, id, 'signed'])
+      await client.query('UPDATE landlord_documents SET updated_by=$1, updated_at=now() WHERE id=$2', [actor, id])
+    })
+    if (version.file_url) {
+      try { await r2DeleteByUrl(String(version.file_url)) } catch {}
+    }
+    const after = await loadDocument(id)
+    addAudit('LandlordDocument', id, 'delete_signed_version', version, after, actor || undefined)
+    return res.json({ ok: true, document: after })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'delete signed version failed' })
   }
 })
 

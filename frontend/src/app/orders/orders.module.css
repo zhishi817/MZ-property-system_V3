@@ -1,0 +1,116 @@
+.ordersCard {
+  margin: 24px;
+}
+
+.ordersCard :global(.ant-card-body) {
+  padding: 16px;
+}
+
+.ordersActionBar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ordersToolbar {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.ordersToolbarPrimary,
+.ordersToolbarFilters,
+.ordersCalendarFilters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ordersSearchInput {
+  width: 200px;
+}
+
+.ordersPropertySelect {
+  width: 220px;
+}
+
+@media (max-width: 767px) {
+  .ordersCard {
+    margin: 8px 0;
+  }
+
+  .ordersCard :global(.ant-card-body) {
+    padding: 16px;
+  }
+
+  .ordersActionBar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .ordersActionBar :global(.ant-btn) {
+    width: 100%;
+  }
+
+  .ordersActionWide {
+    grid-column: 1 / -1;
+  }
+
+  .ordersToolbar {
+    gap: 10px;
+  }
+
+  .ordersToolbarPrimary {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+    width: 100%;
+  }
+
+  .ordersToolbarPrimary :global(.ant-radio-group) {
+    width: 100%;
+  }
+
+  .ordersToolbarPrimary :global(.ant-select) {
+    width: 100%;
+  }
+
+  .ordersToolbarFilters,
+  .ordersCalendarFilters {
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .ordersSearchInput,
+  .ordersPropertySelect,
+  .ordersToolbarFilters :global(.ant-picker),
+  .ordersCalendarFilters :global(.ant-picker),
+  .ordersCalendarFilters :global(.ant-select) {
+    width: 100% !important;
+  }
+
+  .ordersJumpRow {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+    gap: 8px;
+    width: 100%;
+  }
+
+  .ordersJumpRow :global(.ant-btn),
+  .ordersJumpRow :global(.ant-picker) {
+    width: 100%;
+  }
+
+  .ordersToolbarFilters :global(.ant-picker-range) {
+    grid-column: 1 / -1;
+  }
+
+  .ordersToolbarFilters :global(.ant-checkbox-wrapper) {
+    align-self: center;
+    margin-top: 2px;
+  }
+}
