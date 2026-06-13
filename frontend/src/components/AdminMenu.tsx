@@ -1,6 +1,7 @@
- "use client"
- import { Menu } from 'antd'
+"use client"
+import { Menu } from 'antd'
+import type { MenuProps } from 'antd'
  
- export default function AdminMenu({ items }: { items: any[] }) {
-   return <Menu theme="dark" mode="inline" items={items} />
- }
+export default function AdminMenu({ items, theme = 'dark', onClick }: { items: any[]; theme?: MenuProps['theme']; onClick?: MenuProps['onClick'] }) {
+  return <Menu theme={theme} mode="inline" items={items} onClick={onClick} />
+}

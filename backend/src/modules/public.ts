@@ -173,6 +173,7 @@ async function ensureCmsPagesTable() {
     published_at date,
     page_type text NOT NULL DEFAULT 'generic',
     category text,
+    guide_role text,
     pinned boolean NOT NULL DEFAULT false,
     urgent boolean NOT NULL DEFAULT false,
     audience_scope text,
@@ -183,6 +184,7 @@ async function ensureCmsPagesTable() {
   );`)
   try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS page_type text NOT NULL DEFAULT 'generic';`) } catch {}
   try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS category text;`) } catch {}
+  try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS guide_role text;`) } catch {}
   try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false;`) } catch {}
   try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS urgent boolean NOT NULL DEFAULT false;`) } catch {}
   try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS audience_scope text;`) } catch {}
@@ -191,6 +193,8 @@ async function ensureCmsPagesTable() {
   try { await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS updated_by text;`) } catch {}
   try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_status ON cms_pages(status);`) } catch {}
   try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_type ON cms_pages(page_type);`) } catch {}
+  try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_type_category ON cms_pages(page_type, category);`) } catch {}
+  try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_guide_role ON cms_pages(guide_role);`) } catch {}
   try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_pinned ON cms_pages(pinned, published_at);`) } catch {}
   try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_expires ON cms_pages(expires_at);`) } catch {}
 }

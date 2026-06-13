@@ -94,15 +94,34 @@ if (isProd && hasPg) {
   if (!/[?&](sslmode=require|sslmode=verify-full|ssl=true|ssl=1)\b/i.test(url)) throw new Error('DATABASE_URL 需开启 SSL（例如 sslmode=require）')
 }
 
-type StartupWarmupStatus = 'pending' | 'running' | 'ready' | 'failed' | 'skipped'
+type StartupWarmupStatus = 'pending' | 'running' | 'ready' | 'ready_with_warnings' | 'skipped'
+type StartupWarmupStepStatus = 'running' | 'ready' | 'failed'
+type StartupWarmupStepState = {
+  name: string
+  status: StartupWarmupStepStatus
+  started_at: string
+  completed_at?: string
+  duration_ms?: number
+  attempts: number
+  error?: string
+}
 const startupWarmupState: {
   status: StartupWarmupStatus
   started_at?: string
   completed_at?: string
   duration_ms?: number
-  error?: string
+  errors?: string[]
+  steps?: StartupWarmupStepState[]
 } = { status: hasPg ? 'pending' : 'skipped' }
 let startupWarmupPromise: Promise<void> | null = null
+function numberEnv(name: string, fallback: number, min: number) {
+  const raw = process.env[name]
+  const value = raw === undefined || raw === '' ? fallback : Number(raw)
+  return Number.isFinite(value) ? Math.max(min, value) : fallback
+}
+const STARTUP_WARMUP_RETRIES = Math.floor(numberEnv('STARTUP_WARMUP_RETRIES', 2, 1))
+const STARTUP_WARMUP_RETRY_DELAY_MS = numberEnv('STARTUP_WARMUP_RETRY_DELAY_MS', 1000, 0)
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 const app = express()
 app.use((req: any, res, next) => {
@@ -172,12 +191,8 @@ app.get('/health/db', async (_req, res) => {
 app.get('/health/ready', async (_req, res) => {
   const started = Date.now()
   try {
-    if (hasPg && startupWarmupState.status === 'pending' && !startupWarmupPromise) {
-      return res.status(503).json({ status: 'starting', warmup: startupWarmupState, latency_ms: Date.now() - started })
-    }
-    if (startupWarmupPromise) await startupWarmupPromise
     const result: any = {
-      status: startupWarmupState.status === 'failed' ? 'degraded' : 'ok',
+      status: 'ok',
       warmup: startupWarmupState,
       pg: false,
       latency_ms: Date.now() - started,
@@ -990,23 +1005,58 @@ async function runStartupWarmups() {
   startupWarmupState.started_at = new Date(warmupStartedAt).toISOString()
   startupWarmupState.completed_at = undefined
   startupWarmupState.duration_ms = undefined
-  startupWarmupState.error = undefined
-  try {
-    await bootstrapCleaningSyncSchemaV2()
-    await warmupMzappModule()
-    await warmupInventoryModule()
-    await warmupInvoicesModule()
-    startupWarmupState.status = 'ready'
-    startupWarmupState.duration_ms = Date.now() - warmupStartedAt
-    startupWarmupState.completed_at = new Date().toISOString()
-    console.log(`[bootstrap] warmup_completed duration_ms=${startupWarmupState.duration_ms}`)
-  } catch (err: any) {
-    startupWarmupState.status = 'failed'
-    startupWarmupState.duration_ms = Date.now() - warmupStartedAt
-    startupWarmupState.completed_at = new Date().toISOString()
-    startupWarmupState.error = String(err?.message || '')
-    console.error(`[bootstrap] warmup_failed message=${String(err?.message || '')}`)
+  startupWarmupState.errors = undefined
+  startupWarmupState.steps = []
+
+  const steps: Array<{ name: string; run: () => Promise<void> }> = [
+    { name: 'cleaning_sync_schema', run: bootstrapCleaningSyncSchemaV2 },
+    { name: 'mzapp', run: warmupMzappModule },
+    { name: 'inventory', run: warmupInventoryModule },
+    { name: 'invoices', run: warmupInvoicesModule },
+  ]
+  const errors: string[] = []
+
+  for (const stepDef of steps) {
+    const stepStartedAt = Date.now()
+    const stepState: StartupWarmupStepState = {
+      name: stepDef.name,
+      status: 'running',
+      started_at: new Date(stepStartedAt).toISOString(),
+      attempts: 0,
+    }
+    startupWarmupState.steps.push(stepState)
+
+    for (let attempt = 1; attempt <= STARTUP_WARMUP_RETRIES; attempt += 1) {
+      stepState.attempts = attempt
+      try {
+        await stepDef.run()
+        stepState.status = 'ready'
+        stepState.duration_ms = Date.now() - stepStartedAt
+        stepState.completed_at = new Date().toISOString()
+        stepState.error = undefined
+        console.log(`[bootstrap] warmup_step_ready name=${stepDef.name} attempts=${attempt} duration_ms=${stepState.duration_ms}`)
+        break
+      } catch (err: any) {
+        const message = String(err?.message || '')
+        stepState.error = message
+        console.error(`[bootstrap] warmup_step_failed name=${stepDef.name} attempt=${attempt} message=${message}`)
+        if (attempt < STARTUP_WARMUP_RETRIES) await sleep(STARTUP_WARMUP_RETRY_DELAY_MS)
+      }
+    }
+
+    if (stepState.status !== 'ready') {
+      stepState.status = 'failed'
+      stepState.duration_ms = Date.now() - stepStartedAt
+      stepState.completed_at = new Date().toISOString()
+      errors.push(`${stepDef.name}: ${stepState.error || 'failed'}`)
+    }
   }
+
+  startupWarmupState.status = errors.length ? 'ready_with_warnings' : 'ready'
+  startupWarmupState.errors = errors.length ? errors : undefined
+  startupWarmupState.duration_ms = Date.now() - warmupStartedAt
+  startupWarmupState.completed_at = new Date().toISOString()
+  console.log(`[bootstrap] warmup_completed status=${startupWarmupState.status} duration_ms=${startupWarmupState.duration_ms} warnings=${errors.length}`)
 }
 
 async function startServer() {

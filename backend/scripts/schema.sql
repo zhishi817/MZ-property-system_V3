@@ -356,6 +356,7 @@ CREATE TABLE IF NOT EXISTS cms_pages (
   published_at date,
   page_type text NOT NULL DEFAULT 'generic',
   category text,
+  guide_role text,
   pinned boolean NOT NULL DEFAULT false,
   urgent boolean NOT NULL DEFAULT false,
   audience_scope text,
@@ -366,6 +367,7 @@ CREATE TABLE IF NOT EXISTS cms_pages (
 );
 ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS page_type text NOT NULL DEFAULT 'generic';
 ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS category text;
+ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS guide_role text;
 ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false;
 ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS urgent boolean NOT NULL DEFAULT false;
 ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS audience_scope text;
@@ -374,6 +376,8 @@ ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT no
 ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS updated_by text;
 CREATE INDEX IF NOT EXISTS idx_cms_pages_status ON cms_pages(status);
 CREATE INDEX IF NOT EXISTS idx_cms_pages_type ON cms_pages(page_type);
+CREATE INDEX IF NOT EXISTS idx_cms_pages_type_category ON cms_pages(page_type, category);
+CREATE INDEX IF NOT EXISTS idx_cms_pages_guide_role ON cms_pages(guide_role);
 CREATE INDEX IF NOT EXISTS idx_cms_pages_pinned ON cms_pages(pinned, published_at);
 CREATE INDEX IF NOT EXISTS idx_cms_pages_expires ON cms_pages(expires_at);
 

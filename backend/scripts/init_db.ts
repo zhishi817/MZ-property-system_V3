@@ -516,6 +516,7 @@ async function run() {
       published_at date,
       page_type text NOT NULL DEFAULT 'generic',
       category text,
+      guide_role text,
       pinned boolean NOT NULL DEFAULT false,
       urgent boolean NOT NULL DEFAULT false,
       audience_scope text,
@@ -524,8 +525,11 @@ async function run() {
       updated_by text,
       created_at timestamptz DEFAULT now()
     );`,
+    `ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS guide_role text;`,
     `CREATE INDEX IF NOT EXISTS idx_cms_pages_status ON cms_pages(status);`,
     `CREATE INDEX IF NOT EXISTS idx_cms_pages_type ON cms_pages(page_type);`,
+    `CREATE INDEX IF NOT EXISTS idx_cms_pages_type_category ON cms_pages(page_type, category);`,
+    `CREATE INDEX IF NOT EXISTS idx_cms_pages_guide_role ON cms_pages(guide_role);`,
     `CREATE INDEX IF NOT EXISTS idx_cms_pages_pinned ON cms_pages(pinned, published_at);`,
     `CREATE INDEX IF NOT EXISTS idx_cms_pages_expires ON cms_pages(expires_at);`
     ,

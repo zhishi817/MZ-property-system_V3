@@ -21,6 +21,16 @@ const SESSION_CACHE_TTL_MS = Number(process.env.SESSION_CACHE_TTL_MS || 15000)
 const SESSION_TOUCH_INTERVAL_MS = Number(process.env.SESSION_TOUCH_INTERVAL_MS || 60000)
 const PERM_CACHE_TTL_MS = Number(process.env.PERM_CACHE_TTL_MS || 5 * 60 * 1000)
 
+function requestTraceId(req: Request) {
+  return String((req as any)?.traceId || req.headers['x-trace-id'] || req.headers['x-request-id'] || '').trim()
+}
+
+function databaseUnavailable(res: Response, traceId: string) {
+  const body: any = { message: 'database_unavailable' }
+  if (traceId) body.trace_id = traceId
+  return res.status(503).json(body)
+}
+
 export function clearPermissionCacheForRoles(roleNames?: string[]) {
   if (!roleNames || !roleNames.length) {
     permsCache.clear()
@@ -77,7 +87,13 @@ export async function login(req: Request, res: Response) {
         const byEmail = await pgSelect('users', '*', { email: username })
         row = byEmail && byEmail[0]
       }
-    } catch {}
+    } catch (e: any) {
+      const traceId = requestTraceId(req)
+      try {
+        console.error(`[auth] login_db_error trace_id=${traceId || '-'} message=${String(e?.message || '')} code=${String(e?.code || '')}`)
+      } catch {}
+      return databaseUnavailable(res, traceId)
+    }
   }
   if (row) {
     let ok = false

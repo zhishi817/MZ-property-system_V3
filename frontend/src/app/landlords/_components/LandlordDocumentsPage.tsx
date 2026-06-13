@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
 import SignaturePad, { type SignaturePadHandle } from '../../../components/SignaturePad'
+import TableRowActions from '../../../components/TableRowActions'
 
 type DocumentType = 'agency_authority' | 'property_service_agreement'
 type VersionKind = 'draft' | 'signed'
@@ -861,6 +862,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
 
   async function uploadSigned() {
     if (!uploadTarget?.id) return
+    const isReplacing = Boolean(uploadTarget.current_signed_url)
     const v = await uploadForm.validateFields()
     const file = v.file?.[0]?.originFileObj
     if (!file) {
@@ -881,7 +883,7 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
         const j = await res.json().catch(() => null)
         throw new Error(j?.message || '上传失败')
       }
-      message.success('签署版已上传')
+      message.success(isReplacing ? '签署版已重新上传，可在详情删除旧版本' : '签署版已上传')
       setUploadOpen(false)
       await load()
       if (detail?.id === uploadTarget.id) await openDetail(uploadTarget)
@@ -956,6 +958,28 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     }
   }
 
+  async function deleteSignedVersion(version: DocumentVersion) {
+    if (!detail?.id) return
+    const documentId = detail.id
+    Modal.confirm({
+      title: '删除旧签署版？',
+      content: `将删除签署版 v${version.version_no}，文件也会从存储中移除。`,
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      async onOk() {
+        try {
+          const r = await deleteJSON<{ document: LandlordDocument }>(`/landlord-documents/${documentId}/signed-versions/${version.id}`)
+          message.success('旧签署版已删除')
+          setDetail(r.document)
+          await load()
+        } catch (e: any) {
+          message.error(e?.message || '删除失败')
+        }
+      },
+    })
+  }
+
   async function archive(row: LandlordDocument) {
     Modal.confirm({
       title: '确认归档？',
@@ -1026,15 +1050,34 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
     {
       title: '操作',
       key: 'actions',
-      width: 420,
+      width: 520,
       render: (_: any, r: LandlordDocument) => (
-        <Space>
-          <Button onClick={() => openDetail(r)}>详情</Button>
-          {canWrite ? <Button onClick={() => openEdit(r)}>编辑</Button> : null}
-          {!(r.type === 'property_service_agreement' && isLeasedVariant(r.fields?.contract_variant)) ? <Button disabled={!r.current_draft_url && !canWrite} onClick={() => openPreview(r)}>预览</Button> : null}
-          {canWrite && !(r.type === 'property_service_agreement' && isLeasedVariant(r.fields?.contract_variant)) ? <Button onClick={() => downloadSigned(r)}>{r.current_signed_url ? '下载签署版' : '上传签署版'}</Button> : null}
-          {canWrite ? <Button danger disabled={r.status === 'archived'} onClick={() => archive(r)}>归档</Button> : null}
-        </Space>
+        <TableRowActions
+          actions={[
+            { key: 'detail', label: '详情', onClick: () => openDetail(r) },
+            { key: 'edit', label: '编辑', onClick: () => openEdit(r), hidden: !canWrite },
+            {
+              key: 'preview',
+              label: '预览',
+              onClick: () => openPreview(r),
+              disabled: !r.current_draft_url && !canWrite,
+              hidden: r.type === 'property_service_agreement' && isLeasedVariant(r.fields?.contract_variant),
+            },
+            {
+              key: 'signed',
+              label: r.current_signed_url ? '下载签署版' : '上传签署版',
+              onClick: () => downloadSigned(r),
+              hidden: !canWrite || (r.type === 'property_service_agreement' && isLeasedVariant(r.fields?.contract_variant)),
+            },
+            {
+              key: 'replace-signed',
+              label: '重新上传',
+              onClick: () => openUpload(r),
+              hidden: !canWrite || !r.current_signed_url || (r.type === 'property_service_agreement' && isLeasedVariant(r.fields?.contract_variant)),
+            },
+            { key: 'archive', label: '归档', onClick: () => archive(r), danger: true, disabled: r.status === 'archived', hidden: !canWrite },
+          ]}
+        />
       ),
     },
   ]
@@ -1129,7 +1172,16 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
               <Descriptions.Item label="MZ 签署">{detail.fields?.mz_signed_at ? `${detail.fields?.mz_signed_name || '-'} / ${String(detail.fields?.mz_signed_at || '').slice(0, 10)}` : '-'}</Descriptions.Item>
               <Descriptions.Item label="房东签署">{detail.fields?.landlord_signed_at ? `${detail.fields?.landlord_signed_name || '-'} / ${String(detail.fields?.landlord_signed_at || '').slice(0, 10)}` : '-'}</Descriptions.Item>
               <Descriptions.Item label="当前草稿">{detail.type === 'property_service_agreement' && isLeasedVariant(detail.fields?.contract_variant) ? '不适用' : (detail.current_draft_url ? <Button size="small" onClick={() => downloadDraft(detail)}>下载草稿</Button> : '-')}</Descriptions.Item>
-              <Descriptions.Item label="当前签署版">{detail.type === 'property_service_agreement' && isLeasedVariant(detail.fields?.contract_variant) ? '不适用' : (detail.current_signed_url ? <Button size="small" onClick={() => downloadSigned(detail)}>下载签署版</Button> : '-')}</Descriptions.Item>
+              <Descriptions.Item label="当前签署版">
+                {detail.type === 'property_service_agreement' && isLeasedVariant(detail.fields?.contract_variant) ? '不适用' : (
+                  detail.current_signed_url ? (
+                    <Space>
+                      <Button size="small" onClick={() => downloadSigned(detail)}>下载签署版</Button>
+                      {canWrite ? <Button size="small" onClick={() => openUpload(detail)}>重新上传</Button> : null}
+                    </Space>
+                  ) : (canWrite ? <Button size="small" onClick={() => openUpload(detail)}>上传签署版</Button> : '-')
+                )}
+              </Descriptions.Item>
               <Descriptions.Item label="备注" span={2}>{detail.notes || '-'}</Descriptions.Item>
             </Descriptions>
             {detail.type === 'property_service_agreement' && isLeasedVariant(detail.fields?.contract_variant) ? (
@@ -1155,7 +1207,16 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
                     { title: '大小', dataIndex: 'file_size', width: 90, render: fileSize },
                     { title: '备注', dataIndex: 'notes', render: (v: string) => v || '-' },
                     { title: '创建时间', dataIndex: 'created_at', width: 145, render: fmtDate },
-                    { title: '操作', width: 120, render: (_: any, r: DocumentVersion) => r.kind === 'signed' && !r.is_current && canWrite ? <Button size="small" onClick={() => setCurrentSigned(r)}>设为当前</Button> : null },
+                    {
+                      title: '操作',
+                      width: 180,
+                      render: (_: any, r: DocumentVersion) => r.kind === 'signed' && !r.is_current && canWrite ? (
+                        <Space>
+                          <Button size="small" onClick={() => setCurrentSigned(r)}>设为当前</Button>
+                          <Button size="small" danger onClick={() => deleteSignedVersion(r)}>删除</Button>
+                        </Space>
+                      ) : null,
+                    },
                   ] as any}
                 />
               </>
@@ -1164,7 +1225,15 @@ export default function LandlordDocumentsPage({ type, title }: Props) {
         ) : null}
       </Drawer>
 
-      <Modal title="上传签署版 PDF" open={uploadOpen} onCancel={() => setUploadOpen(false)} onOk={uploadSigned} confirmLoading={saving} okText="上传" cancelText="取消">
+      <Modal
+        title={uploadTarget?.current_signed_url ? '重新上传签署版 PDF' : '上传签署版 PDF'}
+        open={uploadOpen}
+        onCancel={() => setUploadOpen(false)}
+        onOk={uploadSigned}
+        confirmLoading={saving}
+        okText={uploadTarget?.current_signed_url ? '重新上传' : '上传'}
+        cancelText="取消"
+      >
         <Form form={uploadForm} layout="vertical">
           <Form.Item name="file" label="签署 PDF" valuePropName="fileList" getValueFromEvent={(e) => Array.isArray(e) ? e : e?.fileList} rules={[{ required: true, message: '请选择 PDF 文件' }]}>
             <Upload {...uploadProps}><Button>选择 PDF</Button></Upload>

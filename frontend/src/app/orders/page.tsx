@@ -15,6 +15,7 @@ import { sortActivePropertiesByRegionThenCode } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 import { buildSegments, placeIntoLanes } from '../../lib/calendarTimeline'
 import AuditTrail from '../../components/AuditTrail'
+import styles from './orders.module.css'
 
 type Order = { id: string; source?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; note?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number; email_header_at?: string; total_payment_raw?: number; processed_status?: string }
 // guest_phone 在后端已支持，这里表单也支持录入
@@ -1470,42 +1471,58 @@ export default function OrdersPage() {
 
   if (!mounted) {
     return (
-      <Card title={<span style={{ fontSize: 24, fontWeight: 600 }}>订单管理</span>} bodyStyle={{ padding: 16 }} style={{ margin: 24 }}>
+      <Card title={<span style={{ fontSize: 24, fontWeight: 600 }}>订单管理</span>} className={styles.ordersCard}>
         <div style={{ height: 420 }} />
       </Card>
     )
   }
 
   return (
-    <Card title={<span style={{ fontSize: 24, fontWeight: 600 }}>订单管理</span>} bodyStyle={{ padding: 16 }} style={{ margin: 24 }} extra={<Space>{hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}{hasPerm('order.manage') ? <Button onClick={manualSyncOrders} disabled={syncing || zeroAmountBackfillLoading}>手动同步订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={backfillZeroAmountAirbnbOrders} loading={zeroAmountBackfillLoading}>回补0金额订单</Button> : null}{hasPerm('order.manage') ? <Button onClick={openFailures}>失败订单邮件手动入库</Button> : null}</Space>}>
-      <Space style={{ marginBottom: 16 }} wrap>
-        <Radio.Group value={view} onChange={(e)=>setView(e.target.value)}>
-          <Radio.Button value="list">列表</Radio.Button>
-          <Radio.Button value="calendar">日历</Radio.Button>
-        </Radio.Group>
-        <Select value={`${sortKey}:${sortOrder}`} onChange={(v)=>{ const [k, o] = String(v).split(':') as any; setSortKey(k); setSortOrder(o) }}
-          options={[
-            { value: 'email_header_at:descend', label: '按邮件时间(新→旧)' },
-            { value: 'email_header_at:ascend', label: '按邮件时间(旧→新)' },
-            { value: 'checkin:ascend', label: '按入住(早→晚)' },
-            { value: 'checkin:descend', label: '按入住(晚→早)' },
-            { value: 'checkout:ascend', label: '按退房(早→晚)' },
-            { value: 'checkout:descend', label: '按退房(晚→早)' }
-          ]}
-        />
+    <Card
+      title={<span style={{ fontSize: 24, fontWeight: 600 }}>订单管理</span>}
+      className={styles.ordersCard}
+      extra={(
+        <div className={styles.ordersActionBar}>
+          {hasPerm('order.sync') ? <Button type="primary" onClick={() => setOpen(true)}>新建订单</Button> : null}
+          {hasPerm('order.manage') ? <Button onClick={() => setImportOpen(true)}>批量导入</Button> : null}
+          {hasPerm('order.manage') ? <Button onClick={manualSyncOrders} disabled={syncing || zeroAmountBackfillLoading}>手动同步订单</Button> : null}
+          {hasPerm('order.manage') ? <Button onClick={backfillZeroAmountAirbnbOrders} loading={zeroAmountBackfillLoading}>回补0金额订单</Button> : null}
+          {hasPerm('order.manage') ? <Button className={styles.ordersActionWide} onClick={openFailures}>失败订单邮件手动入库</Button> : null}
+        </div>
+      )}
+    >
+      <div className={styles.ordersToolbar}>
+        <div className={styles.ordersToolbarPrimary}>
+          <Radio.Group value={view} onChange={(e)=>setView(e.target.value)}>
+            <Radio.Button value="list">列表</Radio.Button>
+            <Radio.Button value="calendar">日历</Radio.Button>
+          </Radio.Group>
+          <Select value={`${sortKey}:${sortOrder}`} onChange={(v)=>{ const [k, o] = String(v).split(':') as any; setSortKey(k); setSortOrder(o) }}
+            options={[
+              { value: 'email_header_at:descend', label: '按邮件时间(新→旧)' },
+              { value: 'email_header_at:ascend', label: '按邮件时间(旧→新)' },
+              { value: 'checkin:ascend', label: '按入住(早→晚)' },
+              { value: 'checkin:descend', label: '按入住(晚→早)' },
+              { value: 'checkout:ascend', label: '按退房(早→晚)' },
+              { value: 'checkout:descend', label: '按退房(晚→早)' }
+            ]}
+          />
+        </div>
         {view==='list' ? (
-          <>
-            <Input placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} style={{ width: 200 }} />
-            <Input placeholder="按确认码搜索" allowClear value={confQuery} onChange={(e) => setConfQuery(e.target.value)} onPressEnter={() => jumpToCalendarByConfirmationCode(confQuery)} style={{ width: 200 }} />
-            <Button onClick={() => jumpToCalendarByConfirmationCode(confQuery)}>跳转日历</Button>
-            <DatePicker picker="month" value={monthFilter as any} onChange={setMonthFilter as any} allowClear placeholder="选择月份(可选)" />
+          <div className={styles.ordersToolbarFilters}>
+            <Input className={styles.ordersSearchInput} placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} />
+            <Input className={styles.ordersSearchInput} placeholder="按确认码搜索" allowClear value={confQuery} onChange={(e) => setConfQuery(e.target.value)} onPressEnter={() => jumpToCalendarByConfirmationCode(confQuery)} />
+            <div className={styles.ordersJumpRow}>
+              <Button onClick={() => jumpToCalendarByConfirmationCode(confQuery)}>跳转日历</Button>
+              <DatePicker picker="month" value={monthFilter as any} onChange={setMonthFilter as any} allowClear placeholder="选择月份(可选)" />
+            </div>
             <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} format="DD/MM/YYYY" />
             <Checkbox checked={hasDeductionOnly} onChange={(e) => setHasDeductionOnly(!!e.target.checked)}>有减扣</Checkbox>
-          </>
+          </div>
         ) : (
-          <>
+          <div className={styles.ordersCalendarFilters}>
             <DatePicker picker="month" value={calMonth} onChange={setCalMonth as any} />
-            <Select showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="选择房号" style={{ width: 220 }} value={calPid} onChange={setCalPid} options={sortActivePropertiesByRegionThenCode(properties).map(p=>({value:p.id,label:p.code||p.id}))} />
+            <Select className={styles.ordersPropertySelect} showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="选择房号" value={calPid} onChange={setCalPid} options={sortActivePropertiesByRegionThenCode(properties).map(p=>({value:p.id,label:p.code||p.id}))} />
             <Button onClick={async () => {
               if (!calPid) { message.warning('请选择房号'); return }
               if (!calRef.current) return
@@ -1534,9 +1551,9 @@ export default function OrdersPage() {
               try { (iframe.contentWindow as any).focus(); (iframe.contentWindow as any).print() } catch {}
               setTimeout(() => { try { document.body.removeChild(iframe) } catch {} }, 500)
             }}>导出日历</Button>
-          </>
+          </div>
         )}
-      </Space>
+      </div>
       {view==='list' ? (
         <Table
           rowKey={(r) => String((r as any).__rid || r.id)}
