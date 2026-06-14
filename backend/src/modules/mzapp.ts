@@ -1605,6 +1605,7 @@ async function ensureCleaningCustomerColumns() {
   cleaningCustomerEnsuring = (async () => {
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS guest_special_request text;`)
     await pgPool.query(`ALTER TABLE cleaning_tasks ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
+    await pgPool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS keys_required integer NOT NULL DEFAULT 1;`)
     cleaningCustomerEnsured = true
   })()
     .catch((e) => {
@@ -1765,34 +1766,36 @@ router.post('/cleaning-tasks/reorder', async (req, res) => {
     await ensureCleaningTaskSortColumns()
 
     let idx = 1
-    let updated = 0
+    const entryById = new Map<string, number>()
     for (const g of groups as any[]) {
       if (!Array.isArray(g)) continue
       const ids = Array.from(new Set(g.map((x: any) => String(x || '').trim()).filter(Boolean)))
       if (!ids.length) continue
-      if (kind === 'cleaner') {
-        const sql = `
-          UPDATE cleaning_tasks
-          SET sort_index_cleaner = $1, updated_at = now()
-          WHERE id = ANY($2::text[])
-            AND COALESCE(task_date, date)::date = $3::date
-            AND COALESCE(cleaner_id::text, assignee_id::text) = $4::text
-        `
-        const r = await pgPool.query(sql, [idx, ids, date, userId])
-        updated += r?.rowCount || 0
-      } else {
-        const sql = `
-          UPDATE cleaning_tasks
-          SET sort_index_inspector = $1, updated_at = now()
-          WHERE id = ANY($2::text[])
-            AND COALESCE(task_date, date)::date = $3::date
-            AND inspector_id::text = $4::text
-        `
-        const r = await pgPool.query(sql, [idx, ids, date, userId])
-        updated += r?.rowCount || 0
-      }
+      for (const id of ids) entryById.set(id, idx)
       idx++
     }
+    const entries = Array.from(entryById.entries()).map(([id, sort_index]) => ({ id, sort_index }))
+    if (!entries.length) return res.status(400).json({ message: 'groups required' })
+    const data = JSON.stringify(entries)
+    const sql = kind === 'cleaner'
+      ? `
+        UPDATE cleaning_tasks AS t
+        SET sort_index_cleaner = v.sort_index, updated_at = now()
+        FROM jsonb_to_recordset($1::jsonb) AS v(id text, sort_index integer)
+        WHERE t.id::text = v.id
+          AND COALESCE(t.task_date, t.date)::date = $2::date
+          AND COALESCE(t.cleaner_id::text, t.assignee_id::text) = $3::text
+      `
+      : `
+        UPDATE cleaning_tasks AS t
+        SET sort_index_inspector = v.sort_index, updated_at = now()
+        FROM jsonb_to_recordset($1::jsonb) AS v(id text, sort_index integer)
+        WHERE t.id::text = v.id
+          AND COALESCE(t.task_date, t.date)::date = $2::date
+          AND t.inspector_id::text = $3::text
+      `
+    const r = await pgPool.query(sql, [data, date, userId])
+    const updated = r?.rowCount || 0
     return res.json({ ok: true, updated })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'reorder_failed' })
@@ -2870,9 +2873,14 @@ async function handleManagerFields(req: any, res: any) {
     let prevRow: any = null
     try {
       const r = await pool.query(
-        `SELECT t.order_id::text AS order_id, t.property_id::text AS property_id, t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
+        `SELECT t.order_id::text AS order_id, t.property_id::text AS property_id, t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request,
+                CASE
+                  WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1)
+                  ELSE COALESCE(o.keys_required, t.keys_required, 1)
+                END AS keys_required,
                 COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
          FROM cleaning_tasks t
+         LEFT JOIN orders o ON o.id::text = t.order_id::text
          LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
          LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
          WHERE t.id=$1 LIMIT 1`,
@@ -2927,14 +2935,15 @@ async function handleManagerFields(req: any, res: any) {
             prevKeysRequiredMax = 1
           } else {
             const rrk = await pool.query(
-              `WITH o AS (SELECT unnest($1::text[]) AS order_id),
+              `WITH target_orders AS (SELECT unnest($1::text[]) AS order_id),
                     i AS (SELECT unnest($2::text[]) AS id)
                SELECT
-                 MIN(COALESCE(t.keys_required, 1)) AS min_k,
-                 MAX(COALESCE(t.keys_required, 1)) AS max_k,
-                 SUM(CASE WHEN COALESCE(t.keys_required, 1) <> $3 THEN 1 ELSE 0 END) AS diff_count
+                 MIN(CASE WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1) ELSE COALESCE(o.keys_required, t.keys_required, 1) END) AS min_k,
+                 MAX(CASE WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1) ELSE COALESCE(o.keys_required, t.keys_required, 1) END) AS max_k,
+                 SUM(CASE WHEN (CASE WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1) ELSE COALESCE(o.keys_required, t.keys_required, 1) END) <> $3 THEN 1 ELSE 0 END) AS diff_count
                FROM cleaning_tasks t
-               WHERE (t.order_id::text IN (SELECT order_id FROM o))
+               LEFT JOIN orders o ON o.id::text = t.order_id::text
+               WHERE (t.order_id::text IN (SELECT order_id FROM target_orders))
                   OR (t.order_id IS NULL AND t.id::text IN (SELECT id FROM i))`,
               [keysOrderIds, keysNullIds, nextK2],
             )
@@ -2966,6 +2975,13 @@ async function handleManagerFields(req: any, res: any) {
       try {
         const doUpdateOrder = async () => {
           if (!keysOrderIds.length) return
+          await pool.query(
+            `UPDATE orders
+             SET keys_required = $1
+             WHERE id::text = ANY($2::text[])
+               AND COALESCE(keys_required, 1) <> $1`,
+            [nextKeysRequired, keysOrderIds],
+          )
           await pool.query(
             `UPDATE cleaning_tasks
              SET keys_required = $1, updated_at = now()
@@ -3013,12 +3029,26 @@ async function handleManagerFields(req: any, res: any) {
           try {
             const affectedIds = Array.from(affectedTaskIds)
             const vis = await pool.query(
-              `SELECT id::text AS id, assignee_id, cleaner_id, inspector_id, lower(COALESCE(task_type, '')) AS task_type
+              `SELECT id::text AS id, assignee_id, cleaner_id, inspector_id, lower(COALESCE(task_type, '')) AS task_type,
+                      property_id::text AS property_id,
+                      COALESCE(task_date, date)::text AS task_date,
+                      COALESCE(keys_required, 1) AS keys_required
                FROM cleaning_tasks
                WHERE id::text = ANY($1::text[])`,
               [affectedIds],
             )
             const byId = new Map<string, any>((vis?.rows || []).map((row: any) => [String(row.id || ''), row]))
+            const keyTagsByGroup = new Map<string, { checkout_sets: number; checkin_sets: number }>()
+            for (const row of vis?.rows || []) {
+              const groupKey = `${String(row?.property_id || '').trim()}|${String(row?.task_date || '').slice(0, 10)}`
+              const prev = keyTagsByGroup.get(groupKey) || { checkout_sets: 0, checkin_sets: 0 }
+              const k0 = Number(row?.keys_required == null ? 1 : row.keys_required)
+              const k = Number.isFinite(k0) ? Math.max(1, Math.min(2, Math.trunc(k0))) : 1
+              const taskType = String(row?.task_type || '').trim()
+              if (taskType === 'checkout_clean') prev.checkout_sets = Math.max(prev.checkout_sets, k)
+              if (taskType === 'checkin_clean') prev.checkin_sets = Math.max(prev.checkin_sets, k)
+              keyTagsByGroup.set(groupKey, prev)
+            }
             const scope = parsed.data.checkout_time !== undefined
               || parsed.data.checkin_time !== undefined
               || parsed.data.keys_required !== undefined
@@ -3029,6 +3059,11 @@ async function handleManagerFields(req: any, res: any) {
               const taskType = String(row?.task_type || '').trim()
               const isCheckoutTask = taskType === 'checkout_clean'
               const isCheckinTask = taskType === 'checkin_clean'
+              const groupKey = `${String(row?.property_id || '').trim()}|${String(row?.task_date || '').slice(0, 10)}`
+              const groupKeys = keyTagsByGroup.get(groupKey) || { checkout_sets: 0, checkin_sets: 0 }
+              const checkoutSets = groupKeys.checkout_sets >= 2 ? groupKeys.checkout_sets : (isCheckoutTask && nextKeysRequired != null ? nextKeysRequired : 0)
+              const checkinSets = groupKeys.checkin_sets >= 2 ? groupKeys.checkin_sets : (isCheckinTask && nextKeysRequired != null ? nextKeysRequired : 0)
+              const mergedKeysRequired = Math.max(1, checkoutSets || 0, checkinSets || 0, nextKeysRequired || 0)
               const changedFieldsForTask = [
                 ...(parsed.data.checkout_time !== undefined ? ['checkout_time'] : []),
                 ...(parsed.data.checkin_time !== undefined ? ['checkin_time'] : []),
@@ -3036,8 +3071,8 @@ async function handleManagerFields(req: any, res: any) {
                 ...(parsed.data.new_code !== undefined ? ['new_code'] : []),
                 ...(parsed.data.guest_special_request !== undefined ? ['guest_special_request'] : []),
                 ...(parsed.data.keys_required !== undefined ? ['keys_required'] : []),
-                ...(parsed.data.keys_required !== undefined && isCheckoutTask ? ['keys_required_checkout'] : []),
-                ...(parsed.data.keys_required !== undefined && isCheckinTask ? ['keys_required_checkin'] : []),
+                ...(parsed.data.keys_required !== undefined ? ['keys_required_checkout'] : []),
+                ...(parsed.data.keys_required !== undefined ? ['keys_required_checkin'] : []),
                 ...(parsed.data.keys_required !== undefined ? ['key_tags'] : []),
               ]
               await emitWorkTaskEvent({
@@ -3053,16 +3088,16 @@ async function handleManagerFields(req: any, res: any) {
                   ...(parsed.data.old_code !== undefined ? { old_code: parsed.data.old_code ?? null } : {}),
                   ...(parsed.data.new_code !== undefined ? { new_code: parsed.data.new_code ?? null } : {}),
                   ...(parsed.data.guest_special_request !== undefined ? { guest_special_request: parsed.data.guest_special_request ?? null } : {}),
-                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null ? { keys_required: nextKeysRequired } : {}),
-                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null && isCheckoutTask ? { keys_required_checkout: nextKeysRequired } : {}),
-                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null && isCheckinTask ? { keys_required_checkin: nextKeysRequired } : {}),
+                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null ? { keys_required: mergedKeysRequired } : {}),
+                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null ? { keys_required_checkout: checkoutSets || null } : {}),
+                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null ? { keys_required_checkin: checkinSets || null } : {}),
                   ...(parsed.data.keys_required !== undefined && nextKeysRequired != null
                     ? {
                         key_tags: {
-                          checkout_sets: isCheckoutTask ? nextKeysRequired : 0,
-                          checkin_sets: isCheckinTask ? nextKeysRequired : 0,
-                          show_checkout: isCheckoutTask && nextKeysRequired >= 2,
-                          show_checkin: isCheckinTask && nextKeysRequired >= 2,
+                          checkout_sets: checkoutSets || null,
+                          checkin_sets: checkinSets || null,
+                          show_checkout: checkoutSets >= 2,
+                          show_checkin: checkinSets >= 2,
                         },
                       }
                     : {}),
@@ -3101,9 +3136,14 @@ async function handleManagerFields(req: any, res: any) {
           let afterRow: any = null
           try {
             const rAfter = await pool.query(
-              `SELECT t.property_id::text AS property_id, t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request, t.keys_required,
+              `SELECT t.property_id::text AS property_id, t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request,
+                      CASE
+                        WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1)
+                        ELSE COALESCE(o.keys_required, t.keys_required, 1)
+                      END AS keys_required,
                       COALESCE(p_id.code, p_code.code, t.property_id::text) AS property_code
                FROM cleaning_tasks t
+               LEFT JOIN orders o ON o.id::text = t.order_id::text
                LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
                LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
                WHERE t.id=$1 LIMIT 1`,
@@ -3119,7 +3159,7 @@ async function handleManagerFields(req: any, res: any) {
             old_code: afterRow?.old_code == null ? null : String(afterRow.old_code),
             new_code: afterRow?.new_code == null ? null : String(afterRow.new_code),
             guest_special_request: afterRow?.guest_special_request == null ? null : String(afterRow.guest_special_request),
-            keys_required: afterRow?.keys_required == null ? 1 : Number(afterRow.keys_required),
+            keys_required: nextKeysRequired != null ? nextKeysRequired : (afterRow?.keys_required == null ? 1 : Number(afterRow.keys_required)),
           }
           const fieldsKey = hashText(JSON.stringify(keyObj))
           const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(Array.from(affectedTaskIds))), ...(await listManagerUserIds())]))
@@ -4122,14 +4162,14 @@ router.post('/work-tasks/reorder', async (req, res) => {
           [date],
         )
       }
-      for (let i = 0; i < taskIds.length; i++) {
-        await pgPool.query(
-          `UPDATE work_tasks
-           SET sort_index = $1, updated_at = now()
-           WHERE id = $2`,
-          [i + 1, taskIds[i]],
-        )
-      }
+      const entries = JSON.stringify(taskIds.map((id, index) => ({ id, sort_index: index + 1 })))
+      await pgPool.query(
+        `UPDATE work_tasks AS w
+         SET sort_index = v.sort_index, updated_at = now()
+         FROM jsonb_to_recordset($1::jsonb) AS v(id text, sort_index integer)
+         WHERE w.id::text = v.id`,
+        [entries],
+      )
       await pgPool.query('COMMIT')
     } catch (e) {
       await pgPool.query('ROLLBACK')
@@ -4574,8 +4614,10 @@ router.get('/work-tasks', async (req, res) => {
                     : isInspectionFinishedStatus(raw)
                       ? 'done'
                       : (raw === 'cleaned' || raw === 'restock_pending' || raw === 'restocked')
-                        ? 'to_inspect'
-                        : (String(inspectorAssigned || '').trim() ? 'assigned' : 'todo')
+                          ? 'to_inspect'
+                          : (raw === 'in_progress' || keyPhotoUrl)
+                            ? 'in_progress'
+                            : (String(inspectorAssigned || '').trim() ? 'assigned' : 'todo')
                 )
               : (
                   requireLockboxBeforeDone && isDoneLike && !lockboxVideoUrl

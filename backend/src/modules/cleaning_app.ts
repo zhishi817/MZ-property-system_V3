@@ -927,6 +927,8 @@ async function ensureCleaningDayEndHandoverTable() {
     await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS warehouse_key_submitted_at timestamptz;`)
     await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS consumable_submitted_at timestamptz;`)
     await pgPool.query(`ALTER TABLE cleaning_day_end_handover ADD COLUMN IF NOT EXISTS reject_submitted_at timestamptz;`)
+    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ALTER COLUMN submitted_at DROP DEFAULT;`)
+    await pgPool.query(`ALTER TABLE cleaning_day_end_handover ALTER COLUMN submitted_at DROP NOT NULL;`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cleaning_day_end_handover_date ON cleaning_day_end_handover(date);`)
     await pgPool.query(`CREATE TABLE IF NOT EXISTS cleaning_day_end_reject_items (
       id text PRIMARY KEY,
@@ -1712,6 +1714,18 @@ router.get('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cl
       updated_at: x.updated_at ? String(x.updated_at) : null,
     }))
     const statusRow = statusRes?.rows?.[0] || null
+    const rawSubmittedAt = statusRow?.submitted_at ? String(statusRow.submitted_at) : null
+    const sectionSubmittedTimes = [
+      statusRow?.key_submitted_at,
+      statusRow?.dirty_linen_submitted_at,
+      statusRow?.warehouse_key_submitted_at,
+      statusRow?.consumable_submitted_at,
+      statusRow?.reject_submitted_at,
+    ]
+      .map((value: any) => (value ? String(value) : ''))
+      .filter(Boolean)
+    const submittedAtTime = rawSubmittedAt ? new Date(rawSubmittedAt).getTime() : NaN
+    const isFinalSubmitted = Number.isFinite(submittedAtTime) && sectionSubmittedTimes.length === 5 && sectionSubmittedTimes.every((value: string) => new Date(value).getTime() === submittedAtTime)
     return res.json({
       key_photos,
       dirty_linen_photos: return_wash_photos,
@@ -1721,7 +1735,7 @@ router.get('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'cl
       reject_items,
       no_dirty_linen: !!statusRow?.no_dirty_linen,
       no_warehouse_key: !!statusRow?.no_warehouse_key,
-      submitted_at: statusRow?.submitted_at ? String(statusRow.submitted_at) : null,
+      submitted_at: isFinalSubmitted ? rawSubmittedAt : null,
       key_submitted_at: statusRow?.key_submitted_at ? String(statusRow.key_submitted_at) : null,
       dirty_linen_submitted_at: statusRow?.dirty_linen_submitted_at ? String(statusRow.dirty_linen_submitted_at) : null,
       warehouse_key_submitted_at: statusRow?.warehouse_key_submitted_at ? String(statusRow.warehouse_key_submitted_at) : null,
@@ -1784,6 +1798,7 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
     const date = String(parsed.data.date || '').slice(0, 10)
     const section = String(parsed.data.section || 'all').trim() as 'all' | 'key' | 'dirty_linen' | 'return_wash' | 'warehouse_key' | 'consumable' | 'reject'
     const isAllSection = section === 'all'
+    const isFinalSubmit = isAllSection
     const writesKey = isAllSection || section === 'key'
     const writesReturnWash = isAllSection || section === 'dirty_linen' || section === 'return_wash'
     const writesWarehouseKey = isAllSection || section === 'warehouse_key'
@@ -1803,7 +1818,7 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
       if ((isAllSection || writesConsumable) && !consumablePhotos.length) return res.status(400).json({ message: '请上传剩余消耗品照片' })
     } else {
       if (writesKey && !keyPhotos.length) return res.status(400).json({ message: '请先上传备用钥匙照片' })
-      if (writesReturnWash && !returnWashPhotos.length && !noDirtyLinen) return res.status(400).json({ message: '请上传退洗床品照片' })
+      if (writesReturnWash && !returnWashPhotos.length && !noDirtyLinen) return res.status(400).json({ message: '请上传脏床品照片' })
       if (section === 'warehouse_key' && !warehouseKeyPhotos.length && !noWarehouseKey) return res.status(400).json({ message: '请上传仓库钥匙照片，或选择今天未使用仓库钥匙' })
     }
 
@@ -1859,12 +1874,12 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
       }
       await client.query(
         `INSERT INTO cleaning_day_end_handover (user_id, date, no_dirty_linen, no_warehouse_key, submitted_at, updated_at)
-         VALUES ($1,$2,$3,$4,now(),now())
+         VALUES ($1,$2,$3,$4,${isFinalSubmit ? 'now()' : 'NULL'},now())
          ON CONFLICT (user_id, date)
-         DO UPDATE SET submitted_at = now(), updated_at = now()`,
+         DO UPDATE SET submitted_at = ${isFinalSubmit ? 'now()' : 'NULL'}, updated_at = now()`,
         [userId, date, noDirtyLinen, noWarehouseKey],
       )
-      const statusSets: string[] = ['submitted_at = now()', 'updated_at = now()']
+      const statusSets: string[] = [isFinalSubmit ? 'submitted_at = now()' : 'submitted_at = NULL', 'updated_at = now()']
       const statusParams: any[] = [userId, date]
       if (writesKey) statusSets.push('key_submitted_at = now()')
       if (writesReturnWash) {
@@ -1895,7 +1910,7 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
     }
     try {
       const { syncDayEndRejectLinenUsage } = require('./inventory')
-      if (writesReject) {
+      if (isFinalSubmit && writesReject) {
         await syncDayEndRejectLinenUsage({
           userId,
           date,
@@ -1909,6 +1924,7 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
       }
     } catch {}
     try {
+      if (!isFinalSubmit) return res.status(201).json({ ok: true })
       const managerIds = await listDayEndManagerUserIds()
       if (managerIds.length) {
         const actorId = String(user.sub || '').trim()

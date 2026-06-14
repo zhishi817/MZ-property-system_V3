@@ -68,13 +68,29 @@ export default function RecurringPage() {
   })
   const [rowMutating, setRowMutating] = useState<Record<string, 'pay' | 'unpay' | 'pause' | 'resume' | undefined>>({})
   const [pageLoading, setPageLoading] = useState(true)
-  const [snapLoading, setSnapLoading] = useState(false)
+  const [, setSnapLoading] = useState(false)
   const [snapKey, setSnapKey] = useState<string>('')
   const [suppressSnapUntil, setSuppressSnapUntil] = useState(0)
   const reloadSeq = useRef(0)
   const lastLoadedAt = useRef(0)
   const snapSeq = useRef(0)
   const snapAbortRef = useRef<AbortController | null>(null)
+
+  async function readResponseMessage(resp: Response, fallback: string) {
+    const json = await resp.clone().json().catch(() => null as any)
+    const msg = json?.message || json?.invalid || json?.error
+    if (msg) return String(msg)
+    const txt = await resp.text().catch(() => '')
+    return txt || fallback || `HTTP ${resp.status}`
+  }
+
+  function stopSnapshotSync(cooldownMs = 60_000) {
+    snapSeq.current += 1
+    setSuppressSnapUntil(Date.now() + cooldownMs)
+    try { snapAbortRef.current?.abort() } catch {}
+    snapAbortRef.current = null
+    setSnapLoading(false)
+  }
 
   async function fetchRecurringPayments() {
     const resp = await fetch(`${API_BASE}/crud/recurring_payments`, { headers: authHeaders(), cache: 'no-store' })
@@ -86,11 +102,10 @@ export default function RecurringPage() {
     return Array.isArray(props) ? props : []
   }
   async function fetchMonthExpenses(mk: string) {
-    const [pe, ce] = await Promise.all([
-      fetch(`${API_BASE}/crud/property_expenses?month_key=${mk}`, { headers: authHeaders(), cache: 'no-store' }).then(r=>r.ok?r.json():[]).catch(()=>[]),
-      fetch(`${API_BASE}/crud/company_expenses?month_key=${mk}`, { headers: authHeaders(), cache: 'no-store' }).then(r=>r.ok?r.json():[]).catch(()=>[]),
-    ])
-    return ([...(Array.isArray(pe)?pe:[]), ...(Array.isArray(ce)?ce:[])] as any[]) as ExpenseRow[]
+    const resp = await fetch(`${API_BASE}/recurring/payments/month-snapshots?month_key=${encodeURIComponent(mk)}`, { headers: authHeaders(), cache: 'no-store' }).catch(() => null)
+    if (!resp?.ok) return []
+    const rows = await resp.json().catch(() => [])
+    return (Array.isArray(rows) ? rows : []) as ExpenseRow[]
   }
   async function load() {
     const [rows, props] = await Promise.all([fetchRecurringPayments(), fetchProperties()])
@@ -245,12 +260,11 @@ export default function RecurringPage() {
                 const id = String(r.id)
                 if (rowMutating[id]) return
                 setRowMutating(s => ({ ...s, [id]: 'resume' }))
-                setSuppressSnapUntil(Date.now() + 4000)
+                stopSnapshotSync()
                 try {
                   const resp = await fetch(`${API_BASE}/recurring/payments/${id}/resume`, { method:'POST', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ month_key: monthKey }) })
                   if (!resp.ok) {
-                    const txt = await resp.text().catch(()=> '')
-                    throw new Error(txt || `HTTP ${resp.status}`)
+                    throw new Error(await readResponseMessage(resp, '恢复失败'))
                   }
                   message.success('已恢复')
                   await load()
@@ -281,7 +295,7 @@ export default function RecurringPage() {
                     onOk: async () => {
                       const id = String(r.id)
                       if (rowMutating[id]) return
-                      setSuppressSnapUntil(Date.now() + 4000)
+                      stopSnapshotSync()
                       const monthKey = m.format('YYYY-MM')
                       const fixedId = String((r as any).fixed_expense_id || r.id)
                       const prevExpenses = (expenses||[]).filter(e => String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId)
@@ -296,8 +310,7 @@ export default function RecurringPage() {
                           body: JSON.stringify({ month_key: monthKey }),
                         })
                         if (!resp.ok) {
-                          const txt = await resp.text().catch(() => '')
-                          throw new Error(txt || `HTTP ${resp.status}`)
+                          throw new Error(await readResponseMessage(resp, '切换失败'))
                         }
                         const data = await resp.json().catch(() => null as any)
                         const keepId = String(data?.expense_id || prevExpenses?.[0]?.id || '')
@@ -325,10 +338,9 @@ export default function RecurringPage() {
               <Button type="primary" loading={rowMutating[String(r.id)]==='pay'} disabled={!!rowMutating[String(r.id)]} onClick={async ()=>{
               const id = String(r.id)
               if (rowMutating[id]) return
-              setSuppressSnapUntil(Date.now() + 4000)
+              stopSnapshotSync()
               const todayISO = nowAU().format('YYYY-MM-DD')
               const dueDay = Number(r.due_day_of_month || 1)
-              const freq = Number(r.frequency_months || 1)
               const dim = m.endOf('month').date()
               const dueISO = m.startOf('month').date(Math.min(dueDay, dim)).format('YYYY-MM-DD')
               const monthKey = m.format('YYYY-MM')
@@ -361,20 +373,16 @@ export default function RecurringPage() {
                   body: JSON.stringify({ month_key: monthKey, paid_date: todayISO }),
                 })
                 if (!resp.ok) {
-                  const txt = await resp.text().catch(() => '')
-                  throw new Error(txt || `HTTP ${resp.status}`)
+                  throw new Error(await readResponseMessage(resp, '标记失败'))
                 }
                 const data = await resp.json().catch(() => null as any)
                 const keepId = String(data?.expense_id || prevExpenses?.[0]?.id || '')
                 if (keepId) {
                   setExpenses(prev => prev.map(e => (String(e.month_key||'')===monthKey && String(e.fixed_expense_id||'')===fixedId) ? ({ ...e, id: keepId } as any) : e))
                 }
-
-                const nextBase = m.add(freq,'month')
-                const nextDim = nextBase.endOf('month').date()
-                const nextISO = nextBase.startOf('month').date(Math.min(dueDay, nextDim)).format('YYYY-MM-DD')
-                const tplResp = await fetch(`${API_BASE}/crud/recurring_payments/${id}`, { method:'PATCH', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify({ last_paid_date: todayISO, next_due_date: nextISO, status: 'active', frequency_months: freq }) })
-                if (!tplResp.ok) throw new Error(`HTTP ${tplResp.status}`)
+                if (data?.template) {
+                  setList(prev => prev.map(x => String(x.id)===id ? ({ ...x, ...(data.template as any) } as any) : x))
+                }
 
                 message.open({ type:'success', content:'已标记为已付', key: msgKey })
                 void refreshMonth()
@@ -398,12 +406,11 @@ export default function RecurringPage() {
             const id = String(r.id)
             if (rowMutating[id]) return
             setRowMutating(s => ({ ...s, [id]: 'pause' }))
-            setSuppressSnapUntil(Date.now() + 4000)
+            stopSnapshotSync()
             try {
               const resp = await fetch(`${API_BASE}/recurring/payments/${r.id}/pause`, { method:'POST', headers: { 'Content-Type':'application/json', ...authHeaders() }, body: '{}' })
               if (!resp.ok) {
-                const txt = await resp.text().catch(()=> '')
-                throw new Error(txt || `HTTP ${resp.status}`)
+                throw new Error(await readResponseMessage(resp, '停用失败'))
               }
               message.success('已停用')
               await load()
@@ -609,9 +616,9 @@ export default function RecurringPage() {
           .filter((t) => {
             const mode = String((t as any).amount_mode || 'fixed')
             const hasRow = !!expByFixed[String(t.id)]
-            return !hasRow || mode === 'percent_of_property_total_income'
+            return mode === 'percent_of_property_total_income' && !hasRow
           })
-        const limit = Math.max(1, Math.min(3, Number((window as any).__ensureSnapConcurrency || 2)))
+        const limit = Math.max(1, Math.min(2, Number((window as any).__ensureSnapConcurrency || 1)))
         let idx = 0
         let ok = 0
         let sawServerBusy = false
@@ -624,7 +631,7 @@ export default function RecurringPage() {
             }
             ok++
           } catch {
-            sawServerBusy = true
+            if (!controller.signal.aborted) sawServerBusy = true
           }
         }
         const workers = Array.from({ length: Math.min(limit, candidates.length || 0) }).map(async () => {
@@ -711,7 +718,7 @@ export default function RecurringPage() {
       </div>
       <Card title="固定支出" size="small" style={{ marginTop: 8 }} loading={pageLoading}>
         <div style={{ margin:'8px 0', color:'#888' }}>修改将从本月起生效，历史或已支付记录不会变化。</div>
-        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={allRows} loading={pageLoading || (snapLoading && monthKey === currentMonthKey)} pagination={{ current: tablePage, pageSize: tablePageSize, showSizeChanger: true, pageSizeOptions: [10,20,50,100], onChange: (page, size) => { setTablePage(page); setTablePageSize(size || DEFAULT_TABLE_PAGE_SIZE) }, onShowSizeChange: (page, size) => { setTablePage(page); setTablePageSize(size || DEFAULT_TABLE_PAGE_SIZE) } }} scroll={{ x: 'max-content' }}
+        <Table rowKey={(r)=>r.id} columns={columns as any} dataSource={allRows} loading={pageLoading} pagination={{ current: tablePage, pageSize: tablePageSize, showSizeChanger: true, pageSizeOptions: [10,20,50,100], onChange: (page, size) => { setTablePage(page); setTablePageSize(size || DEFAULT_TABLE_PAGE_SIZE) }, onShowSizeChange: (page, size) => { setTablePage(page); setTablePageSize(size || DEFAULT_TABLE_PAGE_SIZE) } }} scroll={{ x: 'max-content' }}
           rowClassName={(r)=>{
             const today = nowAU()
             const nd = parseAU(r.next_due_date)

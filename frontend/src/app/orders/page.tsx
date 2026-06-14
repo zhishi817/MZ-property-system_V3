@@ -15,13 +15,29 @@ import { sortActivePropertiesByRegionThenCode } from '../../lib/properties'
 import { hasPerm } from '../../lib/auth'
 import { buildSegments, placeIntoLanes } from '../../lib/calendarTimeline'
 import AuditTrail from '../../components/AuditTrail'
+import TableRowActions from '../../components/TableRowActions'
 import styles from './orders.module.css'
 
 type Order = { id: string; source?: string; stay_type?: 'guest' | 'owner'; checkin?: string; checkout?: string; status?: string; property_id?: string; property_code?: string; confirmation_code?: string; guest_name?: string; guest_phone?: string; note?: string; price?: number; cleaning_fee?: number; net_income?: number; avg_nightly_price?: number; nights?: number; email_header_at?: string; total_payment_raw?: number; processed_status?: string }
 // guest_phone 在后端已支持，这里表单也支持录入
 type CleaningTask = { id: string; status: 'pending'|'scheduled'|'done' }
+type PlatformFilter = 'all'|'airbnb'|'booking'|'offline'|'other'
 const debugOnce = (..._args: any[]) => {}
 const BOOKING_NET_RATE = 0.83
+const PLATFORM_FILTER_OPTIONS: { value: PlatformFilter; label: string }[] = [
+  { value: 'all', label: '全部平台' },
+  { value: 'airbnb', label: 'Airbnb' },
+  { value: 'booking', label: 'Booking.com' },
+  { value: 'offline', label: 'Direct reservation' },
+  { value: 'other', label: 'Other source' },
+]
+function sourcePlatform(source?: any): Exclude<PlatformFilter, 'all'> {
+  const s = String(source || '').trim().toLowerCase()
+  if (s.includes('airbnb')) return 'airbnb'
+  if (s.includes('book')) return 'booking'
+  if (s === 'offline' || s.includes('direct') || s.includes('manual')) return 'offline'
+  return 'other'
+}
 
 export default function OrdersPage() {
   const { message } = App.useApp()
@@ -35,6 +51,7 @@ export default function OrdersPage() {
   const [current, setCurrent] = useState<Order | null>(null)
   const [codeQuery, setCodeQuery] = useState('')
   const [confQuery, setConfQuery] = useState('')
+  const [platformFilter, setPlatformFilter] = useState<PlatformFilter>('all')
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [hasDeductionOnly, setHasDeductionOnly] = useState(false)
   const [properties, setProperties] = useState<{ id: string; code?: string; address?: string; region?: string; archived?: boolean | null }[]>([])
@@ -1146,6 +1163,9 @@ export default function OrdersPage() {
     if (s === 'airbnb' || s.includes('airbnb')) return 'airbnb'
     return raw
   }
+  function matchesPlatformFilter(order: any): boolean {
+    return platformFilter === 'all' || sourcePlatform(order?.source) === platformFilter
+  }
   const columns = [
     { title: '房号', dataIndex: 'property_code', fixed: 'left' as const, width: 120, render: (_: any, r: Order) => {
       const label = getPropertyCodeLabel(r)
@@ -1212,55 +1232,86 @@ export default function OrdersPage() {
       return <Tag color={color}>{txt}</Tag>
     } },
     { title: '到账', dataIndex: 'payment_received', render: (v:any)=> v ? <Tag color="green">已到账</Tag> : <Tag>未到账</Tag> },
-    { title: '操作', fixed: 'right' as const, width: 220, render: (_: any, r: Order) => (
-      <Space>
-        <Button onClick={() => openDetail(r)}>查看</Button>
-        {hasPerm('order.manage') && (String(((r as any).cleaning_sync || {}).status || '') === 'failed') ? <Button onClick={async ()=>{
-          try {
-            const res = await fetch(`${API_BASE}/orders/${r.id}/cleaning-sync/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({}) })
-            if (res.ok) { message.success('已重新排队同步'); load() }
-            else { const j = await res.json().catch(()=>({})); message.error(j?.message || `操作失败（HTTP ${res.status}）`) }
-          } catch { message.error('操作失败') }
-        }}>重试同步</Button> : null}
-        {hasPerm('order.confirm_payment') && !((r as any).payment_received) ? <Button type="primary" onClick={async ()=>{
-          const res = await fetch(`${API_BASE}/orders/${r.id}/confirm-payment`, { method: 'POST', headers: { ...authHeaders() } })
-          if (res.ok) {
-            message.success('已确认到账')
-            setData(prev => prev.map(x => x.id === r.id ? ({ ...x, payment_received: true } as any) : x))
-          } else { const j = await res.json().catch(()=>({})); message.error(j?.message || '操作失败') }
-        }}>确认到账</Button> : null}
-        {hasPerm('order.confirm_payment') && ((r as any).payment_received) ? <Button danger onClick={() => {
-          Modal.confirm({
-            title: '取消到账确认',
-            content: '确定要取消“已到账”状态吗？（用于误点回退）',
-            okText: '取消到账',
-            okType: 'danger',
-            cancelText: '返回',
-            onOk: async () => {
-              const res = await fetch(`${API_BASE}/orders/${r.id}/unconfirm-payment`, { method: 'POST', headers: { ...authHeaders() } })
-              if (res.ok) {
-                message.success('已取消到账')
-                setData(prev => prev.map(x => x.id === r.id ? ({ ...x, payment_received: false } as any) : x))
-              } else { const j = await res.json().catch(()=>({})); message.error(j?.message || '操作失败') }
-            }
-          })
-        }}>取消到账</Button> : null}
-        {hasPerm('order.write') ? <Button onClick={() => openEdit(r)}>编辑</Button> : null}
-        {hasPerm('order.write') ? <Button danger onClick={() => {
-          Modal.confirm({
-            title: '确认删除订单',
-            content: `确定删除订单（房号：${r.property_code || ''}，入住：${r.checkin || ''}）？`,
-            okText: '删除',
-            okType: 'danger',
-            cancelText: '取消',
-            onOk: async () => {
-              const res = await fetch(`${API_BASE}/orders/${r.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
-              if (res.ok) { message.success('订单已删除'); load() }
-              else { let msg = `删除失败（HTTP ${res.status}）`; try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { const t = await res.text(); if (t) msg = t } catch {} } message.error(msg) }
-            }
-          })
-        }}>删除</Button> : null}
-      </Space>
+    { title: '操作', fixed: 'right' as const, width: 'var(--orders-action-column-width)', render: (_: any, r: Order) => (
+      <TableRowActions actions={[
+        {
+          key: 'detail',
+          label: '查看',
+          onClick: () => openDetail(r),
+        },
+        {
+          key: 'edit',
+          label: '编辑',
+          hidden: !hasPerm('order.write'),
+          onClick: () => openEdit(r),
+        },
+        {
+          key: 'retry-cleaning-sync',
+          label: '重试同步',
+          hidden: !hasPerm('order.manage') || String(((r as any).cleaning_sync || {}).status || '') !== 'failed',
+          onClick: async () => {
+            try {
+              const res = await fetch(`${API_BASE}/orders/${r.id}/cleaning-sync/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({}) })
+              if (res.ok) { message.success('已重新排队同步'); load() }
+              else { const j = await res.json().catch(()=>({})); message.error(j?.message || `操作失败（HTTP ${res.status}）`) }
+            } catch { message.error('操作失败') }
+          },
+        },
+        {
+          key: 'confirm-payment',
+          label: '确认到账',
+          hidden: !hasPerm('order.confirm_payment') || !!((r as any).payment_received),
+          onClick: async () => {
+            const res = await fetch(`${API_BASE}/orders/${r.id}/confirm-payment`, { method: 'POST', headers: { ...authHeaders() } })
+            if (res.ok) {
+              message.success('已确认到账')
+              setData(prev => prev.map(x => x.id === r.id ? ({ ...x, payment_received: true } as any) : x))
+            } else { const j = await res.json().catch(()=>({})); message.error(j?.message || '操作失败') }
+          },
+        },
+        {
+          key: 'unconfirm-payment',
+          label: '取消到账',
+          danger: true,
+          hidden: !hasPerm('order.confirm_payment') || !((r as any).payment_received),
+          onClick: () => {
+            Modal.confirm({
+              title: '取消到账确认',
+              content: '确定要取消“已到账”状态吗？（用于误点回退）',
+              okText: '取消到账',
+              okType: 'danger',
+              cancelText: '返回',
+              onOk: async () => {
+                const res = await fetch(`${API_BASE}/orders/${r.id}/unconfirm-payment`, { method: 'POST', headers: { ...authHeaders() } })
+                if (res.ok) {
+                  message.success('已取消到账')
+                  setData(prev => prev.map(x => x.id === r.id ? ({ ...x, payment_received: false } as any) : x))
+                } else { const j = await res.json().catch(()=>({})); message.error(j?.message || '操作失败') }
+              }
+            })
+          },
+        },
+        {
+          key: 'delete',
+          label: '删除',
+          danger: true,
+          hidden: !hasPerm('order.write'),
+          onClick: () => {
+            Modal.confirm({
+              title: '确认删除订单',
+              content: `确定删除订单（房号：${r.property_code || ''}，入住：${r.checkin || ''}）？`,
+              okText: '删除',
+              okType: 'danger',
+              cancelText: '取消',
+              onOk: async () => {
+                const res = await fetch(`${API_BASE}/orders/${r.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+                if (res.ok) { message.success('订单已删除'); load() }
+                else { let msg = `删除失败（HTTP ${res.status}）`; try { const j = await res.json(); if (j?.message) msg = j.message } catch { try { const t = await res.text(); if (t) msg = t } catch {} } message.error(msg) }
+              }
+            })
+          },
+        },
+      ]} />
     ) },
   ]
 
@@ -1296,7 +1347,8 @@ export default function OrdersPage() {
       const co = String(o.checkout || '').slice(0,10)
       if (!ci || !co) return false
       const include = (!isCanceledStatus((o as any).status)) || !!(o as any).count_in_income
-      return include && o.property_id === calPid
+      const okPlatform = platformFilter === 'all' || sourcePlatform(o.source) === platformFilter
+      return include && o.property_id === calPid && okPlatform
     })
     return orders.map(o => {
       const stKey = String((o as any).status || '').toLowerCase()
@@ -1313,7 +1365,7 @@ export default function OrdersPage() {
         extendedProps: { styleToken, order: o },
       }
     })
-  }, [data, calPid])
+  }, [data, calPid, platformFilter])
   const laneMap = useMemo(() => {
     try {
       const segs = buildSegments(
@@ -1369,6 +1421,7 @@ export default function OrdersPage() {
   const monthOrders = (data || []).filter(o => {
     if (!calPid) return false
     if (o.property_id !== calPid) return false
+    if (!matchesPlatformFilter(o)) return false
     const ciDay = dayStr(o.checkin)
     const coDay = dayStr(o.checkout)
     if (!ciDay || !coDay) return false
@@ -1389,7 +1442,7 @@ export default function OrdersPage() {
         const ciDay = dayStr(o.checkin)
         const coDay = dayStr(o.checkout)
         const include = (!isCanceledStatus((o as any).status)) || !!(o as any).count_in_income
-        return include && o.property_id === calPid && ciDay && coDay && ciDay <= dateStr && coDay > dateStr
+        return include && o.property_id === calPid && matchesPlatformFilter(o) && ciDay && coDay && ciDay <= dateStr && coDay > dateStr
       }) as any,
       sortKey,
       sortOrder
@@ -1471,7 +1524,7 @@ export default function OrdersPage() {
 
   if (!mounted) {
     return (
-      <Card title={<span style={{ fontSize: 24, fontWeight: 600 }}>订单管理</span>} className={styles.ordersCard}>
+      <Card title={<span className={styles.ordersTitle}>订单管理</span>} className={styles.ordersCard}>
         <div style={{ height: 420 }} />
       </Card>
     )
@@ -1479,7 +1532,7 @@ export default function OrdersPage() {
 
   return (
     <Card
-      title={<span style={{ fontSize: 24, fontWeight: 600 }}>订单管理</span>}
+      title={<span className={styles.ordersTitle}>订单管理</span>}
       className={styles.ordersCard}
       extra={(
         <div className={styles.ordersActionBar}>
@@ -1512,17 +1565,19 @@ export default function OrdersPage() {
           <div className={styles.ordersToolbarFilters}>
             <Input className={styles.ordersSearchInput} placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} />
             <Input className={styles.ordersSearchInput} placeholder="按确认码搜索" allowClear value={confQuery} onChange={(e) => setConfQuery(e.target.value)} onPressEnter={() => jumpToCalendarByConfirmationCode(confQuery)} />
+            <Select className={styles.ordersPlatformSelect} value={platformFilter} onChange={(v)=>setPlatformFilter(v as PlatformFilter)} options={PLATFORM_FILTER_OPTIONS} />
             <div className={styles.ordersJumpRow}>
               <Button onClick={() => jumpToCalendarByConfirmationCode(confQuery)}>跳转日历</Button>
               <DatePicker picker="month" value={monthFilter as any} onChange={setMonthFilter as any} allowClear placeholder="选择月份(可选)" />
             </div>
-            <DatePicker.RangePicker onChange={(v) => setDateRange(v as any)} format="DD/MM/YYYY" />
+            <DatePicker.RangePicker className={styles.ordersRangePicker} onChange={(v) => setDateRange(v as any)} format="DD/MM/YYYY" />
             <Checkbox checked={hasDeductionOnly} onChange={(e) => setHasDeductionOnly(!!e.target.checked)}>有减扣</Checkbox>
           </div>
         ) : (
           <div className={styles.ordersCalendarFilters}>
             <DatePicker picker="month" value={calMonth} onChange={setCalMonth as any} />
             <Select className={styles.ordersPropertySelect} showSearch optionFilterProp="label" filterOption={(input, option)=> String((option as any)?.label||'').toLowerCase().includes(String(input||'').toLowerCase())} placeholder="选择房号" value={calPid} onChange={setCalPid} options={sortActivePropertiesByRegionThenCode(properties).map(p=>({value:p.id,label:p.code||p.id}))} />
+            <Select className={styles.ordersPlatformSelect} value={platformFilter} onChange={(v)=>setPlatformFilter(v as PlatformFilter)} options={PLATFORM_FILTER_OPTIONS} />
             <Button onClick={async () => {
               if (!calPid) { message.warning('请选择房号'); return }
               if (!calRef.current) return
@@ -1556,6 +1611,7 @@ export default function OrdersPage() {
       </div>
       {view==='list' ? (
         <Table
+          className={styles.ordersTable}
           rowKey={(r) => String((r as any).__rid || r.id)}
           columns={columns as any}
           onRow={(record: any) => ({
@@ -1591,7 +1647,8 @@ export default function OrdersPage() {
                 const okConf = confText.includes(confInput)
                 const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0) || 0
                 const okDed = !hasDeductionOnly || ded > 0
-                return okText && okConf && okDed
+                const okPlatform = matchesPlatformFilter(o)
+                return okPlatform && okText && okConf && okDed
               })
               return applySort(filtered1)
             }
@@ -1611,7 +1668,8 @@ export default function OrdersPage() {
                 )
                 const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0) || 0
                 const okDed = !hasDeductionOnly || ded > 0
-                return okText && okConf && rangeOk && okDed
+                const okPlatform = matchesPlatformFilter(o)
+                return okPlatform && okText && okConf && rangeOk && okDed
               })
               if (rowsPrimary.length) return applySort(rowsPrimary)
             }
@@ -1641,7 +1699,8 @@ export default function OrdersPage() {
               )
               const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0) || 0
               const okDed = !hasDeductionOnly || ded > 0
-              return okText && okConf && monthOverlap && rangeOk && okDed
+              const okPlatform = matchesPlatformFilter(o)
+              return okPlatform && okText && okConf && monthOverlap && rangeOk && okDed
             })
             return applySort(filtered2)
           })()}
@@ -1649,107 +1708,109 @@ export default function OrdersPage() {
           scroll={{ x: 'max-content' }}
         />
       ) : (
-        <div ref={calRef} className="landlord-calendar">
-          <FullCalendar
-            plugins={[dayGridPlugin, interactionPlugin]}
-            initialView="dayGridMonth"
-            headerToolbar={{ start: '', center: '', end: '' }}
-            height="auto"
-            fixedWeekCount={true}
-            firstDay={0}
-            eventOrder="-duration,-start,-id"
-            eventOrderStrict={true}
-            editable={false}
-            selectable={false}
-            eventStartEditable={false}
-            eventDurationEditable={false}
-            initialDate={(calMonth || dayjs()).format('YYYY-MM-DD')}
-            dayHeaderContent={(args) => {
-              const labels = ['Su','Mo','Tu','We','Th','Fr','Sa']
-              const idx = dayjs(args.date).day()
-              return labels[idx]
-            }}
-            datesSet={(arg) => {
-              const start = (arg as any)?.view?.currentStart || arg.startStr
-              const d = dayjs(start)
-              gotoGuardRef.current = true
-              setCalMonth(d)
-              try { setCalApi((arg as any)?.view?.calendar || null) } catch {}
-            }}
-            eventDidMount={(info) => {
-              try {
-                info.el.removeAttribute('title')
-                info.el.setAttribute('aria-label', '')
-                info.el.setAttribute('tabindex', '-1')
-              } catch {}
-            }}
-            events={calendarEvents}
-            eventClassNames={(arg) => {
-              const k = platformKey((arg.event.extendedProps as any) || {})
-              const lane = laneMap[arg.event.id] ?? 0
-              return ['mz-evt', `mz-evt--${k}`, `mz-lane-${lane}`]
-            }}
-            eventContent={(arg) => {
-              const st = (arg.event.extendedProps as any)?.styleToken || { bg:'#eee', border:'#ddd', text:'#333' }
-              const wrapper = document.createElement('div')
-              wrapper.className = 'mz-booking flex items-center justify-between text-xs'
-              wrapper.style.borderWidth = '2px'
-              wrapper.style.borderStyle = 'solid'
-              wrapper.style.width = '100%'
-              wrapper.style.height = '28px'
-              wrapper.style.padding = '0 8px'
-              wrapper.style.boxSizing = 'border-box'
-              wrapper.style.alignItems = 'center'
-              const left = document.createElement('span')
-              left.className = 'bar-left'
-              left.style.overflow = 'hidden'
-              left.style.textOverflow = 'ellipsis'
-              left.style.whiteSpace = 'nowrap'
-              left.style.fontWeight = '500'
-              left.textContent = String((arg.event.extendedProps as any)?.order?.guest_name || '')
-              const right = document.createElement('span')
-              right.className = 'bar-right'
-              right.style.fontWeight = '600'
-              const order = ((arg.event.extendedProps as any)?.order as any) || {}
-              const total = getOrderTotalRent(order)
-              const cleaning = Number(order.__src_cleaning_fee ?? order.cleaning_fee ?? 0)
-              const ded = Number(order.internal_deduction_total ?? order.internal_deduction ?? 0)
-              const net = getLandlordNetIncomeForOrder(order)
-              const visibleNet = Math.max(0, Number((net - ded).toFixed(2)))
-              right.textContent = `$${money(visibleNet)}`
-              try {
-                const ci = String(order.checkin || '').slice(0, 10)
-                const co = String(order.checkout || '').slice(0, 10)
-                const nights = (ci && co) ? Math.max(0, dayjs(co).diff(dayjs(ci), 'day')) : Number(order.nights || 0)
-                const visibleTotal = Math.max(0, Number((total - ded).toFixed(2)))
-                const status = String(order.status || '')
-                const lines = [
-                  `客人：${String(order.guest_name || '')}`,
-                  `房号：${String(order.property_code || '')}`,
-                  `入住：${ci || '-'}`,
-                  `退房：${co || '-'}`,
-                  `晚数：${isFinite(nights) ? String(nights) : '-'}`,
-                  `订单总租金：$${money(visibleTotal)}`,
-                  `清洁费：$${money(cleaning)}`,
-                  `内部扣减：$${money(ded)}`,
-                  `房东净租金：$${money(visibleNet)}`,
-                  `状态：${status || '-'}`,
-                  `确认码：${String(order.confirmation_code || '')}`,
-                  `来源：${sourceLabel(order.source)}`,
-                ].filter(x => x.trim() !== '' && !x.endsWith('：'))
-                wrapper.title = lines.join('\n')
-              } catch {}
-              wrapper.appendChild(left)
-              wrapper.appendChild(right)
-              return { domNodes: [wrapper] }
-            }}
-            eventClick={(info) => {
-              const o = (info.event.extendedProps as any)?.order
-              if (o?.id) openDetail(String(o.id))
-            }}
-            dayMaxEvents={true}
-            eventOverlap={false}
-          />
+        <div className={styles.ordersCalendarViewport}>
+          <div ref={calRef} className={`${styles.ordersCalendarCanvas} landlord-calendar`}>
+            <FullCalendar
+              plugins={[dayGridPlugin, interactionPlugin]}
+              initialView="dayGridMonth"
+              headerToolbar={{ start: '', center: '', end: '' }}
+              height="auto"
+              fixedWeekCount={true}
+              firstDay={0}
+              eventOrder="-duration,-start,-id"
+              eventOrderStrict={true}
+              editable={false}
+              selectable={false}
+              eventStartEditable={false}
+              eventDurationEditable={false}
+              initialDate={(calMonth || dayjs()).format('YYYY-MM-DD')}
+              dayHeaderContent={(args) => {
+                const labels = ['Su','Mo','Tu','We','Th','Fr','Sa']
+                const idx = dayjs(args.date).day()
+                return labels[idx]
+              }}
+              datesSet={(arg) => {
+                const start = (arg as any)?.view?.currentStart || arg.startStr
+                const d = dayjs(start)
+                gotoGuardRef.current = true
+                setCalMonth(d)
+                try { setCalApi((arg as any)?.view?.calendar || null) } catch {}
+              }}
+              eventDidMount={(info) => {
+                try {
+                  info.el.removeAttribute('title')
+                  info.el.setAttribute('aria-label', '')
+                  info.el.setAttribute('tabindex', '-1')
+                } catch {}
+              }}
+              events={calendarEvents}
+              eventClassNames={(arg) => {
+                const k = platformKey((arg.event.extendedProps as any) || {})
+                const lane = laneMap[arg.event.id] ?? 0
+                return ['mz-evt', `mz-evt--${k}`, `mz-lane-${lane}`]
+              }}
+              eventContent={(arg) => {
+                const st = (arg.event.extendedProps as any)?.styleToken || { bg:'#eee', border:'#ddd', text:'#333' }
+                const wrapper = document.createElement('div')
+                wrapper.className = 'mz-booking flex items-center justify-between text-xs'
+                wrapper.style.borderWidth = '2px'
+                wrapper.style.borderStyle = 'solid'
+                wrapper.style.width = '100%'
+                wrapper.style.height = '28px'
+                wrapper.style.padding = '0 8px'
+                wrapper.style.boxSizing = 'border-box'
+                wrapper.style.alignItems = 'center'
+                const left = document.createElement('span')
+                left.className = 'bar-left'
+                left.style.overflow = 'hidden'
+                left.style.textOverflow = 'ellipsis'
+                left.style.whiteSpace = 'nowrap'
+                left.style.fontWeight = '500'
+                left.textContent = String((arg.event.extendedProps as any)?.order?.guest_name || '')
+                const right = document.createElement('span')
+                right.className = 'bar-right'
+                right.style.fontWeight = '600'
+                const order = ((arg.event.extendedProps as any)?.order as any) || {}
+                const total = getOrderTotalRent(order)
+                const cleaning = Number(order.__src_cleaning_fee ?? order.cleaning_fee ?? 0)
+                const ded = Number(order.internal_deduction_total ?? order.internal_deduction ?? 0)
+                const net = getLandlordNetIncomeForOrder(order)
+                const visibleNet = Math.max(0, Number((net - ded).toFixed(2)))
+                right.textContent = `$${money(visibleNet)}`
+                try {
+                  const ci = String(order.checkin || '').slice(0, 10)
+                  const co = String(order.checkout || '').slice(0, 10)
+                  const nights = (ci && co) ? Math.max(0, dayjs(co).diff(dayjs(ci), 'day')) : Number(order.nights || 0)
+                  const visibleTotal = Math.max(0, Number((total - ded).toFixed(2)))
+                  const status = String(order.status || '')
+                  const lines = [
+                    `客人：${String(order.guest_name || '')}`,
+                    `房号：${String(order.property_code || '')}`,
+                    `入住：${ci || '-'}`,
+                    `退房：${co || '-'}`,
+                    `晚数：${isFinite(nights) ? String(nights) : '-'}`,
+                    `订单总租金：$${money(visibleTotal)}`,
+                    `清洁费：$${money(cleaning)}`,
+                    `内部扣减：$${money(ded)}`,
+                    `房东净租金：$${money(visibleNet)}`,
+                    `状态：${status || '-'}`,
+                    `确认码：${String(order.confirmation_code || '')}`,
+                    `来源：${sourceLabel(order.source)}`,
+                  ].filter(x => x.trim() !== '' && !x.endsWith('：'))
+                  wrapper.title = lines.join('\n')
+                } catch {}
+                wrapper.appendChild(left)
+                wrapper.appendChild(right)
+                return { domNodes: [wrapper] }
+              }}
+              eventClick={(info) => {
+                const o = (info.event.extendedProps as any)?.order
+                if (o?.id) openDetail(String(o.id))
+              }}
+              dayMaxEvents={true}
+              eventOverlap={false}
+            />
+          </div>
         </div>
       )}
       <Modal
