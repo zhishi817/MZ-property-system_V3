@@ -22,7 +22,6 @@ const pgPoolConfig: any = {
 export const pgPool = conn ? new Pool(pgPoolConfig) : null
 export const hasPg = !!pgPool
 const afterCommitCallbacksKey = Symbol.for('mz_pg_after_commit_callbacks')
-const rawReleaseKey = Symbol.for('mz_pg_raw_release')
 const checkedOutClients = new Map<number, { id: number; at: number; stack: string }>()
 let checkedOutSeq = 0
 
@@ -37,8 +36,10 @@ function trackCheckedOutClient(client: any) {
   const id = ++checkedOutSeq
   const stack = String(new Error().stack || '').split('\n').slice(2, 10).join(' | ')
   checkedOutClients.set(id, { id, at: Date.now(), stack })
-  const rawRelease = client[rawReleaseKey] || client.release?.bind(client)
-  client[rawReleaseKey] = rawRelease
+  // pg-pool replaces client.release with a fresh single-use closure on every
+  // checkout. Always wrap that current closure; reusing an older one leaks the
+  // client after its first trip through the pool.
+  const rawRelease = client.release?.bind(client)
   let released = false
   client.release = (err?: any) => {
     if (released) return
