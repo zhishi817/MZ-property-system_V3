@@ -1,22 +1,62 @@
 .ordersCard {
-  margin: 24px;
+  --orders-action-button-width: 88px;
+  --orders-action-column-width: 408px;
+  margin: 16px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ordersCard :global(.ant-card-head) {
+  min-height: 64px;
+  padding: 0 20px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.ordersCard :global(.ant-card-head-wrapper) {
+  align-items: center;
+  gap: 16px;
+}
+
+.ordersCard :global(.ant-card-extra) {
+  min-width: 0;
+  padding: 12px 0;
 }
 
 .ordersCard :global(.ant-card-body) {
-  padding: 16px;
+  padding: 14px 20px 20px;
+  overflow: hidden;
+}
+
+.ordersTitle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: 0;
 }
 
 .ordersActionBar {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
+  max-width: 100%;
+}
+
+.ordersActionBar :global(.ant-btn) {
+  flex: 0 0 auto;
 }
 
 .ordersToolbar {
-  display: grid;
-  gap: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
   margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #eef2f7;
 }
 
 .ordersToolbarPrimary,
@@ -28,40 +68,139 @@
   gap: 8px;
 }
 
+.ordersToolbarPrimary {
+  flex: 0 0 auto;
+}
+
+.ordersToolbarPrimary :global(.ant-select) {
+  width: 220px;
+}
+
+.ordersToolbarFilters {
+  flex: 1 1 760px;
+}
+
+.ordersCalendarFilters {
+  flex: 1 1 480px;
+}
+
 .ordersSearchInput {
-  width: 200px;
+  width: 160px;
+}
+
+.ordersPlatformSelect {
+  width: 150px;
+}
+
+.ordersJumpRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ordersJumpRow :global(.ant-picker) {
+  width: 156px;
+}
+
+.ordersRangePicker {
+  width: 240px;
 }
 
 .ordersPropertySelect {
   width: 220px;
 }
 
+.ordersTable :global(.ant-table) {
+  border-radius: 8px;
+}
+
+.ordersTable :global(.ant-table-thead > tr > th) {
+  background: #f8fafc;
+  color: #334155;
+  font-weight: 600;
+}
+
+.ordersTable :global(.ant-table-tbody > tr:hover > td) {
+  background: #f8fbff;
+}
+
+.ordersRowActions {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: var(--orders-action-button-width);
+  justify-content: start;
+  gap: 8px;
+  width: max-content;
+  max-width: 100%;
+}
+
+.ordersRowActions :global(.ant-btn) {
+  width: var(--orders-action-button-width);
+  height: 34px;
+  padding-inline: 0;
+  text-align: center;
+}
+
+.ordersCalendarViewport {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 8px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ordersCalendarCanvas {
+  min-width: 960px;
+}
+
 @media (max-width: 767px) {
   .ordersCard {
-    margin: 8px 0;
+    --orders-action-column-width: 216px;
+    margin: 8px;
+  }
+
+  .ordersCard :global(.ant-card-head) {
+    min-height: 56px;
+    padding: 0 12px;
+  }
+
+  .ordersCard :global(.ant-card-head-wrapper) {
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .ordersCard :global(.ant-card-extra) {
+    width: 100%;
+    padding-top: 0;
   }
 
   .ordersCard :global(.ant-card-body) {
-    padding: 16px;
+    padding: 12px;
+  }
+
+  .ordersTitle {
+    min-height: 32px;
+    font-size: 22px;
   }
 
   .ordersActionBar {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    justify-content: stretch;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding-bottom: 4px;
     width: 100%;
+    scrollbar-width: thin;
   }
 
   .ordersActionBar :global(.ant-btn) {
-    width: 100%;
-  }
-
-  .ordersActionWide {
-    grid-column: 1 / -1;
+    width: auto;
   }
 
   .ordersToolbar {
-    gap: 10px;
+    display: grid;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
   }
 
   .ordersToolbarPrimary {
@@ -71,7 +210,7 @@
   }
 
   .ordersToolbarPrimary :global(.ant-radio-group) {
-    width: 100%;
+    width: auto;
   }
 
   .ordersToolbarPrimary :global(.ant-select) {
@@ -81,13 +220,15 @@
   .ordersToolbarFilters,
   .ordersCalendarFilters {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
+    gap: 8px;
   }
 
   .ordersSearchInput,
+  .ordersPlatformSelect,
   .ordersPropertySelect,
-  .ordersToolbarFilters :global(.ant-picker),
+  .ordersRangePicker,
   .ordersCalendarFilters :global(.ant-picker),
   .ordersCalendarFilters :global(.ant-select) {
     width: 100% !important;
@@ -98,6 +239,7 @@
     grid-template-columns: minmax(0, auto) minmax(0, 1fr);
     gap: 8px;
     width: 100%;
+    grid-column: 1 / -1;
   }
 
   .ordersJumpRow :global(.ant-btn),
@@ -112,5 +254,15 @@
   .ordersToolbarFilters :global(.ant-checkbox-wrapper) {
     align-self: center;
     margin-top: 2px;
+  }
+
+  .ordersRowActions {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(2, var(--orders-action-button-width));
+    width: calc(var(--orders-action-button-width) * 2 + 8px);
+  }
+
+  .ordersCalendarCanvas {
+    min-width: 900px;
   }
 }

@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express'
 import jwt from 'jsonwebtoken'
+import { Pool, PoolClient } from 'pg'
 import { v4 as uuid } from 'uuid'
 import { hasPg, pgPool } from '../dbAdapter'
 
@@ -80,6 +81,57 @@ let schemaEnsured = false
 let schemaEnsuring: Promise<void> | null = null
 let listenerStarted = false
 let listenerStarting: Promise<void> | null = null
+let listenerPool: Pool | null = null
+let listenerClient: PoolClient | null = null
+let listenerRetryTimer: NodeJS.Timeout | null = null
+
+function buildListenerConnectionString() {
+  const direct = String(process.env.DATABASE_DIRECT_URL || '').trim()
+  if (direct) return direct
+  const pooled = String(process.env.DATABASE_URL || '').trim()
+  if (!pooled) return ''
+  try {
+    const url = new URL(pooled)
+    if (/\.neon\.tech$/i.test(url.hostname)) {
+      url.hostname = url.hostname.replace(/-pooler(?=\.)/i, '')
+    }
+    return url.toString()
+  } catch {
+    return pooled
+  }
+}
+
+function getListenerPool() {
+  if (listenerPool) return listenerPool
+  const connectionString = buildListenerConnectionString()
+  if (!connectionString) return null
+  listenerPool = new Pool({
+    connectionString,
+    ssl: { rejectUnauthorized: false },
+    max: 1,
+    idleTimeoutMillis: Number(process.env.PG_LISTENER_IDLE_TIMEOUT_MS || 30000),
+    connectionTimeoutMillis: Number(process.env.PG_LISTENER_CONN_TIMEOUT_MS || process.env.PG_CONN_TIMEOUT_MS || 10000),
+    keepAlive: true,
+    application_name: 'mz-work-task-events-listener',
+  })
+  listenerPool.on('error', (error) => {
+    try { console.error(`[work-task-events] listener_pool_error message=${String(error?.message || '')}`) } catch {}
+  })
+  return listenerPool
+}
+
+function scheduleListenerRestart() {
+  if (!clients.size || listenerRetryTimer) return
+  const delay = Math.max(1000, Number(process.env.PG_LISTENER_RETRY_MS || 5000))
+  listenerRetryTimer = setTimeout(() => {
+    listenerRetryTimer = null
+    void startWorkTaskEventListener().catch((error: any) => {
+      try { console.error(`[work-task-events] listener_restart_failed message=${String(error?.message || '')}`) } catch {}
+      scheduleListenerRestart()
+    })
+  }, delay)
+  try { listenerRetryTimer.unref?.() } catch {}
+}
 
 function roleNamesOf(user: any) {
   const values = Array.isArray(user?.roles) ? user.roles : []
@@ -237,8 +289,23 @@ function broadcastEvent(event: WorkTaskEvent) {
 }
 
 async function startListenerInternal() {
-  if (!hasPg || !pgPool) return
-  const client = await pgPool.connect()
+  if (!hasPg || !pgPool || !clients.size) return
+  const pool = getListenerPool()
+  if (!pool) return
+  const client = await pool.connect()
+  listenerClient = client
+  let released = false
+  const release = (error?: Error) => {
+    if (released) return
+    released = true
+    listenerStarted = false
+    listenerStarting = null
+    if (listenerClient === client) listenerClient = null
+    try { client.removeAllListeners('notification') } catch {}
+    try { client.removeAllListeners('error') } catch {}
+    try { client.removeAllListeners('end') } catch {}
+    try { client.release(error) } catch {}
+  }
   const listen = async () => {
     await client.query('LISTEN work_task_events')
   }
@@ -252,19 +319,26 @@ async function startListenerInternal() {
       try { console.error(`[work-task-events] broadcast_failed message=${String(error?.message || '')}`) } catch {}
     }
   })
-  client.on('error', async (error: any) => {
+  client.once('error', (error: any) => {
     try { console.error(`[work-task-events] listener_error message=${String(error?.message || '')}`) } catch {}
-    listenerStarted = false
-    listenerStarting = null
-    try { client.release() } catch {}
-    setTimeout(() => { void startWorkTaskEventListener() }, 1000)
+    release(error instanceof Error ? error : undefined)
+    scheduleListenerRestart()
   })
-  await listen()
-  listenerStarted = true
+  client.once('end', () => {
+    release()
+    scheduleListenerRestart()
+  })
+  try {
+    await listen()
+    listenerStarted = true
+  } catch (error: any) {
+    release(error instanceof Error ? error : undefined)
+    throw error
+  }
 }
 
 export async function startWorkTaskEventListener() {
-  if (!hasPg || !pgPool) return
+  if (!hasPg || !pgPool || !clients.size) return
   await ensureWorkTaskEventSchema()
   if (listenerStarted) return
   if (listenerStarting) return listenerStarting
@@ -278,6 +352,21 @@ export async function startWorkTaskEventListener() {
       throw error
     })
   return listenerStarting
+}
+
+async function stopWorkTaskEventListener() {
+  if (listenerRetryTimer) clearTimeout(listenerRetryTimer)
+  listenerRetryTimer = null
+  listenerStarted = false
+  listenerStarting = null
+  const client = listenerClient
+  listenerClient = null
+  if (!client) return
+  try { await client.query('UNLISTEN work_task_events') } catch {}
+  try { client.removeAllListeners('notification') } catch {}
+  try { client.removeAllListeners('error') } catch {}
+  try { client.removeAllListeners('end') } catch {}
+  try { client.release() } catch {}
 }
 
 export async function emitWorkTaskEvent(input: EmitWorkTaskEventInput, client?: DbExecutor) {
@@ -346,7 +435,6 @@ export async function streamWorkTaskEvents(req: Request, res: Response) {
   if (!user) return res.status(401).json({ message: 'unauthorized' })
 
   await ensureWorkTaskEventSchema()
-  await startWorkTaskEventListener()
 
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
@@ -361,10 +449,15 @@ export async function streamWorkTaskEvents(req: Request, res: Response) {
 
   const client: SSEClient = { req, res, user, pingTimer }
   clients.add(client)
+  void startWorkTaskEventListener().catch((error: any) => {
+    try { console.error(`[work-task-events] listener_start_failed message=${String(error?.message || '')}`) } catch {}
+    scheduleListenerRestart()
+  })
 
   const cleanup = () => {
     clearInterval(pingTimer)
     clients.delete(client)
+    if (!clients.size) void stopWorkTaskEventListener()
   }
   req.on('close', cleanup)
   req.on('end', cleanup)

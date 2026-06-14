@@ -321,6 +321,7 @@ async function ensureSchemasOnce() {
     try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;') } catch {}
     try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;') } catch {}
     try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS created_by text;') } catch {}
+    try { await pgPool.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_at timestamptz;') } catch {}
 
     try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;') } catch {}
     try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS month_key text;') } catch {}
@@ -334,8 +335,11 @@ async function ensureSchemasOnce() {
     try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS amount_confirmed boolean DEFAULT false;') } catch {}
     try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS amount_confirmed_by text;') } catch {}
     try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS amount_confirmed_at timestamptz;') } catch {}
+    try { await pgPool.query('ALTER TABLE property_expenses ADD COLUMN IF NOT EXISTS deleted_at timestamptz;') } catch {}
     try { await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_property_expenses_fixed_expense_month_key ON property_expenses(fixed_expense_id, month_key) WHERE ${RECURRING_SNAPSHOT_CONFLICT_WHERE};`) } catch {}
     try { await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_fixed_month ON company_expenses(fixed_expense_id, month_key) WHERE ${RECURRING_SNAPSHOT_CONFLICT_WHERE};`) } catch {}
+    try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_property_expenses_month_fixed_lookup ON property_expenses(month_key, fixed_expense_id) WHERE ${RECURRING_SNAPSHOT_CONFLICT_WHERE};`) } catch {}
+    try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_company_expenses_month_fixed_lookup ON company_expenses(month_key, fixed_expense_id) WHERE ${RECURRING_SNAPSHOT_CONFLICT_WHERE};`) } catch {}
   })().catch((e) => {
     schemaEnsured = null
     throw e
@@ -862,6 +866,61 @@ router.get('/property-payables/vendors', requirePerm(PROPERTY_PAYABLE_MENU_PERM)
   }
 })
 
+router.get('/payments/month-snapshots', requireAnyPerm(['recurring_payments.view', 'finance.tx.write']), async (req, res) => {
+  if (!hasPg) return res.status(500).json({ message: 'pg not available' })
+  const monthKey = String((req.query as any)?.month_key || currentMonthKeyAU()).trim()
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) return res.status(400).json({ message: 'invalid month_key' })
+  try {
+    await ensureSchemasOnce()
+    const [propertyRows, companyRows] = await Promise.all([
+      pgPool!.query(
+        `SELECT id,
+                fixed_expense_id,
+                month_key,
+                due_date,
+                paid_date,
+                status,
+                property_id,
+                category,
+                amount,
+                'property_expenses' AS expense_resource
+           FROM property_expenses
+          WHERE month_key = $1
+            AND fixed_expense_id IS NOT NULL
+            AND fixed_expense_id <> ''
+            AND deleted_at IS NULL
+          ORDER BY due_date ASC NULLS LAST, paid_date DESC NULLS LAST`,
+        [monthKey]
+      ),
+      pgPool!.query(
+        `SELECT id,
+                fixed_expense_id,
+                month_key,
+                due_date,
+                paid_date,
+                status,
+                NULL::text AS property_id,
+                category,
+                amount,
+                'company_expenses' AS expense_resource
+           FROM company_expenses
+          WHERE month_key = $1
+            AND fixed_expense_id IS NOT NULL
+            AND fixed_expense_id <> ''
+            AND deleted_at IS NULL
+          ORDER BY due_date ASC NULLS LAST, paid_date DESC NULLS LAST`,
+        [monthKey]
+      ),
+    ])
+    return res.json([...(propertyRows.rows || []), ...(companyRows.rows || [])])
+  } catch (e: any) {
+    const msg = String(e?.message || 'failed to load recurring snapshots')
+    if (/timeout exceeded when trying to connect/i.test(msg)) return res.status(503).json({ message: msg })
+    if (/lock timeout/i.test(msg)) return res.status(503).json({ message: msg })
+    return res.status(500).json({ message: msg })
+  }
+})
+
 router.post('/payments', requireAnyPerm(['recurring_payments.write', 'finance.tx.write']), async (req, res) => {
   if (!hasPg) return res.status(500).json({ message: 'pg not available' })
   const parsed = createPaymentSchema.safeParse(req.body || {})
@@ -1323,8 +1382,28 @@ router.post('/payments/:id/mark-paid', requireAnyPerm(['recurring_payments.write
       })
       let expenseId = rowUp?.id ? String(rowUp.id) : ''
       if (!expenseId) return { failed: true }
-      await client.query(`UPDATE ${table} SET status = 'paid', paid_date = $1 WHERE id = $2`, [paidDate, expenseId])
-      return { ok: true, expense_id: expenseId, month_key: monthKey }
+      const expenseUpd = await client.query(`UPDATE ${table} SET status = 'paid', paid_date = $1 WHERE id = $2 RETURNING *`, [paidDate, expenseId])
+      const rawFreq = Number(payment.frequency_months || 1)
+      const freq = Number.isFinite(rawFreq) ? Math.max(1, Math.min(24, rawFreq)) : 1
+      const nextMonthKey = indexToMonthKey(monthKeyToIndex(monthKey) + freq)
+      const nextDueISO = payment.payment_type === 'rent_deduction' ? `${nextMonthKey}-01` : computeDueISO(nextMonthKey, dueDay)
+      const templateUpd = await client.query(
+        `UPDATE recurring_payments
+            SET last_paid_date = $1,
+                next_due_date = $2,
+                status = 'active',
+                updated_at = now()
+          WHERE id = $3
+          RETURNING *`,
+        [paidDate, nextDueISO, id]
+      )
+      return {
+        ok: true,
+        expense_id: expenseId,
+        month_key: monthKey,
+        row: expenseUpd.rows?.[0] || null,
+        template: templateUpd.rows?.[0] || null,
+      }
     })
     if ((result as any)?.notFound) return res.status(404).json({ message: 'not found' })
     if ((result as any)?.forbidden) return res.status(403).json({ message: 'forbidden' })

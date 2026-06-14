@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { requireAnyPerm, requireResourcePerm } from '../auth'
-import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
+import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction, pgRunWithAdvisoryLock } from '../dbAdapter'
 import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } from '../fingerprint'
 import { db, addAudit } from '../store'
 import { normalizeUrlList } from '../lib/normalizeUrlList'
@@ -1559,17 +1559,11 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
         const fpFuzzy = buildExpenseFingerprint(payload, 'fuzzy')
         const isFixedExpenseSnapshot = !!(payload.fixed_expense_id && payload.month_key)
         try {
-          const { pgPool } = require('../dbAdapter')
           if (pgPool) {
+            const pool = pgPool
             const key1 = 202601
             const key2 = Math.abs(require('xxhashjs').h32(fpExact, 0xABCD).toNumber() || 0)
-            const lock = await pgPool.query('SELECT pg_try_advisory_lock($1, $2) AS ok', [key1, key2])
-            const ok = !!(lock?.rows?.[0]?.ok)
-            if (!ok) {
-              await addDedupLog({ resource: 'property_expenses', fingerprint: fpExact, mode: 'exact', result: 'locked', operator_id: (req as any).user?.sub || null, latency_ms: Date.now() - started })
-              return res.status(409).json({ message: '创建冲突：资源锁定中' })
-            }
-            try {
+            const lockedRun = await pgRunWithAdvisoryLock([key1, key2], 'crud:property-expenses:dedupe', async () => {
               if (!isFixedExpenseSnapshot && await hasFingerprint(fpExact)) {
                 await addDedupLog({ resource: 'property_expenses', fingerprint: fpExact, mode: 'exact', result: 'hit', operator_id: (req as any).user?.sub || null, latency_ms: Date.now() - started })
                 return res.status(409).json({ message: '重复记录：指纹存在（24小时内）', fingerprint: fpExact })
@@ -1583,15 +1577,19 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
               }
               const occ = String(payload.paid_date || payload.occurred_at || '')
               const sql = `SELECT id FROM property_expenses WHERE property_id=$1 AND category=$2 AND abs(amount - $3) <= 1 AND occurred_at BETWEEN (to_date($4,'YYYY-MM-DD') - interval '1 day') AND (to_date($4,'YYYY-MM-DD') + interval '1 day') LIMIT 1`
-              const rs = await pgPool.query(sql, [payload.property_id, payload.category, Number(payload.amount||0), occ.slice(0,10)])
+              const rs = await pool.query(sql, [payload.property_id, payload.category, Number(payload.amount||0), occ.slice(0,10)])
               if (!isFixedExpenseSnapshot && rs.rowCount) {
                 await addDedupLog({ resource: 'property_expenses', fingerprint: fpFuzzy, mode: 'fuzzy', result: 'hit', operator_id: (req as any).user?.sub || null, reasons: ['fuzzy_window'], latency_ms: Date.now() - started })
                 return res.status(409).json({ message: '重复记录：模糊匹配（±1天、±$1）', fingerprint: fpFuzzy, existing_id: rs.rows[0]?.id })
               }
               if (!isFixedExpenseSnapshot) await setFingerprint(fpExact, 24 * 3600)
-            } finally {
-              try { await pgPool.query('SELECT pg_advisory_unlock($1, $2)', [key1, key2]) } catch {}
+              return null
+            })
+            if (!lockedRun.locked) {
+              await addDedupLog({ resource: 'property_expenses', fingerprint: fpExact, mode: 'exact', result: 'locked', operator_id: (req as any).user?.sub || null, latency_ms: Date.now() - started })
+              return res.status(409).json({ message: '创建冲突：资源锁定中' })
             }
+            if (lockedRun.result) return lockedRun.result
           }
         } catch {}
       }
