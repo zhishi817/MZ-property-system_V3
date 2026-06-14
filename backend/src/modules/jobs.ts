@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { requirePerm, allowCronTokenOrPerm } from '../auth'
-import { hasPg, pgPool, pgSelect, pgInsertOnConflictDoNothing, pgInsert, pgRunInTransaction } from '../dbAdapter'
+import { hasPg, pgPool, pgSelect, pgInsertOnConflictDoNothing, pgInsert, pgRunInTransaction, pgRunWithAdvisoryLock } from '../dbAdapter'
 import { v4 as uuid } from 'uuid'
 import { PoolClient } from 'pg'
 
@@ -1637,9 +1637,8 @@ router.get('/email-sync-status', requirePerm('order.manage'), async (_req, res) 
       const url = process.env.DATABASE_URL || ''
       if ((process.env.NODE_ENV || 'development') !== 'production' && url) { const u = new URL(url); console.log(`[Jobs Status] pg_host=${u.hostname} db=${(u.pathname||'').replace(/^\//,'')}`) }
       const ck = 918273645
-      const test = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [ck])
-      const ok = !!(test?.rows?.[0]?.ok)
-      if (ok) { try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [ck]) } catch {} ; lockHeld = false } else { lockHeld = true }
+      const test = await pgRunWithAdvisoryLock(ck, 'email-sync-status:lock-probe', async () => undefined)
+      lockHeld = !test.locked
     } catch {}
     const out: any[] = []
     for (const s of (accRows || [])) {

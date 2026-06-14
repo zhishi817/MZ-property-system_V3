@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { db, FinanceTransaction, Payout, CompanyPayout, PropertyRevenueStatus, addAudit } from '../store'
-import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction } from '../dbAdapter'
+import { hasPg, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction, pgRunWithAdvisoryLock } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
 import { hasR2, r2Upload } from '../r2'
@@ -1143,10 +1143,7 @@ router.post('/company-incomes/backfill', requireAnyPerm(['finance.tx.write','com
     const dryRun = String(((req.body || {}).dry_run) ?? ((req.query || {}) as any).dry_run ?? '').toLowerCase() === 'true' || String(((req.body || {}).dry_run) ?? ((req.query || {}) as any).dry_run ?? '') === '1'
     if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ message: 'invalid month format' })
     const lockKey = 91000000 + Number(month.replace('-', ''))
-    const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey])
-    const ok = !!(lock?.rows?.[0]?.ok)
-    if (!ok) return res.status(409).json({ message: 'backfill already running', reason: 'locked', month })
-    try {
+    const lockedRun = await pgRunWithAdvisoryLock(lockKey, `company-incomes:backfill:${month}`, async () => {
       const y = Number(month.slice(0,4)), m = Number(month.slice(5,7))
       const start = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0,10)
       const endExclusive = new Date(Date.UTC(y, m, 1)).toISOString().slice(0,10)
@@ -1300,9 +1297,9 @@ router.post('/company-incomes/backfill', requireAnyPerm(['finance.tx.write','com
       })
 
       return res.status(201).json(result)
-    } finally {
-      try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [lockKey]) } catch {}
-    }
+    })
+    if (!lockedRun.locked) return res.status(409).json({ message: 'backfill already running', reason: 'locked', month })
+    return lockedRun.result
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'backfill_failed' })
   }

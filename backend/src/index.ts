@@ -83,7 +83,7 @@ if (dbRole !== 'none') {
     throw new Error('❌ PROD backend cannot connect to DEV database')
   }
 }
-import { hasPg, pgPool } from './dbAdapter'
+import { getPgPoolStats, hasPg, pgPool, pgRunWithAdvisoryLock } from './dbAdapter'
 // Supabase removed
 import fs from 'fs'
 const isProd = process.env.NODE_ENV === 'production'
@@ -162,11 +162,15 @@ app.options('*', cors(corsOpts))
 const jsonLimit = String(process.env.JSON_BODY_LIMIT || '25mb')
 app.use(express.json({ limit: jsonLimit }))
 app.use(express.urlencoded({ extended: true, limit: jsonLimit }))
+morgan.token('url', (req: any) => {
+  const raw = String(req?.originalUrl || req?.url || '')
+  return raw.replace(/([?&](?:access_token|token)=)[^&\s]*/gi, '$1[REDACTED]')
+})
 app.use(morgan('dev'))
 // Health endpoints should NOT require auth
 app.get('/health', (req, res) => { res.json({ status: 'ok' }) })
 app.get('/health/db', async (_req, res) => {
-  const result: any = { status: 'ok', appEnv, databaseRole: dbRole, pg: false }
+  const result: any = { status: 'ok', appEnv, databaseRole: dbRole, pg: false, pool: getPgPoolStats() }
   try {
     const url = process.env.DATABASE_URL || ''
     if (url) {
@@ -181,10 +185,12 @@ app.get('/health/db', async (_req, res) => {
       const r = await pgPool.query('SELECT current_database() as db, 1 as ok')
       result.pg = !!(r && r.rows && r.rows[0] && r.rows[0].ok)
       result.pg_database = result.pg_database || (r.rows?.[0]?.db)
+      result.pool = getPgPoolStats()
     }
   } catch (e: any) {
     result.pg = false
     result.pg_error = e?.message
+    result.pool = getPgPoolStats()
   }
   res.json(result)
 })
@@ -195,11 +201,13 @@ app.get('/health/ready', async (_req, res) => {
       status: 'ok',
       warmup: startupWarmupState,
       pg: false,
+      pool: getPgPoolStats(),
       latency_ms: Date.now() - started,
     }
     if (pgPool) {
       const r = await pgPool.query('SELECT 1 AS ok')
       result.pg = !!(r?.rows?.[0]?.ok)
+      result.pool = getPgPoolStats()
       if (!result.pg) return res.status(503).json(result)
     }
     result.latency_ms = Date.now() - started
@@ -209,6 +217,7 @@ app.get('/health/ready', async (_req, res) => {
       status: 'error',
       message: String(e?.message || ''),
       warmup: startupWarmupState,
+      pool: getPgPoolStats(),
       latency_ms: Date.now() - started,
     })
   }
@@ -439,14 +448,13 @@ function onServerListening() {
         const started = Date.now()
         try {
           const key = 987654321
-          const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [key])
-          const ok = !!(lock?.rows?.[0]?.ok)
-          if (!ok) { console.log('[email-sync][schedule] skipped_reason=already_running'); return }
-          const res = await runEmailSyncJob({ mode: 'incremental', trigger_source: 'schedule', max_per_run: Math.min(50, Number(process.env.EMAIL_SYNC_MAX_PER_RUN || 50)), batch_size: Math.min(20, Number(process.env.EMAIL_SYNC_BATCH_SIZE || 20)), concurrency: Math.min(1, Number(process.env.EMAIL_SYNC_CONCURRENCY || 1)), batch_sleep_ms: Number(process.env.EMAIL_SYNC_BATCH_SLEEP_MS || 0), min_interval_ms: Number(process.env.EMAIL_SYNC_MIN_INTERVAL_MS || 60000) })
-          const dur = Date.now() - started
-          const s = (res?.stats || {})
-          console.log(`[email-sync][schedule] scanned=${s.scanned||0} inserted=${s.inserted||0} skipped=${s.skipped_duplicate||0} failed=${s.failed||0} duration_ms=${dur}`)
-          try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [key]) } catch {}
+          const lockedRun = await pgRunWithAdvisoryLock(key, 'email-sync:schedule', async () => {
+            const res = await runEmailSyncJob({ mode: 'incremental', trigger_source: 'schedule', max_per_run: Math.min(50, Number(process.env.EMAIL_SYNC_MAX_PER_RUN || 50)), batch_size: Math.min(20, Number(process.env.EMAIL_SYNC_BATCH_SIZE || 20)), concurrency: Math.min(1, Number(process.env.EMAIL_SYNC_CONCURRENCY || 1)), batch_sleep_ms: Number(process.env.EMAIL_SYNC_BATCH_SLEEP_MS || 0), min_interval_ms: Number(process.env.EMAIL_SYNC_MIN_INTERVAL_MS || 60000) })
+            const dur = Date.now() - started
+            const s = (res?.stats || {})
+            console.log(`[email-sync][schedule] scanned=${s.scanned||0} inserted=${s.inserted||0} skipped=${s.skipped_duplicate||0} failed=${s.failed||0} duration_ms=${dur}`)
+          })
+          if (!lockedRun.locked) console.log('[email-sync][schedule] skipped_reason=already_running')
         } catch (e: any) {
           console.error(`[email-sync][schedule] error message=${String(e?.message || '')}`)
         }
@@ -458,40 +466,38 @@ function onServerListening() {
       const wd = cron.schedule('*/10 * * * *', async () => {
         try {
           const key = 987654321
-          const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [key])
-          const ok = !!(lock?.rows?.[0]?.ok)
-          if (!ok) return
-          // collect recent failed uids per account; exclude duplicates/already_running
-          const sql = `
-            WITH cand AS (
-              SELECT account, uid FROM email_orders_raw WHERE status IN ('failed','unmatched_property') AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
-              UNION ALL
-              SELECT account, uid FROM email_sync_items WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
-            )
-            SELECT DISTINCT c.account, c.uid
-            FROM cand c
-            WHERE NOT EXISTS (
-              SELECT 1 FROM email_sync_items e
-              WHERE e.account = c.account AND e.uid = c.uid AND e.status='skipped' AND e.reason IN ('duplicate','already_running','db_error')
-            )
-            ORDER BY c.account DESC, c.uid DESC
-            LIMIT 200`
-          const rs = await pgPool!.query(sql)
-          const groups: Record<string, number[]> = {}
-          for (const r of (rs?.rows || [])) {
-            const acc = String(r.account || '')
-            const uid = Number(r.uid || 0)
-            if (!acc || !uid) continue
-            if (!groups[acc]) groups[acc] = []
-            if (groups[acc].length < 50) groups[acc].push(uid)
-          }
-          for (const acc of Object.keys(groups)) {
-            const uids = groups[acc]
-            if (!uids.length) continue
-            console.log(`[email-sync][watchdog] retry account=${acc} uids=${uids.length}`)
-            try { await runEmailSyncJob({ mode: 'incremental', trigger_source: 'watchdog_retry_failed', account: acc, uids, min_interval_ms: 0, max_per_run: uids.length, batch_size: Math.min(10, uids.length), concurrency: 1, batch_sleep_ms: 0 }) } catch (e: any) { console.error(`[email-sync][watchdog] account=${acc} error=${String(e?.message || '')}`) }
-          }
-          try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [key]) } catch {}
+          await pgRunWithAdvisoryLock(key, 'email-sync:watchdog', async () => {
+            // collect recent failed uids per account; exclude duplicates/already_running
+            const sql = `
+              WITH cand AS (
+                SELECT account, uid FROM email_orders_raw WHERE status IN ('failed','unmatched_property') AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
+                UNION ALL
+                SELECT account, uid FROM email_sync_items WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
+              )
+              SELECT DISTINCT c.account, c.uid
+              FROM cand c
+              WHERE NOT EXISTS (
+                SELECT 1 FROM email_sync_items e
+                WHERE e.account = c.account AND e.uid = c.uid AND e.status='skipped' AND e.reason IN ('duplicate','already_running','db_error')
+              )
+              ORDER BY c.account DESC, c.uid DESC
+              LIMIT 200`
+            const rs = await pgPool!.query(sql)
+            const groups: Record<string, number[]> = {}
+            for (const r of (rs?.rows || [])) {
+              const acc = String(r.account || '')
+              const uid = Number(r.uid || 0)
+              if (!acc || !uid) continue
+              if (!groups[acc]) groups[acc] = []
+              if (groups[acc].length < 50) groups[acc].push(uid)
+            }
+            for (const acc of Object.keys(groups)) {
+              const uids = groups[acc]
+              if (!uids.length) continue
+              console.log(`[email-sync][watchdog] retry account=${acc} uids=${uids.length}`)
+              try { await runEmailSyncJob({ mode: 'incremental', trigger_source: 'watchdog_retry_failed', account: acc, uids, min_interval_ms: 0, max_per_run: uids.length, batch_size: Math.min(10, uids.length), concurrency: 1, batch_sleep_ms: 0 }) } catch (e: any) { console.error(`[email-sync][watchdog] account=${acc} error=${String(e?.message || '')}`) }
+            }
+          })
         } catch (e: any) { console.error(`[email-sync][watchdog] error=${String(e?.message || '')}`) }
       }, { scheduled: true })
       wd.start()
@@ -791,13 +797,11 @@ function onServerListening() {
           const started = Date.now()
           const lockKey = 975319751
           try {
-            const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey])
-            const ok = !!(lock?.rows?.[0]?.ok)
-            if (!ok) return
-            const r = await runCustomerServiceMemoReminderJob()
-            const dur = Date.now() - started
-            console.log(`[customer-service-memo-reminder][schedule] ok duration_ms=${dur} processed=${Number((r as any)?.processed || 0)} sent=${Number((r as any)?.sent || 0)}`)
-            try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [lockKey]) } catch {}
+            await pgRunWithAdvisoryLock(lockKey, 'customer-service-memo-reminder', async () => {
+              const r = await runCustomerServiceMemoReminderJob()
+              const dur = Date.now() - started
+              console.log(`[customer-service-memo-reminder][schedule] ok duration_ms=${dur} processed=${Number((r as any)?.processed || 0)} sent=${Number((r as any)?.sent || 0)}`)
+            })
           } catch (e: any) {
             console.error(`[customer-service-memo-reminder][schedule] error message=${String(e?.message || '')}`)
           }
@@ -843,14 +847,12 @@ function onServerListening() {
           async () => {
             const started = Date.now()
             try {
-              const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [s.lockKey])
-              const ok = !!(lock?.rows?.[0]?.ok)
-              if (!ok) return
-              const r = await runKeyUploadSlaCheck(s.position, s.level)
-              const dur = Date.now() - started
-              if ((r as any)?.skipped) console.log(`[key-upload-sla][schedule] skipped_reason=${String((r as any).skipped)} position=${s.position} level=${s.level}`)
-              else console.log(`[key-upload-sla][schedule] ok position=${s.position} level=${s.level} duration_ms=${dur} created=${String((r as any)?.created || 0)}`)
-              try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [s.lockKey]) } catch {}
+              await pgRunWithAdvisoryLock(s.lockKey, `key-upload-sla:${s.position}:${s.level}`, async () => {
+                const r = await runKeyUploadSlaCheck(s.position, s.level)
+                const dur = Date.now() - started
+                if ((r as any)?.skipped) console.log(`[key-upload-sla][schedule] skipped_reason=${String((r as any).skipped)} position=${s.position} level=${s.level}`)
+                else console.log(`[key-upload-sla][schedule] ok position=${s.position} level=${s.level} duration_ms=${dur} created=${String((r as any)?.created || 0)}`)
+              })
             } catch (e: any) {
               console.error(`[key-upload-sla][schedule] error position=${s.position} level=${s.level} message=${String(e?.message || '')}`)
             }
@@ -897,14 +899,12 @@ function onServerListening() {
             const started = Date.now()
             try {
               const lockKey = 246802468 + Number(s.at.replace(':', ''))
-              const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey])
-              const ok = !!(lock?.rows?.[0]?.ok)
-              if (!ok) return
-              const r = await runKeyUploadReminder({ at: s.at })
-              const dur = Date.now() - started
-              if ((r as any)?.skipped) console.log(`[key-upload-reminder][schedule] skipped_reason=${String((r as any).skipped)}`)
-              else console.log(`[key-upload-reminder][schedule] ok at=${s.at} duration_ms=${dur}`)
-              try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [lockKey]) } catch {}
+              await pgRunWithAdvisoryLock(lockKey, `key-upload-reminder:${s.at}`, async () => {
+                const r = await runKeyUploadReminder({ at: s.at })
+                const dur = Date.now() - started
+                if ((r as any)?.skipped) console.log(`[key-upload-reminder][schedule] skipped_reason=${String((r as any).skipped)}`)
+                else console.log(`[key-upload-reminder][schedule] ok at=${s.at} duration_ms=${dur}`)
+              })
             } catch (e: any) {
               console.error(`[key-upload-reminder][schedule] error at=${s.at} message=${String(e?.message || '')}`)
             }
@@ -948,14 +948,12 @@ function onServerListening() {
           async () => {
             const started = Date.now()
             try {
-              const lock = await pgPool!.query('SELECT pg_try_advisory_lock($1) AS ok', [s.lockKey])
-              const ok = !!(lock?.rows?.[0]?.ok)
-              if (!ok) return
-              const r = s.kind === 'manager' ? await runDayEndHandoverManagerReminder({ at: s.at }) : await runDayEndHandoverReminder({ at: s.at })
-              const dur = Date.now() - started
-              if ((r as any)?.skipped) console.log(`[day-end-handover-reminder][schedule] skipped_reason=${String((r as any).skipped)} at=${s.at} target=${s.kind}`)
-              else console.log(`[day-end-handover-reminder][schedule] ok at=${s.at} target=${s.kind} duration_ms=${dur} recipients=${String((r as any)?.recipients || 0)}`)
-              try { await pgPool!.query('SELECT pg_advisory_unlock($1)', [s.lockKey]) } catch {}
+              await pgRunWithAdvisoryLock(s.lockKey, `day-end-handover-reminder:${s.at}:${s.kind}`, async () => {
+                const r = s.kind === 'manager' ? await runDayEndHandoverManagerReminder({ at: s.at }) : await runDayEndHandoverReminder({ at: s.at })
+                const dur = Date.now() - started
+                if ((r as any)?.skipped) console.log(`[day-end-handover-reminder][schedule] skipped_reason=${String((r as any).skipped)} at=${s.at} target=${s.kind}`)
+                else console.log(`[day-end-handover-reminder][schedule] ok at=${s.at} target=${s.kind} duration_ms=${dur} recipients=${String((r as any)?.recipients || 0)}`)
+              })
             } catch (e: any) {
               console.error(`[day-end-handover-reminder][schedule] error at=${s.at} target=${s.kind} message=${String(e?.message || '')}`)
             }
