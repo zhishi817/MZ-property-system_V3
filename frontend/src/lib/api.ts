@@ -211,9 +211,31 @@ export async function fetchWithTimeout(input: any, init?: any, options?: FetchTi
     if (extSignal.aborted) onAbort()
     else extSignal.addEventListener('abort', onAbort, { once: true } as any)
   }
-  const t = setTimeout(() => { try { ac.abort() } catch {} }, timeoutMs)
+  let timedOut = false
+  const t = setTimeout(() => {
+    timedOut = true
+    try {
+      ac.abort(new DOMException(`请求超时（超过 ${Math.round(timeoutMs / 1000)} 秒）`, 'TimeoutError'))
+    } catch {
+      try { ac.abort() } catch {}
+    }
+  }, timeoutMs)
   try {
     return await fetch(input, { ...(init || {}), signal: ac.signal })
+  } catch (error: any) {
+    const msg = String(error?.message || '')
+    const name = String(error?.name || '')
+    if (timedOut) {
+      throw withApiFailure(
+        buildApiError(`请求超时（超过 ${Math.round(timeoutMs / 1000)} 秒）`, { status: 408, timeout_ms: timeoutMs }),
+        'network_unavailable',
+        { status: 408, timeout_ms: timeoutMs },
+      )
+    }
+    if (name === 'AbortError' || /abort|aborted/i.test(msg)) {
+      throw withApiFailure(buildApiError('请求已中断，请重试', { status: 499 }), 'network_unavailable', { status: 499 })
+    }
+    throw error
   } finally {
     clearTimeout(t)
     if (extSignal) { try { extSignal.removeEventListener('abort', onAbort as any) } catch {} }

@@ -21,6 +21,15 @@ const SESSION_CACHE_TTL_MS = Number(process.env.SESSION_CACHE_TTL_MS || 15000)
 const SESSION_TOUCH_INTERVAL_MS = Number(process.env.SESSION_TOUCH_INTERVAL_MS || 60000)
 const PERM_CACHE_TTL_MS = Number(process.env.PERM_CACHE_TTL_MS || 5 * 60 * 1000)
 
+const DEFAULT_ROLE_PERMISSION_OVERLAYS: Record<string, string[]> = {
+  customer_service: [
+    'menu.cms',
+    'menu.cms.customer_service_manual.visible',
+    'cms_pages.view',
+    'cms_pages.write',
+  ],
+}
+
 function requestTraceId(req: Request) {
   return String((req as any)?.traceId || req.headers['x-trace-id'] || req.headers['x-request-id'] || '').trim()
 }
@@ -169,7 +178,7 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
           if (s.revoked) return res.status(401).json({ message: 'session revoked' })
           if (exp < now) return res.status(401).json({ message: 'session expired' })
           if (now - last > idleMs) return res.status(401).json({ message: 'session idle timeout' })
-          const nextUser = await hydrateRolesIfMissing(decoded)
+          const nextUser = await hydrateCurrentUserRoles(decoded)
           ;(req as any).user = nextUser
           try {
             const lastTouch = sessionLastSeenUpdateAt.get(String(sid)) || 0
@@ -180,12 +189,12 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
             }
           } catch {}
         } catch (e: any) {
-          const nextUser = await hydrateRolesIfMissing(decoded)
+          const nextUser = await hydrateCurrentUserRoles(decoded)
           ;(req as any).user = nextUser
           ;(req as any).session_unverified = true
         }
       } else {
-        const nextUser = await hydrateRolesIfMissing(decoded)
+        const nextUser = await hydrateCurrentUserRoles(decoded)
         ;(req as any).user = nextUser
       }
     } catch {}
@@ -221,14 +230,43 @@ async function fetchUserRolesForUserId(userId: string, fallbackRole: string) {
   return Array.from(new Set(roles))
 }
 
-async function hydrateRolesIfMissing(decoded: any) {
-  const roles = Array.isArray(decoded?.roles) ? decoded.roles : null
-  if (roles && roles.length) return decoded
+async function hydrateCurrentUserRoles(decoded: any) {
   const sub = String(decoded?.sub || '').trim()
   if (!sub) return decoded
   const fallbackRole = String(decoded?.role || '').trim()
-  const fetched = await fetchUserRolesForUserId(sub, fallbackRole)
-  return { ...(decoded || {}), roles: fetched }
+  try {
+    const { pgPool } = require('./dbAdapter')
+    if (hasPg && pgPool) {
+      await ensureUserRolesTable()
+      const result = await pgPool.query(
+        `SELECT u.role,
+                COALESCE(
+                  ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL),
+                  ARRAY[]::text[]
+                ) AS roles
+         FROM users u
+         LEFT JOIN user_roles ur ON ur.user_id::text = u.id::text
+         WHERE u.id::text = $1
+         GROUP BY u.id, u.role
+         LIMIT 1`,
+        [sub],
+      )
+      const row = result?.rows?.[0] || null
+      if (row) {
+        const role = String(row.role || fallbackRole).trim()
+        const roles = Array.isArray(row.roles)
+          ? row.roles.map((value: any) => String(value || '').trim()).filter(Boolean)
+          : []
+        if (role) roles.unshift(role)
+        return { ...(decoded || {}), role, roles: Array.from(new Set(roles)) }
+      }
+    }
+  } catch {}
+  const roles = Array.isArray(decoded?.roles)
+    ? decoded.roles.map((value: any) => String(value || '').trim()).filter(Boolean)
+    : []
+  if (fallbackRole) roles.unshift(fallbackRole)
+  return { ...(decoded || {}), roles: Array.from(new Set(roles)) }
 }
 
 async function hasAnyPermViaPg(roleName: string, codes: string[]): Promise<boolean> {
@@ -283,6 +321,7 @@ async function listPermissionCodesForRole(roleName: string): Promise<string[]> {
       if (code && roleHasPermission(roleName, code)) out.add(code)
     }
   }
+  ;(DEFAULT_ROLE_PERMISSION_OVERLAYS[roleName] || []).forEach((code) => out.add(code))
   return Array.from(out)
 }
 
@@ -380,18 +419,20 @@ export function allowCronTokenOrPerm(code: string) {
 export function me(req: Request, res: Response) {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : undefined
   ;(async () => {
     try {
-      const nextRoles = roles && roles.length
-        ? roles
-        : await fetchUserRolesForUserId(String(user.sub || '').trim(), String(user.role || '').trim())
-      const permissions = await listPermissionCodesForUser({ ...(user || {}), roles: nextRoles })
-      res.json({ id: user.sub, role: user.role, roles: nextRoles, username: user.username, permissions })
+      const currentUser = await hydrateCurrentUserRoles(user)
+      const nextRoles = Array.isArray(currentUser?.roles) ? currentUser.roles : []
+      const permissions = await listPermissionCodesForUser(currentUser)
+      res.json({ id: currentUser.sub, role: currentUser.role, roles: nextRoles, username: currentUser.username, permissions })
     } catch {
-      res.json({ id: user.sub, role: user.role, roles: roles && roles.length ? roles : undefined, username: user.username, permissions: [] })
+      const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : undefined
+      res.json({ id: user.sub, role: user.role, roles, username: user.username, permissions: [] })
     }
-  })().catch(() => res.json({ id: user.sub, role: user.role, roles: roles && roles.length ? roles : undefined, username: user.username, permissions: [] }))
+  })().catch(() => {
+    const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : undefined
+    res.json({ id: user.sub, role: user.role, roles, username: user.username, permissions: [] })
+  })
 }
 
 export async function setDeletePassword(req: Request, res: Response) {

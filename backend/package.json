@@ -18,9 +18,11 @@
     "backfill:auto-expenses": "ts-node-dev --transpile-only scripts/run_auto_expenses_backfill.ts",
     "test:cleaning-rules": "ts-node-dev --transpile-only scripts/tests/test_cleaning_rules.ts",
     "test:cleaning-inspection-merge": "ts-node-dev --transpile-only scripts/tests/test_cleaning_inspection_merge.ts",
+    "test:guest-luggage-rules": "ts-node-dev --transpile-only scripts/tests/test_guest_luggage_rules.ts",
     "test:orders-overlap": "ts-node-dev --transpile-only scripts/tests/test_orders_overlap.ts",
     "test:auto-expense-source-summary": "ts-node-dev --transpile-only scripts/tests/test_auto_expense_source_summary.ts",
-    "test:company-revenue-report": "ts-node-dev --transpile-only scripts/tests/test_company_revenue_report.ts"
+    "test:company-revenue-report": "ts-node-dev --transpile-only scripts/tests/test_company_revenue_report.ts",
+    "import:customer-service-manual": "node scripts/import_customer_service_manual.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.670.0",

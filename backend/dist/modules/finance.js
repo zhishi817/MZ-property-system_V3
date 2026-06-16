@@ -1146,7 +1146,7 @@ exports.router.post('/', (0, auth_1.requirePerm)('finance.tx.write'), async (req
 });
 // Backfill company_incomes from finance_transactions for a given month
 exports.router.post('/company-incomes/backfill', (0, auth_1.requireAnyPerm)(['finance.tx.write', 'company_incomes.write']), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d;
     try {
         if (!dbAdapter_1.hasPg)
             return res.status(400).json({ message: 'pg required' });
@@ -1155,11 +1155,7 @@ exports.router.post('/company-incomes/backfill', (0, auth_1.requireAnyPerm)(['fi
         if (!/^\d{4}-\d{2}$/.test(month))
             return res.status(400).json({ message: 'invalid month format' });
         const lockKey = 91000000 + Number(month.replace('-', ''));
-        const lock = await dbAdapter_2.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey]);
-        const ok = !!((_f = (_e = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _e === void 0 ? void 0 : _e[0]) === null || _f === void 0 ? void 0 : _f.ok);
-        if (!ok)
-            return res.status(409).json({ message: 'backfill already running', reason: 'locked', month });
-        try {
+        const lockedRun = await (0, dbAdapter_1.pgRunWithAdvisoryLock)(lockKey, `company-incomes:backfill:${month}`, async () => {
             const y = Number(month.slice(0, 4)), m = Number(month.slice(5, 7));
             const start = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 10);
             const endExclusive = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10);
@@ -1309,13 +1305,10 @@ exports.router.post('/company-incomes/backfill', (0, auth_1.requireAnyPerm)(['fi
                 };
             });
             return res.status(201).json(result);
-        }
-        finally {
-            try {
-                await dbAdapter_2.pgPool.query('SELECT pg_advisory_unlock($1)', [lockKey]);
-            }
-            catch (_g) { }
-        }
+        });
+        if (!lockedRun.locked)
+            return res.status(409).json({ message: 'backfill already running', reason: 'locked', month });
+        return lockedRun.result;
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'backfill_failed' });

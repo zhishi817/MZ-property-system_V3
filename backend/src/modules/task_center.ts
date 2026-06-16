@@ -6,6 +6,7 @@ import { db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
 import { ensureCleaningSchemaV2 } from '../services/cleaningSync'
 import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, mergeTurnoverTaskPlan } from '../lib/cleaningInspection'
+import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 
 export const router = Router()
 
@@ -1163,6 +1164,55 @@ const taskFlagsSchema = z.object({
   })).min(1),
 }).strict()
 
+const saveBoardSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  mode: z.enum(['board', 'region', 'final']).optional().default('board'),
+  rows: z.array(z.object({
+    row_key: z.string().min(1),
+    row_type: z.enum(['region', 'final_group', 'deferred']),
+    row_title: z.string().optional(),
+    row_order: z.number().int().optional(),
+    subrow_order: z.array(z.string()).optional(),
+    lane_order: z.array(z.string()).optional(),
+  })).min(1),
+  subrows: z.array(z.object({
+    row_key: z.string().min(1),
+    subrow_key: z.string().min(1),
+    subrow_order: z.number().int().optional(),
+  })).default([]),
+  items: z.array(z.object({
+    task_source: z.enum(['cleaning', 'work']),
+    task_id: z.string().min(1),
+    row_key: z.string().min(1),
+    subrow_key: z.string().optional(),
+    lane_key: z.string().optional(),
+    item_order: z.number().int().optional(),
+  })).default([]),
+  row_assignments: z.array(z.object({
+    row_key: z.string().min(1),
+    assignments: z.record(z.any()).default({}),
+  })).default([]),
+  cleaning_assignments: z.array(z.object({
+    task_id: z.string().min(1),
+    cleaner_id: z.string().min(1).nullable(),
+    inspector_id: z.string().min(1).nullable(),
+    inspection_mode: z.enum(['pending_decision', 'same_day', 'self_complete', 'deferred']),
+    inspection_due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+    status: z.string().min(1),
+  })).default([]),
+  work_assignments: z.array(z.object({
+    task_id: z.string().min(1),
+    assignee_id: z.string().min(1).nullable(),
+  })).default([]),
+  task_flags: z.array(z.object({
+    task_source: z.enum(['cleaning', 'work']),
+    task_id: z.string().min(1),
+    temporarily_skipped: z.boolean(),
+    skip_reason: z.string().nullable(),
+    bucket: z.string().nullable(),
+  })).default([]),
+}).strict()
+
 const deleteRowSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   row_key: z.string().min(1),
@@ -1183,6 +1233,323 @@ router.get('/day', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 
     return res.json(payload)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'task_center_day_failed' })
+  }
+})
+
+router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res) => {
+  const parsed = saveBoardSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  const payload = parsed.data
+  const mode = normalizeBoardMode(payload.mode)
+  const user = (req as any).user || {}
+  const updatedBy = String(user.username || user.sub || '')
+  const assignmentsByRow = new Map(payload.row_assignments.map((row) => [row.row_key, row.assignments || {}]))
+  const rowMap = new Map<string, {
+    row_key: string
+    row_type: 'region' | 'final_group' | 'deferred'
+    row_title: string
+    row_order: number
+    assignments: Record<string, any>
+    subrow_order: string[]
+  }>()
+  for (const row of payload.rows) {
+    rowMap.set(row.row_key, {
+      row_key: row.row_key,
+      row_type: row.row_type,
+      row_title: row.row_title || rowTitleFromKey(row.row_key),
+      row_order: Number(row.row_order || 0),
+      assignments: assignmentsByRow.get(row.row_key) || {},
+      subrow_order: row.subrow_order || row.lane_order || [],
+    })
+  }
+  for (const subrow of payload.subrows) {
+    const row = rowMap.get(subrow.row_key)
+    if (row && !row.subrow_order.includes(subrow.subrow_key)) row.subrow_order.push(subrow.subrow_key)
+  }
+  for (const row of rowMap.values()) {
+    if (!row.subrow_order.length) row.subrow_order = [defaultSubrowKey()]
+  }
+  const inspectorIds = Array.from(new Set(
+    payload.cleaning_assignments.map((item) => text(item.inspector_id)).filter(Boolean),
+  ))
+  try {
+    if (hasPg && pgPool) {
+      await ensureCleaningSchemaV2()
+      await ensureWorkTasksTable()
+      await ensureTaskCenterTables()
+      if (inspectorIds.length) {
+        const staffResult = await pgPool.query(
+          `SELECT
+             u.id::text AS id,
+             u.role,
+             COALESCE(ARRAY_AGG(DISTINCT ur.role_name) FILTER (WHERE ur.role_name IS NOT NULL), ARRAY[]::text[]) AS roles
+           FROM users u
+           LEFT JOIN user_roles ur ON ur.user_id = u.id::text
+           WHERE u.id::text = ANY($1::text[])
+           GROUP BY u.id`,
+          [inspectorIds],
+        )
+        const validIds = new Set<string>()
+        for (const row of staffResult.rows || []) {
+          const roles = [String(row.role || ''), ...(Array.isArray(row.roles) ? row.roles.map((item: any) => String(item || '')) : [])]
+          if (roles.some((role) => role === 'cleaning_inspector' || role === 'cleaner_inspector')) validIds.add(String(row.id))
+        }
+        const invalidId = inspectorIds.find((id) => !validIds.has(id))
+        if (invalidId) return res.status(400).json({ message: '无效的检查人员' })
+      }
+      const client = await pgPool.connect()
+      const eventInputs: Parameters<typeof emitWorkTaskEvent>[0][] = []
+      try {
+        await client.query('BEGIN')
+        let changedCleaningTasks: any[] = []
+        let changedWorkTasks: any[] = []
+        const rowValues = Array.from(rowMap.values()).map((row) => ({
+          row_key: row.row_key,
+          row_type: row.row_type,
+          row_title: row.row_title,
+          row_order: row.row_order,
+          assignments: row.assignments,
+          lane_order: row.subrow_order,
+        }))
+        await client.query(
+          `INSERT INTO task_center_board_rows(task_date, board_mode, row_key, row_type, row_title, row_order, assignments, lane_order, updated_by, updated_at)
+           SELECT $1::date, $2, x.row_key, x.row_type, x.row_title, x.row_order, x.assignments, x.lane_order, $4, now()
+           FROM jsonb_to_recordset($3::jsonb) AS x(
+             row_key text,
+             row_type text,
+             row_title text,
+             row_order integer,
+             assignments jsonb,
+             lane_order jsonb
+           )
+           ON CONFLICT (task_date, board_mode, row_key)
+           DO UPDATE SET row_type=EXCLUDED.row_type, row_title=EXCLUDED.row_title, row_order=EXCLUDED.row_order, assignments=EXCLUDED.assignments, lane_order=EXCLUDED.lane_order, updated_by=EXCLUDED.updated_by, updated_at=now()
+           WHERE task_center_board_rows.row_type IS DISTINCT FROM EXCLUDED.row_type
+              OR task_center_board_rows.row_title IS DISTINCT FROM EXCLUDED.row_title
+              OR task_center_board_rows.row_order IS DISTINCT FROM EXCLUDED.row_order
+              OR task_center_board_rows.assignments IS DISTINCT FROM EXCLUDED.assignments
+              OR task_center_board_rows.lane_order IS DISTINCT FROM EXCLUDED.lane_order`,
+          [payload.date, mode, JSON.stringify(rowValues), updatedBy],
+        )
+        if (payload.items.length) {
+          await client.query(
+            `INSERT INTO task_center_board_items(task_date, board_mode, task_source, task_id, row_key, lane_key, item_order, updated_by, updated_at)
+             SELECT $1::date, $2, x.task_source, x.task_id, x.row_key, x.lane_key, x.item_order, $4, now()
+             FROM jsonb_to_recordset($3::jsonb) AS x(
+               task_source text,
+               task_id text,
+               row_key text,
+               lane_key text,
+               item_order integer
+             )
+             ON CONFLICT (task_date, board_mode, task_source, task_id)
+             DO UPDATE SET row_key=EXCLUDED.row_key, lane_key=EXCLUDED.lane_key, item_order=EXCLUDED.item_order, updated_by=EXCLUDED.updated_by, updated_at=now()
+             WHERE task_center_board_items.row_key IS DISTINCT FROM EXCLUDED.row_key
+                OR task_center_board_items.lane_key IS DISTINCT FROM EXCLUDED.lane_key
+                OR task_center_board_items.item_order IS DISTINCT FROM EXCLUDED.item_order`,
+            [
+              payload.date,
+              mode,
+              JSON.stringify(payload.items.map((item) => ({
+                task_source: item.task_source,
+                task_id: item.task_id,
+                row_key: item.row_key,
+                lane_key: item.subrow_key || item.lane_key || defaultSubrowKey(),
+                item_order: Number(item.item_order || 0),
+              }))),
+              updatedBy,
+            ],
+          )
+        }
+        if (payload.cleaning_assignments.length) {
+          const result = await client.query(
+            `UPDATE cleaning_tasks AS task
+             SET cleaner_id = x.cleaner_id,
+                 assignee_id = x.cleaner_id,
+                 inspector_id = x.inspector_id,
+                 inspection_mode = x.inspection_mode,
+                 inspection_due_date = CASE WHEN x.inspection_due_date IS NULL THEN NULL ELSE x.inspection_due_date::date END,
+                 status = x.status,
+                 updated_at = now()
+             FROM jsonb_to_recordset($1::jsonb) AS x(
+               task_id text,
+               cleaner_id text,
+               inspector_id text,
+               inspection_mode text,
+               inspection_due_date text,
+               status text
+             )
+             WHERE task.id::text = x.task_id
+               AND (
+                 task.cleaner_id IS DISTINCT FROM x.cleaner_id
+                 OR task.assignee_id IS DISTINCT FROM x.cleaner_id
+                 OR task.inspector_id IS DISTINCT FROM x.inspector_id
+                 OR task.inspection_mode IS DISTINCT FROM x.inspection_mode
+                 OR task.inspection_due_date::text IS DISTINCT FROM x.inspection_due_date
+                 OR task.status IS DISTINCT FROM x.status
+               )
+             RETURNING task.*`,
+            [JSON.stringify(payload.cleaning_assignments)],
+          )
+          changedCleaningTasks = result.rows || []
+        }
+        if (payload.work_assignments.length) {
+          const result = await client.query(
+            `UPDATE work_tasks AS task
+             SET assignee_id = x.assignee_id,
+                 status = CASE
+                   WHEN lower(COALESCE(task.status, 'todo')) IN ('todo', 'assigned')
+                     THEN CASE WHEN NULLIF(COALESCE(x.assignee_id, ''), '') IS NULL THEN 'todo' ELSE 'assigned' END
+                   ELSE task.status
+                 END,
+                 updated_by = $2,
+                 updated_at = now()
+             FROM jsonb_to_recordset($1::jsonb) AS x(task_id text, assignee_id text)
+             WHERE task.id::text = x.task_id
+               AND (
+                 task.assignee_id IS DISTINCT FROM x.assignee_id
+                 OR (
+                   lower(COALESCE(task.status, 'todo')) IN ('todo', 'assigned')
+                   AND task.status IS DISTINCT FROM CASE WHEN NULLIF(COALESCE(x.assignee_id, ''), '') IS NULL THEN 'todo' ELSE 'assigned' END
+                 )
+               )
+             RETURNING task.*`,
+            [JSON.stringify(payload.work_assignments), updatedBy],
+          )
+          changedWorkTasks = result.rows || []
+        }
+        if (payload.task_flags.length) {
+          await client.query(
+            `INSERT INTO task_center_task_flags(task_date, task_source, task_id, temporarily_skipped, skip_reason, bucket, updated_by, updated_at)
+             SELECT $1::date, x.task_source, x.task_id, x.temporarily_skipped, x.skip_reason, x.bucket, $3, now()
+             FROM jsonb_to_recordset($2::jsonb) AS x(
+               task_source text,
+               task_id text,
+               temporarily_skipped boolean,
+               skip_reason text,
+               bucket text
+             )
+             ON CONFLICT (task_date, task_source, task_id)
+             DO UPDATE SET temporarily_skipped=EXCLUDED.temporarily_skipped, skip_reason=EXCLUDED.skip_reason, bucket=EXCLUDED.bucket, updated_by=EXCLUDED.updated_by, updated_at=now()
+             WHERE task_center_task_flags.temporarily_skipped IS DISTINCT FROM EXCLUDED.temporarily_skipped
+                OR task_center_task_flags.skip_reason IS DISTINCT FROM EXCLUDED.skip_reason
+                OR task_center_task_flags.bucket IS DISTINCT FROM EXCLUDED.bucket`,
+            [payload.date, JSON.stringify(payload.task_flags), updatedBy],
+          )
+        }
+        for (const task of changedCleaningTasks) {
+          eventInputs.push({
+            taskId: `cleaning_task:${String(task.id)}`,
+            sourceType: 'cleaning_tasks',
+            sourceRefIds: [String(task.id)],
+            eventType: 'TASK_ASSIGNMENT_CHANGED',
+            changeScope: 'membership',
+            changedFields: ['cleaner_id', 'assignee_id', 'inspector_id', 'inspection_mode', 'inspection_due_date', 'status'],
+            patch: {
+              cleaner_id: task.cleaner_id ?? null,
+              assignee_id: task.assignee_id ?? null,
+              inspector_id: task.inspector_id ?? null,
+              inspection_mode: task.inspection_mode ?? null,
+              inspection_due_date: task.inspection_due_date ?? null,
+              status: task.status,
+            },
+            causedByUserId: String(user.sub || '').trim() || null,
+            visibilityHints: buildCleaningTaskVisibilityHints(task),
+          })
+        }
+        for (const task of changedWorkTasks) {
+          eventInputs.push({
+            taskId: String(task.id),
+            sourceType: String(task.source_type || 'work_tasks'),
+            sourceRefIds: [String(task.source_id || task.id)],
+            eventType: 'TASK_ASSIGNMENT_CHANGED',
+            changeScope: 'membership',
+            changedFields: ['assignee_id', 'status'],
+            patch: {
+              assignee_id: task.assignee_id ?? null,
+              status: task.status,
+            },
+            causedByUserId: String(user.sub || '').trim() || null,
+            visibilityHints: buildWorkTaskVisibilityHints(task),
+          })
+        }
+        await client.query('COMMIT')
+      } catch (error) {
+        try { await client.query('ROLLBACK') } catch {}
+        throw error
+      } finally {
+        client.release()
+      }
+      if (eventInputs.length) {
+        void Promise.allSettled(eventInputs.map((eventInput) => emitWorkTaskEvent(eventInput)))
+          .then((results) => {
+            const failed = results.filter((item) => item.status === 'rejected')
+            if (failed.length) console.error(`[task-center] background_event_emit_failed count=${failed.length}`)
+          })
+          .catch((error: any) => {
+            console.error(`[task-center] background_event_emit_failed message=${String(error?.message || error || '')}`)
+          })
+      }
+      return res.json({
+        ok: true,
+        rows: rowMap.size,
+        items: payload.items.length,
+        cleaning_assignments: payload.cleaning_assignments.length,
+        work_assignments: payload.work_assignments.length,
+        event_notifications: eventInputs.length,
+      })
+    }
+
+    for (const row of rowMap.values()) {
+      memoryBoardRows.set(`${payload.date}|${mode}|${row.row_key}`, {
+        row_key: row.row_key,
+        board_mode: mode,
+        row_type: row.row_type,
+        row_title: row.row_title,
+        row_order: row.row_order,
+        assignments: row.assignments,
+        subrow_order: row.subrow_order,
+      })
+    }
+    for (const item of payload.items) {
+      memoryBoardItems.set(`${payload.date}|${mode}|${item.task_source}|${item.task_id}`, {
+        task_source: item.task_source,
+        task_id: item.task_id,
+        row_key: item.row_key,
+        subrow_key: item.subrow_key || item.lane_key || defaultSubrowKey(),
+        item_order: Number(item.item_order || 0),
+      })
+    }
+    const cleaningById = new Map(payload.cleaning_assignments.map((item) => [item.task_id, item]))
+    for (const task of ((db as any).cleaningTasks || []) as any[]) {
+      const assignment = cleaningById.get(String(task.id))
+      if (!assignment) continue
+      task.cleaner_id = assignment.cleaner_id
+      task.assignee_id = assignment.cleaner_id
+      task.inspector_id = assignment.inspector_id
+      task.inspection_mode = assignment.inspection_mode
+      task.inspection_due_date = assignment.inspection_due_date
+      task.status = assignment.status
+    }
+    const workById = new Map(payload.work_assignments.map((item) => [item.task_id, item]))
+    for (const task of (((db as any).workTasks || []) as any[])) {
+      const assignment = workById.get(String(task.id))
+      if (!assignment) continue
+      task.assignee_id = assignment.assignee_id
+      if (['todo', 'assigned'].includes(String(task.status || 'todo').toLowerCase())) task.status = assignment.assignee_id ? 'assigned' : 'todo'
+    }
+    for (const task of payload.task_flags) {
+      memoryTaskFlags.set(`${payload.date}|${task.task_source}|${task.task_id}`, {
+        task_source: task.task_source,
+        task_id: task.task_id,
+        temporarily_skipped: task.temporarily_skipped,
+        skip_reason: task.skip_reason,
+        bucket: task.bucket,
+      })
+    }
+    return res.json({ ok: true, rows: rowMap.size, items: payload.items.length })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'task_center_save_board_failed' })
   }
 })
 
@@ -1231,22 +1598,54 @@ router.post('/layout', requirePerm('cleaning.task.assign'), async (req, res) => 
       const client = await pgPool.connect()
       try {
         await client.query('BEGIN')
-        for (const row of rowMap.values()) {
+        const rowValues = Array.from(rowMap.values()).map((row) => ({
+          row_key: row.row_key,
+          row_type: row.row_type,
+          row_title: row.row_title || rowTitleFromKey(row.row_key),
+          row_order: Number(row.row_order || 0),
+          lane_order: row.subrow_order || [],
+        }))
+        if (rowValues.length) {
           await client.query(
             `INSERT INTO task_center_board_rows(task_date, board_mode, row_key, row_type, row_title, row_order, assignments, lane_order, updated_by, updated_at)
-             VALUES($1::date, $2, $3, $4, $5, $6, COALESCE((SELECT assignments FROM task_center_board_rows WHERE task_date=$1::date AND board_mode=$2 AND row_key=$3), '{}'::jsonb), $7::jsonb, $8, now())
+             SELECT $1::date, $2, x.row_key, x.row_type, x.row_title, x.row_order, '{}'::jsonb, x.lane_order, $4, now()
+             FROM jsonb_to_recordset($3::jsonb) AS x(
+               row_key text,
+               row_type text,
+               row_title text,
+               row_order integer,
+               lane_order jsonb
+             )
              ON CONFLICT (task_date, board_mode, row_key)
              DO UPDATE SET row_type=EXCLUDED.row_type, row_title=EXCLUDED.row_title, row_order=EXCLUDED.row_order, lane_order=EXCLUDED.lane_order, updated_by=EXCLUDED.updated_by, updated_at=now()`,
-            [date, mode, row.row_key, row.row_type, row.row_title || rowTitleFromKey(row.row_key), Number(row.row_order || 0), JSON.stringify(row.subrow_order || []), String(user.username || user.sub || '')],
+            [date, mode, JSON.stringify(rowValues), String(user.username || user.sub || '')],
           )
         }
-        for (const item of items) {
+        if (items.length) {
           await client.query(
             `INSERT INTO task_center_board_items(task_date, board_mode, task_source, task_id, row_key, lane_key, item_order, updated_by, updated_at)
-             VALUES($1::date, $2, $3, $4, $5, $6, $7, $8, now())
+             SELECT $1::date, $2, x.task_source, x.task_id, x.row_key, x.lane_key, x.item_order, $4, now()
+             FROM jsonb_to_recordset($3::jsonb) AS x(
+               task_source text,
+               task_id text,
+               row_key text,
+               lane_key text,
+               item_order integer
+             )
              ON CONFLICT (task_date, board_mode, task_source, task_id)
              DO UPDATE SET row_key=EXCLUDED.row_key, lane_key=EXCLUDED.lane_key, item_order=EXCLUDED.item_order, updated_by=EXCLUDED.updated_by, updated_at=now()`,
-            [date, mode, item.task_source, item.task_id, item.row_key, item.subrow_key || item.lane_key || defaultSubrowKey(), Number(item.item_order || 0), String(user.username || user.sub || '')],
+            [
+              date,
+              mode,
+              JSON.stringify(items.map((item) => ({
+                task_source: item.task_source,
+                task_id: item.task_id,
+                row_key: item.row_key,
+                lane_key: item.subrow_key || item.lane_key || defaultSubrowKey(),
+                item_order: Number(item.item_order || 0),
+              }))),
+              String(user.username || user.sub || ''),
+            ],
           )
         }
         await client.query('COMMIT')

@@ -25,12 +25,13 @@ export type NotificationEventType =
   | 'KEY_UPLOAD_REMINDER'
   | 'KEY_UPLOAD_SLA_REMINDER'
   | 'KEY_UPLOAD_SLA_ESCALATION'
-  | 'CUSTOMER_SERVICE_MEMO_REMINDER'
+  | 'GUEST_LUGGAGE_UPDATED'
+  | 'WAREHOUSE_KEY_UPDATED'
   | 'WORK_TASK_UPDATED'
 
 export type EmitNotificationEventParams = {
   type: NotificationEventType
-  entity: 'order' | 'cleaning_task' | 'work_task'
+  entity: 'order' | 'cleaning_task' | 'work_task' | 'warehouse_key'
   entityId: string
   eventId?: string | null
   propertyId?: string | null
@@ -145,7 +146,8 @@ function buildDefaultTitleBody(params: EmitNotificationEventParams) {
   if (type === 'KEY_UPLOAD_REMINDER') return { title: '提醒：上传钥匙照片', body: '请检查并上传钥匙照片' }
   if (type === 'KEY_UPLOAD_SLA_REMINDER') return { title: '上传钥匙提醒', body: '请尽快上传钥匙照片' }
   if (type === 'KEY_UPLOAD_SLA_ESCALATION') return { title: '上传钥匙超时提醒', body: '清洁员未按时上传钥匙照片' }
-  if (type === 'CUSTOMER_SERVICE_MEMO_REMINDER') return { title: '客服备忘录提醒', body: '你有一条需要处理的客服备忘录。' }
+  if (type === 'GUEST_LUGGAGE_UPDATED') return { title: '当天任务临时通知', body: '当天任务新增或更新了一条临时通知，请查看照片和说明。' }
+  if (type === 'WAREHOUSE_KEY_UPDATED') return { title: '仓库钥匙更新', body: 'MSQ 仓库钥匙状态已更新' }
   if (type === 'WORK_TASK_UPDATED') return { title: '任务有更新', body: '任务已更新' }
   return { title: '通知', body: '有新的更新' }
 }
@@ -213,7 +215,8 @@ function resolvePriority(params: EmitNotificationEventParams): NotificationPrior
   if (params.type === 'KEY_UPLOAD_REMINDER') return 'high'
   if (params.type === 'KEY_UPLOAD_SLA_REMINDER') return 'high'
   if (params.type === 'KEY_UPLOAD_SLA_ESCALATION') return 'high'
-  if (params.type === 'CUSTOMER_SERVICE_MEMO_REMINDER') return 'high'
+  if (params.type === 'GUEST_LUGGAGE_UPDATED') return 'high'
+  if (params.type === 'WAREHOUSE_KEY_UPDATED') return 'high'
   return 'low'
 }
 
@@ -285,6 +288,70 @@ async function resolveAudienceRecipients(audience: NotificationAudienceType, par
   if (audience === 'work_task_users') return await listWorkTaskUserIds(entityId)
   if (audience === 'manager_users') return await resolveManagerUsersAudience()
   return []
+}
+
+async function enrichNotificationData(params: EmitNotificationEventParams, client: any, actorUserId: string) {
+  const base = params.data && typeof params.data === 'object' ? params.data : {}
+  const enriched: Record<string, any> = { ...base }
+  if (actorUserId) {
+    enriched.actor_user_id = enriched.actor_user_id || actorUserId
+    if (!enriched.actor_name) {
+      try {
+        const actorResult = await client.query(
+          `SELECT COALESCE(NULLIF(TRIM(username), ''), NULLIF(TRIM(legal_name), ''), NULLIF(TRIM(email), ''), id::text) AS actor_name
+           FROM users
+           WHERE id::text = $1::text
+           LIMIT 1`,
+          [actorUserId],
+        )
+        enriched.actor_name = String(actorResult?.rows?.[0]?.actor_name || '').trim() || undefined
+      } catch {}
+    }
+  }
+  if (params.entity === 'cleaning_task') {
+    try {
+      const taskResult = await client.query(
+        `SELECT COALESCE(p_id.code::text, p_code.code::text, t.property_id::text) AS property_code,
+                COALESCE(t.task_date, t.date)::text AS task_date,
+                t.guest_special_request,
+                COALESCE(t.keys_required, 1)::int AS keys_required
+         FROM cleaning_tasks t
+         LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+         LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+         WHERE t.id::text = $1::text
+         LIMIT 1`,
+        [String(params.entityId || '')],
+      )
+      const row = taskResult?.rows?.[0] || null
+      enriched.property_code = enriched.property_code || String(row?.property_code || '').trim() || undefined
+      enriched.task_date = enriched.task_date || String(row?.task_date || '').slice(0, 10) || undefined
+      if (!Object.prototype.hasOwnProperty.call(enriched, 'guest_special_request')) {
+        enriched.guest_special_request = row?.guest_special_request == null ? null : String(row.guest_special_request).trim()
+      }
+      if (!Object.prototype.hasOwnProperty.call(enriched, 'keys_required')) {
+        const keysRequired = Number(row?.keys_required)
+        enriched.keys_required = Number.isFinite(keysRequired) && keysRequired > 0 ? Math.trunc(keysRequired) : 1
+      }
+    } catch {}
+  }
+  if (params.entity === 'work_task' && (!enriched.property_code || !enriched.task_date || !enriched.task_title)) {
+    try {
+      const taskResult = await client.query(
+        `SELECT w.title::text AS task_title, w.scheduled_date::text AS task_date,
+                COALESCE(p.code::text, w.property_id::text) AS property_code
+         FROM work_tasks w
+         LEFT JOIN properties p ON p.id::text = w.property_id::text
+         WHERE w.id::text = $1::text
+         LIMIT 1`,
+        [String(params.entityId || '')],
+      )
+      const row = taskResult?.rows?.[0] || null
+      enriched.property_code = enriched.property_code || String(row?.property_code || '').trim() || undefined
+      enriched.task_date = enriched.task_date || String(row?.task_date || '').slice(0, 10) || undefined
+      enriched.task_title = enriched.task_title || String(row?.task_title || '').trim() || undefined
+    } catch {}
+  }
+  return enriched
 }
 
 export async function emitNotificationEvent(params: EmitNotificationEventParams, opts?: EmitNotificationEventOptions) {
@@ -363,7 +430,7 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
   const body = String(params.body || '').trim() || autoBody
   const changes = uniqText(params.changes || [])
 
-  const baseData = params.data || {}
+  const baseData = await enrichNotificationData(params, client, actor)
   const data = {
     ...(typeof baseData === 'object' && baseData ? baseData : {}),
     event_id: eventId,

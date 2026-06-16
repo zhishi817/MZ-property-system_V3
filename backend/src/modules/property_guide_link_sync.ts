@@ -30,6 +30,56 @@ function decryptLinkToken(tokenEnc: string) {
   return plaintext.toString('utf8')
 }
 
+function normalizeStoredGuideLink(raw: any) {
+  const text = String(raw || '').trim()
+  if (!text) return ''
+  const href = text.match(/href\s*=\s*["']([^"']+)["']/i)?.[1] || text
+  return href.match(/https?:\/\/[^\s"'<>]+/i)?.[0] || href.trim()
+}
+
+export async function resolvePropertyPublicGuideLinks(entries: Array<{ propertyId: string; fallbackLink?: any }>) {
+  const fallbackById = new Map<string, string | null>()
+  for (const entry of entries || []) {
+    const id = String(entry?.propertyId || '').trim()
+    if (!id) continue
+    fallbackById.set(id, normalizeStoredGuideLink(entry?.fallbackLink) || null)
+  }
+  const out = new Map(fallbackById)
+  const ids = Array.from(fallbackById.keys())
+  if (!hasPg || !pgPool || !ids.length) return out
+  try {
+    const result = await pgPool.query(
+      `SELECT DISTINCT ON (g.property_id) g.property_id::text AS property_id, l.token_enc
+       FROM property_guides g
+       JOIN property_guide_public_links l ON l.guide_id = g.id
+       WHERE g.property_id::text = ANY($1::text[])
+         AND g.status = 'published'
+         AND l.revoked_at IS NULL
+         AND l.expires_at > now()
+       ORDER BY g.property_id, l.created_at DESC`,
+      [ids],
+    )
+    const baseUrl = pickPublicBaseUrl()
+    for (const row of result?.rows || []) {
+      const id = String(row?.property_id || '').trim()
+      const tokenEnc = String(row?.token_enc || '').trim()
+      const token = tokenEnc ? decryptLinkToken(tokenEnc) : ''
+      const publicUrl = token && baseUrl ? buildPublicGuideUrl(token, baseUrl) : ''
+      if (id && publicUrl) out.set(id, publicUrl)
+    }
+  } catch {
+    return out
+  }
+  return out
+}
+
+export async function resolvePropertyPublicGuideLink(propertyId: string, fallbackLink?: any) {
+  const id = String(propertyId || '').trim()
+  if (!id) return normalizeStoredGuideLink(fallbackLink) || null
+  const links = await resolvePropertyPublicGuideLinks([{ propertyId: id, fallbackLink }])
+  return links.get(id) || null
+}
+
 async function ensureSyncLogsTable() {
   if (!hasPg || !pgPool) return
   await pgPool.query(`CREATE TABLE IF NOT EXISTS property_guide_link_sync_logs (

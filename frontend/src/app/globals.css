@@ -73,6 +73,43 @@ body { margin: 0; background: #fff; color: #000; overflow-x: hidden; }
   text-align: right;
 }
 
+.mz-admin-notification-button {
+  color: #1f2937;
+}
+
+.mz-admin-notification-panel {
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(520px, calc(100vh - 120px));
+  overflow: auto;
+}
+
+.mz-admin-notification-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.mz-admin-notification-item {
+  width: 100%;
+}
+
+.mz-admin-notification-message {
+  margin: 6px 0 2px !important;
+  color: #374151;
+}
+
+.mz-admin-notification-time {
+  display: block;
+  font-size: 12px;
+}
+
+.mz-admin-notification-unread {
+  background: #f8fbff;
+}
+
 .mz-admin-menu-button {
   flex: 0 0 auto;
 }

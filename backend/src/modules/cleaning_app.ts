@@ -12,6 +12,7 @@ import fs from 'fs'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { effectiveInspectionMode } from '../lib/cleaningInspection'
+import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 
 export const router = Router()
 
@@ -127,6 +128,324 @@ async function resolveUserDisplayName(userId: string) {
   }
 }
 
+async function ensureWarehouseKeyTables() {
+  if (!hasPg) return
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool) return
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS warehouse_keys (
+    key_code text PRIMARY KEY,
+    label text NOT NULL,
+    status text NOT NULL DEFAULT 'available',
+    holder_user_id text,
+    holder_name_snapshot text,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    updated_by text
+  );`)
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS warehouse_key_events (
+    id text PRIMARY KEY,
+    key_code text NOT NULL,
+    action text NOT NULL,
+    actor_user_id text NOT NULL,
+    actor_name_snapshot text,
+    from_user_id text,
+    from_name_snapshot text,
+    to_user_id text,
+    to_name_snapshot text,
+    note text,
+    task_date date,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );`)
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_warehouse_key_events_key_created ON warehouse_key_events(key_code, created_at DESC);`)
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_warehouse_key_events_task_date ON warehouse_key_events(task_date);`)
+  await pgPool.query(
+    `INSERT INTO warehouse_keys (key_code, label, status)
+     VALUES ('msq', 'MSQ 仓库钥匙', 'available')
+     ON CONFLICT (key_code) DO NOTHING`,
+  )
+}
+
+function normalizeWarehouseKeyCode(raw: any) {
+  const value = String(raw || '').trim().toLowerCase()
+  return value || 'msq'
+}
+
+function todayYmd() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function toIsoStringOrNull(value: any) {
+  if (!value) return null
+  if (value instanceof Date) return value.toISOString()
+  const d = new Date(value)
+  if (!Number.isNaN(d.getTime())) return d.toISOString()
+  return String(value)
+}
+
+async function listSouthbankWarehouseKeyUsers(taskDate: string) {
+  if (!hasPg) return { userIds: [] as string[], candidates: [] as Array<{ id: string; name: string; role: string }> }
+  const { pgPool } = require('../dbAdapter')
+  if (!pgPool) return { userIds: [], candidates: [] }
+  const date = String(taskDate || '').slice(0, 10) || todayYmd()
+  const r = await pgPool.query(
+    `SELECT DISTINCT
+        u.id::text AS id,
+        COALESCE(NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.legal_name), ''), NULLIF(TRIM(u.email), ''), u.id::text) AS name,
+        COALESCE(NULLIF(TRIM(u.role), ''), '') AS role
+     FROM cleaning_tasks t
+     LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+     LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+     JOIN users u ON u.id::text = ANY(ARRAY[
+       NULLIF(t.cleaner_id::text, ''),
+       NULLIF(t.inspector_id::text, ''),
+       NULLIF(t.assignee_id::text, '')
+     ]::text[])
+     WHERE COALESCE(t.task_date, t.date)::date = $1::date
+       AND lower(COALESCE(t.status, '')) NOT IN ('cancelled', 'canceled')
+       AND lower(COALESCE(p_id.region, p_code.region, '')) LIKE '%southbank%'
+     ORDER BY name ASC`,
+    [date],
+  )
+  const candidates = (r?.rows || []).map((row: any) => ({
+    id: String(row.id || '').trim(),
+    name: String(row.name || '').trim(),
+    role: String(row.role || '').trim(),
+  })).filter((row: any) => !!row.id)
+  return {
+    userIds: Array.from(new Set(candidates.map((row: any) => row.id))),
+    candidates,
+  }
+}
+
+async function listWarehouseKeyNotificationUserIds(params: { taskDate: string; actorId: string; extraUserIds?: string[] }) {
+  const { listUserIdsByRoles } = require('./notifications')
+  const related = await listSouthbankWarehouseKeyUsers(params.taskDate)
+  const managerIds = await listUserIdsByRoles(['admin', 'offline_manager'])
+  const actorId = String(params.actorId || '').trim()
+  const ids = [
+    ...related.userIds,
+    ...managerIds,
+    ...((params.extraUserIds || []).map((x) => String(x || '').trim()).filter(Boolean)),
+  ]
+  return Array.from(new Set(ids.filter(Boolean))).filter((id) => id !== actorId)
+}
+
+function warehouseKeyActionText(action: string) {
+  if (action === 'borrow') return '借走了'
+  if (action === 'return') return '归还了'
+  if (action === 'handover') return '转交了'
+  return '更新了'
+}
+
+const warehouseKeyEventSchema = z.object({
+  key_code: z.string().trim().max(40).optional(),
+  action: z.enum(['borrow', 'return', 'handover']),
+  to_user_id: z.string().trim().max(80).optional(),
+  note: z.string().trim().max(500).optional(),
+  task_date: z.string().trim().min(10).max(32).optional(),
+}).strict()
+
+router.get('/warehouse-key/status', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish', 'cleaning_app.calendar.view.all']), async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  try {
+    if (!hasPg) return res.json({ key: { key_code: 'msq', label: 'MSQ 仓库钥匙', status: 'available', holder_user_id: null, holder_name: null, holder_phone_au: null, updated_at: null }, events: [], candidates: [] })
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+    await ensureWarehouseKeyTables()
+    const keyCode = normalizeWarehouseKeyCode((req.query as any)?.key || (req.query as any)?.key_code)
+    const taskDate = String((req.query as any)?.date || '').slice(0, 10) || todayYmd()
+    const [keyRes, eventRes, related] = await Promise.all([
+      pgPool.query(
+        `SELECT k.key_code, k.label, k.status, k.holder_user_id, k.holder_name_snapshot, u.phone_au AS holder_phone_au, k.updated_at, k.updated_by
+         FROM warehouse_keys k
+         LEFT JOIN users u ON u.id::text = k.holder_user_id::text
+         WHERE k.key_code = $1
+         LIMIT 1`,
+        [keyCode],
+      ),
+      pgPool.query(
+        `SELECT id, key_code, action, actor_user_id, actor_name_snapshot, from_user_id, from_name_snapshot,
+                to_user_id, to_name_snapshot, note, task_date::text AS task_date, created_at
+         FROM warehouse_key_events
+         WHERE key_code = $1
+         ORDER BY created_at DESC
+         LIMIT 20`,
+        [keyCode],
+      ),
+      listSouthbankWarehouseKeyUsers(taskDate),
+    ])
+    const keyRow = keyRes?.rows?.[0] || { key_code: keyCode, label: 'MSQ 仓库钥匙', status: 'available' }
+    return res.json({
+      key: {
+        key_code: String(keyRow.key_code || keyCode),
+        label: String(keyRow.label || 'MSQ 仓库钥匙'),
+        status: String(keyRow.status || 'available'),
+        holder_user_id: keyRow.holder_user_id == null ? null : String(keyRow.holder_user_id || ''),
+        holder_name: keyRow.holder_name_snapshot == null ? null : String(keyRow.holder_name_snapshot || ''),
+        holder_phone_au: keyRow.holder_phone_au == null ? null : String(keyRow.holder_phone_au || '').trim() || null,
+        updated_at: toIsoStringOrNull(keyRow.updated_at),
+        updated_by: keyRow.updated_by == null ? null : String(keyRow.updated_by || ''),
+      },
+      events: (eventRes?.rows || []).map((row: any) => ({
+        id: String(row.id || ''),
+        key_code: String(row.key_code || keyCode),
+        action: String(row.action || ''),
+        actor_user_id: String(row.actor_user_id || ''),
+        actor_name: String(row.actor_name_snapshot || ''),
+        from_user_id: row.from_user_id == null ? null : String(row.from_user_id || ''),
+        from_name: row.from_name_snapshot == null ? null : String(row.from_name_snapshot || ''),
+        to_user_id: row.to_user_id == null ? null : String(row.to_user_id || ''),
+        to_name: row.to_name_snapshot == null ? null : String(row.to_name_snapshot || ''),
+        note: row.note == null ? null : String(row.note || ''),
+        task_date: row.task_date ? String(row.task_date).slice(0, 10) : null,
+        created_at: toIsoStringOrNull(row.created_at),
+      })),
+      candidates: related.candidates,
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
+router.post('/warehouse-key/events', requireAnyPerm(['cleaning_app.tasks.finish', 'cleaning_app.inspect.finish']), async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  const parsed = warehouseKeyEventSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  try {
+    if (!hasPg) return res.status(201).json({ ok: true })
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return res.status(500).json({ message: 'pg not available' })
+    await ensureWarehouseKeyTables()
+    const uuid = require('uuid')
+    const keyCode = normalizeWarehouseKeyCode(parsed.data.key_code)
+    const action = parsed.data.action
+    const actorId = String(user.sub || '').trim()
+    if (!actorId) return res.status(401).json({ message: 'unauthorized' })
+    const actorName = await resolveUserDisplayName(actorId)
+    const toUserId = String(parsed.data.to_user_id || '').trim()
+    if (action === 'handover' && !toUserId) return res.status(400).json({ message: '请选择要转交的同事' })
+    if (action === 'handover' && toUserId === actorId) return res.status(400).json({ message: '不能转交给自己' })
+    const toName = toUserId ? await resolveUserDisplayName(toUserId) : ''
+    const taskDate = String(parsed.data.task_date || '').slice(0, 10) || todayYmd()
+    const note = String(parsed.data.note || '').trim()
+    const client = await pgPool.connect()
+    let eventRow: any = null
+    let updatedKey: any = null
+    let fromUserId = ''
+    let fromName = ''
+    try {
+      await client.query('BEGIN')
+      await client.query(
+        `INSERT INTO warehouse_keys (key_code, label, status)
+         VALUES ($1, 'MSQ 仓库钥匙', 'available')
+         ON CONFLICT (key_code) DO NOTHING`,
+        [keyCode],
+      )
+      const cur = await client.query(
+        `SELECT key_code, label, status, holder_user_id, holder_name_snapshot
+         FROM warehouse_keys
+         WHERE key_code = $1
+         FOR UPDATE`,
+        [keyCode],
+      )
+      const current = cur?.rows?.[0] || {}
+      fromUserId = String(current.holder_user_id || '').trim()
+      fromName = String(current.holder_name_snapshot || '').trim()
+      let nextStatus = 'available'
+      let nextHolderUserId: string | null = null
+      let nextHolderName: string | null = null
+      if (action === 'borrow') {
+        nextStatus = 'borrowed'
+        nextHolderUserId = actorId
+        nextHolderName = actorName
+      } else if (action === 'handover') {
+        nextStatus = 'borrowed'
+        nextHolderUserId = toUserId
+        nextHolderName = toName
+      }
+      const up = await client.query(
+        `UPDATE warehouse_keys
+            SET status = $2,
+                holder_user_id = $3,
+                holder_name_snapshot = $4,
+                updated_at = now(),
+                updated_by = $5
+          WHERE key_code = $1
+          RETURNING key_code, label, status, holder_user_id, holder_name_snapshot, updated_at, updated_by`,
+        [keyCode, nextStatus, nextHolderUserId, nextHolderName, actorId],
+      )
+      updatedKey = up?.rows?.[0] || null
+      const ev = await client.query(
+        `INSERT INTO warehouse_key_events (
+           id, key_code, action, actor_user_id, actor_name_snapshot, from_user_id, from_name_snapshot,
+           to_user_id, to_name_snapshot, note, task_date, created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::date,now())
+         RETURNING id, key_code, action, actor_user_id, actor_name_snapshot, from_user_id, from_name_snapshot,
+                   to_user_id, to_name_snapshot, note, task_date::text AS task_date, created_at`,
+        [uuid.v4(), keyCode, action, actorId, actorName, fromUserId || null, fromName || null, toUserId || null, toName || null, note || null, taskDate],
+      )
+      eventRow = ev?.rows?.[0] || null
+      await client.query('COMMIT')
+    } catch (e) {
+      try { await client.query('ROLLBACK') } catch {}
+      throw e
+    } finally {
+      client.release()
+    }
+
+    try {
+      const recipients = await listWarehouseKeyNotificationUserIds({ taskDate, actorId, extraUserIds: [toUserId] })
+      const actionText = warehouseKeyActionText(action)
+      const body = action === 'handover'
+        ? `${actorName} 已将 MSQ 仓库钥匙转交给 ${toName || '同事'}。`
+        : `${actorName} ${actionText} MSQ 仓库钥匙。`
+      await emitNotificationEvent({
+        type: 'WAREHOUSE_KEY_UPDATED',
+        entity: 'warehouse_key',
+        entityId: keyCode,
+        eventId: `warehouse_key:${keyCode}:${String(eventRow?.id || Date.now())}`,
+        updatedAt: eventRow?.created_at ? String(eventRow.created_at) : new Date().toISOString(),
+        title: 'MSQ 仓库钥匙更新',
+        body,
+        recipientUserIds: recipients,
+        actorUserId: actorId,
+        priority: 'high',
+        data: {
+          kind: 'warehouse_key_updated',
+          key_code: keyCode,
+          key_label: 'MSQ 仓库钥匙',
+          action,
+          task_date: taskDate,
+          actor_user_id: actorId,
+          actor_name: actorName,
+          from_user_id: fromUserId || null,
+          from_name: fromName || null,
+          to_user_id: toUserId || null,
+          to_name: toName || null,
+          note: note || null,
+        },
+      })
+    } catch {}
+
+    return res.status(201).json({
+      ok: true,
+      key: updatedKey ? {
+        key_code: String(updatedKey.key_code || keyCode),
+        label: String(updatedKey.label || 'MSQ 仓库钥匙'),
+        status: String(updatedKey.status || 'available'),
+        holder_user_id: updatedKey.holder_user_id == null ? null : String(updatedKey.holder_user_id || ''),
+        holder_name: updatedKey.holder_name_snapshot == null ? null : String(updatedKey.holder_name_snapshot || ''),
+        updated_at: updatedKey.updated_at ? String(updatedKey.updated_at) : null,
+        updated_by: updatedKey.updated_by == null ? null : String(updatedKey.updated_by || ''),
+      } : null,
+      event: eventRow,
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'error' })
+  }
+})
+
 // List tasks for app (self or all)
 router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_app.tasks.view.self']), async (req, res) => {
   const { assignee_id, date_from, date_to, status } = req.query as { assignee_id?: string; date_from?: string; date_to?: string; status?: string }
@@ -188,6 +507,12 @@ router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_
       `
       const r = await pgPool.query(q, [dfRaw, dtRaw, assignee, status0])
       const rows = (r?.rows || []) as any[]
+      const guideLinks = await resolvePropertyPublicGuideLinks(
+        rows.map((row) => ({
+          propertyId: String(row.property_id || '').trim(),
+          fallbackLink: row.property_access_guide_link,
+        })),
+      )
       return res.json(
         rows.map((row) => {
           const taskId = String(row.task_id || '')
@@ -197,8 +522,7 @@ router.get('/tasks', requireAnyPerm(['cleaning_app.calendar.view.all','cleaning_
           const keyboxCode = row.property_keybox_code === null || row.property_keybox_code === undefined ? null : String(row.property_keybox_code)
           const accessCode = (newCode && newCode.trim()) ? newCode : (oldCode && oldCode.trim()) ? oldCode : (keyboxCode && keyboxCode.trim()) ? keyboxCode : null
           const propertyId = row.property_id === null || row.property_id === undefined ? null : String(row.property_id)
-          const accessGuideLink =
-            row.property_access_guide_link === null || row.property_access_guide_link === undefined ? null : String(row.property_access_guide_link)
+          const accessGuideLink = propertyId ? guideLinks.get(propertyId) || null : null
           const region = row.property_region === null || row.property_region === undefined ? null : String(row.property_region)
           const property = propertyId
             ? {
@@ -490,7 +814,18 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
               updatedAt: new Date().toISOString(),
               title: '房源问题反馈',
               body: `收到新的问题反馈：${String(issue.title || '').trim() || '问题'}`.slice(0, 240),
-              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'issue_reported', task_id: id, issue_id: issue.id },
+              data: {
+                entity: 'cleaning_task',
+                entityId: String(id),
+                action: 'open_task',
+                kind: 'issue_reported',
+                task_id: id,
+                issue_id: issue.id,
+                issue_title: String(issue.title || '').trim() || undefined,
+                issue_detail: issue.detail || undefined,
+                severity: issue.severity || undefined,
+                photo_url: parsed.data.media_url || undefined,
+              },
               actorUserId: String(user?.sub || ''),
               recipientUserIds: managerRecipients,
             },

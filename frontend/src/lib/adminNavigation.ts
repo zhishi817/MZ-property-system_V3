@@ -620,6 +620,14 @@ export const ADMIN_NAVIGATION: AdminNavNode[] = [
         actionPerms: ['cms_public_access.manage'],
       },
       {
+        id: 'cms-customer-service-manual',
+        label: '客服手册',
+        href: '/cms/customer-service-manual',
+        visibleWhenAny: ['menu.cms.customer_service_manual.visible'],
+        rbacKey: 'menu.cms.customer_service_manual.visible',
+        actionPerms: ['cms_pages.view', 'cms_pages.write', 'cms_pages.delete'],
+      },
+      {
         id: 'cms-company',
         label: '公司内容中心',
         href: '/cms/company',

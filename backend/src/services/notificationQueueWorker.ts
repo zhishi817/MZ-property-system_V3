@@ -21,8 +21,6 @@ function delayMsForAttempt(attempt: number) {
   return a * 60 * 1000
 }
 
-const NOTIFICATION_WORKER_LOCK_KEY = 246813581
-
 async function takePendingBatch(limit: number): Promise<QueueRow[]> {
   if (!hasPg || !pgPool) return []
   await ensureNotificationStorage()
@@ -145,32 +143,23 @@ let eventRetryOnEmpty = false
 
 async function drainNotificationQueue(batchSize: number): Promise<QueueDrainResult> {
   if (!hasPg || !pgPool) return { taken: 0, sent: 0, failed: 0, locked: false, moreWork: false }
-  const lockClient = await pgPool.connect()
-  let locked = false
   let taken = 0
   let sent = 0
   let failed = 0
   let moreWork = false
-  try {
-    const lock = await lockClient.query('SELECT pg_try_advisory_lock($1) AS ok', [NOTIFICATION_WORKER_LOCK_KEY])
-    locked = !!(lock?.rows?.[0]?.ok)
-    if (!locked) return { taken, sent, failed, locked, moreWork }
-
-    for (let round = 0; round < 20; round++) {
-      const result = await processOnce(batchSize)
-      taken += Number(result.taken || 0)
-      sent += Number(result.sent || 0)
-      failed += Number(result.failed || 0)
-      moreWork = Number(result.taken || 0) >= batchSize
-      if (!moreWork) break
-    }
-    return { taken, sent, failed, locked, moreWork }
-  } finally {
-    if (locked) {
-      try { await lockClient.query('SELECT pg_advisory_unlock($1)', [NOTIFICATION_WORKER_LOCK_KEY]) } catch {}
-    }
-    lockClient.release()
+  // Queue rows are claimed atomically with FOR UPDATE SKIP LOCKED. A
+  // session-level advisory lock is unsafe through transaction poolers such as
+  // Neon: the unlock query may run on a different PostgreSQL session and leave
+  // the worker permanently blocked.
+  for (let round = 0; round < 20; round++) {
+    const result = await processOnce(batchSize)
+    taken += Number(result.taken || 0)
+    sent += Number(result.sent || 0)
+    failed += Number(result.failed || 0)
+    moreWork = Number(result.taken || 0) >= batchSize
+    if (!moreWork) break
   }
+  return { taken, sent, failed, locked: true, moreWork }
 }
 
 function setEventTimer(delayMs: number) {

@@ -28,6 +28,15 @@ export function getRole(): string | null {
 }
 
 let cachedPerms: Record<string, string[]> = {}
+const ROLE_PERMISSION_OVERLAYS: Record<string, string[]> = {
+  customer_service: [
+    'menu.cms',
+    'menu.cms.customer_service_manual.visible',
+    'cms_pages.view',
+    'cms_pages.write',
+  ],
+}
+
 async function fetchMyPerms(): Promise<string[]> {
   const arr = await getJSON<any>('/rbac/my-permissions', { authSensitive: true, timeoutMs: 5000 })
   return Array.isArray(arr) ? arr : []
@@ -51,5 +60,6 @@ export function hasPerm(code: string): boolean {
       if (Array.isArray(latest) && latest.length) list = latest
     } catch {}
   }
-  return Array.isArray(list) ? list.includes(code) : false
+  const overlay = ROLE_PERMISSION_OVERLAYS[role] || []
+  return Array.isArray(list) ? list.includes(code) || overlay.includes(code) : overlay.includes(code)
 }
