@@ -846,6 +846,20 @@
 }
 
 @media (max-width: 720px) {
+  .taskCenterToolbar {
+    align-items: stretch;
+  }
+
+  .taskCenterSummaryStats {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .taskCenterToolbar > :global(.ant-btn) {
+    margin-left: 0;
+  }
+
   .headerCard { flex-direction: column; align-items: stretch; }
   .rightGroup { justify-content: space-between; }
   .grid { border-radius: 14px; }
@@ -1460,15 +1474,17 @@
 .taskCenterToolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
+  margin-bottom: 14px;
+  flex-wrap: nowrap;
   padding: 0 14px;
 }
 
 .taskCenterFilterInput {
-  width: min(300px, 100%);
+  flex: 0 1 280px;
+  width: 280px;
+  min-width: 200px;
 }
 
 .taskCenterFilterInput :global(.ant-input-affix-wrapper) {
@@ -1493,8 +1509,13 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   min-width: 0;
+}
+
+.taskCenterToolbar > :global(.ant-btn) {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .taskCenterSummaryPill {
@@ -2200,11 +2221,13 @@
   }
 
   .taskCenterToolbar {
-    align-items: stretch;
+    align-items: center;
+    flex-wrap: wrap;
   }
 
   .taskCenterFilterInput {
-    width: 100%;
+    flex: 1 1 240px;
+    width: 240px;
   }
 
   .taskCenterBoardWrap {
@@ -2279,13 +2302,8 @@
     gap: 10px;
   }
 
-  .taskCenterSummaryStats {
-    width: 100%;
-  }
-
   .taskCenterSummaryPill {
-    justify-content: space-between;
-    width: calc(50% - 5px);
+    width: auto;
     min-width: 0;
   }
 
@@ -2318,6 +2336,7 @@
   }
 
   .taskCenterFilterInput {
+    flex: 1 1 100%;
     width: 100%;
   }
 

@@ -87,6 +87,7 @@ async function ensureCmsPagesCompanyColumns() {
     await pgPool.query(`ALTER TABLE cms_pages ADD COLUMN IF NOT EXISTS updated_by text;`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_status ON cms_pages(status);`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_type ON cms_pages(page_type);`)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_type_category ON cms_pages(page_type, category);`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_guide_role ON cms_pages(guide_role);`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_pinned ON cms_pages(pinned, published_at);`)
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_cms_pages_expires ON cms_pages(expires_at);`)
@@ -115,7 +116,7 @@ async function ensureCmsCompanyPublicLinksTable() {
 
 const pageTypeSchema = z.enum(['announce', 'doc', 'warehouse'])
 const audienceScopeSchema = z.enum(['all_staff', 'cleaners', 'warehouse_staff', 'maintenance_staff', 'managers']).optional()
-const categorySchema = z.enum(['company_rule', 'starter_guide', 'role_guide', 'work_guide']).optional()
+const categorySchema = z.enum(['company_rule', 'starter_guide', 'role_guide', 'work_guide', 'customer_service_manual']).optional()
 const guideRoleSchema = z.enum(['cleaner', 'cleaning_inspector']).optional()
 
 function categorySupportsGuideRole(category: string | null | undefined) {
@@ -209,25 +210,34 @@ router.get('/company/pages', requirePerm('cms_pages.view'), async (req, res) => 
   const type = String((req.query as any)?.type || '').trim()
   const parsed = pageTypeSchema.safeParse(type)
   if (!parsed.success) return res.status(400).json({ message: 'invalid type' })
+  const category = String((req.query as any)?.category || '').trim()
+  const parsedCategory = category ? categorySchema.safeParse(category) : null
+  if (category && !parsedCategory?.success) return res.status(400).json({ message: 'invalid category' })
   if (!hasPg) return res.status(500).json({ message: 'no database configured' })
   await ensureCmsPagesCompanyColumns()
   const { pgPool } = require('../dbAdapter')
   if (!pgPool) return res.status(500).json({ message: 'no database configured' })
   try {
+    const where = ['page_type=$1']
+    const values: any[] = [type]
+    if (type === 'doc' && category) {
+      values.push(category)
+      where.push(`category=$${values.length}`)
+    }
     if (type === 'announce') {
       const r = await pgPool.query(
         `SELECT * FROM cms_pages
-         WHERE page_type=$1
+         WHERE ${where.join(' AND ')}
          ORDER BY pinned DESC, published_at DESC NULLS LAST, updated_at DESC NULLS LAST, created_at DESC`,
-        [type]
+        values
       )
       return res.json(r.rows || [])
     }
     const r = await pgPool.query(
       `SELECT * FROM cms_pages
-       WHERE page_type=$1
+       WHERE ${where.join(' AND ')}
        ORDER BY updated_at DESC NULLS LAST, created_at DESC`,
-      [type]
+      values
     )
     return res.json(r.rows || [])
   } catch (e: any) {
@@ -487,7 +497,7 @@ router.get('/company/pages/app-list', async (req, res) => {
       type === 'announce'
         ? 'pinned DESC, published_at DESC NULLS LAST, updated_at DESC NULLS LAST, created_at DESC'
         : 'updated_at DESC NULLS LAST, published_at DESC NULLS LAST, created_at DESC'
-    const sql = `SELECT id, title, content, published_at, updated_at, pinned, urgent, audience_scope, page_type, category, guide_role, expires_at, created_at
+    const sql = `SELECT id, slug, title, content, published_at, updated_at, pinned, urgent, audience_scope, page_type, category, guide_role, expires_at, created_at
                  FROM cms_pages
                  WHERE ${where.join(' AND ')}
                  ORDER BY ${orderBy}`

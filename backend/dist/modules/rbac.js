@@ -543,6 +543,7 @@ exports.router.post('/role-permissions', (0, auth_1.requirePerm)('rbac.manage'),
         'menu.finance.company_overview.visible': ['finance_transactions', 'order', 'properties', 'property_expenses'],
         'menu.finance.company_revenue.visible': ['company_incomes', 'company_expenses'],
         'menu.cms.visible': ['cms_pages'],
+        'menu.cms.customer_service_manual.visible': ['cms_pages'],
         'menu.rbac.visible': ['users'],
     };
     // 仅当勾选“查看数据/编辑/删除/归档”时派生资源权限；父级 group 不派生
@@ -819,37 +820,51 @@ const userCreateSchema = zod_1.z.object({
     username: zod_1.z.string().min(1),
     email: zod_1.z.preprocess((v) => {
         if (v === null || v === undefined)
-            return undefined;
+            return v;
         const s = String(v).trim();
-        return s ? s : undefined;
-    }, zod_1.z.string().email().optional()),
-    phone_au: zod_1.z.string().min(1),
+        return s || null;
+    }, zod_1.z.string().email().nullable().optional()),
+    phone_au: zod_1.z.preprocess((v) => {
+        if (v === null || v === undefined)
+            return v;
+        const s = String(v).trim();
+        return s || null;
+    }, zod_1.z.string().nullable().optional()),
     role: zod_1.z.string().min(1),
     roles: zod_1.z.array(zod_1.z.string().min(1)).optional(),
     password: zod_1.z.string().min(6),
     color_hex: zod_1.z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
 }).transform((v) => {
-    const phone = normalizeAuPhone(v.phone_au);
-    if (!phone)
-        throw new Error('invalid_phone_au');
-    return { ...v, phone_au: phone };
+    const out = { ...v };
+    if (out.phone_au) {
+        const phone = normalizeAuPhone(out.phone_au);
+        if (!phone)
+            throw new Error('invalid_phone_au');
+        out.phone_au = phone;
+    }
+    return out;
 });
 const userUpdateSchema = zod_1.z.object({
     username: zod_1.z.string().optional(),
     email: zod_1.z.preprocess((v) => {
         if (v === null || v === undefined)
-            return undefined;
+            return v;
         const s = String(v).trim();
-        return s ? s : undefined;
-    }, zod_1.z.string().email().optional()),
-    phone_au: zod_1.z.string().optional(),
+        return s || null;
+    }, zod_1.z.string().email().nullable().optional()),
+    phone_au: zod_1.z.preprocess((v) => {
+        if (v === null || v === undefined)
+            return v;
+        const s = String(v).trim();
+        return s || null;
+    }, zod_1.z.string().nullable().optional()),
     role: zod_1.z.string().optional(),
     roles: zod_1.z.array(zod_1.z.string().min(1)).optional(),
     password: zod_1.z.string().min(6).optional(),
     color_hex: zod_1.z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
 }).transform((v) => {
     const out = { ...v };
-    if (out.phone_au !== undefined) {
+    if (out.phone_au) {
         const phone = normalizeAuPhone(out.phone_au);
         if (!phone)
             throw new Error('invalid_phone_au');

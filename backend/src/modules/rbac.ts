@@ -494,6 +494,7 @@ router.post('/role-permissions', requirePerm('rbac.manage'), async (req, res) =>
     'menu.finance.company_overview.visible': ['finance_transactions','order','properties','property_expenses'],
     'menu.finance.company_revenue.visible': ['company_incomes','company_expenses'],
     'menu.cms.visible': ['cms_pages'],
+    'menu.cms.customer_service_manual.visible': ['cms_pages'],
     'menu.rbac.visible': ['users'],
   }
   // 仅当勾选“查看数据/编辑/删除/归档”时派生资源权限；父级 group 不派生
@@ -713,35 +714,47 @@ function normalizeAuPhone(v: unknown) {
 const userCreateSchema = z.object({
   username: z.string().min(1),
   email: z.preprocess((v) => {
-    if (v === null || v === undefined) return undefined
+    if (v === null || v === undefined) return v
     const s = String(v).trim()
-    return s ? s : undefined
-  }, z.string().email().optional()),
-  phone_au: z.string().min(1),
+    return s || null
+  }, z.string().email().nullable().optional()),
+  phone_au: z.preprocess((v) => {
+    if (v === null || v === undefined) return v
+    const s = String(v).trim()
+    return s || null
+  }, z.string().nullable().optional()),
   role: z.string().min(1),
   roles: z.array(z.string().min(1)).optional(),
   password: z.string().min(6),
   color_hex: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
 }).transform((v) => {
-  const phone = normalizeAuPhone((v as any).phone_au)
-  if (!phone) throw new Error('invalid_phone_au')
-  return { ...(v as any), phone_au: phone }
+  const out: any = { ...(v as any) }
+  if (out.phone_au) {
+    const phone = normalizeAuPhone(out.phone_au)
+    if (!phone) throw new Error('invalid_phone_au')
+    out.phone_au = phone
+  }
+  return out
 })
 const userUpdateSchema = z.object({
   username: z.string().optional(),
   email: z.preprocess((v) => {
-    if (v === null || v === undefined) return undefined
+    if (v === null || v === undefined) return v
     const s = String(v).trim()
-    return s ? s : undefined
-  }, z.string().email().optional()),
-  phone_au: z.string().optional(),
+    return s || null
+  }, z.string().email().nullable().optional()),
+  phone_au: z.preprocess((v) => {
+    if (v === null || v === undefined) return v
+    const s = String(v).trim()
+    return s || null
+  }, z.string().nullable().optional()),
   role: z.string().optional(),
   roles: z.array(z.string().min(1)).optional(),
   password: z.string().min(6).optional(),
   color_hex: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
 }).transform((v) => {
   const out: any = { ...(v as any) }
-  if (out.phone_au !== undefined) {
+  if (out.phone_au) {
     const phone = normalizeAuPhone(out.phone_au)
     if (!phone) throw new Error('invalid_phone_au')
     out.phone_au = phone

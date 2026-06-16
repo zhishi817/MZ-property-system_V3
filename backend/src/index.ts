@@ -48,7 +48,6 @@ import { publicRouter as guestSitePublicRouter, adminRouter as guestSiteAdminRou
 import { runKeyUploadReminder } from './lib/keyUploadReminderJob'
 import { runKeyUploadSlaCheck } from './lib/keyUploadSlaJob'
 import { runDayEndHandoverReminder } from './lib/dayEndHandoverReminderJob'
-import { runCustomerServiceMemoReminderJob } from './lib/customerServiceMemoReminderJob'
 import { auth } from './auth'
 import publicRouter from './modules/public'
 import publicAdminRouter from './modules/public_admin'
@@ -774,43 +773,6 @@ function onServerListening() {
       console.log('[pdf-jobs][schedule] disabled_on_web')
     } catch (e: any) {
       console.error(`[pdf-jobs][schedule] init error message=${String(e?.message || '')}`)
-    }
-  })()
-
-  ;(async () => {
-    try {
-      const defaultEnabled = process.env.NODE_ENV === 'production'
-      const enabled = String(process.env.CUSTOMER_SERVICE_MEMO_REMINDER_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true'
-      if (!enabled) {
-        console.log('[customer-service-memo-reminder][schedule] disabled')
-        return
-      }
-      if (!hasPg || !pgPool) {
-        console.log('[customer-service-memo-reminder][schedule] skipped_reason=pg=false')
-        return
-      }
-      const expr = String(process.env.CUSTOMER_SERVICE_MEMO_REMINDER_CRON || '*/1 * * * *').trim()
-      console.log(`[customer-service-memo-reminder][schedule] enabled cron=${expr} tz=Australia/Melbourne`)
-      const task = cron.schedule(
-        expr,
-        async () => {
-          const started = Date.now()
-          const lockKey = 975319751
-          try {
-            await pgRunWithAdvisoryLock(lockKey, 'customer-service-memo-reminder', async () => {
-              const r = await runCustomerServiceMemoReminderJob()
-              const dur = Date.now() - started
-              console.log(`[customer-service-memo-reminder][schedule] ok duration_ms=${dur} processed=${Number((r as any)?.processed || 0)} sent=${Number((r as any)?.sent || 0)}`)
-            })
-          } catch (e: any) {
-            console.error(`[customer-service-memo-reminder][schedule] error message=${String(e?.message || '')}`)
-          }
-        },
-        { scheduled: true, timezone: 'Australia/Melbourne' },
-      )
-      task.start()
-    } catch (e: any) {
-      console.error(`[customer-service-memo-reminder][schedule] init error message=${String(e?.message || '')}`)
     }
   })()
 

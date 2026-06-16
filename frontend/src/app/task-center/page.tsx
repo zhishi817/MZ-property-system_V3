@@ -1,10 +1,11 @@
 "use client"
 
 import { Alert, Button, DatePicker, Empty, Input, Modal, Select, Skeleton, Space, Switch, Tag, message } from 'antd'
-import { DeleteOutlined, HolderOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { DeleteOutlined, HolderOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined, SaveOutlined } from '@ant-design/icons'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { getJSON, patchJSON, postJSON } from '../../lib/api'
+import { upsertAdminNotification } from '../../lib/adminNotifications'
 import styles from '../cleaning/cleaningSchedule.module.scss'
 
 type Staff = {
@@ -133,6 +134,13 @@ const DEFAULT_SUMMARY_CHECKOUT_TIME = '10am'
 const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm'
 const TASK_CENTER_TIMEZONE = 'Australia/Melbourne'
 const TASK_CENTER_DAY_END_HOUR = 18
+const SAVE_BOARD_TIMEOUT_MS = 120000
+
+function saveBoardErrorMessage(error: any) {
+  const msg = String(error?.message || '').trim()
+  if (/timeout|超时|abort|aborted/i.test(msg)) return '保存安排耗时较长，请稍后刷新确认结果；如果没有保存成功，再点一次保存'
+  return msg || '保存安排失败'
+}
 
 function melbourneDateParts(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -325,7 +333,10 @@ export default function TaskCenterPage() {
   const [detailSaving, setDetailSaving] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [createLoading, setCreateLoading] = useState(false)
-  const [creatingRow, setCreatingRow] = useState(false)
+  const [boardDirty, setBoardDirty] = useState(false)
+  const [boardSaving, setBoardSaving] = useState(false)
+  const boardDirtyRef = useRef(false)
+  const loadDayRequestRef = useRef(0)
   const [offlineCreate, setOfflineCreate] = useState<{
     date: Dayjs
     task_type: 'property' | 'company' | 'other'
@@ -348,18 +359,40 @@ export default function TaskCenterPage() {
     setProperties(Array.isArray(rows) ? rows : [])
   }, [])
 
-  const loadDay = useCallback(async () => {
+  const setBoardDraftDirty = useCallback((dirty: boolean) => {
+    boardDirtyRef.current = dirty
+    setBoardDirty(dirty)
+    if (dirty) {
+      upsertAdminNotification({
+        id: 'task-center-save-status',
+        type: 'warning',
+        title: '任务中心',
+        message: '有未保存修改',
+        source: 'task-center',
+      })
+    }
+  }, [])
+
+  const loadDay = useCallback(async (options?: { discardDraft?: boolean }) => {
+    const requestId = loadDayRequestRef.current + 1
+    loadDayRequestRef.current = requestId
     setLoading(true)
     setError(null)
     try {
       const payload = await getJSON<TaskCenterDay>(`/task-center/day?date=${encodeURIComponent(dateStr)}&include_overdue=1&include_unscheduled=1&include_future=1`, { timeoutMs: 20000 })
+      if (requestId !== loadDayRequestRef.current) return false
+      if (boardDirtyRef.current && !options?.discardDraft) return false
       setDayData(payload || null)
+      setBoardDraftDirty(false)
+      return true
     } catch (e: any) {
+      if (requestId !== loadDayRequestRef.current) return false
       setError(String(e?.message || '加载失败'))
+      return false
     } finally {
-      setLoading(false)
+      if (requestId === loadDayRequestRef.current) setLoading(false)
     }
-  }, [dateStr])
+  }, [dateStr, setBoardDraftDirty])
 
   useEffect(() => {
     loadStaff().catch(() => {})
@@ -369,6 +402,16 @@ export default function TaskCenterPage() {
   useEffect(() => {
     loadDay().catch(() => {})
   }, [loadDay])
+
+  useEffect(() => {
+    if (!boardDirty) return
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warnBeforeUnload)
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload)
+  }, [boardDirty])
 
   const activeStaff = useMemo(() => staff.filter((item) => item.is_active !== false), [staff])
   const activeCleaners = useMemo(() => activeStaff.filter((item) => (item.kind || 'cleaner') === 'cleaner'), [activeStaff])
@@ -404,41 +447,6 @@ export default function TaskCenterPage() {
   }, [allRows, filterQuery])
 
   const allBoardTasks = useMemo(() => allRows.flatMap((row) => row.subrows.flatMap((subrow) => subrow.tasks)), [allRows])
-
-  const allCleaningTaskRefs = useMemo(() => {
-    const ids: string[] = []
-    for (const task of allBoardTasks) {
-      if (task.task_source !== 'cleaning') continue
-      ids.push(...task.task_ids.map((id) => String(id)))
-    }
-    return Array.from(new Set(ids.filter(Boolean)))
-  }, [allBoardTasks])
-
-  const lockTaskIds = useMemo(() => {
-    const ids: string[] = []
-    for (const task of allBoardTasks) {
-      if (task.task_source !== 'cleaning') continue
-      if (!String(task.order_id || '').trim()) continue
-      if (task.auto_sync_enabled === false) continue
-      ids.push(...task.task_ids.map((id) => String(id)))
-    }
-    return Array.from(new Set(ids.filter(Boolean)))
-  }, [allBoardTasks])
-
-  const unlockTaskIds = useMemo(() => {
-    const ids: string[] = []
-    for (const task of allBoardTasks) {
-      if (task.task_source !== 'cleaning') continue
-      if (!String(task.order_id || '').trim()) continue
-      if (task.auto_sync_enabled !== false) continue
-      ids.push(...task.task_ids.map((id) => String(id)))
-    }
-    return Array.from(new Set(ids.filter(Boolean)))
-  }, [allBoardTasks])
-
-  const dayLocked = useMemo(() => {
-    return allBoardTasks.some((task) => task.task_source === 'cleaning' && task.auto_sync_enabled === false && String(task.order_id || '').trim())
-  }, [allBoardTasks])
 
   const propertyOptions = useMemo(() => (
     properties
@@ -692,14 +700,6 @@ export default function TaskCenterPage() {
     }))),
   }), [])
 
-  const persistBoardLayout = useCallback(async (rows: TaskCenterRow[]) => {
-    await postJSON('/task-center/layout', {
-      date: dateStr,
-      mode: 'board',
-      ...layoutPayloadFromRows(normalizeRowsForBoard(rows)),
-    }, { timeoutMs: 20000 })
-  }, [dateStr, layoutPayloadFromRows, normalizeRowsForBoard])
-
   const saveTaskFlags = useCallback(async (task: TaskCenterTask, temporarilySkipped: boolean, skipReason: string) => {
     const refs = task.task_source === 'cleaning' ? task.task_ids.map((id) => ({ task_source: 'cleaning' as const, task_id: String(id) })) : [{ task_source: 'work' as const, task_id: String(task.task_id) }]
     await postJSON('/task-center/task-flags', {
@@ -820,14 +820,15 @@ export default function TaskCenterPage() {
       if (movedTask) break
     }
     if (!movedTask) return nextRows
-    if (task.task_source === 'cleaning' && nextInspectionMode === 'deferred') {
-      const targetRow = ensureBoardRow(nextRows, DEFERRED_INSPECTION_ROW_KEY)
-      const targetSubrow = targetRow.subrows[0]
-      if (!targetSubrow) return nextRows
-      targetSubrow.tasks.push(movedTask)
-      return nextRows
-    }
-    const targetRowKey = defaultBoardRowKeyForTask(movedTask)
+    const shouldRebucket =
+      movedTask.temporarily_skipped ||
+      (task.task_source === 'cleaning' && nextInspectionMode === 'deferred') ||
+      (sourceRowKey === DEFERRED_ROW_KEY && !movedTask.temporarily_skipped) ||
+      (sourceRowKey === DEFERRED_INSPECTION_ROW_KEY && nextInspectionMode !== 'deferred') ||
+      sourceRowKey === COMPLETED_ROW_KEY
+    const targetRowKey = shouldRebucket || !sourceRowKey
+      ? defaultBoardRowKeyForTask(movedTask)
+      : sourceRowKey
     const targetRow = ensureBoardRow(nextRows, targetRowKey)
     const targetSubrow = targetRow.subrows[0]
     if (!targetSubrow) return nextRows
@@ -856,17 +857,18 @@ export default function TaskCenterPage() {
 
   const saveTaskDetail = useCallback(async () => {
     if (!detailTask || !detailDraft) return
+    if (detailTask.task_source === 'cleaning') {
+      applyTaskDetailLocally(detailTask, detailDraft)
+      setBoardDraftDirty(true)
+      setDetailTask(null)
+      setDetailDraft(null)
+      message.success('修改已应用，请点击右上角“保存安排”统一保存')
+      return
+    }
     const rescheduleDate = detailTask.task_source === 'work' && detailDraft.temporarily_skipped && detailDraft.deferred_to_date
       ? detailDraft.deferred_to_date.format('YYYY-MM-DD')
       : null
     const shouldRescheduleWork = detailTask.task_source === 'work' && !!rescheduleDate
-    const keysHungChanged = detailTask.task_source === 'cleaning' && detailDraft.keys_hung !== isKeysHungStatus(detailTask.status)
-    const inspectionChanged =
-      detailTask.task_source === 'cleaning' && (
-        String(detailTask.inspection_mode || 'pending_decision') !== String((detailDraft.keys_hung ? 'self_complete' : detailDraft.inspection_mode) || 'pending_decision') ||
-        String(detailTask.inspection_due_date || '') !== String(detailDraft.inspection_mode === 'deferred' && detailDraft.inspection_due_date ? detailDraft.inspection_due_date.format('YYYY-MM-DD') : '') ||
-        String(detailTask.inspector_id || '') !== String((detailDraft.keys_hung || detailDraft.inspection_mode === 'pending_decision' || detailDraft.inspection_mode === 'self_complete') ? '' : (detailDraft.inspector_id || ''))
-      )
     const pendingKeys = taskPendingKeys(detailTask)
     const previousRows = cloneRows(allRows)
     const skipChanged =
@@ -879,37 +881,24 @@ export default function TaskCenterPage() {
     setDetailTask(null)
     setDetailDraft(null)
     try {
-      if (detailTask.task_source === 'cleaning') {
-        const nextStatus = nextCleaningDetailStatus(detailTask, detailDraft)
-        const nextInspectionMode = detailDraft.keys_hung ? 'self_complete' : detailDraft.inspection_mode
-        const nextCleanerId = requiresCleanerAssignment(detailTask) ? (detailDraft.cleaner_id || null) : null
-        await patchCleaningTasks(detailTask.task_ids, {
-          cleaner_id: nextCleanerId,
-          inspector_id: nextInspectionMode === 'pending_decision' || nextInspectionMode === 'self_complete' ? null : (detailDraft.inspector_id || null),
-          inspection_mode: nextInspectionMode,
-          inspection_due_date: nextInspectionMode === 'deferred' ? (detailDraft.inspection_due_date ? detailDraft.inspection_due_date.format('YYYY-MM-DD') : null) : null,
-          status: nextStatus,
-        })
-        if (keysHungChanged) {
-          const rowsForPersist = rowsAfterTaskDetail(normalizeRowsForBoard(cloneRows(previousRows)), detailTask, detailDraft)
-          await persistBoardLayout(rowsForPersist)
-        }
-      } else {
-        await patchWorkTask(detailTask.task_id, {
-          title: String(detailDraft.title || '').trim(),
-          summary: String(detailDraft.summary || '').trim(),
-          urgency: detailDraft.urgency,
-          assignee_id: shouldRescheduleWork ? null : (detailDraft.assignee_id || null),
-          scheduled_date: shouldRescheduleWork ? rescheduleDate : undefined,
-          status: shouldRescheduleWork ? 'todo' : undefined,
-        })
-      }
-      if (skipChanged || keysHungChanged || inspectionChanged) {
-        await saveTaskFlags(
+      const saves: Promise<any>[] = []
+      saves.push(patchWorkTask(detailTask.task_id, {
+        title: String(detailDraft.title || '').trim(),
+        summary: String(detailDraft.summary || '').trim(),
+        urgency: detailDraft.urgency,
+        assignee_id: shouldRescheduleWork ? null : (detailDraft.assignee_id || null),
+        scheduled_date: shouldRescheduleWork ? rescheduleDate : undefined,
+        status: shouldRescheduleWork ? 'todo' : undefined,
+      }))
+      if (skipChanged) {
+        saves.push(saveTaskFlags(
           detailTask,
           shouldRescheduleWork ? false : detailDraft.temporarily_skipped,
           shouldRescheduleWork ? '' : detailDraft.skip_reason,
-        )
+        ))
+      }
+      await Promise.all(saves)
+      if (shouldRescheduleWork) {
         await loadDay()
       }
       message.success(shouldRescheduleWork ? `任务已移到 ${rescheduleDate}` : '任务已更新')
@@ -920,7 +909,7 @@ export default function TaskCenterPage() {
       removePending(pendingKeys)
       setDetailSaving(false)
     }
-  }, [addPending, allRows, applyTaskDetailLocally, cloneRows, detailDraft, detailTask, loadDay, nextCleaningDetailStatus, normalizeRowsForBoard, patchCleaningTasks, patchWorkTask, persistBoardLayout, removePending, replaceRowsLocally, rowsAfterTaskDetail, saveTaskFlags, taskPendingKeys])
+  }, [addPending, allRows, applyTaskDetailLocally, cloneRows, detailDraft, detailTask, loadDay, patchWorkTask, removePending, replaceRowsLocally, saveTaskFlags, setBoardDraftDirty, taskPendingKeys])
 
   const rowTaskCollections = useCallback((row: TaskCenterRow) => {
     const tasks = row.subrows.flatMap((subrow) => subrow.tasks)
@@ -987,10 +976,8 @@ export default function TaskCenterPage() {
     })
   }, [autoCleaningStatus, autoWorkStatus, buildReadinessFromRows])
 
-  const updateRowAssignment = useCallback(async (row: TaskCenterRow, field: 'inspector_id' | 'executor_id', value: string | null) => {
+  const updateRowAssignment = useCallback((row: TaskCenterRow, field: 'inspector_id' | 'executor_id', value: string | null) => {
     const fullRow = allRows.find((item) => item.row_key === row.row_key) || row
-    const nextAssignments = { ...(fullRow.assignments || {}), [field]: value || null }
-    const previousRows = cloneRows(allRows)
     const collections = rowTaskCollections(fullRow)
     applyRowAssignmentLocally({
       rowKey: fullRow.row_key,
@@ -999,65 +986,16 @@ export default function TaskCenterPage() {
       inspectionIds: collections.inspectionIds,
       workIds: collections.workIds,
     })
-    try {
-      await postJSON('/task-center/row-assignments', {
-        date: dateStr,
-        mode: 'board',
-        row_key: fullRow.row_key,
-        row_type: fullRow.row_type,
-        row_title: fullRow.row_title,
-        row_order: fullRow.row_order,
-        subrow_order: fullRow.subrows.map((item) => item.subrow_key),
-        assignments: nextAssignments,
-      }, { timeoutMs: 20000 })
-      if (field === 'inspector_id' && collections.inspectionIds.length) {
-        await patchCleaningTasks(collections.inspectionIds, {
-          inspector_id: value || null,
-          inspection_mode: value ? 'same_day' : 'pending_decision',
-        })
-      }
-      if (field === 'executor_id' && collections.workIds.length) {
-        await Promise.all(collections.workIds.map((taskId) => patchWorkTask(taskId, { assignee_id: value || null })))
-      }
-      await loadDay()
-      message.success('整行指派已更新')
-    } catch (e: any) {
-      replaceRowsLocally(previousRows)
-      message.error(String(e?.message || '更新失败'))
-    }
-  }, [allRows, applyRowAssignmentLocally, cloneRows, dateStr, loadDay, patchCleaningTasks, patchWorkTask, replaceRowsLocally, rowTaskCollections])
+    setBoardDraftDirty(true)
+  }, [allRows, applyRowAssignmentLocally, rowTaskCollections, setBoardDraftDirty])
 
-  const createRow = useCallback(async () => {
+  const createRow = useCallback(() => {
     const previousRows = cloneRows(allRows)
     const nextRowOrder = previousRows.reduce((max, row) => Math.max(max, Number(row.row_order || 0)), 0) + 100
     const tempRowKey = `group:pending:${Date.now()}`
     replaceRowsLocally([...previousRows, buildEmptyBoardRow(tempRowKey, nextRowOrder)])
-    setCreatingRow(true)
-    try {
-      const payload = await postJSON<{ row_key?: string }>('/task-center/create-row', { date: dateStr }, { timeoutMs: 20000 })
-      const persistedRowKey = String(payload?.row_key || '').trim()
-      if (persistedRowKey) {
-        setDayData((prev) => {
-          if (!prev) return prev
-          const rows = prev.rows.map((row) => (row.row_key === tempRowKey ? { ...row, row_key: persistedRowKey } : row))
-          return {
-            ...prev,
-            rows,
-            region_rows: rows.filter((row) => row.row_type !== 'deferred'),
-            final_group_rows: rows.filter((row) => row.row_type === 'final_group'),
-            deferred_rows: rows.filter((row) => row.row_type === 'deferred'),
-            entry_readiness: buildReadinessFromRows(rows),
-          }
-        })
-      }
-      message.success('已新增一行')
-    } catch (e: any) {
-      replaceRowsLocally(previousRows)
-      message.error(String(e?.message || '新增一行失败'))
-    } finally {
-      setCreatingRow(false)
-    }
-  }, [allRows, buildEmptyBoardRow, buildReadinessFromRows, cloneRows, dateStr, replaceRowsLocally])
+    setBoardDraftDirty(true)
+  }, [allRows, buildEmptyBoardRow, cloneRows, replaceRowsLocally, setBoardDraftDirty])
 
   const deleteRow = useCallback(async (rowKey: string) => {
     const previousRows = cloneRows(allRows)
@@ -1088,12 +1026,11 @@ export default function TaskCenterPage() {
     task_id: task.task_id,
   }), [])
 
-  const handleTaskDrop = useCallback(async (payload: any, targetLine: TaskCenterLine) => {
+  const handleTaskDrop = useCallback((payload: any, targetLine: TaskCenterLine) => {
     const task = allBoardTasks.find((item) => item.task_source === payload.task_source && item.task_id === payload.task_id)
     if (!task) return
     const pendingKeys = taskPendingKeys(task)
     if (pendingKeys.some((key) => hasPendingKey(key))) return
-    const previousRows = cloneRows(allRows)
     const nextRows = normalizeRowsForBoard(cloneRows(allRows))
     let movedTask: TaskCenterTask | null = null
     for (const row of nextRows) {
@@ -1118,6 +1055,33 @@ export default function TaskCenterPage() {
     const row = ensureBoardRow(nextRows, resolvedTargetRowKey)
     const subrow = row?.subrows[0]
     if (!row || !subrow) return
+    if (row.row_key === DEFERRED_ROW_KEY) {
+      movedTask = {
+        ...movedTask,
+        temporarily_skipped: true,
+        skip_reason: movedTask.skip_reason || '暂不安排',
+        skip_bucket: 'deferred',
+      }
+    } else if (movedTask.temporarily_skipped) {
+      movedTask = {
+        ...movedTask,
+        temporarily_skipped: false,
+        skip_reason: null,
+        skip_bucket: null,
+      }
+    }
+    const targetInspectorId = task.task_source === 'cleaning' && row.row_type !== 'deferred'
+      ? String(row.assignments?.inspector_id || '').trim()
+      : ''
+    if (targetInspectorId) {
+      movedTask = {
+        ...movedTask,
+        inspector_id: targetInspectorId,
+        inspection_mode: 'same_day',
+        inspection_due_date: null,
+        status: autoCleaningStatus(movedTask.status, movedTask.cleaner_id || movedTask.assignee_id || null, targetInspectorId),
+      }
+    }
     const insertIndex = targetLine.row_key === 'work:bottom'
       ? subrow.tasks.length
       : (() => {
@@ -1128,55 +1092,143 @@ export default function TaskCenterPage() {
             : Math.min(currentStart + currentLength, subrow.tasks.length)
         })()
     subrow.tasks.splice(insertIndex, 0, movedTask)
-    addPending(pendingKeys)
     replaceRowsLocally(nextRows)
+    setBoardDraftDirty(true)
     setDragOverKey(null)
-    try {
-      if (row.row_key === DEFERRED_ROW_KEY) {
-        await saveTaskFlags(task, true, task.skip_reason || '暂不安排')
-      } else if (task.temporarily_skipped) {
-        await saveTaskFlags(task, false, '')
-      }
-      await persistBoardLayout(nextRows)
-    } catch (e: any) {
-      replaceRowsLocally(previousRows)
-      message.error(String(e?.message || '拖拽更新失败'))
-    } finally {
-      removePending(pendingKeys)
-      setDragOverKey(null)
+  }, [allBoardTasks, allRows, autoCleaningStatus, cloneRows, defaultBoardRowKeyForTask, ensureBoardRow, hasPendingKey, normalizeRowsForBoard, replaceRowsLocally, setBoardDraftDirty, taskPendingKeys])
+
+  const saveBoardDraft = useCallback(async () => {
+    if (boardSaving) return
+    if (!boardDirtyRef.current) {
+      upsertAdminNotification({
+        id: 'task-center-save-status',
+        type: 'success',
+        title: '任务中心',
+        message: '当前安排已保存',
+        source: 'task-center',
+      })
+      message.info('当前没有需要保存的修改')
+      return
     }
-  }, [addPending, allBoardTasks, allRows, cloneRows, defaultBoardRowKeyForTask, ensureBoardRow, hasPendingKey, normalizeRowsForBoard, persistBoardLayout, removePending, replaceRowsLocally, saveTaskFlags, taskPendingKeys])
+    const rows = normalizeRowsForBoard(cloneRows(allRows))
+    const layout = layoutPayloadFromRows(rows)
+    const cleaningAssignments = new Map<string, {
+      task_id: string
+      cleaner_id: string | null
+      inspector_id: string | null
+      inspection_mode: TaskCenterTask['inspection_mode']
+      inspection_due_date: string | null
+      status: string
+    }>()
+    const workAssignments = new Map<string, { task_id: string; assignee_id: string | null }>()
+    const taskFlags = new Map<string, {
+      task_source: TaskCenterTask['task_source']
+      task_id: string
+      temporarily_skipped: boolean
+      skip_reason: string | null
+      bucket: string | null
+    }>()
+    for (const row of rows) {
+      for (const task of row.subrows.flatMap((subrow) => subrow.tasks)) {
+        const taskIds = task.task_source === 'cleaning' ? task.task_ids : [task.task_id]
+        for (const taskId of taskIds) {
+          const id = String(taskId)
+          taskFlags.set(`${task.task_source}:${id}`, {
+            task_source: task.task_source,
+            task_id: id,
+            temporarily_skipped: task.temporarily_skipped === true,
+            skip_reason: task.temporarily_skipped ? (task.skip_reason || '暂不安排') : null,
+            bucket: task.temporarily_skipped ? 'deferred' : null,
+          })
+          if (task.task_source === 'cleaning') {
+            cleaningAssignments.set(id, {
+              task_id: id,
+              cleaner_id: task.cleaner_id || task.assignee_id || null,
+              inspector_id: task.inspector_id || null,
+              inspection_mode: task.inspection_mode || 'pending_decision',
+              inspection_due_date: task.inspection_due_date || null,
+              status: task.status,
+            })
+          } else {
+            workAssignments.set(id, { task_id: id, assignee_id: task.assignee_id || null })
+          }
+        }
+      }
+    }
+    setBoardSaving(true)
+    upsertAdminNotification({
+      id: 'task-center-save-status',
+      type: 'info',
+      title: '任务中心',
+      message: '正在保存安排...',
+      source: 'task-center',
+    })
+    try {
+      const savedAt = dayjs().format('HH:mm:ss')
+      const result = await postJSON<{
+        ok?: boolean
+        event_notifications?: number
+      }>('/task-center/save-board', {
+        date: dateStr,
+        mode: 'board',
+        ...layout,
+        row_assignments: rows.map((row) => ({
+          row_key: row.row_key,
+          assignments: row.assignments || {},
+        })),
+        cleaning_assignments: Array.from(cleaningAssignments.values()),
+        work_assignments: Array.from(workAssignments.values()),
+        task_flags: Array.from(taskFlags.values()),
+      }, { timeoutMs: SAVE_BOARD_TIMEOUT_MS })
+      setBoardDraftDirty(false)
+      upsertAdminNotification({
+        id: 'task-center-save-status',
+        type: 'success',
+        title: '任务中心',
+        message: `已保存 ${savedAt}${typeof result?.event_notifications === 'number' ? `，通知 ${result.event_notifications} 条后台发送中` : ''}，正在刷新最新数据...`,
+        source: 'task-center',
+      })
+      message.success('任务安排已保存')
+      const refreshed = await loadDay({ discardDraft: true })
+      upsertAdminNotification({
+        id: 'task-center-save-status',
+        type: refreshed ? 'success' : 'warning',
+        title: '任务中心',
+        message: refreshed ? `已保存 ${savedAt}` : `已保存 ${savedAt}，但刷新最新数据失败，请手动刷新`,
+        source: 'task-center',
+      })
+    } catch (e: any) {
+      const text = saveBoardErrorMessage(e)
+      upsertAdminNotification({
+        id: 'task-center-save-status',
+        type: 'error',
+        title: '任务中心',
+        message: text,
+        source: 'task-center',
+      })
+      message.error(text)
+    } finally {
+      setBoardSaving(false)
+    }
+  }, [allRows, boardSaving, cloneRows, dateStr, layoutPayloadFromRows, loadDay, normalizeRowsForBoard, setBoardDraftDirty])
 
-  const lockDay = useCallback(async () => {
-    if (!allCleaningTaskRefs.length) { message.warning('当日无可锁定任务'); return }
-    if (!lockTaskIds.length) { message.info('当日已处于锁定状态'); return }
+  const confirmDiscardBoardDraft = useCallback((action: () => void) => {
+    if (!boardDirtyRef.current) {
+      action()
+      return
+    }
     Modal.confirm({
-      title: '确认锁定当日安排？',
-      content: '锁定后将禁用拖拽分配与快速指派，需手动解锁才能继续修改。',
-      okText: '锁定',
+      title: '放弃未保存的安排？',
+      content: '检查人员或任务位置还有未保存的修改。',
+      okText: '放弃修改',
       okButtonProps: { danger: true },
-      onOk: async () => {
-        await postJSON('/cleaning/tasks/bulk-lock-auto-sync', { ids: lockTaskIds }, { timeoutMs: 20000 })
-        await loadDay()
-        message.success('已锁定当日安排')
+      cancelText: '继续编辑',
+      onOk: () => {
+        setBoardDraftDirty(false)
+        action()
       },
     })
-  }, [allCleaningTaskRefs.length, loadDay, lockTaskIds])
-
-  const unlockDay = useCallback(async () => {
-    if (!allCleaningTaskRefs.length) { message.warning('当日无可解锁任务'); return }
-    if (!unlockTaskIds.length) { message.info('当日已处于解锁状态'); return }
-    Modal.confirm({
-      title: '确认解锁当日安排？',
-      content: '解锁后允许拖拽与快速指派，并恢复自动同步。',
-      okText: '解锁',
-      onOk: async () => {
-        await postJSON('/cleaning/tasks/bulk-restore-auto-sync', { ids: unlockTaskIds }, { timeoutMs: 20000 })
-        await loadDay()
-        message.success('已解锁当日安排')
-      },
-    })
-  }, [allCleaningTaskRefs.length, loadDay, unlockTaskIds])
+  }, [setBoardDraftDirty])
 
   const openCreateModal = useCallback(() => {
     setOfflineCreate({
@@ -1230,8 +1282,7 @@ export default function TaskCenterPage() {
     const pending = taskPendingKeys(task).some((key) => hasPendingKey(key))
     const dragKey = line?.line_key || `${row.row_key}:${subrow.subrow_key}`
     const textColor = textColorForTask(task)
-    const lockedByDay = dayLocked && task.task_source === 'cleaning' && String(task.order_id || '').trim().length > 0
-    const dragDisabled = pending || lockedByDay || filteringActive
+    const dragDisabled = pending || filteringActive || boardSaving
     const timingTags = specialTimingTags(task)
     const detailText = task.skip_reason || (task.task_source === 'cleaning' ? cleaningSecondarySummary(task) : (task.detail || task.summary || ''))
     const assignedStaffId = preferredStaffIdForTask(task)
@@ -1251,7 +1302,9 @@ export default function TaskCenterPage() {
         onDragEnter={onLineDragOver}
         onDrop={onLineDrop}
         onDragEnd={() => setDragOverKey(null)}
-        onClick={() => openTaskDetail(task, row, subrow)}
+        onClick={() => {
+          openTaskDetail(task, row, subrow)
+        }}
         title={`${task.title}\n${detailText || ''}${task.skip_reason ? `\n${task.skip_reason}` : ''}`}
       >
         <span className={`${styles.taskGrip} ${styles.taskCenterCompactGrip}`}><HolderOutlined /></span>
@@ -1292,7 +1345,7 @@ export default function TaskCenterPage() {
         {dragOverKey === dragKey ? <div className={styles.taskCenterDropMarker} /> : null}
       </div>
     )
-  }, [cardStyleForTask, dayLocked, dragOverKey, dragPayloadForTask, filteringActive, hasPendingKey, inspectionModeText, openTaskDetail, staffById, statusChipCls, statusText, stripeColorForTask, taskPendingKeys, textColorForTask])
+  }, [boardDirty, boardSaving, cardStyleForTask, dragOverKey, dragPayloadForTask, filteringActive, hasPendingKey, inspectionModeText, openTaskDetail, staffById, statusChipCls, statusText, stripeColorForTask, taskPendingKeys, textColorForTask])
 
   const displayRows = useMemo(() => {
     const output: TaskCenterDisplayRow[] = []
@@ -1333,6 +1386,20 @@ export default function TaskCenterPage() {
         } else if (workTasks.length) {
           bottomWorkTasks.push(...workTasks)
         }
+      }
+      if (!rowLines.length && isCustomBoardRow(row.row_key, row.row_type)) {
+        globalLineIndex += 1
+        rowLines.push({
+          line_key: `${row.row_key}:line:empty:1`,
+          row_key: row.row_key,
+          row_type: row.row_type,
+          assignments: row.assignments || {},
+          tasks: [],
+          start_index: 0,
+          line_index: globalLineIndex,
+          inspectionIds: [],
+          workIds: [],
+        })
       }
       if (rowLines.length) {
         output.push({
@@ -1408,7 +1475,7 @@ export default function TaskCenterPage() {
       e.stopPropagation()
       try {
         const payload = JSON.parse(e.dataTransfer.getData('text/plain') || '{}')
-        handleTaskDrop(payload, line).catch(() => {})
+        handleTaskDrop(payload, line)
       } catch {}
     }
     return (
@@ -1442,6 +1509,7 @@ export default function TaskCenterPage() {
     const realRow = allRows.find((item) => item.row_key === displayRow.row_key)
     const rowTaskCount = realRow?.subrows.reduce((sum, subrow) => sum + subrow.tasks.length, 0) || 0
     const canDeleteRow = isCustomBoardRow(displayRow.row_key, displayRow.row_type) && rowTaskCount === 0
+    const isPendingRow = displayRow.row_key.startsWith('group:pending:')
     return (
       <div key={displayRow.row_key} className={styles.taskCenterBoardRow}>
         <div className={styles.taskCenterBoardRowHead}>
@@ -1462,6 +1530,7 @@ export default function TaskCenterPage() {
                 danger
                 size="small"
                 icon={<DeleteOutlined />}
+                disabled={boardSaving || (boardDirty && !isPendingRow)}
                 onClick={() => deleteRow(displayRow.row_key).catch(() => {})}
               >
                 删除行
@@ -1473,6 +1542,7 @@ export default function TaskCenterPage() {
                 showSearch
                 optionFilterProp="label"
                 value={displayRow.assignments?.inspector_id || undefined}
+                disabled={boardSaving}
                 onChange={(value) => updateRowAssignment(realRow || {
                   row_key: displayRow.row_key,
                   row_title: '',
@@ -1493,25 +1563,20 @@ export default function TaskCenterPage() {
                 showSearch
                 optionFilterProp="label"
                 value={displayRow.assignments?.executor_id || undefined}
+                disabled={boardSaving}
                 onChange={(value) => {
                   if (realRow) {
                     updateRowAssignment(realRow, 'executor_id', value ? String(value) : null)
                     return
                   }
                   const nextValue = value ? String(value) : null
-                  const previousRows = cloneRows(allRows)
                   applyRowAssignmentLocally({
                     field: 'executor_id',
                     value: nextValue,
                     inspectionIds: [],
                     workIds: displayRow.workIds,
                   })
-                  Promise.all(displayRow.workIds.map((taskId) => patchWorkTask(taskId, { assignee_id: nextValue })))
-                    .then(() => loadDay())
-                    .catch((e: any) => {
-                      replaceRowsLocally(previousRows)
-                      message.error(String(e?.message || '更新失败'))
-                    })
+                  setBoardDraftDirty(true)
                 }}
                 className={styles.taskCenterRowSelect}
                 placeholder="执行人"
@@ -1541,23 +1606,26 @@ export default function TaskCenterPage() {
 
         <div className={`${styles.card} ${styles.headerCard}`}>
           <div className={styles.navGroup}>
-            <Button className={styles.navBtn} icon={<LeftOutlined />} onClick={() => setDate((value) => value.subtract(1, 'day'))} />
+            <Button className={styles.navBtn} icon={<LeftOutlined />} onClick={() => confirmDiscardBoardDraft(() => setDate((value) => value.subtract(1, 'day')))} />
             <div className={styles.monthTitle}>{date.format('YYYY-MM-DD')}</div>
-            <Button className={styles.navBtn} icon={<RightOutlined />} onClick={() => setDate((value) => value.add(1, 'day'))} />
+            <Button className={styles.navBtn} icon={<RightOutlined />} onClick={() => confirmDiscardBoardDraft(() => setDate((value) => value.add(1, 'day')))} />
           </div>
           <div className={styles.rightGroup}>
-            <DatePicker value={date} onChange={(value) => value && setDate(value)} />
-            <Button className={styles.secondaryBtn} icon={<ReloadOutlined />} onClick={() => loadDay().catch(() => {})} loading={loading}>
+            <DatePicker value={date} onChange={(value) => value && confirmDiscardBoardDraft(() => setDate(value))} />
+            <Button className={styles.secondaryBtn} icon={<ReloadOutlined />} onClick={() => confirmDiscardBoardDraft(() => loadDay({ discardDraft: true }).catch(() => {}))} loading={loading}>
               刷新
             </Button>
-            <Button className={styles.secondaryBtn} onClick={lockDay} disabled={!lockTaskIds.length}>
-              锁定当日
-            </Button>
-            <Button className={styles.secondaryBtn} onClick={unlockDay} disabled={!unlockTaskIds.length}>
-              解锁当日
-            </Button>
-            <Button className={styles.primaryBtn} icon={<PlusOutlined />} onClick={openCreateModal}>
+            <Button className={styles.primaryBtn} icon={<PlusOutlined />} onClick={openCreateModal} disabled={boardSaving}>
               新增线下任务
+            </Button>
+            <Button
+              type="primary"
+              icon={<SaveOutlined />}
+              onClick={() => saveBoardDraft().catch(() => {})}
+              loading={boardSaving}
+              disabled={boardSaving || !boardDirty}
+            >
+              {boardSaving ? '保存中...' : '保存安排'}
             </Button>
           </div>
         </div>
@@ -1575,9 +1643,6 @@ export default function TaskCenterPage() {
               placeholder="搜索房号或任务..."
               className={styles.taskCenterFilterInput}
             />
-          </div>
-
-          <div className={styles.taskCenterCompactHint}>
             <div className={styles.taskCenterSummaryStats}>
               <span className={styles.taskCenterSummaryPill}>
                 <strong>未安排</strong>
@@ -1592,7 +1657,7 @@ export default function TaskCenterPage() {
                 <em>{readiness.skipped_count} 个</em>
               </span>
             </div>
-            <Button className={styles.secondaryBtn} icon={<PlusOutlined />} onClick={() => createRow().catch(() => {})} loading={creatingRow}>
+            <Button className={styles.secondaryBtn} icon={<PlusOutlined />} onClick={createRow} disabled={boardSaving}>
               新增一行
             </Button>
           </div>
@@ -1618,7 +1683,7 @@ export default function TaskCenterPage() {
         title={detailTask ? '任务详情' : '任务详情'}
         width={640}
         onCancel={closeTaskDetail}
-        okText="保存"
+        okText={detailTask?.task_source === 'cleaning' ? '应用修改' : '保存'}
         cancelText="取消"
         confirmLoading={detailSaving}
         onOk={() => saveTaskDetail().catch(() => {})}

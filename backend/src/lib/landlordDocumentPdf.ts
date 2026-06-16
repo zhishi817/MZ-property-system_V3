@@ -214,12 +214,23 @@ function baseCss() {
     .cover-label { font-size: 10px; text-transform: uppercase; letter-spacing: 2.2px; color: #666; margin-bottom: 5mm; }
     .cover-title { font-size: 36px; line-height: 1.05; font-weight: 700; letter-spacing: .2px; margin: 0 0 5mm; }
     .cover-subtitle { font-size: 13px; color: #333; max-width: 120mm; line-height: 1.55; margin: 0 auto 12mm; }
-    .document-meta { display: grid; grid-template-columns: 1.1fr 1.6fr 1.1fr; gap: 4mm; margin: 4mm 0 5mm; }
+    .document-meta { display: grid; grid-template-columns: 1.8fr .8fr 1fr; gap: 4mm; margin: 4mm 0 5mm; }
     .document-meta div { border-top: 1px solid #111; padding-top: 2mm; min-height: 15mm; }
     .meta-label { display: block; font-size: 8px; text-transform: uppercase; letter-spacing: 1px; color: #666; margin-bottom: 1mm; }
     .meta-value { font-weight: 700; font-size: 12px; line-height: 1.35; }
-    .summary-note { border-top: 2px solid #111; border-bottom: 1px solid #cfcfcf; padding: 3mm 0; margin: 4mm 0; }
+    .party-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; break-inside: avoid; page-break-inside: avoid; }
+    .party-card { border: 1px solid #cfcfcf; min-height: 37mm; }
+    .party-card-title { padding: 2mm 2.4mm; background: #f1f1f1; border-bottom: 1px solid #cfcfcf; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+    .party-card-body { padding: 1.2mm 2.4mm 1.8mm; }
+    .party-field { display: grid; grid-template-columns: 24mm 1fr; gap: 2mm; padding: 1.4mm 0; border-bottom: 1px solid #e5e5e5; }
+    .party-field:last-child { border-bottom: 0; }
+    .party-field-label { color: #666; font-size: 9px; text-transform: uppercase; letter-spacing: .35px; }
+    .party-field-value { font-weight: 600; overflow-wrap: anywhere; }
     .compact-table th, .compact-table td { padding: 1.7mm 2mm; }
+    .agreement-signature-section { break-inside: avoid-page; page-break-inside: avoid; }
+    .agreement-signature-section h2 { margin-top: 6mm; }
+    .agreement-signature-section .signatures { margin-top: 7mm; }
+    .agreement-signature-section .sig-line { min-height: 36mm; break-inside: avoid; page-break-inside: avoid; }
     .footer { position: absolute; bottom: 0; left: 0; right: 0; display: flex; justify-content: space-between; border-top: 1px solid #ddd; padding-top: 2mm; color: #666; font-size: 9px; }
     .authority-page { page: authority; height: calc(297mm - 16mm); padding-bottom: 0; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; }
     .authority-page h1 { margin-bottom: 3.6mm; font-size: 24px; }
@@ -431,13 +442,9 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
         <section class="page content-page page-break">
           <h1>MZ PROPERTY Service Agreement</h1>
           <div class="document-meta">
-            <div><span class="meta-label">Owner</span><span class="meta-value">${escapeHtml(ownerName || '-')}</span></div>
             <div><span class="meta-label">Property</span><span class="meta-value">${escapeHtml(propertyAddress || '-')}</span></div>
             <div><span class="meta-label">Commencement</span><span class="meta-value">${escapeHtml(commencement || '-')}</span></div>
-          </div>
-          <div class="summary-note">
-            <strong>MZ Contact:</strong> ${escapeHtml(contactName)} · ${escapeHtml(contactPhone)} · ${escapeHtml(contactEmail)}
-            <br /><strong>Document No.:</strong> ${escapeHtml(input.documentNo || (isBlankTemplate ? 'Blank Template' : 'Draft'))}
+            <div><span class="meta-label">Document No.</span><span class="meta-value">${escapeHtml(input.documentNo || (isBlankTemplate ? 'Blank Template' : 'Draft'))}</span></div>
           </div>
           <p>This agreement is made between MZ Property Pty Ltd and the Owner for short-term rental management services for the Property identified above.</p>
           <p>This Service Agreement is subject to the Terms and Conditions attached to and forming part of this Agreement.</p>
@@ -445,11 +452,25 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
             ? 'This version applies where the Property is being marketed for sale while MZ Property manages short-stay operations.'
             : 'This version applies where the Owner appoints MZ Property to manage short-stay operations on a management-fee basis while the Owner funds the property setup and ongoing property costs.'}</p>
           <h2>Parties</h2>
-          <table class="compact-table">
-            ${row('Owner Contact', [text(f, 'owner_phone'), emailText(f, 'owner_email')].filter(Boolean).join(' / '))}
-            ${row('MZ Property', `${companyName}, ABN ${companyAbn}`)}
-            ${row('MZ Address', companyAddress)}
-          </table>
+          <div class="party-grid">
+            <div class="party-card">
+              <div class="party-card-title">MZ Property</div>
+              <div class="party-card-body">
+                <div class="party-field"><span class="party-field-label">Company</span><span class="party-field-value">${escapeHtml(companyName || '-')}</span></div>
+                <div class="party-field"><span class="party-field-label">ABN</span><span class="party-field-value">${escapeHtml(companyAbn || '-')}</span></div>
+                <div class="party-field"><span class="party-field-label">Address</span><span class="party-field-value">${escapeHtml(companyAddress || '-')}</span></div>
+                <div class="party-field"><span class="party-field-label">Contact</span><span class="party-field-value">${escapeHtml([contactName, contactPhone, contactEmail].filter(Boolean).join(' · ') || '-')}</span></div>
+              </div>
+            </div>
+            <div class="party-card">
+              <div class="party-card-title">Owner</div>
+              <div class="party-card-body">
+                <div class="party-field"><span class="party-field-label">Name</span><span class="party-field-value">${escapeHtml(ownerName || '-')}</span></div>
+                <div class="party-field"><span class="party-field-label">Phone</span><span class="party-field-value">${escapeHtml(phoneText(f, 'owner_phone') || '-')}</span></div>
+                <div class="party-field"><span class="party-field-label">Email</span><span class="party-field-value">${escapeHtml(emailText(f, 'owner_email') || '-')}</span></div>
+              </div>
+            </div>
+          </div>
           <h2>Property Details</h2>
           <table class="compact-table">
             ${row('Property', propertyAddress)}
@@ -508,10 +529,12 @@ function renderServiceAgreement(input: LandlordDocumentPdfInput) {
             <li>All rental income received less any fees or Owner Expenses due to MZ Property will be transferred to the Owner's bank account once a month within the first 6 business days of the following month.</li>
           </ul>
 
-          <h2>Accepted and Agreed</h2>
-          <div class="signatures">
-            <div class="sig-line"><strong>${escapeHtml(companyName)}</strong><br />Name: ${escapeHtml(mzSignedName)}<br />Title: General Manager<br /><br />Signature:<br />${mzSignature}<br />Date: ${escapeHtml(mzSignedAt)}</div>
-            <div class="sig-line"><strong>Owner</strong><br />Name: ${escapeHtml(landlordSignedName)}<br />Title: Owner<br /><br />Signature:<br />${landlordSignature}<br />Date: ${escapeHtml(landlordSignedAt)}</div>
+          <div class="agreement-signature-section">
+            <h2>Accepted and Agreed</h2>
+            <div class="signatures">
+              <div class="sig-line"><strong>${escapeHtml(companyName)}</strong><br />Name: ${escapeHtml(mzSignedName)}<br />Title: General Manager<br /><br />Signature:<br />${mzSignature}<br />Date: ${escapeHtml(mzSignedAt)}</div>
+              <div class="sig-line"><strong>Owner</strong><br />Name: ${escapeHtml(landlordSignedName)}<br />Title: Owner<br /><br />Signature:<br />${landlordSignature}<br />Date: ${escapeHtml(landlordSignedAt)}</div>
+            </div>
           </div>
           <h2>Special Conditions</h2>
           ${specialConditionsHtml}

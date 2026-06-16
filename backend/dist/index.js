@@ -53,7 +53,6 @@ const guest_site_1 = require("./modules/guest_site");
 const keyUploadReminderJob_1 = require("./lib/keyUploadReminderJob");
 const keyUploadSlaJob_1 = require("./lib/keyUploadSlaJob");
 const dayEndHandoverReminderJob_1 = require("./lib/dayEndHandoverReminderJob");
-const customerServiceMemoReminderJob_1 = require("./lib/customerServiceMemoReminderJob");
 const auth_2 = require("./auth");
 const public_1 = __importDefault(require("./modules/public"));
 const public_admin_1 = __importDefault(require("./modules/public_admin"));
@@ -102,6 +101,14 @@ if (isProd && dbAdapter_1.hasPg) {
 }
 const startupWarmupState = { status: dbAdapter_1.hasPg ? 'pending' : 'skipped' };
 let startupWarmupPromise = null;
+function numberEnv(name, fallback, min) {
+    const raw = process.env[name];
+    const value = raw === undefined || raw === '' ? fallback : Number(raw);
+    return Number.isFinite(value) ? Math.max(min, value) : fallback;
+}
+const STARTUP_WARMUP_RETRIES = Math.floor(numberEnv('STARTUP_WARMUP_RETRIES', 2, 1));
+const STARTUP_WARMUP_RETRY_DELAY_MS = numberEnv('STARTUP_WARMUP_RETRY_DELAY_MS', 1000, 0);
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const app = (0, express_1.default)();
 app.use((req, res, next) => {
     const headerTraceId = String(req.headers['x-trace-id'] || req.headers['x-request-id'] || '').trim();
@@ -145,12 +152,16 @@ app.options('*', (0, cors_1.default)(corsOpts));
 const jsonLimit = String(process.env.JSON_BODY_LIMIT || '25mb');
 app.use(express_1.default.json({ limit: jsonLimit }));
 app.use(express_1.default.urlencoded({ extended: true, limit: jsonLimit }));
+morgan_1.default.token('url', (req) => {
+    const raw = String((req === null || req === void 0 ? void 0 : req.originalUrl) || (req === null || req === void 0 ? void 0 : req.url) || '');
+    return raw.replace(/([?&](?:access_token|token)=)[^&\s]*/gi, '$1[REDACTED]');
+});
 app.use((0, morgan_1.default)('dev'));
 // Health endpoints should NOT require auth
 app.get('/health', (req, res) => { res.json({ status: 'ok' }); });
 app.get('/health/db', async (_req, res) => {
     var _a, _b;
-    const result = { status: 'ok', appEnv, databaseRole: dbRole, pg: false };
+    const result = { status: 'ok', appEnv, databaseRole: dbRole, pg: false, pool: (0, dbAdapter_1.getPgPoolStats)() };
     try {
         const url = process.env.DATABASE_URL || '';
         if (url) {
@@ -166,11 +177,13 @@ app.get('/health/db', async (_req, res) => {
             const r = await dbAdapter_1.pgPool.query('SELECT current_database() as db, 1 as ok');
             result.pg = !!(r && r.rows && r.rows[0] && r.rows[0].ok);
             result.pg_database = result.pg_database || ((_b = (_a = r.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.db);
+            result.pool = (0, dbAdapter_1.getPgPoolStats)();
         }
     }
     catch (e) {
         result.pg = false;
         result.pg_error = e === null || e === void 0 ? void 0 : e.message;
+        result.pool = (0, dbAdapter_1.getPgPoolStats)();
     }
     res.json(result);
 });
@@ -178,20 +191,17 @@ app.get('/health/ready', async (_req, res) => {
     var _a, _b;
     const started = Date.now();
     try {
-        if (dbAdapter_1.hasPg && startupWarmupState.status === 'pending' && !startupWarmupPromise) {
-            return res.status(503).json({ status: 'starting', warmup: startupWarmupState, latency_ms: Date.now() - started });
-        }
-        if (startupWarmupPromise)
-            await startupWarmupPromise;
         const result = {
-            status: startupWarmupState.status === 'failed' ? 'degraded' : 'ok',
+            status: 'ok',
             warmup: startupWarmupState,
             pg: false,
+            pool: (0, dbAdapter_1.getPgPoolStats)(),
             latency_ms: Date.now() - started,
         };
         if (dbAdapter_1.pgPool) {
             const r = await dbAdapter_1.pgPool.query('SELECT 1 AS ok');
             result.pg = !!((_b = (_a = r === null || r === void 0 ? void 0 : r.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
+            result.pool = (0, dbAdapter_1.getPgPoolStats)();
             if (!result.pg)
                 return res.status(503).json(result);
         }
@@ -203,6 +213,7 @@ app.get('/health/ready', async (_req, res) => {
             status: 'error',
             message: String((e === null || e === void 0 ? void 0 : e.message) || ''),
             warmup: startupWarmupState,
+            pool: (0, dbAdapter_1.getPgPoolStats)(),
             latency_ms: Date.now() - started,
         });
     }
@@ -468,24 +479,17 @@ function onServerListening() {
         if (enabled && dbAdapter_1.hasPg) {
             console.log(`[email-sync][schedule] enabled cron=${expr}`);
             const task = node_cron_1.default.schedule(expr, async () => {
-                var _a, _b;
                 const started = Date.now();
                 try {
                     const key = 987654321;
-                    const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [key]);
-                    const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
-                    if (!ok) {
+                    const lockedRun = await (0, dbAdapter_1.pgRunWithAdvisoryLock)(key, 'email-sync:schedule', async () => {
+                        const res = await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', trigger_source: 'schedule', max_per_run: Math.min(50, Number(process.env.EMAIL_SYNC_MAX_PER_RUN || 50)), batch_size: Math.min(20, Number(process.env.EMAIL_SYNC_BATCH_SIZE || 20)), concurrency: Math.min(1, Number(process.env.EMAIL_SYNC_CONCURRENCY || 1)), batch_sleep_ms: Number(process.env.EMAIL_SYNC_BATCH_SLEEP_MS || 0), min_interval_ms: Number(process.env.EMAIL_SYNC_MIN_INTERVAL_MS || 60000) });
+                        const dur = Date.now() - started;
+                        const s = ((res === null || res === void 0 ? void 0 : res.stats) || {});
+                        console.log(`[email-sync][schedule] scanned=${s.scanned || 0} inserted=${s.inserted || 0} skipped=${s.skipped_duplicate || 0} failed=${s.failed || 0} duration_ms=${dur}`);
+                    });
+                    if (!lockedRun.locked)
                         console.log('[email-sync][schedule] skipped_reason=already_running');
-                        return;
-                    }
-                    const res = await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', trigger_source: 'schedule', max_per_run: Math.min(50, Number(process.env.EMAIL_SYNC_MAX_PER_RUN || 50)), batch_size: Math.min(20, Number(process.env.EMAIL_SYNC_BATCH_SIZE || 20)), concurrency: Math.min(1, Number(process.env.EMAIL_SYNC_CONCURRENCY || 1)), batch_sleep_ms: Number(process.env.EMAIL_SYNC_BATCH_SLEEP_MS || 0), min_interval_ms: Number(process.env.EMAIL_SYNC_MIN_INTERVAL_MS || 60000) });
-                    const dur = Date.now() - started;
-                    const s = ((res === null || res === void 0 ? void 0 : res.stats) || {});
-                    console.log(`[email-sync][schedule] scanned=${s.scanned || 0} inserted=${s.inserted || 0} skipped=${s.skipped_duplicate || 0} failed=${s.failed || 0} duration_ms=${dur}`);
-                    try {
-                        await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [key]);
-                    }
-                    catch (_c) { }
                 }
                 catch (e) {
                     console.error(`[email-sync][schedule] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
@@ -495,56 +499,49 @@ function onServerListening() {
             const wdEnabled = String(process.env.EMAIL_SYNC_WATCHDOG_ENABLED || 'true').toLowerCase() === 'true';
             if (wdEnabled) {
                 const wd = node_cron_1.default.schedule('*/10 * * * *', async () => {
-                    var _a, _b;
                     try {
                         const key = 987654321;
-                        const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [key]);
-                        const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
-                        if (!ok)
-                            return;
-                        // collect recent failed uids per account; exclude duplicates/already_running
-                        const sql = `
-            WITH cand AS (
-              SELECT account, uid FROM email_orders_raw WHERE status IN ('failed','unmatched_property') AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
-              UNION ALL
-              SELECT account, uid FROM email_sync_items WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
-            )
-            SELECT DISTINCT c.account, c.uid
-            FROM cand c
-            WHERE NOT EXISTS (
-              SELECT 1 FROM email_sync_items e
-              WHERE e.account = c.account AND e.uid = c.uid AND e.status='skipped' AND e.reason IN ('duplicate','already_running','db_error')
-            )
-            ORDER BY c.account DESC, c.uid DESC
-            LIMIT 200`;
-                        const rs = await dbAdapter_1.pgPool.query(sql);
-                        const groups = {};
-                        for (const r of ((rs === null || rs === void 0 ? void 0 : rs.rows) || [])) {
-                            const acc = String(r.account || '');
-                            const uid = Number(r.uid || 0);
-                            if (!acc || !uid)
-                                continue;
-                            if (!groups[acc])
-                                groups[acc] = [];
-                            if (groups[acc].length < 50)
-                                groups[acc].push(uid);
-                        }
-                        for (const acc of Object.keys(groups)) {
-                            const uids = groups[acc];
-                            if (!uids.length)
-                                continue;
-                            console.log(`[email-sync][watchdog] retry account=${acc} uids=${uids.length}`);
-                            try {
-                                await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', trigger_source: 'watchdog_retry_failed', account: acc, uids, min_interval_ms: 0, max_per_run: uids.length, batch_size: Math.min(10, uids.length), concurrency: 1, batch_sleep_ms: 0 });
+                        await (0, dbAdapter_1.pgRunWithAdvisoryLock)(key, 'email-sync:watchdog', async () => {
+                            // collect recent failed uids per account; exclude duplicates/already_running
+                            const sql = `
+              WITH cand AS (
+                SELECT account, uid FROM email_orders_raw WHERE status IN ('failed','unmatched_property') AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
+                UNION ALL
+                SELECT account, uid FROM email_sync_items WHERE status='failed' AND created_at > now() - interval '12 hours' AND uid IS NOT NULL AND account IS NOT NULL
+              )
+              SELECT DISTINCT c.account, c.uid
+              FROM cand c
+              WHERE NOT EXISTS (
+                SELECT 1 FROM email_sync_items e
+                WHERE e.account = c.account AND e.uid = c.uid AND e.status='skipped' AND e.reason IN ('duplicate','already_running','db_error')
+              )
+              ORDER BY c.account DESC, c.uid DESC
+              LIMIT 200`;
+                            const rs = await dbAdapter_1.pgPool.query(sql);
+                            const groups = {};
+                            for (const r of ((rs === null || rs === void 0 ? void 0 : rs.rows) || [])) {
+                                const acc = String(r.account || '');
+                                const uid = Number(r.uid || 0);
+                                if (!acc || !uid)
+                                    continue;
+                                if (!groups[acc])
+                                    groups[acc] = [];
+                                if (groups[acc].length < 50)
+                                    groups[acc].push(uid);
                             }
-                            catch (e) {
-                                console.error(`[email-sync][watchdog] account=${acc} error=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                            for (const acc of Object.keys(groups)) {
+                                const uids = groups[acc];
+                                if (!uids.length)
+                                    continue;
+                                console.log(`[email-sync][watchdog] retry account=${acc} uids=${uids.length}`);
+                                try {
+                                    await (0, jobs_1.runEmailSyncJob)({ mode: 'incremental', trigger_source: 'watchdog_retry_failed', account: acc, uids, min_interval_ms: 0, max_per_run: uids.length, batch_size: Math.min(10, uids.length), concurrency: 1, batch_sleep_ms: 0 });
+                                }
+                                catch (e) {
+                                    console.error(`[email-sync][watchdog] account=${acc} error=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
+                                }
                             }
-                        }
-                        try {
-                            await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [key]);
-                        }
-                        catch (_c) { }
+                        });
                     }
                     catch (e) {
                         console.error(`[email-sync][watchdog] error=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
@@ -878,47 +875,6 @@ function onServerListening() {
     })();
     (async () => {
         try {
-            const defaultEnabled = process.env.NODE_ENV === 'production';
-            const enabled = String(process.env.CUSTOMER_SERVICE_MEMO_REMINDER_ENABLED || (defaultEnabled ? 'true' : 'false')).toLowerCase() === 'true';
-            if (!enabled) {
-                console.log('[customer-service-memo-reminder][schedule] disabled');
-                return;
-            }
-            if (!dbAdapter_1.hasPg || !dbAdapter_1.pgPool) {
-                console.log('[customer-service-memo-reminder][schedule] skipped_reason=pg=false');
-                return;
-            }
-            const expr = String(process.env.CUSTOMER_SERVICE_MEMO_REMINDER_CRON || '*/1 * * * *').trim();
-            console.log(`[customer-service-memo-reminder][schedule] enabled cron=${expr} tz=Australia/Melbourne`);
-            const task = node_cron_1.default.schedule(expr, async () => {
-                var _a, _b;
-                const started = Date.now();
-                const lockKey = 975319751;
-                try {
-                    const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey]);
-                    const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
-                    if (!ok)
-                        return;
-                    const r = await (0, customerServiceMemoReminderJob_1.runCustomerServiceMemoReminderJob)();
-                    const dur = Date.now() - started;
-                    console.log(`[customer-service-memo-reminder][schedule] ok duration_ms=${dur} processed=${Number((r === null || r === void 0 ? void 0 : r.processed) || 0)} sent=${Number((r === null || r === void 0 ? void 0 : r.sent) || 0)}`);
-                    try {
-                        await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [lockKey]);
-                    }
-                    catch (_c) { }
-                }
-                catch (e) {
-                    console.error(`[customer-service-memo-reminder][schedule] error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-                }
-            }, { scheduled: true, timezone: 'Australia/Melbourne' });
-            task.start();
-        }
-        catch (e) {
-            console.error(`[customer-service-memo-reminder][schedule] init error message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
-        }
-    })();
-    (async () => {
-        try {
             const enabled = String(process.env.KEY_UPLOAD_SLA_ENABLED || 'false').toLowerCase() === 'true';
             const featureCleaning = String(process.env.FEATURE_CLEANING_APP || 'false').toLowerCase() === 'true';
             if (!enabled) {
@@ -944,23 +900,16 @@ function onServerListening() {
             for (const s of schedules) {
                 console.log(`[key-upload-sla][schedule] enabled cron=${s.expr} tz=Australia/Melbourne position=${s.position} level=${s.level}`);
                 const task = node_cron_1.default.schedule(s.expr, async () => {
-                    var _a, _b;
                     const started = Date.now();
                     try {
-                        const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [s.lockKey]);
-                        const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
-                        if (!ok)
-                            return;
-                        const r = await (0, keyUploadSlaJob_1.runKeyUploadSlaCheck)(s.position, s.level);
-                        const dur = Date.now() - started;
-                        if (r === null || r === void 0 ? void 0 : r.skipped)
-                            console.log(`[key-upload-sla][schedule] skipped_reason=${String(r.skipped)} position=${s.position} level=${s.level}`);
-                        else
-                            console.log(`[key-upload-sla][schedule] ok position=${s.position} level=${s.level} duration_ms=${dur} created=${String((r === null || r === void 0 ? void 0 : r.created) || 0)}`);
-                        try {
-                            await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [s.lockKey]);
-                        }
-                        catch (_c) { }
+                        await (0, dbAdapter_1.pgRunWithAdvisoryLock)(s.lockKey, `key-upload-sla:${s.position}:${s.level}`, async () => {
+                            const r = await (0, keyUploadSlaJob_1.runKeyUploadSlaCheck)(s.position, s.level);
+                            const dur = Date.now() - started;
+                            if (r === null || r === void 0 ? void 0 : r.skipped)
+                                console.log(`[key-upload-sla][schedule] skipped_reason=${String(r.skipped)} position=${s.position} level=${s.level}`);
+                            else
+                                console.log(`[key-upload-sla][schedule] ok position=${s.position} level=${s.level} duration_ms=${dur} created=${String((r === null || r === void 0 ? void 0 : r.created) || 0)}`);
+                        });
                     }
                     catch (e) {
                         console.error(`[key-upload-sla][schedule] error position=${s.position} level=${s.level} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
@@ -999,24 +948,17 @@ function onServerListening() {
             for (const s of schedules) {
                 console.log(`[key-upload-reminder][schedule] enabled cron=${s.expr} tz=Australia/Melbourne at=${s.at}`);
                 const task = node_cron_1.default.schedule(s.expr, async () => {
-                    var _a, _b;
                     const started = Date.now();
                     try {
                         const lockKey = 246802468 + Number(s.at.replace(':', ''));
-                        const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [lockKey]);
-                        const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
-                        if (!ok)
-                            return;
-                        const r = await (0, keyUploadReminderJob_1.runKeyUploadReminder)({ at: s.at });
-                        const dur = Date.now() - started;
-                        if (r === null || r === void 0 ? void 0 : r.skipped)
-                            console.log(`[key-upload-reminder][schedule] skipped_reason=${String(r.skipped)}`);
-                        else
-                            console.log(`[key-upload-reminder][schedule] ok at=${s.at} duration_ms=${dur}`);
-                        try {
-                            await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [lockKey]);
-                        }
-                        catch (_c) { }
+                        await (0, dbAdapter_1.pgRunWithAdvisoryLock)(lockKey, `key-upload-reminder:${s.at}`, async () => {
+                            const r = await (0, keyUploadReminderJob_1.runKeyUploadReminder)({ at: s.at });
+                            const dur = Date.now() - started;
+                            if (r === null || r === void 0 ? void 0 : r.skipped)
+                                console.log(`[key-upload-reminder][schedule] skipped_reason=${String(r.skipped)}`);
+                            else
+                                console.log(`[key-upload-reminder][schedule] ok at=${s.at} duration_ms=${dur}`);
+                        });
                     }
                     catch (e) {
                         console.error(`[key-upload-reminder][schedule] error at=${s.at} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
@@ -1054,23 +996,16 @@ function onServerListening() {
             for (const s of schedules) {
                 console.log(`[day-end-handover-reminder][schedule] enabled cron=${s.expr} tz=Australia/Melbourne at=${s.at} target=${s.kind}`);
                 const task = node_cron_1.default.schedule(s.expr, async () => {
-                    var _a, _b;
                     const started = Date.now();
                     try {
-                        const lock = await dbAdapter_1.pgPool.query('SELECT pg_try_advisory_lock($1) AS ok', [s.lockKey]);
-                        const ok = !!((_b = (_a = lock === null || lock === void 0 ? void 0 : lock.rows) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.ok);
-                        if (!ok)
-                            return;
-                        const r = s.kind === 'manager' ? await runDayEndHandoverManagerReminder({ at: s.at }) : await (0, dayEndHandoverReminderJob_1.runDayEndHandoverReminder)({ at: s.at });
-                        const dur = Date.now() - started;
-                        if (r === null || r === void 0 ? void 0 : r.skipped)
-                            console.log(`[day-end-handover-reminder][schedule] skipped_reason=${String(r.skipped)} at=${s.at} target=${s.kind}`);
-                        else
-                            console.log(`[day-end-handover-reminder][schedule] ok at=${s.at} target=${s.kind} duration_ms=${dur} recipients=${String((r === null || r === void 0 ? void 0 : r.recipients) || 0)}`);
-                        try {
-                            await dbAdapter_1.pgPool.query('SELECT pg_advisory_unlock($1)', [s.lockKey]);
-                        }
-                        catch (_c) { }
+                        await (0, dbAdapter_1.pgRunWithAdvisoryLock)(s.lockKey, `day-end-handover-reminder:${s.at}:${s.kind}`, async () => {
+                            const r = s.kind === 'manager' ? await runDayEndHandoverManagerReminder({ at: s.at }) : await (0, dayEndHandoverReminderJob_1.runDayEndHandoverReminder)({ at: s.at });
+                            const dur = Date.now() - started;
+                            if (r === null || r === void 0 ? void 0 : r.skipped)
+                                console.log(`[day-end-handover-reminder][schedule] skipped_reason=${String(r.skipped)} at=${s.at} target=${s.kind}`);
+                            else
+                                console.log(`[day-end-handover-reminder][schedule] ok at=${s.at} target=${s.kind} duration_ms=${dur} recipients=${String((r === null || r === void 0 ? void 0 : r.recipients) || 0)}`);
+                        });
                     }
                     catch (e) {
                         console.error(`[day-end-handover-reminder][schedule] error at=${s.at} target=${s.kind} message=${String((e === null || e === void 0 ? void 0 : e.message) || '')}`);
@@ -1122,24 +1057,55 @@ async function runStartupWarmups() {
     startupWarmupState.started_at = new Date(warmupStartedAt).toISOString();
     startupWarmupState.completed_at = undefined;
     startupWarmupState.duration_ms = undefined;
-    startupWarmupState.error = undefined;
-    try {
-        await (0, cleaningSync_1.bootstrapCleaningSyncSchemaV2)();
-        await (0, mzapp_1.warmupMzappModule)();
-        await (0, inventory_1.warmupInventoryModule)();
-        await (0, invoices_1.warmupInvoicesModule)();
-        startupWarmupState.status = 'ready';
-        startupWarmupState.duration_ms = Date.now() - warmupStartedAt;
-        startupWarmupState.completed_at = new Date().toISOString();
-        console.log(`[bootstrap] warmup_completed duration_ms=${startupWarmupState.duration_ms}`);
+    startupWarmupState.errors = undefined;
+    startupWarmupState.steps = [];
+    const steps = [
+        { name: 'cleaning_sync_schema', run: cleaningSync_1.bootstrapCleaningSyncSchemaV2 },
+        { name: 'mzapp', run: mzapp_1.warmupMzappModule },
+        { name: 'inventory', run: inventory_1.warmupInventoryModule },
+        { name: 'invoices', run: invoices_1.warmupInvoicesModule },
+    ];
+    const errors = [];
+    for (const stepDef of steps) {
+        const stepStartedAt = Date.now();
+        const stepState = {
+            name: stepDef.name,
+            status: 'running',
+            started_at: new Date(stepStartedAt).toISOString(),
+            attempts: 0,
+        };
+        startupWarmupState.steps.push(stepState);
+        for (let attempt = 1; attempt <= STARTUP_WARMUP_RETRIES; attempt += 1) {
+            stepState.attempts = attempt;
+            try {
+                await stepDef.run();
+                stepState.status = 'ready';
+                stepState.duration_ms = Date.now() - stepStartedAt;
+                stepState.completed_at = new Date().toISOString();
+                stepState.error = undefined;
+                console.log(`[bootstrap] warmup_step_ready name=${stepDef.name} attempts=${attempt} duration_ms=${stepState.duration_ms}`);
+                break;
+            }
+            catch (err) {
+                const message = String((err === null || err === void 0 ? void 0 : err.message) || '');
+                stepState.error = message;
+                console.error(`[bootstrap] warmup_step_failed name=${stepDef.name} attempt=${attempt} message=${message}`);
+                if (attempt < STARTUP_WARMUP_RETRIES)
+                    await sleep(STARTUP_WARMUP_RETRY_DELAY_MS);
+            }
+        }
+        if (stepState.status !== 'ready') {
+            stepState.status = 'failed';
+            stepState.duration_ms = Date.now() - stepStartedAt;
+            stepState.completed_at = new Date().toISOString();
+            errors.push(`${stepDef.name}: ${stepState.error || 'failed'}`);
+        }
     }
-    catch (err) {
-        startupWarmupState.status = 'failed';
-        startupWarmupState.duration_ms = Date.now() - warmupStartedAt;
-        startupWarmupState.completed_at = new Date().toISOString();
-        startupWarmupState.error = String((err === null || err === void 0 ? void 0 : err.message) || '');
-        console.error(`[bootstrap] warmup_failed message=${String((err === null || err === void 0 ? void 0 : err.message) || '')}`);
-    }
+    startupWarmupState.status = errors.length ? 'ready_with_warnings' : 'ready';
+    startupWarmupState.errors = errors.length ? errors : undefined;
+    startupWarmupState.duration_ms = Date.now() - warmupStartedAt;
+    startupWarmupState.completed_at = new Date().toISOString();
+    console.log(`[bootstrap] warmup_completed status=${startupWarmupState.status} duration_ms=${startupWarmupState.duration_ms} warnings=${errors.length}`);
 }
 async function startServer() {
     const server = app.listen(port, onServerListening);

@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { hasPg, pgPool } from '../dbAdapter'
+import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
 import multer from 'multer'
 import path from 'path'
 import { hasR2, r2Upload } from '../r2'
@@ -10,8 +10,14 @@ import fs from 'fs'
 import { listPermissionCodesForUser, userHasAnyPerm } from '../auth'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { emitNotificationEvent } from '../services/notificationEvents'
+import {
+  canEditGuestLuggageForRoles,
+  planGuestLuggageMutation,
+  resolveGuestLuggageRecipientIds,
+} from '../services/guestLuggage'
 import { deferredProjectionDate, effectiveInspectionMode, isInspectionFinishedStatus, mergeInspectionPlan } from '../lib/cleaningInspection'
 import { deepCleaningSourceSummary, maintenanceSourceSummary } from '../lib/autoExpenseSourceSummary'
+import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
 
 export const router = Router()
 
@@ -1266,39 +1272,191 @@ async function ensureMzappAlertsTable() {
   await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_mzapp_alerts_dedupe ON mzapp_alerts(kind, target_user_id, date, position, level);`)
 }
 
-async function ensureMzappCustomerServiceMemosTable() {
+async function ensureGuestLuggageTables() {
   if (!hasPg || !pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS mzapp_customer_service_memos (
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS guest_luggage_notices (
     id text PRIMARY KEY,
-    user_id text NOT NULL,
-    content text NOT NULL,
-    is_done boolean NOT NULL DEFAULT false,
-    is_alert boolean NOT NULL DEFAULT false,
-    sort_index integer NOT NULL DEFAULT 0,
+    property_id text NOT NULL,
+    task_date date NOT NULL,
+    note text,
+    photo_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
+    version integer NOT NULL DEFAULT 1,
+    created_by text,
+    updated_by text,
     created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(property_id, task_date)
   );`)
-  await pgPool.query(`ALTER TABLE mzapp_customer_service_memos ADD COLUMN IF NOT EXISTS reminder_at timestamptz;`)
-  await pgPool.query(`ALTER TABLE mzapp_customer_service_memos ADD COLUMN IF NOT EXISTS reminder_sent_at timestamptz;`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_mzapp_customer_service_memos_user ON mzapp_customer_service_memos(user_id, sort_index, created_at DESC);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_mzapp_customer_service_memos_user_updated ON mzapp_customer_service_memos(user_id, updated_at DESC);`)
-  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_mzapp_customer_service_memos_reminder_due ON mzapp_customer_service_memos(reminder_at, reminder_sent_at);`)
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_guest_luggage_notices_task ON guest_luggage_notices(task_date, property_id);`)
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS guest_luggage_acknowledgements (
+    notice_id text NOT NULL REFERENCES guest_luggage_notices(id) ON DELETE CASCADE,
+    user_id text NOT NULL,
+    notice_version integer NOT NULL,
+    acknowledged_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY(notice_id, user_id)
+  );`)
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_guest_luggage_ack_user ON guest_luggage_acknowledgements(user_id, acknowledged_at DESC);`)
 }
 
-function parseOptionalIsoDateTime(raw: any) {
-  if (raw == null) return { ok: true as const, value: null as string | null }
-  const text = String(raw || '').trim()
-  if (!text) return { ok: true as const, value: null as string | null }
-  const ms = Date.parse(text)
-  if (!Number.isFinite(ms)) return { ok: false as const, value: null as string | null }
-  return { ok: true as const, value: new Date(ms).toISOString() }
+function canEditGuestLuggage(user: any) {
+  return canEditGuestLuggageForRoles(roleNamesOf(user))
 }
 
-function normalizeCustomerServiceMemoContent(raw: any) {
-  return String(raw || '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase()
+function melbourneToday() {
+  const parts = new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Australia/Melbourne',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${value.year}-${value.month}-${value.day}`
+}
+
+async function resolveGuestLuggageTaskScope(taskIds0: string[], client: any = pgPool) {
+  const taskIds = Array.from(new Set((taskIds0 || []).map((x) => String(x || '').trim()).filter(Boolean)))
+  if (!taskIds.length || !client) throw new Error('missing task ids')
+  const result = await client.query(
+    `SELECT t.id::text AS id,
+            COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
+            COALESCE(p_id.code::text, p_code.code::text, t.property_id::text) AS property_code,
+            COALESCE(t.task_date, t.date)::text AS task_date,
+            t.assignee_id::text AS assignee_id,
+            t.cleaner_id::text AS cleaner_id,
+            t.inspector_id::text AS inspector_id,
+            lower(COALESCE(t.task_type, '')) AS task_type
+     FROM cleaning_tasks t
+     LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+     LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+     WHERE t.id::text = ANY($1::text[])
+       AND COALESCE(t.status, '') <> 'cancelled'`,
+    [taskIds],
+  )
+  const rows = result?.rows || []
+  if (rows.length !== taskIds.length) throw new Error('invalid task ids')
+  const propertyIds = Array.from(new Set<string>(rows.map((row: any) => String(row.property_id || '').trim()).filter(Boolean)))
+  const taskDates = Array.from(new Set<string>(rows.map((row: any) => String(row.task_date || '').slice(0, 10)).filter(Boolean)))
+  if (propertyIds.length !== 1 || taskDates.length !== 1) throw new Error('tasks must belong to the same property and date')
+  return {
+    taskIds,
+    rows,
+    propertyId: propertyIds[0],
+    propertyCode: String(rows[0]?.property_code || '').trim(),
+    taskDate: taskDates[0],
+  }
+}
+
+async function loadGuestLuggageNotice(noticeId: string, viewerUserId: string, client: any = pgPool) {
+  if (!client) return null
+  const noticeResult = await client.query(
+    `SELECT id, property_id::text AS property_id, task_date::text AS task_date, note, photo_urls, version,
+            created_by, updated_by, created_at::text AS created_at, updated_at::text AS updated_at
+     FROM guest_luggage_notices
+     WHERE id = $1
+     LIMIT 1`,
+    [noticeId],
+  )
+  const row = noticeResult?.rows?.[0] || null
+  if (!row) return null
+  const version = Number(row.version || 1)
+  const assignments = await client.query(
+    `WITH assigned AS (
+       SELECT 'cleaner'::text AS role_kind,
+              COALESCE(t.cleaner_id::text, t.assignee_id::text) AS user_id
+       FROM cleaning_tasks t
+       LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+       WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
+         AND COALESCE(t.task_date, t.date)::date = $2::date
+         AND COALESCE(t.status, '') <> 'cancelled'
+       UNION ALL
+       SELECT 'inspector'::text AS role_kind, t.inspector_id::text AS user_id
+       FROM cleaning_tasks t
+       LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+       WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
+         AND COALESCE(t.task_date, t.date)::date = $2::date
+         AND COALESCE(t.status, '') <> 'cancelled'
+     )
+     SELECT DISTINCT a.role_kind, a.user_id,
+            COALESCE(NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.legal_name), ''), NULLIF(TRIM(u.email), ''), a.user_id) AS user_name,
+            ack.acknowledged_at::text AS acknowledged_at
+     FROM assigned a
+     LEFT JOIN users u ON u.id::text = a.user_id
+     LEFT JOIN guest_luggage_acknowledgements ack
+       ON ack.notice_id = $3
+      AND ack.user_id = a.user_id
+      AND ack.notice_version = $4
+     WHERE COALESCE(a.user_id, '') <> ''
+     ORDER BY a.role_kind, user_name`,
+    [String(row.property_id || ''), String(row.task_date || '').slice(0, 10), noticeId, version],
+  )
+  const cleaners: any[] = []
+  const inspectors: any[] = []
+  for (const item of assignments?.rows || []) {
+    const mapped = {
+      user_id: String(item.user_id || ''),
+      user_name: String(item.user_name || item.user_id || ''),
+      acknowledged: !!item.acknowledged_at,
+      acknowledged_at: item.acknowledged_at ? String(item.acknowledged_at) : null,
+    }
+    if (String(item.role_kind || '') === 'inspector') inspectors.push(mapped)
+    else cleaners.push(mapped)
+  }
+  const currentUserAcknowledged = [...cleaners, ...inspectors].some(
+    (item) => item.user_id === viewerUserId && item.acknowledged,
+  )
+  return {
+    id: String(row.id || ''),
+    property_id: String(row.property_id || ''),
+    task_date: String(row.task_date || '').slice(0, 10),
+    note: row.note == null ? null : String(row.note || ''),
+    photo_urls: normalizeStoredPhotoUrls(row.photo_urls),
+    version,
+    created_by: row.created_by == null ? null : String(row.created_by || ''),
+    updated_by: row.updated_by == null ? null : String(row.updated_by || ''),
+    created_at: row.created_at ? String(row.created_at) : null,
+    updated_at: row.updated_at ? String(row.updated_at) : null,
+    current_user_acknowledged: currentUserAcknowledged,
+    acknowledgements: { cleaners, inspectors },
+  }
+}
+
+async function listGuestLuggageRecipients(propertyId: string, taskDate: string) {
+  if (!pgPool) return []
+  const taskUsers = await pgPool.query(
+    `SELECT t.cleaner_id::text AS cleaner_id, t.inspector_id::text AS inspector_id, t.assignee_id::text AS assignee_id
+     FROM cleaning_tasks t
+     LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+     LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+     WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
+       AND COALESCE(t.task_date, t.date)::date = $2::date
+       AND COALESCE(t.status, '') <> 'cancelled'`,
+    [propertyId, taskDate],
+  )
+  const { listUserIdsByRoles } = require('./notifications')
+  return resolveGuestLuggageRecipientIds(taskUsers?.rows || [], await listUserIdsByRoles(['admin', 'offline_manager']))
+}
+
+async function emitGuestLuggageTaskEvents(params: {
+  taskRows: any[]
+  taskIds: string[]
+  patch?: any
+  actorUserId: string
+}) {
+  for (const row of params.taskRows || []) {
+    await emitWorkTaskEvent({
+      taskId: `cleaning_task:${String(row.id || '')}`,
+      sourceType: 'cleaning_tasks',
+      sourceRefIds: params.taskIds,
+      eventType: 'TASK_DETAIL_ASSET_CHANGED',
+      changeScope: 'detail',
+      changedFields: ['guest_luggage'],
+      patch: params.patch === undefined ? null : { guest_luggage: params.patch },
+      causedByUserId: params.actorUserId || null,
+      visibilityHints: buildCleaningTaskVisibilityHints(row),
+    })
+  }
 }
 
 router.get('/alerts', async (req, res) => {
@@ -1347,181 +1505,6 @@ router.post('/alerts/:id/read', async (req, res) => {
     return res.json({ ok: true })
   } catch (e: any) {
     return res.status(500).json({ message: String(e?.message || 'alerts_read_failed') })
-  }
-})
-
-const customerServiceMemoCreateSchema = z.object({
-  content: z.string().trim().min(1).max(500),
-  is_done: z.boolean().optional(),
-  is_alert: z.boolean().optional(),
-  sort_index: z.number().int().min(0).max(100000).optional(),
-  reminder_at: z.any().optional(),
-})
-
-const customerServiceMemoPatchSchema = z
-  .object({
-    content: z.string().trim().min(1).max(500).optional(),
-    is_done: z.boolean().optional(),
-    is_alert: z.boolean().optional(),
-    sort_index: z.number().int().min(0).max(100000).optional(),
-    reminder_at: z.any().optional(),
-  })
-  .refine((value) => Object.keys(value).length > 0, { message: 'missing patch fields' })
-
-router.get('/customer-service-memos', async (req, res) => {
-  const user = (req as any).user
-  if (!user) return res.status(401).json({ message: 'unauthorized' })
-  if (!hasRole(user, 'customer_service')) return res.status(403).json({ message: 'forbidden' })
-  const userId = String(user.sub || '').trim()
-  if (!userId) return res.status(401).json({ message: 'unauthorized' })
-  try {
-    if (!hasPg || !pgPool) return res.json([])
-    await ensureMzappCustomerServiceMemosTable()
-    const r = await pgPool.query(
-      `SELECT id, user_id, content, is_done, is_alert, sort_index, reminder_at::text AS reminder_at, reminder_sent_at::text AS reminder_sent_at, created_at::text AS created_at, updated_at::text AS updated_at
-       FROM mzapp_customer_service_memos
-       WHERE user_id = $1
-       ORDER BY is_done ASC, is_alert DESC, sort_index ASC, created_at DESC`,
-      [userId],
-    )
-    return res.json(
-      (r?.rows || []).map((row: any) => ({
-        id: String(row.id || ''),
-        user_id: String(row.user_id || ''),
-        content: String(row.content || ''),
-        is_done: !!row.is_done,
-        is_alert: !!row.is_alert,
-        sort_index: Number.isFinite(Number(row.sort_index)) ? Number(row.sort_index) : 0,
-        reminder_at: row.reminder_at ? String(row.reminder_at || '') : null,
-        reminder_sent_at: row.reminder_sent_at ? String(row.reminder_sent_at || '') : null,
-        created_at: String(row.created_at || ''),
-        updated_at: String(row.updated_at || ''),
-      })),
-    )
-  } catch (e: any) {
-    return res.status(500).json({ message: String(e?.message || 'customer_service_memos_failed') })
-  }
-})
-
-router.post('/customer-service-memos', async (req, res) => {
-  const user = (req as any).user
-  if (!user) return res.status(401).json({ message: 'unauthorized' })
-  if (!hasRole(user, 'customer_service')) return res.status(403).json({ message: 'forbidden' })
-  const userId = String(user.sub || '').trim()
-  if (!userId) return res.status(401).json({ message: 'unauthorized' })
-  const parsed = customerServiceMemoCreateSchema.safeParse(req.body || {})
-  if (!parsed.success) return res.status(400).json(parsed.error.format())
-  try {
-    if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
-    await ensureMzappCustomerServiceMemosTable()
-    const reminderParsed = parseOptionalIsoDateTime(parsed.data.reminder_at)
-    if (!reminderParsed.ok) return res.status(400).json({ message: 'invalid reminder_at' })
-    const content = String(parsed.data.content || '').trim()
-    const contentKey = normalizeCustomerServiceMemoContent(content)
-    const dup = await pgPool.query(
-      `SELECT id
-       FROM mzapp_customer_service_memos
-       WHERE user_id = $1
-         AND is_done = false
-         AND lower(regexp_replace(trim(content), '\s+', ' ', 'g')) = $2
-       LIMIT 1`,
-      [userId, contentKey],
-    )
-    if (dup?.rowCount) return res.status(409).json({ message: '已有相同的未完成备忘录' })
-    const id = require('uuid').v4()
-    const r = await pgPool.query(
-      `INSERT INTO mzapp_customer_service_memos (id, user_id, content, is_done, is_alert, sort_index, reminder_at, reminder_sent_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz)
-       RETURNING id, user_id, content, is_done, is_alert, sort_index, reminder_at::text AS reminder_at, reminder_sent_at::text AS reminder_sent_at, created_at::text AS created_at, updated_at::text AS updated_at`,
-      [
-        id,
-        userId,
-        content,
-        parsed.data.is_done === true,
-        parsed.data.is_alert === true,
-        parsed.data.sort_index == null ? 0 : Number(parsed.data.sort_index),
-        reminderParsed.value,
-        null,
-      ],
-    )
-    return res.json(r?.rows?.[0] || null)
-  } catch (e: any) {
-    return res.status(500).json({ message: String(e?.message || 'customer_service_memo_create_failed') })
-  }
-})
-
-router.patch('/customer-service-memos/:id', async (req, res) => {
-  const user = (req as any).user
-  if (!user) return res.status(401).json({ message: 'unauthorized' })
-  if (!hasRole(user, 'customer_service')) return res.status(403).json({ message: 'forbidden' })
-  const userId = String(user.sub || '').trim()
-  const id = String(req.params.id || '').trim()
-  if (!userId) return res.status(401).json({ message: 'unauthorized' })
-  if (!id) return res.status(400).json({ message: 'missing id' })
-  const parsed = customerServiceMemoPatchSchema.safeParse(req.body || {})
-  if (!parsed.success) return res.status(400).json(parsed.error.format())
-  try {
-    if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
-    await ensureMzappCustomerServiceMemosTable()
-    const reminderParsed = parsed.data.reminder_at !== undefined ? parseOptionalIsoDateTime(parsed.data.reminder_at) : null
-    if (reminderParsed && !reminderParsed.ok) return res.status(400).json({ message: 'invalid reminder_at' })
-    const sets: string[] = []
-    const vals: any[] = []
-    if (parsed.data.content !== undefined) {
-      vals.push(String(parsed.data.content || '').trim())
-      sets.push(`content = $${vals.length}`)
-    }
-    if (parsed.data.is_done !== undefined) {
-      vals.push(parsed.data.is_done === true)
-      sets.push(`is_done = $${vals.length}`)
-    }
-    if (parsed.data.is_alert !== undefined) {
-      vals.push(parsed.data.is_alert === true)
-      sets.push(`is_alert = $${vals.length}`)
-    }
-    if (parsed.data.sort_index !== undefined) {
-      vals.push(Number(parsed.data.sort_index))
-      sets.push(`sort_index = $${vals.length}`)
-    }
-    if (parsed.data.reminder_at !== undefined) {
-      vals.push(reminderParsed ? reminderParsed.value : null)
-      sets.push(`reminder_at = $${vals.length}::timestamptz`)
-      sets.push(`reminder_sent_at = NULL`)
-    }
-    if (parsed.data.is_done === true) {
-      sets.push(`reminder_sent_at = COALESCE(reminder_sent_at, now())`)
-    }
-    vals.push(id)
-    vals.push(userId)
-    const r = await pgPool.query(
-      `UPDATE mzapp_customer_service_memos
-       SET ${sets.join(', ')}, updated_at = now()
-       WHERE id = $${vals.length - 1} AND user_id = $${vals.length}
-       RETURNING id, user_id, content, is_done, is_alert, sort_index, reminder_at::text AS reminder_at, reminder_sent_at::text AS reminder_sent_at, created_at::text AS created_at, updated_at::text AS updated_at`,
-      vals,
-    )
-    if (!r?.rowCount) return res.status(404).json({ message: 'memo not found' })
-    return res.json(r.rows[0] || null)
-  } catch (e: any) {
-    return res.status(500).json({ message: String(e?.message || 'customer_service_memo_update_failed') })
-  }
-})
-
-router.delete('/customer-service-memos/:id', async (req, res) => {
-  const user = (req as any).user
-  if (!user) return res.status(401).json({ message: 'unauthorized' })
-  if (!hasRole(user, 'customer_service')) return res.status(403).json({ message: 'forbidden' })
-  const userId = String(user.sub || '').trim()
-  const id = String(req.params.id || '').trim()
-  if (!userId) return res.status(401).json({ message: 'unauthorized' })
-  if (!id) return res.status(400).json({ message: 'missing id' })
-  try {
-    if (!hasPg || !pgPool) return res.json({ ok: true })
-    await ensureMzappCustomerServiceMemosTable()
-    await pgPool.query(`DELETE FROM mzapp_customer_service_memos WHERE id = $1 AND user_id = $2`, [id, userId])
-    return res.json({ ok: true })
-  } catch (e: any) {
-    return res.status(500).json({ message: String(e?.message || 'customer_service_memo_delete_failed') })
   }
 })
 
@@ -2269,6 +2252,41 @@ router.post('/cleaning-tasks/:id/restock-proof', async (req, res) => {
   }
 })
 
+async function emitGuestCheckoutRealtimeEvents(params: {
+  taskIds: string[]
+  checkedOutAt: string | null
+  propertyCode: string
+  keysRequired?: number | null
+  eventId: string
+  cancelled?: boolean
+  causedByUserId?: string | null
+}) {
+  if (!hasPg || !pgPool) return
+  const taskIds = Array.from(new Set((params.taskIds || []).map((id) => String(id || '').trim()).filter(Boolean)))
+  if (!taskIds.length) return
+  const result = await pgPool.query(
+    `SELECT id::text AS id, assignee_id, cleaner_id, inspector_id
+     FROM cleaning_tasks
+     WHERE id::text = ANY($1::text[])`,
+    [taskIds],
+  )
+  for (const row of result?.rows || []) {
+    const id = String(row?.id || '').trim()
+    if (!id) continue
+    await emitWorkTaskEvent({
+      taskId: `cleaning_task:${id}`,
+      sourceType: 'cleaning_tasks',
+      sourceRefIds: [id],
+      eventType: 'TASK_UPDATED',
+      changeScope: 'list',
+      changedFields: ['checked_out_at'],
+      patch: { checked_out_at: params.cancelled ? null : params.checkedOutAt },
+      causedByUserId: params.causedByUserId || null,
+      visibilityHints: buildCleaningTaskVisibilityHints(row),
+    })
+  }
+}
+
 router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
@@ -2319,6 +2337,14 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
         } catch {}
         const to = Array.from(new Set([...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())]))
         const eventId = `guest_checked_out_cancelled:${propertyCode || id}:${prevCheckedOutAt || ''}`
+        await emitGuestCheckoutRealtimeEvents({
+          taskIds: [id],
+          checkedOutAt: prevCheckedOutAt,
+          propertyCode,
+          eventId,
+          cancelled: true,
+          causedByUserId: userId,
+        })
         if (propertyId && to.length) {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
@@ -2375,6 +2401,14 @@ router.post('/cleaning-tasks/:id/guest-checked-out', async (req, res) => {
       const to = Array.from(new Set([...(await listCleaningTaskUserIds(id)), ...(await listManagerUserIds())]))
       const eventId = `guest_checked_out:${propertyCode || id}:${checkedOutAt || ''}`
       const body = keysRequired && keysRequired >= 2 ? `已退房（${keysRequired}把钥匙）` : '已退房'
+      await emitGuestCheckoutRealtimeEvents({
+        taskIds: [id],
+        checkedOutAt,
+        propertyCode,
+        keysRequired,
+        eventId,
+        causedByUserId: userId,
+      })
       if (propertyId && to.length) {
         const { emitNotificationEvent } = require('../services/notificationEvents')
         await emitNotificationEvent({
@@ -2473,6 +2507,14 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
         const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
         const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(ids2)), ...(await listManagerUserIds())]))
         const eventId = `guest_checked_out_cancelled:${propertyCode || ids2[0]}:${prevCheckedOutAt || ''}`
+        await emitGuestCheckoutRealtimeEvents({
+          taskIds: ids2,
+          checkedOutAt: prevCheckedOutAt,
+          propertyCode,
+          eventId,
+          cancelled: true,
+          causedByUserId: userId,
+        })
         if (propertyId && to.length) {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
@@ -2525,6 +2567,14 @@ router.post('/cleaning-tasks/guest-checked-out', async (req, res) => {
       keysRequired = r?.rows?.[0]?.keys_required == null ? null : Number(r.rows[0].keys_required)
     } catch {}
     const eventId = `guest_checked_out:${propertyCode || ids2[0]}:${checkedOutAt || ''}`
+    await emitGuestCheckoutRealtimeEvents({
+      taskIds: ids2,
+      checkedOutAt,
+      propertyCode,
+      keysRequired,
+      eventId,
+      causedByUserId: userId,
+    })
     try {
       const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
       const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(ids2)), ...(await listManagerUserIds())]))
@@ -2636,6 +2686,14 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
         const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
         const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(taskIds)), ...(await listManagerUserIds())]))
         const eventId = `guest_checked_out_cancelled:${propertyCode || taskIds[0]}:${prevCheckedOutAt || ''}`
+        await emitGuestCheckoutRealtimeEvents({
+          taskIds,
+          checkedOutAt: prevCheckedOutAt,
+          propertyCode,
+          eventId,
+          cancelled: true,
+          causedByUserId: userId,
+        })
         if (propertyId && to.length) {
           const { emitNotificationEvent } = require('../services/notificationEvents')
           await emitNotificationEvent({
@@ -2693,6 +2751,14 @@ router.post('/cleaning-tasks/order-checked-out', async (req, res) => {
       keysRequired = r?.rows?.[0]?.keys_required == null ? null : Number(r.rows[0].keys_required)
     } catch {}
     const eventId = `guest_checked_out:${propertyCode || taskIds[0]}:${checkedOutAt || ''}`
+    await emitGuestCheckoutRealtimeEvents({
+      taskIds,
+      checkedOutAt,
+      propertyCode,
+      keysRequired,
+      eventId,
+      causedByUserId: userId,
+    })
     try {
       const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
       const { emitNotificationEvent } = require('../services/notificationEvents')
@@ -2915,21 +2981,60 @@ async function handleManagerFields(req: any, res: any) {
         try {
           const ids0 = Array.from(new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean)))
           const rrIds = await pool.query(
-            `SELECT id::text AS id, order_id::text AS order_id, task_type::text AS task_type
-             FROM cleaning_tasks
-             WHERE id::text = ANY($1::text[])`,
+            `SELECT t.id::text AS id, t.order_id::text AS order_id, t.task_type::text AS task_type,
+                    COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
+                    COALESCE(t.task_date, t.date)::text AS task_date
+             FROM cleaning_tasks t
+             LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+             LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+             WHERE t.id::text = ANY($1::text[])`,
             [ids0],
           )
           const pickedRows = (() => {
             const rows = (rrIds?.rows || []) as any[]
             const checkins = rows.filter((x: any) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')
             if (checkins.length) return checkins
-            const checkouts = rows.filter((x: any) => String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean')
-            if (checkouts.length) return checkouts
-            return rows
+            return []
           })()
-          keysOrderIds = Array.from(new Set(pickedRows.map((x: any) => String(x.order_id || '').trim()).filter(Boolean)))
-          keysNullIds = Array.from(new Set(pickedRows.filter((x: any) => !String(x.order_id || '').trim()).map((x: any) => String(x.id || '').trim()).filter(Boolean)))
+          let incomingRows = pickedRows
+          if (!incomingRows.length) {
+            const rows = (rrIds?.rows || []) as any[]
+            const propertyIds = Array.from(new Set(rows.map((x: any) => String(x?.property_id || '').trim()).filter(Boolean)))
+            const taskDates = rows.map((x: any) => String(x?.task_date || '').slice(0, 10)).filter(Boolean).sort()
+            const propertyId0 = propertyIds.length === 1 ? propertyIds[0] : ''
+            const taskDate0 = taskDates[0] || ''
+            if (propertyId0 && taskDate0) {
+              const nextCheckins = await pool.query(
+                `WITH candidates AS (
+                   SELECT t.id::text AS id, t.order_id::text AS order_id,
+                          COALESCE(t.task_date, t.date)::date AS task_date
+                   FROM cleaning_tasks t
+                   LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+                   LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+                   LEFT JOIN orders o ON o.id::text = t.order_id::text
+                   WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
+                     AND COALESCE(t.task_date, t.date)::date >= $2::date
+                     AND lower(COALESCE(t.task_type, '')) = 'checkin_clean'
+                     AND COALESCE(t.status, '') <> 'cancelled'
+                     AND (
+                       t.order_id IS NULL
+                       OR (
+                         o.id IS NOT NULL
+                         AND lower(COALESCE(o.status, '')) <> 'invalid'
+                         AND lower(COALESCE(o.status, '')) NOT LIKE '%cancel%'
+                       )
+                     )
+                 )
+                 SELECT id, order_id, task_date::text AS task_date
+                 FROM candidates
+                 WHERE task_date = (SELECT MIN(task_date) FROM candidates)`,
+                [propertyId0, taskDate0],
+              )
+              incomingRows = nextCheckins?.rows || []
+            }
+          }
+          keysOrderIds = Array.from(new Set(incomingRows.map((x: any) => String(x.order_id || '').trim()).filter(Boolean)))
+          keysNullIds = Array.from(new Set(incomingRows.filter((x: any) => !String(x.order_id || '').trim()).map((x: any) => String(x.id || '').trim()).filter(Boolean)))
           if (!keysOrderIds.length && !keysNullIds.length) {
             prevKeysRequiredMin = 1
             prevKeysRequiredMax = 1
@@ -3173,7 +3278,21 @@ async function handleManagerFields(req: any, res: any) {
           const title = propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新'
           const body = lines.join('\n')
           const eventId = `manager_fields:${propertyCode || repId}:${fieldsKey}`
-          const data = { entity: 'cleaning_task', entityId: String(repId), action: 'open_task', kind: 'cleaning_task_manager_fields_updated', task_ids: Array.from(affectedTaskIds), property_code: propertyCode, fields_key: fieldsKey, event_id: eventId }
+          const dedupeKey = nextKeysRequired != null
+            ? `manager_fields:${propertyCode || repId}:keys_required:${nextKeysRequired}`
+            : eventId
+          const data = {
+            entity: 'cleaning_task',
+            entityId: String(repId),
+            action: 'open_task',
+            kind: 'cleaning_task_manager_fields_updated',
+            task_ids: Array.from(affectedTaskIds),
+            property_code: propertyCode,
+            fields_key: fieldsKey,
+            event_id: eventId,
+            keys_required: nextKeysRequired,
+            dedupe_key: dedupeKey,
+          }
           if (propertyId && to.length) {
             const { emitNotificationEvent } = require('../services/notificationEvents')
             await emitNotificationEvent({
@@ -3202,6 +3321,255 @@ async function handleManagerFields(req: any, res: any) {
 
 router.patch('/cleaning-tasks/manager-fields', handleManagerFields)
 router.post('/cleaning-tasks/manager-fields', handleManagerFields)
+
+const guestLuggageUpsertSchema = z
+  .object({
+    task_ids: z.array(z.string().trim().min(1)).min(1).max(50),
+    note: z.string().trim().max(1500).optional().nullable(),
+    photo_urls: z.array(z.string().trim().min(1).max(1200)).min(1).max(3),
+  })
+  .strict()
+
+router.post('/cleaning-tasks/guest-luggage', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!canEditGuestLuggage(user)) return res.status(403).json({ message: 'forbidden' })
+  const parsed = guestLuggageUpsertSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  const actorUserId = String(user.sub || '').trim()
+  try {
+    await ensureGuestLuggageTables()
+    const scope = await resolveGuestLuggageTaskScope(parsed.data.task_ids)
+    if (scope.taskDate !== melbourneToday()) return res.status(400).json({ message: '只能编辑当天任务的临时通知' })
+    const nextNote = String(parsed.data.note || '').trim() || null
+    const nextPhotos = Array.from(new Set(parsed.data.photo_urls.map((url) => String(url || '').trim()).filter(Boolean)))
+    if (!nextPhotos.length || nextPhotos.length > 3) return res.status(400).json({ message: '请上传 1-3 张临时通知照片' })
+
+    const result = await pgRunInTransaction(async (client: any) => {
+      const existingResult = await client.query(
+        `SELECT id, note, photo_urls, version
+         FROM guest_luggage_notices
+         WHERE property_id = $1 AND task_date = $2::date
+         FOR UPDATE`,
+        [scope.propertyId, scope.taskDate],
+      )
+      const existing = existingResult?.rows?.[0] || null
+      const mutation = planGuestLuggageMutation(
+        existing,
+        { note: nextNote, photoUrls: nextPhotos },
+        normalizeStoredPhotoUrls,
+      )
+      if (!mutation.changed) {
+        return {
+          changed: false,
+          notice: await loadGuestLuggageNotice(String(existing.id || ''), actorUserId, client),
+        }
+      }
+      const id = existing ? String(existing.id || '') : require('uuid').v4()
+      const version = mutation.version
+      if (existing) {
+        await client.query(
+          `UPDATE guest_luggage_notices
+           SET note = $1, photo_urls = $2::jsonb, version = $3, updated_by = $4, updated_at = now()
+           WHERE id = $5`,
+          [nextNote, JSON.stringify(nextPhotos), version, actorUserId || null, id],
+        )
+        if (mutation.resetAcknowledgements) {
+          await client.query(`DELETE FROM guest_luggage_acknowledgements WHERE notice_id = $1`, [id])
+        }
+      } else {
+        await client.query(
+          `INSERT INTO guest_luggage_notices
+             (id, property_id, task_date, note, photo_urls, version, created_by, updated_by)
+           VALUES ($1, $2, $3::date, $4, $5::jsonb, 1, $6, $6)`,
+          [id, scope.propertyId, scope.taskDate, nextNote, JSON.stringify(nextPhotos), actorUserId || null],
+        )
+      }
+      return {
+        changed: true,
+        notice: await loadGuestLuggageNotice(id, actorUserId, client),
+      }
+    })
+    const notice = result?.notice || null
+    if (!notice) return res.status(500).json({ message: 'guest luggage save failed' })
+    if (result?.changed) {
+      try {
+        await emitGuestLuggageTaskEvents({
+          taskRows: scope.rows,
+          taskIds: scope.taskIds,
+          patch: notice,
+          actorUserId,
+        })
+      } catch {}
+      try {
+        const recipients = await listGuestLuggageRecipients(scope.propertyId, scope.taskDate)
+        await emitNotificationEvent({
+          type: 'GUEST_LUGGAGE_UPDATED',
+          entity: 'cleaning_task',
+          entityId: scope.taskIds[0],
+          eventId: `guest_luggage:${notice.id}:v${notice.version}`,
+          updatedAt: notice.updated_at || new Date().toISOString(),
+          changes: ['guest_luggage'],
+          priority: 'high',
+          title: `当天任务临时通知${scope.propertyCode ? `：${scope.propertyCode}` : ''}`,
+          body: [notice.note || '请查看照片和说明，并按通知内容处理。', `照片：${notice.photo_urls.length} 张`].join('\n'),
+          data: {
+            entity: 'cleaning_task',
+            entityId: scope.taskIds[0],
+            action: 'open_task',
+            kind: 'guest_luggage_updated',
+            task_ids: scope.taskIds,
+            property_code: scope.propertyCode || undefined,
+            guest_luggage_id: notice.id,
+            guest_luggage_version: notice.version,
+            photo_url: notice.photo_urls[0] || null,
+            photo_urls: notice.photo_urls,
+          },
+          actorUserId,
+          recipientUserIds: recipients,
+        })
+      } catch {}
+    }
+    return res.status(result?.changed ? 201 : 200).json({ ok: true, changed: !!result?.changed, guest_luggage: notice })
+  } catch (e: any) {
+    const message = String(e?.message || 'guest_luggage_save_failed')
+    if (message === 'invalid task ids' || message === 'tasks must belong to the same property and date' || message === 'missing task ids') {
+      return res.status(400).json({ message })
+    }
+    return res.status(500).json({ message })
+  }
+})
+
+router.delete('/cleaning-tasks/guest-luggage/:id', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!canEditGuestLuggage(user)) return res.status(403).json({ message: 'forbidden' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  const noticeId = String(req.params.id || '').trim()
+  const actorUserId = String(user.sub || '').trim()
+  if (!noticeId) return res.status(400).json({ message: 'missing id' })
+  try {
+    await ensureGuestLuggageTables()
+    const found = await pgPool.query(
+      `SELECT id, property_id::text AS property_id, task_date::text AS task_date, version
+       FROM guest_luggage_notices WHERE id = $1 LIMIT 1`,
+      [noticeId],
+    )
+    const notice = found?.rows?.[0] || null
+    if (!notice) return res.status(404).json({ message: 'guest luggage notice not found' })
+    const taskResult = await pgPool.query(
+      `SELECT t.id::text AS id, t.assignee_id::text AS assignee_id, t.cleaner_id::text AS cleaner_id,
+              t.inspector_id::text AS inspector_id, lower(COALESCE(t.task_type, '')) AS task_type,
+              COALESCE(p_id.code::text, p_code.code::text, t.property_id::text) AS property_code
+       FROM cleaning_tasks t
+       LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+       WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
+         AND COALESCE(t.task_date, t.date)::date = $2::date
+         AND COALESCE(t.status, '') <> 'cancelled'`,
+      [String(notice.property_id || ''), String(notice.task_date || '').slice(0, 10)],
+    )
+    const taskRows = taskResult?.rows || []
+    const taskIds = taskRows.map((row: any) => String(row.id || '')).filter(Boolean)
+    const propertyCode = String(taskRows?.[0]?.property_code || '').trim()
+    const recipients = await listGuestLuggageRecipients(String(notice.property_id || ''), String(notice.task_date || '').slice(0, 10))
+    await pgPool.query(`DELETE FROM guest_luggage_notices WHERE id = $1`, [noticeId])
+    try {
+      await emitGuestLuggageTaskEvents({ taskRows, taskIds, patch: null, actorUserId })
+    } catch {}
+    if (taskIds.length) {
+      try {
+        await emitNotificationEvent({
+          type: 'GUEST_LUGGAGE_UPDATED',
+          entity: 'cleaning_task',
+          entityId: taskIds[0],
+          eventId: `guest_luggage:${noticeId}:deleted:v${Number(notice.version || 1)}`,
+          changes: ['guest_luggage'],
+          priority: 'high',
+          title: `当天任务临时通知已移除${propertyCode ? `：${propertyCode}` : ''}`,
+          body: '当天任务中的临时通知已移除。',
+          data: {
+            entity: 'cleaning_task',
+            entityId: taskIds[0],
+            action: 'open_task',
+            kind: 'guest_luggage_deleted',
+            task_ids: taskIds,
+            property_code: propertyCode || undefined,
+            guest_luggage_id: noticeId,
+          },
+          actorUserId,
+          recipientUserIds: recipients,
+        })
+      } catch {}
+    }
+    return res.json({ ok: true })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'guest_luggage_delete_failed') })
+  }
+})
+
+router.post('/cleaning-tasks/guest-luggage/:id/ack', async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  const noticeId = String(req.params.id || '').trim()
+  const userId = String(user.sub || '').trim()
+  if (!noticeId || !userId) return res.status(400).json({ message: 'missing id' })
+  try {
+    await ensureGuestLuggageTables()
+    const noticeResult = await pgPool.query(
+      `SELECT id, property_id::text AS property_id, task_date::text AS task_date, version
+       FROM guest_luggage_notices WHERE id = $1 LIMIT 1`,
+      [noticeId],
+    )
+    const noticeRow = noticeResult?.rows?.[0] || null
+    if (!noticeRow) return res.status(404).json({ message: 'guest luggage notice not found' })
+    const assigned = await pgPool.query(
+      `SELECT t.id::text AS id, t.assignee_id::text AS assignee_id, t.cleaner_id::text AS cleaner_id,
+              t.inspector_id::text AS inspector_id, lower(COALESCE(t.task_type, '')) AS task_type
+       FROM cleaning_tasks t
+       LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+       WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
+         AND COALESCE(t.task_date, t.date)::date = $2::date
+         AND COALESCE(t.status, '') <> 'cancelled'
+         AND ($3 = COALESCE(t.cleaner_id::text, t.assignee_id::text) OR $3 = t.inspector_id::text)`,
+      [String(noticeRow.property_id || ''), String(noticeRow.task_date || '').slice(0, 10), userId],
+    )
+    if (!assigned?.rowCount) return res.status(403).json({ message: 'forbidden' })
+    await pgPool.query(
+      `INSERT INTO guest_luggage_acknowledgements (notice_id, user_id, notice_version, acknowledged_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (notice_id, user_id)
+       DO UPDATE SET notice_version = EXCLUDED.notice_version, acknowledged_at = now()`,
+      [noticeId, userId, Number(noticeRow.version || 1)],
+    )
+    const guestLuggage = await loadGuestLuggageNotice(noticeId, userId)
+    const allTasks = await pgPool.query(
+      `SELECT t.id::text AS id, t.assignee_id::text AS assignee_id, t.cleaner_id::text AS cleaner_id,
+              t.inspector_id::text AS inspector_id, lower(COALESCE(t.task_type, '')) AS task_type
+       FROM cleaning_tasks t
+       LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+       WHERE COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) = $1
+         AND COALESCE(t.task_date, t.date)::date = $2::date
+         AND COALESCE(t.status, '') <> 'cancelled'`,
+      [String(noticeRow.property_id || ''), String(noticeRow.task_date || '').slice(0, 10)],
+    )
+    const taskRows = allTasks?.rows || []
+    try {
+      await emitGuestLuggageTaskEvents({
+        taskRows,
+        taskIds: taskRows.map((row: any) => String(row.id || '')).filter(Boolean),
+        actorUserId: userId,
+      })
+    } catch {}
+    return res.json({ ok: true, guest_luggage: guestLuggage })
+  } catch (e: any) {
+    return res.status(500).json({ message: String(e?.message || 'guest_luggage_ack_failed') })
+  }
+})
 
 router.get('/checklist-items', async (req, res) => {
   const user = (req as any).user
@@ -4236,7 +4604,14 @@ router.get('/work-tasks', async (req, res) => {
           w.updated_at DESC,
           w.id DESC`
       const r = await pgPool.query(sql, vals)
-      for (const x of (r?.rows || [])) {
+      const rows = r?.rows || []
+      const guideLinks = await resolvePropertyPublicGuideLinks(
+        rows.map((row: any) => ({
+          propertyId: String(row.property_id || '').trim(),
+          fallbackLink: row.property_access_guide_link,
+        })),
+      )
+      for (const x of rows) {
         const completionPhotoUrls = normalizeWorkTaskPhotoUrls(x.completion_photo_urls)
         out.push({
           id: String(x.id),
@@ -4263,7 +4638,7 @@ router.get('/work-tasks', async (req, res) => {
                 address: x.property_address ? String(x.property_address) : '',
                 unit_type: x.property_unit_type ? String(x.property_unit_type) : '',
                 region: x.property_region ? String(x.property_region) : null,
-                access_guide_link: x.property_access_guide_link ? String(x.property_access_guide_link) : null,
+                access_guide_link: guideLinks.get(String(x.property_id || '').trim()) || null,
                 wifi_ssid: x.property_wifi_ssid ? String(x.property_wifi_ssid) : null,
                 wifi_password: x.property_wifi_password ? String(x.property_wifi_password) : null,
                 router_location: x.property_router_location ? String(x.property_router_location) : null,
@@ -4366,7 +4741,35 @@ router.get('/work-tasks', async (req, res) => {
             )
           ORDER BY COALESCE(t.task_date, t.date) ASC, COALESCE(p_id.code, p_code.code) NULLS LAST, t.id`
         const r = await pgPool.query(sql, [dateFrom, dateTo])
-        const taskIds = Array.from(new Set((r?.rows || []).map((x: any) => String(x.id || '')).filter(Boolean)))
+        const cleaningRows = r?.rows || []
+        const cleaningGuideLinks = await resolvePropertyPublicGuideLinks(
+          cleaningRows.map((row: any) => ({
+            propertyId: String(row.property_id || '').trim(),
+            fallbackLink: row.property_access_guide_link,
+          })),
+        )
+        const taskIds = Array.from(new Set(cleaningRows.map((x: any) => String(x.id || '')).filter(Boolean)))
+        const guestLuggageByTaskKey = new Map<string, any>()
+        const guestLuggagePropertyIds = Array.from(
+          new Set(cleaningRows.map((x: any) => String(x.property_id || '').trim()).filter(Boolean)),
+        )
+        if (guestLuggagePropertyIds.length) {
+          await ensureGuestLuggageTables()
+          const luggageRows = await pgPool.query(
+            `SELECT id, property_id::text AS property_id, task_date::text AS task_date
+             FROM guest_luggage_notices
+             WHERE property_id::text = ANY($1::text[])
+               AND task_date::date BETWEEN $2::date AND $3::date`,
+            [guestLuggagePropertyIds, dateFrom, dateTo],
+          )
+          const luggageDetails = await Promise.all(
+            (luggageRows?.rows || []).map((row: any) => loadGuestLuggageNotice(String(row.id || ''), userId)),
+          )
+          for (const detail of luggageDetails) {
+            if (!detail) continue
+            guestLuggageByTaskKey.set(`${detail.property_id}|${detail.task_date}`, detail)
+          }
+        }
         const restockByTaskId = new Map<string, any[]>()
         if (taskIds.length) {
           const rr = await pgPool.query(
@@ -4413,7 +4816,7 @@ router.get('/work-tasks', async (req, res) => {
         }
         const cleanerGroups = new Map<string, any[]>()
         const inspectorGroups = new Map<string, any[]>()
-        for (const row of (r?.rows || [])) {
+        for (const row of cleaningRows) {
           const taskDate = String(row.task_date || row.date || '').slice(0, 10)
           const propId = row.property_id ? String(row.property_id) : null
           const prop = propId
@@ -4423,7 +4826,7 @@ router.get('/work-tasks', async (req, res) => {
                 address: row.property_address ? String(row.property_address) : '',
                 unit_type: row.property_unit_type ? String(row.property_unit_type) : '',
                 region: row.property_region ? String(row.property_region) : null,
-                access_guide_link: row.property_access_guide_link ? String(row.property_access_guide_link) : null,
+                access_guide_link: cleaningGuideLinks.get(String(propId || '').trim()) || null,
                 wifi_ssid: row.property_wifi_ssid ? String(row.property_wifi_ssid) : null,
                 wifi_password: row.property_wifi_password ? String(row.property_wifi_password) : null,
                 router_location: row.property_router_location ? String(row.property_router_location) : null,
@@ -4483,6 +4886,7 @@ router.get('/work-tasks', async (req, res) => {
             inspector_name: row.inspector_name,
             sort_index_cleaner: row.sort_index_cleaner,
             sort_index_inspector: row.sort_index_inspector,
+            guest_luggage: guestLuggageByTaskKey.get(`${String(propId || '')}|${taskDate}`) || null,
             status,
             property: prop,
           }
@@ -4638,6 +5042,17 @@ router.get('/work-tasks', async (req, res) => {
 
           const outId = p.kind === 'turnover' ? `cleaning_tasks_${roleKind}_turnover:${date}:${propId || 'unknown'}:${assigneeId}` : `cleaning_tasks_${roleKind}:${p.ids.join(',')}`
           const primarySourceId = String(p.a.__raw_id)
+          const nextCheckinsForCheckout = p.kind === 'checkout'
+            ? (() => {
+                const candidates = cleaningRows
+                  .filter((x: any) => String(x?.property_id || '') === String(propId || ''))
+                  .filter((x: any) => cleaningType(x?.task_type) === 'checkin')
+                  .filter((x: any) => String(x?.task_date || x?.date || '').slice(0, 10) >= date)
+                  .sort((a: any, b: any) => String(a?.task_date || a?.date || '').localeCompare(String(b?.task_date || b?.date || '')))
+                const nextDate = String(candidates[0]?.task_date || candidates[0]?.date || '').slice(0, 10)
+                return nextDate ? candidates.filter((x: any) => String(x?.task_date || x?.date || '').slice(0, 10) === nextDate) : []
+              })()
+            : []
           const checkoutKeys =
             p.kind === 'turnover' || p.kind === 'checkout'
               ? (p.a?.keys_required == null ? 1 : Number(p.a.keys_required))
@@ -4647,13 +5062,16 @@ router.get('/work-tasks', async (req, res) => {
               ? (p.b?.keys_required == null ? 1 : Number(p.b.keys_required))
               : p.kind === 'checkin'
                 ? (p.a?.keys_required == null ? 1 : Number(p.a.keys_required))
-                : null
+                : p.kind === 'checkout' && nextCheckinsForCheckout.length
+                  ? Math.max(...nextCheckinsForCheckout.map((x: any) => (x?.keys_required == null ? 1 : Number(x.keys_required))))
+                  : null
           const checkoutOrderId =
             (p.kind === 'turnover' || p.kind === 'checkout') && p.a?.order_id ? String(p.a.order_id) : null
           const checkinOrderId =
             p.kind === 'turnover'
               ? (p.b?.order_id ? String(p.b.order_id) : null)
               : (p.kind === 'checkin' && p.a?.order_id ? String(p.a.order_id) : null)
+                || (p.kind === 'checkout' && nextCheckinsForCheckout[0]?.order_id ? String(nextCheckinsForCheckout[0].order_id) : null)
           const singleOrderId = p.kind === 'turnover' ? null : (p.a?.order_id ? String(p.a.order_id) : null)
           const checkoutKeysOut = checkoutKeys != null && Number.isFinite(checkoutKeys) ? Math.max(1, Math.min(2, Math.trunc(checkoutKeys))) : null
           const checkinKeysOut = checkinKeys != null && Number.isFinite(checkinKeys) ? Math.max(1, Math.min(2, Math.trunc(checkinKeys))) : null
@@ -4684,6 +5102,7 @@ router.get('/work-tasks', async (req, res) => {
             old_code: oldCode,
             new_code: newCode,
             guest_special_request: guestSpecialRequest,
+            guest_luggage: p.a.guest_luggage || null,
             note: taskNote,
             inspection_mode: inspectionMode,
             inspection_due_date: inspectionDueDate,
@@ -4693,7 +5112,7 @@ router.get('/work-tasks', async (req, res) => {
             key_tags: {
               checkout_sets: checkoutKeysOut,
               checkin_sets: checkinKeysOut,
-              show_checkout: (checkoutKeysOut ?? 0) >= 2 && !String(checkedOutAt || '').trim(),
+              show_checkout: (checkoutKeysOut ?? 0) >= 2,
               show_checkin: (checkinKeysOut ?? 0) >= 2,
             },
             checked_out_at: checkedOutAt,
@@ -4853,7 +5272,7 @@ router.get('/work-tasks', async (req, res) => {
           key_tags: {
             checkout_sets: checkoutKeysOut,
             checkin_sets: checkinKeysOut,
-            show_checkout: (checkoutKeysOut ?? 0) >= 2 && !String(checkedOutAtMerged || '').trim(),
+            show_checkout: (checkoutKeysOut ?? 0) >= 2,
             show_checkin: (checkinKeysOut ?? 0) >= 2,
           },
           cleaner_name: cleanerName,

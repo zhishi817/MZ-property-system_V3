@@ -21,6 +21,7 @@ import { clearAuth, getJSON, isApiFailureKind } from '../lib/api'
 import { VersionBadge } from './VersionBadge'
 import { pickHomeRoute } from '../lib/homeRoute'
 import { ADMIN_NAVIGATION, buildSidebarNavigation, type SidebarNavNode } from '../lib/adminNavigation'
+import { AdminNotificationBell } from './AdminNotificationBell'
 
 const { Header, Sider, Content } = Layout
 const { useBreakpoint } = Grid
@@ -205,6 +206,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
             <div className="mz-admin-header-actions">
               <Space wrap>
                 {authState === 'backend_unavailable' ? <Tag color="orange">本地后端启动中，正在重试</Tag> : null}
+                <AdminNotificationBell />
                 <span className="mz-admin-user" style={{ fontFamily:'SF Pro Text, Segoe UI, Roboto, Helvetica Neue, Arial', color:'#555', display: authed ? 'inline' : 'none' }}>
                   Hi, {username || ''}{role ? ` (${role})` : ''}
                 </span>

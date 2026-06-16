@@ -183,11 +183,11 @@ export default function RBACPage() {
   async function submitUser() {
     const v = await userForm.validateFields()
     const payload: any = { ...v }
-    if (!payload.email) delete payload.email
+    payload.email = String(payload.email || '').trim() || null
+    payload.phone_au = payload.phone_au ? normalizeAuPhone(payload.phone_au) : null
     payload.roles = normalizeRoles(payload.role, payload.extra_roles)
     delete payload.extra_roles
     if (payload.color_hex) payload.color_hex = String(payload.color_hex).trim().toUpperCase()
-    if (payload.phone_au) payload.phone_au = normalizeAuPhone(payload.phone_au)
     const res = await fetch(`${API_BASE}/rbac/users`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) })
     if (res.ok) { message.success('已创建用户'); setUserOpen(false); userForm.resetFields(); load() } else { message.error('创建失败') }
   }
@@ -206,8 +206,8 @@ export default function RBACPage() {
     const id = editUser?.id
     if (!id) return
     const payload: any = { ...v }
-    if (!payload.email) delete payload.email
-    if (payload.phone_au) payload.phone_au = normalizeAuPhone(payload.phone_au)
+    payload.email = String(payload.email || '').trim() || null
+    payload.phone_au = payload.phone_au ? normalizeAuPhone(payload.phone_au) : null
     payload.roles = normalizeRoles(payload.role, payload.extra_roles)
     delete payload.extra_roles
     if (!payload.color_hex) delete payload.color_hex
@@ -962,14 +962,14 @@ export default function RBACPage() {
       <Modal open={userOpen} onCancel={() => setUserOpen(false)} onOk={submitUser} title="新建用户">
         <Form form={userForm} layout="vertical" initialValues={{ color_hex: '#3B82F6' }}>
           <Form.Item name="username" label="用户名" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="email" label="邮箱" rules={[{ type: 'email' }]}><Input placeholder="可选" /></Form.Item>
+          <Form.Item name="email" label="邮箱（可选）" rules={[{ type: 'email' }]}><Input placeholder="可留空" /></Form.Item>
           <Form.Item
             name="phone_au"
-            label="澳洲手机号"
+            label="澳洲手机号（可选）"
             normalize={(v) => normalizeAuPhone(v)}
-            rules={[{ required: true }, { pattern: /^\+61\d{9}$/, message: '请输入有效澳洲手机号，例如 +61412345678 或 0412345678' }]}
+            rules={[{ pattern: /^\+61\d{9}$/, message: '请输入有效澳洲手机号，例如 +61412345678 或 0412345678' }]}
           >
-            <Input placeholder="+61412345678 或 0412345678" />
+            <Input placeholder="可留空；例如 +61412345678 或 0412345678" />
           </Form.Item>
           <Form.Item name="role" label="主角色" rules={[{ required: true }]}><Select options={roles.map(r => ({ value: r.name, label: r.name }))} /></Form.Item>
           <Form.Item name="extra_roles" label="其他角色">
@@ -1002,14 +1002,14 @@ export default function RBACPage() {
       >
         <Form form={editUserForm} layout="vertical">
           <Form.Item name="username" label="用户名" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="email" label="邮箱" rules={[{ type: 'email' }]}><Input placeholder="留空则不修改" /></Form.Item>
+          <Form.Item name="email" label="邮箱（可选）" rules={[{ type: 'email' }]}><Input placeholder="可留空" /></Form.Item>
           <Form.Item
             name="phone_au"
-            label="澳洲手机号"
+            label="澳洲手机号（可选）"
             normalize={(v) => normalizeAuPhone(v)}
-            rules={[{ required: true }, { pattern: /^\+61\d{9}$/, message: '请输入有效澳洲手机号，例如 +61412345678 或 0412345678' }]}
+            rules={[{ pattern: /^\+61\d{9}$/, message: '请输入有效澳洲手机号，例如 +61412345678 或 0412345678' }]}
           >
-            <Input placeholder="+61412345678 或 0412345678" />
+            <Input placeholder="可留空；例如 +61412345678 或 0412345678" />
           </Form.Item>
           <Form.Item name="role" label="主角色" rules={[{ required: true }]}><Select options={roles.map(r => ({ value: r.name, label: r.name }))} /></Form.Item>
           <Form.Item name="extra_roles" label="其他角色">

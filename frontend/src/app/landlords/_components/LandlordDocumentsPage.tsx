@@ -88,7 +88,7 @@ type SavedMzSignature = {
 
 const MZ_SIGNATURE_STORAGE_KEY = 'landlord_documents_mz_signature_v1'
 const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v7-page-filled-2026-05-18'
-const SERVICE_AGREEMENT_TEMPLATE_VERSION = 'service-agreement-v4-2026-05-21'
+const SERVICE_AGREEMENT_TEMPLATE_VERSION = 'service-agreement-v5-2026-06-15'
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const ATTACHMENT_ACCEPT = '.pdf,.doc,.docx,.jpg,.jpeg,.png'
 
@@ -1716,8 +1716,29 @@ function ServiceAgreementFields({
           <Divider orientation="left">费用设置</Divider>
           <Row gutter={12}>
             <Col span={8}><Form.Item name={['fields', 'setup_fee']} label="Setup Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
-            <Col span={8}><Form.Item name={['fields', 'management_fee_rate']} label="Management Fee (%)"><InputNumber min={0} max={100} precision={3} style={{ width: '100%' }} /></Form.Item></Col>
-            <Col span={8}><Form.Item name={['fields', 'management_fee']} label="Management Fee 文本"><Input readOnly /></Form.Item></Col>
+            <Col span={8}>
+              <Form.Item name={['fields', 'management_fee_rate']} label="Management Fee (%)">
+                <InputNumber
+                  min={0}
+                  max={100}
+                  precision={3}
+                  style={{ width: '100%' }}
+                  onChange={(value) => {
+                    const rate = percentToRate(value)
+                    form.setFieldValue(['fields', 'management_fee'], formatManagementFeeText(rate))
+                  }}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item
+                name={['fields', 'management_fee']}
+                label="Management Fee 文本"
+                extra="根据 Management Fee (%) 自动更新"
+              >
+                <Input readOnly />
+              </Form.Item>
+            </Col>
             <Col span={8}><Form.Item name={['fields', 'consumable_fee']} label="Consumable Fee"><Input addonBefore="AUD $" /></Form.Item></Col>
             <Col span={8}><Form.Item name={['fields', 'linen_fee']} label="Linen / Amenities"><Input /></Form.Item></Col>
             <Col span={8}><Form.Item name={['fields', 'initial_housekeeping_fee']} label="Initial Housekeeping"><Input addonBefore="AUD $" /></Form.Item></Col>

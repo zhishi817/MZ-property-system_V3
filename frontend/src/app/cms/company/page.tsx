@@ -10,7 +10,7 @@ import { CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, CloseOutlin
 type PageType = 'announce' | 'doc' | 'warehouse'
 type PageStatus = 'draft' | 'published'
 type AudienceScope = 'all_staff' | 'cleaners' | 'warehouse_staff' | 'maintenance_staff' | 'managers'
-type DocCategory = 'company_rule' | 'starter_guide' | 'role_guide' | 'work_guide'
+type DocCategory = 'company_rule' | 'starter_guide' | 'role_guide' | 'work_guide' | 'customer_service_manual'
 type DocCategoryFilter = 'all' | DocCategory
 type CompanyGuideRole = 'cleaner' | 'cleaning_inspector'
 
@@ -56,6 +56,7 @@ const DOC_CATEGORY_META: Record<DocCategory, { label: string; shortLabel: string
   starter_guide: { label: '新手指南', shortLabel: '新手', description: '下载安装、登录、首次使用', color: 'green' },
   role_guide: { label: '角色使用说明', shortLabel: '角色', description: '按角色拆分的 App 使用说明', color: 'blue' },
   work_guide: { label: '现场工作指南', shortLabel: '现场', description: '现场 SOP、工作动作与注意事项', color: 'purple' },
+  customer_service_manual: { label: '客服手册', shortLabel: '客服', description: '客服培训、SOP、规定与回复模板', color: 'cyan' },
 }
 
 const DOC_CATEGORY_OPTIONS = Object.entries(DOC_CATEGORY_META).map(([value, meta]) => ({
