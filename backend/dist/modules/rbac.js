@@ -66,6 +66,15 @@ function expandPermissionSynonyms(codes) {
             'inventory_region_rules.view', 'inventory_region_rules.create', 'inventory_region_rules.write',
         ].forEach((code) => s.add(code));
     }
+    if (s.has('inventory_linen_purchase_orders.pay') || s.has('finance.tx.write') || s.has('company_expenses.write')) {
+        ;
+        [
+            'menu.inventory',
+            'menu.inventory.linen.visible',
+            'menu.inventory.linen.purchase_orders.visible',
+            'inventory_linen_purchase_orders.view',
+        ].forEach((code) => s.add(code));
+    }
     if (s.has('inventory.move')) {
         ;
         [

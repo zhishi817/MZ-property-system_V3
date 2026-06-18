@@ -196,7 +196,7 @@ export const ADMIN_NAVIGATION: AdminNavNode[] = [
             href: '/inventory/category/linen/purchase-orders',
             visibleWhenAny: ['menu.inventory.linen.purchase_orders.visible'],
             rbacKey: 'menu.inventory.linen.purchase_orders.visible',
-            actionPerms: ['inventory_linen_purchase_orders.view', 'inventory_linen_purchase_orders.create', 'inventory_linen_purchase_orders.write'],
+            actionPerms: ['inventory_linen_purchase_orders.view', 'inventory_linen_purchase_orders.create', 'inventory_linen_purchase_orders.write', 'inventory_linen_purchase_orders.pay', 'finance.tx.write', 'company_expenses.write'],
           },
           {
             id: 'inventory-linen-deliveries',
