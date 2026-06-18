@@ -6339,8 +6339,8 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
       if (!nextArea || !nextDetail) return res.status(400).json({ message: 'missing maintenance fields' })
       const beforeType = await getColumnType('property_maintenance', 'photo_urls')
       const afterType = await getColumnType('property_maintenance', 'repair_photo_urls')
-      const beforeExpr = beforeType === 'text[]' ? '$5::text[]' : '$5::jsonb'
-      const afterExpr = afterType === 'text[]' ? '$7::text[]' : '$7::jsonb'
+      const beforeExpr = beforeType === 'text[]' ? '$4::text[]' : '$4::jsonb'
+      const afterExpr = afterType === 'text[]' ? '$6::text[]' : '$6::jsonb'
       await pgPool.query(
         `UPDATE property_maintenance
             SET area = $2,

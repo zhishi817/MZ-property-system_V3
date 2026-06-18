@@ -18,7 +18,10 @@ const path_1 = __importDefault(require("path"));
 const uploadImageResize_1 = require("../lib/uploadImageResize");
 const r2_1 = require("../r2");
 exports.router = (0, express_1.Router)();
-const inventoryPurchaseOrderViewPerms = ['inventory_linen_purchase_orders.view', 'inventory_daily_purchase_orders.view', 'inventory_consumable_purchase_orders.view', 'inventory_other_purchase_orders.view', 'inventory.po.manage'];
+const inventoryPurchaseOrderOperationalViewPerms = ['inventory_linen_purchase_orders.view', 'inventory_daily_purchase_orders.view', 'inventory_consumable_purchase_orders.view', 'inventory_other_purchase_orders.view', 'inventory.po.manage'];
+const inventoryPurchaseOrderPaymentPerms = ['inventory_linen_purchase_orders.pay', 'finance.tx.write', 'company_expenses.write'];
+const inventoryPurchaseOrderViewPerms = [...inventoryPurchaseOrderOperationalViewPerms, ...inventoryPurchaseOrderPaymentPerms];
+const linenPurchaseOrderExpenseRefType = 'inventory_linen_purchase_order';
 const inventoryPurchaseOrderCreatePerms = ['inventory_linen_purchase_orders.create', 'inventory_daily_purchase_orders.create', 'inventory_consumable_purchase_orders.create', 'inventory_other_purchase_orders.create', 'inventory.po.manage'];
 const inventoryPurchaseOrderWritePerms = ['inventory_linen_purchase_orders.write', 'inventory_daily_purchase_orders.write', 'inventory_consumable_purchase_orders.write', 'inventory_other_purchase_orders.write', 'inventory.po.manage'];
 const inventoryTransferViewPerms = ['inventory_linen_deliveries.view', 'inventory_daily_deliveries.view', 'inventory_consumable_deliveries.view', 'inventory_other_deliveries.view', 'inventory.view'];
@@ -91,6 +94,75 @@ function toDayStartIsoMelbourne(daysFromToday = 0) {
     mel.setHours(0, 0, 0, 0);
     mel.setDate(mel.getDate() + Number(daysFromToday || 0));
     return mel.toISOString();
+}
+function todayMelbourneDate() {
+    return toDayStartIsoMelbourne(0).slice(0, 10);
+}
+function monthKeyFromDate(date) {
+    return String(date || '').slice(0, 7);
+}
+function dateOnly(value) {
+    const raw = String(value || '').trim();
+    const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (match)
+        return match[1];
+    const d = value instanceof Date ? value : new Date(raw);
+    if (!Number.isNaN(d.getTime()))
+        return d.toISOString().slice(0, 10);
+    return '';
+}
+function purchaseOrderExpenseDate(po) {
+    return dateOnly(po === null || po === void 0 ? void 0 : po.ordered_date) || dateOnly(po === null || po === void 0 ? void 0 : po.created_at) || todayMelbourneDate();
+}
+async function ensureCompanyExpenseSchemaForInventory(client) {
+    await client.query(`CREATE TABLE IF NOT EXISTS company_expenses (
+    id text PRIMARY KEY,
+    occurred_at date NOT NULL,
+    amount numeric NOT NULL,
+    currency text NOT NULL DEFAULT 'AUD',
+    category text,
+    category_detail text,
+    expense_name text,
+    note text,
+    invoice_url text,
+    created_at timestamptz DEFAULT now(),
+    created_by text,
+    deleted_at timestamptz,
+    deleted_by text,
+    delete_source text,
+    fixed_expense_id text,
+    month_key text,
+    due_date date,
+    paid_date date,
+    status text,
+    generated_from text,
+    ref_type text,
+    ref_id text,
+    is_auto boolean DEFAULT false,
+    manual_override boolean DEFAULT false,
+    source_title text,
+    source_summary text
+  );`);
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS expense_name text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS invoice_url text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_at timestamptz;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_by text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS delete_source text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_type text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_id text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS is_auto boolean DEFAULT false;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_title text;');
+    await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_summary text;');
+    await client.query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_ref ON company_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;");
 }
 function buildDailyItemSku(id) {
     const raw = String(id || '').replace(/[^a-zA-Z0-9]+/g, '').toUpperCase();
@@ -2286,7 +2358,7 @@ function buildLinenDeliveryRecordFingerprint(input) {
         extra_linen_lines,
     });
 }
-exports.router.get('/warehouses', (0, auth_1.requirePerm)('inventory.view'), async (req, res) => {
+exports.router.get('/warehouses', (0, auth_1.requireAnyPerm)(['inventory.view', ...inventoryPurchaseOrderPaymentPerms]), async (req, res) => {
     const startedAt = Date.now();
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
@@ -5475,11 +5547,15 @@ exports.router.patch('/daily-replacements/:id', (0, auth_1.requireAnyPerm)(['inv
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
-exports.router.get('/suppliers', (0, auth_1.requireAnyPerm)(['inventory_suppliers.view', 'inventory.po.manage']), async (req, res) => {
+exports.router.get('/suppliers', (0, auth_1.requireAnyPerm)(['inventory_suppliers.view', 'inventory.po.manage', ...inventoryPurchaseOrderPaymentPerms]), async (req, res) => {
     try {
         if (dbAdapter_1.hasPg && dbAdapter_1.pgPool) {
             await ensureInventorySchema();
-            const rows = await dbAdapter_1.pgPool.query(`SELECT id, name, kind, supply_items_note, login_url, login_username, login_password, login_note, active FROM suppliers ORDER BY name ASC`);
+            const canViewSupplierSecrets = await (0, auth_1.userHasAnyPerm)(req.user, ['inventory_suppliers.view', 'inventory.po.manage']);
+            const fields = canViewSupplierSecrets
+                ? 'id, name, kind, supply_items_note, login_url, login_username, login_password, login_note, active'
+                : 'id, name, kind, active';
+            const rows = await dbAdapter_1.pgPool.query(`SELECT ${fields} FROM suppliers ORDER BY name ASC`);
             return res.json(rows.rows || []);
         }
         return res.json([]);
@@ -5709,6 +5785,13 @@ exports.router.get('/purchase-orders', (0, auth_1.requireAnyPerm)([...inventoryP
             const supplier_id = String(q.supplier_id || '').trim();
             const warehouse_id = String(q.warehouse_id || '').trim();
             const category = String(q.category || '').trim();
+            const [hasOperationalView, hasPaymentView] = await Promise.all([
+                (0, auth_1.userHasAnyPerm)(req.user, [...inventoryPurchaseOrderOperationalViewPerms]),
+                (0, auth_1.userHasAnyPerm)(req.user, [...inventoryPurchaseOrderPaymentPerms]),
+            ]);
+            if (!hasOperationalView && hasPaymentView && category !== 'linen') {
+                return res.status(403).json({ message: 'finance payment access is limited to linen purchase orders' });
+            }
             let poIds = null;
             if (category) {
                 const its = await dbAdapter_1.pgPool.query(`SELECT id FROM inventory_items WHERE category = $1`, [category]);
@@ -5757,7 +5840,7 @@ exports.router.get('/purchase-orders', (0, auth_1.requireAnyPerm)([...inventoryP
                 return res.json([]);
             const supplierIds = Array.from(new Set(rows.map((r) => String(r.supplier_id || '')).filter(Boolean)));
             const warehouseIds = Array.from(new Set(rows.map((r) => String(r.warehouse_id || '')).filter(Boolean)));
-            const [supRows, whRows, aggRows] = await Promise.all([
+            const [supRows, whRows, aggRows, paidRows] = await Promise.all([
                 supplierIds.length ? dbAdapter_1.pgPool.query(`SELECT id, name FROM suppliers WHERE id = ANY($1::text[])`, [supplierIds]) : Promise.resolve({ rows: [] }),
                 warehouseIds.length ? dbAdapter_1.pgPool.query(`SELECT id, code, name FROM warehouses WHERE id = ANY($1::text[])`, [warehouseIds]) : Promise.resolve({ rows: [] }),
                 dbAdapter_1.pgPool.query(`SELECT po_id,
@@ -5767,14 +5850,23 @@ exports.router.get('/purchase-orders', (0, auth_1.requireAnyPerm)([...inventoryP
            FROM purchase_order_lines
            WHERE po_id = ANY($1::text[])
            GROUP BY po_id`, [rows.map((r) => String(r.id))]),
+                dbAdapter_1.pgPool.query(`SELECT DISTINCT ON (ref_id) id, ref_id, paid_date, occurred_at, status
+           FROM company_expenses
+           WHERE ref_type = $1
+             AND ref_id = ANY($2::text[])
+             AND deleted_at IS NULL
+             AND COALESCE(status, '') <> 'void'
+           ORDER BY ref_id, created_at DESC`, [linenPurchaseOrderExpenseRefType, rows.map((r) => String(r.id))]).catch(() => ({ rows: [] })),
             ]);
             const supMap = new Map(supRows.rows.map((r) => [String(r.id), r]));
             const whMap = new Map(whRows.rows.map((r) => [String(r.id), r]));
             const aggMap = new Map(aggRows.rows.map((r) => [String(r.po_id), r]));
+            const paidMap = new Map(paidRows.rows.map((r) => [String(r.ref_id), r]));
             const out = rows.map((r) => {
                 const s = supMap.get(String(r.supplier_id)) || {};
                 const w = whMap.get(String(r.warehouse_id)) || {};
                 const a = aggMap.get(String(r.id)) || {};
+                const paid = paidMap.get(String(r.id)) || null;
                 return {
                     ...r,
                     supplier_name: s.name,
@@ -5786,6 +5878,8 @@ exports.router.get('/purchase-orders', (0, auth_1.requireAnyPerm)([...inventoryP
                     subtotal_amount: r.subtotal_amount !== undefined && r.subtotal_amount !== null ? String(r.subtotal_amount) : '0',
                     gst_amount: r.gst_amount !== undefined && r.gst_amount !== null ? String(r.gst_amount) : '0',
                     total_amount_inc_gst: r.total_amount_inc_gst !== undefined && r.total_amount_inc_gst !== null ? String(r.total_amount_inc_gst) : '0',
+                    paid_expense_id: (paid === null || paid === void 0 ? void 0 : paid.id) || null,
+                    paid_at: (paid === null || paid === void 0 ? void 0 : paid.paid_date) || (paid === null || paid === void 0 ? void 0 : paid.occurred_at) || null,
                 };
             });
             return res.json(out);
@@ -6037,7 +6131,7 @@ exports.router.post('/purchase-orders', (0, auth_1.requireAnyPerm)([...inventory
     }
 });
 exports.router.get('/purchase-orders/:id', (0, auth_1.requireAnyPerm)([...inventoryPurchaseOrderViewPerms]), async (req, res) => {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j;
     const id = String(req.params.id || '');
     try {
         if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
@@ -6053,12 +6147,31 @@ exports.router.get('/purchase-orders/:id', (0, auth_1.requireAnyPerm)([...invent
         if (!String(((_c = (_b = po.rows) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.po_no) || '').trim()) {
             po.rows[0].po_no = await ensurePurchaseOrderNo(dbAdapter_1.pgPool, po.rows[0]);
         }
-        const lines = await dbAdapter_1.pgPool.query(`SELECT l.*, i.name AS item_name, i.sku AS item_sku, lt.sort_order
+        const lines = await dbAdapter_1.pgPool.query(`SELECT l.*, i.name AS item_name, i.sku AS item_sku, i.category AS item_category, lt.sort_order
        FROM purchase_order_lines l
        JOIN inventory_items i ON i.id = l.item_id
        LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
        WHERE l.po_id = $1
        ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`, [id]);
+        const [hasOperationalView, hasPaymentView] = await Promise.all([
+            (0, auth_1.userHasAnyPerm)(req.user, [...inventoryPurchaseOrderOperationalViewPerms]),
+            (0, auth_1.userHasAnyPerm)(req.user, [...inventoryPurchaseOrderPaymentPerms]),
+        ]);
+        if (!hasOperationalView && hasPaymentView) {
+            const hasNonLinenLine = (lines.rows || []).some((line) => String(line.item_category || '') !== 'linen');
+            if (hasNonLinenLine)
+                return res.status(403).json({ message: 'finance payment access is limited to linen purchase orders' });
+        }
+        const paidExpense = await dbAdapter_1.pgPool.query(`SELECT id, paid_date, occurred_at, status
+       FROM company_expenses
+       WHERE ref_type = $1
+         AND ref_id = $2
+         AND deleted_at IS NULL
+         AND COALESCE(status, '') <> 'void'
+       ORDER BY created_at DESC
+       LIMIT 1`, [linenPurchaseOrderExpenseRefType, id]).catch(() => ({ rows: [] }));
+        po.rows[0].paid_expense_id = ((_e = (_d = paidExpense.rows) === null || _d === void 0 ? void 0 : _d[0]) === null || _e === void 0 ? void 0 : _e.id) || null;
+        po.rows[0].paid_at = ((_g = (_f = paidExpense.rows) === null || _f === void 0 ? void 0 : _f[0]) === null || _g === void 0 ? void 0 : _g.paid_date) || ((_j = (_h = paidExpense.rows) === null || _h === void 0 ? void 0 : _h[0]) === null || _j === void 0 ? void 0 : _j.occurred_at) || null;
         const deliveries = await dbAdapter_1.pgPool.query(`SELECT d.* FROM purchase_deliveries d WHERE d.po_id = $1 ORDER BY d.received_at DESC`, [id]);
         const deliveryRows = deliveries.rows || [];
         if (deliveryRows.length) {
@@ -6082,6 +6195,105 @@ exports.router.get('/purchase-orders/:id', (0, auth_1.requireAnyPerm)([...invent
     }
     catch (e) {
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
+    }
+});
+exports.router.post('/purchase-orders/:id/mark-paid', (0, auth_1.requireAnyPerm)([...inventoryPurchaseOrderPaymentPerms]), async (req, res) => {
+    var _a;
+    const id = String(req.params.id || '');
+    try {
+        if (!(dbAdapter_1.hasPg && dbAdapter_1.pgPool))
+            return res.status(501).json({ message: 'not available without PG' });
+        await ensureInventorySchema();
+        const actor = actorId(req);
+        const result = await (0, dbAdapter_1.pgRunInTransaction)(async (client) => {
+            var _a, _b, _c, _d, _e, _f, _g, _h;
+            await ensureCompanyExpenseSchemaForInventory(client);
+            const poRes = await client.query(`SELECT po.*, s.name AS supplier_name, w.name AS warehouse_name, w.code AS warehouse_code
+         FROM purchase_orders po
+         JOIN suppliers s ON s.id = po.supplier_id
+         JOIN warehouses w ON w.id = po.warehouse_id
+         WHERE po.id = $1
+         FOR UPDATE OF po`, [id]);
+            const po = (_a = poRes.rows) === null || _a === void 0 ? void 0 : _a[0];
+            if (!po) {
+                const err = new Error('po not found');
+                err.statusCode = 404;
+                throw err;
+            }
+            if (!String(po.po_no || '').trim()) {
+                po.po_no = await ensurePurchaseOrderNo(client, po);
+            }
+            const lineStats = await client.query(`SELECT COUNT(*)::int AS line_count,
+                COUNT(*) FILTER (WHERE i.category = 'linen')::int AS linen_line_count
+         FROM purchase_order_lines l
+         JOIN inventory_items i ON i.id = l.item_id
+         WHERE l.po_id = $1`, [id]);
+            const lineCount = Number(((_c = (_b = lineStats.rows) === null || _b === void 0 ? void 0 : _b[0]) === null || _c === void 0 ? void 0 : _c.line_count) || 0);
+            const linenLineCount = Number(((_e = (_d = lineStats.rows) === null || _d === void 0 ? void 0 : _d[0]) === null || _e === void 0 ? void 0 : _e.linen_line_count) || 0);
+            if (!lineCount) {
+                const err = new Error('采购单没有明细，无法标记已支付');
+                err.statusCode = 400;
+                throw err;
+            }
+            if (lineCount !== linenLineCount) {
+                const err = new Error('只有床品采购单可以通过此操作记录公司支出');
+                err.statusCode = 400;
+                throw err;
+            }
+            const amount = Number(po.total_amount_inc_gst || 0);
+            if (!Number.isFinite(amount) || amount <= 0) {
+                const err = new Error('采购单金额必须大于 0 才能记录公司支出');
+                err.statusCode = 400;
+                throw err;
+            }
+            const poNo = String(po.po_no || po.id);
+            const expenseDate = purchaseOrderExpenseDate(po);
+            const sourceSummary = `${poNo} · ${po.supplier_name || '-'} · ${po.warehouse_code || ''}${po.warehouse_code ? ' - ' : ''}${po.warehouse_name || '-'}`;
+            const expenseName = `床品采购 ${poNo}`;
+            const note = `床品采购已支付；供应商：${po.supplier_name || '-'}；送货仓库：${po.warehouse_code || ''}${po.warehouse_code ? ' - ' : ''}${po.warehouse_name || '-'}；采购单：${poNo}`;
+            const expense = await client.query(`INSERT INTO company_expenses (
+           id, occurred_at, amount, currency, category, category_detail, expense_name, note,
+           created_by, month_key, due_date, paid_date, status, generated_from, ref_type, ref_id,
+           is_auto, source_title, source_summary, deleted_at, deleted_by, delete_source
+         )
+         VALUES (
+           $1,$2,$3,'AUD','bedding_fee','床品采购',$4,$5,
+           $6,$7,$2,$2,'paid','inventory_linen_purchase_order',$8,$9,
+           true,'床品采购已支付',$10,NULL,NULL,NULL
+         )
+         ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
+         SET occurred_at = EXCLUDED.occurred_at,
+             amount = EXCLUDED.amount,
+             currency = EXCLUDED.currency,
+             category = EXCLUDED.category,
+             category_detail = EXCLUDED.category_detail,
+             expense_name = EXCLUDED.expense_name,
+             note = EXCLUDED.note,
+             created_by = COALESCE(company_expenses.created_by, EXCLUDED.created_by),
+             month_key = EXCLUDED.month_key,
+             due_date = EXCLUDED.due_date,
+             paid_date = EXCLUDED.paid_date,
+             status = EXCLUDED.status,
+             generated_from = EXCLUDED.generated_from,
+             is_auto = EXCLUDED.is_auto,
+             source_title = EXCLUDED.source_title,
+             source_summary = EXCLUDED.source_summary,
+             deleted_at = NULL,
+             deleted_by = NULL,
+             delete_source = NULL
+         RETURNING *`, [(0, uuid_1.v4)(), expenseDate, amount, expenseName, note, actor, monthKeyFromDate(expenseDate), linenPurchaseOrderExpenseRefType, id, sourceSummary]);
+            return { po: { ...po, paid_expense_id: ((_g = (_f = expense.rows) === null || _f === void 0 ? void 0 : _f[0]) === null || _g === void 0 ? void 0 : _g.id) || null, paid_at: expenseDate }, expense: ((_h = expense.rows) === null || _h === void 0 ? void 0 : _h[0]) || null };
+        });
+        if (!result)
+            return res.status(500).json({ message: 'failed' });
+        (0, store_1.addAudit)('PurchaseOrder', id, 'mark_paid', null, result.po || null, actor);
+        if ((_a = result.expense) === null || _a === void 0 ? void 0 : _a.id)
+            (0, store_1.addAudit)('company_expenses', String(result.expense.id), 'upsert_from_purchase_order', null, result.expense, actor);
+        return res.json(result);
+    }
+    catch (e) {
+        const status = Number((e === null || e === void 0 ? void 0 : e.statusCode) || (e === null || e === void 0 ? void 0 : e.status) || 500);
+        return res.status(status >= 400 && status < 600 ? status : 500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'failed' });
     }
 });
 const poPatchSchema = zod_1.z.object({

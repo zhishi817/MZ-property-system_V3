@@ -25,6 +25,7 @@ import { AdminNotificationBell } from './AdminNotificationBell'
 
 const { Header, Sider, Content } = Layout
 const { useBreakpoint } = Grid
+const PUBLIC_SHELL_PATHS = ['/public', '/public-cleaning-guide', '/guide/p']
 
 export function AdminLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
@@ -41,7 +42,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const isLogin = pathname.startsWith('/login')
-  const isPublic = /^\/public(\/|$)/.test(pathname)
+  const isPublic = PUBLIC_SHELL_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
   const [role, setRole] = useState<string | null>(null)
   const [username, setUsername] = useState<string | null>(null)
   const [mounted, setMounted] = useState(false)

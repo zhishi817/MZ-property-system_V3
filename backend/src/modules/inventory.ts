@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { db, addAudit } from '../store'
 import { z } from 'zod'
-import { requireAnyPerm, requirePerm } from '../auth'
+import { requireAnyPerm, requirePerm, userHasAnyPerm } from '../auth'
 import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
 import { v4 as uuidv4 } from 'uuid'
 import multer from 'multer'
@@ -11,7 +11,10 @@ import { hasR2, r2Upload } from '../r2'
 
 export const router = Router()
 
-const inventoryPurchaseOrderViewPerms = ['inventory_linen_purchase_orders.view', 'inventory_daily_purchase_orders.view', 'inventory_consumable_purchase_orders.view', 'inventory_other_purchase_orders.view', 'inventory.po.manage'] as const
+const inventoryPurchaseOrderOperationalViewPerms = ['inventory_linen_purchase_orders.view', 'inventory_daily_purchase_orders.view', 'inventory_consumable_purchase_orders.view', 'inventory_other_purchase_orders.view', 'inventory.po.manage'] as const
+const inventoryPurchaseOrderPaymentPerms = ['inventory_linen_purchase_orders.pay', 'finance.tx.write', 'company_expenses.write'] as const
+const inventoryPurchaseOrderViewPerms = [...inventoryPurchaseOrderOperationalViewPerms, ...inventoryPurchaseOrderPaymentPerms] as const
+const linenPurchaseOrderExpenseRefType = 'inventory_linen_purchase_order'
 const inventoryPurchaseOrderCreatePerms = ['inventory_linen_purchase_orders.create', 'inventory_daily_purchase_orders.create', 'inventory_consumable_purchase_orders.create', 'inventory_other_purchase_orders.create', 'inventory.po.manage'] as const
 const inventoryPurchaseOrderWritePerms = ['inventory_linen_purchase_orders.write', 'inventory_daily_purchase_orders.write', 'inventory_consumable_purchase_orders.write', 'inventory_other_purchase_orders.write', 'inventory.po.manage'] as const
 const inventoryTransferViewPerms = ['inventory_linen_deliveries.view', 'inventory_daily_deliveries.view', 'inventory_consumable_deliveries.view', 'inventory_other_deliveries.view', 'inventory.view'] as const
@@ -91,6 +94,78 @@ function toDayStartIsoMelbourne(daysFromToday = 0) {
   mel.setHours(0, 0, 0, 0)
   mel.setDate(mel.getDate() + Number(daysFromToday || 0))
   return mel.toISOString()
+}
+
+function todayMelbourneDate() {
+  return toDayStartIsoMelbourne(0).slice(0, 10)
+}
+
+function monthKeyFromDate(date: string) {
+  return String(date || '').slice(0, 7)
+}
+
+function dateOnly(value: any) {
+  const raw = String(value || '').trim()
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/)
+  if (match) return match[1]
+  const d = value instanceof Date ? value : new Date(raw)
+  if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10)
+  return ''
+}
+
+function purchaseOrderExpenseDate(po: any) {
+  return dateOnly(po?.ordered_date) || dateOnly(po?.created_at) || todayMelbourneDate()
+}
+
+async function ensureCompanyExpenseSchemaForInventory(client: any) {
+  await client.query(`CREATE TABLE IF NOT EXISTS company_expenses (
+    id text PRIMARY KEY,
+    occurred_at date NOT NULL,
+    amount numeric NOT NULL,
+    currency text NOT NULL DEFAULT 'AUD',
+    category text,
+    category_detail text,
+    expense_name text,
+    note text,
+    invoice_url text,
+    created_at timestamptz DEFAULT now(),
+    created_by text,
+    deleted_at timestamptz,
+    deleted_by text,
+    delete_source text,
+    fixed_expense_id text,
+    month_key text,
+    due_date date,
+    paid_date date,
+    status text,
+    generated_from text,
+    ref_type text,
+    ref_id text,
+    is_auto boolean DEFAULT false,
+    manual_override boolean DEFAULT false,
+    source_title text,
+    source_summary text
+  );`)
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS category_detail text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS expense_name text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS note text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS invoice_url text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_at timestamptz;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS deleted_by text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS delete_source text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS fixed_expense_id text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS month_key text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS due_date date;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS paid_date date;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS status text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS generated_from text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_type text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS ref_id text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS is_auto boolean DEFAULT false;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS manual_override boolean DEFAULT false;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_title text;')
+  await client.query('ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS source_summary text;')
+  await client.query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_company_expenses_ref ON company_expenses(ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL;")
 }
 
 function buildDailyItemSku(id: string) {
@@ -2541,7 +2616,7 @@ function buildLinenDeliveryRecordFingerprint(input: {
   })
 }
 
-router.get('/warehouses', requirePerm('inventory.view'), async (req, res) => {
+router.get('/warehouses', requireAnyPerm(['inventory.view', ...inventoryPurchaseOrderPaymentPerms]), async (req, res) => {
   const startedAt = Date.now()
   try {
     if (hasPg && pgPool) {
@@ -5617,11 +5692,15 @@ router.patch('/daily-replacements/:id', requireAnyPerm(['inventory_daily_replace
   }
 })
 
-router.get('/suppliers', requireAnyPerm(['inventory_suppliers.view', 'inventory.po.manage']), async (req, res) => {
+router.get('/suppliers', requireAnyPerm(['inventory_suppliers.view', 'inventory.po.manage', ...inventoryPurchaseOrderPaymentPerms]), async (req, res) => {
   try {
     if (hasPg && pgPool) {
       await ensureInventorySchema()
-      const rows = await pgPool.query(`SELECT id, name, kind, supply_items_note, login_url, login_username, login_password, login_note, active FROM suppliers ORDER BY name ASC`)
+      const canViewSupplierSecrets = await userHasAnyPerm((req as any).user, ['inventory_suppliers.view', 'inventory.po.manage'])
+      const fields = canViewSupplierSecrets
+        ? 'id, name, kind, supply_items_note, login_url, login_username, login_password, login_note, active'
+        : 'id, name, kind, active'
+      const rows = await pgPool.query(`SELECT ${fields} FROM suppliers ORDER BY name ASC`)
       return res.json(rows.rows || [])
     }
     return res.json([])
@@ -5848,6 +5927,13 @@ router.get('/purchase-orders', requireAnyPerm([...inventoryPurchaseOrderViewPerm
       const supplier_id = String(q.supplier_id || '').trim()
       const warehouse_id = String(q.warehouse_id || '').trim()
       const category = String(q.category || '').trim()
+      const [hasOperationalView, hasPaymentView] = await Promise.all([
+        userHasAnyPerm((req as any).user, [...inventoryPurchaseOrderOperationalViewPerms]),
+        userHasAnyPerm((req as any).user, [...inventoryPurchaseOrderPaymentPerms]),
+      ])
+      if (!hasOperationalView && hasPaymentView && category !== 'linen') {
+        return res.status(403).json({ message: 'finance payment access is limited to linen purchase orders' })
+      }
       let poIds: string[] | null = null
       if (category) {
         const its = await pgPool.query(`SELECT id FROM inventory_items WHERE category = $1`, [category])
@@ -5884,7 +5970,7 @@ router.get('/purchase-orders', requireAnyPerm([...inventoryPurchaseOrderViewPerm
       const supplierIds = Array.from(new Set(rows.map((r: any) => String(r.supplier_id || '')).filter(Boolean)))
       const warehouseIds = Array.from(new Set(rows.map((r: any) => String(r.warehouse_id || '')).filter(Boolean)))
 
-      const [supRows, whRows, aggRows] = await Promise.all([
+      const [supRows, whRows, aggRows, paidRows] = await Promise.all([
         supplierIds.length ? pgPool.query(`SELECT id, name FROM suppliers WHERE id = ANY($1::text[])`, [supplierIds]) : Promise.resolve({ rows: [] as any[] }),
         warehouseIds.length ? pgPool.query(`SELECT id, code, name FROM warehouses WHERE id = ANY($1::text[])`, [warehouseIds]) : Promise.resolve({ rows: [] as any[] }),
         pgPool.query(
@@ -5897,16 +5983,28 @@ router.get('/purchase-orders', requireAnyPerm([...inventoryPurchaseOrderViewPerm
            GROUP BY po_id`,
           [rows.map((r: any) => String(r.id))],
         ),
+        pgPool.query(
+          `SELECT DISTINCT ON (ref_id) id, ref_id, paid_date, occurred_at, status
+           FROM company_expenses
+           WHERE ref_type = $1
+             AND ref_id = ANY($2::text[])
+             AND deleted_at IS NULL
+             AND COALESCE(status, '') <> 'void'
+           ORDER BY ref_id, created_at DESC`,
+          [linenPurchaseOrderExpenseRefType, rows.map((r: any) => String(r.id))],
+        ).catch(() => ({ rows: [] as any[] })),
       ])
 
       const supMap = new Map<string, any>((supRows as any).rows.map((r: any) => [String(r.id), r]))
       const whMap = new Map<string, any>((whRows as any).rows.map((r: any) => [String(r.id), r]))
       const aggMap = new Map<string, any>((aggRows as any).rows.map((r: any) => [String(r.po_id), r]))
+      const paidMap = new Map<string, any>((paidRows as any).rows.map((r: any) => [String(r.ref_id), r]))
 
       const out = rows.map((r: any) => {
         const s = supMap.get(String(r.supplier_id)) || {}
         const w = whMap.get(String(r.warehouse_id)) || {}
         const a = aggMap.get(String(r.id)) || {}
+        const paid = paidMap.get(String(r.id)) || null
         return {
           ...r,
           supplier_name: s.name,
@@ -5918,6 +6016,8 @@ router.get('/purchase-orders', requireAnyPerm([...inventoryPurchaseOrderViewPerm
           subtotal_amount: r.subtotal_amount !== undefined && r.subtotal_amount !== null ? String(r.subtotal_amount) : '0',
           gst_amount: r.gst_amount !== undefined && r.gst_amount !== null ? String(r.gst_amount) : '0',
           total_amount_inc_gst: r.total_amount_inc_gst !== undefined && r.total_amount_inc_gst !== null ? String(r.total_amount_inc_gst) : '0',
+          paid_expense_id: paid?.id || null,
+          paid_at: paid?.paid_date || paid?.occurred_at || null,
         }
       })
       return res.json(out)
@@ -6181,7 +6281,7 @@ router.get('/purchase-orders/:id', requireAnyPerm([...inventoryPurchaseOrderView
       po.rows[0].po_no = await ensurePurchaseOrderNo(pgPool, po.rows[0])
     }
     const lines = await pgPool.query(
-      `SELECT l.*, i.name AS item_name, i.sku AS item_sku, lt.sort_order
+      `SELECT l.*, i.name AS item_name, i.sku AS item_sku, i.category AS item_category, lt.sort_order
        FROM purchase_order_lines l
        JOIN inventory_items i ON i.id = l.item_id
        LEFT JOIN inventory_linen_types lt ON lt.code = i.linen_type_code
@@ -6189,6 +6289,27 @@ router.get('/purchase-orders/:id', requireAnyPerm([...inventoryPurchaseOrderView
        ORDER BY COALESCE(lt.sort_order, 9999) ASC, COALESCE(lt.code, i.linen_type_code, i.name) ASC, i.name ASC`,
       [id],
     )
+    const [hasOperationalView, hasPaymentView] = await Promise.all([
+      userHasAnyPerm((req as any).user, [...inventoryPurchaseOrderOperationalViewPerms]),
+      userHasAnyPerm((req as any).user, [...inventoryPurchaseOrderPaymentPerms]),
+    ])
+    if (!hasOperationalView && hasPaymentView) {
+      const hasNonLinenLine = (lines.rows || []).some((line: any) => String(line.item_category || '') !== 'linen')
+      if (hasNonLinenLine) return res.status(403).json({ message: 'finance payment access is limited to linen purchase orders' })
+    }
+    const paidExpense = await pgPool.query(
+      `SELECT id, paid_date, occurred_at, status
+       FROM company_expenses
+       WHERE ref_type = $1
+         AND ref_id = $2
+         AND deleted_at IS NULL
+         AND COALESCE(status, '') <> 'void'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [linenPurchaseOrderExpenseRefType, id],
+    ).catch(() => ({ rows: [] as any[] }))
+    po.rows[0].paid_expense_id = paidExpense.rows?.[0]?.id || null
+    po.rows[0].paid_at = paidExpense.rows?.[0]?.paid_date || paidExpense.rows?.[0]?.occurred_at || null
     const deliveries = await pgPool.query(
       `SELECT d.* FROM purchase_deliveries d WHERE d.po_id = $1 ORDER BY d.received_at DESC`,
       [id],
@@ -6217,6 +6338,110 @@ router.get('/purchase-orders/:id', requireAnyPerm([...inventoryPurchaseOrderView
     return res.json({ po: po.rows[0], lines: lines.rows || [], deliveries: deliveryRows })
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'failed' })
+  }
+})
+
+router.post('/purchase-orders/:id/mark-paid', requireAnyPerm([...inventoryPurchaseOrderPaymentPerms]), async (req, res) => {
+  const id = String(req.params.id || '')
+  try {
+    if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
+    await ensureInventorySchema()
+    const actor = actorId(req)
+    const result = await pgRunInTransaction(async (client) => {
+      await ensureCompanyExpenseSchemaForInventory(client)
+      const poRes = await client.query(
+        `SELECT po.*, s.name AS supplier_name, w.name AS warehouse_name, w.code AS warehouse_code
+         FROM purchase_orders po
+         JOIN suppliers s ON s.id = po.supplier_id
+         JOIN warehouses w ON w.id = po.warehouse_id
+         WHERE po.id = $1
+         FOR UPDATE OF po`,
+        [id],
+      )
+      const po = poRes.rows?.[0]
+      if (!po) {
+        const err: any = new Error('po not found')
+        err.statusCode = 404
+        throw err
+      }
+      if (!String(po.po_no || '').trim()) {
+        po.po_no = await ensurePurchaseOrderNo(client, po)
+      }
+      const lineStats = await client.query(
+        `SELECT COUNT(*)::int AS line_count,
+                COUNT(*) FILTER (WHERE i.category = 'linen')::int AS linen_line_count
+         FROM purchase_order_lines l
+         JOIN inventory_items i ON i.id = l.item_id
+         WHERE l.po_id = $1`,
+        [id],
+      )
+      const lineCount = Number(lineStats.rows?.[0]?.line_count || 0)
+      const linenLineCount = Number(lineStats.rows?.[0]?.linen_line_count || 0)
+      if (!lineCount) {
+        const err: any = new Error('采购单没有明细，无法标记已支付')
+        err.statusCode = 400
+        throw err
+      }
+      if (lineCount !== linenLineCount) {
+        const err: any = new Error('只有床品采购单可以通过此操作记录公司支出')
+        err.statusCode = 400
+        throw err
+      }
+      const amount = Number(po.total_amount_inc_gst || 0)
+      if (!Number.isFinite(amount) || amount <= 0) {
+        const err: any = new Error('采购单金额必须大于 0 才能记录公司支出')
+        err.statusCode = 400
+        throw err
+      }
+
+      const poNo = String(po.po_no || po.id)
+      const expenseDate = purchaseOrderExpenseDate(po)
+      const sourceSummary = `${poNo} · ${po.supplier_name || '-'} · ${po.warehouse_code || ''}${po.warehouse_code ? ' - ' : ''}${po.warehouse_name || '-'}`
+      const expenseName = `床品采购 ${poNo}`
+      const note = `床品采购已支付；供应商：${po.supplier_name || '-'}；送货仓库：${po.warehouse_code || ''}${po.warehouse_code ? ' - ' : ''}${po.warehouse_name || '-'}；采购单：${poNo}`
+      const expense = await client.query(
+        `INSERT INTO company_expenses (
+           id, occurred_at, amount, currency, category, category_detail, expense_name, note,
+           created_by, month_key, due_date, paid_date, status, generated_from, ref_type, ref_id,
+           is_auto, source_title, source_summary, deleted_at, deleted_by, delete_source
+         )
+         VALUES (
+           $1,$2,$3,'AUD','bedding_fee','床品采购',$4,$5,
+           $6,$7,$2,$2,'paid','inventory_linen_purchase_order',$8,$9,
+           true,'床品采购已支付',$10,NULL,NULL,NULL
+         )
+         ON CONFLICT (ref_type, ref_id) WHERE ref_type IS NOT NULL AND ref_id IS NOT NULL DO UPDATE
+         SET occurred_at = EXCLUDED.occurred_at,
+             amount = EXCLUDED.amount,
+             currency = EXCLUDED.currency,
+             category = EXCLUDED.category,
+             category_detail = EXCLUDED.category_detail,
+             expense_name = EXCLUDED.expense_name,
+             note = EXCLUDED.note,
+             created_by = COALESCE(company_expenses.created_by, EXCLUDED.created_by),
+             month_key = EXCLUDED.month_key,
+             due_date = EXCLUDED.due_date,
+             paid_date = EXCLUDED.paid_date,
+             status = EXCLUDED.status,
+             generated_from = EXCLUDED.generated_from,
+             is_auto = EXCLUDED.is_auto,
+             source_title = EXCLUDED.source_title,
+             source_summary = EXCLUDED.source_summary,
+             deleted_at = NULL,
+             deleted_by = NULL,
+             delete_source = NULL
+         RETURNING *`,
+        [uuidv4(), expenseDate, amount, expenseName, note, actor, monthKeyFromDate(expenseDate), linenPurchaseOrderExpenseRefType, id, sourceSummary],
+      )
+      return { po: { ...po, paid_expense_id: expense.rows?.[0]?.id || null, paid_at: expenseDate }, expense: expense.rows?.[0] || null }
+    })
+    if (!result) return res.status(500).json({ message: 'failed' })
+    addAudit('PurchaseOrder', id, 'mark_paid', null, result.po || null, actor)
+    if (result.expense?.id) addAudit('company_expenses', String(result.expense.id), 'upsert_from_purchase_order', null, result.expense, actor)
+    return res.json(result)
+  } catch (e: any) {
+    const status = Number(e?.statusCode || e?.status || 500)
+    return res.status(status >= 400 && status < 600 ? status : 500).json({ message: e?.message || 'failed' })
   }
 })
 

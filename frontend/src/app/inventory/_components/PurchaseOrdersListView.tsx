@@ -1,10 +1,12 @@
 "use client"
 import { Card, Table, Space, Button, Tag, Select, message, Modal, Form, Input, InputNumber, DatePicker } from 'antd'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
 import dayjs from 'dayjs'
 import { getJSON, patchJSON, postJSON } from '../../../lib/api'
 import { hasPerm } from '../../../lib/auth'
+import TableRowActions from '../../../components/TableRowActions'
 
 type Warehouse = { id: string; code: string; name: string; active: boolean }
 type Supplier = { id: string; name: string; kind: string; active: boolean }
@@ -23,6 +25,8 @@ type PoRow = {
   warehouse_name: string
   warehouse_code: string
   total_amount_inc_gst?: string | null
+  paid_expense_id?: string | null
+  paid_at?: string | null
 }
 type DeliveryLine = { item_id: string; item_name: string; item_sku: string; quantity: number }
 
@@ -33,6 +37,7 @@ export type PurchaseOrdersListViewProps = {
 
 export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProps) {
   const { title, category } = props
+  const router = useRouter()
   const newPath = category ? `/inventory/category/${category}/purchase-orders/new` : '/inventory/purchase-orders/new'
   const [rows, setRows] = useState<PoRow[]>([])
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
@@ -43,9 +48,11 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
   const [deliveryPo, setDeliveryPo] = useState<PoRow | null>(null)
   const [deliveryLines, setDeliveryLines] = useState<DeliveryLine[]>([])
   const [deliverySaving, setDeliverySaving] = useState(false)
+  const [payingId, setPayingId] = useState<string>('')
   const [deliveryForm] = Form.useForm()
 
   const canManage = hasPerm('inventory.po.manage')
+  const canMarkPaid = category === 'linen' && (hasPerm('inventory_linen_purchase_orders.pay') || hasPerm('finance.tx.write') || hasPerm('company_expenses.write'))
 
   async function loadBase() {
     const [ws, ss] = await Promise.all([
@@ -139,6 +146,25 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
     })
   }
 
+  function markPaid(row: PoRow) {
+    Modal.confirm({
+      title: '确认标记已支付？',
+      content: `采购单 ${row.po_no || row.id} 将记录为公司支出。`,
+      okText: '确认已支付',
+      cancelText: '取消',
+      onOk: async () => {
+        setPayingId(row.id)
+        try {
+          await postJSON(`/inventory/purchase-orders/${row.id}/mark-paid`, {})
+          message.success('已记录公司支出')
+          await load()
+        } finally {
+          setPayingId('')
+        }
+      },
+    })
+  }
+
   const statusTag = (s: string) => {
     if (s === 'draft') return <Tag>草稿</Tag>
     if (s === 'ordered') return <Tag color="blue">已下单</Tag>
@@ -160,19 +186,23 @@ export default function PurchaseOrdersListView(props: PurchaseOrdersListViewProp
     { title: '送货仓库', dataIndex: 'warehouse_name', render: (_: any, r: PoRow) => `${r.warehouse_code} - ${r.warehouse_name}` },
     { title: '总金额', dataIndex: 'total_amount_inc_gst', width: 140, render: (v: string | null) => `$${Number(v || 0).toFixed(2)}` },
     { title: '状态', dataIndex: 'status', render: (v: string) => statusTag(v) },
+    { title: '付款', dataIndex: 'paid_at', width: 120, render: (_value: string | null, r: PoRow) => r.paid_expense_id ? <Tag color="green">已支付</Tag> : '-' },
     { title: '备注', dataIndex: 'note' },
     {
       title: '操作',
       dataIndex: '_op',
-      width: 220,
+      width: 360,
       render: (_: any, r: PoRow) => (
-        <Space>
-          <Link href={detailPath(r.id)} prefetch={false}><Button>详情</Button></Link>
-          {canManage && r.status !== 'received' && r.status !== 'closed' ? <Link href={editPath(r.id)} prefetch={false}><Button>编辑</Button></Link> : null}
-          {canManage && r.status === 'draft' ? <Button type="primary" onClick={() => markOrdered(r).catch((e) => message.error(e?.message || '下单失败'))}>下单</Button> : null}
-          {canManage && r.status === 'ordered' ? <Button onClick={() => openDelivery(r).catch((e) => message.error(e?.message || '加载到货明细失败'))}>登记到货</Button> : null}
-          {canManage ? <Button danger onClick={() => archiveRow(r)}>归档</Button> : null}
-        </Space>
+        <TableRowActions
+          actions={[
+            { key: 'detail', label: '详情', onClick: () => router.push(detailPath(r.id)) },
+            { key: 'edit', label: '编辑', onClick: () => router.push(editPath(r.id)), hidden: !canManage || r.status === 'received' || r.status === 'closed' },
+            { key: 'order', label: '下单', onClick: () => markOrdered(r).catch((e) => message.error(e?.message || '下单失败')), hidden: !canManage || r.status !== 'draft' },
+            { key: 'receive', label: '登记到货', onClick: () => openDelivery(r).catch((e) => message.error(e?.message || '加载到货明细失败')), hidden: !canManage || r.status !== 'ordered' },
+            { key: 'paid', label: '确认已支付', onClick: () => markPaid(r), hidden: !canMarkPaid || !!r.paid_expense_id || !['ordered', 'received'].includes(String(r.status || '')), loading: payingId === r.id },
+            { key: 'archive', label: '归档', onClick: () => archiveRow(r), danger: true, hidden: !canManage },
+          ]}
+        />
       ),
     },
   ]

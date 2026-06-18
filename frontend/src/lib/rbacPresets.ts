@@ -145,6 +145,9 @@ export const RBAC_PRESETS: RolePreset[] = [
     defaultForRoles: ['finance_staff'],
     recommendedMenus: [
       'menu.dashboard',
+      'menu.inventory',
+      'menu.inventory.linen.visible',
+      'menu.inventory.linen.purchase_orders.visible',
       'menu.finance',
       'menu.finance.invoices.visible',
       'menu.landlords',
@@ -153,8 +156,19 @@ export const RBAC_PRESETS: RolePreset[] = [
     recommendedPerms: [
       'invoice.view',
       'invoice.draft.create',
+      'inventory_linen_purchase_orders.view',
+      'inventory_linen_purchase_orders.pay',
     ],
     workflowGroups: [
+      {
+        key: 'linen_purchase_payment',
+        title: '床品采购付款',
+        description: '用于查看床品采购记录并确认已支付，确认后会写入公司支出。',
+        items: [
+          { key: 'linen_purchase_view', label: '查看床品采购记录', permCodes: ['inventory_linen_purchase_orders.view'], requiresAll: true },
+          { key: 'linen_purchase_pay', label: '确认床品采购已支付', permCodes: ['inventory_linen_purchase_orders.pay'], requiresAll: true },
+        ],
+      },
       {
         key: 'invoice_basic',
         title: '发票（基础）',
@@ -188,4 +202,3 @@ export function validatePresetCodes(preset: RolePreset, knownPermissionCodes: Se
   const missingRecommended = [...preset.recommendedMenus, ...preset.recommendedPerms].filter((c) => !knownPermissionCodes.has(c))
   return { missing, missingRecommended }
 }
-

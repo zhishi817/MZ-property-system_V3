@@ -254,6 +254,23 @@ const fixed: Record<string, Omit<PermissionMeta, 'code'>> = {
       '涉及资金与账户信息，错误授权/误操作风险高',
     ],
   },
+  'inventory_linen_purchase_orders.pay': {
+    displayName: '床品采购记录：确认已支付（高危）',
+    riskLevel: 'high',
+    purpose: '允许在床品采购单上确认已支付，并自动按采购单下单日期写入公司支出。',
+    scenarios: [
+      '财务核对供应商付款后，在床品采购记录中标记已支付',
+      '将床品采购金额自动纳入对应下单月份的公司支出',
+    ],
+    denyImpact: [
+      '无法在床品采购记录中确认已支付',
+      '床品采购支出需要通过其他财务流程手动登记',
+    ],
+    privacyRisk: [
+      '误操作会改变采购单付款状态并影响公司支出月份与金额',
+      '涉及供应商、金额与财务报表数据，需按财务岗位最小授权',
+    ],
+  },
   'finance.tx.write': {
     displayName: '财务：交易录入/编辑（中高）',
     riskLevel: 'high',
