@@ -63,10 +63,16 @@ async function notifyRecipientsForTask(taskId: string, actorId: string) {
   return Array.from(new Set([...taskUsers, ...managerUsers]))
 }
 
-async function listInspectionNotificationUserIds(taskId: string, actorId?: string) {
+async function listKeysHungNotificationUserIds(actorId?: string) {
+  const { listManagerUserIds, excludeUserIds } = require('./notifications')
+  const managerUsers = await listManagerUserIds({ roles: ['admin', 'offline_manager', 'customer_service'] })
+  return excludeUserIds(managerUsers, actorId)
+}
+
+async function listConsumablesRestockNotificationUserIds(taskId: string, actorId?: string) {
   const { listInspectionTaskUserIds, listManagerUserIds, excludeUserIds } = require('./notifications')
   const inspectionUsers = await listInspectionTaskUserIds(taskId)
-  const managerUsers = await listManagerUserIds()
+  const managerUsers = await listManagerUserIds({ roles: ['admin', 'offline_manager'] })
   return excludeUserIds(Array.from(new Set([...inspectionUsers, ...managerUsers])), actorId)
 }
 
@@ -1109,15 +1115,19 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
           const propertyId = String((up as any)?.property_id || task.property_id || '').trim()
           const restockLabels = restockItemsPayload.map((it) => (it.qty != null ? `${it.label} x${it.qty}` : it.label)).filter(Boolean)
           const restockSummary = restockLabels.length ? `待补货：${restockLabels.join('、')}` : ''
-          if (propertyId) {
+          const actorId = String(user?.sub || '')
+          const restockRecipients = needsRestock ? await listConsumablesRestockNotificationUserIds(String(id), actorId) : []
+          if (propertyId && (!needsRestock || restockRecipients.length)) {
             await emitNotificationEvent(
               {
-                type: hadExisting ? 'CLEANING_TASK_UPDATED' : 'CLEANING_COMPLETED',
+                type: needsRestock ? 'WORK_TASK_UPDATED' : (hadExisting ? 'CLEANING_TASK_UPDATED' : 'CLEANING_COMPLETED'),
                 entity: 'cleaning_task',
                 entityId: String(id),
                 propertyId,
                 updatedAt: String(now),
-                title: propertyCode ? `${hadExisting ? '补品已更新' : '清洁完成'}：${propertyCode}` : (hadExisting ? '补品已更新' : '清洁完成'),
+                title: needsRestock
+                  ? (propertyCode ? `消耗品需要补充：${propertyCode}` : '消耗品需要补充')
+                  : (propertyCode ? `${hadExisting ? '补品已更新' : '清洁完成'}：${propertyCode}` : (hadExisting ? '补品已更新' : '清洁完成')),
                 body: needsRestock ? restockSummary || '清洁已完成，待补货' : (hadExisting ? '清洁补品记录已修改，请检查更新' : '清洁已完成，待检查'),
                 data: {
                   entity: 'cleaning_task',
@@ -1129,7 +1139,8 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
                   property_code: propertyCode,
                   restock_items: restockItemsPayload,
                 },
-                actorUserId: String(user?.sub || ''),
+                actorUserId: actorId,
+                recipientUserIds: needsRestock ? restockRecipients : undefined,
               },
               { operationId },
             )
@@ -1225,23 +1236,23 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
         const operationId = require('uuid').v4()
         const propertyId = String((up as any)?.property_id || '').trim()
         const photoUrls = await listInspectionPhotoUrls(String(id))
-        const recipients = await listInspectionNotificationUserIds(String(id), String(user?.sub || ''))
+        const recipients = await listKeysHungNotificationUserIds(String(user?.sub || ''))
         if (propertyId && recipients.length) {
           await emitNotificationEvent(
             {
-              type: 'INSPECTION_COMPLETED',
+              type: 'WORK_TASK_UPDATED',
               entity: 'cleaning_task',
               entityId: String(id),
-              eventId: `inspection_complete:${String(id)}`,
+              eventId: `keys_hung:${String(id)}`,
               propertyId,
               updatedAt: now,
-              title: '检查已完成',
-              body: '检查员已提交挂钥匙视频并标记完成',
+              title: '房间已挂钥匙',
+              body: '检查员已上传挂钥匙视频，房间钥匙已挂好',
               data: {
                 entity: 'cleaning_task',
                 entityId: String(id),
                 action: 'open_task',
-                kind: 'inspection_complete',
+                kind: 'keys_hung',
                 task_id: id,
                 photo_url: photoUrls[0] || null,
                 photo_urls: photoUrls,
@@ -1571,18 +1582,20 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       try {
         const operationId = require('uuid').v4()
         const propertyId = String((up as any)?.property_id || '').trim()
-        if (propertyId) {
+        const recipients = await listKeysHungNotificationUserIds(String(user?.sub || ''))
+        if (propertyId && recipients.length) {
           await emitNotificationEvent(
             {
-              type: 'CLEANING_TASK_UPDATED',
+              type: 'WORK_TASK_UPDATED',
               entity: 'cleaning_task',
               entityId: String(id),
               propertyId,
               updatedAt: now,
-              title: '挂钥匙视频已上传',
-              body: '清洁员已上传挂钥匙视频',
-              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'lockbox_video_uploaded', task_id: id },
+              title: '房间已挂钥匙',
+              body: '挂钥匙视频已上传，房间钥匙已挂好',
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'keys_hung', task_id: id },
               actorUserId: String(user?.sub || ''),
+              recipientUserIds: recipients,
             },
             { operationId },
           )
