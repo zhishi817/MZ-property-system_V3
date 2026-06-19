@@ -2925,8 +2925,7 @@ const managerFieldsSchema = z
 async function handleManagerFields(req: any, res: any) {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
-  const role = String(user.role || '')
-  if (role !== 'customer_service') return res.status(403).json({ message: 'forbidden' })
+  if (!(hasRole(user, 'customer_service') || hasRole(user, 'admin') || hasRole(user, 'offline_manager'))) return res.status(403).json({ message: 'forbidden' })
   const parsed = managerFieldsSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })

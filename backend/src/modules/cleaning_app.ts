@@ -164,6 +164,22 @@ async function ensureWarehouseKeyTables() {
   )
 }
 
+let warehouseKeyTablesInitPromise: Promise<void> | null = null
+
+function ensureWarehouseKeyTablesOnce() {
+  if (!warehouseKeyTablesInitPromise) {
+    warehouseKeyTablesInitPromise = ensureWarehouseKeyTables().catch((e) => {
+      warehouseKeyTablesInitPromise = null
+      throw e
+    })
+  }
+  return warehouseKeyTablesInitPromise
+}
+
+void ensureWarehouseKeyTablesOnce().catch((e) => {
+  console.warn('[warehouse-key] table initialization failed:', e?.message || e)
+})
+
 function normalizeWarehouseKeyCode(raw: any) {
   const value = String(raw || '').trim().toLowerCase()
   return value || 'msq'
@@ -187,21 +203,59 @@ async function listSouthbankWarehouseKeyUsers(taskDate: string) {
   if (!pgPool) return { userIds: [], candidates: [] }
   const date = String(taskDate || '').slice(0, 10) || todayYmd()
   const r = await pgPool.query(
-    `SELECT DISTINCT
+    `WITH southbank_tasks AS (
+       SELECT
+         t.*,
+         COALESCE(t.task_date, t.date)::date AS task_day,
+         lower(COALESCE(t.task_type, '')) AS task_type_l,
+         lower(COALESCE(t.status, '')) AS status_l,
+         CASE
+           WHEN lower(COALESCE(t.inspection_mode, '')) IN ('pending_decision', 'same_day', 'self_complete', 'deferred')
+             THEN lower(COALESCE(t.inspection_mode, ''))
+           WHEN lower(COALESCE(t.task_type, '')) = 'stayover_clean'
+             THEN 'self_complete'
+           WHEN lower(COALESCE(t.task_type, '')) = 'checkin_clean'
+             THEN 'same_day'
+           WHEN lower(COALESCE(t.task_type, '')) = 'checkout_clean'
+             THEN CASE
+               WHEN NULLIF(t.inspector_id::text, '') IS NOT NULL THEN 'same_day'
+               WHEN lower(COALESCE(t.status, '')) IN ('cleaned', 'restock_pending', 'restocked', 'inspected', 'done', 'completed', 'ready', 'keys_hung') THEN 'self_complete'
+               ELSE 'pending_decision'
+             END
+           WHEN NULLIF(t.inspector_id::text, '') IS NOT NULL
+             THEN 'same_day'
+           ELSE 'pending_decision'
+         END AS effective_inspection_mode
+       FROM cleaning_tasks t
+       LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+       WHERE COALESCE(t.task_date, t.date)::date = $1::date
+         AND lower(COALESCE(t.status, '')) NOT IN ('cancelled', 'canceled')
+         AND lower(COALESCE(p_id.region, p_code.region, '')) LIKE '%southbank%'
+     )
+     SELECT DISTINCT
         u.id::text AS id,
         COALESCE(NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.legal_name), ''), NULLIF(TRIM(u.email), ''), u.id::text) AS name,
         COALESCE(NULLIF(TRIM(u.role), ''), '') AS role
-     FROM cleaning_tasks t
-     LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
-     LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
-     JOIN users u ON u.id::text = ANY(ARRAY[
-       NULLIF(t.cleaner_id::text, ''),
-       NULLIF(t.inspector_id::text, ''),
-       NULLIF(t.assignee_id::text, '')
-     ]::text[])
-     WHERE COALESCE(t.task_date, t.date)::date = $1::date
-       AND lower(COALESCE(t.status, '')) NOT IN ('cancelled', 'canceled')
-       AND lower(COALESCE(p_id.region, p_code.region, '')) LIKE '%southbank%'
+     FROM southbank_tasks t
+     JOIN LATERAL (
+       VALUES
+         (NULLIF(COALESCE(NULLIF(t.cleaner_id::text, ''), NULLIF(t.assignee_id::text, '')), '')),
+         (CASE
+           WHEN NULLIF(t.inspector_id::text, '') IS NOT NULL
+             AND (
+               t.effective_inspection_mode = 'same_day'
+               OR (
+                 t.effective_inspection_mode = 'deferred'
+                 AND t.inspection_due_date IS NOT NULL
+                 AND t.inspection_due_date::date = t.task_day
+               )
+             )
+           THEN NULLIF(t.inspector_id::text, '')
+           ELSE NULL
+         END)
+     ) AS candidate(user_id) ON candidate.user_id IS NOT NULL
+     JOIN users u ON u.id::text = candidate.user_id
      ORDER BY name ASC`,
     [date],
   )
@@ -251,7 +305,7 @@ router.get('/warehouse-key/status', requireAnyPerm(['cleaning_app.tasks.finish',
     if (!hasPg) return res.json({ key: { key_code: 'msq', label: 'MSQ 仓库钥匙', status: 'available', holder_user_id: null, holder_name: null, holder_phone_au: null, updated_at: null }, events: [], candidates: [] })
     const { pgPool } = require('../dbAdapter')
     if (!pgPool) return res.status(500).json({ message: 'pg not available' })
-    await ensureWarehouseKeyTables()
+    await ensureWarehouseKeyTablesOnce()
     const keyCode = normalizeWarehouseKeyCode((req.query as any)?.key || (req.query as any)?.key_code)
     const taskDate = String((req.query as any)?.date || '').slice(0, 10) || todayYmd()
     const [keyRes, eventRes, related] = await Promise.all([
@@ -316,7 +370,7 @@ router.post('/warehouse-key/events', requireAnyPerm(['cleaning_app.tasks.finish'
     if (!hasPg) return res.status(201).json({ ok: true })
     const { pgPool } = require('../dbAdapter')
     if (!pgPool) return res.status(500).json({ message: 'pg not available' })
-    await ensureWarehouseKeyTables()
+    await ensureWarehouseKeyTablesOnce()
     const uuid = require('uuid')
     const keyCode = normalizeWarehouseKeyCode(parsed.data.key_code)
     const action = parsed.data.action
