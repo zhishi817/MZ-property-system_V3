@@ -27,6 +27,7 @@ const DEFAULT_ROLE_PERMISSION_OVERLAYS: Record<string, string[]> = {
     'menu.cms.customer_service_manual.visible',
     'cms_pages.view',
     'cms_pages.write',
+    'cleaning_app.calendar.view.all',
   ],
 }
 
