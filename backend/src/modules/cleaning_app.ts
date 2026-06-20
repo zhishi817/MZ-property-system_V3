@@ -96,6 +96,26 @@ async function listInspectionPhotoUrls(taskId: string) {
   }
 }
 
+async function resolveCleaningTaskPropertyCode(taskId: string) {
+  if (!hasPg) return ''
+  try {
+    const { pgPool } = require('../dbAdapter')
+    if (!pgPool) return ''
+    const r = await pgPool.query(
+      `SELECT COALESCE(p_id.code::text, p_code.code::text, t.property_id::text) AS property_code
+       FROM cleaning_tasks t
+       LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+       WHERE t.id::text = $1::text
+       LIMIT 1`,
+      [String(taskId || '').trim()],
+    )
+    return String(r?.rows?.[0]?.property_code || '').trim()
+  } catch {
+    return ''
+  }
+}
+
 function normalizeStoredPhotoUrls(raw: any, fallback?: any) {
   if (Array.isArray(raw)) return Array.from(new Set(raw.map((item) => String(item || '').trim()).filter(Boolean)))
   const text = String(raw || '').trim()
@@ -1236,6 +1256,7 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
         const operationId = require('uuid').v4()
         const propertyId = String((up as any)?.property_id || '').trim()
         const photoUrls = await listInspectionPhotoUrls(String(id))
+        const propertyCode = await resolveCleaningTaskPropertyCode(String(id))
         const recipients = await listKeysHungNotificationUserIds(String(user?.sub || ''))
         if (propertyId && recipients.length) {
           await emitNotificationEvent(
@@ -1246,7 +1267,7 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
               eventId: `keys_hung:${String(id)}`,
               propertyId,
               updatedAt: now,
-              title: '房间已挂钥匙',
+              title: propertyCode ? `${propertyCode} · 房间已挂钥匙` : '房间已挂钥匙',
               body: '检查员已上传挂钥匙视频，房间钥匙已挂好',
               data: {
                 entity: 'cleaning_task',
@@ -1254,6 +1275,7 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
                 action: 'open_task',
                 kind: 'keys_hung',
                 task_id: id,
+                property_code: propertyCode || undefined,
                 photo_url: photoUrls[0] || null,
                 photo_urls: photoUrls,
               },
@@ -1582,6 +1604,7 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
       try {
         const operationId = require('uuid').v4()
         const propertyId = String((up as any)?.property_id || '').trim()
+        const propertyCode = await resolveCleaningTaskPropertyCode(String(id))
         const recipients = await listKeysHungNotificationUserIds(String(user?.sub || ''))
         if (propertyId && recipients.length) {
           await emitNotificationEvent(
@@ -1591,9 +1614,9 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
               entityId: String(id),
               propertyId,
               updatedAt: now,
-              title: '房间已挂钥匙',
+              title: propertyCode ? `${propertyCode} · 房间已挂钥匙` : '房间已挂钥匙',
               body: '挂钥匙视频已上传，房间钥匙已挂好',
-              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'keys_hung', task_id: id },
+              data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'keys_hung', task_id: id, property_code: propertyCode || undefined },
               actorUserId: String(user?.sub || ''),
               recipientUserIds: recipients,
             },
