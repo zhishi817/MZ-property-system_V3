@@ -466,9 +466,22 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
   return out
 }
 
-async function loadCleaningTasks(date: string): Promise<BoardTask[]> {
+function taskDateInScope(taskDate: string | null, date: string, includeOverdue: boolean, includeFuture: boolean) {
+  if (!taskDate) return false
+  if (taskDate === date) return true
+  if (includeOverdue && taskDate < date) return true
+  if (includeFuture && taskDate > date) return true
+  return false
+}
+
+async function loadCleaningTasks(date: string, includeOverdue: boolean, includeFuture: boolean): Promise<BoardTask[]> {
   if (hasPg && pgPool) {
     await ensureCleaningSchemaV2()
+    const dateScopes = [`((COALESCE(t.task_date, t.date)::date) = ($1::date))`]
+    if (includeOverdue) dateScopes.push(`((COALESCE(t.task_date, t.date)::date) < ($1::date))`)
+    if (includeFuture) dateScopes.push(`((COALESCE(t.task_date, t.date)::date) > ($1::date))`)
+    const inspectionDueScopes = [`(t.inspection_due_date IS NOT NULL AND (t.inspection_due_date::date) <= ($1::date))`]
+    if (includeFuture) inspectionDueScopes.push(`(t.inspection_due_date IS NOT NULL AND (t.inspection_due_date::date) > ($1::date))`)
     const r = await pgPool.query(
       `SELECT
          t.id,
@@ -505,8 +518,8 @@ async function loadCleaningTasks(date: string): Promise<BoardTask[]> {
        LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
        LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
        WHERE (
-           ((COALESCE(t.task_date, t.date)::date) = ($1::date))
-           OR (t.inspection_due_date IS NOT NULL AND (t.inspection_due_date::date) <= ($1::date))
+           ${dateScopes.join('\n           OR ')}
+           OR ${inspectionDueScopes.join('\n           OR ')}
          )
          AND COALESCE(t.status,'') <> 'cancelled'
          AND (t.order_id IS NULL OR o.id IS NOT NULL)
@@ -536,10 +549,10 @@ async function loadCleaningTasks(date: string): Promise<BoardTask[]> {
         inspectionMode,
         inspectionDueDate,
         dateFrom: date,
-        dateTo: date,
+        dateTo: includeFuture ? '9999-12-31' : date,
         status: row.status,
       })
-      if (d === date) {
+      if (taskDateInScope(d, date, includeOverdue, includeFuture)) {
         const sum = summaryText({
           property_region: row.property_region,
           property_code: row.property_code,
@@ -634,7 +647,7 @@ async function loadCleaningTasks(date: string): Promise<BoardTask[]> {
     const order = orders.find((o: any) => String(o.id) === String(row.order_id)) || null
     const inspectionMode = effectiveInspectionMode(row)
     const inspectionDueDate = dayOnly(row.inspection_due_date)
-    if (taskDate === date) {
+    if (taskDateInScope(taskDate, date, includeOverdue, includeFuture)) {
       const sum = summaryText({
         property_region: prop?.region,
         property_code: prop?.code,
@@ -1068,7 +1081,7 @@ function buildEntryReadiness(tasks: BoardTask[]) {
 
 async function buildTaskCenterDay(date: string, includeOverdue: boolean, includeUnscheduled: boolean, includeFuture: boolean) {
   const [cleaningTasks, workTasks, taskFlags, rowMetas, itemLayouts] = await Promise.all([
-    loadCleaningTasks(date),
+    loadCleaningTasks(date, includeOverdue, includeFuture),
     loadWorkTasks(date, includeOverdue, includeUnscheduled, includeFuture),
     loadTaskFlags(date),
     loadBoardRows(date, 'board'),

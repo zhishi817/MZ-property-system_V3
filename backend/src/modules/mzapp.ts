@@ -4913,8 +4913,8 @@ router.get('/work-tasks', async (req, res) => {
             property: prop,
           }
 
-          if (wantCleaner && effectiveCleanerId && taskDate >= dateFrom && taskDate <= dateTo && (allowAll || effectiveCleanerId === userId)) {
-            const k = `${taskDate}|${propId || ''}|${effectiveCleanerId}`
+          if (wantCleaner && taskDate >= dateFrom && taskDate <= dateTo && (allowAll || effectiveCleanerId === userId)) {
+            const k = `${taskDate}|${propId || ''}|${effectiveCleanerId || 'unassigned'}`
             const arr = cleanerGroups.get(k) || []
             arr.push(base)
             cleanerGroups.set(k, arr)
@@ -5050,7 +5050,9 @@ router.get('/work-tasks', async (req, res) => {
                     ? 'to_hang_keys'
                     : requireSelfComplete && isDoneLike && !completionPhotosOk
                       ? 'to_complete'
-                      : (raw === 'cleaned' || raw === 'restock_pending' ? 'done' : p.a.status)
+                      : (!String(assigneeId || '').trim() && !isDoneLike && raw !== 'in_progress' && !keyPhotoUrl)
+                        ? 'todo'
+                        : (raw === 'cleaned' || raw === 'restock_pending' ? 'done' : p.a.status)
                 )
           const sortIndex =
             roleKind === 'cleaner'
@@ -5062,7 +5064,8 @@ router.get('/work-tasks', async (req, res) => {
           const sort_index_cleaner = Number.isFinite(cleanerSortIndex) && cleanerSortIndex !== Number.POSITIVE_INFINITY ? cleanerSortIndex : null
           const sort_index_inspector = Number.isFinite(inspectorSortIndex) && inspectorSortIndex !== Number.POSITIVE_INFINITY ? inspectorSortIndex : null
 
-          const outId = p.kind === 'turnover' ? `cleaning_tasks_${roleKind}_turnover:${date}:${propId || 'unknown'}:${assigneeId}` : `cleaning_tasks_${roleKind}:${p.ids.join(',')}`
+          const assigneeKey = String(assigneeId || '').trim() || 'unassigned'
+          const outId = p.kind === 'turnover' ? `cleaning_tasks_${roleKind}_turnover:${date}:${propId || 'unknown'}:${assigneeKey}` : `cleaning_tasks_${roleKind}:${p.ids.join(',')}`
           const primarySourceId = String(p.a.__raw_id)
           const nextCheckinsForCheckout = p.kind === 'checkout'
             ? (() => {
@@ -5114,7 +5117,7 @@ router.get('/work-tasks', async (req, res) => {
             start_time: checkoutTime || null,
             end_time: checkinTime || null,
             task_type: p.kind === 'turnover' ? 'turnover' : String(p.a.task_type || ''),
-            assignee_id: assigneeId,
+            assignee_id: String(assigneeId || '').trim() || null,
             inspector_id: inspectorAssigned ? String(inspectorAssigned) : null,
             status: statusOut,
             urgency: 'medium',
@@ -5152,8 +5155,7 @@ router.get('/work-tasks', async (req, res) => {
 
         for (const [k, rows] of cleanerGroups) {
           const parts = k.split('|')
-          const assigneeId = parts[2] || ''
-          if (!assigneeId) continue
+          const assigneeId = parts[2] === 'unassigned' ? '' : (parts[2] || '')
           out.push(buildMerged('cleaner', rows, assigneeId))
         }
 
