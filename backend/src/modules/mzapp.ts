@@ -5050,7 +5050,9 @@ router.get('/work-tasks', async (req, res) => {
                     ? 'to_hang_keys'
                     : requireSelfComplete && isDoneLike && !completionPhotosOk
                       ? 'to_complete'
-                      : (raw === 'cleaned' || raw === 'restock_pending' ? 'done' : p.a.status)
+                      : (!String(assigneeId || '').trim() && !isDoneLike && raw !== 'in_progress' && !keyPhotoUrl)
+                        ? 'todo'
+                        : (raw === 'cleaned' || raw === 'restock_pending' ? 'done' : p.a.status)
                 )
           const sortIndex =
             roleKind === 'cleaner'
