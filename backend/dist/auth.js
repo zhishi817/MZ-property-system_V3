@@ -37,6 +37,7 @@ const DEFAULT_ROLE_PERMISSION_OVERLAYS = {
         'menu.cms.customer_service_manual.visible',
         'cms_pages.view',
         'cms_pages.write',
+        'cleaning_app.calendar.view.all',
     ],
 };
 function requestTraceId(req) {
