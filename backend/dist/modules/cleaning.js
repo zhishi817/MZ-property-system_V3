@@ -14,6 +14,18 @@ const cleaningInspection_1 = require("../lib/cleaningInspection");
 exports.router = (0, express_1.Router)();
 const DEFAULT_SUMMARY_CHECKOUT_TIME = '10am';
 const DEFAULT_SUMMARY_CHECKIN_TIME = '3pm';
+function roleNamesOfRequest(req) {
+    const user = (req === null || req === void 0 ? void 0 : req.user) || {};
+    const roles = Array.isArray(user === null || user === void 0 ? void 0 : user.roles) ? user.roles : [];
+    const primary = String((user === null || user === void 0 ? void 0 : user.role) || '').trim();
+    return Array.from(new Set([primary, ...roles].map((x) => String(x || '').trim()).filter(Boolean)));
+}
+function requireCleaningManualCreateAccess(req, res, next) {
+    const roles = roleNamesOfRequest(req);
+    if (roles.includes('admin') || roles.includes('offline_manager') || roles.includes('customer_service'))
+        return next();
+    return (0, auth_1.requireAnyPerm)(['cleaning.schedule.manage', 'cleaning.task.assign'])(req, res, next);
+}
 function auDayStr(d) {
     const parts = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
     const get = (t) => { var _a; return ((_a = parts.find((p) => p.type === t)) === null || _a === void 0 ? void 0 : _a.value) || ''; };
@@ -25,6 +37,137 @@ function dayOnly(s) {
 }
 function assignedStatusFromAssignees(cleanerId, inspectorId) {
     return String(cleanerId || '').trim() || String(inspectorId || '').trim() ? 'assigned' : 'pending';
+}
+function cleanNotificationText(value) {
+    return String(value !== null && value !== void 0 ? value : '').replace(/\s+/g, ' ').trim();
+}
+function formatCleaningTaskFieldChange(label, nextValue, prevValue) {
+    const next = cleanNotificationText(nextValue) || '-';
+    const prev = cleanNotificationText(prevValue) || '-';
+    return `${label}：${next}（原：${prev}）`;
+}
+function buildCleaningTaskUpdateNoticeDetails(before, after) {
+    const changes = [];
+    const lines = [];
+    const taskDate = cleanNotificationText((after === null || after === void 0 ? void 0 : after.task_date) || (after === null || after === void 0 ? void 0 : after.date));
+    const add = (change, label, beforeValue, afterValue) => {
+        if (cleanNotificationText(beforeValue) === cleanNotificationText(afterValue))
+            return;
+        changes.push(change);
+        lines.push(formatCleaningTaskFieldChange(label, afterValue, beforeValue));
+    };
+    add('password', '旧密码', before === null || before === void 0 ? void 0 : before.old_code, after === null || after === void 0 ? void 0 : after.old_code);
+    add('password', '新密码', before === null || before === void 0 ? void 0 : before.new_code, after === null || after === void 0 ? void 0 : after.new_code);
+    add('time', '退房时间', before === null || before === void 0 ? void 0 : before.checkout_time, after === null || after === void 0 ? void 0 : after.checkout_time);
+    add('time', '入住时间', before === null || before === void 0 ? void 0 : before.checkin_time, after === null || after === void 0 ? void 0 : after.checkin_time);
+    add('note', '客人需求', before === null || before === void 0 ? void 0 : before.guest_special_request, after === null || after === void 0 ? void 0 : after.guest_special_request);
+    add('keys', '需挂钥匙套数', before === null || before === void 0 ? void 0 : before.keys_required, after === null || after === void 0 ? void 0 : after.keys_required);
+    if (cleanNotificationText(before === null || before === void 0 ? void 0 : before.status) !== cleanNotificationText(after === null || after === void 0 ? void 0 : after.status))
+        changes.push('status');
+    if (cleanNotificationText(before === null || before === void 0 ? void 0 : before.inspection_mode) !== cleanNotificationText(after === null || after === void 0 ? void 0 : after.inspection_mode) ||
+        cleanNotificationText(before === null || before === void 0 ? void 0 : before.inspection_due_date) !== cleanNotificationText(after === null || after === void 0 ? void 0 : after.inspection_due_date)) {
+        changes.push('inspection');
+    }
+    return {
+        changes: Array.from(new Set(changes)),
+        lines: taskDate && lines.length ? [`任务日期：${taskDate}`, ...lines] : lines,
+    };
+}
+function cleaningTaskSummaryForWorkPatch(task) {
+    const taskType = String((task === null || task === void 0 ? void 0 : task.task_type) || (task === null || task === void 0 ? void 0 : task.type) || '').trim().toLowerCase();
+    const checkoutTime = cleanNotificationText(task === null || task === void 0 ? void 0 : task.checkout_time) || DEFAULT_SUMMARY_CHECKOUT_TIME;
+    const checkinTime = cleanNotificationText(task === null || task === void 0 ? void 0 : task.checkin_time) || DEFAULT_SUMMARY_CHECKIN_TIME;
+    if (taskType === 'checkout_clean')
+        return `${checkoutTime}退房`;
+    if (taskType === 'checkin_clean')
+        return `${checkinTime}入住`;
+    if (taskType === 'stayover_clean')
+        return '清洁';
+    if (cleanNotificationText(task === null || task === void 0 ? void 0 : task.checkout_time) && cleanNotificationText(task === null || task === void 0 ? void 0 : task.checkin_time))
+        return `${checkoutTime}退房 ${checkinTime}入住`;
+    if (cleanNotificationText(task === null || task === void 0 ? void 0 : task.checkout_time))
+        return `${checkoutTime}退房`;
+    if (cleanNotificationText(task === null || task === void 0 ? void 0 : task.checkin_time))
+        return `${checkinTime}入住`;
+    return null;
+}
+function buildCleaningTaskWorkPatch(after, rawChangedFields) {
+    var _a, _b;
+    const changedFields = new Set(rawChangedFields
+        .map((field) => String(field || '').trim())
+        .filter((field) => !!field && field !== 'updated_at'));
+    const patch = {};
+    for (const field of changedFields)
+        patch[field] = after === null || after === void 0 ? void 0 : after[field];
+    if (changedFields.has('checkout_time')) {
+        changedFields.add('start_time');
+        changedFields.add('summary');
+        patch.start_time = (_a = after === null || after === void 0 ? void 0 : after.checkout_time) !== null && _a !== void 0 ? _a : null;
+    }
+    if (changedFields.has('checkin_time')) {
+        changedFields.add('end_time');
+        changedFields.add('summary');
+        patch.end_time = (_b = after === null || after === void 0 ? void 0 : after.checkin_time) !== null && _b !== void 0 ? _b : null;
+    }
+    if (changedFields.has('summary'))
+        patch.summary = cleaningTaskSummaryForWorkPatch(after);
+    return { changedFields: Array.from(changedFields), patch };
+}
+function actualCleaningTaskChangedFields(before, after, fields) {
+    return Array.from(new Set(fields))
+        .map((field) => String(field || '').trim())
+        .filter((field) => {
+        if (!field || field === 'updated_at')
+            return false;
+        return cleanNotificationText(before === null || before === void 0 ? void 0 : before[field]) !== cleanNotificationText(after === null || after === void 0 ? void 0 : after[field]);
+    });
+}
+function buildCleaningTaskCreateNoticeDetails(after) {
+    const changes = [];
+    const lines = [];
+    const taskType = String((after === null || after === void 0 ? void 0 : after.task_type) || (after === null || after === void 0 ? void 0 : after.type) || '').trim().toLowerCase();
+    const taskDate = cleanNotificationText((after === null || after === void 0 ? void 0 : after.task_date) || (after === null || after === void 0 ? void 0 : after.date));
+    if (taskDate)
+        lines.push(`任务日期：${taskDate}`);
+    const add = (change, label, value) => {
+        if (!cleanNotificationText(value))
+            return;
+        changes.push(change);
+        lines.push(`${label}：${cleanNotificationText(value)}`);
+    };
+    if (taskType === 'checkout_clean') {
+        add('time', '退房时间', after === null || after === void 0 ? void 0 : after.checkout_time);
+        add('password', '旧密码', after === null || after === void 0 ? void 0 : after.old_code);
+    }
+    else if (taskType === 'checkin_clean') {
+        add('time', '入住时间', after === null || after === void 0 ? void 0 : after.checkin_time);
+        add('password', '新密码', after === null || after === void 0 ? void 0 : after.new_code);
+    }
+    else if (taskType === 'stayover_clean') {
+        add('time', '入住中清洁时间', after === null || after === void 0 ? void 0 : after.checkin_time);
+    }
+    add('note', '客人需求', after === null || after === void 0 ? void 0 : after.guest_special_request);
+    const keysRequired = Number(after === null || after === void 0 ? void 0 : after.keys_required);
+    if (Number.isFinite(keysRequired) && keysRequired > 1) {
+        changes.push('keys');
+        lines.push(`需挂钥匙套数：${Math.trunc(keysRequired)}`);
+    }
+    return {
+        changes: Array.from(new Set(changes)),
+        lines: changes.length ? lines : [],
+    };
+}
+async function resolveCleaningTaskUpdateRecipients(taskIds) {
+    try {
+        const ids = Array.from(new Set(taskIds.map((x) => String(x || '').trim()).filter(Boolean)));
+        if (!ids.length)
+            return undefined;
+        const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications');
+        return Array.from(new Set([...(await listCleaningTaskUserIdsBulk(ids)), ...(await listManagerUserIds())]));
+    }
+    catch (_a) {
+        return undefined;
+    }
 }
 function validateAndApplyInspectionPatch(params) {
     const patch = params.patch || {};
@@ -299,8 +442,8 @@ exports.router.get('/offline-tasks', (0, auth_1.requireAnyPerm)(['cleaning.view'
         return res.status(500).json({ message: (e === null || e === void 0 ? void 0 : e.message) || 'offline_tasks_failed' });
     }
 });
-exports.router.post('/offline-tasks', (0, auth_1.requirePerm)('cleaning.schedule.manage'), async (req, res) => {
-    var _a, _b, _c, _d;
+exports.router.post('/offline-tasks', requireCleaningManualCreateAccess, async (req, res) => {
+    var _a, _b, _c, _d, _e;
     const parsed = offlineTaskSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -327,9 +470,34 @@ exports.router.post('/offline-tasks', (0, auth_1.requirePerm)('cleaning.schedule
             try {
                 await upsertWorkTaskFromOfflineTask(out);
             }
-            catch (_e) { }
+            catch (_f) { }
+            const workTaskId = offlineWorkTaskId(String(out.id || row.id));
+            if (String(out.status || '').trim().toLowerCase() !== 'done') {
+                try {
+                    await (0, workTaskEvents_1.emitWorkTaskEvent)({
+                        taskId: `work_task:${workTaskId}`,
+                        sourceType: 'work_tasks',
+                        sourceRefIds: [workTaskId],
+                        eventType: 'TASK_CREATED',
+                        changeScope: 'membership',
+                        changedFields: ['id', 'title', 'summary', 'scheduled_date', 'status', 'urgency', 'property_id', 'assignee_id'],
+                        patch: {
+                            id: workTaskId,
+                            title: out.title,
+                            summary: out.content || null,
+                            scheduled_date: out.date,
+                            status: out.status,
+                            urgency: out.urgency,
+                            property_id: out.property_id || null,
+                            assignee_id: out.assignee_id || null,
+                        },
+                        causedByUserId: String(((_d = req.user) === null || _d === void 0 ? void 0 : _d.sub) || '').trim() || null,
+                        visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: out.assignee_id }),
+                    });
+                }
+                catch (_g) { }
+            }
             if (String(out.status || '').trim().toLowerCase() === 'done') {
-                const workTaskId = offlineWorkTaskId(String(out.id || row.id));
                 try {
                     await (0, workTaskEvents_1.emitWorkTaskEvent)({
                         taskId: `work_task:${workTaskId}`,
@@ -339,11 +507,11 @@ exports.router.post('/offline-tasks', (0, auth_1.requirePerm)('cleaning.schedule
                         changeScope: 'list',
                         changedFields: ['status'],
                         patch: { status: 'done' },
-                        causedByUserId: String(((_d = req.user) === null || _d === void 0 ? void 0 : _d.sub) || '').trim() || null,
+                        causedByUserId: String(((_e = req.user) === null || _e === void 0 ? void 0 : _e.sub) || '').trim() || null,
                         visibilityHints: (0, workTaskEvents_1.buildWorkTaskVisibilityHints)({ assignee_id: out.assignee_id }),
                     });
                 }
-                catch (_f) { }
+                catch (_h) { }
                 enqueueNotification(() => {
                     var _a;
                     return (0, notificationEvents_1.emitNotificationEvent)({
@@ -605,6 +773,7 @@ const patchTaskSchema = zod_1.z.object({
     checkout_time: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
     checkin_time: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
     scheduled_at: zod_1.z.union([zod_1.z.string().min(1), zod_1.z.null()]).optional(),
+    guest_special_request: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
     note: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
 }).strict();
 async function isValidStaffId(id, kind) {
@@ -633,7 +802,7 @@ async function isValidStaffId(id, kind) {
     return !!found;
 }
 exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l;
     const { id } = req.params;
     const operationId = (0, uuid_1.v4)();
     const opNow = new Date().toISOString();
@@ -655,6 +824,9 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                 return res.status(400).json({ message: '该任务关联订单，钥匙套数请按订单更新（orders.keys_required）' });
             }
             const patch = { ...parsed.data };
+            if (patch.guest_special_request === undefined && patch.note !== undefined)
+                patch.guest_special_request = patch.note;
+            delete patch.note;
             if (patch.keys_required === null)
                 patch.keys_required = 1;
             if (patch.cleaner_id !== undefined && patch.assignee_id === undefined)
@@ -699,30 +871,37 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                  AND COALESCE(status,'') <> 'cancelled'
                  AND COALESCE(keys_required, 1) <> $1`, [nextK, orderId]);
                     }
-                    catch (_p) { }
+                    catch (_m) { }
                 }
             }
             try {
-                const changes = [];
-                if (String(before.old_code || '') !== String(updated.old_code || ''))
-                    changes.push('password');
-                if (String(before.new_code || '') !== String(updated.new_code || ''))
-                    changes.push('password');
-                if (String(before.checkout_time || '') !== String(updated.checkout_time || ''))
-                    changes.push('time');
-                if (String(before.checkin_time || '') !== String(updated.checkin_time || ''))
-                    changes.push('time');
-                if (String(before.note || '') !== String(updated.note || ''))
-                    changes.push('note');
-                if (String(before.status || '') !== String(updated.status || ''))
-                    changes.push('status');
-                if (String((_k = before.keys_required) !== null && _k !== void 0 ? _k : '') !== String((_l = updated.keys_required) !== null && _l !== void 0 ? _l : ''))
-                    changes.push('keys');
-                if (String(before.inspection_mode || '') !== String(updated.inspection_mode || '') || String(before.inspection_due_date || '') !== String(updated.inspection_due_date || ''))
-                    changes.push('inspection');
+                const actualChangedFields = actualCleaningTaskChangedFields(before, updated, keys);
+                if (actualChangedFields.length) {
+                    const workPatch = buildCleaningTaskWorkPatch(updated, actualChangedFields);
+                    await (0, workTaskEvents_1.emitWorkTaskEvent)({
+                        taskId: `cleaning_task:${String(id)}`,
+                        sourceType: 'cleaning_tasks',
+                        sourceRefIds: [String(id)],
+                        eventType: 'TASK_UPDATED',
+                        changeScope: workPatch.changedFields.some((field) => field === 'checkout_time' || field === 'checkin_time' || field === 'start_time' || field === 'end_time' || field === 'summary') ? 'list' : 'detail',
+                        changedFields: workPatch.changedFields,
+                        patch: workPatch.patch,
+                        causedByUserId: String(((_k = req === null || req === void 0 ? void 0 : req.user) === null || _k === void 0 ? void 0 : _k.sub) || '').trim() || null,
+                        visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(updated),
+                    });
+                }
+            }
+            catch (_o) { }
+            try {
+                const { changes, lines } = buildCleaningTaskUpdateNoticeDetails(before, updated);
                 const propertyId = String(updated.property_id || '').trim();
                 if (changes.length && propertyId) {
-                    enqueueNotification(() => {
+                    const title = lines.length ? '任务信息更新' : null;
+                    const body = lines.length ? lines.join('\n') : null;
+                    const data = lines.length
+                        ? { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'cleaning_task_manager_fields_updated' }
+                        : { entity: 'cleaning_task', entityId: String(id), action: 'open_task' };
+                    enqueueNotification(async () => {
                         var _a;
                         return (0, notificationEvents_1.emitNotificationEvent)({
                             type: 'CLEANING_TASK_UPDATED',
@@ -731,13 +910,16 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                             propertyId,
                             updatedAt: opNow,
                             changes,
-                            data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
+                            title,
+                            body,
+                            data,
                             actorUserId: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub,
+                            recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(id)]),
                         }, { operationId });
                     });
                 }
             }
-            catch (_q) { }
+            catch (_p) { }
             return res.json(updated);
         }
         const task = store_1.db.cleaningTasks.find((t) => String(t.id) === String(id));
@@ -749,45 +931,49 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
         }
         if (parsed.data.keys_required === null)
             parsed.data.keys_required = 1;
-        validateAndApplyInspectionPatch({ patch: parsed.data, current: task });
-        if (parsed.data.property_id !== undefined)
-            task.property_id = parsed.data.property_id;
-        if (parsed.data.task_date !== undefined) {
-            task.task_date = parsed.data.task_date;
-            task.date = parsed.data.task_date;
+        const localPatch = { ...parsed.data };
+        if (localPatch.guest_special_request === undefined && localPatch.note !== undefined)
+            localPatch.guest_special_request = localPatch.note;
+        delete localPatch.note;
+        validateAndApplyInspectionPatch({ patch: localPatch, current: task });
+        if (localPatch.property_id !== undefined)
+            task.property_id = localPatch.property_id;
+        if (localPatch.task_date !== undefined) {
+            task.task_date = localPatch.task_date;
+            task.date = localPatch.task_date;
         }
-        if (parsed.data.status !== undefined)
-            task.status = parsed.data.status;
-        if (parsed.data.cleaner_id !== undefined)
-            task.cleaner_id = parsed.data.cleaner_id;
-        if (parsed.data.inspector_id !== undefined)
-            task.inspector_id = parsed.data.inspector_id;
-        if (parsed.data.inspection_mode !== undefined)
-            task.inspection_mode = parsed.data.inspection_mode;
-        if (parsed.data.inspection_due_date !== undefined)
-            task.inspection_due_date = parsed.data.inspection_due_date;
-        if (parsed.data.keys_required !== undefined)
-            task.keys_required = parsed.data.keys_required;
-        if (parsed.data.nights_override !== undefined)
-            task.nights_override = parsed.data.nights_override;
-        if (parsed.data.old_code !== undefined)
-            task.old_code = parsed.data.old_code;
-        if (parsed.data.new_code !== undefined)
-            task.new_code = parsed.data.new_code;
-        if (parsed.data.checkout_time !== undefined)
-            task.checkout_time = parsed.data.checkout_time;
-        if (parsed.data.checkin_time !== undefined)
-            task.checkin_time = parsed.data.checkin_time;
-        if (parsed.data.assignee_id !== undefined)
-            task.assignee_id = parsed.data.assignee_id;
-        if (parsed.data.cleaner_id !== undefined && parsed.data.assignee_id === undefined)
-            task.assignee_id = parsed.data.cleaner_id;
-        if (parsed.data.assignee_id !== undefined && parsed.data.cleaner_id === undefined)
-            task.cleaner_id = parsed.data.assignee_id;
-        if (parsed.data.scheduled_at !== undefined)
-            task.scheduled_at = parsed.data.scheduled_at;
-        if (parsed.data.note !== undefined)
-            task.note = parsed.data.note;
+        if (localPatch.status !== undefined)
+            task.status = localPatch.status;
+        if (localPatch.cleaner_id !== undefined)
+            task.cleaner_id = localPatch.cleaner_id;
+        if (localPatch.inspector_id !== undefined)
+            task.inspector_id = localPatch.inspector_id;
+        if (localPatch.inspection_mode !== undefined)
+            task.inspection_mode = localPatch.inspection_mode;
+        if (localPatch.inspection_due_date !== undefined)
+            task.inspection_due_date = localPatch.inspection_due_date;
+        if (localPatch.keys_required !== undefined)
+            task.keys_required = localPatch.keys_required;
+        if (localPatch.nights_override !== undefined)
+            task.nights_override = localPatch.nights_override;
+        if (localPatch.old_code !== undefined)
+            task.old_code = localPatch.old_code;
+        if (localPatch.new_code !== undefined)
+            task.new_code = localPatch.new_code;
+        if (localPatch.checkout_time !== undefined)
+            task.checkout_time = localPatch.checkout_time;
+        if (localPatch.checkin_time !== undefined)
+            task.checkin_time = localPatch.checkin_time;
+        if (localPatch.assignee_id !== undefined)
+            task.assignee_id = localPatch.assignee_id;
+        if (localPatch.cleaner_id !== undefined && localPatch.assignee_id === undefined)
+            task.assignee_id = localPatch.cleaner_id;
+        if (localPatch.assignee_id !== undefined && localPatch.cleaner_id === undefined)
+            task.cleaner_id = localPatch.assignee_id;
+        if (localPatch.scheduled_at !== undefined)
+            task.scheduled_at = localPatch.scheduled_at;
+        if (localPatch.guest_special_request !== undefined)
+            task.guest_special_request = localPatch.guest_special_request;
         {
             const beforeStatus = String(before.status || 'pending');
             const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned';
@@ -819,26 +1005,33 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
             }
         }
         try {
-            const changes = [];
-            if (String(before.old_code || '') !== String(task.old_code || ''))
-                changes.push('password');
-            if (String(before.new_code || '') !== String(task.new_code || ''))
-                changes.push('password');
-            if (String(before.checkout_time || '') !== String(task.checkout_time || ''))
-                changes.push('time');
-            if (String(before.checkin_time || '') !== String(task.checkin_time || ''))
-                changes.push('time');
-            if (String(before.note || '') !== String(task.note || ''))
-                changes.push('note');
-            if (String(before.status || '') !== String(task.status || ''))
-                changes.push('status');
-            if (String((_m = before.keys_required) !== null && _m !== void 0 ? _m : '') !== String((_o = task.keys_required) !== null && _o !== void 0 ? _o : ''))
-                changes.push('keys');
-            if (String(before.inspection_mode || '') !== String(task.inspection_mode || '') || String(before.inspection_due_date || '') !== String(task.inspection_due_date || ''))
-                changes.push('inspection');
+            const actualChangedFields = actualCleaningTaskChangedFields(before, task, Object.keys(localPatch || {}));
+            if (actualChangedFields.length) {
+                const workPatch = buildCleaningTaskWorkPatch(task, actualChangedFields);
+                await (0, workTaskEvents_1.emitWorkTaskEvent)({
+                    taskId: `cleaning_task:${String(id)}`,
+                    sourceType: 'cleaning_tasks',
+                    sourceRefIds: [String(id)],
+                    eventType: 'TASK_UPDATED',
+                    changeScope: workPatch.changedFields.some((field) => field === 'checkout_time' || field === 'checkin_time' || field === 'start_time' || field === 'end_time' || field === 'summary') ? 'list' : 'detail',
+                    changedFields: workPatch.changedFields,
+                    patch: workPatch.patch,
+                    causedByUserId: String(((_l = req === null || req === void 0 ? void 0 : req.user) === null || _l === void 0 ? void 0 : _l.sub) || '').trim() || null,
+                    visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(task),
+                });
+            }
+        }
+        catch (_q) { }
+        try {
+            const { changes, lines } = buildCleaningTaskUpdateNoticeDetails(before, task);
             const propertyId = String(task.property_id || '').trim();
             if (changes.length && propertyId) {
-                enqueueNotification(() => {
+                const title = lines.length ? '任务信息更新' : null;
+                const body = lines.length ? lines.join('\n') : null;
+                const data = lines.length
+                    ? { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'cleaning_task_manager_fields_updated' }
+                    : { entity: 'cleaning_task', entityId: String(id), action: 'open_task' };
+                enqueueNotification(async () => {
                     var _a;
                     return (0, notificationEvents_1.emitNotificationEvent)({
                         type: 'CLEANING_TASK_UPDATED',
@@ -847,8 +1040,11 @@ exports.router.patch('/tasks/:id', (0, auth_1.requirePerm)('cleaning.task.assign
                         propertyId,
                         updatedAt: opNow,
                         changes,
-                        data: { entity: 'cleaning_task', entityId: String(id), action: 'open_task' },
+                        title,
+                        body,
+                        data,
                         actorUserId: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub,
+                        recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(id)]),
                     }, { operationId });
                 });
             }
@@ -887,10 +1083,11 @@ const createTaskSchema = zod_1.z.object({
         .optional()
         .nullable(),
     nights_override: zod_1.z.union([zod_1.z.number().int().nonnegative(), zod_1.z.null()]).optional(),
+    guest_special_request: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
     note: zod_1.z.union([zod_1.z.string(), zod_1.z.null()]).optional(),
 }).strict();
-exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), async (req, res) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u;
+exports.router.post('/tasks', requireCleaningManualCreateAccess, async (req, res) => {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v;
     const parsed = createTaskSchema.safeParse(req.body || {});
     if (!parsed.success)
         return res.status(400).json(parsed.error.format());
@@ -898,6 +1095,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
         return res.status(400).json({ message: '无效的清洁人员' });
     if (!(await isValidStaffId((_b = parsed.data.inspector_id) !== null && _b !== void 0 ? _b : null, 'inspector')))
         return res.status(400).json({ message: '无效的检查人员' });
+    const operationId = (0, uuid_1.v4)();
     try {
         const mode = parsed.data.create_mode;
         const taskType = parsed.data.task_type;
@@ -920,7 +1118,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
                     return res.status(400).json({ message: '无效的房源' });
                 normalizedPropertyId = id;
             }
-            catch (_v) { }
+            catch (_w) { }
         }
         else {
             const anyDb = store_1.db;
@@ -947,7 +1145,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
             checkin_time: (_o = parsed.data.checkin_time) !== null && _o !== void 0 ? _o : null,
             keys_required: parsed.data.keys_required == null ? 1 : parsed.data.keys_required,
             nights_override: (_p = parsed.data.nights_override) !== null && _p !== void 0 ? _p : null,
-            note: (_q = parsed.data.note) !== null && _q !== void 0 ? _q : null,
+            guest_special_request: (_r = (_q = parsed.data.guest_special_request) !== null && _q !== void 0 ? _q : parsed.data.note) !== null && _r !== void 0 ? _r : null,
             auto_sync_enabled: true,
             source: 'manual',
         };
@@ -963,7 +1161,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
                         task_type: tt,
                         type: tt,
                         inspection_mode: (0, cleaningInspection_1.normalizeInspectionMode)(parsed.data.inspection_mode) || (0, cleaningInspection_1.defaultInspectionModeForTaskType)(tt),
-                        inspection_due_date: (_r = parsed.data.inspection_due_date) !== null && _r !== void 0 ? _r : null,
+                        inspection_due_date: (_s = parsed.data.inspection_due_date) !== null && _s !== void 0 ? _s : null,
                     };
                     validateAndApplyInspectionPatch({ patch: row, taskType: tt });
                     const keys = Object.keys(row).filter((k) => row[k] !== undefined);
@@ -972,7 +1170,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
                     const values = keys.map((k) => row[k]);
                     const sql = `INSERT INTO cleaning_tasks(${cols}) VALUES(${args}) RETURNING *`;
                     const r = await client.query(sql, values);
-                    const created = ((_s = r === null || r === void 0 ? void 0 : r.rows) === null || _s === void 0 ? void 0 : _s[0]) || row;
+                    const created = ((_t = r === null || r === void 0 ? void 0 : r.rows) === null || _t === void 0 ? void 0 : _t[0]) || row;
                     createdRows.push(created);
                     await (0, workTaskEvents_1.emitWorkTaskEvent)({
                         taskId: `cleaning_task:${String(created.id)}`,
@@ -993,7 +1191,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
                             scheduled_at: created.scheduled_at,
                             property_id: created.property_id,
                         },
-                        causedByUserId: String(((_t = req === null || req === void 0 ? void 0 : req.user) === null || _t === void 0 ? void 0 : _t.sub) || '').trim() || null,
+                        causedByUserId: String(((_u = req === null || req === void 0 ? void 0 : req.user) === null || _u === void 0 ? void 0 : _u.sub) || '').trim() || null,
                         visibilityHints: (0, workTaskEvents_1.buildCleaningTaskVisibilityHints)(created),
                     }, client);
                 }
@@ -1003,11 +1201,36 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
                 try {
                     await client.query('ROLLBACK');
                 }
-                catch (_w) { }
+                catch (_x) { }
                 throw e;
             }
             finally {
                 client.release();
+            }
+            for (const created of createdRows) {
+                try {
+                    const { changes, lines } = buildCleaningTaskCreateNoticeDetails(created);
+                    const propertyId = String((created === null || created === void 0 ? void 0 : created.property_id) || '').trim();
+                    if (!changes.length || !propertyId)
+                        continue;
+                    enqueueNotification(async () => {
+                        var _a;
+                        return (0, notificationEvents_1.emitNotificationEvent)({
+                            type: 'CLEANING_TASK_UPDATED',
+                            entity: 'cleaning_task',
+                            entityId: String(created.id),
+                            propertyId,
+                            updatedAt: new Date().toISOString(),
+                            changes,
+                            title: '任务信息更新',
+                            body: lines.join('\n'),
+                            data: { entity: 'cleaning_task', entityId: String(created.id), action: 'open_task', kind: 'cleaning_task_manager_fields_updated' },
+                            actorUserId: (_a = req.user) === null || _a === void 0 ? void 0 : _a.sub,
+                            recipientUserIds: await resolveCleaningTaskUpdateRecipients([String(created.id)]),
+                        }, { operationId });
+                    });
+                }
+                catch (_y) { }
             }
             if (createdRows.length === 1)
                 return res.json(createdRows[0]);
@@ -1020,7 +1243,7 @@ exports.router.post('/tasks', (0, auth_1.requirePerm)('cleaning.task.assign'), a
                 task_type: tt,
                 type: tt,
                 inspection_mode: (0, cleaningInspection_1.normalizeInspectionMode)(parsed.data.inspection_mode) || (0, cleaningInspection_1.defaultInspectionModeForTaskType)(tt),
-                inspection_due_date: (_u = parsed.data.inspection_due_date) !== null && _u !== void 0 ? _u : null,
+                inspection_due_date: (_v = parsed.data.inspection_due_date) !== null && _v !== void 0 ? _v : null,
             };
             validateAndApplyInspectionPatch({ patch: row, taskType: tt });
             store_1.db.cleaningTasks.push(row);
@@ -1151,6 +1374,9 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
         return res.status(400).json({ message: '无效的检查人员' });
     const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)));
     const basePatch = { ...parsed.data.patch };
+    if (basePatch.guest_special_request === undefined && basePatch.note !== undefined)
+        basePatch.guest_special_request = basePatch.note;
+    delete basePatch.note;
     if (basePatch.keys_required === null)
         basePatch.keys_required = 1;
     if (basePatch.cleaner_id !== undefined && basePatch.assignee_id === undefined)
@@ -1258,8 +1484,8 @@ exports.router.post('/tasks/bulk-patch', (0, auth_1.requirePerm)('cleaning.task.
                     task.keys_required = patch.keys_required;
                 if (patch.scheduled_at !== undefined)
                     task.scheduled_at = patch.scheduled_at;
-                if (patch.note !== undefined)
-                    task.note = patch.note;
+                if (patch.guest_special_request !== undefined)
+                    task.guest_special_request = patch.guest_special_request;
                 {
                     const beforeStatus = String(task.status || 'pending');
                     const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned';
@@ -1455,6 +1681,8 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
            t.auto_sync_enabled,
            t.old_code,
            t.new_code,
+           t.guest_special_request,
+           t.note,
            (o.confirmation_code::text) AS order_code,
            COALESCE(t.nights_override, o.nights) AS nights
          FROM cleaning_tasks t
@@ -1498,6 +1726,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                     property_code: row.property_code ? String(row.property_code) : null,
                     property_region: row.property_region ? String(row.property_region) : null,
                     task_type: row.task_type ? String(row.task_type) : null,
+                    checkin_sync_status: rawType === 'checkin_clean' ? (row.order_id ? 'synced' : 'pending') : null,
                     status: String(row.status || 'pending'),
                     assignee_id: row.assignee_id ? String(row.assignee_id) : null,
                     cleaner_id: row.cleaner_id ? String(row.cleaner_id) : (row.assignee_id ? String(row.assignee_id) : null),
@@ -1508,6 +1737,8 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                     auto_sync_enabled: row.auto_sync_enabled !== false,
                     old_code: row.old_code != null ? String(row.old_code || '') : null,
                     new_code: row.new_code != null ? String(row.new_code || '') : null,
+                    guest_special_request: row.guest_special_request != null ? String(row.guest_special_request || '') : null,
+                    note: row.note != null ? String(row.note || '') : null,
                     nights: row.nights != null ? Number(row.nights) : null,
                     summary_checkout_time: String(row.checkout_time || '').trim() || DEFAULT_SUMMARY_CHECKOUT_TIME,
                     summary_checkin_time: String(row.checkin_time || '').trim() || DEFAULT_SUMMARY_CHECKIN_TIME,
@@ -1625,6 +1856,7 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                 property_code: (prop === null || prop === void 0 ? void 0 : prop.code) ? String(prop.code) : null,
                 property_region: (prop === null || prop === void 0 ? void 0 : prop.region) ? String(prop.region) : null,
                 task_type: rawType || null,
+                checkin_sync_status: rawType === 'checkin_clean' ? (t.order_id ? 'synced' : 'pending') : null,
                 status: String(t.status || 'pending'),
                 assignee_id: t.assignee_id ? String(t.assignee_id) : null,
                 cleaner_id: t.cleaner_id ? String(t.cleaner_id) : (t.assignee_id ? String(t.assignee_id) : null),
@@ -1633,6 +1865,8 @@ exports.router.get('/calendar-range', (0, auth_1.requireAnyPerm)(['cleaning.view
                 auto_sync_enabled: t.auto_sync_enabled !== false,
                 old_code: t.old_code != null ? String(t.old_code || '') : null,
                 new_code: t.new_code != null ? String(t.new_code || '') : null,
+                guest_special_request: t.guest_special_request != null ? String(t.guest_special_request || '') : null,
+                note: t.note != null ? String(t.note || '') : null,
                 nights: t.nights_override != null ? Number(t.nights_override) : ((order === null || order === void 0 ? void 0 : order.nights) != null ? Number(order.nights) : null),
                 summary_checkout_time: String(t.checkout_time || '').trim() || DEFAULT_SUMMARY_CHECKOUT_TIME,
                 summary_checkin_time: String(t.checkin_time || '').trim() || DEFAULT_SUMMARY_CHECKIN_TIME,

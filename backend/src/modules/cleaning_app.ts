@@ -1968,23 +1968,38 @@ router.get('/property-codes', requireAnyPerm(['cleaning_app.tasks.finish', 'clea
     if (!pgPool) return res.json([])
     const q = String((req.query as any)?.q || '').trim()
     const values: any[] = []
-    let where = `WHERE COALESCE(code, '') <> ''`
+    let where = `WHERE COALESCE(code, '') <> '' AND COALESCE(archived, false) = false`
     if (q) {
       values.push(`%${q}%`)
       where += ` AND code ILIKE $${values.length}`
     }
     values.push(q ? 100 : 5000)
     const rows = await pgPool.query(
-      `SELECT id::text AS id, code
+      `SELECT id::text AS id, code, region
        FROM properties
        ${where}
-       ORDER BY code ASC
+       ORDER BY
+         CASE COALESCE(region, '')
+           WHEN 'Melbourne' THEN 0
+           WHEN 'Southbank' THEN 1
+           WHEN 'South Melbourne' THEN 2
+           WHEN 'West Melbourne' THEN 3
+           WHEN 'St Kilda' THEN 4
+           WHEN 'Docklands' THEN 5
+           WHEN '' THEN 99
+           WHEN '其他' THEN 99
+           WHEN '未分区' THEN 99
+           ELSE 50
+         END ASC,
+         COALESCE(region, '') ASC,
+         code ASC
        LIMIT $${values.length}`,
       values,
     )
     return res.json((rows.rows || []).map((x: any) => ({
       id: String(x.id || ''),
       code: String(x.code || ''),
+      region: x.region ? String(x.region) : null,
     })))
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'error' })

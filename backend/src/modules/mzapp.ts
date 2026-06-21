@@ -3192,8 +3192,8 @@ async function handleManagerFields(req: any, res: any) {
               const checkinSets = groupKeys.checkin_sets >= 2 ? groupKeys.checkin_sets : (isCheckinTask && nextKeysRequired != null ? nextKeysRequired : 0)
               const mergedKeysRequired = Math.max(1, checkoutSets || 0, checkinSets || 0, nextKeysRequired || 0)
               const changedFieldsForTask = [
-                ...(parsed.data.checkout_time !== undefined ? ['checkout_time'] : []),
-                ...(parsed.data.checkin_time !== undefined ? ['checkin_time'] : []),
+                ...(parsed.data.checkout_time !== undefined ? ['checkout_time', 'start_time', 'summary'] : []),
+                ...(parsed.data.checkin_time !== undefined ? ['checkin_time', 'end_time', 'summary'] : []),
                 ...(parsed.data.old_code !== undefined ? ['old_code'] : []),
                 ...(parsed.data.new_code !== undefined ? ['new_code'] : []),
                 ...(parsed.data.guest_special_request !== undefined ? ['guest_special_request'] : []),
@@ -3211,7 +3211,17 @@ async function handleManagerFields(req: any, res: any) {
                 changedFields: changedFieldsForTask,
                 patch: {
                   ...(parsed.data.checkout_time !== undefined ? { checkout_time: parsed.data.checkout_time ?? null } : {}),
+                  ...(parsed.data.checkout_time !== undefined ? { start_time: parsed.data.checkout_time ?? null } : {}),
                   ...(parsed.data.checkin_time !== undefined ? { checkin_time: parsed.data.checkin_time ?? null } : {}),
+                  ...(parsed.data.checkin_time !== undefined ? { end_time: parsed.data.checkin_time ?? null } : {}),
+                  ...(parsed.data.checkout_time !== undefined || parsed.data.checkin_time !== undefined
+                    ? {
+                        summary: summaryFromCleaningTimes(
+                          parsed.data.checkout_time !== undefined ? parsed.data.checkout_time : prevRow?.checkout_time,
+                          parsed.data.checkin_time !== undefined ? parsed.data.checkin_time : prevRow?.checkin_time,
+                        ),
+                      }
+                    : {}),
                   ...(parsed.data.old_code !== undefined ? { old_code: parsed.data.old_code ?? null } : {}),
                   ...(parsed.data.new_code !== undefined ? { new_code: parsed.data.new_code ?? null } : {}),
                   ...(parsed.data.guest_special_request !== undefined ? { guest_special_request: parsed.data.guest_special_request ?? null } : {}),

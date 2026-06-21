@@ -239,11 +239,46 @@ export default function OrdersPage() {
   useEffect(() => {
     setMounted(true)
   }, [])
-  function getPropertyById(id?: string) { return (Array.isArray(properties) ? properties : []).find(p => p.id === id) }
+  function normalizePropertyLookupKey(id?: string) {
+    const raw = String(id || '').trim()
+    if (!raw) return ''
+    const m = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(true|false)?$/i.exec(raw)
+    return m ? m[1] : raw
+  }
+  function getPropertyById(id?: string) {
+    const key = normalizePropertyLookupKey(id)
+    const lower = key.toLowerCase()
+    return (Array.isArray(properties) ? properties : []).find(p => String(p.id || '') === key || String(p.code || '').toLowerCase() === lower)
+  }
   function getPropertyCodeLabel(o: Order) {
     const p = getPropertyById(o.property_id)
-    const byCodeAsId = (Array.isArray(properties) ? properties : []).find(px => (px.code || '') === (o.property_id || ''))
-    return (p?.code || byCodeAsId?.code || o.property_code || p?.address || o.property_id || '')
+    return (p?.code || o.property_code || p?.address || normalizePropertyLookupKey(o.property_id) || '')
+  }
+  function searchText(...values: any[]) {
+    return values.map(v => String(v || '').trim()).filter(Boolean).join(' ').toLowerCase()
+  }
+  function getOrderPropertySearchText(o: Order) {
+    const p = getPropertyById(o.property_id)
+    return searchText(
+      getPropertyCodeLabel(o),
+      o.property_code,
+      normalizePropertyLookupKey(o.property_id),
+      p?.code,
+      p?.address,
+      (o as any).property_name,
+      (o as any).listing_name,
+    )
+  }
+  function matchesOrderTextFilters(o: Order, roomInput: string, confirmationInput: string) {
+    const q = String(roomInput || '').trim().toLowerCase()
+    const cq = String(confirmationInput || '').trim().toLowerCase()
+    const text = searchText(getOrderPropertySearchText(o), o.source, o.guest_name)
+    const confirmation = String((o as any).confirmation_code || '').trim().toLowerCase()
+    const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0) || 0
+    return (!q || text.includes(q))
+      && (!cq || confirmation.includes(cq))
+      && (!hasDeductionOnly || ded > 0)
+      && matchesPlatformFilter(o)
   }
   function fmtDay(s?: string) {
     if (!s) return ''
@@ -1563,8 +1598,10 @@ export default function OrdersPage() {
         </div>
         {view==='list' ? (
           <div className={styles.ordersToolbarFilters}>
-            <Input className={styles.ordersSearchInput} placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} />
-            <Input className={styles.ordersSearchInput} placeholder="按确认码搜索" allowClear value={confQuery} onChange={(e) => setConfQuery(e.target.value)} onPressEnter={() => jumpToCalendarByConfirmationCode(confQuery)} />
+            <div className={styles.ordersSearchGroup}>
+              <Input className={styles.ordersSearchInput} placeholder="按房号搜索" allowClear value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} />
+              <Input className={styles.ordersSearchInput} placeholder="按确认码搜索" allowClear value={confQuery} onChange={(e) => setConfQuery(e.target.value)} onPressEnter={() => jumpToCalendarByConfirmationCode(confQuery)} />
+            </div>
             <Select className={styles.ordersPlatformSelect} value={platformFilter} onChange={(v)=>setPlatformFilter(v as PlatformFilter)} options={PLATFORM_FILTER_OPTIONS} />
             <div className={styles.ordersJumpRow}>
               <Button onClick={() => jumpToCalendarByConfirmationCode(confQuery)}>跳转日历</Button>
@@ -1638,38 +1675,18 @@ export default function OrdersPage() {
                 return normalizeOrderListAmounts(o, nights)
               })
               const filtered1 = raw.filter(o => {
-                const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
-                const listingText = String((o as any).listing_name || '').toLowerCase()
-                const sourceText = String(o.source || '').toLowerCase()
-                const guestText = String(o.guest_name || '').toLowerCase()
-                const okText = !input || codeText.includes(input) || listingText.includes(input) || sourceText.includes(input) || guestText.includes(input)
-                const confText = String((o as any).confirmation_code || '').toLowerCase()
-                const okConf = confText.includes(confInput)
-                const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0) || 0
-                const okDed = !hasDeductionOnly || ded > 0
-                const okPlatform = matchesPlatformFilter(o)
-                return okPlatform && okText && okConf && okDed
+                return matchesOrderTextFilters(o, input, confInput)
               })
               return applySort(filtered1)
             }
             if (monthFilter) {
               const baseSegs: (Order & { __rid?: string })[] = monthSegments(data as any, ms) as any
               const rowsPrimary = baseSegs.filter(o => {
-                const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
-                const listingText = String((o as any).listing_name || '').toLowerCase()
-                const sourceText = String(o.source || '').toLowerCase()
-                const guestText = String(o.guest_name || '').toLowerCase()
-                const okText = !input || codeText.includes(input) || listingText.includes(input) || sourceText.includes(input) || guestText.includes(input)
-                const confText = String((o as any).confirmation_code || '').toLowerCase()
-                const okConf = !confInput || confText.includes(confInput)
                 const rangeOk = !dateRange || (
                   (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
                   (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
                 )
-                const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0) || 0
-                const okDed = !hasDeductionOnly || ded > 0
-                const okPlatform = matchesPlatformFilter(o)
-                return okPlatform && okText && okConf && rangeOk && okDed
+                return matchesOrderTextFilters(o, input, confInput) && rangeOk
               })
               if (rowsPrimary.length) return applySort(rowsPrimary)
             }
@@ -1683,13 +1700,6 @@ export default function OrdersPage() {
               return normalizeOrderListAmounts(o, nights)
             })
             const filtered2 = raw.filter(o => {
-              const codeText = (getPropertyCodeLabel(o) || '').toLowerCase()
-              const listingText = String((o as any).listing_name || '').toLowerCase()
-              const sourceText = String(o.source || '').toLowerCase()
-              const guestText = String(o.guest_name || '').toLowerCase()
-              const okText = !input || codeText.includes(input) || listingText.includes(input) || sourceText.includes(input) || guestText.includes(input)
-              const confText = String((o as any).confirmation_code || '').toLowerCase()
-              const okConf = !confInput || confText.includes(confInput)
               const ci = dayjs(String(o.checkin || '').slice(0,10))
               const co = dayjs(String(o.checkout || '').slice(0,10))
               const monthOverlap = !monthFilter ? true : (ci.isValid() && co.isValid() ? (ci.isBefore(me) && co.isAfter(ms)) : true)
@@ -1697,10 +1707,7 @@ export default function OrdersPage() {
                 (!dateRange[0] || dayjs(o.checkout).diff(dateRange[0], 'day') > 0) &&
                 (!dateRange[1] || dayjs(o.checkin).diff(dateRange[1], 'day') <= 0)
               )
-              const ded = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0) || 0
-              const okDed = !hasDeductionOnly || ded > 0
-              const okPlatform = matchesPlatformFilter(o)
-              return okPlatform && okText && okConf && monthOverlap && rangeOk && okDed
+              return matchesOrderTextFilters(o, input, confInput) && monthOverlap && rangeOk
             })
             return applySort(filtered2)
           })()}
