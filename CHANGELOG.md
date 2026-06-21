@@ -1,5 +1,15 @@
 # Changelog
 
+## Dev (2026-06-21)
+
+### build.1
+
+- Version: `0.2.12-task-scheduling.20260621+build.1`
+- Task center: Show same-day offline tasks and merge them with existing work tasks without duplicate cards.
+- Task scheduling: Stage offline-task detail and assignee changes locally, then save them together through "保存安排".
+- Mobile tasks: Return the assigned staff name and concrete task content required by the existing mobile task cards.
+- Notifications: Include task title, content, date, assignee, status, and urgency in banner and information-center events.
+
 ## Dev (2026-06-10)
 
 ### build.3

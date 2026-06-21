@@ -4625,9 +4625,11 @@ router.get('/work-tasks', async (req, res) => {
           p.access_guide_link AS property_access_guide_link,
           p.wifi_ssid AS property_wifi_ssid,
           p.wifi_password AS property_wifi_password,
-          p.router_location AS property_router_location
+          p.router_location AS property_router_location,
+          COALESCE(NULLIF(TRIM(au.display_name), ''), NULLIF(TRIM(au.username), ''), NULLIF(TRIM(au.email), ''), w.assignee_id::text) AS assignee_name
         FROM work_tasks w
         LEFT JOIN properties p ON p.id = w.property_id
+        LEFT JOIN users au ON (au.id::text) = (w.assignee_id::text)
         WHERE ${where.join(' AND ')}
         ORDER BY
           w.scheduled_date ASC,
@@ -4657,6 +4659,8 @@ router.get('/work-tasks', async (req, res) => {
           start_time: x.start_time !== undefined && x.start_time !== null ? String(x.start_time || '') : null,
           end_time: x.end_time !== undefined && x.end_time !== null ? String(x.end_time || '') : null,
           assignee_id: x.assignee_id ? String(x.assignee_id) : null,
+          assignee_name: x.assignee_name ? String(x.assignee_name) : null,
+          cleaner_name: x.assignee_name ? String(x.assignee_name) : null,
           status: normStatus(x.status),
           urgency: normUrgency(x.urgency),
           sort_index: workTaskSortNumber(x.sort_index),

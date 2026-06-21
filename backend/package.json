@@ -1,6 +1,6 @@
 {
   "name": "mz-property-backend",
-  "version": "0.2.11-public-sign-proxy.20260610+build.1",
+  "version": "0.2.12-task-scheduling.20260621+build.1",
   "private": true,
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
