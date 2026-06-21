@@ -24,7 +24,7 @@ const TYPES = ['agency_authority', 'property_service_agreement'] as const
 const STATUSES = ['draft', 'sent_for_signature', 'signed', 'archived'] as const
 const AGENCY_AUTHORITY_TEMPLATE_VERSION = 'authorisation-detail-v7-page-filled-2026-05-18'
 const SERVICE_AGREEMENT_TEMPLATE_VERSION = 'service-agreement-v5-2026-06-15'
-const SERVICE_VARIANTS = ['management_standard', 'management_sale', 'leased_to_mz'] as const
+const SERVICE_VARIANTS = ['management_standard', 'management_sale', 'leased_to_mz', 'leased_direct_to_mz'] as const
 const ATTACHMENT_CATEGORIES = ['agency_contract', 'condition_report'] as const
 
 const createSchema = z.object({
@@ -166,6 +166,15 @@ function isLeasedToMzVariant(fields: Record<string, any>) {
   return serviceAgreementVariantOf(fields) === 'leased_to_mz'
 }
 
+function isDirectLeaseToMzVariant(fields: Record<string, any>) {
+  return serviceAgreementVariantOf(fields) === 'leased_direct_to_mz'
+}
+
+function isMzLeaseVariant(fields: Record<string, any>) {
+  const variant = serviceAgreementVariantOf(fields)
+  return variant === 'leased_to_mz' || variant === 'leased_direct_to_mz'
+}
+
 function normalizeManagementFeeRate(value: any, fallbackRate: number | null) {
   const num = Number(value)
   if (Number.isFinite(num) && num > 0) {
@@ -191,6 +200,9 @@ function parseRateFromFeeText(value: any) {
 function currentMonthKey() {
   return new Date().toISOString().slice(0, 7)
 }
+
+const DIRECT_LEASE_UTILITIES_TEXT = 'MZ Property pays usage utilities during the lease term, including electricity, gas, internet and water usage where billed as consumption utilities. The Owner remains responsible for owners corporation / strata levies, council rates, water rates and other owner-side property charges unless expressly agreed otherwise in writing.'
+const DIRECT_LEASE_INSURANCE_TEXT = 'MZ Property will arrange short-stay insurance for its operation. The Owner is not required to participate in short-stay management and only needs to provide owner information, documents or signatures reasonably required for insurance setup, renewal or claims.'
 
 function effectiveMonthFromFields(fields: Record<string, any>) {
   const raw = String(fields?.commencement_date || '').trim()
@@ -255,6 +267,18 @@ async function loadDefaults(landlordId?: string | null, propertyId?: string | nu
     installation_fee: '$0.00',
     purchase_fee: '$0.00',
     photography_fee: '$0.00',
+    monthly_rent: '',
+    rent_payment_frequency: 'Monthly',
+    rent_due_day: '1',
+    first_rent_due_date: '',
+    bond_amount: 'One month rent',
+    bond_due_date: '',
+    electronic_notice_method: ownerEmail ? `Email: ${ownerEmail}` : 'Email',
+    urgent_repair_contact: 'MZ Property operations team',
+    owners_corporation_rules: 'Owner to provide if applicable',
+    minimum_standards_confirmation: 'Owner confirms the Property meets applicable rental minimum standards before handover.',
+    owner_charges_handling: DIRECT_LEASE_UTILITIES_TEXT,
+    short_stay_insurance: DIRECT_LEASE_INSURANCE_TEXT,
   }
 }
 
@@ -262,9 +286,32 @@ function applyServiceAgreementVariantDefaults(fields: Record<string, any>) {
   const next = { ...(fields || {}) }
   const variant = serviceAgreementVariantOf(next)
   next.contract_variant = variant
-  if (variant === 'leased_to_mz') {
+  if (variant === 'leased_to_mz' || variant === 'leased_direct_to_mz') {
     next.management_fee_rate = null
     next.management_fee = ''
+    if (variant === 'leased_direct_to_mz') {
+      next.utilities_paid_by = 'paid by MZ Property'
+      if (!String(next.monthly_rent || '').trim()) next.monthly_rent = ''
+      if (!String(next.rent_payment_frequency || '').trim()) next.rent_payment_frequency = 'Monthly'
+      if (!String(next.rent_due_day || '').trim()) next.rent_due_day = '1'
+      if (!String(next.first_rent_due_date || '').trim()) next.first_rent_due_date = ''
+      if (!String(next.bond_amount || '').trim()) next.bond_amount = 'One month rent'
+      if (!String(next.bond_due_date || '').trim()) next.bond_due_date = ''
+      if (!String(next.electronic_notice_method || '').trim()) next.electronic_notice_method = 'Email'
+      if (!String(next.urgent_repair_contact || '').trim()) next.urgent_repair_contact = 'MZ Property operations team'
+      if (!String(next.owners_corporation_rules || '').trim()) next.owners_corporation_rules = 'Owner to provide if applicable'
+      if (!String(next.minimum_standards_confirmation || '').trim()) {
+        next.minimum_standards_confirmation = 'Owner confirms the Property meets applicable rental minimum standards before handover.'
+      }
+      if (!String(next.owner_charges_handling || '').trim()) {
+        next.owner_charges_handling = DIRECT_LEASE_UTILITIES_TEXT
+      } else if (/may pay agreed|deduct or reconcile|owners corporation \/ strata fees|council rates|water rates and other agreed property charges/i.test(String(next.owner_charges_handling || ''))) {
+        next.owner_charges_handling = DIRECT_LEASE_UTILITIES_TEXT
+      }
+      if (!String(next.short_stay_insurance || '').trim()) {
+        next.short_stay_insurance = DIRECT_LEASE_INSURANCE_TEXT
+      }
+    }
     return next
   }
   const fallbackRate = variant === 'management_standard' ? 0.185 : 0.5
@@ -297,7 +344,9 @@ function buildBlankTemplateFields(type: LandlordDocumentType, variant?: ServiceA
       landlord_signature_data_url: '',
     }
   }
-  const selectedVariant: ServiceAgreementVariant = variant === 'management_sale' ? 'management_sale' : 'management_standard'
+  const selectedVariant: ServiceAgreementVariant = variant === 'management_sale'
+    ? 'management_sale'
+    : (variant === 'leased_direct_to_mz' ? 'leased_direct_to_mz' : 'management_standard')
   return applyServiceAgreementVariantDefaults({
     blank_template: true,
     contract_variant: selectedVariant,
@@ -335,6 +384,18 @@ function buildBlankTemplateFields(type: LandlordDocumentType, variant?: ServiceA
     installation_fee: '$0.00',
     purchase_fee: '$0.00',
     photography_fee: '$0.00',
+      monthly_rent: '',
+      rent_payment_frequency: 'Monthly',
+      rent_due_day: '1',
+      first_rent_due_date: '',
+      bond_amount: 'One month rent',
+      bond_due_date: '',
+      electronic_notice_method: 'Email',
+      urgent_repair_contact: 'MZ Property operations team',
+      owners_corporation_rules: 'Owner to provide if applicable',
+      minimum_standards_confirmation: 'Owner confirms the Property meets applicable rental minimum standards before handover.',
+      owner_charges_handling: DIRECT_LEASE_UTILITIES_TEXT,
+      short_stay_insurance: DIRECT_LEASE_INSURANCE_TEXT,
     mz_signed_name: '',
     mz_signed_at: '',
     mz_signature_data_url: '',
@@ -455,7 +516,7 @@ async function syncPropertyBizCategory(client: any, propertyId: string | null, b
 
 async function syncLandlordRuleForDocumentFields(client: any, landlordId: string | null, fields: Record<string, any>, actor: string | null) {
   const landlord = String(landlordId || '').trim()
-  if (!landlord || isLeasedToMzVariant(fields)) return
+  if (!landlord || isMzLeaseVariant(fields)) return
   const rate = Number(fields?.management_fee_rate || 0)
   if (!(Number.isFinite(rate) && rate > 0)) return
   const monthKey = effectiveMonthFromFields(fields)
@@ -479,7 +540,7 @@ async function syncLandlordRuleForDocumentFields(client: any, landlordId: string
 
 async function syncServiceAgreementBusinessState(client: any, landlordId: string | null, propertyId: string | null, fields: Record<string, any>, actor: string | null) {
   const variant = serviceAgreementVariantOf(fields)
-  if (variant === 'leased_to_mz') {
+  if (variant === 'leased_to_mz' || variant === 'leased_direct_to_mz') {
     await syncPropertyBizCategory(client, propertyId, 'leased')
     return
   }
@@ -671,7 +732,7 @@ router.get('/templates/blank', requireAnyPerm(VIEW_PERMS), async (req, res) => {
     const type = String(req.query.type || '').trim() as LandlordDocumentType
     if (!TYPES.includes(type as any)) return res.status(400).json({ message: 'invalid type' })
     const rawVariant = String(req.query.variant || '').trim()
-    if (type === 'property_service_agreement' && rawVariant && !['management_standard', 'management_sale'].includes(rawVariant)) {
+    if (type === 'property_service_agreement' && rawVariant && !['management_standard', 'management_sale', 'leased_direct_to_mz'].includes(rawVariant)) {
       return res.status(400).json({ message: 'invalid variant' })
     }
     const fields = buildBlankTemplateFields(type, rawVariant as ServiceAgreementVariant)
@@ -680,12 +741,12 @@ router.get('/templates/blank', requireAnyPerm(VIEW_PERMS), async (req, res) => {
       type,
       documentNo: type === 'agency_authority'
         ? 'blank-template'
-        : `blank-template-${variant === 'management_sale' ? 'sale' : 'standard'}`,
+        : `blank-template-${variant === 'management_sale' ? 'sale' : (variant === 'leased_direct_to_mz' ? 'direct-lease' : 'standard')}`,
       fields,
     })
     const filename = type === 'agency_authority'
       ? 'agency-authority-blank-template.pdf'
-      : `service-agreement-blank-template-${variant === 'management_sale' ? 'sale' : 'standard'}.pdf`
+      : `service-agreement-blank-template-${variant === 'management_sale' ? 'sale' : (variant === 'leased_direct_to_mz' ? 'direct-lease' : 'standard')}.pdf`
     res.setHeader('Content-Type', 'application/pdf')
     res.setHeader('Content-Disposition', `attachment; filename="${filename || result.filename}"`)
     return res.status(200).send(result.pdf)
@@ -722,7 +783,7 @@ router.post('/', requireAnyPerm(WRITE_PERMS), async (req, res) => {
     const ownerName = String(fields.landlord_name || fields.owner_name || '').trim()
     if (!ownerName) return res.status(400).json({ message: 'missing landlord_name' })
     const actor = actorOf(req)
-    if (v.type === 'property_service_agreement' && !isLeasedToMzVariant(fields)) await ensureManagementFeeRulesTable()
+    if (v.type === 'property_service_agreement' && !isMzLeaseVariant(fields)) await ensureManagementFeeRulesTable()
     const out = await pgRunInTransaction(async (client) => {
       const status = v.type === 'property_service_agreement' && isLeasedToMzVariant(fields) ? 'draft' : (v.status || 'draft')
       const row = await client.query(
@@ -744,7 +805,7 @@ router.post('/', requireAnyPerm(WRITE_PERMS), async (req, res) => {
       responseDoc = generated.document
     }
     if (createdId && v.type === 'property_service_agreement' && landlordId) {
-      if (!isLeasedToMzVariant(fields)) await syncLandlordCachedManagementFeeRate(landlordId)
+      if (!isMzLeaseVariant(fields)) await syncLandlordCachedManagementFeeRate(landlordId)
       responseDoc = await loadDocument(createdId)
     }
     addAudit('LandlordDocument', createdId, 'create', null, responseDoc, actor || undefined)
@@ -773,7 +834,7 @@ router.patch('/:id', requireAnyPerm(WRITE_PERMS), async (req, res) => {
       return res.status(400).json({ message: 'missing property_code' })
     }
     const actor = actorOf(req)
-    if (before.type === 'property_service_agreement' && !leasedVariant) await ensureManagementFeeRulesTable()
+    if (before.type === 'property_service_agreement' && !isMzLeaseVariant(fields)) await ensureManagementFeeRulesTable()
     const out = await pgRunInTransaction(async (client) => {
       const keys: string[] = []
       const values: any[] = []
@@ -810,7 +871,7 @@ router.patch('/:id', requireAnyPerm(WRITE_PERMS), async (req, res) => {
     } else {
       responseDoc = await loadDocument(id)
     }
-    if (before.type === 'property_service_agreement' && landlordId && !leasedVariant) await syncLandlordCachedManagementFeeRate(String(landlordId))
+    if (before.type === 'property_service_agreement' && landlordId && !isMzLeaseVariant(fields)) await syncLandlordCachedManagementFeeRate(String(landlordId))
     addAudit('LandlordDocument', id, 'update', before, responseDoc, actor || undefined)
     return res.json(responseDoc)
   } catch (e: any) {
@@ -996,7 +1057,9 @@ router.post('/:id/attachments/upload', requireAnyPerm(WRITE_PERMS), upload.singl
     if (!doc) return res.status(404).json({ message: 'not found' })
     if (doc.status === 'archived') return res.status(409).json({ message: 'archived' })
     const fields = parseFields(doc.fields)
-    if (doc.type !== 'property_service_agreement' || !isLeasedToMzVariant(fields)) return res.status(409).json({ message: 'attachments_only_for_leased_variant' })
+    const allowLeaseAttachments = doc.type === 'property_service_agreement' && (isLeasedToMzVariant(fields) || isDirectLeaseToMzVariant(fields))
+    if (!allowLeaseAttachments) return res.status(409).json({ message: 'attachments_only_for_leased_variant' })
+    if (isDirectLeaseToMzVariant(fields) && parsedCategory.data !== 'condition_report') return res.status(409).json({ message: 'condition_report_only_for_direct_lease' })
     const file = req.file
     if (!allowedAttachmentExt(file.originalname || '') && !/^application\/pdf$|^application\/msword$|^application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document$|^image\/(png|jpeg|jpg)$/i.test(String(file.mimetype || ''))) {
       return res.status(400).json({ message: 'unsupported_file_type' })
@@ -1013,16 +1076,20 @@ router.post('/:id/attachments/upload', requireAnyPerm(WRITE_PERMS), upload.singl
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now())`,
         [attachmentId, id, parsedCategory.data, url, key, file.originalname || safeName, file.size || (file as any).buffer?.byteLength || 0, file.mimetype || 'application/octet-stream', actor]
       )
-      const nextStatus = leasedAttachmentStatus([
-        ...currentAttachments,
-        {
-          id: attachmentId,
-          document_id: id,
-          category: parsedCategory.data,
-          file_url: url,
-        } as LandlordDocumentAttachment,
-      ])
-      await client.query('UPDATE landlord_documents SET status=$2, updated_by=$3, updated_at=now() WHERE id=$1', [id, nextStatus, actor])
+      if (isLeasedToMzVariant(fields)) {
+        const nextStatus = leasedAttachmentStatus([
+          ...currentAttachments,
+          {
+            id: attachmentId,
+            document_id: id,
+            category: parsedCategory.data,
+            file_url: url,
+          } as LandlordDocumentAttachment,
+        ])
+        await client.query('UPDATE landlord_documents SET status=$2, updated_by=$3, updated_at=now() WHERE id=$1', [id, nextStatus, actor])
+      } else {
+        await client.query('UPDATE landlord_documents SET updated_by=$2, updated_at=now() WHERE id=$1', [id, actor])
+      }
     })
     const after = await loadDocument(id)
     addAudit('LandlordDocumentAttachment', attachmentId, 'create', null, after, actor || undefined)
@@ -1040,7 +1107,8 @@ router.delete('/:id/attachments/:attachmentId', requireAnyPerm(WRITE_PERMS), asy
     const doc = await loadDocument(id)
     if (!doc) return res.status(404).json({ message: 'not found' })
     const fields = parseFields(doc.fields)
-    if (doc.type !== 'property_service_agreement' || !isLeasedToMzVariant(fields)) return res.status(409).json({ message: 'attachments_only_for_leased_variant' })
+    const allowLeaseAttachments = doc.type === 'property_service_agreement' && (isLeasedToMzVariant(fields) || isDirectLeaseToMzVariant(fields))
+    if (!allowLeaseAttachments) return res.status(409).json({ message: 'attachments_only_for_leased_variant' })
     const existing = await pgPool.query('SELECT * FROM landlord_document_attachments WHERE id=$1 AND document_id=$2 LIMIT 1', [attachmentId, id])
     const beforeAttachment = existing.rows?.[0] || null
     if (!beforeAttachment) return res.status(404).json({ message: 'attachment not found' })
@@ -1049,7 +1117,11 @@ router.delete('/:id/attachments/:attachmentId', requireAnyPerm(WRITE_PERMS), asy
       .filter((x) => String(x.id || '') !== attachmentId)
     await pgRunInTransaction(async (client) => {
       await client.query('DELETE FROM landlord_document_attachments WHERE id=$1 AND document_id=$2', [attachmentId, id])
-      await client.query('UPDATE landlord_documents SET status=$2, updated_by=$3, updated_at=now() WHERE id=$1', [id, leasedAttachmentStatus(currentAttachments), actor])
+      if (isLeasedToMzVariant(fields)) {
+        await client.query('UPDATE landlord_documents SET status=$2, updated_by=$3, updated_at=now() WHERE id=$1', [id, leasedAttachmentStatus(currentAttachments), actor])
+      } else {
+        await client.query('UPDATE landlord_documents SET updated_by=$2, updated_at=now() WHERE id=$1', [id, actor])
+      }
     })
     const after = await loadDocument(id)
     addAudit('LandlordDocumentAttachment', attachmentId, 'delete', beforeAttachment, after, actor || undefined)

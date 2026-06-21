@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mergeInspectionPlan, mergeTurnoverTaskPlan } from '../../src/lib/cleaningInspection'
+import { deferredProjectionDate, mergeInspectionPlan, mergeTurnoverTaskPlan } from '../../src/lib/cleaningInspection'
 
 function testTurnoverCheckoutAssignmentWinsOverPendingFallback() {
   const out = mergeInspectionPlan([
@@ -121,11 +121,23 @@ function testTemporaryCheckinDoesNotClearCheckoutInspector() {
   assert.equal(out.inspectionMode, 'same_day')
 }
 
+function testCompletedDeferredInspectionDoesNotProject() {
+  const out = deferredProjectionDate({
+    inspectionMode: 'deferred',
+    inspectionDueDate: '2026-06-21',
+    dateFrom: '2026-06-21',
+    dateTo: '2026-06-21',
+    status: 'completed',
+  })
+  assert.equal(out, null)
+}
+
 testTurnoverCheckoutAssignmentWinsOverPendingFallback()
 testTurnoverPendingCheckoutDoesNotGetPromotedByCheckinDefault()
 testDeferredCheckoutKeepsDeferredDate()
 testStayoverRemainsSelfComplete()
 testTemporaryCheckinDoesNotUnassignScheduledCheckout()
 testTemporaryCheckinDoesNotClearCheckoutInspector()
+testCompletedDeferredInspectionDoesNotProject()
 
 console.log('test_cleaning_inspection_merge: ok')
