@@ -7,6 +7,7 @@ import { hasPg, pgPool } from '../dbAdapter'
 import { ensureCleaningSchemaV2 } from '../services/cleaningSync'
 import { defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, mergeTurnoverTaskPlan } from '../lib/cleaningInspection'
 import { buildCleaningTaskVisibilityHints, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
+import { emitNotificationEvent } from '../services/notificationEvents'
 
 export const router = Router()
 
@@ -236,6 +237,46 @@ function workTaskDisplayText(row: any): { title: string; detail: string } {
   }
 }
 
+function mapWorkTaskRowToBoardTask(row: any, date: string): BoardTask {
+  const display = workTaskDisplayText(row)
+  return {
+    item_key: `work:${String(row.id)}`,
+    task_source: 'work' as const,
+    task_id: String(row.id),
+    task_ids: [String(row.id)],
+    task_kind: String(row.task_kind || ''),
+    source_type: row.source_type ? String(row.source_type) : null,
+    source_id: row.source_id ? String(row.source_id) : null,
+    property_id: row.property_id ? String(row.property_id) : null,
+    property_code: row.property_code ? String(row.property_code) : null,
+    property_region: row.property_region ? String(row.property_region) : null,
+    status: normStatus(row.status),
+    urgency: normUrgency(row.urgency),
+    title: display.title,
+    detail: display.detail,
+    summary: row.summary != null ? String(row.summary || '') : null,
+    task_date: row.scheduled_date ? String(row.scheduled_date).slice(0, 10) : date,
+    assignee_id: row.assignee_id ? String(row.assignee_id) : null,
+    cleaner_id: null,
+    inspector_id: null,
+  }
+}
+
+function dedupeBoardTasks(tasks: BoardTask[]): BoardTask[] {
+  const out: BoardTask[] = []
+  const seen = new Set<string>()
+  for (const task of tasks) {
+    const sourceType = text(task.source_type)
+    const sourceId = text(task.source_id)
+    const sourceKey = sourceType && sourceId ? `${sourceType}:${sourceId}` : ''
+    const key = sourceKey || task.task_id
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(task)
+  }
+  return out
+}
+
 async function ensureWorkTasksTable() {
   if (!hasPg || !pgPool) return
   await pgPool.query(`CREATE TABLE IF NOT EXISTS work_tasks (
@@ -261,6 +302,47 @@ async function ensureWorkTasksTable() {
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day_assignee ON work_tasks(scheduled_date, assignee_id, status);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_kind_day ON work_tasks(task_kind, scheduled_date);`)
   await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_work_tasks_day ON work_tasks(scheduled_date);`)
+}
+
+async function hasCleaningOfflineTasksTable() {
+  if (!hasPg || !pgPool) return false
+  const result = await pgPool.query(`SELECT to_regclass('public.cleaning_offline_tasks') AS table_name`)
+  return !!result?.rows?.[0]?.table_name
+}
+
+async function backfillOfflineTasksToWorkTasks(date: string, includeOverdue: boolean, includeFuture: boolean) {
+  if (!hasPg || !pgPool) return false
+  if (!(await hasCleaningOfflineTasksTable())) return false
+  const where: string[] = [`t.date::date = $1::date`]
+  if (includeOverdue) where.push(`(t.date::date < $1::date AND COALESCE(t.status, 'todo') <> 'done')`)
+  if (includeFuture) where.push(`(t.date::date > $1::date AND COALESCE(t.status, 'todo') <> 'done')`)
+  await pgPool.query(
+    `INSERT INTO work_tasks(
+       id, task_kind, source_type, source_id, property_id,
+       title, summary, scheduled_date, assignee_id, status, urgency,
+       created_at, updated_at
+     )
+     SELECT
+       ('cleaning_offline_tasks:' || t.id::text) AS id,
+       'offline' AS task_kind,
+       'cleaning_offline_tasks' AS source_type,
+       t.id::text AS source_id,
+       t.property_id,
+       COALESCE(t.title, '') AS title,
+       NULLIF(COALESCE(t.content, ''), '') AS summary,
+       t.date::date AS scheduled_date,
+       t.assignee_id,
+       CASE WHEN COALESCE(t.status, 'todo') = 'done' THEN 'done' ELSE 'todo' END AS status,
+       COALESCE(NULLIF(t.urgency, ''), 'medium') AS urgency,
+       COALESCE(t.created_at, t.updated_at, now()) AS created_at,
+       COALESCE(t.updated_at, t.created_at, now()) AS updated_at
+     FROM cleaning_offline_tasks t
+     WHERE COALESCE(t.status, 'todo') <> 'done'
+       AND (${where.join(' OR ')})
+     ON CONFLICT (source_type, source_id) DO NOTHING`,
+    [date],
+  )
+  return true
 }
 
 async function ensureTaskCenterTables() {
@@ -729,6 +811,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
 async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnscheduled: boolean, includeFuture: boolean): Promise<BoardTask[]> {
   if (hasPg && pgPool) {
     await ensureWorkTasksTable()
+    const hasOfflineTasks = await backfillOfflineTasksToWorkTasks(date, includeOverdue, includeFuture)
     const doneSet = ['done', 'completed', 'cancelled', 'canceled']
     const where: string[] = []
     const vals: any[] = [date, doneSet, WORK_TASK_VISIBILITY_START]
@@ -750,32 +833,43 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
       ORDER BY COALESCE(w.scheduled_date, $1::date) ASC, w.urgency DESC, w.updated_at DESC, w.id DESC
     `
     const r = await pgPool.query(sql, vals)
-    return (r?.rows || []).map((row: any) => {
-      const display = workTaskDisplayText(row)
-      return {
-      item_key: `work:${String(row.id)}`,
-      task_source: 'work' as const,
-      task_id: String(row.id),
-      task_ids: [String(row.id)],
-      task_kind: String(row.task_kind || ''),
-      source_type: row.source_type ? String(row.source_type) : null,
-      source_id: row.source_id ? String(row.source_id) : null,
-      property_id: row.property_id ? String(row.property_id) : null,
-      property_code: row.property_code ? String(row.property_code) : null,
-      property_region: row.property_region ? String(row.property_region) : null,
-      status: normStatus(row.status),
-      urgency: normUrgency(row.urgency),
-      title: display.title,
-      detail: display.detail,
-      summary: row.summary != null ? String(row.summary || '') : null,
-      task_date: row.scheduled_date ? String(row.scheduled_date).slice(0, 10) : date,
-      assignee_id: row.assignee_id ? String(row.assignee_id) : null,
-      cleaner_id: null,
-      inspector_id: null,
-    }})
+    const workTasks = (r?.rows || []).map((row: any) => mapWorkTaskRowToBoardTask(row, date))
+    if (!hasOfflineTasks) return workTasks
+    const offlineWhere: string[] = [`t.date::date = $1::date`]
+    if (includeOverdue) offlineWhere.push(`(t.date::date < $1::date AND COALESCE(t.status, 'todo') <> 'done')`)
+    if (includeFuture) offlineWhere.push(`(t.date::date > $1::date AND COALESCE(t.status, 'todo') <> 'done')`)
+    const offlineSql = `
+      SELECT
+        ('cleaning_offline_tasks:' || t.id::text) AS id,
+        'offline' AS task_kind,
+        'cleaning_offline_tasks' AS source_type,
+        t.id::text AS source_id,
+        t.property_id,
+        t.title,
+        NULLIF(COALESCE(t.content, ''), '') AS summary,
+        t.date::date AS scheduled_date,
+        NULL::text AS start_time,
+        NULL::text AS end_time,
+        t.assignee_id,
+        CASE WHEN COALESCE(t.status, 'todo') = 'done' THEN 'done' ELSE 'todo' END AS status,
+        COALESCE(NULLIF(t.urgency, ''), 'medium') AS urgency,
+        COALESCE(t.created_at, t.updated_at, now()) AS created_at,
+        COALESCE(t.updated_at, t.created_at, now()) AS updated_at,
+        COALESCE(p_id.code::text, p_code.code::text) AS property_code,
+        COALESCE(p_id.region::text, p_code.region::text) AS property_region
+      FROM cleaning_offline_tasks t
+      LEFT JOIN properties p_id ON (p_id.id::text) = (t.property_id::text)
+      LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+      WHERE COALESCE(t.status, 'todo') <> 'done'
+        AND (${offlineWhere.join(' OR ')})
+      ORDER BY t.date::date ASC, COALESCE(NULLIF(t.urgency, ''), 'medium') DESC, t.updated_at DESC, t.id DESC
+    `
+    const offlineResult = await pgPool.query(offlineSql, [date])
+    const offlineTasks = (offlineResult?.rows || []).map((row: any) => mapWorkTaskRowToBoardTask(row, date))
+    return dedupeBoardTasks([...workTasks, ...offlineTasks])
   }
   const rows = (((db as any).workTasks || []) as any[]).slice()
-  return rows
+  const workTasks = rows
     .filter((row: any) => {
       const created = dayOnly(row.created_at || row.updated_at || row.scheduled_date)
       if (created && created < WORK_TASK_VISIBILITY_START) return false
@@ -811,6 +905,32 @@ async function loadWorkTasks(date: string, includeOverdue: boolean, includeUnsch
       cleaner_id: null,
       inspector_id: null,
     }})
+  const offlineTasks = (((db as any).cleaningOfflineTasks || []) as any[])
+    .filter((row: any) => {
+      const status = normStatus(row.status)
+      if (status === 'done' || status === 'cancelled') return false
+      const scheduled = dayOnly(row.date)
+      if (scheduled === date) return true
+      if (includeOverdue && scheduled && scheduled < date) return true
+      if (includeFuture && scheduled && scheduled > date) return true
+      return false
+    })
+    .map((row: any) => mapWorkTaskRowToBoardTask({
+      id: `cleaning_offline_tasks:${String(row.id)}`,
+      task_kind: 'offline',
+      source_type: 'cleaning_offline_tasks',
+      source_id: String(row.id),
+      property_id: row.property_id || null,
+      property_code: null,
+      property_region: null,
+      title: row.title,
+      summary: row.content,
+      scheduled_date: row.date,
+      assignee_id: row.assignee_id || null,
+      status: row.status,
+      urgency: row.urgency,
+    }, date))
+  return dedupeBoardTasks([...workTasks, ...offlineTasks])
 }
 
 async function loadTaskFlags(date: string) {
@@ -1251,6 +1371,11 @@ const saveBoardSchema = z.object({
   work_assignments: z.array(z.object({
     task_id: z.string().min(1),
     assignee_id: z.string().min(1).nullable(),
+    title: z.string().optional(),
+    summary: z.string().nullable().optional(),
+    scheduled_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+    status: z.string().optional(),
+    urgency: z.enum(['low', 'medium', 'high', 'urgent']).nullable().optional(),
   })).default([]),
   task_flags: z.array(z.object({
     task_source: z.enum(['cleaning', 'work']),
@@ -1444,20 +1569,43 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
         if (payload.work_assignments.length) {
           const result = await client.query(
             `UPDATE work_tasks AS task
-             SET assignee_id = x.assignee_id,
+             SET title = COALESCE(NULLIF(x.title, ''), task.title),
+                 summary = x.summary,
+                 scheduled_date = CASE WHEN x.scheduled_date IS NULL THEN task.scheduled_date ELSE x.scheduled_date::date END,
+                 assignee_id = x.assignee_id,
                  status = CASE
+                   WHEN NULLIF(COALESCE(x.status, ''), '') IS NOT NULL
+                     THEN x.status
                    WHEN lower(COALESCE(task.status, 'todo')) IN ('todo', 'assigned')
                      THEN CASE WHEN NULLIF(COALESCE(x.assignee_id, ''), '') IS NULL THEN 'todo' ELSE 'assigned' END
                    ELSE task.status
                  END,
+                 urgency = COALESCE(NULLIF(x.urgency, ''), task.urgency),
                  updated_by = $2,
                  updated_at = now()
-             FROM jsonb_to_recordset($1::jsonb) AS x(task_id text, assignee_id text)
+             FROM jsonb_to_recordset($1::jsonb) AS x(
+               task_id text,
+               assignee_id text,
+               title text,
+               summary text,
+               scheduled_date text,
+               status text,
+               urgency text
+             )
              WHERE task.id::text = x.task_id
                AND (
-                 task.assignee_id IS DISTINCT FROM x.assignee_id
+                 task.title IS DISTINCT FROM COALESCE(NULLIF(x.title, ''), task.title)
+                 OR task.summary IS DISTINCT FROM x.summary
+                 OR task.scheduled_date::text IS DISTINCT FROM CASE WHEN x.scheduled_date IS NULL THEN task.scheduled_date::text ELSE x.scheduled_date END
+                 OR task.assignee_id IS DISTINCT FROM x.assignee_id
+                 OR task.urgency IS DISTINCT FROM COALESCE(NULLIF(x.urgency, ''), task.urgency)
+                 OR (
+                   NULLIF(COALESCE(x.status, ''), '') IS NOT NULL
+                   AND task.status IS DISTINCT FROM x.status
+                 )
                  OR (
                    lower(COALESCE(task.status, 'todo')) IN ('todo', 'assigned')
+                   AND NULLIF(COALESCE(x.status, ''), '') IS NULL
                    AND task.status IS DISTINCT FROM CASE WHEN NULLIF(COALESCE(x.assignee_id, ''), '') IS NULL THEN 'todo' ELSE 'assigned' END
                  )
                )
@@ -1465,6 +1613,82 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
             [JSON.stringify(payload.work_assignments), updatedBy],
           )
           changedWorkTasks = result.rows || []
+          if (changedWorkTasks.some((task: any) => String(task.source_type || '') === 'cleaning_offline_tasks') && await hasCleaningOfflineTasksTable()) {
+            await client.query(
+              `UPDATE cleaning_offline_tasks AS t
+               SET date = w.scheduled_date,
+                   title = w.title,
+                   content = COALESCE(w.summary, ''),
+                   assignee_id = w.assignee_id,
+                   status = CASE WHEN lower(COALESCE(w.status, 'todo')) = 'done' THEN 'done' ELSE 'todo' END,
+                   urgency = w.urgency,
+                   updated_at = now()
+               FROM work_tasks w
+               WHERE w.source_type = 'cleaning_offline_tasks'
+                 AND t.id::text = w.source_id::text
+                 AND w.id::text = ANY($1::text[])`,
+              [changedWorkTasks.map((task: any) => String(task.id))],
+            )
+          }
+        }
+        const workAssigneeIds = Array.from(new Set(changedWorkTasks.map((task: any) => String(task.assignee_id || '').trim()).filter(Boolean)))
+        const workAssigneeNames = new Map<string, string>()
+        if (workAssigneeIds.length) {
+          try {
+            const assigneeResult = await client.query(
+              `SELECT id::text AS id,
+                      COALESCE(NULLIF(TRIM(display_name), ''), NULLIF(TRIM(username), ''), NULLIF(TRIM(email), ''), id::text) AS name
+               FROM users
+               WHERE id::text = ANY($1::text[])`,
+              [workAssigneeIds],
+            )
+            for (const row of assigneeResult?.rows || []) {
+              workAssigneeNames.set(String(row.id), String(row.name || row.id || ''))
+            }
+          } catch {}
+        }
+        for (const task of changedWorkTasks) {
+          const assigneeId = String(task.assignee_id || '').trim()
+          if (!assigneeId) continue
+          const actorId = String(user.sub || '').trim()
+          const taskDate = task.scheduled_date ? String(task.scheduled_date).slice(0, 10) : payload.date
+          const taskTitle = String(task.title || '').trim() || '线下任务'
+          const taskSummary = String(task.summary || '').trim()
+          const assigneeName = workAssigneeNames.get(assigneeId) || assigneeId
+          try {
+            await emitNotificationEvent(
+              {
+                type: 'WORK_TASK_UPDATED',
+                entity: 'work_task',
+                entityId: String(task.id),
+                propertyId: task.property_id ? String(task.property_id) : undefined,
+                updatedAt: String(task.updated_at || '').trim() || new Date().toISOString(),
+                title: '任务安排已更新',
+                body: [
+                  `任务：${taskTitle}`,
+                  taskSummary ? `内容：${taskSummary}` : '',
+                  `日期：${taskDate}`,
+                ].filter(Boolean).join('\n'),
+                data: {
+                  entity: 'work_task',
+                  entityId: String(task.id),
+                  action: 'open_work_task',
+                  kind: 'work_task_updated',
+                  task_id: String(task.id),
+                  task_title: taskTitle,
+                  task_summary: taskSummary || null,
+                  task_date: taskDate,
+                  assignee_id: assigneeId,
+                  assignee_name: assigneeName,
+                  status: task.status,
+                  urgency: task.urgency,
+                },
+                actorUserId: actorId || null,
+                recipientUserIds: [assigneeId],
+              },
+              { operationId: uuid(), pgClient: client },
+            )
+          } catch {}
         }
         if (payload.task_flags.length) {
           await client.query(
@@ -1512,10 +1736,19 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), async (req, res)
             sourceRefIds: [String(task.source_id || task.id)],
             eventType: 'TASK_ASSIGNMENT_CHANGED',
             changeScope: 'membership',
-            changedFields: ['assignee_id', 'status'],
+            changedFields: ['title', 'summary', 'scheduled_date', 'assignee_id', 'status', 'urgency'],
             patch: {
+              title: task.title ?? '',
+              summary: task.summary ?? null,
+              scheduled_date: task.scheduled_date ? String(task.scheduled_date).slice(0, 10) : null,
               assignee_id: task.assignee_id ?? null,
               status: task.status,
+              urgency: task.urgency ?? null,
+            },
+            payload: {
+              task_title: task.title ?? '',
+              task_summary: task.summary ?? null,
+              task_date: task.scheduled_date ? String(task.scheduled_date).slice(0, 10) : null,
             },
             causedByUserId: String(user.sub || '').trim() || null,
             visibilityHints: buildWorkTaskVisibilityHints(task),
