@@ -16,6 +16,7 @@ type CalendarItem = {
   entity_ids?: string[]
   order_id: string | null
   order_code?: string | null
+  checkin_sync_status?: 'pending' | 'synced' | null
   property_id: string | null
   property_code?: string | null
   property_region?: string | null
@@ -37,6 +38,8 @@ type CalendarItem = {
   nights?: number | null
   summary_checkout_time?: string | null
   summary_checkin_time?: string | null
+  guest_special_request?: string | null
+  note?: string | null
   checkin_order_id?: string | null
   checkout_order_id?: string | null
   checkin_order_code?: string | null
@@ -60,6 +63,7 @@ type CleaningTaskRow = {
   inspector_id?: string | null
   keys_required?: number | null
   scheduled_at?: string | null
+  guest_special_request?: string | null
   note?: string | null
   auto_sync_enabled?: boolean | null
   old_code?: string | null
@@ -75,6 +79,7 @@ type EditTaskForm = {
   task_date: Dayjs
   property_id: string | null
   status: string
+  checkin_sync_status?: 'pending' | 'synced' | null
   cleaner_id: string | null
   inspector_id: string | null
   keys_required_checkin: 1 | 2
@@ -83,7 +88,7 @@ type EditTaskForm = {
   checkout_order_id: string | null
   checkin_manual_ids: string[]
   checkout_manual_ids: string[]
-  note: string
+  guest_special_request: string
   nights_override: number | null
   checkout_ids: string[]
   checkin_ids: string[]
@@ -115,7 +120,7 @@ type ManualCreateForm = {
   nights_override: number | null
   checkout_time: string
   checkin_time: string
-  note: string
+  guest_special_request: string
 }
 
 type OfflineTaskForm = {
@@ -251,6 +256,38 @@ export default function CleaningPage() {
     return hour * 60 + minute > 10 * 60
   }, [])
 
+  const isDefaultCheckoutTime = useCallback((raw: string | null | undefined) => {
+    const s = String(raw || '').trim().toLowerCase()
+    if (!s) return true
+    const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/)
+    if (!m) return false
+    let hour = Number(m[1] || 0)
+    const minute = Number(m[2] || 0)
+    const meridiem = String(m[3] || '').trim()
+    if (meridiem === 'am') {
+      if (hour === 12) hour = 0
+    } else if (meridiem === 'pm') {
+      if (hour < 12) hour += 12
+    }
+    return hour * 60 + minute === 10 * 60
+  }, [])
+
+  const isDefaultCheckinTime = useCallback((raw: string | null | undefined) => {
+    const s = String(raw || '').trim().toLowerCase()
+    if (!s) return true
+    const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/)
+    if (!m) return false
+    let hour = Number(m[1] || 0)
+    const minute = Number(m[2] || 0)
+    const meridiem = String(m[3] || '').trim()
+    if (meridiem === 'am') {
+      if (hour === 12) hour = 0
+    } else if (meridiem === 'pm') {
+      if (hour < 12) hour += 12
+    }
+    return hour * 60 + minute === 15 * 60
+  }, [])
+
   const hasLateCheckout = useCallback((it: CalendarItem) => {
     const type = String(it.task_type || '').toLowerCase()
     const label = String(it.label || '')
@@ -260,10 +297,19 @@ export default function CleaningPage() {
     return isLateCheckoutTime(it.summary_checkout_time)
   }, [isLateCheckoutTime])
 
+  const checkinSyncTag = useCallback((it: Pick<CalendarItem, 'source' | 'checkin_sync_status'>) => {
+    if (it.source !== 'cleaning_tasks') return null
+    if (it.checkin_sync_status === 'pending') return { label: '待同步', tone: 'warning' as const }
+    if (it.checkin_sync_status === 'synced') return { label: '已同步', tone: 'success' as const }
+    return null
+  }, [])
+
   const summaryText = useCallback((it: CalendarItem) => {
     const region = String(it.property_region || '').trim()
     const code = String(it.property_code || '').trim() || propertyLabelForItem(it)
-    const checkoutT = String(it.summary_checkout_time || '').trim() || '10am'
+    const rawCheckoutT = String(it.summary_checkout_time || '').trim()
+    const checkoutT = rawCheckoutT || '10am'
+    const checkoutLabel = isDefaultCheckoutTime(checkoutT) ? '退房' : `${checkoutT}退房`
     const type = String(it.task_type || '').toLowerCase()
     const label = String(it.label || '')
     const isTurnover = type === 'turnover' || (label.includes('退房') && label.includes('入住'))
@@ -273,19 +319,20 @@ export default function CleaningPage() {
     const parts: string[] = []
     if (isTurnover) {
       const checkinT = String(it.summary_checkin_time || '').trim() || '3pm'
-      parts.push(`${checkoutT}退房`, `${checkinT}入住`)
+      const checkinLabel = isDefaultCheckinTime(checkinT) ? '入住' : `${checkinT}入住`
+      parts.push(checkoutLabel, checkinLabel)
     }
-    else if (isCheckout) parts.push(`${checkoutT}退房`)
+    else if (isCheckout) parts.push(checkoutLabel)
     else if (isStayover) {
       const t = String((it as any).checkin_time || '').trim()
       parts.push(t ? `${t}清洁` : '清洁')
     } else if (isCheckin) {
       const checkinT = String(it.summary_checkin_time || '').trim() || '3pm'
-      parts.push(`${checkinT}入住`)
+      parts.push(isDefaultCheckinTime(checkinT) ? '入住' : `${checkinT}入住`)
     }
     if (hasLateCheckout(it)) parts.push('晚退房')
     return { region, code, detail: parts.join(' ') }
-  }, [hasLateCheckout, propertyLabelForItem])
+  }, [hasLateCheckout, isDefaultCheckinTime, isDefaultCheckoutTime, propertyLabelForItem])
 
   const entityIds = useCallback((it: CalendarItem) => {
     const ids = Array.isArray(it.entity_ids) && it.entity_ids.length ? it.entity_ids : [it.entity_id]
@@ -379,6 +426,7 @@ export default function CleaningPage() {
             summary_checkin_time: checkin?.summary_checkin_time || null,
             checkout_order_id: checkout?.order_id ? String(checkout.order_id) : null,
             checkin_order_id: checkin?.order_id ? String(checkin.order_id) : null,
+            checkin_sync_status: checkin?.checkin_sync_status || null,
             checkout_order_code: checkout?.order_code ? String(checkout.order_code) : null,
             checkin_order_code: checkin?.order_code ? String(checkin.order_code) : null,
             checkout_old_code: checkout?.old_code != null ? String(checkout.old_code || '') : null,
@@ -455,6 +503,7 @@ export default function CleaningPage() {
             has_key_photo: anyKeyUploaded(checkins0),
             auto_sync_enabled: autoSync,
             summary_checkin_time: checkins0[0].summary_checkin_time || null,
+            checkin_sync_status: checkins0.some((x) => x.checkin_sync_status === 'pending') ? 'pending' : (checkins0.some((x) => x.checkin_sync_status === 'synced') ? 'synced' : null),
             checkin_order_id: null,
             checkout_order_id: null,
             checkin_order_code: checkins0.map((x) => String(x.order_code || x.order_id || '')).filter(Boolean).join(','),
@@ -668,7 +717,9 @@ export default function CleaningPage() {
     const baseRow = selectedRows.find((r) => r && String(r.id) === String(clickedIds[0])) || selectedRows[0]
     const checkoutAllExists = checkoutIdsAll.length > 0
     const checkinAllExists = checkinIdsAll.length > 0
-    const note = ids.length === 1 ? (baseRow?.note != null ? String(baseRow.note || '') : '') : ''
+    const guestSpecialRequest = selectedRows
+      .map((r) => String(r?.guest_special_request || r?.note || '').trim())
+      .find(Boolean) || ''
     const status = ids.length === 1 ? String(baseRow?.status || it.status || 'pending') : mergedStatus(selectedRows.map((r) => String(r?.status || it.status || 'pending')))
     const getCleaner = (r: CleaningTaskRow | null) => String(r?.cleaner_id || r?.assignee_id || '').trim()
     const getInspector = (r: CleaningTaskRow | null) => String(r?.inspector_id || '').trim()
@@ -719,12 +770,16 @@ export default function CleaningPage() {
     const checkoutOrderId = checkoutOrderIds.length === 1 ? checkoutOrderIds[0] : null
     const checkinManualIds = checkinRows.filter((r) => !String((r as any)?.order_id || '').trim()).map((r) => String((r as any)?.id || '').trim()).filter(Boolean)
     const checkoutManualIds = checkoutRows.filter((r) => !String((r as any)?.order_id || '').trim()).map((r) => String((r as any)?.id || '').trim()).filter(Boolean)
+    const checkinSyncStatus: EditTaskForm['checkin_sync_status'] = stayoverMode || !checkinRows.length
+      ? null
+      : (checkinRows.some((r) => !String((r as any)?.order_id || '').trim()) ? 'pending' : 'synced')
     setEditForm({
       mode: stayoverMode ? 'stayover' : 'default',
       ids,
       task_date: dayjs(date),
       property_id: propertyId,
       status,
+      checkin_sync_status: checkinSyncStatus,
       cleaner_id: cleanerId,
       inspector_id: inspectorId,
       keys_required_checkin: keysRequiredCheckin,
@@ -733,7 +788,7 @@ export default function CleaningPage() {
       checkout_order_id: stayoverMode ? null : checkoutOrderId,
       checkin_manual_ids: stayoverMode ? [] : checkinManualIds,
       checkout_manual_ids: stayoverMode ? [] : checkoutManualIds,
-      note,
+      guest_special_request: guestSpecialRequest,
       nights_override: stayoverMode ? null : nightsOverride,
       checkout_ids: stayoverMode ? [] : checkoutIdsAll,
       checkin_ids: stayoverMode ? [] : checkinIdsAll,
@@ -760,8 +815,7 @@ export default function CleaningPage() {
     }
     if (editForm.ids.length === 1 || editForm.cleaner_id !== null) base.cleaner_id = editForm.cleaner_id
     if (editForm.ids.length === 1 || editForm.inspector_id !== null) base.inspector_id = editForm.inspector_id
-    if (editForm.ids.length === 1) base.note = editForm.note || null
-    else if (String(editForm.note || '').trim()) base.note = editForm.note
+    base.guest_special_request = editForm.guest_special_request || null
 
     if (editForm.mode === 'stayover') {
       const patches = editForm.ids.map((id) => {
@@ -803,6 +857,7 @@ export default function CleaningPage() {
         keys_required: editForm.keys_required_checkout,
         old_code: toNull(editForm.checkout_password),
         checkout_time: toNull(editForm.checkout_time),
+        guest_special_request: editForm.guest_special_request || null,
       })
     }
     if (editForm.pending_add_checkin && editForm.property_id) {
@@ -817,6 +872,7 @@ export default function CleaningPage() {
         new_code: toNull(editForm.checkin_password),
         nights_override: editForm.nights_override ?? null,
         checkin_time: toNull(editForm.checkin_time),
+        guest_special_request: editForm.guest_special_request || null,
       })
     }
 
@@ -1077,7 +1133,7 @@ export default function CleaningPage() {
       nights_override: null,
       checkout_time: '10am',
       checkin_time: '3pm',
-      note: '',
+      guest_special_request: '',
     })
     setManualCreateOpen(true)
   }, [])
@@ -1098,7 +1154,7 @@ export default function CleaningPage() {
       nights_override: manualCreateForm.nights_override != null ? Number(manualCreateForm.nights_override) : null,
       checkout_time: manualCreateForm.checkout_time ? String(manualCreateForm.checkout_time) : null,
       checkin_time: isStayover ? null : (manualCreateForm.checkin_time ? String(manualCreateForm.checkin_time) : null),
-      note: manualCreateForm.note.trim() ? manualCreateForm.note.trim() : null,
+      guest_special_request: manualCreateForm.guest_special_request.trim() ? manualCreateForm.guest_special_request.trim() : null,
     }
     await postJSON('/cleaning/tasks', body)
     message.success('已新增清洁任务')
@@ -1641,6 +1697,7 @@ export default function CleaningPage() {
               const hasAssignee = !!String(it.cleaner_id || it.assignee_id || '').trim()
               const isKeyUploaded = !!(it.has_key_photo || it.key_photo_uploaded_at)
               const showKeyMissing = it.source === 'cleaning_tasks' && hasAssignee && !isKeyUploaded && String(it.status || '').toLowerCase() !== 'cancelled'
+              const syncTag = checkinSyncTag(it)
               return (
                 <div key={`${it.source}:${it.entity_id}`} className={styles.missionCard}>
                   <div className={`${styles.accent} ${accentCls}`} style={{ backgroundColor: accentColor }} />
@@ -1685,6 +1742,7 @@ export default function CleaningPage() {
                   </div>
                   <div className={styles.metaRow}>
                     {it.nights != null ? <span className={styles.metaChip}>{`${it.nights}晚`}</span> : null}
+                    {syncTag ? <span className={`${styles.metaChip} ${syncTag.tone === 'warning' ? styles.metaChipWarn : ''}`}>{syncTag.label}</span> : null}
                     {hasLateCheckout(it) ? <span className={styles.metaChip}>晚退房</span> : null}
                     {showKeyMissing ? <span className={`${styles.metaChip} ${styles.metaChipDanger}`}>钥匙未上传</span> : null}
                     {checkoutCode !== '-' ? <span className={styles.metaText}><span className={styles.metaKey}>退房</span>{checkoutCode}</span> : null}
@@ -1779,6 +1837,8 @@ export default function CleaningPage() {
               </div>
               <div className={styles.cleaningEditHeroChips}>
                 <span className={styles.cleaningEditChip}>{statusText(editForm.status)}</span>
+                {editForm.checkin_sync_status === 'pending' ? <span className={`${styles.cleaningEditChip} ${styles.cleaningEditChipWarn}`}>待同步</span> : null}
+                {editForm.checkin_sync_status === 'synced' ? <span className={styles.cleaningEditChip}>已同步</span> : null}
                 {!editForm.auto_sync_enabled ? <span className={`${styles.cleaningEditChip} ${styles.cleaningEditChipWarn}`}>自动同步已锁定</span> : null}
                 {editForm.mode === 'stayover' ? <span className={`${styles.cleaningEditChip} ${styles.cleaningEditChipSoft}`}>仅清洁安排</span> : null}
               </div>
@@ -2044,12 +2104,12 @@ export default function CleaningPage() {
             <div className={styles.cleaningEditSection}>
               <div className={styles.cleaningEditSectionHead}>
                 <div>
-                  <div className={styles.cleaningEditSectionTitle}>备注</div>
-                  <div className={styles.cleaningEditSectionHint}>记录密码说明、客人要求或其他需要同步给现场的信息。</div>
+                  <div className={styles.cleaningEditSectionTitle}>客人需求</div>
+                  <div className={styles.cleaningEditSectionHint}>记录客人要求或其他需要同步给现场的信息。</div>
                 </div>
               </div>
-              <Form.Item label="备注" style={{ marginBottom: 0 }}>
-                <Input.TextArea rows={4} value={editForm.note} onChange={(e) => setEditForm((p) => (p ? { ...p, note: e.target.value } : p))} />
+              <Form.Item label="客人需求" style={{ marginBottom: 0 }}>
+                <Input.TextArea rows={4} value={editForm.guest_special_request} onChange={(e) => setEditForm((p) => (p ? { ...p, guest_special_request: e.target.value } : p))} />
               </Form.Item>
             </div>
           </Form>
@@ -2241,10 +2301,10 @@ export default function CleaningPage() {
               </>
             ) : null}
             <div>
-              <div className={styles.fieldLabel}>备注</div>
+              <div className={styles.fieldLabel}>客人需求</div>
               <Input.TextArea
-                value={manualCreateForm.note}
-                onChange={(e) => setManualCreateForm((p) => (p ? { ...p, note: e.target.value } : p))}
+                value={manualCreateForm.guest_special_request}
+                onChange={(e) => setManualCreateForm((p) => (p ? { ...p, guest_special_request: e.target.value } : p))}
                 style={{ width: '100%' }}
                 autoSize={{ minRows: 2, maxRows: 6 }}
               />
